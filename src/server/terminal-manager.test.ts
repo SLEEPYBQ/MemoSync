@@ -1,0 +1,358 @@
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { mkdtemp, mkdir, rm } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { TerminalManager } from "./terminal-manager"
+
+// Upper bounds for waitFor() polling (25ms interval; returns as soon as the
+// condition holds, so raising them never slows a passing test).
+const SHELL_START_TIMEOUT_MS = 20_000
+const COMMAND_TIMEOUT_MS = 20_000
+const FOCUS_IN_SEQUENCE = "\x1b[I"
+const RAW_READ_HEX_COMMAND = `python3 -c "exec('import os,sys,tty,termios,select\\nfd=sys.stdin.fileno()\\nold=termios.tcgetattr(fd)\\ntty.setraw(fd)\\ntry:\\n    sys.stdout.write(\"__RAW_READY__\\\\n\")\\n    sys.stdout.flush()\\n    r,_,_=select.select([fd],[],[],1)\\n    data=os.read(fd,8) if r else b\"\"\\n    print(data.hex() or \"__EMPTY__\")\\nfinally:\\n    termios.tcsetattr(fd, termios.TCSADRAIN, old)')"\r`
+
+const isSupportedPlatform = process.platform !== "win32" && typeof Bun.Terminal === "function"
+const describeIfSupported = isSupportedPlatform ? describe : describe.skip
+
+// Tests that spawn a REAL interactive login shell and assert live terminal
+// semantics (job control, ctrl+d EOF, focus reporting). These depend on the
+// host shell's interactive behavior, which headless CI runners do not provide
+// reliably — the ctrl+d-EOF case intermittently leaves the shell alive well
+// past any timeout (the shell simply never treats EOF as exit under CI's PTY).
+// They're valuable on a developer machine, so they run locally and skip on CI.
+// Pure-unit terminal tests (mocked sessions) still run everywhere.
+// Real-PTY tests share the machine with the whole parallel suite: spawning a
+// shell takes ~400ms solo but can exceed bun's 5s default per-test timeout
+// under load (the recurring flake). Give them their own generous ceiling —
+// the inner waitFor calls already bound the real waiting at 20s.
+const SHELL_TEST_TIMEOUT_MS = 30_000
+const shellTest: typeof test = process.env.CI
+  ? (test.skip as typeof test)
+  : ((((name: string, fn: () => void | Promise<void>) => test(name, fn, SHELL_TEST_TIMEOUT_MS)) as unknown) as typeof test)
+
+let tempProjectPath = ""
+let tempHomePath = ""
+const originalHome = process.env.HOME
+const originalZdotdir = process.env.ZDOTDIR
+const originalHistfile = process.env.HISTFILE
+
+beforeAll(async () => {
+  if (!isSupportedPlatform) return
+  tempProjectPath = await mkdtemp(path.join(os.tmpdir(), "memosync-terminal-manager-"))
+  tempHomePath = await mkdtemp(path.join(os.tmpdir(), "memosync-terminal-home-"))
+  await mkdir(path.join(tempHomePath, ".config"), { recursive: true })
+  process.env.HOME = tempHomePath
+  process.env.ZDOTDIR = tempHomePath
+  process.env.HISTFILE = path.join(tempHomePath, ".zsh_history")
+})
+
+afterEach(async () => {
+  if (!tempProjectPath) return
+  await rm(tempProjectPath, { recursive: true, force: true })
+  tempProjectPath = await mkdtemp(path.join(os.tmpdir(), "memosync-terminal-manager-"))
+})
+
+afterAll(async () => {
+  if (originalHome === undefined) {
+    delete process.env.HOME
+  } else {
+    process.env.HOME = originalHome
+  }
+
+  if (originalZdotdir === undefined) {
+    delete process.env.ZDOTDIR
+  } else {
+    process.env.ZDOTDIR = originalZdotdir
+  }
+
+  if (originalHistfile === undefined) {
+    delete process.env.HISTFILE
+  } else {
+    process.env.HISTFILE = originalHistfile
+  }
+
+  if (tempHomePath) {
+    await rm(tempHomePath, { recursive: true, force: true })
+  }
+})
+
+async function waitFor(check: () => boolean, timeoutMs: number, intervalMs = 25) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (check()) return
+    await Bun.sleep(intervalMs)
+  }
+  throw new Error(`Timed out after ${timeoutMs}ms`)
+}
+
+async function createSession(terminalId: string) {
+  const manager = new TerminalManager()
+  let output = ""
+  manager.onEvent((event) => {
+    if (event.type === "terminal.output" && event.terminalId === terminalId) {
+      output += event.data
+    }
+  })
+
+  manager.createTerminal({
+    projectPath: tempProjectPath,
+    terminalId,
+    cols: 80,
+    rows: 24,
+    scrollback: 1_000,
+  })
+
+  manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
+  await waitFor(() => output.includes("__KANNA_READY__"), SHELL_START_TIMEOUT_MS)
+
+  return {
+    manager,
+    getOutput: () => output,
+  }
+}
+
+async function waitForOutputToContain(getOutput: () => string, value: string, timeoutMs = COMMAND_TIMEOUT_MS) {
+  await waitFor(() => getOutput().includes(value), timeoutMs)
+}
+
+describeIfSupported("TerminalManager", () => {
+  shellTest("ctrl+c interrupts the foreground job and keeps the shell alive", async () => {
+    const terminalId = "terminal-ctrl-c-foreground"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    try {
+      manager.write(terminalId, `python3 -c "import time; print('__KANNA_SLEEP__', flush=True); time.sleep(30)"\r`)
+      await waitFor(() => getOutput().includes("__KANNA_SLEEP__"), COMMAND_TIMEOUT_MS)
+
+      manager.write(terminalId, "\x03")
+      manager.write(terminalId, "printf '__KANNA_AFTER_INT__\\n'\r")
+
+      await waitFor(() => getOutput().includes("__KANNA_AFTER_INT__"), COMMAND_TIMEOUT_MS)
+
+      const snapshot = manager.getSnapshot(terminalId)
+      expect(snapshot?.status).toBe("running")
+      expect(getOutput()).toContain("__KANNA_AFTER_INT__")
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  shellTest("ctrl+c at an idle prompt does not exit the shell", async () => {
+    const terminalId = "terminal-ctrl-c-prompt"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    try {
+      manager.write(terminalId, "\x03")
+      manager.write(terminalId, "printf '__KANNA_IDLE_AFTER_INT__\\n'\r")
+      await waitFor(() => getOutput().includes("__KANNA_IDLE_AFTER_INT__"), COMMAND_TIMEOUT_MS)
+
+      const snapshot = manager.getSnapshot(terminalId)
+      expect(snapshot?.status).toBe("running")
+      expect(getOutput()).toContain("__KANNA_IDLE_AFTER_INT__")
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  shellTest("ctrl+d preserves eof behavior", async () => {
+    const terminalId = "terminal-ctrl-d"
+    const { manager } = await createSession(terminalId)
+
+    try {
+      manager.write(terminalId, "\x04")
+
+      await waitFor(() => manager.getSnapshot(terminalId)?.status === "exited", COMMAND_TIMEOUT_MS)
+
+      expect(manager.getSnapshot(terminalId)?.exitCode).toBe(0)
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  shellTest("filters leaked focus reports while focus mode is disabled", async () => {
+    const terminalId = "terminal-focus-filtered"
+    const { manager, getOutput } = await createSession(terminalId)
+
+    try {
+      const beforeLength = getOutput().length
+      manager.write(terminalId, RAW_READ_HEX_COMMAND)
+      await waitForOutputToContain(getOutput, "__RAW_READY__")
+
+      manager.write(terminalId, FOCUS_IN_SEQUENCE)
+      await waitForOutputToContain(getOutput, "__EMPTY__")
+
+      const interactionOutput = getOutput().slice(beforeLength)
+      expect(interactionOutput).toContain("__EMPTY__")
+      expect(interactionOutput).not.toContain("1b5b49")
+    } finally {
+      manager.close(terminalId)
+    }
+  })
+
+  test("forwards focus reports when the session mode is enabled", () => {
+    const manager = new TerminalManager() as unknown as {
+      sessions: Map<
+        string,
+        {
+          status: "running" | "exited"
+          focusReportingEnabled: boolean
+          terminal: { write: (data: string) => void }
+          process: Bun.Subprocess | null
+        }
+      >
+      write: (terminalId: string, data: string) => void
+    }
+    const writes: string[] = []
+
+    manager.sessions.set("terminal-focus-forwarded", {
+      status: "running",
+      focusReportingEnabled: true,
+      terminal: {
+        write(data: string) {
+          writes.push(data)
+        },
+      },
+      process: null,
+    })
+
+    manager.write("terminal-focus-forwarded", FOCUS_IN_SEQUENCE)
+
+    expect(writes).toEqual([FOCUS_IN_SEQUENCE])
+  })
+
+  test("forwards ctrl+c through the PTY so its foreground process receives SIGINT", () => {
+    const manager = new TerminalManager() as unknown as {
+      sessions: Map<
+        string,
+        {
+          status: "running" | "exited"
+          focusReportingEnabled: boolean
+          terminal: { write: (data: string) => void }
+          process: Bun.Subprocess | null
+        }
+      >
+      write: (terminalId: string, data: string) => void
+    }
+    const writes: string[] = []
+
+    manager.sessions.set("terminal-ctrl-c-pty", {
+      status: "running",
+      focusReportingEnabled: false,
+      terminal: {
+        write(data: string) {
+          writes.push(data)
+        },
+      },
+      process: null,
+    })
+
+    manager.write("terminal-ctrl-c-pty", "before\x03after")
+
+    expect(writes).toEqual(["before\x03after"])
+  })
+
+  test("resize signals the shell process group with SIGWINCH", () => {
+    const manager = new TerminalManager() as unknown as {
+      sessions: Map<
+        string,
+        {
+          cols: number
+          rows: number
+          headless: { resize: (cols: number, rows: number) => void }
+          terminal: { resize: (cols: number, rows: number) => void }
+          process: { pid: number } | null
+        }
+      >
+      resize: (terminalId: string, cols: number, rows: number) => void
+    }
+    const resizeCalls: Array<{ cols: number; rows: number }> = []
+    const killCalls: Array<{ pid: number; signal: NodeJS.Signals }> = []
+    const originalKill = process.kill
+
+    ;(process as typeof process & {
+      kill: (pid: number, signal?: NodeJS.Signals | number) => boolean
+    }).kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+      if (typeof signal === "string") {
+        killCalls.push({ pid, signal })
+      }
+      return true
+    }) as typeof process.kill
+
+    manager.sessions.set("terminal-resize-sigwinch", {
+      cols: 80,
+      rows: 24,
+      headless: {
+        resize(cols, rows) {
+          resizeCalls.push({ cols, rows })
+        },
+      },
+      terminal: {
+        resize(cols, rows) {
+          resizeCalls.push({ cols, rows })
+        },
+      },
+      process: { pid: 4321 },
+    })
+
+    try {
+      manager.resize("terminal-resize-sigwinch", 120, 40)
+    } finally {
+      process.kill = originalKill
+    }
+
+    expect(resizeCalls).toEqual([
+      { cols: 120, rows: 40 },
+      { cols: 120, rows: 40 },
+    ])
+    expect(killCalls).toContainEqual({ pid: -4321, signal: "SIGWINCH" })
+  })
+
+  shellTest("new sessions reset focus mode back to filtered", async () => {
+    const manager = new TerminalManager()
+    const firstTerminalId = "terminal-focus-first"
+    const secondTerminalId = "terminal-focus-second"
+    let outputByTerminalId = new Map<string, string>()
+
+    manager.onEvent((event) => {
+      if (event.type !== "terminal.output") return
+      outputByTerminalId.set(event.terminalId, `${outputByTerminalId.get(event.terminalId) ?? ""}${event.data}`)
+    })
+
+    const getOutput = (terminalId: string) => outputByTerminalId.get(terminalId) ?? ""
+
+    const createManagedSession = async (terminalId: string) => {
+      manager.createTerminal({
+        projectPath: tempProjectPath,
+        terminalId,
+        cols: 80,
+        rows: 24,
+        scrollback: 1_000,
+      })
+      manager.write(terminalId, "printf '__KANNA_READY__\\n'\r")
+      await waitForOutputToContain(() => getOutput(terminalId), "__KANNA_READY__", SHELL_START_TIMEOUT_MS)
+    }
+
+    try {
+      await createManagedSession(firstTerminalId)
+      const firstBeforeLength = getOutput(firstTerminalId).length
+      manager.write(firstTerminalId, "printf '\\033[?1004h'\r")
+      await waitFor(() => getOutput(firstTerminalId).length > firstBeforeLength, COMMAND_TIMEOUT_MS)
+      manager.close(firstTerminalId)
+
+      await createManagedSession(secondTerminalId)
+      const before = getOutput(secondTerminalId).length
+      manager.write(secondTerminalId, "cat -v\r")
+      await waitFor(() => getOutput(secondTerminalId).length > before, COMMAND_TIMEOUT_MS)
+      manager.write(secondTerminalId, FOCUS_IN_SEQUENCE)
+      manager.write(secondTerminalId, "\x03")
+      manager.write(secondTerminalId, "printf '__KANNA_FRESH_SESSION__\\n'\r")
+      await waitForOutputToContain(() => getOutput(secondTerminalId), "__KANNA_FRESH_SESSION__")
+
+      const interactionOutput = getOutput(secondTerminalId).slice(before)
+      expect(interactionOutput).not.toContain("^[[I")
+    } finally {
+      manager.close(firstTerminalId)
+      manager.close(secondTerminalId)
+    }
+  })
+})

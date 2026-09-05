@@ -1,0 +1,49 @@
+# dependencies
+node_modules/
+package-lock.json
+
+# build output
+dist/
+
+# environment / secrets
+.env
+.env.*
+!.env.example
+
+# research data exports (bun run export-data writes into the repo root by default)
+memosync-export-*.tar.gz
+
+# editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.code-workspace
+
+# logs
+*.log
+
+# typescript
+*.tsbuildinfo
+
+# vite
+vite.config.ts.timestamp-*
+/.kanna
+
+# local workspaces
+/workspace/
+/workspace-auto/
+/workspace-static/
+/tmp/
+
+# local research, generated visuals, and canvas state
+/artifacts/
+/canvas/
+/download/
+
+# tooling caches & generated output (added 2026-08-05)
+.playwright-cli/
+/output/
+/garden-gpt-image-2/

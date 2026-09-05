@@ -1,0 +1,38 @@
+# CI: typecheck + full unit/integration suite + client builds on every push/PR.
+# No network calls: all LLM passes are stub-injected in tests, and the only
+# live-model test (title-generation.live.test.ts) is gated behind
+# KANNA_RUN_LIVE_TITLE_TESTS=1. E2E scripts (scripts/e2e-*.ts) are NOT run
+# here — they need a live instance + a real DeepSeek key.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Configure git for tests
+        # The pre-existing Kanna git tests (diff-store etc.) create temp repos
+        # and assume the default branch is `main` — set it like a dev machine.
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.name ci
+          git config --global user.email ci@example.com
+      - name: Typecheck + client builds
+        run: bun run check
+      - name: Unit + integration tests
+        # --timeout 30000: bun's per-test default is 5s, which the real-PTY
+        # terminal tests (login-shell startup + ctrl+d EOF) intermittently
+        # exceed on loaded shared runners. This is the runner-level ceiling;
+        # the tests' own waitFor() bounds (20s) fail first with a clear message.
+        run: bun test src/ --timeout 30000

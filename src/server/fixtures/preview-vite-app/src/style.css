@@ -1,0 +1,13 @@
+:root {
+  font-family: system-ui, sans-serif;
+}
+
+.fixture-shell {
+  color: rgb(18, 52, 86);
+  padding: 24px;
+}
+
+nav {
+  display: flex;
+  gap: 12px;
+}
