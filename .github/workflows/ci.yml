@@ -21,6 +21,8 @@ jobs:
           bun-version: 1.3.10
       - name: Install
         run: bun install --frozen-lockfile
+      - name: Install Chromium for integration tests
+        run: bunx playwright install --with-deps chromium
       - name: Configure git for tests
         # The pre-existing Kanna git tests (diff-store etc.) create temp repos
         # and assume the default branch is `main` — set it like a dev machine.

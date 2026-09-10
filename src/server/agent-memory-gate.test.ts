@@ -1119,6 +1119,7 @@ describe("memory preview gate (coordinator)", () => {
     }
     const h = createHarness({
       preview: true,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
       openingBoard: true,
       activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),
@@ -1180,6 +1181,7 @@ describe("memory preview gate (coordinator)", () => {
     const telemetry: Array<{ turnId: string; content: string; acceptedAt: string }> = []
     const h = createHarness({
       preview: true,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
       openingBoard: true,
       activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),

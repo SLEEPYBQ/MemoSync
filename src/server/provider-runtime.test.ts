@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import * as claudeSdk from "@anthropic-ai/claude-agent-sdk"
-import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -155,7 +155,11 @@ describe("isolated CLI provider profiles", () => {
 
   test("rejects profiles placed in or redirected to the official CLI directories", () => {
     expect(() => buildIsolatedClaudeEnv({ MEMOSYNC_CLI_PROFILE_DIR: join(homedir(), ".claude") })).toThrow("must be separate")
-    symlinkSync(join(homedir(), ".codex"), join(profile, "codex"))
-    expect(() => prepareCodexRuntime({ MEMOSYNC_CLI_PROFILE_DIR: profile, GLM_API_KEY: "key" })).toThrow("must be separate")
+    const hostCodex = join(profile, "host-codex")
+    const isolated = join(profile, "isolated")
+    mkdirSync(hostCodex)
+    mkdirSync(isolated)
+    symlinkSync(hostCodex, join(isolated, "codex"))
+    expect(() => prepareCodexRuntime({ MEMOSYNC_CLI_PROFILE_DIR: isolated, CODEX_HOME: hostCodex, GLM_API_KEY: "key" })).toThrow("must be separate")
   })
 })
