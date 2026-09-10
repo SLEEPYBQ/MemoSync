@@ -48,7 +48,7 @@ export interface RecordReportedStage {
 export interface RecordAuditStage {
   entryId: string
   status?: "ok" | "failed" | "discarded" | "pending" | "empty"
-  labels: Array<{ id: string; label: AuditVerdict; note?: string; quote?: string; missing?: string }>
+  labels: Array<{ id: string; label: AuditVerdict; note?: string; quote?: string; toolId?: string; missing?: string }>
 }
 
 export interface MemoryRecordTurn {
@@ -210,7 +210,7 @@ export function buildMemoryRecord(
           labels: message.labels
             .filter((l): l is typeof l & { label: AuditVerdict } =>
               l.label === "operational" || l.label === "injected_without_effect" || l.label === "violated" || l.label === "not_applicable")
-            .map((l) => ({ id: l.id, label: l.label, note: l.note, quote: l.quote, missing: l.missing })),
+            .map((l) => ({ id: l.id, label: l.label, note: l.note, quote: l.quote, toolId: l.toolId, missing: l.missing })),
         }
         break
       }

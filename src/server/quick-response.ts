@@ -5,6 +5,8 @@ import { getDataRootDir } from "../shared/branding"
 import type { LlmProviderSnapshot } from "../shared/types"
 import { CodexAppServerManager } from "./codex-app-server"
 import { readLlmProviderSnapshot } from "./llm-provider"
+import { resolveChatProviderRoute } from "./chat-providers"
+import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, DEFAULT_GLM_MODEL, isCliIsolationEnabled } from "./provider-runtime"
 
 const CLAUDE_STRUCTURED_TIMEOUT_MS = 5_000
 
@@ -24,6 +26,7 @@ export interface StructuredQuickResponseArgs<T> {
 }
 
 interface QuickResponseAdapterArgs {
+  env?: Readonly<Record<string, string | undefined>>
   codexManager?: CodexAppServerManager
   readLlmProvider?: () => Promise<LlmProviderSnapshot>
   runOpenAIStructured?: (
@@ -97,6 +100,26 @@ export function getClaudeStructuredQueryOptions(
   args: Omit<StructuredQuickResponseArgs<unknown>, "parse">,
   env: Record<string, string | undefined> = process.env,
 ) {
+  const runtimeEnv = buildIsolatedClaudeEnv(env)
+  const isolated = isCliIsolationEnabled(env)
+  const model = isolated && env.GLM_API_KEY?.trim() && env.MEMOSYNC_USE_OWN_ANTHROPIC !== "1"
+    ? env.GLM_MODEL?.trim() || DEFAULT_GLM_MODEL
+    : runtimeEnv.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001"
+  const route = resolveChatProviderRoute(model, runtimeEnv)
+  if (route) {
+    Object.assign(runtimeEnv, {
+      ANTHROPIC_BASE_URL: route.baseUrl,
+      ANTHROPIC_AUTH_TOKEN: route.apiKey,
+      ANTHROPIC_API_KEY: route.apiKey,
+      ANTHROPIC_MODEL: model,
+      ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+      ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: route.subagentModel,
+      CLAUDE_CODE_SUBAGENT_MODEL: route.subagentModel,
+      CLAUDE_CODE_AUTO_COMPACT_WINDOW: route.autoCompactWindow,
+    })
+  }
+  assertIsolatedClaudeCredentials(runtimeEnv)
   return {
     cwd: args.cwd,
     // Honor ANTHROPIC_MODEL (the pilot points the Claude engine at a DeepSeek-
@@ -105,7 +128,7 @@ export function getClaudeStructuredQueryOptions(
     // commit-message generation silently fell back to crude heuristics with no
     // user-visible reason (BUG AGENT-6). The literal id stays as the default
     // for a real Anthropic deployment.
-    model: env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001",
+    model,
     tools: [],
     systemPrompt: "",
     effort: "low" as const,
@@ -114,7 +137,8 @@ export function getClaudeStructuredQueryOptions(
       type: "json_schema" as const,
       schema: args.schema,
     },
-    env: { ...env },
+    env: runtimeEnv,
+    ...(isolated ? { settingSources: [] } : {}),
     // Title and commit-message calls are one-shot helpers. Persisting them
     // creates visible ~/.claude project sessions containing the source prompt.
     persistSession: false,
@@ -196,6 +220,7 @@ export async function runCodexStructured(
 }
 
 export class QuickResponseAdapter {
+  private readonly isolationEnabled: boolean
   private readonly codexManager: CodexAppServerManager
   private readonly readLlmProvider: () => Promise<LlmProviderSnapshot>
   private readonly runOpenAIStructured: (
@@ -206,6 +231,7 @@ export class QuickResponseAdapter {
   private readonly runCodexStructured: (args: Omit<StructuredQuickResponseArgs<unknown>, "parse">) => Promise<unknown | null>
 
   constructor(args: QuickResponseAdapterArgs = {}) {
+    this.isolationEnabled = isCliIsolationEnabled(args.env ?? process.env)
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.readLlmProvider = args.readLlmProvider ?? (() => readLlmProviderSnapshot())
     this.runOpenAIStructured = args.runOpenAIStructured ?? runOpenAIStructured
@@ -227,8 +253,8 @@ export class QuickResponseAdapter {
     }
 
     const failures: StructuredQuickResponseFailure[] = []
-    const llmProvider = await this.readLlmProvider()
-    if (llmProvider.enabled) {
+    const llmProvider = this.isolationEnabled ? null : await this.readLlmProvider()
+    if (llmProvider?.enabled) {
       const openAIResult = await this.tryProvider("openai", args.task, args.parse, () => this.runOpenAIStructured(llmProvider, request))
       if (openAIResult.value !== null) {
         return {

@@ -90,6 +90,7 @@ export interface MemoryRouteServices {
     previewId: string;
     selectedIds: string[];
   }) => Promise<ExpectedMemoryUse[]>;
+  workingMemoryRevise?: (input: { chatId: string; previewId: string; instruction: string; selectedIds: string[] }) => Promise<import('./revise-injection').ReviseInjectionResult>;
 }
 
 const MEMORY_SCOPES: MemoryScope[] = ['personal', 'project', 'session'];
@@ -1118,7 +1119,9 @@ export async function handleMemoryRequest(
           requestedIds,
           effectiveIds,
         },
-        run: () => services.reviseInjection!.revise({ instruction: b.instruction as string, pool, selectedIds: effectiveIds }),
+        run: () => services.workingMemoryRevise && sessionId && previewId
+          ? services.workingMemoryRevise({ chatId: sessionId, previewId, instruction: b.instruction as string, selectedIds: effectiveIds })
+          : services.reviseInjection!.revise({ instruction: b.instruction as string, pool, selectedIds: effectiveIds }),
       });
       const revisedSelection = new Set(result.selectedIds);
       const effectiveResult = {
@@ -1156,6 +1159,10 @@ export async function handleMemoryRequest(
         seen.add(id);
         return true;
       });
+      if (!policy.studyMode && policy.condition === 'memosync' && services.workingMemoryUsePlan
+        && typeof b.sessionId === 'string' && typeof b.previewId === 'string') {
+        return ok(await services.workingMemoryUsePlan({ chatId: b.sessionId, previewId: b.previewId, selectedIds: uniqueIds }));
+      }
       if (policy.studyMode && policy.condition === 'memosync') {
         if (typeof b.sessionId !== 'string' || !b.sessionId) {
           throw new RouteError(400, 'BAD_REQUEST', 'sessionId is required');

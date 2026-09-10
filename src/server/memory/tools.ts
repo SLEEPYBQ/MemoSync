@@ -17,6 +17,8 @@ export interface MemoryToolContext {
   turn?: number;
   /** Engine executing the tool; only Claude review capture enables the ledger. */
   engine?: string;
+  /** Server-confirmed working memory for this turn; omitted by legacy callers. */
+  allowedMemoryIds?: readonly string[];
 }
 
 /** Normalized tool result; adapters translate this into each engine's shape. */
@@ -187,6 +189,7 @@ export function buildMemoryToolSpecs(
         const loaded: string[] = [];
         const parts: string[] = [];
         for (const id of ids) {
+          if (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id)) continue;
           const m = memory.store.getById(id);
           if (!m || m.status !== 'active') continue;
           memory.store.recordUse(id, { actor: 'agent', sessionId: ctx.sessionId, via: 'detail_load', detailLoaded: true });

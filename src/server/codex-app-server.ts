@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
+import { homedir } from "node:os"
+import { join } from "node:path"
 import { createInterface } from "node:readline"
 import type { Readable, Writable } from "node:stream"
 import type {
@@ -11,9 +13,12 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
+import { prepareCodexRuntime, resolveCodexRuntimeModel } from "./provider-runtime"
 import {
   type CollabAgentToolCallItem,
   type ContextCompactedNotification,
+  type ConfigReadParams,
+  type ConfigReadResponse,
   type CodexRequestId,
   type CommandExecutionApprovalDecision,
   type CommandExecutionRequestApprovalParams,
@@ -66,7 +71,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string) => CodexAppServerProcess
+type SpawnCodexAppServer = (cwd: string, env?: Record<string, string | undefined>) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -118,9 +123,12 @@ interface SessionContext {
   sessionToken: string | null
   stderrLines: string[]
   closed: boolean
+  subprocessEnv?: Record<string, string | undefined>
+  externalToolsDisabled?: boolean
 }
 
 export interface StartCodexSessionArgs {
+  signal?: AbortSignal
   chatId: string
   cwd: string
   model: string
@@ -129,6 +137,13 @@ export interface StartCodexSessionArgs {
   pendingForkSessionToken?: string | null
   /** Client-declared dynamic tools (e.g. memory tools) to register on the thread. */
   dynamicTools?: DynamicToolFunctionSpec[]
+  /** Memory branches inspect the shared workspace without changing it. */
+  sandbox?: "read-only" | "workspace-write" | "danger-full-access"
+  subprocessEnv?: Record<string, string | undefined>
+  /** Memory retries must fail if their child disappeared instead of losing its analysis. */
+  allowResumeFallback?: boolean
+  /** Branch-only: disable configured MCP servers, native subagents, and web search. */
+  disableExternalTools?: boolean
 }
 
 export interface StartCodexTurnArgs {
@@ -143,6 +158,7 @@ export interface StartCodexTurnArgs {
   /** Memory block injected as Codex developer_instructions for this turn. */
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
+  outputSchema?: Record<string, unknown>
 }
 
 export interface GenerateStructuredArgs {
@@ -170,8 +186,8 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
  * the provider defined in CODEX_HOME/config.toml). Mirrors ANTHROPIC_MODEL
  * for the Claude engine (agent.ts).
  */
-function resolveCodexModel(model: string): string {
-  return process.env.CODEX_MODEL || model
+function resolveCodexModel(model: string, env?: Record<string, string | undefined>): string {
+  return resolveCodexRuntimeModel(model, env)
 }
 
 /**
@@ -772,30 +788,54 @@ class AsyncQueue<T> implements AsyncIterable<T> {
   }
 }
 
+const runtimeStarts = new Map<string, Promise<unknown>>()
+
+/** A fresh CODEX_HOME has one SQLite migration owner. Model turns remain concurrent. */
+export async function serializeCodexRuntimeStart<T>(profile: string, start: () => Promise<T>): Promise<T> {
+  const previous = runtimeStarts.get(profile) ?? Promise.resolve()
+  const current = previous.catch(() => {}).then(start)
+  runtimeStarts.set(profile, current)
+  try { return await current }
+  finally { if (runtimeStarts.get(profile) === current) runtimeStarts.delete(profile) }
+}
+
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly spawnProcess: SpawnCodexAppServer
+  private readonly usesRealProcess: boolean
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.spawnProcess = args.spawnProcess ?? ((cwd) =>
-      spawn("codex", ["app-server"], {
+    this.usesRealProcess = !args.spawnProcess
+    this.spawnProcess = args.spawnProcess ?? ((cwd, env) => {
+      const runtime = prepareCodexRuntime(env)
+      return spawn("codex", runtime.args, {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
-        env: process.env,
-      }) as unknown as CodexAppServerProcess)
+        env: runtime.env,
+      }) as unknown as CodexAppServerProcess
+    })
   }
 
   async startSession(args: StartCodexSessionArgs) {
+    if (!this.usesRealProcess) return this.startSessionUnlocked(args)
+    const env = args.subprocessEnv ?? process.env
+    const profile = env.MEMOSYNC_CLI_PROFILE_DIR || env.CODEX_HOME || join(homedir(), ".codex")
+    return serializeCodexRuntimeStart(profile, () => this.startSessionUnlocked(args))
+  }
+
+  private async startSessionUnlocked(args: StartCodexSessionArgs) {
+    args.signal?.throwIfAborted()
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken) {
-      return
+    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
+      && (!args.disableExternalTools || existing.externalToolsDisabled)) {
+      return existing.sessionToken
     }
 
     if (existing) {
       this.stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd)
+    const child = this.spawnProcess(args.cwd, args.subprocessEnv)
     const context: SessionContext = {
       chatId: args.chatId,
       cwd: args.cwd,
@@ -805,10 +845,22 @@ export class CodexAppServerManager {
       sessionToken: null,
       stderrLines: [],
       closed: false,
+      subprocessEnv: args.subprocessEnv,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
 
+    try {
+      return await this.initializeSession(args, context)
+    } catch (error) {
+      // A rejected handshake must not remain reusable with a null thread ID.
+      // Do not stop a replacement session if an older request fails late.
+      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+      throw error
+    }
+  }
+
+  private async initializeSession(args: StartCodexSessionArgs, context: SessionContext) {
     await this.sendRequest(context, "initialize", {
       clientInfo: {
         name: "memosync_desktop",
@@ -823,12 +875,40 @@ export class CodexAppServerManager {
       method: "initialized",
     })
 
+    let branchConfig: Record<string, unknown> | undefined
+    if (args.disableExternalTools) {
+      // Sandbox policy covers local commands, not an MCP server's external
+      // side effects. Inspect names only, then override each server on this
+      // thread; never write config.toml or forward its credentials as config.
+      let effective: ConfigReadResponse
+      try {
+        effective = await this.sendRequest<ConfigReadResponse>(context, "config/read", {
+          includeLayers: false,
+          cwd: args.cwd,
+        } satisfies ConfigReadParams)
+      } catch {
+        throw new Error("Cannot establish read-only memory branch: Codex configuration could not be read")
+      }
+      const config = asRecord(effective?.config)
+      if (!config) throw new Error("Cannot establish read-only memory branch: invalid Codex configuration response")
+      const servers = config.mcp_servers === undefined ? {} : asRecord(config.mcp_servers)
+      if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
+      branchConfig = { "features.multi_agent": false, web_search: "disabled" }
+      for (const name of Object.keys(servers)) {
+        // Config overrides use dotted paths. Ambiguous names must not disable
+        // the wrong server and silently leave the intended one available.
+        if (!/^[A-Za-z0-9_-]+$/.test(name)) throw new Error("Cannot establish read-only memory branch: unsupported MCP server identifier")
+        branchConfig[`mcp_servers.${name}.enabled`] = false
+      }
+    }
+
     const threadParams = {
-      model: resolveCodexModel(args.model),
+      config: branchConfig,
+      model: resolveCodexModel(args.model, args.subprocessEnv),
       cwd: args.cwd,
       serviceTier: args.serviceTier,
       approvalPolicy: "never",
-      sandbox: "danger-full-access",
+      sandbox: args.sandbox ?? "danger-full-access",
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       dynamicTools: args.dynamicTools ?? [],
@@ -837,29 +917,31 @@ export class CodexAppServerManager {
     let response: ThreadStartResponse | ThreadResumeResponse | ThreadForkResponse
     if (args.pendingForkSessionToken) {
       response = await this.sendRequest<ThreadForkResponse>(context, "thread/fork", {
+        config: branchConfig,
         threadId: args.pendingForkSessionToken,
-        model: resolveCodexModel(args.model),
+        model: resolveCodexModel(args.model, args.subprocessEnv),
         cwd: args.cwd,
         serviceTier: args.serviceTier,
         approvalPolicy: "never",
-        sandbox: "danger-full-access",
+        sandbox: args.sandbox ?? "danger-full-access",
         persistExtendedHistory: false,
         dynamicTools: args.dynamicTools ?? [],
       } satisfies ThreadForkParams)
     } else if (args.sessionToken) {
       try {
         response = await this.sendRequest<ThreadResumeResponse>(context, "thread/resume", {
+          config: branchConfig,
           threadId: args.sessionToken,
-          model: resolveCodexModel(args.model),
+          model: resolveCodexModel(args.model, args.subprocessEnv),
           cwd: args.cwd,
           serviceTier: args.serviceTier,
           approvalPolicy: "never",
-          sandbox: "danger-full-access",
+          sandbox: args.sandbox ?? "danger-full-access",
           persistExtendedHistory: false,
           dynamicTools: args.dynamicTools ?? [],
         } satisfies ThreadResumeParams)
       } catch (error) {
-        if (!isRecoverableResumeError(error)) {
+        if (args.allowResumeFallback === false || !isRecoverableResumeError(error)) {
           this.stopSession(args.chatId)
           throw error
         }
@@ -870,6 +952,7 @@ export class CodexAppServerManager {
     }
 
     context.sessionToken = response.thread.id
+    context.externalToolsDisabled = args.disableExternalTools === true
     return context.sessionToken
   }
 
@@ -883,11 +966,11 @@ export class CodexAppServerManager {
     if (context.sessionToken) {
       queue.push({ type: "session_token", sessionToken: context.sessionToken })
     }
-    queue.push({ type: "transcript", entry: codexSystemInitEntry(resolveCodexModel(args.model)) })
+    queue.push({ type: "transcript", entry: codexSystemInitEntry(resolveCodexModel(args.model, context.subprocessEnv)) })
 
     const pendingTurn: PendingTurn = {
       turnId: null,
-      model: resolveCodexModel(args.model),
+      model: resolveCodexModel(args.model, context.subprocessEnv),
       planMode: args.planMode,
       queue,
       startedToolIds: new Set(),
@@ -916,13 +999,14 @@ export class CodexAppServerManager {
           },
         ],
         approvalPolicy: "never",
-        model: resolveCodexModel(args.model),
+        model: resolveCodexModel(args.model, context.subprocessEnv),
         effort: args.effort,
         serviceTier: args.serviceTier,
+        outputSchema: args.outputSchema,
         collaborationMode: {
           mode: args.planMode ? "plan" : codexProtocolCompat09x() ? "code" : "default",
           settings: {
-            model: resolveCodexModel(args.model),
+            model: resolveCodexModel(args.model, context.subprocessEnv),
             reasoning_effort: null,
             developer_instructions: args.developerInstructions ?? null,
           },
@@ -1009,6 +1093,10 @@ export class CodexAppServerManager {
     if (!context) return
     context.closed = true
     context.pendingTurn?.queue.finish()
+    for (const pending of context.pendingRequests.values()) {
+      pending.reject(new Error("Codex session stopped"))
+    }
+    context.pendingRequests.clear()
     this.sessions.delete(chatId)
     try {
       context.child.kill("SIGKILL")

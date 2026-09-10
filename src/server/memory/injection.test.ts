@@ -101,7 +101,7 @@ describe('planMemoryInjection', () => {
     expect(after.sessionRebuildKey).toBe(before.sessionRebuildKey); // …but no rebuild
   });
 
-  test('skills: per-turn restriction filters injectedMemories but never the baked block', () => {
+  test('skills: only confirmed working memories are baked into the main context', () => {
     const plan = planMemoryInjection({
       policy: resolveConditionPolicy('memosync'),
       provider: 'claude',
@@ -111,8 +111,9 @@ describe('planMemoryInjection', () => {
       restrictToIds: ['M-02'],
     });
     expect(plan.injectedMemories.map((m) => m.id)).toEqual(['M-02']);
-    expect(plan.bakedMemories.map((m) => m.id)).toEqual(['M-01', 'M-02']);
-    expect(plan.block).toContain('[M-01 v1]'); // full set stays baked
+    expect(plan.bakedMemories.map((m) => m.id)).toEqual(['M-02']);
+    expect(plan.block).not.toContain('[M-01 v1]');
+    expect(plan.block).toContain('[M-02 v1]');
   });
 
   test('auto arm: plain block, no ids, no tools', () => {
@@ -377,8 +378,11 @@ describe('computeMemoryTurnDelta', () => {
     });
     expect(delta.block).toContain('For this turn only, ignore: [M-01].');
     expect(delta.effectiveIds).toEqual(['M-02']);
-    // Baseline still tracks the full context (the snapshot was not un-baked).
-    expect(delta.nextBaseline.has('M-01')).toBe(true);
+    // Unselected memories leave the current baseline and are resent if selected later.
+    expect(delta.nextBaseline.has('M-01')).toBe(false);
+    const reselected = computeMemoryTurnDelta({ memory, projectId: 'proj-1', baseline: delta.nextBaseline, restrictToIds: ['M-01'] });
+    expect(reselected.block).toContain('[M-01');
+    expect(reselected.effectiveIds).toEqual(['M-01']);
   });
 
   test('new conflict rides the added line with a ⚠ mark', () => {

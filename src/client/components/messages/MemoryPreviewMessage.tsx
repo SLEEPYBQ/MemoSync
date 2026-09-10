@@ -61,6 +61,14 @@ const REVISE_STATUS_WORDS = ["thinking…", "reading the pool…", "revising the
 
 const DEFAULT_EXPECTED_USE = "Apply this memory while completing the task."
 
+export function WorkingMemorySelectionError({ error, onRetry, disabled = false }: { error: string; onRetry: () => void; disabled?: boolean }) {
+  return <div role="alert" className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
+    <p className="font-medium text-destructive">{error}</p>
+    <p className="mt-1 text-muted-foreground">Choose items from the memory pool, or retry the selection.</p>
+    <Button type="button" size="xs" variant="outline" className="mt-2" onClick={onRetry} disabled={disabled}>Retry selection</Button>
+  </div>
+}
+
 function replyUrlTransform(url: string): string {
   return url.startsWith(MEMORY_CITATION_SCHEME) ? url : defaultUrlTransform(url)
 }
@@ -109,6 +117,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const [selection, setSelection] = useState<Map<string, InjectSource> | null>(null)
   const [expectedUsesById, setExpectedUsesById] = useState<Map<string, string>>(new Map())
   const [planningIds, setPlanningIds] = useState<Set<string>>(new Set())
+  const [failedPlanningIds, setFailedPlanningIds] = useState<Set<string>>(new Set())
+  const [selectionRecovered, setSelectionRecovered] = useState(false)
   const [poolExpanded, setPoolExpanded] = useState(false)
   const suggestionsMergedRef = useRef(false)
   const nextPlanTokenRef = useRef(0)
@@ -119,6 +129,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     setSelection(null)
     setExpectedUsesById(new Map())
     setPlanningIds(new Set())
+    setFailedPlanningIds(new Set())
+    setSelectionRecovered(false)
     setPoolExpanded(false)
     planTokenByIdRef.current.clear()
   }, [message.refreshVersion])
@@ -158,6 +170,15 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
       setSelection(seed)
       return
     }
+    if (message.selectionError && !selectionRecovered) {
+      // Failure is not a model decision to select nothing. Preserve any
+      // manual choices and mandatory items, then expose the pool for recovery.
+      if (selection === null) {
+        setSelection(new Map([...attentionIds].filter((id) => memoriesById.has(id)).map((id) => [id, "attention" as InjectSource])))
+        setPoolExpanded(true)
+      }
+      return
+    }
     if (message.relevant === undefined) {
       if (message.relevancePending !== true && selection === null) {
         const seed = new Map(message.memories.map((m) => [m.id, "standing" as InjectSource]))
@@ -178,9 +199,9 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
       }
       return next
     })
-  }, [attentionIds, message.decision, message.decisionSelectedIds, message.memories, message.relevant, message.relevancePending, memoriesById, pending, relevantIds, selection])
+  }, [attentionIds, message.decision, message.decisionSelectedIds, message.memories, message.relevant, message.relevancePending, message.selectionError, memoriesById, pending, relevantIds, selection, selectionRecovered])
 
-  const seeding = refreshing || selection === null
+  const seeding = refreshing || (selection === null && !message.selectionError)
   const injectedIds = useMemo(() => [...(selection?.keys() ?? [])].filter((id) => memoriesById.has(id)), [selection, memoriesById])
   const poolRest = useMemo(
     () => message.memories.filter((m) => !selection?.has(m.id)),
@@ -195,6 +216,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     () => injectedIds.some((id) => planningIds.has(id)),
     [injectedIds, planningIds],
   )
+  const failedSelected = injectedIds.filter((id) => failedPlanningIds.has(id))
+  const selectionError = failedSelected.length ? "Expected-use planning failed for the selected items." : !selectionRecovered ? message.selectionError : undefined
 
   async function planExpectedUses(ids: string[]) {
     const uniqueIds = [...new Set(ids)].filter((id) => memoriesById.has(id))
@@ -216,6 +239,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         sessionId: chatId,
         previewId: message.previewId,
       })
+      const plannedIds = new Set(planned.filter((use) => use.expectedUse.trim()).map((use) => use.id))
+      if (uniqueIds.some((id) => !plannedIds.has(id))) throw new Error("Expected-use plan is incomplete")
       setExpectedUsesById((current) => {
         const next = new Map(current)
         for (const use of planned) {
@@ -223,25 +248,20 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
             next.set(use.id, use.expectedUse.trim())
           }
         }
-        for (const id of uniqueIds) {
-          if (planTokenByIdRef.current.get(id) === token && !next.has(id)) next.set(id, DEFAULT_EXPECTED_USE)
-        }
         return next
       })
+      setFailedPlanningIds((current) => new Set([...current].filter((id) => !uniqueIds.includes(id) || planTokenByIdRef.current.get(id) !== token)))
+      setSelectionRecovered(true)
     } catch {
-      setExpectedUsesById((current) => {
-        const next = new Map(current)
-        for (const id of uniqueIds) {
-          if (planTokenByIdRef.current.get(id) === token && !next.has(id)) next.set(id, DEFAULT_EXPECTED_USE)
-        }
-        return next
-      })
+      setFailedPlanningIds((current) => new Set([...current, ...uniqueIds.filter((id) => planTokenByIdRef.current.get(id) === token)]))
     } finally {
       setPlanningIds((current) => {
         const next = new Set(current)
         for (const id of uniqueIds) {
           if (planTokenByIdRef.current.get(id) !== token) continue
-          planTokenByIdRef.current.delete(id)
+          // Keep the last token until the next request/reset. React may apply
+          // queued state updaters after this finally block; they still need
+          // to distinguish the latest plan from a superseded request.
           next.delete(id)
         }
         return next
@@ -298,8 +318,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     if (previewDemo?.exchanges) setExchanges(previewDemo.exchanges)
   }, [previewDemo?.exchanges])
 
-  async function askAgentToRevise() {
-    const instruction = reviseText.trim()
+  async function askAgentToRevise(retryInstruction?: string) {
+    const instruction = retryInstruction ?? reviseText.trim()
     if (!instruction || revising) return
     setRevising(true)
     setReviseText("")
@@ -334,6 +354,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         })
         if (addedIds.length) void planExpectedUses(addedIds)
       }
+      setSelectionRecovered(true)
       setExchanges((prev) => [...prev, { q: instruction, a: result.reply }])
     } catch (err) {
       setExchanges((prev) => [
@@ -366,7 +387,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   }
 
   function start() {
-    if (submitting || seeding || revising || planningSelected) return
+    if (submitting || seeding || revising || planningSelected || failedSelected.length) return
     // Zero injected = the honest "start with nothing" — same user model,
     // existing server semantics.
     if (injectedIds.length === 0) respond("without_memory")
@@ -393,7 +414,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, submitting, message.previewId, injectedIds])
+  }, [pending, submitting, message.previewId, injectedIds, seeding, revising, planningSelected, failedSelected.length])
 
   const decidedText = message.decision
     ? message.decision === "go_on" && message.decisionAuto
@@ -424,6 +445,15 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
           </p>
         ) : null}
 
+        {pending && selectionError ? <WorkingMemorySelectionError
+          error={selectionError}
+          disabled={revising || planningSelected}
+          onRetry={() => {
+            if (failedSelected.length) void planExpectedUses(failedSelected)
+            else void askAgentToRevise("Retry selecting working memory for the current task from the active pool. Preserve every enforced item and explain the selection.")
+          }}
+        /> : null}
+
         {message.memories.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">no memories are available for this turn</p>
         ) : (
@@ -435,7 +465,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               />
             ) : injectedIds.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                working memory is empty — pick from the pool below, or start without memory
+                {selectionError ? "No selection is ready. Pick items below, retry, or explicitly start without memory." : "working memory is empty — pick from the pool below, or start without memory"}
               </p>
             ) : (
               injectedIds.map((id, index) => {
@@ -444,6 +474,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 const label = SOURCE_LABELS[source]
                 const expectedUse = expectedUsesById.get(id) ?? DEFAULT_EXPECTED_USE
                 const planning = planningIds.has(id)
+                const planningFailed = failedPlanningIds.has(id) || Boolean(message.selectionError && !expectedUsesById.has(id))
                 return (
                   <RiseIn key={id} freshAt={pending ? Date.now() : undefined} delay={index * 0.06}>
                     <div className="relative -mx-1 overflow-hidden rounded-lg bg-muted/40 px-3 py-2 text-sm border border-border/70">
@@ -509,6 +540,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             className="memory-review-skeleton mt-1.5 h-4 w-3/4 rounded-md"
                             aria-label={`Planning how to use ${id}`}
                           />
+                        ) : planningFailed ? (
+                          <p className="mt-1 text-xs leading-relaxed text-destructive">Expected use is unavailable. Retry planning before starting.</p>
                         ) : (
                           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{expectedUse}</p>
                         )}
@@ -518,7 +551,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 )
               })
             )}
-            {message.relevant !== undefined && injectedIds.length > 0 ? (
+            {message.relevant !== undefined && !selectionError && injectedIds.length > 0 ? (
               <p className="text-[10px] italic text-muted-foreground/70">
                 suggestions are a model prediction — adjust the list before starting
               </p>
@@ -634,7 +667,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
         {interactive ? (
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button variant="juicy" size="xs" disabled={submitting !== null || seeding || revising || planningSelected} onClick={start}>
+            <Button variant="juicy" size="xs" disabled={submitting !== null || seeding || revising || planningSelected || failedSelected.length > 0} onClick={start}>
               {submitting === "go_on" || submitting === "without_memory" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : null}

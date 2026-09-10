@@ -16,7 +16,7 @@ import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
 import { migrateLegacyDataRoot } from "./migrate-data-root"
-import { AgentCoordinator } from "./agent"
+import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
@@ -46,6 +46,8 @@ import { createStudyBaselineProjectCopyPreparer } from "./experiment/study-basel
 import { createStaticMemoryExtractor } from "./experiment/static-memory-extractor"
 import { resolveFrozenStaticObjectStates } from "./experiment/static-freeze"
 import { createDeepSeekJsonCaller } from "./memory/deepseek"
+import { createBranchJsonCaller, memoryRequestContext } from "./memory/branch-caller"
+import { getServerProviderCatalog } from "./provider-catalog"
 import { createCaptureService } from "./memory/capture"
 import { createTraceService } from "./memory/trace"
 import { createRelevanceService } from "./memory/relevance"
@@ -163,7 +165,8 @@ export function createStudyAuditAdmission(args: {
   return ({ chatId, memoryId }) => {
     const chat = args.store.getChat(chatId)
     if (!chat) return "This is not an active chat."
-    if (chat.provider !== "claude") return "Audit actions are only available in a Claude chat."
+    if (chat.provider !== "claude" && args.policy.studyMode) return "Audit actions are only available in a Claude chat."
+    if (chat.provider !== "claude" && chat.provider !== "codex") return "Audit actions are only available in a supported MemoSync chat."
     if (args.studyPromptGate) {
       const refusal = args.studyPromptGate({ chatId, content: "" })
       if (refusal) return refusal
@@ -410,7 +413,24 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   // Post-turn memory passes (capture + trace) run on DeepSeek; without a key
   // they are disabled and the app degrades to recall-only memory. The
   // condition policy further gates which passes exist for this study arm.
-  const memoryLlm = createDeepSeekJsonCaller()
+  const branchMemory = createBranchJsonCaller({ resolve: context => {
+    const chat = context.sessionId ? store.getChat(context.sessionId) : undefined
+    const project = store.getProject(context.projectId ?? chat?.projectId ?? "")
+    const current = context.sessionId ? agent?.memoryRuntimeChoice(context.sessionId) : undefined
+    const provider = current?.provider ?? chat?.provider ?? "claude"
+    const messages = chat ? store.getMessages(chat.id) : []
+    const lastInit = messages.filter(message => message.kind === "system_init").at(-1)
+    const model = current?.model ?? lastInit?.model ?? appSettings.getSnapshot().providerDefaults[provider].model
+      ?? getServerProviderCatalog(provider).defaultModel
+    const localPath = project?.localPath ?? process.cwd()
+    const runtime = provider === "claude" ? buildClaudeSdkRuntimeOptions({
+      requestedModel: model,
+      env: buildClaudeSubprocessEnv({ localPath, rawStudyProjects: process.env.STUDY_PROJECTS }),
+    }) : null
+    return { provider, localPath, model: runtime?.model ?? model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime?.env }
+  } })
+  // MemoSync uses its selected CLI runtime even without a DeepSeek API key.
+  const memoryLlm = conditionPolicy.condition === "memosync" ? branchMemory.callJson : createDeepSeekJsonCaller()
   const staticMemoryExtractor =
     memoryLlm && studyMemoryStore && conditionPolicy.condition === "static"
       ? createStaticMemoryExtractor({
@@ -432,6 +452,10 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     memoryLlm && conditionPolicy.capture === "review" && conditionPolicy.trace
       ? createRevisionService({ memory, callJson: memoryLlm })
       : null
+  if (memoryRevision && conditionPolicy.condition === "memosync") {
+    const scan = memoryRevision.scanAndPropose.bind(memoryRevision)
+    memoryRevision.scanAndPropose = input => branchMemory.run({ sessionId: input.sessionId }, () => scan(input))
+  }
   // Applies participant-reviewed Checkup actions. Detection belongs to the
   // Checkup service; this service only validates and commits those actions.
   // Auto-arm summary panel (baseline B1): the arm's only memory surface — a
@@ -561,10 +585,19 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     registry: studyRegistry,
   })
   const studyPreviewRuntime = conditionPolicy.studyMode ? new StudyPreviewRuntime() : null
+  const memoryCapture = memoryLlm && conditionPolicy.capture !== "off" ? createCaptureService({
+    memory, callJson: memoryLlm, surface: conditionPolicy.capture,
+    durablePromptCapture: conditionPolicy.studyMode && conditionPolicy.condition === "memosync",
+  }) : null
+  if (memoryCapture && conditionPolicy.condition === "memosync") {
+    const route = memoryCapture.routeProposal.bind(memoryCapture)
+    memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
+  }
   const activeAgent = new AgentCoordinator({
     store,
     memory,
     policy: conditionPolicy,
+    memoryBranches: conditionPolicy.condition === "memosync",
     studyMemoryStore,
     staticMemoryExtractor,
     studyPreviewRuntime,
@@ -577,15 +610,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
       ? memoryBoardBacklog
       : null,
     getMemoryPreviewSettings: () => appSettings.getSnapshot().memoryPreview,
-    capture:
-      memoryLlm && conditionPolicy.capture !== "off"
-          ? createCaptureService({
-            memory,
-            callJson: memoryLlm,
-            surface: conditionPolicy.capture,
-            durablePromptCapture: conditionPolicy.studyMode && conditionPolicy.condition === "memosync",
-          })
-        : null,
+    capture: memoryCapture,
     // No logger: the coordinator CAS-validates trace verdicts against live
     // memory state and emits memory.trace itself.
     memoryTrace: memoryLlm && conditionPolicy.trace ? createTraceService({ callJson: memoryLlm }) : null,
@@ -902,7 +927,9 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
             return workspaceResponse
           }
 
-          const memoryResponse = await handleMemoryRequest(req, url, memory, conditionPolicy, {
+          const memoryResponse = await branchMemory.run(
+            url.pathname.startsWith("/api/memories") ? await memoryRequestContext(req, url) : {},
+            () => handleMemoryRequest(req, url, memory, conditionPolicy, {
             transfer: memoryTransfer,
             sanitize: memorySanitize,
             maintenance: memoryMaintenance,
@@ -943,6 +970,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
             workingMemorySelectionAdmission: studyWorkingMemoryAdmission,
             workingMemoryEvidenceAdmission: studyWorkingMemoryEvidenceAdmission,
             workingMemoryUsePlan: (input) => activeAgent.planMemoryPreviewUses(input),
+            workingMemoryRevise: conditionPolicy.condition === "memosync" ? input => activeAgent.reviseMemoryPreview(input) : undefined,
             workingMemoryPool: ({ chatId, previewId }) => {
               const pending = activeAgent.pendingPreviews.get(chatId)
               if (!pending?.published || pending.previewId !== previewId) return null
@@ -955,7 +983,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
             },
             studySessionAttribution,
             beginStudyMemoryMutation,
-          })
+          }))
           if (memoryResponse) {
             return memoryResponse
           }

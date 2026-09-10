@@ -20,7 +20,6 @@ import { useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { DISPLAY_NAME, getKeybindingsFilePathDisplay, SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import {
   DEFAULT_KEYBINDINGS,
-  PROVIDERS,
   type AgentProvider,
   type InstalledSkillSummary,
   type KeybindingAction,
@@ -1428,10 +1427,9 @@ export function SettingsPage() {
                             <SelectItem value="last_used">
                               Last Used
                             </SelectItem>
-                            {/* DeepSeek-only experiment: Codex stays out of the picker. */}
-                            {PROVIDERS.filter((provider) => provider.id === "claude").map((provider) => (
+                            {state.availableProviders.map((provider) => (
                               <SelectItem key={provider.id} value={provider.id}>
-                                {provider.label}
+                                {provider.id === "claude" ? "Claude Code" : provider.label}
                               </SelectItem>
                             ))}
                           </SelectGroup>
@@ -1440,13 +1438,13 @@ export function SettingsPage() {
                     </SettingsRow>
 
                     <SettingsRow
-                      title="DeepSeek Defaults"
-                      description="Saved defaults for DeepSeek through the Claude Code adapter."
+                      title="Claude Code Defaults"
+                      description="Saved model and reasoning settings for new Claude Code chats."
                       alignStart
                     >
                       <div className="max-w-[420px]">
                         <ChatPreferenceControls
-                          availableProviders={PROVIDERS}
+                          availableProviders={state.availableProviders}
                           selectedProvider="claude"
                           showProviderPicker={false}
                           providerLocked
@@ -1469,6 +1467,28 @@ export function SettingsPage() {
                         />
                       </div>
                     </SettingsRow>
+
+                    {state.availableProviders.some((provider) => provider.id === "codex") ? (
+                      <SettingsRow title="Codex Defaults" description="Saved model and reasoning settings for new Codex chats." alignStart>
+                        <ChatPreferenceControls
+                          availableProviders={state.availableProviders}
+                          selectedProvider="codex"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.codex.model}
+                          modelOptions={providerDefaults.codex.modelOptions}
+                          onModelChange={(_, model) => handleProviderDefaultModelChange("codex", model)}
+                          onModelOptionChange={(change) => {
+                            if (change.type === "codexReasoningEffort") handleProviderDefaultModelOptionsChange("codex", { reasoningEffort: change.effort })
+                            else if (change.type === "fastMode") handleProviderDefaultModelOptionsChange("codex", { fastMode: change.fastMode })
+                          }}
+                          planMode={providerDefaults.codex.planMode}
+                          onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("codex", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </SettingsRow>
+                    ) : null}
 
                   </div>
                 ) : selectedPage === "keybindings" ? (

@@ -244,9 +244,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         vendor: "DeepSeek",
         aliases: [
           "fable",
-          "sonnet",
           "haiku",
-          "claude-sonnet-4-6",
           "claude-haiku-4-5-20251001",
         ],
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
@@ -265,19 +263,35 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         label: "V4 Pro",
         supportsEffort: true,
         vendor: "DeepSeek",
-        aliases: ["opus", "claude-opus-4-8"],
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
       },
       {
         // GLM-5.3-Flash ("牛来", 智谱 2026-08-26): 1M-native multimodal, routed
         // per-chat to its own endpoint+key (see server/chat-providers.ts).
-        // Runs on the same Claude Code engine; memory passes stay on DeepSeek.
+        // Memory branches inherit the same provider as the main session.
         id: "glm-5.3-flash",
         label: "GLM-5.3 Flash",
         supportsEffort: true,
         vendor: "GLM",
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
+        supportsMaxReasoningEffort: true,
+      },
+      {
+        id: "sonnet",
+        label: "Claude Sonnet",
+        aliases: ["claude-sonnet-4-6"],
+        vendor: "Anthropic",
+        supportsEffort: true,
+        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
+      },
+      {
+        id: "opus",
+        label: "Claude Opus",
+        aliases: ["claude-opus-4-8"],
+        vendor: "Anthropic",
+        supportsEffort: true,
+        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
         supportsMaxReasoningEffort: true,
       },
     ],
@@ -329,7 +343,9 @@ export function normalizeClaudeModelId(modelId?: string, fallbackModelId = DEFAU
 }
 
 export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
-  return normalizeProviderModelId("codex", modelId, fallbackModelId)
+  // Custom Responses providers supply their model catalog at runtime. Preserve
+  // those IDs in preferences; the server validates them against its catalog.
+  return getProviderModelMatch("codex", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -979,6 +995,8 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
     label: "operational" | "injected_without_effect" | "violated" | "not_applicable"
     note?: string
     quote?: string
+    /** Validated current-turn tool call/result that supplies the audit evidence. */
+    toolId?: string
     /** Not-applicable only: the absent object/opportunity the audit named. */
     missing?: string
     /** Violated only: whether the violation visibly hurt the outcome. */
@@ -1130,6 +1148,8 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
   relevant: Array<{ id: string; why: string }>
   /** Use Planner output for the initially selected relevant/attention items. */
   expectedUses?: ExpectedMemoryUse[]
+  /** A failed selection is distinct from a successful empty selection. */
+  error?: string
 }
 
 /** Replaces a parked preview's contents after an earlier review is reopened. */
@@ -1485,7 +1505,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_trace"; labels: MemoryTraceEntry["labels"]; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_checkup"; checkupId: string; openingReviewId?: string; turn?: number; pending?: boolean; waiting?: boolean; suggestions?: MemoryCheckupSuggestionSnapshot[]; failedKinds?: MemoryCheckupKind[]; decision?: MemoryCheckupDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })

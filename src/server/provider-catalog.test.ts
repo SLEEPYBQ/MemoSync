@@ -3,6 +3,7 @@ import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
   applyStudyModelPin,
+  deployedProviders,
   codexServiceTierFromModelOptions,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
@@ -71,7 +72,7 @@ describe("provider catalog normalization", () => {
   test("normalizes server model ids through the shared alias catalog", () => {
     expect(normalizeServerModel("codex")).toBe("gpt-5.5")
     expect(normalizeServerModel("claude", "fable")).toBe("deepseek-v4-flash")
-    expect(normalizeServerModel("claude", "opus")).toBe("deepseek-v4-pro")
+    expect(normalizeServerModel("claude", "opus")).toBe("opus")
     expect(normalizeServerModel("codex", "gpt-5-codex")).toBe("gpt-5.3-codex")
   })
 
@@ -89,7 +90,14 @@ describe("provider catalog normalization", () => {
 
     const claude = SERVER_PROVIDERS.find((provider) => provider.id === "claude")
     expect(claude?.label).toBe("DeepSeek")
-    expect(claude?.models.map((model) => model.id)).toEqual(["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "glm-5.3-flash"])
+    expect(claude?.models.map((model) => model.id)).toEqual(["deepseek-v4-flash", "deepseek-v4-flash-vision-exp", "deepseek-v4-pro", "glm-5.3-flash", "sonnet", "opus"])
+  })
+
+  test("normal deployments expose both engines, while isolated GLM exposes its configured Codex model", () => {
+    expect(deployedProviders({}).map((provider) => provider.id)).toEqual(["claude", "codex"])
+    const codex = deployedProviders({ MEMOSYNC_ISOLATE_CLI: "1", GLM_API_KEY: "test", MEMOSYNC_CODEX_MODEL: "glm-5.3" }).find((provider) => provider.id === "codex")
+    expect(codex?.defaultModel).toBe("glm-5.3")
+    expect(codex?.models.map((model) => model.id)).toEqual(["glm-5.3"])
   })
 })
 
@@ -107,6 +115,7 @@ describe("applyStudyModelPin", () => {
     expect(claude.defaultModel).toBe("deepseek-v4-flash")
     expect(claude.efforts.map((e) => e.id)).toEqual(["high"])
     expect(claude.defaultEffort).toBe("high")
+    expect(deployedProviders({}).map((provider) => provider.id)).toEqual(["claude"])
   })
 
   test("an operator model id outside the catalog still pins to a single entry", () => {

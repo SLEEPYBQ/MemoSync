@@ -160,6 +160,8 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
 
       <button
         onClick={() => setExpanded(!expanded)}
+        data-expandable-toggle=""
+        aria-expanded={expanded}
         className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
       >
         <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">

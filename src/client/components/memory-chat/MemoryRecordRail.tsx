@@ -29,6 +29,7 @@ import {
 } from "../../lib/memoryTimeline"
 import { recordUiMonitor } from "../../lib/memoriesApi"
 import { findQuoteBlock, flashQuoteBlock } from "../../lib/quoteJump"
+import { revealToolEvidence } from "../../lib/toolEvidence"
 import { CurrentTurnMemoryCitationProvider, MemoryCitationChip } from "../messages/shared"
 import { useMemoryStore } from "../../stores/memoryStore"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
@@ -163,9 +164,11 @@ function DecisionWord({ decision }: { decision?: string }) {
 }
 
 function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStage }) {
-  const jumpToQuote = (quote: string) => {
+  const jumpToQuote = async (label: RecordAuditStage["labels"][number]) => {
     recordUiMonitor("timeline_quote_jump", { sessionId: chatId, interaction: "click" })
-    const block = findQuoteBlock(quote, null)
+    const block = label.toolId
+      ? await revealToolEvidence({ toolId: label.toolId, quote: label.quote, chatId }, null)
+      : label.quote ? findQuoteBlock(label.quote, null) : null
     if (!block) return
     flashQuoteBlock(block)
   }
@@ -184,12 +187,12 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
                 <span className="mt-0.5 block text-[10px] leading-relaxed text-muted-foreground">
                   {label.quote ? <span className="text-foreground/80">“{truncate(label.quote, 110)}”</span> : null}
                   {label.note ? <span className="block">{label.note}</span> : null}
-                  {label.quote ? (
+                  {label.quote || label.toolId ? (
                     <button
                       type="button"
                       onClick={(event) => {
                         event.stopPropagation()
-                        jumpToQuote(label.quote!)
+                        void jumpToQuote(label)
                       }}
                       className="mt-0.5 block underline underline-offset-2 hover:text-foreground"
                     >

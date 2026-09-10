@@ -43,9 +43,8 @@ export interface MemoryInjectionPlan {
   /** Items in play for the turn (per-turn restriction applied) — logging, preview, trace. */
   injectedMemories: MemoryItem[];
   /**
-   * Items actually baked into `block` ([] in file mode). In skills mode this is
-   * the FULL set even under a per-turn restriction — it seeds the delta
-   * baseline, which must mirror what the context really contains.
+   * Items actually baked into `block` ([] in file mode). This is the confirmed
+   * selection in skills mode and seeds the next turn's delta baseline.
    */
   bakedMemories: MemoryItem[];
   /** Workspace-relative paths backing a file-mode block ([] otherwise). */
@@ -75,10 +74,8 @@ export interface PlanMemoryInjectionOptions {
   /** Chat workspace root — where file-mode memory files live. */
   workspaceDir: string;
   /**
-   * Per-turn override from an EDITED preview gate: only these ids inject this
-   * turn. Under the delta model this no longer filters the skills BOOT block
-   * (the restriction rides the turn's delta as an ignore line); it still
-   * filters plain-mode blocks, Codex per-turn blocks, and the trace snapshot.
+   * Only these confirmed ids inject this turn, including the skills boot
+   * block, subsequent deltas, Codex developer instructions and audit snapshot.
    */
   restrictToIds?: string[];
 }
@@ -183,25 +180,24 @@ export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInj
     };
   }
 
-  // skills mode: restriction is reported (for preview/trace consumers) via
-  // injectedMemories filtering below, but the BOOT block always carries the
-  // full set — a per-turn edit must not bake into a persistent session.
+  // Only confirmed working memories enter the main session. Later selections
+  // arrive through deltas; unselected content is never preloaded at boot.
   const restricted = opts.restrictToIds
     ? injected.filter((m) => new Set(opts.restrictToIds).has(m.id))
     : injected;
   return {
     mode: 'skills',
     block: buildMemoryBlock({
-      memories: injected,
+      memories: restricted,
       tools: policy.memoryTools,
-      conflicts: conflictPairsAmong(memory, injected),
+      conflicts: conflictPairsAmong(memory, restricted),
     }),
     registerTools: policy.memoryTools,
     injectedMemories: restricted,
-    bakedMemories: injected,
+    bakedMemories: restricted,
     staticFiles: [],
     staticPayload: null,
-    hash: `skills:${setHash}`,
+    hash: `skills:${restricted.map(m => `${m.id}@v${m.version}`).join('|')}`,
     // Content changes ride deltas; only a tools/mode flip rebuilds the session.
     sessionRebuildKey: `skills-live:${policy.memoryTools}`,
   };
@@ -235,7 +231,9 @@ export interface MemoryTurnDeltaResult {
  * and render the per-turn delta block. Pure read — callers own baseline state.
  */
 export function computeMemoryTurnDelta(opts: MemoryTurnDeltaOptions): MemoryTurnDeltaResult {
-  const current = opts.memory.injectedFor(opts.projectId, opts.chatId);
+  const visible = opts.memory.injectedFor(opts.projectId, opts.chatId);
+  const selected = opts.restrictToIds ? new Set(opts.restrictToIds) : null;
+  const current = selected ? visible.filter(item => selected.has(item.id)) : visible;
   const currentById = new Map(current.map((m) => [m.id, m]));
   const nextBaseline = new Map(current.map((m) => [m.id, m.version]));
 
@@ -270,7 +268,7 @@ export function computeMemoryTurnDelta(opts: MemoryTurnDeltaOptions): MemoryTurn
   }
 
   const ignoreForTurn = opts.restrictToIds
-    ? current.filter((m) => !new Set(opts.restrictToIds).has(m.id)).map((m) => m.id)
+    ? [...opts.baseline.keys()].filter(id => !currentById.has(id))
     : undefined;
 
   const effective = opts.restrictToIds
@@ -280,7 +278,7 @@ export function computeMemoryTurnDelta(opts: MemoryTurnDeltaOptions): MemoryTurn
   return {
     block: buildMemoryDeltaBlock({ entries, ignoreForTurn }),
     nextBaseline,
-    visibleMemories: current,
+    visibleMemories: visible,
     effectiveMemories: effective,
     effectiveIds: effective.map((m) => m.id),
   };

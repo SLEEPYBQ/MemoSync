@@ -80,13 +80,17 @@ function text(id: string, body: string): HydratedTranscriptMessage {
 
 function trace(
   turn: number,
-  labels: Array<{ id: string; label: string; note?: string; quote?: string }>,
+  labels: Array<{ id: string; label: string; note?: string; quote?: string; toolId?: string }>,
   summary?: string,
 ): HydratedTranscriptMessage {
   return { ...base, id: `t-${turn}`, kind: "memory_trace", labels, summary, turn } as HydratedTranscriptMessage
 }
 
 describe("buildMemoryRecord", () => {
+  it("keeps validated tool evidence anchors available in the Memory Record", () => {
+    const record = buildMemoryRecord([trace(1, [{ id: "M-31", label: "violated", quote: "currency = 12.5", toolId: "tool-evidence" }])])
+    expect(record.turns[0].audit?.labels[0].toolId).toBe("tool-evidence")
+  })
   it("mirrors each transcript station into its stage, in turn order", () => {
     const record = buildMemoryRecord([
       proposals(1, ["Always deploy previews"], "reviewed"),

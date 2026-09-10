@@ -226,7 +226,7 @@ interface Harness {
   memory: MemoryService
   studyMemoryStore: StudyMemoryStore | null
   workspaceDir: string
-  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy }>
+  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null }>
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
   openingBoardBacklog: MemoryBoardBacklogService | null
@@ -239,7 +239,7 @@ interface Harness {
   cleanup: () => void
 }
 
-type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number }
+type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number }
 
 function createHarness(
   opts: {
@@ -380,6 +380,7 @@ function createHarness(
     startClaudeSession: async (args) => {
       const attempt = sessionStarts.length + 1
       sessionStarts.push({
+        memoryPlan: args.memoryPlan,
         memory: (args.memory as MemoryService | null) ?? null,
         sessionToken: args.sessionToken,
         policy: args.policy,
@@ -2180,7 +2181,7 @@ describe("memory preview gate (coordinator)", () => {
       })
 
       await waitFor(() => h.prompts.length === 1)
-      expect(h.prompts[0]).toContain(`For this turn only, ignore: [${ignored.id}].`)
+      expect(h.sessionStarts[0]?.memoryPlan?.block).not.toContain(ignored.content)
       expect(h.prompts[0]).toContain(`- [${selected.id}] Use pnpm while updating dependencies.`)
       expect(experimentEvents.some((event) => event.type === "memory.inject" && event.schemaVersion === 2)).toBe(false)
       h.memory.store.update(
@@ -3125,12 +3126,30 @@ describe("memory preview gate (coordinator)", () => {
 
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.promptContexts).toEqual([
-        { turn: 1, engine: "claude", promptSeq: 1 },
-        { turn: 2, engine: "claude", promptSeq: 2 },
+        { turn: 1, engine: "claude", promptSeq: 1, allowedMemoryIds: ["M-01"] },
+        { turn: 2, engine: "claude", promptSeq: 2, allowedMemoryIds: ["M-01"] },
       ])
     } finally {
       h.cleanup()
     }
+  })
+
+  test("switching Claude vendors rebuilds the subprocess instead of retaining its old endpoint", async () => {
+    const h = createHarness({ preview: false })
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "deepseek-v4-flash", content: "first vendor" })
+      await waitFor(() => h.prompts.length === 1)
+      h.finishTurn()
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "glm-5.3-flash", content: "second vendor" })
+      await waitFor(() => h.prompts.length === 2)
+      expect(h.sessionStarts).toHaveLength(2)
+      h.finishTurn()
+      await waitFor(() => h.store.turnFinishedCount === 2)
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "opus", content: "official vendor" })
+      await waitFor(() => h.prompts.length === 3)
+      expect(h.sessionStarts).toHaveLength(3)
+    } finally { h.cleanup() }
   })
 
   test("a stale trace verdict is discarded while its terminal state remains auditable (CAS)", async () => {
@@ -3983,13 +4002,13 @@ describe("memory preview gate (coordinator)", () => {
           chatId: "chat-1",
           memoryId: memory.id,
           quote: "unsupported control",
-        })).rejects.toThrow("Per-memory interrupt is only available on the MemoSync Claude engine")
+        })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
         await expect(h.coordinator.resumeInterrupted({
           chatId: "chat-1",
           interruptId: `unsupported-${scenario.name}`,
           correction: "Continue with the confirmed working memory.",
           selectedIds: [],
-        })).rejects.toThrow("Per-memory interrupt is only available on the MemoSync Claude engine")
+        })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
         expect(h.store.messages.filter((message) => message.kind === "memory_interrupt")).toHaveLength(1)
         expect(h.store.messages.some((message) => message.kind === "memory_interrupt_resolution")).toBe(false)
         expect(h.prompts).toHaveLength(0)
@@ -4012,7 +4031,7 @@ describe("memory preview gate (coordinator)", () => {
         chatId: "chat-1",
         memoryId: "M-01",
         quote: "deployment control",
-      })).rejects.toThrow("A MemoSync Claude turn must be running")
+      })).rejects.toThrow("A MemoSync turn must be running")
     } finally {
       h.cleanup()
     }
@@ -4053,7 +4072,7 @@ describe("memory preview gate (coordinator)", () => {
         memoryIds: [ordinary.id],
       })
       await waitFor(() => h.prompts.length === 1)
-      expect(h.prompts[0]).toContain(`For this turn only, ignore: [${enforced.id}].`)
+      expect(h.sessionStarts[0]?.memoryPlan?.block).not.toContain(enforced.content)
       expect(h.prompts[0]).not.toContain("ENFORCED THIS RUN")
       expect(h.memory.store.getKv<Array<{ id: string; quote?: string }>>(`pay_attention:chat-1`)).toEqual([])
     } finally {

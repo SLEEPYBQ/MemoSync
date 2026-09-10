@@ -166,8 +166,8 @@ test("a GLM chat overrides the ANTHROPIC_* bundle for its own subprocess", () =>
     env: bootEnv,
   })
 
-  // GLM is 1M-native: bare id, no [1m] suffix.
-  expect(options.model).toBe("glm-5.3-flash")
+  // The CLI strips this documented selector before sending the API model id.
+  expect(options.model).toBe("glm-5.3-flash[1m]")
   expect(options.env).toMatchObject({
     ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
     ANTHROPIC_AUTH_TOKEN: "glm-key",
@@ -182,6 +182,16 @@ test("a GLM chat overrides the ANTHROPIC_* bundle for its own subprocess", () =>
 test("a GLM pick wins over the DeepSeek env default model", () => {
   // resolveClaudeSessionModel must not let the boot ANTHROPIC_MODEL hijack it.
   expect(resolveClaudeSessionModel("glm-5.3-flash", "deepseek-v4-flash")).toBe("glm-5.3-flash")
+})
+
+test("an inherited official model cannot hijack an explicit GLM vendor selection", () => {
+  const options = buildClaudeSdkRuntimeOptions({
+    requestedModel: "glm-5.3-flash",
+    env: { ANTHROPIC_MODEL: "claude-opus-4-6", ANTHROPIC_AUTH_TOKEN: "old-key", GLM_API_KEY: "test-glm-key" },
+  })
+  expect(options.model).toBe("glm-5.3-flash[1m]")
+  expect(options.env.ANTHROPIC_BASE_URL).toBe("https://open.bigmodel.cn/api/anthropic")
+  expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe("test-glm-key")
 })
 
 test("Claude Bash inherits the exact assigned project's runtime instead of the MemoSync server env", () => {

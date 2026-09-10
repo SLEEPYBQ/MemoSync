@@ -216,9 +216,9 @@ export function ChatPreferenceControls({
     ? (providerConfig?.models ?? []).filter((candidate) => candidate.vendor === selectedVendor)
     : (providerConfig?.models ?? [])
   const VendorIcon = (selectedVendor ? VENDOR_ICONS[selectedVendor] : undefined) ?? PROVIDER_ICONS[selectedProvider]
-  // The engine chip only appears when there are multiple ENGINES and no vendor
-  // split to drive the left chip instead.
-  const showEngineProviderPicker = showProviderPicker && !useVendorPicker && availableProviders.length > 1
+  // Engine and model vendor are independent choices: a multi-vendor Claude
+  // catalog must not hide the switch to Codex.
+  const showEngineProviderPicker = showProviderPicker && availableProviders.length > 1
   const ModelIcon = Box
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
@@ -257,7 +257,8 @@ export function ChatPreferenceControls({
             )
           })}
         </InputPopover>
-      ) : showEngineProviderPicker ? (
+      ) : null}
+      {showEngineProviderPicker ? (
         <InputPopover
           disabled={providerLocked || !onProviderChange}
           trigger={(
@@ -266,7 +267,7 @@ export function ChatPreferenceControls({
                 const ProviderIcon = PROVIDER_ICONS[selectedProvider]
                 return <ProviderIcon className="h-3.5 w-3.5" />
               })()}
-              <span>{providerConfig?.label ?? selectedProvider}</span>
+              <span>{selectedProvider === "claude" ? "Claude Code" : providerConfig?.label ?? selectedProvider}</span>
             </>
           )}
         >
@@ -281,7 +282,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={selectedProvider === provider.id}
                 icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                label={provider.label}
+                label={provider.id === "claude" ? "Claude Code" : provider.label}
               />
             )
           })}

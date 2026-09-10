@@ -21,6 +21,14 @@ afterEach(() => {
 });
 
 describe('memory tools (engine-neutral)', () => {
+  it('loads details only for the server-confirmed working set', async () => {
+    const selected = memory.store.create({ content: 'Use integer cents', detail: '1250 is USD 12.50.', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const hidden = memory.store.create({ content: 'Hidden rule', detail: 'Unselected details must stay out of context.', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [selected.id, hidden.id] }, { sessionId: 'chat-1', allowedMemoryIds: [selected.id] });
+    expect(result.text).toContain('1250 is USD 12.50.');
+    expect(result.text).not.toContain('Unselected details');
+    expect(memory.store.getById(hidden.id)?.usageCount).toBe(0);
+  });
   it('without a capture service: ONLY load_memory_detail — no propose_memory, no search_memory (the injected list is the complete surface)', () => {
     const names = buildMemoryToolSpecs(memory).map((s) => s.name);
     expect(names).not.toContain('propose_memory');

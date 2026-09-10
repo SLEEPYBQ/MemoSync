@@ -38,6 +38,7 @@ export interface DynamicToolFunctionSpec {
 }
 
 export interface ThreadStartParams {
+  config?: Record<string, unknown> | null
   model?: string | null
   cwd?: string | null
   serviceTier?: ServiceTier | null
@@ -49,6 +50,7 @@ export interface ThreadStartParams {
 }
 
 export interface ThreadResumeParams {
+  config?: Record<string, unknown> | null
   threadId: string
   model?: string | null
   cwd?: string | null
@@ -60,6 +62,7 @@ export interface ThreadResumeParams {
 }
 
 export interface ThreadForkParams {
+  config?: Record<string, unknown> | null
   threadId: string
   model?: string | null
   cwd?: string | null
@@ -69,6 +72,16 @@ export interface ThreadForkParams {
   ephemeral?: boolean
   persistExtendedHistory: boolean
   dynamicTools?: DynamicToolFunctionSpec[] | null
+}
+
+export interface ConfigReadParams {
+  includeLayers?: boolean
+  /** Include project configuration visible from this working directory. */
+  cwd?: string | null
+}
+
+export interface ConfigReadResponse {
+  config: Record<string, unknown>
 }
 
 export interface TextUserInput {
@@ -99,6 +112,8 @@ export interface TurnStartParams {
   effort?: ReasoningEffort | null
   serviceTier?: ServiceTier | null
   collaborationMode?: CollaborationMode | null
+  /** JSON Schema for the final assistant response; applies to this turn only. */
+  outputSchema?: Record<string, unknown> | null
 }
 
 export interface TurnInterruptParams {

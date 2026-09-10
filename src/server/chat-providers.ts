@@ -7,8 +7,7 @@
 // A GLM chat instead needs its OWN endpoint + key injected into just that
 // session's subprocess env — because each Claude session is a separate
 // subprocess with its own env, we can route per chat without a second server.
-// Memory passes are untouched: they keep using the DeepSeek sidecar regardless
-// of which vendor a given chat picked.
+// Memory branches inherit the main session's resolved provider environment.
 //
 // Adding a vendor = one entry here + its models in the shared catalog
 // (src/shared/types.ts). Keep the model-id prefixes in sync with
@@ -32,8 +31,7 @@ export interface ChatProviderRoute {
   autoCompactWindow: string
   /** Cheap model for haiku-class / subagent traffic on this vendor. */
   subagentModel: string
-  /** DeepSeek needs the `[1m]` CLI selector to lift the 200k assumption; GLM is
-   * 1M-native and rejects the suffix, so only DeepSeek sets this. */
+  /** CLI context-window selector; both DeepSeek and current GLM require it. */
   appendOneMillionSuffix: boolean
 }
 
@@ -51,11 +49,11 @@ export function resolveChatProviderRoute(
       // a VPN. Override with GLM_BASE_URL for Z.AI (https://api.z.ai/api/anthropic).
       baseUrl: env.GLM_BASE_URL?.trim() || "https://open.bigmodel.cn/api/anthropic",
       apiKey: env.GLM_API_KEY?.trim() || undefined,
-      // GLM-5.3-Flash is 1M-native; GLM's own Claude Code guide budgets the
-      // full window. GLM_AUTO_COMPACT_WINDOW overrides.
+      // https://docs.bigmodel.cn/cn/coding-plan/latest-model specifies both
+      // the [1m] selector and this compact window for current Claude Code.
       autoCompactWindow: env.GLM_AUTO_COMPACT_WINDOW?.trim() || "1000000",
       subagentModel: env.GLM_SUBAGENT_MODEL?.trim() || "glm-5.3-flash",
-      appendOneMillionSuffix: false,
+      appendOneMillionSuffix: true,
     }
   }
   return null

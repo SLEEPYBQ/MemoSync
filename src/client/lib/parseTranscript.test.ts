@@ -12,6 +12,22 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("preserves working-memory selection failure separately from an empty successful result", () => {
+    const preview = entry({ kind: "memory_preview", previewId: "failed-w", memories: [{ id: "M-1", content: "Use cents", scope: "project" }], relevancePending: true })
+    const failed = processTranscriptMessages([
+      preview,
+      entry({ kind: "memory_preview_relevance", previewId: "failed-w", relevant: [], expectedUses: [], error: "Working-memory selection failed." }),
+    ])
+    expect(failed[0]).toMatchObject({ kind: "memory_preview", selectionError: "Working-memory selection failed.", relevant: [] })
+    const recovered = processTranscriptMessages([
+      preview,
+      entry({ kind: "memory_preview_update", previewId: "failed-w", revision: 1, memories: [{ id: "M-1", content: "Use cents", scope: "project" }], relevancePending: true }),
+      entry({ kind: "memory_preview_relevance", previewId: "failed-w", revision: 1, relevant: [{ id: "M-1", why: "Charging money" }], expectedUses: [{ id: "M-1", expectedUse: "Charge integer cents." }] }),
+      entry({ kind: "memory_preview_relevance", previewId: "failed-w", revision: 0, relevant: [], error: "Late failure from the old selection" }),
+    ])
+    expect(recovered[0]).toMatchObject({ kind: "memory_preview", relevant: [{ id: "M-1", why: "Charging money" }], selectionError: undefined })
+  })
+
   test("preserves the durable opening-Board owner on every Long-term parent", () => {
     const openingReviewId = "opening-review-1"
     const messages = processTranscriptMessages([

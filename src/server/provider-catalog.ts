@@ -8,6 +8,7 @@ import type {
   ProviderModelOption,
   ServiceTier,
 } from "../shared/types"
+import { isCliIsolationEnabled, resolveCodexRuntimeModel } from "./provider-runtime"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
@@ -51,13 +52,21 @@ function createServerProviders(): ProviderCatalogEntry[] {
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
 
 /**
- * What this deployment offers in the engine picker: Claude Code only (the
- * longitudinal build ships without the Codex CLI or its DeepSeek bridge).
- * The full SERVER_PROVIDERS catalog stays intact internally so legacy codex
- * chats keep resolving their stored model preferences.
+ * Study-mode pinning already narrows SERVER_PROVIDERS to one Claude model.
+ * Regular deployments expose both engines, including an explicitly configured
+ * isolated Codex provider model without advertising OpenAI IDs to that endpoint.
  */
-export function deployedProviders(): ProviderCatalogEntry[] {
-  return SERVER_PROVIDERS.filter((provider) => provider.id === "claude")
+export function deployedProviders(env: Readonly<Record<string, string | undefined>> = process.env): ProviderCatalogEntry[] {
+  return SERVER_PROVIDERS.map((provider) => {
+    if (provider.id !== "codex" || !isCliIsolationEnabled(env)) return provider
+    try {
+      const model = resolveCodexRuntimeModel(provider.defaultModel, env)
+      return { ...provider, defaultModel: model, models: [{ id: model, label: model, supportsEffort: true }] }
+    } catch {
+      // A missing key is reported when that engine is started, not while reading UI state.
+      return provider
+    }
+  })
 }
 
 export function resetServerProvidersForTests() {
@@ -156,7 +165,8 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 }
 
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
-  const catalog = getServerProviderCatalog(provider)
+  const catalog = deployedProviders().find((entry) => entry.id === provider) ?? getServerProviderCatalog(provider)
+  if (model && catalog.models.some((candidate) => candidate.id === model)) return model
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
     return normalizedModel

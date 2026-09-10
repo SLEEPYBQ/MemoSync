@@ -21,6 +21,10 @@ export interface TraceInput {
   turn?: number;
   userText: string;
   assistantText: string;
+  /** Current-turn tool calls/results, also used to validate tool-only audit anchors. */
+  executionText?: string;
+  /** Durable per-tool evidence from this turn; enables Where used on collapsed tools. */
+  executionTools?: Array<{ toolId: string; text: string }>;
   /** Memories injected/cited this turn — the set Trace is asked to judge. */
   usedMemories: MemoryItem[];
 }
@@ -41,7 +45,7 @@ export interface TraceOutcome {
   // `missing` (not_applicable only): the absent object/opportunity the audit
   // named — an NA verdict without it is downgraded (decision tree, 2026-08-19).
   // `impact` (violated only): whether the violation visibly hurt the outcome.
-  labels: Array<{ id: string; label: TraceLabel; note?: string; quote?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact }>;
+  labels: Array<{ id: string; label: TraceLabel; note?: string; quote?: string; toolId?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact }>;
   /**
    * One-sentence English recap of the turn with the memories that MATTERED
    * cited inline as [M-NN] (operational/violated only — no-effect memories are
@@ -110,11 +114,12 @@ function buildUserPrompt(input: TraceInput): string {
     `Memories used this turn:\n${input.usedMemories.map(formatMemoryForPrompt).join('\n\n')}`,
     `User message:\n${input.userText}`,
     `Assistant response:\n${input.assistantText}`,
+    ...(input.executionText ? [`Tool calls and results:\n${input.executionText}`] : []),
   ].join('\n\n');
 }
 
 /** Best-effort read of a raw label entry; malformed entries are dropped/coerced, never thrown. */
-function readLabelEntry(entry: unknown): { id: string; label: TraceLabel; note?: string; quote?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact } | null {
+function readLabelEntry(entry: unknown): TraceOutcome['labels'][number] | null {
   if (!entry || typeof entry !== 'object') return null;
   const id = (entry as Record<string, unknown>).id;
   if (typeof id !== 'string') return null;
@@ -124,13 +129,15 @@ function readLabelEntry(entry: unknown): { id: string; label: TraceLabel; note?:
   const note = typeof rawNote === 'string' ? rawNote : undefined;
   const rawQuote = (entry as Record<string, unknown>).quote;
   const quote = typeof rawQuote === 'string' && rawQuote.trim() ? rawQuote : undefined;
+  const rawToolId = (entry as Record<string, unknown>).toolId;
+  const toolId = typeof rawToolId === 'string' && rawToolId.trim() ? rawToolId.trim() : undefined;
   const rawCause = (entry as Record<string, unknown>).cause;
   const cause = rawCause === 'not_followed' || rawCause === 'memory_conflict' ? rawCause : undefined;
   const rawMissing = (entry as Record<string, unknown>).missing;
   const missing = typeof rawMissing === 'string' && rawMissing.trim() ? rawMissing.trim() : undefined;
   const rawImpact = (entry as Record<string, unknown>).impact;
   const impact = rawImpact === 'negative' || rawImpact === 'none' ? rawImpact : undefined;
-  return { id, label, note, quote, cause, missing, impact };
+  return { id, label, note, quote, toolId, cause, missing, impact };
 }
 
 // NOTE: the service emits NO experiment event — the verdicts it returns are
@@ -161,11 +168,11 @@ export function createTraceService(opts: { callJson: LlmJsonCaller; logger?: Pic
  */
 export function coerceTraceOutcome(
   raw: Record<string, unknown>,
-  input: Pick<TraceInput, 'usedMemories' | 'assistantText'>,
+  input: Pick<TraceInput, 'usedMemories' | 'assistantText' | 'executionText' | 'executionTools'>,
 ): TraceOutcome {
   {
       const validIds = new Set(input.usedMemories.map((m) => m.id));
-      const byId = new Map<string, { label: TraceLabel; note?: string; quote?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact }>();
+      const byId = new Map<string, Omit<TraceOutcome['labels'][number], 'id'>>();
       const rawLabels = Array.isArray(raw.labels) ? raw.labels : [];
       for (const entry of rawLabels) {
         const parsed = readLabelEntry(entry);
@@ -177,7 +184,7 @@ export function coerceTraceOutcome(
           byId.set(parsed.id, { label: 'injected_without_effect', note: parsed.note });
           continue;
         }
-        byId.set(parsed.id, { label: parsed.label, note: parsed.note, quote: parsed.quote, cause: parsed.cause, missing: parsed.missing, impact: parsed.impact });
+        byId.set(parsed.id, { label: parsed.label, note: parsed.note, quote: parsed.quote, toolId: parsed.toolId, cause: parsed.cause, missing: parsed.missing, impact: parsed.impact });
       }
 
       // Quote validation is tolerant of whitespace/markdown drift: the model
@@ -186,7 +193,7 @@ export function coerceTraceOutcome(
       // their where-used jump (bug, user report 2026-08-07). Same
       // normalization family as the client's quote-jump matcher.
       const normalizeQuote = (s: string) => s.replace(/[*_`~#>[\]()]/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
-      const normalizedAssistant = normalizeQuote(input.assistantText);
+      const normalizedAssistant = normalizeQuote([input.assistantText, input.executionText ?? '', ...(input.executionTools ?? []).map((tool) => tool.text)].join('\n'));
 
       // Every usedMemory appears exactly once: fall back for anything the model skipped.
       const labels = input.usedMemories.map((m) => {
@@ -196,12 +203,21 @@ export function coerceTraceOutcome(
           // (operational/violated) — never for NA or no-effect.
           const keepQuote = found.quote
             && (found.label === 'operational' || found.label === 'violated')
+            && normalizeQuote(found.quote).length > 0
             && normalizedAssistant.includes(normalizeQuote(found.quote));
+          // Never accept an invented tool ID or an anchor to a different
+          // tool than the cited evidence. An omitted ID may be inferred from
+          // its exact quote when it matches one of this turn's tools.
+          const matchedTool = keepQuote ? input.executionTools?.find((tool) =>
+            (!found.toolId || found.toolId === tool.toolId)
+            && normalizeQuote(tool.text).includes(normalizeQuote(found.quote!)),
+          ) : undefined;
           return {
             id: m.id,
             label: found.label,
             ...(found.note !== undefined ? { note: found.note } : {}),
             ...(keepQuote ? { quote: found.quote } : {}),
+            ...(matchedTool ? { toolId: matchedTool.toolId } : {}),
             // Cause + impact only ride violations — cause drives the follow-up
             // action, impact surfaces "violated but harmless" honestly.
             ...(found.label === 'violated' && found.cause ? { cause: found.cause } : {}),

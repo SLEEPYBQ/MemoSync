@@ -55,6 +55,84 @@ async function collectStream(stream: AsyncIterable<any>) {
 }
 
 describe("CodexAppServerManager", () => {
+  for (const failedMethod of ["initialize", "thread/start", "thread/fork"] as const) {
+    test(`cleans up a failed ${failedMethod} handshake so the same chat can retry`, async () => {
+      const children: FakeCodexProcess[] = []
+      const manager = new CodexAppServerManager({
+        spawnProcess: () => {
+          const firstAttempt = children.length === 0
+          const process = new FakeCodexProcess((message, child) => {
+            if (firstAttempt && message.method === failedMethod) {
+              child.writeServerMessage({ id: message.id, error: { message: "temporary startup failure" } })
+            } else if (message.method === "initialize") {
+              child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+            } else if (message.method === "thread/start" || message.method === "thread/fork") {
+              child.writeServerMessage({ id: message.id, result: { thread: { id: "recovered-thread" }, model: "gpt-5.4", reasoningEffort: "high" } })
+            }
+          })
+          children.push(process)
+          return process as never
+        },
+      })
+      const args = {
+        chatId: "retry-chat", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null,
+        ...(failedMethod === "thread/fork" ? { pendingForkSessionToken: "parent-thread" } : {}),
+      }
+      try {
+        await expect(manager.startSession(args)).rejects.toThrow("temporary startup failure")
+        expect(children).toHaveLength(1)
+        expect(children[0]?.killed).toBe(true)
+        expect(await manager.startSession(args)).toBe("recovered-thread")
+        expect(children).toHaveLength(2)
+        expect(children[1]?.killed).toBe(false)
+      } finally {
+        manager.stopAll()
+      }
+    })
+  }
+
+  for (const mode of ["start", "fork", "resume"] as const) {
+    test(`memory thread/${mode} disables configured MCP, subagents, and web search without forwarding secrets`, async () => {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        else if (message.method === "config/read") child.writeServerMessage({ id: message.id, result: { config: { mcp_servers: {
+          repo_tools: { command: "mcp-server", env: { TOKEN: "fixture-secret-not-forwarded" } },
+          github: { url: "https://example.invalid/mcp", enabled: true },
+        } } } })
+        else if (message.method === `thread/${mode}`) child.writeServerMessage({ id: message.id, result: { thread: { id: "child" }, model: "test", reasoningEffort: null } })
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: mode === "resume" ? "child" : null,
+        pendingForkSessionToken: mode === "fork" ? "parent" : null, disableExternalTools: true, sandbox: "read-only", allowResumeFallback: false,
+      })
+      const read = process.messages.find((message: any) => message.method === "config/read") as any
+      expect(read.params).toEqual({ includeLayers: false, cwd: "/tmp/project" })
+      const thread = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
+      expect(thread.params.config).toEqual({ "features.multi_agent": false, web_search: "disabled", "mcp_servers.repo_tools.enabled": false, "mcp_servers.github.enabled": false })
+      expect(JSON.stringify(process.messages)).not.toContain("fixture-secret-not-forwarded")
+      expect(process.messages.some((message: any) => message.method.startsWith("config/") && message.method !== "config/read")).toBe(false)
+      manager.stopAll()
+    })
+  }
+
+  test("memory branches fail closed when effective MCP configuration cannot be read or represented", async () => {
+    for (const response of [
+      { error: { message: "unsupported config/read" } },
+      { result: { config: null } },
+      { result: { config: { mcp_servers: [] } } },
+      { result: { config: { mcp_servers: { "ambiguous.name": {} } } } },
+    ]) {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === "config/read") child.writeServerMessage({ id: message.id, ...response })
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null, disableExternalTools: true })).rejects.toThrow("Cannot establish read-only memory branch")
+      expect(process.messages.some((message: any) => message.method.startsWith("thread/"))).toBe(false)
+      expect(process.killed).toBe(true)
+    }
+  })
+
   test("initializes app-server and starts a fresh thread", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
@@ -150,6 +228,67 @@ describe("CodexAppServerManager", () => {
       "initialized",
       "thread/fork",
     ])
+  })
+
+  test("memory forks keep read-only sandbox and schema on follow-ups without forking again", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/fork") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "memory-child" }, model: "test-model", reasoningEffort: null } })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "memory-turn", status: "completed", error: null } } })
+        child.writeServerMessage({ method: "turn/completed", params: { threadId: "memory-child", turn: { id: "memory-turn", status: "completed", error: null } } })
+      }
+    })
+    let spawnEnv: Record<string, string | undefined> | undefined
+    const manager = new CodexAppServerManager({ spawnProcess: (_cwd, env) => { spawnEnv = env; return process as never } })
+    const env = { CODEX_MODEL: "isolated-model" }
+    expect(await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "picker-model", sessionToken: null, pendingForkSessionToken: "main", sandbox: "read-only", subprocessEnv: env })).toBe("memory-child")
+    const schema = { type: "object", properties: { labels: { type: "array" } } }
+    for (const content of ["Audit the turn", "Update only the reviewed items"]) {
+      const turn = await manager.startTurn({ chatId: "memory", model: "picker-model", content, planMode: false, outputSchema: schema, onToolRequest: async () => ({}) })
+      await collectStream(turn.stream)
+    }
+    expect(spawnEnv).toBe(env)
+    expect(process.messages.filter((message: any) => message.method === "thread/fork")).toHaveLength(1)
+    expect((process.messages.find((message: any) => message.method === "thread/fork") as any).params).toMatchObject({ sandbox: "read-only", approvalPolicy: "never", model: "isolated-model" })
+    const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
+    expect(turns.map((message) => message.params.threadId)).toEqual(["memory-child", "memory-child"])
+    expect(turns[0].params.outputSchema).toEqual(schema)
+    expect(turns[1].params.model).toBe("isolated-model")
+    manager.stopAll()
+  })
+
+  test("a missing fork parent fails without silently creating an unrelated thread", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/fork") child.writeServerMessage({ id: message.id, error: { message: "thread not found" } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null, pendingForkSessionToken: "missing" })).rejects.toThrow("thread not found")
+    expect(process.messages.some((message: any) => message.method === "thread/start")).toBe(false)
+    manager.stopAll()
+  })
+
+  test("a missing memory child cannot fall back to a fresh thread during retry", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/resume") child.writeServerMessage({ id: message.id, error: { message: "thread not found" } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: "saved-child", allowResumeFallback: false })).rejects.toThrow("thread not found")
+    expect(process.messages.some((message: any) => message.method === "thread/start")).toBe(false)
+    expect(process.killed).toBe(true)
+  })
+
+  test("stopping a session settles an in-flight initialization request", async () => {
+    const process = new FakeCodexProcess()
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    const starting = manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null })
+    manager.stopSession("memory")
+    await expect(starting).rejects.toThrow("session stopped")
+    expect(process.killed).toBe(true)
   })
 
   test("maps fast mode and reasoning into app-server params", async () => {

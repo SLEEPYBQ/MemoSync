@@ -58,6 +58,14 @@ import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memo
 import { runForkTrace } from "./memory/trace-fork"
 import { runForkCapture } from "./memory/capture-fork"
 import { runForkQuery } from "./memory/fork-query"
+import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
+import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
+import { memoryStageSchema } from "./memory/branch-schemas"
+import {
+  buildWorkingMemoryBranchPrompt, parseWorkingMemoryBranchResult,
+  buildAuditBranchPrompt, parseAuditBranchResult, MemoryBranchResultError,
+} from "./memory/branch-stages"
+import { buildIsolatedClaudeEnv, assertIsolatedClaudeCredentials, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
 import type { RevisionService } from "./memory/evolution"
 import type { CheckupResult, CheckupService } from "./memory/checkup"
 import type {
@@ -98,17 +106,20 @@ export function buildClaudeSdkRuntimeOptions(args: {
   requestedModel: string
   configuredModel?: string
   env: Readonly<Record<string, string | undefined>>
-}) {
-  const rawModel = resolveClaudeSessionModel(args.requestedModel, args.configuredModel)
+}): { model: string; settings: { autoMemoryEnabled: boolean; autoDreamEnabled: boolean }; env: Record<string, string | undefined> } {
+  const official = args.requestedModel === "sonnet" || args.requestedModel === "opus" || args.requestedModel.startsWith("claude-")
+  const configuredModel = args.configuredModel ?? (args.env.MEMOSYNC_USE_OWN_ANTHROPIC === "1" ? args.env.ANTHROPIC_MODEL : "")
+  const rawModel = official ? args.requestedModel : resolveClaudeSessionModel(args.requestedModel, configuredModel ?? "")
+  if (official) args = { ...args, env: resolveOfficialClaudeEnv(args.env) }
   // Normalize away an operator-supplied suffix first so we never double-append.
   const resolvedModel = rawModel.endsWith("[1m]") ? rawModel.slice(0, -"[1m]".length) : rawModel
 
   // A non-default vendor (currently GLM) overrides the whole ANTHROPIC_* bundle
   // for THIS session's subprocess so it talks to that vendor's endpoint with
-  // its own key. Memory passes are untouched — they stay on the DeepSeek
-  // sidecar regardless of which vendor this chat picked.
+  // its own key. MemoSync memory branches receive this same resolved bundle.
   const route = resolveChatProviderRoute(resolvedModel, args.env)
   if (route) {
+    assertIsolatedClaudeCredentials({ ...args.env, ANTHROPIC_API_KEY: route.apiKey, ANTHROPIC_AUTH_TOKEN: route.apiKey })
     return {
       model: route.appendOneMillionSuffix ? `${resolvedModel}[1m]` : resolvedModel,
       settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
@@ -136,6 +147,7 @@ export function buildClaudeSdkRuntimeOptions(args: {
   // CLI books the unknown model id as 200k and its PREFLIGHT rejects long
   // prompts with "Prompt is too long" at ~152k (observed live 2026-08-24).
   const isDeepSeek = resolvedModel.startsWith("deepseek-")
+  assertIsolatedClaudeCredentials(args.env)
   return {
     model: isDeepSeek ? `${resolvedModel}[1m]` : resolvedModel,
     settings: {
@@ -164,6 +176,8 @@ export function buildClaudeSdkRuntimeOptions(args: {
 // boot when it inherits them (observed 2026-08-24 launching MemoSync from a
 // Claude Code terminal).
 const CLAUDE_ENGINE_ENV_ALLOWLIST = new Set([
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
   "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
   "CLAUDE_CODE_SUBAGENT_MODEL",
   "CLAUDE_CODE_EFFORT_LEVEL",
@@ -174,7 +188,8 @@ export function buildClaudeSubprocessEnv(args: {
   rawStudyProjects: string | undefined
   baseEnv?: Readonly<Record<string, string | undefined>>
 }): Record<string, string | undefined> {
-  const baseEnv: Record<string, string | undefined> = { ...(args.baseEnv ?? process.env) }
+  const rawEnv = args.baseEnv ?? process.env
+  const baseEnv: Record<string, string | undefined> = buildIsolatedClaudeEnv(rawEnv)
   for (const key of Object.keys(baseEnv)) {
     if ((key === "CLAUDECODE" || key.startsWith("CLAUDE_")) && !CLAUDE_ENGINE_ENV_ALLOWLIST.has(key)) {
       delete baseEnv[key]
@@ -421,6 +436,7 @@ interface ActiveTurn {
   citedIds: Set<string>
   /** User chose "proceed without memory" at the preview gate for this turn. */
   memoryDisabled?: boolean
+  memoryDeliveryAccepted?: boolean
   /**
    * Snapshot of the memory ids injected for THIS turn, taken at engine boot.
    * Trace labels against this — a memory accepted mid-turn must not be
@@ -437,7 +453,7 @@ interface ClaudeSessionHandle {
   close: () => void
   sendPrompt: (
     content: string,
-    context?: Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number },
+    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
   ) => Promise<void>
   /** Release only the cancelled prompt reservations whose FIFO entries were
    * proven orphaned when a later provider turn started. */
@@ -473,6 +489,7 @@ interface ClaudeSessionState {
    * a rebuild. The resume token carries the conversation across rebuilds.
    */
   memorySetHash: string
+  providerRuntimeKey: string
   /**
    * id → version of what the context currently claims (boot snapshot, then
    * updated after every delta append). null = memory off or non-skills mode.
@@ -495,6 +512,9 @@ interface AgentCoordinatorArgs {
   forkTrace?: typeof runForkTrace
   forkCapture?: typeof runForkCapture
   forkQuery?: typeof runForkQuery
+  /** Persistent C/T/M/W/A conversations; injected in tests, enabled in the application. */
+  memoryBranches?: boolean
+  createMemoryBranch?: typeof createMemoryBranch
   /** Sidecar relevance prediction for the preview receipt (REDESIGN D6); null disables. */
   memoryRelevance?: RelevanceService | null
   /** Turn-scoped instructions for how Claude should use each selected memory. */
@@ -598,6 +618,14 @@ interface PostTurnMemoryPassArgs {
   /** Claude only: resume token + workspace of the finished session — enables fork trace. */
   claudeSessionToken?: string | null
   localPath?: string
+  sessionToken?: string | null
+  injectedMemories?: MemoryItem[]
+  executionText?: string
+  expectedUses?: ExpectedMemoryUse[]
+  executionTools?: Array<{ toolId: string; text: string }>
+  model?: string
+  effort?: string
+  serviceTier?: "fast"
 }
 
 function isClaudeSteerLoggingEnabled() {
@@ -1421,6 +1449,7 @@ export async function startClaudeSession(args: {
       : null
   let activeMemoryToolTurn: number | undefined
   let activeMemoryToolEngine: string | undefined
+  let activeMemoryToolIds: readonly string[] | undefined = plan?.injectedMemories.map(item => item.id)
   // Claude sessions persist across user turns, as does their in-process MCP
   // server. Use getters so every tool call reads the context installed just
   // before the corresponding prompt is queued, rather than the boot turn.
@@ -1433,6 +1462,7 @@ export async function startClaudeSession(args: {
     get engine() {
       return activeMemoryToolEngine
     },
+    get allowedMemoryIds() { return activeMemoryToolIds },
   }
   const memorySpecs =
     args.memory && plan?.registerTools
@@ -1543,7 +1573,6 @@ export async function startClaudeSession(args: {
   })
   const sdkRuntime = buildClaudeSdkRuntimeOptions({
     requestedModel: args.model,
-    configuredModel: baseSubprocessEnv.ANTHROPIC_MODEL,
     env: baseSubprocessEnv,
   })
 
@@ -1578,7 +1607,7 @@ export async function startClaudeSession(args: {
         : undefined,
       // Study mode narrows to user settings only: a workspace CLAUDE.md would
       // otherwise be a second, uncontrolled memory channel in every arm.
-      settingSources: policy.studyMode ? ["user"] : ["user", "project", "local"],
+      settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : policy.studyMode ? ["user"] : ["user", "project", "local"],
       // MemoSync IS the memory system. The harness's own auto-memory
       // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
       // read+write channel — observed live: the model wrote MEMORY.md there
@@ -1606,10 +1635,11 @@ export async function startClaudeSession(args: {
     },
     sendPrompt: async (
       content: string,
-      context?: Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number },
+      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
     ) => {
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
+      activeMemoryToolIds = context?.allowedMemoryIds
       outboundOrigins.beginHumanTurn(context?.promptSeq)
       try {
         promptQueue.push({
@@ -1632,7 +1662,6 @@ export async function startClaudeSession(args: {
     setModel: async (model: string) => {
       await q.setModel(buildClaudeSdkRuntimeOptions({
         requestedModel: model,
-        configuredModel: baseSubprocessEnv.ANTHROPIC_MODEL,
         env: baseSubprocessEnv,
       }).model)
     },
@@ -1662,6 +1691,7 @@ interface PreviewControlOperation {
 }
 
 interface PendingMemoryPreview {
+  chatId?: string
   previewId: string
   revision: number
   published: boolean
@@ -1700,6 +1730,14 @@ export class AgentCoordinator {
   private readonly forkTraceFn: typeof runForkTrace
   private readonly forkCaptureFn: typeof runForkCapture
   private readonly forkQueryFn: typeof runForkQuery
+  private readonly memoryBranches: boolean
+  private readonly createMemoryBranchFn: typeof createMemoryBranch
+  private readonly branchPreparations = new Map<string, {
+    pipeline: MemoryBranchPipeline
+    args: StartTurnArgs
+    snapshots: { transfer: Map<string, string>; changes: Map<string, string> }
+  }>()
+  private readonly workingBranches = new Map<string, MemoryBranch>()
   private readonly memoryRelevance: RelevanceService | null
   private readonly memoryUsePlan: UsePlanService | null
   /** Exact per-memory instructions shown in the preview and injected into Claude. */
@@ -1870,6 +1908,8 @@ export class AgentCoordinator {
     this.memoryCheckup = args.memoryCheckup ?? null
     this.memoryTransferDetect = args.memoryTransferDetect ?? null
     this.policy = args.policy ?? resolveConditionPolicy()
+    this.memoryBranches = this.policy.condition === "memosync" && (args.memoryBranches ?? Boolean(args.createMemoryBranch))
+    this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
     this.getMemoryPreviewSettings =
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
     this.getActiveStudyTaskId = args.getActiveStudyTaskId ?? (() => null)
@@ -1881,6 +1921,135 @@ export class AgentCoordinator {
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.studyPreviewRuntime = args.studyPreviewRuntime ?? null
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
+  }
+
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier">, purpose: string, parent?: string | null) {
+    const chat = this.store.requireChat(args.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Memory branch project is unavailable")
+    const runtime = args.provider === "claude" ? buildClaudeSdkRuntimeOptions({
+      requestedModel: args.model,
+      env: buildClaudeSubprocessEnv({ localPath: project.localPath, rawStudyProjects: process.env.STUDY_PROJECTS }),
+    }) : null
+    const branch = this.createMemoryBranchFn({
+      provider: args.provider,
+      parentSessionToken: parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent,
+      localPath: project.localPath,
+      model: runtime?.model ?? args.model,
+      effort: args.effort,
+      serviceTier: args.serviceTier,
+      subprocessEnv: runtime?.env,
+      purpose,
+    })
+    this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
+    return branch
+  }
+
+  private memoryBranchSnapshot(): Map<string, string> {
+    return new Map((this.memory?.store.list() ?? []).map(item => [item.id, JSON.stringify({
+      id: item.id, version: item.version, status: item.status, content: item.content, detail: item.detail,
+      scope: item.scope, projectId: item.projectId, sessionId: item.sessionId,
+      relations: this.memory!.store.getRelations(item.id),
+      pendingRevision: this.memory!.store.hasOpenRevision(item.id),
+    })]))
+  }
+
+  memoryRuntimeChoice(chatId: string) {
+    const current = this.activeTurns.get(chatId) ?? this.branchPreparations.get(chatId)?.args
+    if (current) return { provider: current.provider, model: current.model, effort: current.effort, serviceTier: current.serviceTier }
+    return undefined
+  }
+
+  private startMemoryBranches(args: StartTurnArgs, ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number }) {
+    if (!this.memoryBranches) return
+    this.disposeMemoryBranches(args.chatId)
+    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content }
+    const candidate = this.capture?.buildBranchPrompt?.(captureInput)
+    const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
+    const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
+    const empty = (schema: string): BranchRequest => ({ prompt: `The current memory store is empty. Analyze the current task only if it yields a valid proposal. Otherwise return ${schema}. Current task: ${JSON.stringify(captureInput.userText)}`, dependencyKey: "" })
+    const snapshot = this.memoryBranchSnapshot()
+    this.branchPreparations.set(args.chatId, {
+      args,
+      snapshots: { transfer: new Map(snapshot), changes: new Map(snapshot) },
+      pipeline: new MemoryBranchPipeline({
+        createBranch: purpose => this.newMemoryBranch(args, purpose),
+        requests: {
+          candidate: candidate ?? empty('{"candidates":[]}'),
+          transfer: transfer ?? empty('{"suggestions":[]}'),
+          changes: changes ?? empty('{"conflicts":[],"redundancy":[],"staleness":[]}'),
+        },
+      }),
+    })
+  }
+
+  private async continueMemoryBranch(chatId: string, stage: "transfer" | "changes", review: string, dependencyKey: string) {
+    const preparation = this.branchPreparations.get(chatId)
+    if (!preparation) throw new Error("Memory preparation branch is unavailable")
+    const previous = preparation.snapshots[stage]
+    const next = this.memoryBranchSnapshot()
+    const upsert = [...next].filter(([id, value]) => previous.get(id) !== value).map(([, value]) => JSON.parse(value))
+    const remove = [...previous.keys()].filter(id => !next.has(id))
+    preparation.snapshots[stage] = next
+    const chat = this.store.requireChat(chatId)
+    const decisions = this.store.getMessages(chatId).filter(message =>
+      (message.kind === "memory_proposals_decision" || message.kind === "memory_transfer_decision" || message.kind === "memory_checkup_decision")
+      && message.createdAt >= (this.store.getMessages(chatId).find(entry => entry._id === preparation.args.turnId)?.createdAt ?? Infinity),
+    ).map(({ _id, createdAt, ...decision }) => decision)
+    const declinedSources = (this.memory?.store.list() ?? []).filter(item => this.memory!.store.getKv(`transfer_declined:${item.id}:${chat.projectId ?? chatId}`)).map(item => item.id)
+    return await preparation.pipeline.continue(stage, { review, changes: { upsert, remove, decisions, declinedSources }, dependencyKey })
+  }
+
+  private disposeMemoryBranches(chatId: string) {
+    this.branchPreparations.get(chatId)?.pipeline.dispose()
+    this.branchPreparations.delete(chatId)
+    this.workingBranches.get(chatId)?.dispose()
+    this.workingBranches.delete(chatId)
+  }
+
+  private restoreUndeliveredEnforcement(chatId: string) {
+    if (this.activeTurns.get(chatId)?.memoryDeliveryAccepted) return
+    const entries = this.turnPayAttention.get(chatId)
+    if (!entries?.length || !this.memory) return
+    const queued = this.memory.store.getKv<Array<string | { id: string; quote?: string }>>(`pay_attention:${chatId}`) ?? []
+    const merged = new Map(queued.map(item => typeof item === "string" ? [item, { id: item }] : [item.id, item]))
+    for (const item of entries) if (!merged.has(item.id)) merged.set(item.id, item)
+    this.memory.store.setKv(`pay_attention:${chatId}`, [...merged.values()])
+    this.turnPayAttention.delete(chatId)
+  }
+
+  private async refreshTransferAfterCandidateReview(args: StartTurnArgs, turnNumber: number) {
+    if (!this.memoryBranches || !this.memoryTransferDetect) return false
+    const chat = this.store.requireChat(args.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Transfer project is unavailable")
+    const transferId = this.store.getMessages(args.chatId).filter(message => message.kind === "memory_transfer").at(-1)?.transferId
+    const stage = await this.runTransferGate(args, { chat, project, turnNumber }, Promise.resolve(), { transferId, recompute: true })
+    return stage.decision === "cancelled"
+  }
+
+  private async assessWorkingMemory(args: StartTurnArgs, memories: MemoryItem[], mandatoryIds: string[]): Promise<RelevantMemory[]> {
+    if (!this.memoryBranches) return this.memoryRelevance?.assess(args.memoryUserText ?? args.content, memories, {
+      mustInclude: mandatoryIds, recentContext: this.recentConversationDigest(args.chatId),
+    }) ?? []
+    this.workingBranches.get(args.chatId)?.dispose()
+    const branch = this.newMemoryBranch(args, "working-memory")
+    this.workingBranches.set(args.chatId, branch)
+    const input = { task: args.memoryUserText ?? args.content, memories, mandatoryIds }
+    const raw = await branch.ask(buildWorkingMemoryBranchPrompt(input), { schema: memoryStageSchema("working-memory") })
+    const result = parseWorkingMemoryBranchResult(raw, input)
+    const expected = new Map(result.expectedUses.map(use => [use.id, use.expectedUse]))
+    return result.relevant.map(item => ({ ...item, expectedUse: expected.get(item.id) }))
+  }
+
+  private async reportWorkingMemoryFailure(chatId: string, previewId: string, revision: number) {
+    const pending = this.pendingPreviews.get(chatId)
+    if (pending?.previewId !== previewId || pending.revision !== revision) return
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "memory_preview_relevance", previewId, revision, relevant: [], expectedUses: [],
+      error: "Working-memory selection failed. Select the memories to use and confirm to retry their expected-use planning, or reopen preparation.",
+    }))
+    this.emitStateChange(chatId)
   }
 
   private hasPendingPreviewActivity(chatId: string) {
@@ -1945,7 +2114,7 @@ export class AgentCoordinator {
     const taskId = this.getActiveStudyTaskId()
     const isFormalMemoSync = this.policy.studyMode && this.policy.condition === "memosync" && Boolean(taskId)
     let effectiveIds = [...requestedIds]
-    if (isFormalMemoSync && command.decision === "go_on") {
+    if ((isFormalMemoSync || this.memoryBranches) && command.decision === "go_on") {
       if (!this.memory) throw new Error("Memory service is unavailable")
       const chat = this.store.requireChat(command.chatId)
       const previewPool = new Set(pending.memoryIds)
@@ -2002,7 +2171,7 @@ export class AgentCoordinator {
       }
 
       let authoritativeExpectedUses = command.expectedUses
-      if (isFormalMemoSync) {
+      if (isFormalMemoSync || this.memoryBranches) {
         authoritativeExpectedUses = command.decision === "go_on"
           ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
           : []
@@ -2012,7 +2181,7 @@ export class AgentCoordinator {
       pending.respond(
         command.decision,
         command.decision === "go_on"
-          ? isFormalMemoSync ? effectiveIds : command.memoryIds
+          ? isFormalMemoSync || this.memoryBranches ? effectiveIds : command.memoryIds
           : undefined,
         authoritativeExpectedUses,
         controlOperation,
@@ -2060,6 +2229,24 @@ export class AgentCoordinator {
       selectedIds: input.selectedIds.filter((id) => previewPool.has(id)),
     })
     return await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
+  }
+
+  async reviseMemoryPreview(input: { chatId: string; previewId: string; instruction: string; selectedIds: string[] }) {
+    const pending = this.pendingPreviews.get(input.chatId)
+    const branch = this.workingBranches.get(input.chatId)
+    if (!pending?.published || pending.previewId !== input.previewId || !branch) throw new Error("No matching working-memory branch")
+    const selected = new Set(input.selectedIds)
+    const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
+    const branchInput = { task: pending.task, memories: pending.memories, mandatoryIds }
+    const raw = await branch.ask([
+      'The developer is adjusting working memory. Continue in this same branch. Answer questions while preserving the selection; follow instructions about selection with minimal changes. Include a short reply field.',
+      `Current selection: ${JSON.stringify(input.selectedIds)}. Developer message: ${JSON.stringify(input.instruction)}`,
+      buildWorkingMemoryBranchPrompt(branchInput),
+    ].join('\n\n'), { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
+    if (this.pendingPreviews.get(input.chatId) !== pending) throw new Error("Working-memory preview changed during revision")
+    const result = parseWorkingMemoryBranchResult(raw, branchInput)
+    for (const use of result.expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
+    return { selectedIds: result.relevant.map(item => item.id), reply: typeof raw.reply === "string" ? raw.reply : "Updated working memory for this task." }
   }
 
   /** Return to Step 1 or Step 2 while the engine is still parked at preview. */
@@ -2790,6 +2977,27 @@ export class AgentCoordinator {
   }
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
+    const active = this.activeTurns.get(args.chatId)
+    if (this.memoryBranches && active) {
+      args.injectedMemories = active.memoryPlan?.injectedMemories.map(item => ({ ...item }))
+      args.expectedUses = this.turnExpectedUses.get(args.chatId)
+      args.model = active.model
+      args.effort = active.effort
+      args.serviceTier = active.serviceTier
+      const messages = this.store.getMessages(args.chatId)
+      const start = messages.findIndex(message => message._id === args.turnId)
+      const turnMessages = start >= 0 ? messages.slice(start + 1) : []
+      args.executionText = turnMessages.filter(message => message.kind === "tool_call" || message.kind === "tool_result")
+        .map(message => JSON.stringify(message)).join("\n")
+      args.executionTools = turnMessages.flatMap(message => {
+        if (message.kind === "tool_call") return [{ toolId: message.tool.toolId, text: JSON.stringify(message.tool) }]
+        if (message.kind === "tool_result") return [{ toolId: message.toolId, text: typeof message.content === "string" ? message.content : JSON.stringify(message.content) }]
+        return []
+      })
+      const chat = this.store.getChat(args.chatId)
+      args.sessionToken = chat?.sessionToken
+      args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
+    }
     if (args.engine !== "claude" || !args.taskId) {
       const run = () => this.runPostTurnMemoryPasses(args)
       void (this.policy.condition === "auto" && args.engine === "claude"
@@ -2989,6 +3197,9 @@ export class AgentCoordinator {
     // during the turn and never wait on either). Each pass keeps its own
     // error containment.
     const capturePass = async (): Promise<StudyMemoryQualityFlag[]> => {
+      // C reviews the completed trajectory with the next prompt. It already
+      // includes extraction and routing in a single forked conversation.
+      if (this.memoryBranches) return []
       if (!this.capture) return []
       try {
         const captureInput = {
@@ -3066,32 +3277,53 @@ export class AgentCoordinator {
     }
 
     const tracePass = async (): Promise<StudyMemoryQualityFlag[]> => {
-      if (!this.memoryTrace || args.memoryDisabled) return []
+      if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return []
       try {
         // "Used" = everything in play this turn: the BOOT-TIME injected
         // snapshot plus any extra memories the model cited (e.g. pulled in via
         // search_memory). Memories accepted mid-turn are not in play.
         const usedIds = [...new Set([...args.injectedIds, ...args.citedIds])]
+        const injectedById = new Map((args.injectedMemories ?? []).map(item => [item.id, item]))
         const usedMemories = usedIds
-          .map((id) => this.memory!.store.getById(id))
+          .map((id) => injectedById.get(id) ?? this.memory!.store.getById(id))
           .filter((m): m is MemoryItem => Boolean(m && m.status === "active"))
         if (usedMemories.length) {
-          // Audit skeleton (redesign 2026-08-07 §3): the pass can take up to
-          // 90s — the card appears immediately as "auditing…" and the final
-          // entry for the same turn supersedes this one at hydration.
+          // Publish the pending card before the bounded audit request; its
+          // final entry for the same turn supersedes it at hydration.
           await this.store.appendMessage(
             args.chatId,
             timestamped({ kind: "memory_trace", turn: args.turnNumber, status: "pending", labels: [] })
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
-          // Fork path first (user design 2026-08-05): ask the question on a
-          // fork of the finished session — cached prefix, full trajectory,
-          // zero main-context pollution. Any failure falls back to the
-          // sidecar; MEMOSYNC_TRACE_FORK=0 disables the fork entirely.
+          // MemoSync always uses a child of the completed conversation. The
+          // legacy path below retains its configured fork/sidecar policy.
           let outcome: TraceOutcome | null = null
           let tracedVia: "fork" | "sidecar" = "sidecar"
+          if (this.memoryBranches) {
+            const chat = this.store.requireChat(args.chatId)
+            const provider = args.engine as AgentProvider
+            const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
+            const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
+            try {
+              const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
+              try {
+                outcome = parseAuditBranchResult(raw, auditInput)
+              } catch (error) {
+                if (!(error instanceof MemoryBranchResultError)) throw error
+                const repaired = await branch.ask([
+                  `The audit response did not satisfy its required format: ${error.message}`,
+                  "Correct only the structured response using the evidence and analysis already in this conversation. Do not inspect more files or run a new analysis.",
+                  "Return every supplied memory ID exactly once. not_applicable requires a separate missing field; violated requires cause and impact. Use null for optional fields with no evidence. Never invent a verdict or evidence to fill a field.",
+                ].join("\n\n"), { schema: memoryStageSchema("audit"), budget: { maxTurns: 2, maxToolCalls: 0 } })
+                outcome = parseAuditBranchResult(repaired, auditInput)
+              }
+              tracedVia = "fork"
+            } finally { branch.dispose() }
+          }
           if (
+            !this.memoryBranches &&
             args.engine === "claude" &&
             args.claudeSessionToken &&
             args.localPath &&
@@ -3124,7 +3356,7 @@ export class AgentCoordinator {
           const labels = outcome.labels.filter((l) => {
             const now = this.memory!.store.getById(l.id)
             const snap = usedById.get(l.id)
-            return Boolean(now && snap && now.status === "active" && now.content === snap.content)
+            return Boolean(now && snap && now.status === "active" && now.version === snap.version && now.content === snap.content && now.detail === snap.detail)
           })
           const droppedIds = new Set(outcome.labels.map((l) => l.id).filter((id) => !labels.some((l) => l.id === id)))
           const summary =
@@ -3318,6 +3550,7 @@ export class AgentCoordinator {
 
     const qualityFlags = (await Promise.all([capturePass(), tracePass()])).flat()
     args.onStudyMeasurementSettled?.(qualityFlags)
+    if (this.memoryBranches) return
 
     const precomputeCheckup = async () => {
       // Checkup precomputation (user decision 2026-08-08, option B): compute
@@ -3659,6 +3892,7 @@ export class AgentCoordinator {
   }
 
   async shutdownStudyRuntime() {
+    for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
@@ -4551,14 +4785,18 @@ export class AgentCoordinator {
     // terminal handler attached to the detached task so a late rejection never
     // becomes unhandled; the shared phase signal wins the public gate race.
     if (!prep?.cancellation.signal.aborted) {
-      const captureTask = this.capture!.captureFromPrompt({
+      const captureInput = {
         projectId: ctx.project.id,
         sessionId: args.chatId,
         turn: ctx.turnNumber,
         engine: args.provider,
         userText: args.memoryUserText ?? args.content,
         signal: prep?.cancellation.signal,
-      }).then(
+      }
+      const branches = this.branchPreparations.get(args.chatId)
+      const captureTask = (branches
+        ? branches.pipeline.result("candidate").then(result => this.capture!.captureFromBranch!(result.raw, captureInput, result.dependencyKey))
+        : this.capture!.captureFromPrompt(captureInput)).then(
         () => ({ kind: "done" as const }),
         (error: unknown) => ({ kind: "error" as const, error }),
       )
@@ -4570,6 +4808,7 @@ export class AgentCoordinator {
         : await captureTask
       if (captureOutcome.kind === "error") {
         const error = captureOutcome.error
+        if (this.memoryBranches) throw error
         this.reportBackgroundError?.(
           `[memory-proposals] chat ${args.chatId} turn ${ctx.turnNumber}: ${error instanceof Error ? error.message : String(error)}`,
         )
@@ -4749,6 +4988,7 @@ export class AgentCoordinator {
 
     const proposalsDecision = await this.parkExistingProposalsGate(args, ctx, proposalsId)
     if (proposalsDecision === "cancelled") return { cancelled: true, revision }
+    if (await this.refreshTransferAfterCandidateReview(args, ctx.turnNumber)) return { cancelled: true, revision }
 
     await this.store.appendMessage(
       args.chatId,
@@ -4942,10 +5182,10 @@ export class AgentCoordinator {
     stepOneSettled: Promise<unknown> | null,
     options?: { transferId?: string; recompute?: boolean },
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled"; transferId: string }> {
-    const existingMessages = args.openingReview ? this.store.getMessages(args.chatId) : []
+    const existingMessages = args.openingReview || options?.transferId ? this.store.getMessages(args.chatId) : []
     const existingParent = existingMessages.filter(
       (message): message is Extract<TranscriptEntry, { kind: "memory_transfer" }> =>
-        message.kind === "memory_transfer" && message.openingReviewId === args.openingReview?.reviewId,
+        message.kind === "memory_transfer" && (options?.transferId ? message.transferId === options.transferId : message.openingReviewId === args.openingReview?.reviewId),
     ).at(-1)
     const transferId = options?.transferId ?? existingParent?.transferId ?? crypto.randomUUID()
     if (existingParent && !options?.recompute) {
@@ -4987,7 +5227,7 @@ export class AgentCoordinator {
     }
     // A fresh transfer stage starts a fresh landing set — the preview badge
     // reflects THIS turn's accepts only.
-    this.memory?.clearTransferLandings(args.chatId)
+    if (!options?.recompute) this.memory?.clearTransferLandings(args.chatId)
     const taskCtx = {
       projectId: ctx.project.id,
       sessionId: args.chatId,
@@ -5089,6 +5329,11 @@ export class AgentCoordinator {
     searched = this.memoryTransferDetect!.hasSourceCandidates(taskCtx)
     maybePublishShell()
     const computeTask = async (): Promise<TransferTaskResult | null> => {
+      const branches = this.branchPreparations.get(args.chatId)
+      if (branches) {
+        await branches.pipeline.result("transfer")
+        return null // Materialize after Candidate review against its approved store.
+      }
       // Cold start and an overlapping turn-end preparation converge here;
       // the detector shares identical in-flight Encode work.
       await this.memoryTransferDetect!.prepareSources(taskCtx)
@@ -5160,6 +5405,13 @@ export class AgentCoordinator {
     // the same flag; the caller's finally clears it.
     if (this.cancelledDuringPreview.has(args.chatId)) return settleCancelledScan()
 
+    if (this.memoryBranches) {
+      const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
+      const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate review", request.dependencyKey)
+      result = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
+      if (!result) throw new Error("Memory transfer dependencies changed during review; prepare this turn again")
+    }
+
     // Candidate and Transfer relevance ran in parallel. Candidate decisions
     // are now settled, so refresh only landing if their active target pool
     // actually changed; the prompt's relevance selection remains fixed.
@@ -5177,7 +5429,13 @@ export class AgentCoordinator {
             | { kind: "result"; value: TransferTaskResult }
             | { kind: "error"; error: unknown }
             | { kind: "cancelled" } = await Promise.race([
-            this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress }).then(
+            (this.memoryBranches ? (async () => {
+              const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
+              const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey)
+              const fresh = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
+              if (!fresh) throw new Error("Memory transfer dependencies changed")
+              return fresh
+            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress })).then(
               (value) => ({ kind: "result" as const, value }),
               (error: unknown) => ({ kind: "error" as const, error }),
             ),
@@ -5434,7 +5692,16 @@ export class AgentCoordinator {
         }
         this.emitStateChange(args.chatId, { immediate: true })
       }
-      result = await this.memoryCheckup!.run(checkupCtx)
+      if (this.memoryBranches) {
+        const request = this.memoryCheckup!.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
+          ?? this.memoryCheckup!.buildForkPrompt!(checkupCtx)
+        const prepared = await this.continueMemoryBranch(args.chatId, "changes", "Transfer and memory review", request?.dependencyKey ?? "")
+        const checked = await this.memoryCheckup!.primeFromBranchResult!(checkupCtx, prepared.dependencyKey, prepared.raw)
+        if (!checked) throw new Error("Memory change dependencies changed during analysis")
+        result = checked
+      } else {
+        result = await this.memoryCheckup!.run(checkupCtx)
+      }
     } catch (error) {
       this.reportBackgroundError?.(
         `[memory-checkup] chat ${args.chatId} turn ${ctx.turnNumber}: ${error instanceof Error ? error.message : String(error)}`,
@@ -5528,6 +5795,7 @@ export class AgentCoordinator {
         decision: analysisFailed ? "failed" : "clear",
       })
       this.emitStateChange(args.chatId)
+      if (analysisFailed && this.memoryBranches) throw new Error("Memory-change analysis failed. Retry preparation before running the coding agent.")
       return { decision: "none", checkupId }
     }
 
@@ -5661,6 +5929,7 @@ export class AgentCoordinator {
       if (from === "proposals") {
         const decision = await this.parkExistingProposalsGate(args, input.ctx, input.proposalsId!)
         if (decision === "cancelled") return
+        if (await this.refreshTransferAfterCandidateReview(args, input.ctx.turnNumber)) return
 
         // Step 1 settled again. Step 2 now changes from "waiting" to the
         // shared result; Checkup recomputes only when its dependencies changed.
@@ -5838,12 +6107,28 @@ export class AgentCoordinator {
   ): Promise<ExpectedMemoryUse[]> {
     const allowed = new Set(pending.memoryIds)
     const selected = [...new Set(selectedIds)].filter((id) => allowed.has(id))
+    if (this.memoryBranches) {
+      for (const id of selected) {
+        const snapshot = pending.memories.find(item => item.id === id)
+        const current = this.memory?.store.getById(id)
+        if (!snapshot || !current || current.status !== "active" || current.version !== snapshot.version || current.content !== snapshot.content || current.detail !== snapshot.detail) {
+          throw new Error("Working memory changed during review. Reopen preparation to review the updated items.")
+        }
+      }
+    }
     const missing = selected.filter((id) => !pending.expectedUseById.has(id))
     if (missing.length) {
       let planned: ExpectedMemoryUse[] = []
       try {
-        planned = await this.planExpectedMemoryUses(pending.task, pending.memories, missing)
-      } catch {
+        const branch = pending.chatId ? this.workingBranches.get(pending.chatId) : undefined
+        if (this.memoryBranches) {
+          if (!branch) throw new Error("Working-memory branch is unavailable; reopen memory preparation")
+          const input = { task: pending.task, memories: pending.memories.filter(item => selected.includes(item.id)), mandatoryIds: selected }
+          const raw = await branch.ask(`The developer confirmed these items. Continue your selection analysis and provide an expected use for each.\n${buildWorkingMemoryBranchPrompt(input)}`, { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
+          planned = parseWorkingMemoryBranchResult(raw, input).expectedUses
+        } else planned = await this.planExpectedMemoryUses(pending.task, pending.memories, missing)
+      } catch (error) {
+        if (this.memoryBranches) throw error
         // A preview decision must not fail because the optional planner is
         // unavailable. The fallback remains server-authored and deterministic.
       }
@@ -5888,10 +6173,11 @@ export class AgentCoordinator {
     const { args, ctx, previewId, revision } = input
     const memoryIds = ctx.injected.map((memory) => memory.id)
     const attentionIds = (this.turnPayAttention.get(args.chatId) ?? []).map((e) => e.id).filter((id) => memoryIds.includes(id))
-    const willAssessRelevance = Boolean(this.memoryRelevance) && ctx.injected.length > 0
+    const willAssessRelevance = (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
 
     this.turnExpectedUses.delete(args.chatId)
     const pending: PendingMemoryPreview = {
+      chatId: args.chatId,
       previewId,
       revision,
       published: false,
@@ -5972,13 +6258,11 @@ export class AgentCoordinator {
         )
         this.emitStateChange(args.chatId)
       }
-      void this.memoryRelevance!
-        .assess(userText, ctx.injected, {
-          mustInclude: attentionIds,
-          recentContext: this.recentConversationDigest(args.chatId),
-        })
+      void this.assessWorkingMemory(args, ctx.injected, attentionIds)
         .then(settle)
-        .catch(() => settle([]).catch(() => {}))
+        .catch(() => this.memoryBranches
+          ? this.reportWorkingMemoryFailure(args.chatId, previewId, revision)
+          : settle([]).catch(() => {}))
     }
   }
 
@@ -6094,12 +6378,23 @@ export class AgentCoordinator {
           reopened: false,
           cancellation: createMemoryPreparationCancellation(),
         })
+        this.startMemoryBranches(args, ctx)
         const proposalsRun =
           this.capture && this.policy.capture === "review"
             ? this.runProposalsGate(args, ctx, recomputeProposals
                 ? { proposalsId, recompute: true }
                 : undefined)
             : null
+        if (this.memoryBranches) {
+          // M incorporates Candidate decisions while T is still being reviewed.
+          void (proposalsRun ?? Promise.resolve()).then(() => {
+            if (this.cancelledDuringPreview.has(args.chatId)) return
+            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId }
+            const request = this.memoryCheckup?.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
+              ?? this.memoryCheckup?.buildForkPrompt?.(checkupCtx)
+            return this.continueMemoryBranch(args.chatId, "changes", "Candidate review", request?.dependencyKey ?? "")
+          }).catch(() => {})
+        }
         const transferRun =
           this.memoryTransferDetect && this.policy.capture === "review"
             ? this.runTransferGate(
@@ -6131,7 +6426,10 @@ export class AgentCoordinator {
             const decision = await prep.reparks.shift()!
             if (decision === "cancelled") return
           }
-          if (prep?.reopened) stepOneTouched = true
+          if (prep?.reopened) {
+            stepOneTouched = true
+            if (await this.refreshTransferAfterCandidateReview(args, ctx.turnNumber)) return
+          }
         }
         const completedPreparation = this.activePreparations.get(args.chatId)
         this.activePreparations.delete(args.chatId)
@@ -6189,7 +6487,7 @@ export class AgentCoordinator {
         // Changes accepted/resolved at the gates are effective NOW — recompute
         // the plan so the injection receipt (and the boot) carry them this
         // same turn (the causal chain the design demands).
-        if (stepOneTouched) {
+        if (stepOneTouched || this.memoryBranches) {
           ctx = {
             ...ctx,
             injected: planMemoryInjection({
@@ -6262,6 +6560,7 @@ export class AgentCoordinator {
         // "No matching pending memory preview".
         if (!autoProceed) {
           const pending: PendingMemoryPreview = {
+            chatId: args.chatId,
             previewId,
             revision: 0,
             published: false,
@@ -6308,7 +6607,7 @@ export class AgentCoordinator {
           this.pendingPreviews.set(args.chatId, pending)
           gated = true
         }
-        const willAssessRelevance = !autoProceed && Boolean(this.memoryRelevance) && ctx.injected.length > 0
+        const willAssessRelevance = !autoProceed && (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
         await this.store.appendMessage(
           args.chatId,
           timestamped({
@@ -6367,13 +6666,11 @@ export class AgentCoordinator {
             )
             this.emitStateChange(args.chatId)
           }
-          void this.memoryRelevance!
-            .assess(userText, ctx.injected, {
-              mustInclude: attentionIds,
-              recentContext: this.recentConversationDigest(args.chatId),
-            })
+          void this.assessWorkingMemory(args, ctx.injected, attentionIds)
             .then(settle)
-            .catch(() => settle([]).catch(() => {}))
+            .catch(() => this.memoryBranches
+              ? this.reportWorkingMemoryFailure(args.chatId, previewId, 0)
+              : settle([]).catch(() => {}))
         }
         if (autoProceed) {
           // Stop can land during the preview-entry append here too — an
@@ -6427,7 +6724,7 @@ export class AgentCoordinator {
           this.pendingPreviews.delete(args.chatId)
           return
         }
-        if (args.openingReview) {
+        if (args.openingReview || this.memoryBranches) {
           // The opening Board is an admission barrier, not an optional preview
           // enhancement. A failed durable phase transition must reach the
           // detached outer failure recorder; booting here would bypass the
@@ -6452,6 +6749,7 @@ export class AgentCoordinator {
     } catch (error) {
       // The turn is detached from any chat.send ack here — record the failure
       // in the transcript the way the engine loops do.
+      this.restoreUndeliveredEnforcement(args.chatId)
       const message = error instanceof Error ? error.message : String(error)
       try {
         await this.store.appendMessage(
@@ -6473,6 +6771,7 @@ export class AgentCoordinator {
       this.cancelledDuringPreview.delete(args.chatId)
       // Resolve Stop only after every public busy/freeze guard is gone.
       activePreparation?.cancellation.settle()
+      if (!this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) this.disposeMemoryBranches(args.chatId)
     }
   }
 
@@ -6527,6 +6826,8 @@ export class AgentCoordinator {
       if (decision !== "go_on") this.turnExpectedUses.delete(args.chatId)
 
       if (decision === "dismiss") {
+        this.restoreUndeliveredEnforcement(args.chatId)
+        this.disposeMemoryBranches(args.chatId)
         await this.store.recordTurnCancelled(args.chatId)
         if (ctx.controlOperation) {
           try {
@@ -6570,6 +6871,7 @@ export class AgentCoordinator {
         }
       }
     } catch (error) {
+      this.restoreUndeliveredEnforcement(args.chatId)
       if (ctx.controlOperation) {
         try {
           this.memory?.logger.event({
@@ -6624,6 +6926,7 @@ export class AgentCoordinator {
     }
   ) {
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
+    this.disposeMemoryBranches(args.chatId)
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
 
@@ -6724,7 +7027,7 @@ export class AgentCoordinator {
       // DECLARATIONS are thread-level and persist across turns by protocol, but
       // with no dispatch handler a call this turn is a no-op.)
       const codexMemorySpecs =
-        this.memory && this.policy.memoryTools && !memoryDisabledForTurn
+        this.memory && this.policy.memoryTools
           ? buildMemoryToolSpecs(this.memory, {
               capture: this.capture,
               onProposed: (created, info) => {
@@ -6748,7 +7051,17 @@ export class AgentCoordinator {
               },
             })
           : []
-      const codexMemoryBlock = codexPlan?.block ?? ""
+      const codexSelected = new Set(codexPlan?.injectedMemories.map(item => item.id) ?? [])
+      const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => codexSelected.has(use.id))
+      const enforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => codexSelected.has(item.id))
+      const codexMemoryBlock = [
+        codexPlan?.block ?? "",
+        expectedUses.length ? `How the selected memories are expected to guide this turn:\n${expectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
+        ...enforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
+        args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
+        args.resume?.enforce ? `ENFORCED THIS RUN: [${args.resume.memoryId}] MUST be followed. ${args.resume.correction}` : "",
+      ].filter(Boolean).join("\n\n")
+      if (args.resume?.enforce && !codexSelected.has(args.resume.memoryId)) throw new Error("The enforced memory is no longer in Working Memory")
       if (this.memory && codexPlan && codexMemoryBlock) {
         this.memory.logger.event({
           type: "memory.inject",
@@ -6760,11 +7073,14 @@ export class AgentCoordinator {
           staticFiles: codexPlan.staticFiles.length ? codexPlan.staticFiles : undefined,
         })
       }
-      const onDynamicToolCall = codexMemorySpecs.length
+      const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
+              turn: turnNumber,
+              engine: "codex",
+              allowedMemoryIds: codexPlan?.injectedMemories.map(item => item.id) ?? [],
             })
             return { text: r.text, isError: r.isError }
           }
@@ -6797,6 +7113,8 @@ export class AgentCoordinator {
         developerInstructions: codexMemoryBlock || undefined,
         onDynamicToolCall,
       })
+      this.turnPayAttention.delete(args.chatId)
+      args.onMemoryDeliveryAccepted?.(codexPlan?.injectedMemories.map(item => item.id) ?? [])
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,
@@ -6830,6 +7148,7 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
+      memoryDeliveryAccepted: args.provider === "codex",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
@@ -6925,7 +7244,6 @@ export class AgentCoordinator {
         const payAttention = (this.turnPayAttention.get(args.chatId) ?? []).filter(
           (e) => turnRestrictionForEnforce === undefined || turnRestrictionForEnforce.includes(e.id),
         )
-        this.turnPayAttention.delete(args.chatId)
         if (payAttention.length) {
           reminderParts.push(
             payAttention
@@ -6969,8 +7287,9 @@ export class AgentCoordinator {
               `continue from where it stopped.${selectionNote} Participant correction: ${resumeCtx.correction}`,
           )
         }
-        const expectedUses = this.turnExpectedUses.get(args.chatId)
-        this.turnExpectedUses.delete(args.chatId)
+        const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => deliveredFocusIds.includes(use.id))
+        if (this.memoryBranches) this.turnExpectedUses.set(args.chatId, expectedUses)
+        else this.turnExpectedUses.delete(args.chatId)
         if (expectedUses?.length) {
           deliveredExpectedUses = expectedUses
           const detailIds = this.policy.memoryTools
@@ -7052,6 +7371,7 @@ export class AgentCoordinator {
       }
       try {
         await session.session.sendPrompt(promptText, {
+          allowedMemoryIds: deliveredFocusIds,
           turn: active.turnNumber ?? turnNumber,
           engine: "claude",
           promptSeq,
@@ -7084,7 +7404,10 @@ export class AgentCoordinator {
         this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
       }
       if (nextMemoryBaseline) session.memoryBaseline = nextMemoryBaseline
+      active.memoryDeliveryAccepted = true
+      this.turnPayAttention.delete(args.chatId)
       active.injectedIds = deliveredFocusIds
+      if (active.memoryPlan) active.memoryPlan = { ...active.memoryPlan, injectedMemories: deliveredFocusedMemories.map(item => ({ ...item })) }
       args.onMemoryDeliveryAccepted?.([...deliveredFocusIds])
       if (this.memory && (this.policy.condition === "memosync" || this.policy.condition === "auto")) {
         try {
@@ -7175,6 +7498,18 @@ export class AgentCoordinator {
     await this.prepareStudyProjectRuntime(args.localPath)
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
+    const subprocessEnv = buildClaudeSubprocessEnv({
+      localPath: args.localPath,
+      rawStudyProjects: this.policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
+    })
+    const runtimeEnv: Record<string, string | undefined> = buildClaudeSdkRuntimeOptions({ requestedModel: args.model, env: subprocessEnv }).env
+    // Endpoint, credentials and profile belong to the subprocess. setModel()
+    // cannot migrate any of them when the user switches vendors.
+    const providerRuntimeKey = String(Bun.hash(JSON.stringify([
+      runtimeEnv.ANTHROPIC_BASE_URL ?? "official",
+      runtimeEnv.ANTHROPIC_API_KEY, runtimeEnv.ANTHROPIC_AUTH_TOKEN,
+      runtimeEnv.CLAUDE_CONFIG_DIR,
+    ])))
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
     // mode/tools flips (arm switch), and plain/file CONTENT changes — those
@@ -7202,6 +7537,7 @@ export class AgentCoordinator {
       session.localPath !== args.localPath ||
       session.effort !== args.effort ||
       session.memorySetHash !== desiredMemoryHash ||
+      session.providerRuntimeKey !== providerRuntimeKey ||
       args.forkSession
     ) {
       let resumeToken = session?.sessionToken ?? args.sessionToken
@@ -7235,10 +7571,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         policy: this.policy,
         studyPreviewRuntime: this.studyPreviewRuntime,
-        subprocessEnv: buildClaudeSubprocessEnv({
-          localPath: args.localPath,
-          rawStudyProjects: this.policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
-        }),
+        subprocessEnv,
         memoryPlan: turnPlan,
         restrictMemoryIds: args.restrictMemoryIds,
         // Redesign 2026-08-07 §3: agent-channel proposals park in the store
@@ -7283,6 +7616,7 @@ export class AgentCoordinator {
         retireReason: null,
         pump: null,
         memorySetHash: desiredMemoryHash,
+        providerRuntimeKey,
         memoryBaseline:
           bootPlan?.mode === "skills"
             ? new Map(bootPlan.bakedMemories.map((m) => [m.id, m.version]))
@@ -7907,13 +8241,13 @@ export class AgentCoordinator {
     }
   }
 
-  private assertMemoSyncClaudeControl(chatId: string): void {
+  private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
     // Per-memory interrupt/resume is a memosync-condition Claude feature. It is
     // available in the normal deployment (studyMode false) and in the memosync
     // study arm alike — but never in the auto/static baseline arms or on Codex.
-    if (this.policy.condition !== "memosync" || chat.provider !== "claude") {
-      throw new Error("Per-memory interrupt is only available on the MemoSync Claude engine")
+    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || chat.provider !== "codex"))) {
+      throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
 
@@ -7928,10 +8262,10 @@ export class AgentCoordinator {
    */
   async interruptMemory(args: { chatId: string; memoryId: string; quote?: string }) {
     const { chatId, memoryId } = args
-    this.assertMemoSyncClaudeControl(chatId)
+    this.assertMemoSyncControl(chatId)
     const active = this.activeTurns.get(chatId)
-    if (!active || active.provider !== "claude") {
-      throw new Error("A MemoSync Claude turn must be running before a memory can interrupt it")
+    if (!active) {
+      throw new Error("A MemoSync turn must be running before a memory can interrupt it")
     }
     // Snapshot BEFORE cancel(): it tears down the active turn and drops the
     // streaming text this attribution is built from.
@@ -8005,7 +8339,7 @@ export class AgentCoordinator {
     enforce?: boolean
   }) {
     const { chatId } = args
-    this.assertMemoSyncClaudeControl(chatId)
+    this.assertMemoSyncControl(chatId)
     if (this.activeTurns.has(chatId)) throw new Error("A turn is already running")
     const messages = this.store.getMessages(chatId)
     const entry = messages.find(
@@ -8066,7 +8400,8 @@ export class AgentCoordinator {
     }
 
     const provider = (chat.provider ?? "claude") as AgentProvider
-    const settings = this.getProviderSettings(provider, {} as SendMessageOptions)
+    const lastModel = messages.filter(message => message.kind === "system_init").at(-1)?.model
+    const settings = this.getProviderSettings(provider, { model: lastModel })
     let deliveryAccepted = false
     let deliveredSelectedIds: string[] = []
     await this.startTurnForChat({
@@ -8095,7 +8430,7 @@ export class AgentCoordinator {
       },
     })
     if (!deliveryAccepted) {
-      throw new Error("Claude did not accept the interrupt recovery delivery")
+      throw new Error("The coding agent did not accept the interrupt recovery delivery")
     }
     // The recovery decision becomes durable only after Claude accepted the
     // continuation. A failed provider boot therefore leaves the card open and
@@ -8122,6 +8457,8 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    this.restoreUndeliveredEnforcement(chatId)
+    this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind
     // below may take a moment and the partial must not linger as if live.
     this.clearStreamingAssistantText(chatId)

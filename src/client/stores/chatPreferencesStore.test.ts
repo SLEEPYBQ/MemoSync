@@ -12,7 +12,18 @@ afterEach(() => {
 })
 
 describe("migrateChatPreferencesState", () => {
-  test("migrates versioned Opus preferences to DeepSeek Pro", () => {
+  test("preserves isolated Codex provider models across a reload", () => {
+    const migrated = migrateChatPreferencesState({
+      providerDefaults: { codex: { model: "glm-5.3-flash" } },
+      composerState: { provider: "codex", model: "glm-5.3-flash" },
+      chatStates: { existing: { provider: "codex", model: "glm-5.3-flash" } },
+    })
+    expect(migrated.providerDefaults.codex.model).toBe("glm-5.3-flash")
+    expect(migrated.legacyComposerState?.model).toBe("glm-5.3-flash")
+    expect(migrated.chatStates.existing?.model).toBe("glm-5.3-flash")
+  })
+
+  test("migrates versioned Opus preferences to the official Opus alias", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -25,7 +36,7 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.claude).toEqual({
-      model: "deepseek-v4-pro",
+      model: "opus",
       modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
       planMode: false,
     })
@@ -58,7 +69,7 @@ describe("migrateChatPreferencesState", () => {
       defaultProvider: "last_used",
       providerDefaults: {
         claude: {
-          model: "deepseek-v4-pro",
+          model: "opus",
           // Legacy "low" tier no longer exists — falls back to the default.
           modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
           planMode: true,
@@ -72,9 +83,8 @@ describe("migrateChatPreferencesState", () => {
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
-        model: "deepseek-v4-flash",
-        // V4 Flash now supports max, so the stored "max" survives migration.
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        model: "sonnet",
+        modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
         planMode: false,
       },
     })
@@ -225,7 +235,7 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "deepseek-v4-flash",
+      model: "sonnet",
       // "low" is not a DeepSeek tier — normalized to the "high" default.
       modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
       planMode: true,

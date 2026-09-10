@@ -87,6 +87,7 @@ export interface DeliveredFocusEvent {
 
 /** Discriminated union of logged events (extend as new signals are wired). */
 export type ExperimentEvent =
+  | { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
   | {
       type: "study.control_operation"
       operationId: string

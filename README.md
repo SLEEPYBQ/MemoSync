@@ -92,7 +92,7 @@ Before a turn starts, MemoSync presents three review steps for proposed changes 
   <img src="docs/figures/execution.png" alt="Tracing and interrupting memory application" width="960" />
 </p>
 
-As the reply streams, every place the agent applies a memory item carries an inline citation. Hover a citation for the item's content, scope, version, and usage count. Every citation includes a **Stop** control: press it when the agent does the opposite of what the item says, and the turn stops at that sentence. A recovery card quotes the sentence and asks what should have happened; write the correction, optionally tick **Enforce for this resumed run**, and the agent resumes from where it stopped. The corrected content is stored back to the item.
+As the reply streams, the agent is instructed to cite each memory it applies. Hover a citation for the item's content, scope, version, and usage count. Every citation includes a **Stop** control: press it when the agent does the opposite of what the item says, and execution is interrupted. A recovery card quotes the sentence and asks what should have happened; write the correction, optionally tick **Enforce for this resumed run**, and the agent continues in the same main session. Use the item's Save control to retain corrected memory content.
 
 ### 4 · Impact — audit memory use and enforce a rule
 
@@ -121,24 +121,24 @@ The **Memory Record** in the sidebar lists, for each turn of a session, what was
 - **Independent post-turn audit** with four verdicts and source tags (audit-found / self-reported).
 - **Memory Board + Memory files** — drag-to-rescope, search, archive/restore, Markdown projection that syncs both ways, import of existing config files.
 - **Memory Record** — a per-turn ledger that survives context compaction.
-- **Cache-friendly injection** — memory rides the session as a stable snapshot plus per-turn deltas, so editing memories never rebuilds the agent's prompt cache.
-- **Model choice per chat** — DeepSeek V4 Flash / V4 Vision / V4 Pro, optionally GLM-5.3-Flash, with a thinking-strength switch.
+- **Stable session injection** — confirmed memory rides the session as a snapshot plus per-turn deltas, so memory edits can take effect without restarting the conversation.
+- **Claude Code and Codex engines** — official CLI subscriptions or isolated GLM testing; memory reasoning forks from the chosen engine's conversation. Claude Code also offers DeepSeek and per-chat vendor selection.
 - **A full coding workbench underneath** — project-first sidebar, plan mode, rich transcript rendering, embedded terminal, file and git panels, session resumption, local-first persistence.
 
 ## Quickstart
 
-Requirements: [Bun](https://bun.sh) 1.3.5 or newer, and a DeepSeek API key from [platform.deepseek.com](https://platform.deepseek.com). No Claude Code install or login is needed — MemoSync bundles the agent runtime and points it at DeepSeek's Anthropic-compatible endpoint.
+Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile.
 
 ```bash
 git clone <this repository> MemoSync
 cd MemoSync
 bun install
-cp .env.example .env      # then set DEEPSEEK_API_KEY
+cp .env.example .env      # then set GLM_API_KEY for isolated testing
 bun run build
 bun run start
 ```
 
-MemoSync opens at [`localhost:3210`](http://localhost:3210). Add a project folder, send a message, and the first review cards appear before the agent's first turn.
+MemoSync opens at [`localhost:3210`](http://localhost:3210). For GLM, choose **Claude Code → GLM**, or **Codex** (the isolated configuration supplies its GLM model). Add a project folder and send a message to prepare the first memory review.
 
 If Bun is not installed:
 
@@ -154,18 +154,39 @@ All configuration is read from `.env` in the project directory (see [`.env.examp
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | — | **Required.** Runs both the chat engine and the memory passes. |
+| `DEEPSEEK_API_KEY` | — | Optional DeepSeek credential for the Claude Code engine. |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Default chat model; each chat can switch to `deepseek-v4-flash-vision-exp` or `deepseek-v4-pro` in the picker. |
 | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Override for proxies or compatible endpoints. |
 | `PORT` | `3210` | HTTP port. |
-| `GLM_API_KEY` | — | Optional. Enables GLM-5.3-Flash in the picker; only chats that pick a GLM model use it. |
+| `GLM_API_KEY` | — | GLM credential for Claude Code and isolated Codex sessions; their memory branches inherit the same provider. |
+| `GLM_MODEL` | `glm-5.3-flash` | GLM model for isolated helper calls and the default isolated Codex configuration. |
 | `GLM_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` | GLM endpoint (`https://api.z.ai/api/anthropic` for the international service). |
+| `GLM_CODEX_BASE_URL` | `https://open.bigmodel.cn/api/v1` | GLM's Codex Responses endpoint; separate from its Chat Completions endpoint. |
+| `MEMOSYNC_ISOLATE_CLI` | unset | Set to `1` to isolate both CLI profiles and require explicit API credentials. The example configuration enables this. |
+| `MEMOSYNC_CLI_PROFILE_DIR` | MemoSync data root `/cli-profiles` | Optional absolute profile root; also enables isolation. Main sessions and forks share their engine's subdirectory. |
+| `MEMOSYNC_CODEX_PROVIDER` | `glm` when `GLM_API_KEY` is set | Isolated Codex provider: `glm` or `custom`. |
+| `MEMOSYNC_CODEX_MODEL` | GLM model above | Explicit model for isolated Codex. Legacy `CODEX_MODEL` is also accepted. |
+| `MEMOSYNC_CODEX_API_KEY`, `MEMOSYNC_CODEX_BASE_URL` | — | Explicit key and Responses endpoint for isolated `custom` Codex; also set `MEMOSYNC_CODEX_MODEL`. |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `786432` | Token count at which the engine auto-compacts the conversation. MemoSync selects the 1M context window on every DeepSeek session; a "Context compacted" marker appears in the transcript when compaction happens. |
 | `MEMOSYNC_USE_OWN_ANTHROPIC` | — | Set to `1` to run the chat engine on your own exported `ANTHROPIC_*` variables (a real Anthropic key or another Anthropic-compatible endpoint) instead of the derived DeepSeek bundle. |
 
 With `DEEPSEEK_API_KEY` set, MemoSync derives the whole `ANTHROPIC_*` bundle itself and ignores leftover `ANTHROPIC_*` / `CLAUDE_CODE_*` exports from other Claude Code setups in your shell, so a stray `ANTHROPIC_BASE_URL` cannot hijack the engine.
 
-The chat model picker is two-level: choose a vendor on the left (DeepSeek, GLM) and a model on the right. Thinking strength (High / Max) is set per chat.
+The composer exposes an engine picker and, for Claude Code, a vendor picker (DeepSeek, GLM, Anthropic). For official Claude subscriptions choose an Anthropic model; the `sonnet` and `opus` aliases resolve in the installed Claude runtime. Leave `MEMOSYNC_ISOLATE_CLI` and `MEMOSYNC_CLI_PROFILE_DIR` unset when using existing official subscriptions. Study deployments retain their single configured Claude model.
+
+Isolated mode gives child processes separate `CLAUDE_CONFIG_DIR` and `CODEX_HOME` directories without changing the server's `HOME`, shell settings, `~/.claude`, or `~/.codex`. It strips inherited OAuth and provider routing variables. Codex receives a provider definition through process arguments and a key through an environment variable, with an ephemeral credential store; no credential is written to a Codex config or auth file. Missing explicit credentials fail rather than use your normal login. Claude memory branches and title helpers use the same isolation rules.
+
+For a live check of both engines, export `GLM_API_KEY` in the current shell and run:
+
+```bash
+bun run scripts/smoke-isolated-branches.ts
+```
+
+The check creates a temporary workspace and profile, exercises three parallel forks, review continuation, working-memory selection, main-context isolation, and post-turn audit, then removes its temporary files. Add `claude` or `codex` to test one engine. Provider calls use the configured GLM account.
+
+`bun run scripts/smoke-memosync-pipeline.ts claude` exercises the complete application coordinator with the real memory prompts and parsers across two turns, automatically reviewing the test proposals. Use `codex` for the other engine. Both checks isolate all CLI state in a temporary profile; the full pipeline check has a ten-minute limit.
+
+The GLM endpoints and Claude `[1m]` selector follow the [GLM model guide](https://docs.bigmodel.cn/cn/coding-plan/latest-model). CLI profile behavior is documented in the [Claude environment reference](https://code.claude.com/docs/en/env-vars) and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
 
 ## Command line
 
@@ -182,10 +203,10 @@ bun run export-data [--full]   # bundle local data into a tar.gz (see below)
 ## How it is built
 
 - **Stack.** React 19 + TypeScript on the client, Bun on the server. Memory items and their histories live in SQLite; projects, chats, and transcripts are append-only JSONL logs with snapshot compaction.
-- **Agent runtime.** The coding agent is the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) (which bundles Claude Code), driven through its `query()` interface with an asynchronous prompt queue, session fork handles, system prompts, MCP servers, and tool permissions. MemoSync points it at DeepSeek's Anthropic-compatible endpoint, selects the 1M-token context window, and keeps auto-compaction on so long sessions keep going.
+- **Agent runtime.** Claude Code runs through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) `query()` interface with an asynchronous prompt queue. Codex runs through the [Codex app-server](https://developers.openai.com/codex/app-server/) protocol with native thread creation, resume, fork, dynamic tools, and per-turn developer instructions. Both support official authentication or the isolated provider profile described above.
 - **Memory tools.** The agent sees the memory store through an MCP server: `load_memory_detail` fetches an item's detailed form on demand and `propose_memory` lets the agent nominate a candidate mid-turn (it still goes through your review).
-- **Memory passes without a second model.** Candidate extraction, transfer encoding/decoding, conflict/redundancy/staleness checks, expected-use statements, and the post-turn audit run on a **fork of the live session** using the SDK's fork mechanism. Forks share the main session's context prefix, so they benefit from prompt caching and see the whole project context. When no session exists to fork (for example before the first turn), a pass falls back to a direct DeepSeek JSON call with the same key.
-- **Cache-friendly injection.** The memory block rides the session as a stable snapshot plus small per-turn deltas, so editing an item never invalidates the agent's prompt cache.
+- **Parallel memory branches.** Candidate extraction (C), transfer (T), and memory changes (M) start together. Candidate decisions continue T and M in their existing conversations; transfer decisions continue M. A further branch selects working memory and writes expected uses after approved changes reach the store. An audit branch judges the completed turn, including uncited tool evidence. MemoSync has no direct-API fallback: every memory model call uses the chosen CLI runtime. Before the first main turn is persisted, branches explicitly start with empty history because Claude cannot fork an unpersisted session. [Implementation and validation details](docs/MEMORY_BRANCHES.md).
+- **Confirmed memory injection.** Only confirmed items enter the main Memory Block and detail-tool allowlist. Claude keeps its session and updates selections through deltas; Codex receives the selected block and expected uses through per-turn developer instructions. Branch analysis transcripts stay out of the main conversation. Provider cache reuse depends on the runtime and provider; no latency saving is assumed.
 - **Local-first.** Everything is stored under `~/.memosync/data/`; there is no server component beyond the local Bun process.
 
 ```

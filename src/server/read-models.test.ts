@@ -202,13 +202,14 @@ describe("read models", () => {
     expect(streaming?.runtime.streamingText).toBe("typing this out")
     expect(chat?.queuedMessages.map((message) => message.content)).toEqual(["follow up"])
     expect(chat?.history.recentLimit).toBe(200)
-    // Claude-only deployment: snapshots advertise exactly the DeepSeek engine.
-    expect(chat?.availableProviders.map((provider) => provider.id)).toEqual(["claude"])
+    expect(chat?.availableProviders.map((provider) => provider.id)).toEqual(["claude", "codex"])
     expect(chat?.availableProviders[0]?.models.map((model) => model.id)).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp",
       "deepseek-v4-pro",
       "glm-5.3-flash",
+      "sonnet",
+      "opus",
     ])
   })
 

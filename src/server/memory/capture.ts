@@ -21,6 +21,7 @@ import type { MemoryService } from './index';
 import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
 import type { AbstractionLevel, EvidenceClass, MemoryItem, MemoryScope, MemoryType } from './types';
 import { MEMORY_ATOM_SPEC } from './atom-spec';
+import { buildCandidateBranchPrompt, parseCandidateBranchResult, type CandidateBranchInput } from './branch-stages';
 
 export type CaptureProfile = 'review' | 'auto-project-copy';
 
@@ -86,6 +87,10 @@ export interface PromptCaptureInput {
 }
 
 export interface CaptureService {
+  /** Complete extraction and relationship analysis in a persistent provider branch. */
+  buildBranchPrompt?(input: PromptCaptureInput): { prompt: string; dependencyKey: string };
+  /** Persist already-routed branch output without another model call. */
+  captureFromBranch?(raw: Record<string, unknown>, input: PromptCaptureInput, dependencyKey: string): Promise<CaptureOutcome>;
   capture(input: CaptureInput): Promise<CaptureOutcome>;
   /**
    * Route ONE agent-proposed candidate through the routing gate. `raw` is the
@@ -381,6 +386,21 @@ export function createCaptureService(opts: {
   ): ValidatedCandidate[] => profile === 'auto-project-copy'
     ? candidates
     : candidates.filter((candidate) => !memory.store.wasCandidateDismissed(candidate.content));
+
+  function branchSnapshot(input: PromptCaptureInput): { input: CandidateBranchInput; items: MemoryItem[]; key: string } {
+    const items = [
+      ...memory.store.list({ scope: 'personal' }),
+      ...(input.projectId ? memory.store.list({ scope: 'project', projectId: input.projectId }) : []),
+      ...memory.store.list({ scope: 'session', sessionId: input.sessionId }),
+    ].filter((item) => item.status === 'active' || item.status === 'candidate').sort((a, b) => a.id.localeCompare(b.id));
+    const dismissed = recentDismissed(memory);
+    return {
+      input: { task: input.userText, memories: items, dismissed },
+      items,
+      key: JSON.stringify({ task: input.userText, projectId: input.projectId, sessionId: input.sessionId,
+        items: items.map((item) => [item.id, item.version, item.scope, item.status]), dismissed }),
+    };
+  }
   type TurnObservationResolution = { memoryId?: string };
   type TurnObservationClaimResult =
     | { status: 'completed'; resolution: TurnObservationResolution }
@@ -549,6 +569,10 @@ export function createCaptureService(opts: {
     preCounts: { proposed: number; preDropped: number },
     via?: string,
     durablePromptOperation?: { key: string; inputHash: string },
+    branchRouting?: {
+      existing: MemoryItem[];
+      decisions: Map<ValidatedCandidate, { route: Route; targetId: string | null }>;
+    },
   ): Promise<CaptureOutcome> {
     input.signal?.throwIfAborted();
     const captureProfile = captureProfileFor(input);
@@ -665,12 +689,16 @@ export function createCaptureService(opts: {
         }
         return outcome;
       }
-    const existing = existingShortList(memory, input.projectId, captureProfile === 'auto-project-copy');
+    const existing = branchRouting?.existing ?? existingShortList(memory, input.projectId, captureProfile === 'auto-project-copy');
     // Content snapshot at gate time: routing verdicts (targetId) refer to THIS
     // text. If a target moves during the LLM await (a user edit, another
     // turn), the verdict no longer applies to what's stored.
     const contentAtGate = new Map(existing.map((m) => [m.id, m.content]));
-    const decisionsRaw = await callJson({
+    const decisionsRaw = branchRouting ? {
+      decisions: routableCandidates.map((candidate, index) => ({
+        index, ...branchRouting.decisions.get(candidate),
+      })),
+    } : await callJson({
       system: captureProfile === 'auto-project-copy' ? AUTO_ROUTING_SYSTEM : ROUTING_SYSTEM,
       user: buildRoutingUserPrompt(
         routableCandidates,
@@ -735,7 +763,8 @@ export function createCaptureService(opts: {
       const targetFresh = Boolean(
         target &&
           (target.status === 'active' || target.status === 'candidate') &&
-          target.content === contentAtGate.get(target.id),
+          target.content === contentAtGate.get(target.id) &&
+          (!branchRouting || branchRouting.existing.some((snapshot) => snapshot.id === target.id && snapshot.version === target.version && snapshot.scope === target.scope)),
       );
 
       let route = decision.route;
@@ -931,6 +960,34 @@ export function createCaptureService(opts: {
   }
 
   return {
+    buildBranchPrompt(input) {
+      const snapshot = branchSnapshot(input);
+      return { prompt: buildCandidateBranchPrompt(snapshot.input), dependencyKey: snapshot.key };
+    },
+
+    async captureFromBranch(raw, input, dependencyKey) {
+      input.signal?.throwIfAborted();
+      const snapshot = branchSnapshot(input);
+      if (snapshot.key !== dependencyKey) throw new Error('Candidate branch inputs changed before persistence');
+      const parsed = parseCandidateBranchResult(raw, snapshot.input);
+      const filtered = parsed.filter((candidate) => !memory.store.wasCandidateDismissed(candidate.content));
+      const decisions = new Map(filtered.map((candidate) => [candidate, {
+        route: candidate.route,
+        targetId: candidate.targetId ?? null,
+      }]));
+      const outcome = await routeAndPersist(filtered, input, {
+        proposed: parsed.length, preDropped: parsed.length - filtered.length,
+      }, 'branch_capture', undefined, { existing: snapshot.items, decisions });
+      memory.logger.event({
+        type: 'memory.capture', sessionId: input.sessionId, engine: input.engine, turn: input.turn,
+        status: 'ok', channel: 'prompt', proposed: outcome.proposed, surfaced: outcome.surfaced,
+        dropped: outcome.dropped, sensitive: outcome.created.filter((candidate) => candidate.sensitive).length,
+        reinforced: outcome.reinforced, revisions: outcome.revisions,
+        sameTurnDuplicates: outcome.sameTurnDuplicates?.length ?? 0,
+      });
+      return outcome;
+    },
+
     async capture(input: CaptureInput): Promise<CaptureOutcome> {
       // Every invocation ends in exactly ONE terminal memory.capture event —
       // success with counts (zeros included) or failure with the stage that

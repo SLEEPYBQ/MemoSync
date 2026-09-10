@@ -152,6 +152,7 @@ function forcePersistedCodexPreference<T extends {
   planMode?: boolean
 }>(value?: T): T | undefined {
   if (!value) return value
+  if (value.model && !value.model.startsWith("gpt-")) return value
   return {
     ...value,
     model: "gpt-5.5",
@@ -160,6 +161,7 @@ function forcePersistedCodexPreference<T extends {
 
 function forcePersistedCodexComposerState<T extends PersistedComposerState | ComposerState>(value?: T): T | undefined {
   if (!value || value.provider !== "codex") return value
+  if (value.model && !value.model.startsWith("gpt-")) return value
   return {
     ...value,
     model: "gpt-5.5",
