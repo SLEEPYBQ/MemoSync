@@ -28,6 +28,10 @@
 
 <br />
 
+## Demo video
+
+https://github.com/user-attachments/assets/488a1e41-5a01-4c01-ac76-5c37b8e764f0
+
 ## Why MemoSync
 
 Coding agents accumulate memory — `CLAUDE.md` files, auto-extracted notes, session summaries — but the developer rarely knows what is in it, what the agent brought into a turn, or whether the agent followed it. Memory changes behind your back, stale rules from an old project leak into a new one, and a violated constraint only shows up when the tests fail.
