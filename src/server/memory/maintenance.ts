@@ -110,6 +110,11 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       if (a.status !== 'active' || b.status !== 'active') {
         throw new Error('Both memories must still be active to merge');
       }
+      if (a.scope !== b.scope
+        || (a.scope === 'project' && (!a.projectId || a.projectId !== b.projectId))
+        || (a.scope === 'session' && (!a.sessionId || a.sessionId !== b.sessionId))) {
+        throw new Error('Both memories must belong to the same scope and context to merge');
+      }
       const draftRaw = await callJson({
         system: MERGE_SYSTEM,
         user: JSON.stringify(
@@ -133,6 +138,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
           abstractionLevel: draft.abstractionLevel,
           sensitive: draft.sensitive,
           projectId: a.scope === 'project' ? a.projectId : undefined,
+          sessionId: a.scope === 'session' ? a.sessionId : undefined,
           provenanceSessionId: meta.sessionId,
         },
         [a.id, b.id],

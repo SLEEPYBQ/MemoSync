@@ -935,6 +935,55 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     expect(store.revisionTargetOf(proposal.id)?.id).toBe(target.id);
   });
 
+  it('rejects a stale revision snapshot without mutating the candidate, target, or event histories', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint' },
+      target.id,
+      { actor: 'system' },
+    )!;
+    store.update(target.id, { content: 'Use port 5000' }, { actor: 'user' });
+    const ids = [proposal.id, target.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
+  });
+
+  it('erasing an unseen revision removes its snapshot before the candidate id is reused', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' },
+    )!;
+    expect(store.getKv(`revision_targets:${proposal.id}`)).not.toBeNull();
+    store.eraseCandidate(proposal.id);
+    expect(store.getKv(`revision_targets:${proposal.id}`)).toBeNull();
+    const unrelated = store.create(
+      { content: 'Use small commits', scope: 'personal', type: 'preference', status: 'candidate', id: proposal.id },
+      { actor: 'system' },
+    );
+    expect(store.acceptRevision(unrelated.id, { actor: 'user' }).updated.status).toBe('active');
+    expect(store.getById(target.id)!.status).toBe('active');
+  });
+
+  it('rejects a legacy relation-linked revision without a snapshot and leaves state unchanged', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.create(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint', status: 'candidate' },
+      { actor: 'system' },
+    );
+    store.addRelation(proposal.id, target.id, 'revises');
+    const ids = [proposal.id, target.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+    expect(store.getKv(`revision_targets:${proposal.id}`)).toBeNull();
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
+  });
+
   it('a MERGE proposal revises BOTH originals; accepting archives the pair (REDESIGN D5)', () => {
     const store = freshStore();
     const a = store.create({ content: 'Use pnpm, never npm, in this repo', scope: 'personal', type: 'constraint' }, { actor: 'user' });
@@ -957,6 +1006,24 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     expect(replaced.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
     expect(store.getById(a.id)!.status).toBe('archived');
     expect(store.getById(b.id)!.status).toBe('archived');
+  });
+
+  it('rejects a stale merge snapshot without mutating the candidate, either target, or event histories', () => {
+    const store = freshStore();
+    const a = store.create({ content: 'Use pnpm, never npm, in this repo', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const b = store.create({ content: 'The user wants pnpm instead of npm', scope: 'personal', type: 'preference' }, { actor: 'agent' });
+    const proposal = store.createMergeProposal(
+      { content: 'Use pnpm for this repository', scope: 'personal', type: 'constraint' },
+      [a.id, b.id],
+      { actor: 'system' },
+      { expectedContents: [a.content, b.content] },
+    )!;
+    store.update(b.id, { content: 'The user now prefers Bun' }, { actor: 'user' });
+    const ids = [proposal.id, a.id, b.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited merge draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
   });
 
   it('createMergeProposal CAS: a moved original voids the draft', () => {
