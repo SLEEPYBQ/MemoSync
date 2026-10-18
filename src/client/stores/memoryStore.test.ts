@@ -36,6 +36,29 @@ afterEach(() => {
 })
 
 describe("memoryStore load races", () => {
+  test("lets a later fresh GET supersede a confirmed local edit while ignoring the earlier GET", async () => {
+    const older = deferred<MemoryItem[]>()
+    const newer = deferred<MemoryItem[]>()
+    const listSpy = spyOn(memoriesApi, "list")
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise)
+    restoreList = () => listSpy.mockRestore()
+
+    const olderLoad = useMemoryStore.getState().loadAll()
+    useMemoryStore.getState().upsertLocal(memory("updated", "confirmed local edit"))
+    const newerLoad = useMemoryStore.getState().loadAll()
+    newer.resolve([memory("updated", "newer server version")])
+    await newerLoad
+    older.resolve([memory("updated", "old server version")])
+    await olderLoad
+
+    expect(useMemoryStore.getState()).toMatchObject({
+      items: [memory("updated", "newer server version")],
+      status: "ready",
+      error: null,
+    })
+  })
+
   test("overlays local upserts and tombstones made while a GET is pending", async () => {
     const request = deferred<MemoryItem[]>()
     const listSpy = spyOn(memoriesApi, "list").mockImplementation(() => request.promise)
