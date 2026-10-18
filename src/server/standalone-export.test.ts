@@ -69,6 +69,27 @@ function createMessages(attachmentAbsolutePath: string): TranscriptEntry[] {
 }
 
 describe("writeStandaloneTranscriptExport", () => {
+  test("embeds the sanitized transcript as inert JSON without an HTML injection", async () => {
+    const viewerDistDir = await createViewerDist()
+    const literalBodyTag = '<script>window.tag = "</body>"</script>'
+    await writeFile(path.join(viewerDistDir, "index.html"), `<html><body>${literalBodyTag}<div id="root"></div></body></html>`)
+    const projectDir = await createTempDir("memosync-export-inline-")
+    const payload = '</script><script>window.exportInjected = true</script>'
+    const result = await writeStandaloneTranscriptExport({
+      chatId: "inline-proof", title: payload, localPath: projectDir,
+      theme: "light", attachmentMode: "metadata", messages: createMessages(path.join(projectDir, "private.png")),
+    }, { viewerDistDir })
+    const html = await Bun.file(result.indexHtmlPath).text()
+    const inlineJson = html.match(/<script id="memosync-transcript-data" type="application\/json">([\s\S]*?)<\/script>/)?.[1]
+    expect(inlineJson).toBeDefined()
+    expect(JSON.parse(inlineJson!)).toEqual(await Bun.file(result.transcriptJsonPath).json())
+    expect(html).not.toContain(payload)
+    expect(html).not.toContain("legacy-secret-candidate")
+    expect(html).not.toContain("legacy-person@example.com")
+    expect(html).not.toContain(projectDir)
+    expect(html).toContain(literalBodyTag)
+  })
+
   test("writes a metadata-only export with viewer assets and sanitized attachments", async () => {
     const viewerDistDir = await createViewerDist()
     const projectDir = await createTempDir("memosync-project-")

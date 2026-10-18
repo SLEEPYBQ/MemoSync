@@ -1,5 +1,5 @@
 import path from "node:path"
-import { cp as copyPath, copyFile, mkdir, stat, writeFile } from "node:fs/promises"
+import { cp as copyPath, copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import type {
   StandaloneTranscriptAttachmentMode,
   StandaloneTranscriptBundle,
@@ -98,10 +98,20 @@ export async function writeStandaloneTranscriptExport(
   const transcriptJsonPath = path.join(outputDir, "transcript.json")
   await writeFileImpl(transcriptJsonPath, transcriptJson, "utf8")
 
+  const indexHtmlPath = path.join(outputDir, "index.html")
+  const viewerHtml = await readFile(indexHtmlPath, "utf8")
+  const bodyEnd = viewerHtml.toLowerCase().lastIndexOf("</body>")
+  if (bodyEnd < 0) {
+    throw new Error("Standalone viewer HTML is missing its closing body tag.")
+  }
+  // Escape HTML delimiters even in inert JSON: a literal </script> ends the element.
+  const embeddedData = `<script id="memosync-transcript-data" type="application/json">${transcriptJson.replace(/</g, "\\u003c")}</script>`
+  await writeFileImpl(indexHtmlPath, `${viewerHtml.slice(0, bodyEnd)}${embeddedData}${viewerHtml.slice(bodyEnd)}`, "utf8")
+
   return {
     ok: true,
     outputDir,
-    indexHtmlPath: path.join(outputDir, "index.html"),
+    indexHtmlPath,
     transcriptJsonPath,
     attachmentMode: args.attachmentMode,
     totalAttachmentCount: prepared.totalAttachmentCount,

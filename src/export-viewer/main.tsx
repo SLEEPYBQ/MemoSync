@@ -43,18 +43,18 @@ function StandaloneTranscriptApp() {
   useEffect(() => {
     let cancelled = false
 
-    void fetch(new URL("./transcript.json", document.baseURI).toString(), {
-      headers: {
-        Accept: "application/json",
-      },
-    })
-      .then(async (response) => {
-        if (!response.ok) {
-          throw new Error(`Transcript request failed with status ${response.status}`)
-        }
+    async function loadBundle(): Promise<StandaloneTranscriptBundle> {
+      const embedded = document.getElementById("memosync-transcript-data")
+      if (embedded) return JSON.parse(embedded.textContent ?? "") as StandaloneTranscriptBundle
 
-        return await response.json() as StandaloneTranscriptBundle
+      const response = await fetch(new URL("./transcript.json", document.baseURI).toString(), {
+        headers: { Accept: "application/json" },
       })
+      if (!response.ok) throw new Error(`Transcript request failed with status ${response.status}`)
+      return await response.json() as StandaloneTranscriptBundle
+    }
+
+    void loadBundle()
       .then((bundle) => {
         if (cancelled) return
         setState({ status: "ready", bundle })

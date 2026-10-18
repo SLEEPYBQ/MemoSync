@@ -20,9 +20,9 @@ MemoSync is local-first. Everything it produces lives on your machine under
 ## Usage log (`experiments/events.jsonl`)
 
 MemoSync records how its memory features are used, one JSON object per line,
-stamped with the install id. The intent is to let a team that deploys MemoSync
-study how people monitor and control agent memory over time. It is purely
-local — the file is never read by the app itself and never transmitted.
+stamped with the install id. The log describes local memory workflows. It is
+purely local — the file is never read by the app itself and never transmitted
+automatically.
 
 Event families:
 
@@ -38,23 +38,41 @@ Raw prompt text is **not** part of this stream. Chat transcripts are stored
 separately (see the table above) and are only bundled by the exporter when you
 explicitly ask for them.
 
-To turn logging off entirely, delete `experiments/events.jsonl` after use or
-avoid running the exporter; there is no server-side collection to disable.
+Deleting `experiments/events.jsonl` removes existing records, but does not
+disable future local logging. There is no server-side collection to disable.
 
 ## Exporting a bundle
 
 ```bash
 bun run export-data            # usage log + memory library (default)
-bun run export-data --full     # additionally chat/session logs and transcripts
+bun run export-data --full     # additionally raw historical data and chat logs
 bun run export-data --out DIR  # write the archive somewhere specific
 DATA_DIR=/path bun run export-data   # export a non-default data directory
 ```
 
-The default bundle contains `experiments/`, `install-id`, `memory.sqlite`,
-`memories/`, and `settings.json`. `--full` adds the JSONL logs, `snapshot.json`,
-and `transcripts/`. The archive is written as
+The default bundle contains only `experiments/events.jsonl`, `install-id`,
+`memory.sqlite`, `memories/`, and `settings.json`. Other files under
+`experiments/` are excluded by default, including historical study databases
+(which can contain raw prompts) and workspace snapshots (which can contain
+source code). `--full` explicitly includes that entire directory, the JSONL
+logs, `snapshot.json`, and `transcripts/`.
+
+Even the default archive can contain private memory contents, settings, and
+paths. It is not anonymized: review it before sharing. Nothing is uploaded by
+the exporter. The archive is written as
 `memosync-export-<install-id>-<timestamp>[-full].tar.gz` in the current
 directory (it is gitignored).
+
+## Offline chat exports
+
+The chat transcript export creates a folder with an `index.html` page that
+can be opened directly in a browser, without running MemoSync or a web server.
+Its viewer code and sanitized transcript data are embedded in the HTML;
+`transcript.json` is also retained for other tools. Keep the exported folder
+together when copying it, especially its `attachments/` directory when you
+choose to bundle attachments. Metadata-only exports do not copy attachment
+contents. Transcript exports still contain the conversation you selected, so
+review them before sharing too.
 
 ## Analysing a log
 
