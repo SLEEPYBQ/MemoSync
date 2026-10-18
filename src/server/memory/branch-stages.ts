@@ -304,6 +304,9 @@ export function mergeMemoryBranchUpdate(previous: Record<string, unknown>, updat
     if (Object.keys(update).some((key) => !allowed.has(key)) || collections.some((key) => !Array.isArray(update[key]))) {
       throw new MemoryBranchResultError('Branch replacement must contain every original proposal collection and no unknown keys');
     }
+    for (const key of collections) {
+      for (const value of update[key] as unknown[]) proposalKey(key, value);
+    }
     return update;
   }
   if (Object.keys(update).some((key) => key !== 'upsert' && key !== 'remove')) {
@@ -316,18 +319,23 @@ export function mergeMemoryBranchUpdate(previous: Record<string, unknown>, updat
   }
   const result = { ...previous };
   for (const key of collections) {
-    if (!Object.hasOwn(upsert, key) && !Object.hasOwn(remove, key)) continue;
     const old = previous[key];
     const added = Object.hasOwn(upsert, key) ? upsert[key] : [];
     const removed = Object.hasOwn(remove, key) ? remove[key] : [];
     if (!Array.isArray(old) || !Array.isArray(added) || !Array.isArray(removed) || removed.some((id) => typeof id !== 'string' || !id.trim())) {
       throw new MemoryBranchResultError('Malformed memory branch delta');
     }
-    const byId = new Map(old.map((value) => [proposalKey(key, value), value]));
-    if (removed.some((id) => !byId.has(id))) {
+    // An explicitly discarded old transfer may have an invalid source identity.
+    // Only its declared proposalId can identify it for removal, not for upsert.
+    const removalIds = old.map((value) => key === 'suggestions' ? object(value)?.proposalId : proposalKey(key, value));
+    if (removed.some((id) => !removalIds.includes(id))) {
       throw new MemoryBranchResultError('Branch delta references an unknown proposal removal identity');
     }
-    for (const id of removed) byId.delete(id);
+    if (removed.some((id) => removalIds.filter((oldId) => oldId === id).length !== 1)) {
+      throw new MemoryBranchResultError('Branch delta references an ambiguous proposal removal identity');
+    }
+    const survivors = old.filter((_, index) => !removed.includes(removalIds[index]));
+    const byId = new Map(survivors.map((value) => [proposalKey(key, value), value]));
     for (const value of added) byId.set(proposalKey(key, value), value);
     result[key] = [...byId.values()];
   }
