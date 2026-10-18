@@ -234,13 +234,23 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const textDraftKey = draftKey ?? chatId ?? null
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
-  const [value, setValue] = useState(() => (textDraftKey ? getDraft(textDraftKey) : ""))
+  const draftRevisionRef = useRef(0)
+  const submissionRef = useRef<object | null>(null)
+  const [value, setValueState] = useState(() => (textDraftKey ? getDraft(textDraftKey) : ""))
+  const setValue = useCallback((next: React.SetStateAction<string>) => {
+    draftRevisionRef.current += 1
+    setValueState(next)
+  }, [])
   // "/" autocomplete over engine-reported commands (closed by Esc until the draft changes).
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
+    draftRevisionRef.current += 1
+    setAttachmentsState(next)
+  }, [])
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const uploadQueueRef = useRef<File[]>([])
@@ -249,7 +259,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
-  const latestChatIdRef = useRef<string | null>(chatId ?? null)
+
+  useLayoutEffect(() => {
+    setValue(textDraftKey ? getDraft(textDraftKey) : "")
+    submissionRef.current = null
+    return () => {
+      draftRevisionRef.current += 1
+      submissionRef.current = null
+    }
+  }, [chatId, textDraftKey, getDraft, setValue])
 
   const providerLocked = activeProvider !== null
   const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
@@ -343,10 +361,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useEffect(() => {
     textareaRef.current?.focus()
-  }, [chatId])
-
-  useEffect(() => {
-    latestChatIdRef.current = chatId ?? null
   }, [chatId])
 
   useEffect(() => {
@@ -579,12 +593,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }), [enqueueFiles, setDraft, textDraftKey])
 
   async function handleSubmit() {
-    if (!canSubmit || hasPendingUploads) return
+    if (!canSubmit || hasPendingUploads || submissionRef.current) return
 
+    const submission = {}
+    submissionRef.current = submission
+    const revision = draftRevisionRef.current
+    const ownsDraft = () => submissionRef.current === submission && draftRevisionRef.current === revision
     const nextValue = value
     const previousAttachments = attachmentsRef.current
-    const previousSelectedAttachmentId = selectedAttachmentId
-    const previousUploadError = uploadError
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
@@ -605,24 +621,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await runRetainedDraftSubmission({
       submit: () => onSubmit(nextValue, submitOptions),
       onAccepted: () => {
+        if (!ownsDraft()) return
         setValue("")
         if (textDraftKey) clearDraft(textDraftKey)
         if (textareaRef.current) textareaRef.current.style.height = "auto"
         clearAttachments({ cleanupPreviews: false })
-        if (latestChatIdRef.current) clearAttachmentDrafts(latestChatIdRef.current)
+        if (chatId) clearAttachmentDrafts(chatId)
         previousAttachments.forEach(cleanupAttachmentPreview)
       },
       onRejected: (error) => {
         console.error("[ChatInput] Submit failed:", error)
-        // Idempotent while the draft stayed present, and restorative when a
-        // route/lifecycle transition rejected the held message.
-        setValue(nextValue)
-        if (textDraftKey) setDraft(textDraftKey, nextValue)
-        setAttachments(previousAttachments)
-        setSelectedAttachmentId(previousSelectedAttachmentId)
-        setUploadError(previousUploadError)
       },
     })
+    if (submissionRef.current === submission) submissionRef.current = null
   }
 
   // Fresh chats have no system_init yet — fall back to the last list this

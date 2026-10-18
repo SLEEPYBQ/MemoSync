@@ -1,0 +1,221 @@
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import type { Page } from "playwright"
+import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
+
+interface ChatInputFixtureApi {
+  setChatId: (chatId: string) => void
+  submissions: () => Array<{ value: string; options: { attachments?: Array<{ id: string }> } }>
+  resolveSubmit: (index: number) => void
+  rejectSubmit: (index: number, reason: string) => void
+  draft: (chatId: string) => string
+  attachments: (chatId: string) => Array<{ id: string; displayName: string }>
+}
+
+let harness: Awaited<ReturnType<typeof startMountedRaceHarness>>
+let page: Page | undefined
+
+beforeAll(async () => {
+  harness = await startMountedRaceHarness()
+})
+
+afterEach(async () => {
+  await page?.close()
+  page = undefined
+})
+
+afterAll(async () => {
+  await harness?.close()
+})
+
+async function openFixture() {
+  page = await harness.openPage("chat-input")
+  await page.getByPlaceholder("Build something...").waitFor({ state: "visible" })
+  return page
+}
+
+async function readDraft(target: Page, chatId: string) {
+  return target.evaluate(
+    (id) => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.draft(id),
+    chatId
+  )
+}
+
+async function readAttachments(target: Page, chatId: string) {
+  return target.evaluate(
+    (id) => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.attachments(id),
+    chatId
+  )
+}
+
+async function submissions(target: Page) {
+  return target.evaluate(() => (
+    window as unknown as { __chatInputFixture: ChatInputFixtureApi }
+  ).__chatInputFixture.submissions())
+}
+
+async function settle(target: Page, index: number, success: boolean, reason = "send rejected") {
+  await target.evaluate(
+    ({ index, success, reason }) => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      if (success) fixture.resolveSubmit(index)
+      else fixture.rejectSubmit(index, reason)
+    },
+    { index, success, reason }
+  )
+}
+
+async function attach(target: Page, fileName: string) {
+  const currentCount = (await readAttachments(target, "chat-one")).length
+  await target.locator('input[type="file"]').setInputFiles({
+    name: fileName,
+    mimeType: "text/plain",
+    buffer: Buffer.from(fileName),
+  })
+  await target.waitForFunction((count) => {
+    const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+    return fixture.attachments("chat-one").length >= count
+  }, currentCount + 1)
+}
+
+describe("mounted ChatInput submission races", () => {
+  test("retains text and attachment edits made while a successful send is pending", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await attach(target, "first.txt")
+    await input.fill("submitted text")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+    ))
+    expect((await submissions(target))[0]).toMatchObject({ value: "submitted text" })
+
+    await input.fill("edited text")
+    await attach(target, "second.txt")
+    await settle(target, 0, true)
+
+    await expectInputValue(target, "edited text")
+    expect(await readDraft(target, "chat-one")).toBe("edited text")
+    expect((await readAttachments(target, "chat-one")).map((attachment) => attachment.displayName)).toEqual([
+      "uploaded-1.txt",
+      "uploaded-2.txt",
+    ])
+  })
+
+  test("retains text and attachment edits when a pending send rejects", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await attach(target, "first.txt")
+    await input.fill("submitted text")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+    ))
+
+    await input.fill("edited text")
+    await attach(target, "second.txt")
+    await settle(target, 0, false)
+
+    await expectInputValue(target, "edited text")
+    expect(await readDraft(target, "chat-one")).toBe("edited text")
+    expect((await readAttachments(target, "chat-one")).map((attachment) => attachment.displayName)).toEqual([
+      "uploaded-1.txt",
+      "uploaded-2.txt",
+    ])
+  })
+
+  test("treats editing away and back as a newer draft revision", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await input.fill("same text")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+    ))
+
+    await input.fill("temporary edit")
+    await input.fill("same text")
+    await settle(target, 0, true)
+
+    await expectInputValue(target, "same text")
+    expect(await readDraft(target, "chat-one")).toBe("same text")
+  })
+
+  test("does not let a settled send clear or restore another chat's draft", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await input.fill("chat one pending")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+    ))
+
+    await target.evaluate(() => (
+      window as unknown as { __chatInputFixture: ChatInputFixtureApi }
+    ).__chatInputFixture.setChatId("chat-two"))
+    await target.getByTestId("current-chat").getByText("chat-two").waitFor()
+    await input.fill("chat two draft")
+    await settle(target, 0, true)
+    await expectInputValue(target, "chat two draft")
+    expect(await readDraft(target, "chat-two")).toBe("chat two draft")
+
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 2
+    ))
+    await target.evaluate(() => (
+      window as unknown as { __chatInputFixture: ChatInputFixtureApi }
+    ).__chatInputFixture.setChatId("chat-one"))
+    await target.getByTestId("current-chat").getByText("chat-one").waitFor()
+    await input.fill("chat one new draft")
+    await settle(target, 1, false)
+
+    await expectInputValue(target, "chat one new draft")
+    expect(await readDraft(target, "chat-one")).toBe("chat one new draft")
+  })
+
+  test("allows only one same-tick submit and accepts another after settlement", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await input.fill("first message")
+    await target.locator("button:has(svg.lucide-arrow-up)").evaluate((button) => {
+      const event = () => new PointerEvent("pointerdown", { bubbles: true, pointerId: 1, pointerType: "mouse", button: 0 })
+      button.dispatchEvent(event())
+      button.dispatchEvent(event())
+    })
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length > 0
+    ))
+    expect((await submissions(target)).map(({ value }) => value)).toEqual(["first message"])
+
+    await settle(target, 0, true)
+    await expectInputValue(target, "")
+    await input.fill("second message")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 2
+    ))
+    expect((await submissions(target)).map(({ value }) => value)).toEqual(["first message", "second message"])
+    await settle(target, 1, true)
+  })
+
+  test("clears an unchanged accepted draft", async () => {
+    const target = await openFixture()
+    const input = target.getByPlaceholder("Build something...")
+    await input.fill("accepted unchanged")
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (
+      (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+    ))
+    await settle(target, 0, true)
+
+    await expectInputValue(target, "")
+    expect(await readDraft(target, "chat-one")).toBe("")
+  })
+})
+
+async function expectInputValue(target: Page, value: string) {
+  await target.waitForFunction(
+    (expected) => (document.querySelector("textarea") as HTMLTextAreaElement | null)?.value === expected,
+    value
+  )
+}
