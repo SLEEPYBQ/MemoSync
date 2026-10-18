@@ -617,6 +617,20 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
   } as TranscriptEntry
 }
 
+async function interruptTurnWithTimeout(turn: HarnessTurn) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      turn.interrupt(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000) }),
+    ])
+  } catch {
+    // The caller still closes the turn/session when interruption fails.
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
 function stringFromUnknown(value: unknown) {
   if (typeof value === "string") return value
   try {
@@ -6850,7 +6864,7 @@ export class AgentCoordinator {
         throw error
       }
       if (!this.isStartupAttemptActive(args)) {
-        await turn.interrupt().catch(() => undefined)
+        await interruptTurnWithTimeout(turn)
         this.codexManager.stopSession(args.chatId)
         return
       }
@@ -8386,14 +8400,7 @@ export class AgentCoordinator {
 
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
-    try {
-      await Promise.race([
-        active.turn.interrupt(),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ])
-    } catch {
-      // interrupt() failed — force close
-    }
+    await interruptTurnWithTimeout(active.turn)
     active.turn.close()
   }
 

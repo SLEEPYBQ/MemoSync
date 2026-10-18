@@ -2133,6 +2133,79 @@ describe("AgentCoordinator claude integration", () => {
     expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
   })
 
+  test("bounds an unacknowledged interrupt after cancelled Codex turn startup and drains the queue", async () => {
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    let releaseInterrupt!: () => void
+    const startupEntered = new Promise<void>((resolve) => { markStartupEntered = resolve })
+    const startupGate = new Promise<void>((resolve) => { releaseStartup = resolve })
+    const interruptGate = new Promise<void>((resolve) => { releaseInterrupt = resolve })
+    const firstEvents = new AsyncEventQueue<any>()
+    const nextEvents = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    let stopSessionCount = 0
+    let interruptCount = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: {
+        startSession: async () => "thread-1",
+        startTurn: async (args: { content: string }) => {
+          prompts.push(args.content)
+          if (prompts.length === 1) {
+            markStartupEntered()
+            await startupGate
+            return {
+              provider: "codex",
+              stream: firstEvents,
+              interrupt: async () => { interruptCount += 1; await interruptGate },
+              close: () => firstEvents.close(),
+            }
+          }
+          nextEvents.push({
+            type: "transcript",
+            entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+          })
+          nextEvents.close()
+          return {
+            provider: "codex",
+            stream: nextEvents,
+            interrupt: async () => {},
+            close: () => nextEvents.close(),
+          }
+        },
+        stopSession: () => { stopSessionCount += 1; firstEvents.close() },
+      } as never,
+    })
+    const send = coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "codex", content: "cancel during turn start", model: "gpt-5.4",
+    })
+    try {
+      await startupEntered
+      await coordinator.cancel("chat-1")
+      const queued = await coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "codex", content: "next queued turn", model: "gpt-5.4",
+      })
+      expect(queued).toMatchObject({ queued: true })
+      releaseStartup()
+      await waitFor(() => stopSessionCount === 1, 7_000)
+      await send
+      await waitFor(() => store.turnFinishedCount === 1)
+      expect(interruptCount).toBe(1)
+      expect(prompts).toEqual(["cancel during turn start", "next queued turn"])
+      expect(store.queuedMessages).toHaveLength(0)
+      expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    } finally {
+      releaseStartup()
+      releaseInterrupt()
+      firstEvents.close()
+      nextEvents.close()
+      await send
+    }
+  }, 10_000)
+
   test("reuses a persistent Claude session across turns", async () => {
     const events = new AsyncEventQueue<any>()
     const startSessionCalls: Array<{ model: string; planMode: boolean; sessionToken: string | null }> = []
