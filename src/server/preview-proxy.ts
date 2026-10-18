@@ -61,6 +61,22 @@ export function previewProxyTarget(req: Request, selfPort: number): number | nul
   return validTargetPort(port, selfPort) ? port : null
 }
 
+export function canonicalHostPreviewUrl(req: Request, targetPort: number): URL | null {
+  if (req.method !== "GET" && req.method !== "HEAD") return null
+  if (req.headers.has("upgrade") || req.headers.get("connection")?.toLowerCase().split(",").some((token) => token.trim() === "upgrade")) return null
+  const destination = req.headers.get("sec-fetch-dest")
+  const mode = req.headers.get("sec-fetch-mode")
+  if ((destination && destination !== "document") || (mode && mode !== "navigate")) return null
+
+  const url = new URL(req.url)
+  const match = url.host.match(HOST_PATTERN)
+  if (!match || Number(match[1]) !== targetPort) return null
+  // Keep the request's scheme and app port, never forwarded host headers.
+  url.hostname = "localhost"
+  url.pathname = previewProxyPath(targetPort, url.pathname)
+  return url
+}
+
 /** Build the client-facing proxy origin for a target port (used in tests;
  * the client derives it from window.location at runtime). */
 export function previewProxyOrigin(targetPort: number, appHostWithPort: string): string {

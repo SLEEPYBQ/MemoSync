@@ -168,7 +168,7 @@ describe("password auth", () => {
     }
   })
 
-  test.each(["host", "path"] as const)("protects %s previews and upgrade requests without leaking the app cookie", async (form) => {
+  test.each(["host", "path"] as const)("guards %s mutations and upgrade attempts with explicitly supplied credentials", async (form) => {
     const seenCookies: Array<string | null> = []
     const target = Bun.serve({
       port: 0,
@@ -190,6 +190,7 @@ describe("password auth", () => {
       })
       const cookie = extractCookie(login)
       for (const upgrade of [false, true]) {
+        const method = upgrade ? "GET" : "POST"
         const headers = new Headers({ Host: host, Origin: `http://${host}` })
         if (upgrade) {
           headers.set("Connection", "Upgrade")
@@ -197,17 +198,72 @@ describe("password auth", () => {
           headers.set("Sec-WebSocket-Version", "13")
           headers.set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
         }
-        expect((await fetch(previewUrl, { headers })).status).toBe(401)
+        expect((await fetch(previewUrl, { method, headers, redirect: "manual" })).status).toBe(401)
         headers.set("Cookie", `${cookie}; project_session=kept`)
         headers.set("Origin", "http://foreign.invalid")
-        expect((await fetch(previewUrl, { headers })).status).toBe(403)
+        expect((await fetch(previewUrl, { method, headers, redirect: "manual" })).status).toBe(403)
         expect(seenCookies).toHaveLength(upgrade ? 1 : 0)
         headers.set("Origin", `http://${host}`)
-        const authenticated = await fetch(previewUrl, { headers })
+        const authenticated = await fetch(previewUrl, { method, headers, redirect: "manual" })
         expect(authenticated.status).toBe(200)
         expect(await authenticated.text()).toBe("protected preview target")
         expect(seenCookies.at(-1)).toBe("project_session=kept")
       }
+    } finally {
+      target.stop(true)
+      await server.stop()
+    }
+  })
+
+  test("redirects host preview navigation to localhost using host-scoped app cookies", async () => {
+    const seen: Array<{ path: string; cookie: string | null }> = []
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        const url = new URL(req.url)
+        seen.push({ path: `${url.pathname}${url.search}`, cookie: req.headers.get("cookie") })
+        return new Response("protected preview target")
+      },
+    })
+    const { server } = await startPasswordServer()
+    const appOrigin = `http://localhost:${server.port}`
+    const previewHost = `${target.port}.localhost:${server.port}`
+    const suffix = "/nested/a%20b?tab=files&next=%2Fother"
+    try {
+      const login = await fetch(`${appOrigin}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "secret", next: "/" }),
+      })
+      expect(login.headers.get("set-cookie")?.toLowerCase()).not.toContain("domain=")
+      const cookie = extractCookie(login)
+      const browserRequest = (url: string, method = "GET") => {
+        const parsed = new URL(url)
+        const headers = new Headers({ Host: parsed.host, "Sec-Fetch-Dest": "document", "Sec-Fetch-Mode": "navigate" })
+        if (parsed.hostname === "localhost") headers.set("Cookie", cookie)
+        // Connect locally while retaining the browser URL's host and cookie scope.
+        return fetch(`${appOrigin}${parsed.pathname}${parsed.search}`, { method, headers, redirect: "manual" })
+      }
+      const canonicalUrl = `${appOrigin}/__memosync/preview/${target.port}${suffix}`
+      for (const method of ["GET", "HEAD"]) {
+        const response = await browserRequest(`http://${previewHost}${suffix}`, method)
+        expect(response.status).toBe(302)
+        expect(response.headers.get("location")).toBe(canonicalUrl)
+        expect(seen).toHaveLength(0)
+      }
+      expect((await fetch(canonicalUrl)).status).toBe(401)
+      const foreign = await fetch(`${appOrigin}${suffix}`, {
+        headers: { Host: previewHost, Origin: "http://foreign.invalid" },
+        redirect: "manual",
+      })
+      expect(foreign.status).toBe(403)
+      expect(foreign.headers.get("location")).toBeNull()
+      expect(seen).toHaveLength(0)
+      const content = await browserRequest(canonicalUrl)
+      expect(content.status).toBe(200)
+      expect(await content.text()).toBe("protected preview target")
+      expect(seen).toEqual([{ path: suffix, cookie: null }])
     } finally {
       target.stop(true)
       await server.stop()

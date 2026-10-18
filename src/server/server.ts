@@ -28,7 +28,7 @@ import { StudyPreviewRuntime } from "./study-preview-runtime"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { canonicalHostPreviewUrl, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 import { MemoryService } from "./memory"
 import { handleMemoryRequest } from "./memory/routes"
 import { handleStudyRequest } from "./study-routes"
@@ -817,6 +817,11 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
               allowedOrigins,
             })) {
               return new Response("Forbidden", { status: 403 })
+            }
+            if (auth) {
+              // Host-only app cookies become available on the canonical path.
+              const canonicalUrl = canonicalHostPreviewUrl(req, previewPort)
+              if (canonicalUrl) return Response.redirect(canonicalUrl, 302)
             }
             if (auth && !auth.isAuthenticated(req)) {
               return new Response("Unauthorized", { status: 401 })

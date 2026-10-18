@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { canonicalHostPreviewUrl, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 
 function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Request {
   const req = new Request(url, init)
@@ -8,6 +8,24 @@ function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Reque
 }
 
 describe("preview proxy", () => {
+  it("canonicalizes only host-form navigations without trusting forwarded hosts", () => {
+    const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/nested?q=1", {
+      headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" },
+    })
+    expect(canonicalHostPreviewUrl(req, 8901)?.href).toBe("http://localhost:3210/__memosync/preview/8901/nested?q=1")
+    expect(canonicalHostPreviewUrl(reqWithHost("foreign.invalid", "http://foreign.invalid/"), 8901)).toBeNull()
+    expect(canonicalHostPreviewUrl(reqWithHost("localhost:3210", "http://localhost:3210/__memosync/preview/8901/"), 8901)).toBeNull()
+    const nonNavigationHeaders: HeadersInit[] = [
+      { "Sec-Fetch-Dest": "iframe" },
+      { "Sec-Fetch-Mode": "cors" },
+      { Upgrade: "websocket" },
+      { Connection: "Upgrade" },
+    ]
+    for (const headers of nonNavigationHeaders) {
+      expect(canonicalHostPreviewUrl(reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", { headers }), 8901)).toBeNull()
+    }
+  })
+
   it.each(["host", "path"] as const)("isolates MemoSync cookies in both directions for %s previews", async (form) => {
     const url = form === "host"
       ? "http://8901.localhost:3210/"
