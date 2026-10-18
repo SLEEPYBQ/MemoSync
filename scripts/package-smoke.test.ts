@@ -5,6 +5,7 @@ import path from "node:path"
 
 const repo = path.resolve(import.meta.dir, "..")
 const artifactDir = path.join(repo, "artifacts")
+const privilegedNamespace = process.env.MEMOSYNC_SMOKE_PRIVILEGED_NETNS === "1"
 let fixture = ""
 let consumer = ""
 let runtimeEnv: Record<string, string> = {}
@@ -51,6 +52,10 @@ async function command(cmd: string[], cwd: string, env: Record<string, string>, 
 }
 
 beforeAll(async () => {
+  if (privilegedNamespace) {
+    expect(process.getuid!()).not.toBe(0)
+    expect(process.geteuid!()).not.toBe(0)
+  }
   await mkdir(artifactDir, { recursive: true })
   fixture = await mkdtemp(path.join(tmpdir(), "memosync-package-smoke-"))
   consumer = path.join(fixture, "consumer")
@@ -108,11 +113,33 @@ test("installed package serves built assets across restart and rejects missing c
   expect(ip).not.toBeNull()
   const version = (JSON.parse(await readFile(path.join(repo, "package.json"), "utf8")) as { version: string }).version
   const parentNetwork = await readlink("/proc/self/ns/net")
-  const output = await command([
-    unshare!, "--user", "--map-root-user", "--net", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL",
-    "/bin/sh", "-c", '"$1" link set lo up && shift && exec "$@"', "package-smoke",
-    ip!, path.join(fixture, "bin", "bun"), path.join(consumer, "runtime.ts"), version, parentNetwork,
-  ], consumer, runtimeEnv, 75_000)
+  const uid = privilegedNamespace ? process.getuid!() : 0
+  const gid = privilegedNamespace ? process.getgid!() : 0
+  const runtime = [
+    path.join(fixture, "bin", "bun"), path.join(consumer, "runtime.ts"), version, parentNetwork,
+    String(uid), String(gid), privilegedNamespace ? "privileged" : "user",
+  ]
+  const namespace = ["--net", "--pid", "--fork", "--mount-proc", "--kill-child=SIGKILL"]
+  const loopback = ["/bin/sh", "-c", '"$1" link set lo up && shift && exec "$@"', "package-smoke", ip!]
+  let cmd: string[]
+  if (privilegedNamespace) {
+    const sudo = Bun.which("sudo")
+    const timeout = Bun.which("timeout")
+    const setpriv = Bun.which("setpriv")
+    for (const executable of [sudo, timeout, unshare, ip, setpriv]) {
+      expect(executable).not.toBeNull()
+      expect(path.isAbsolute(executable!)).toBe(true)
+    }
+    // The root-side watchdog can reap the namespace even if the test loses permission to signal it.
+    cmd = [
+      sudo!, "-n", timeout!, "--signal=TERM", "--kill-after=5s", "75s", unshare!, ...namespace,
+      ...loopback, setpriv!, "--reuid", String(uid), "--regid", String(gid), "--clear-groups", "--no-new-privs",
+      "/usr/bin/env", "-i", ...Object.entries(runtimeEnv).map(([key, value]) => `${key}=${value}`), ...runtime,
+    ]
+  } else {
+    cmd = [unshare!, "--user", "--map-root-user", ...namespace, ...loopback, ...runtime]
+  }
+  const output = await command(cmd, consumer, runtimeEnv, privilegedNamespace ? 90_000 : 75_000)
   expect(output).toContain("PASS missing-dist negative control")
   expect(output).toContain("PASS installed start/assets/restart")
-}, 90_000)
+}, 110_000)

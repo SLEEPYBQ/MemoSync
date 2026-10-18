@@ -2,7 +2,18 @@ import assert from "node:assert/strict"
 import { readFile, readlink, realpath, rename } from "node:fs/promises"
 import path from "node:path"
 
-const [expectedVersion, parentNetwork] = process.argv.slice(2)
+const [expectedVersion, parentNetwork, expectedUid, expectedGid, namespaceMode] = process.argv.slice(2)
+assert.equal(process.geteuid!(), Number(expectedUid), "Runtime must use the expected effective UID")
+assert.equal(process.getegid!(), Number(expectedGid), "Runtime must use the expected effective GID")
+const status = await readFile("/proc/self/status", "utf8")
+if (namespaceMode === "privileged") {
+  assert.notEqual(process.geteuid!(), 0, "Privileged namespace must drop root before running the helper")
+  assert.match(status, /^NoNewPrivs:\s+1$/m, "Runtime must not gain privileges")
+  assert.match(status, /^CapEff:\s+0+$/m, "Runtime must have no effective capabilities")
+} else {
+  assert.equal(namespaceMode, "user")
+}
+console.log(`PASS runtime identity: uid=${process.geteuid!()} gid=${process.getegid!()} mode=${namespaceMode} ${status.match(/^NoNewPrivs:.*$/m)?.[0]} ${status.match(/^CapEff:.*$/m)?.[0]}`)
 const consumer = process.cwd()
 const installed = path.join(consumer, "node_modules", "memosync")
 const binary = Bun.which("memosync")

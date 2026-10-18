@@ -40,6 +40,8 @@ jobs:
           mkdir -p artifacts
           bun test src/ scripts/analyze-experiment.test.ts --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml
       - name: Installed package smoke
+        env:
+          MEMOSYNC_SMOKE_PRIVILEGED_NETNS: "1"
         run: bun test scripts/package-smoke.test.ts --timeout 30000
       - name: Test diagnostics
         if: always()
