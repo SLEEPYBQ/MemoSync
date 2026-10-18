@@ -730,7 +730,6 @@ export function createCaptureService(opts: {
         return;
       }
 
-      const isRevision = route === 'updates';
       const conflictWithId = route === 'conflicts' ? target!.id : null;
 
       const scope: MemoryScope = candidate.scope === 'project' && !input.projectId
@@ -753,16 +752,17 @@ export function createCaptureService(opts: {
         evidenceClass: candidate.evidenceClass,
       };
       const meta = { actor: 'agent' as const, sessionId: input.sessionId, turn: input.turn };
-      const item = isRevision
-        ? memory.store.createRevisionProposal(itemInput, target!.id, meta, {
+      const proposal = route === 'updates'
+        ? memory.store.createCaptureUpdateProposal(itemInput, target!.id, meta, {
             expectedTargetContent: contentAtGate.get(target!.id),
           })
-        : memory.store.create(itemInput, meta);
-      if (!item) {
+        : { item: memory.store.create(itemInput, meta), isRevision: false };
+      if (!proposal) {
         rememberObservation();
         dropped++;
         return;
       }
+      const { item, isRevision } = proposal;
       if (isRevision) revisions++;
       created.push(item);
       rememberObservation(item.id);

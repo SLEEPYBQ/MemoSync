@@ -1189,6 +1189,44 @@ describe('memory routes', () => {
     expect(archived!.status).toBe(409);
   });
 
+  it.each(['project', 'session'] as const)('rejects a transfer preview after only its source %s binding changes', async (scope) => {
+    const binding = scope === 'project' ? 'projectId' : 'sessionId';
+    const source = memory.store.create({ content: 'Source rule', scope, [binding]: 'A', type: 'lesson' }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Destination rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const preview = await call('POST', `/api/memories/${source.id}/transfer-preview`, { targetScope: 'personal' }, {
+      transfer: {
+        encode: async () => { throw new Error('unused'); },
+        decode: async () => { throw new Error('unused'); },
+        propose: async () => ({
+          verdict: 'rewrite' as const, portable: 'Portable rule', content: 'Destination rule',
+          abstractionLevel: 'general' as const, note: '',
+          landing: { route: 'reinforces' as const, targetId: target.id },
+        }),
+      },
+    });
+    expect(preview!.status).toBe(200);
+    const { data } = await json(preview);
+    const patch = await call('PATCH', `/api/memories/${source.id}`, { [binding]: 'B' });
+    expect(patch!.status).toBe(200);
+    expect(memory.store.getById(source.id)![binding]).toBe('B');
+    const state = () => memory.store.list().map((item) => ({
+      item, events: memory.store.getEvents(item.id), relations: memory.store.getRelations(item.id),
+    }));
+    const before = state();
+    const receipts = memory.db.query('SELECT * FROM memory_kv ORDER BY key').all();
+    const result = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: data.sourceVersion, targetScope: 'personal', content: data.content,
+      abstractionLevel: data.abstractionLevel, verdict: data.verdict,
+      landingRoute: data.landing.route, landingTargetId: data.landing.targetId,
+      landingTargetVersion: data.landing.targetVersion, archiveOriginal: true, chatId: 's-binding-transfer',
+    });
+    expect(result!.status).toBe(409);
+    expect((await json(result)).error.code).toBe('CONFLICT');
+    expect(state()).toEqual(before);
+    expect(memory.db.query('SELECT * FROM memory_kv ORDER BY key').all()).toEqual(receipts);
+    expect(memory.getTransferLandings('s-binding-transfer')).toEqual([]);
+  });
+
   it('requires a reviewed active landing target version before reinforcing', async () => {
     const source = (await json(await call('POST', '/api/memories', {
       content: 'RenderX uses pnpm', scope: 'project', projectId: 'RenderX', type: 'preference',

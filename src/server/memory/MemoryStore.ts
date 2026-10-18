@@ -130,7 +130,7 @@ const VERSIONED_FIELDS = [
 const SCOPE_REACH: Record<MemoryScope, number> = { session: 0, project: 1, personal: 2 };
 
 /** Patch keys whose change means "the text/meaning the model acts on moved" — these bump `version`. */
-const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'type', 'topic', 'abstractionLevel'] as const;
+const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel'] as const;
 
 type CandidateDecisionTransition = 'ordinary' | 'dismiss' | 'restore';
 
@@ -846,16 +846,39 @@ export class MemoryStore {
       expectedTargetContent?: string;
     },
   ): MemoryItem | null {
+    return this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
+  }
+
+  /** Preserve a new capture observation without replacing an existing pending revision. */
+  createCaptureUpdateProposal(
+    input: CreateMemoryInput,
+    targetId: string,
+    meta: ActorMeta,
+    opts?: { expectedTargetContent?: string },
+  ): { item: MemoryItem; isRevision: boolean } | null {
+    return this.createRevisionCandidate(input, targetId, meta, true, opts);
+  }
+
+  private createRevisionCandidate(
+    input: CreateMemoryInput,
+    targetId: string,
+    meta: ActorMeta,
+    allowStandalone: boolean,
+    opts?: { expectedTargetContent?: string },
+  ): { item: MemoryItem; isRevision: boolean } | null {
     return this.db.transaction(() => {
       const target = this.getById(targetId);
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
-      if (this.hasOpenRevision(targetId)) return null;
+      const isRevision = !this.hasOpenRevision(targetId);
+      if (!isRevision && !allowStandalone) return null;
       const proposal = this.create({ ...input, status: 'candidate' }, meta);
-      this.addRelation(proposal.id, targetId, 'revises');
-      this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
-      return proposal;
-    })() as MemoryItem | null;
+      if (isRevision) {
+        this.addRelation(proposal.id, targetId, 'revises');
+        this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
+      }
+      return { item: proposal, isRevision };
+    })();
   }
 
   /**

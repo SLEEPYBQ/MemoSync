@@ -602,24 +602,39 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     }
   });
 
-  it('capture UPDATE drops a refused revision without creating an orphan candidate', async () => {
+  it('capture UPDATE preserves a distinct observation when a revision is already pending', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const target = memory.store.create(
       { content: 'Dev server runs on port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' },
     );
-    memory.store.createRevisionProposal(
-      { content: 'Use port 4000 instead', scope: 'personal', type: 'fact' }, target.id, { actor: 'user' },
-    );
-    const before = memory.store.list();
     const { call } = stubCaller([
-      { candidates: [{ content: 'Dev server now runs on port 3210', type: 'fact', scope: 'personal' }] },
+      { candidates: [{ content: 'Dev server now runs on port 4000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+      { candidates: [{ content: 'Dev server now runs on port 5000', type: 'fact', scope: 'personal' }] },
       { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
     ]);
-    const outcome = await createCaptureService({ memory, callJson: call }).capture({
-      sessionId: 's-update', userText: 'We moved the dev server to 3210', assistantText: 'Noted.',
+    const capture = createCaptureService({ memory, callJson: call });
+    const first = await capture.capture({
+      sessionId: 's-update', turn: 1, userText: 'We moved the dev server to 4000', assistantText: 'Noted.',
     });
-    expect(outcome).toMatchObject({ created: [], surfaced: 0, revisions: 0, dropped: 1 });
-    expect(memory.store.list()).toEqual(before);
+    expect(first).toMatchObject({ surfaced: 1, revisions: 1, dropped: 0 });
+    const draft = first.created[0]!;
+    const draftEvents = memory.store.getEvents(draft.id);
+    const outcome = await capture.capture({
+      sessionId: 's-update', turn: 2, userText: 'We moved the dev server to 5000', assistantText: 'Noted.',
+    });
+    expect(outcome).toMatchObject({ surfaced: 1, revisions: 0, dropped: 0 });
+    expect(outcome.created).toHaveLength(1);
+    const latest = outcome.created[0]!;
+    expect(latest).toMatchObject({ content: 'Dev server now runs on port 5000', status: 'candidate', provenanceTurn: 2 });
+    expect(memory.store.list({ status: 'candidate' }).map(({ id }) => id).sort()).toEqual([draft.id, latest.id].sort());
+    expect(memory.store.getById(draft.id)).toEqual(draft);
+    expect(memory.store.getEvents(draft.id)).toEqual(draftEvents);
+    expect(memory.store.revisionTargetOf(draft.id)?.id).toBe(target.id);
+    expect(memory.store.getKv(`revision_targets:${draft.id}`)).not.toBeNull();
+    expect(memory.store.getRelations(latest.id)).toEqual([]);
+    expect(memory.store.getKv(`revision_targets:${latest.id}`)).toBeNull();
+    expect(memory.store.getById(target.id)).toEqual(target);
   });
 
   it('updates verdict surfaces a REVISION candidate linked revises → target', async () => {

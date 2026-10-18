@@ -347,6 +347,17 @@ describe('MemoryStore', () => {
   });
 
   describe('version/usage event log (option 乙)', () => {
+    it.each(['project', 'session'] as const)('versions %s binding changes but not no-ops or status changes', (scope) => {
+      const binding = scope === 'project' ? 'projectId' : 'sessionId';
+      const item = store.create({ content: 'Context rule', scope, type: 'fact', [binding]: 'A' }, { actor: 'user' });
+      const moved = store.update(item.id, { [binding]: 'B' }, { actor: 'user' });
+      expect(moved.version).toBe(item.version + 1);
+      const events = store.getEvents(item.id);
+      expect(store.update(item.id, { [binding]: 'B' }, { actor: 'user' })).toEqual(moved);
+      expect(store.getEvents(item.id)).toEqual(events);
+      expect(store.archive(item.id, { actor: 'user' }).version).toBe(moved.version);
+    });
+
     it('logs a create event with actor + session + full snapshot', () => {
       const m = store.create(
         { content: 'x', scope: 'session', type: 'lesson', sessionId: 's-9' },
@@ -916,6 +927,47 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     expect(
       store.createRevisionProposal(input, target.id, { actor: 'system' }, { expectedTargetContent: 'Use port 5000 (user fixed it)' }),
     ).not.toBeNull();
+  });
+
+  it('capture update fallback rejects stale or inactive targets even with an open revision', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const input = { content: 'Use port 4000', scope: 'personal' as const, type: 'fact' as const };
+    store.createRevisionProposal(input, target.id, { actor: 'agent' });
+    store.update(target.id, { content: 'Use port 443' }, { actor: 'user' });
+    const before = store.list();
+    expect(store.createCaptureUpdateProposal(input, target.id, { actor: 'agent' }, {
+      expectedTargetContent: target.content,
+    })).toBeNull();
+    expect(store.list()).toEqual(before);
+    store.archive(target.id, { actor: 'user' });
+    const archived = store.list();
+    expect(store.createCaptureUpdateProposal(input, target.id, { actor: 'agent' }, {
+      expectedTargetContent: 'Use port 443',
+    })).toBeNull();
+    expect(store.createCaptureUpdateProposal(input, 'M-missing', { actor: 'agent' })).toBeNull();
+    expect(store.list()).toEqual(archived);
+  });
+
+  it('capture update rolls back its candidate and relation if snapshot persistence fails', () => {
+    const db = new Database(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    applySchema(db);
+    const store = new MemoryStore(db);
+    try {
+      const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      db.exec(`CREATE TRIGGER reject_revision_snapshot BEFORE INSERT ON memory_kv
+        BEGIN SELECT RAISE(ABORT, 'snapshot write failed'); END;`);
+      expect(() => store.createCaptureUpdateProposal(
+        { content: 'Use port 4000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      )).toThrow('snapshot write failed');
+      expect(store.list()).toEqual([target]);
+      expect(db.query('SELECT * FROM memory_relations').all()).toEqual([]);
+      expect(db.query('SELECT * FROM memory_kv').all()).toEqual([]);
+      expect(db.query('SELECT * FROM memory_events').all()).toHaveLength(1);
+    } finally {
+      db.close();
+    }
   });
 
   it('acceptRevision activates the candidate and archives its target in one act', () => {
