@@ -16,6 +16,7 @@ import {
 } from "../ui/dialog"
 import { markdownComponentsWithLinks } from "./shared"
 import { FileContentView } from "./FileContentView"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import {
   TABLE_PREVIEW_COLUMN_LIMIT,
   TEXT_PREVIEW_LIMIT_BYTES,
@@ -125,10 +126,10 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
   ])
 
   async function handleCopyLink() {
-    if (!absoluteContentUrl || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    if (!absoluteContentUrl) {
       return
     }
-    await navigator.clipboard.writeText(absoluteContentUrl)
+    await copyTextToClipboard(absoluteContentUrl)
   }
 
   function handleOpenInNewTab() {
