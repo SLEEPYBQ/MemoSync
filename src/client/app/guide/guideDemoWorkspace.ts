@@ -271,29 +271,6 @@ export function installGuideFetchShim(): GuideFetchShimController {
   const realFetch = window.fetch.bind(window)
   const boardDemo = createGuideBoardDemoController(GUIDE_BOARD_PENDING_DEMO)
   const filesPrefix = `/api/projects/${GUIDE_PROJECT_ID}/files`
-  const memoryFilePath = `/api/projects/${GUIDE_PROJECT_ID}/memory-file`
-  let memoryFileContent = [
-    "# Memory",
-    "",
-    "## Project facts",
-    "- Cart state lives in `client/src/cart/CartContext.tsx`.",
-    "",
-    "## Preferences",
-    "- Ask for confirmation before destructive actions.",
-  ].join("\n")
-  let memoryFileMtime = 1_723_280_400_000
-  const summary = {
-    text: [
-      "## Project",
-      "The cart is managed through `CartContext`, and product prices use the shared `formatPrice` helper.",
-      "",
-      "## Preferences",
-      "Ask for confirmation before destructive actions and avoid adding dependencies when the repository already has what is needed.",
-    ].join("\n"),
-    updatedAt: "2026-08-10T09:00:00.000Z",
-    stale: false,
-  }
-
   window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
     const raw = typeof input === "string" ? input : input instanceof URL ? input.href : input.url
     const url = new URL(raw, window.location.origin)
@@ -474,38 +451,6 @@ export function installGuideFetchShim(): GuideFetchShimController {
         return Promise.resolve(failClosed(url.pathname))
       }
       return Promise.resolve(json({ queued: id }))
-    }
-    if (url.pathname === "/api/memories/summary") {
-      return Promise.resolve(json(summary))
-    }
-    if (url.pathname === "/api/memories/summary/refresh") {
-      return Promise.resolve(json(summary))
-    }
-    if (url.pathname === "/api/memories/summary/chat") {
-      return Promise.resolve(json({
-        reply: "In the live panel, the assistant would confirm the requested memory update here.",
-        applied: 0,
-        summary,
-      }))
-    }
-    if (url.pathname === memoryFilePath) {
-      if (method === "PUT") {
-        try {
-          const body = typeof init?.body === "string" ? JSON.parse(init.body) as { content?: unknown } : null
-          if (typeof body?.content === "string") memoryFileContent = body.content
-        } catch {
-          // The production panel reports malformed input; the guide never
-          // needs to make a real request as a fallback.
-        }
-        memoryFileMtime += 1
-        return Promise.resolve(json({ path: "MEMORY.md", mtimeMs: memoryFileMtime }))
-      }
-      return Promise.resolve(json({
-        path: "MEMORY.md",
-        content: memoryFileContent,
-        mtimeMs: memoryFileMtime,
-        exists: true,
-      }))
     }
     if (!url.pathname.startsWith(filesPrefix)) {
       if (

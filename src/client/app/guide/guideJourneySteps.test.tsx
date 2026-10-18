@@ -1,16 +1,8 @@
-import { describe, expect, test } from "bun:test"
-import { renderToStaticMarkup } from "react-dom/server"
-import {
-  buildAutoSteps,
-  buildMemoSyncSteps,
-  buildStaticSteps,
-} from "./guideJourneySteps"
-import {
-  buildAutoSteps as buildSourceAutoSteps,
-  buildMemoSyncSteps as buildSourceMemoSyncSteps,
-  buildStaticSteps as buildSourceStaticSteps,
-} from "./tourSteps"
-import type { TourStep } from "./GuideTour"
+import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { buildMemoSyncSteps } from "./guideJourneySteps";
+import { buildMemoSyncSteps as buildSourceMemoSyncSteps } from "./tourSteps";
+import type { TourStep } from "./GuideTour";
 
 function copy(steps: TourStep[]) {
   return steps
@@ -45,9 +37,9 @@ const POST_SESSION = [
 ]
 
 describe("participant-facing Guide journey", () => {
-  const tours = [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]
+  const tours = [buildMemoSyncSteps()]
 
-  test("all conditions follow the same task start and post-session sequence", () => {
+  test("MemoSync follows the task start and post-session sequence", () => {
     for (const steps of tours) {
       expect(ids(steps).slice(0, SHARED_START.length)).toEqual(SHARED_START)
       expect(ids(steps).slice(-POST_SESSION.length)).toEqual(POST_SESSION)
@@ -123,8 +115,6 @@ describe("participant-facing Guide journey", () => {
   test("the choreography preserves every source lesson and only adds the shared practice task", () => {
     const pairs = [
       [buildSourceMemoSyncSteps(), buildMemoSyncSteps()],
-      [buildSourceAutoSteps(), buildAutoSteps()],
-      [buildSourceStaticSteps(), buildStaticSteps()],
     ] as const
 
     for (const [source, journey] of pairs) {
@@ -199,19 +189,6 @@ describe("participant-facing Guide journey", () => {
     expect(html).toContain("No visible effect")
     expect(html).toContain("M-02 shapes the shared cart action")
     expect(html).toContain("M-07 has no image to apply to")
-  })
-
-  test("baseline participants receive the same outer journey without MemoSync vocabulary", () => {
-    for (const steps of [buildAutoSteps(), buildStaticSteps()]) {
-      const html = copy(steps)
-      expect(html).toContain("Practice shop")
-      expect(html).toContain("Read the task brief first")
-      expect(html).toContain("Finish the session when the task is complete")
-      expect(html).not.toContain("MemoSync")
-      expect(html).not.toContain("Memory Board")
-      expect(html).not.toContain("Working Memory for This Turn")
-      expect(html).not.toContain("Memory Use Audit")
-    }
   })
 
   test("the shared practice task does not reveal experiment conditions", () => {

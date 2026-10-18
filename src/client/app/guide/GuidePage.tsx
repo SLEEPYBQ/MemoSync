@@ -4,19 +4,9 @@ import { Loader2 } from "lucide-react"
 import { useConditionPolicyResolved } from "../../lib/conditionApi"
 import { canSkipGuide, completeStudyGuide, markGuideSeen } from "../../lib/guideState"
 import { GuideTour } from "./GuideTour"
-import { buildAutoSteps, buildMemoSyncSteps, buildStaticSteps } from "./guideJourneySteps"
+import { buildMemoSyncSteps } from "./guideJourneySteps"
 
-/**
- * /guide — the per-arm interactive walkthrough. Auto-opens once per browser
- * in study deployments (see AppLayout); always reachable again from the
- * sidebar. Content switches on the resolved condition; until the policy
- * arrives we show a spinner rather than defaulting, so a baseline
- * participant can never flash the full-system tour.
- *
- * guideJourneySteps owns participant-facing order and language. The source
- * tourSteps module continues to own the production scenes and local practice
- * controllers shared by all three conditions.
- */
+/** MemoSync walkthrough, reachable from the sidebar and study onboarding. */
 export function GuidePage() {
   const navigate = useNavigate()
   const policy = useConditionPolicyResolved()
@@ -40,8 +30,6 @@ export function GuidePage() {
 
   const tour = useMemo(() => {
     if (policy === null) return null
-    if (policy.condition === "auto") return { brandName: "Agent", steps: buildAutoSteps() }
-    if (policy.condition === "static") return { brandName: "Agent", steps: buildStaticSteps() }
     return { brandName: "MemoSync", steps: buildMemoSyncSteps() }
   }, [policy])
 

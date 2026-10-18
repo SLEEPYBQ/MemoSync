@@ -1,8 +1,8 @@
-import { describe, expect, test } from "bun:test"
-import { existsSync, mkdtempSync, readFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { ExperimentLogger, NoopExperimentLogger } from "./logger"
+import { describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ExperimentLogger, NoopExperimentLogger } from "./logger";
 
 describe("ExperimentLogger", () => {
   test("appends one JSON line per event with ts + condition", () => {
@@ -27,13 +27,30 @@ describe("ExperimentLogger", () => {
     expect(() => NoopExperimentLogger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
   })
 
-  test("stamps participant on every event when configured (orchestrated instances)", () => {
+  test("stamps MemoSync on new events even when configured with a retired condition", () => {
     const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
     const filePath = join(dir, "events.jsonl")
     const logger = new ExperimentLogger({ filePath, condition: "auto", participant: "P07", stdout: false })
     logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
     const record = JSON.parse(readFileSync(filePath, "utf8").trim())
     expect(record.participant).toBe("P07")
+    expect(record.condition).toBe("memosync")
+  })
+
+  test("ignores a retired condition in the environment for new events", () => {
+    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
+    const filePath = join(dir, "events.jsonl")
+    const previousCondition = process.env.EXPERIMENT_CONDITION
+    process.env.EXPERIMENT_CONDITION = "static"
+    try {
+      const logger = new ExperimentLogger({ filePath, stdout: false })
+      logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
+      const record = JSON.parse(readFileSync(filePath, "utf8").trim())
+      expect(record.condition).toBe("memosync")
+    } finally {
+      if (previousCondition === undefined) delete process.env.EXPERIMENT_CONDITION
+      else process.env.EXPERIMENT_CONDITION = previousCondition
+    }
   })
 
   test("stamps internal QA allocation mode on every exported event", () => {

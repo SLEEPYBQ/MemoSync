@@ -22,18 +22,6 @@ export interface MemoryServiceOptions {
   logger?: Pick<ExperimentLogger, 'event'>;
 }
 
-export interface AutoProjectCloneProvenance {
-  transitionKey: string;
-  sourceTaskId: string;
-  sourceProjectId: string;
-  cloneOf: {
-    memoryId: string;
-    version: number;
-    contentHash: string;
-  };
-}
-
-
 export class MemoryService {
   readonly db: Database;
   readonly store: MemoryStore;
@@ -91,56 +79,6 @@ export class MemoryService {
     if (!sessionId) return all;
     const excluded = new Set(this.store.getSessionExclusions(sessionId));
     return excluded.size === 0 ? all : all.filter((m) => !excluded.has(m.id));
-  }
-
-  /**
-   * Auto condition treatment: one independently mutable Project Copy, shared
-   * by every chat/session in that project. Scope is fixed to Project for this
-   * baseline; session exclusions and participant-selected working sets belong
-   * to MemoSync and never narrow the copy.
-   *
-   * An absent project id has no implicit participant-wide fallback. Returning
-   * an empty copy is fail-closed and preserves the approved empty first-project
-   * starting state until the server supplies the assigned project.
-   */
-  autoProjectMemories(projectId?: string): MemoryItem[] {
-    if (!projectId) return [];
-    return this.store.list({ scope: 'project', projectId, status: 'active' });
-  }
-
-  /** Audit provenance for a new identity created by Baseline Project Copy. */
-  getAutoProjectCloneRef(memoryId: string): AutoProjectCloneProvenance | null {
-    const row = this.db.query(`
-      SELECT lineage.transition_key,
-             lineage.source_memory_id,
-             lineage.source_version,
-             lineage.source_content_hash,
-             receipt.source_task_id,
-             receipt.source_project_id
-        FROM auto_project_copy_lineage AS lineage
-        JOIN auto_project_copy_receipts AS receipt
-          ON receipt.transition_key = lineage.transition_key
-       WHERE lineage.target_memory_id = ?
-    `).get(memoryId) as {
-      transition_key: string;
-      source_memory_id: string;
-      source_version: number;
-      source_content_hash: string;
-      source_task_id: string;
-      source_project_id: string;
-    } | null;
-    return row
-      ? {
-          transitionKey: row.transition_key,
-          sourceTaskId: row.source_task_id,
-          sourceProjectId: row.source_project_id,
-          cloneOf: {
-            memoryId: row.source_memory_id,
-            version: row.source_version,
-            contentHash: row.source_content_hash,
-          },
-        }
-      : null;
   }
 
   /** Re-materialize the Markdown projection for a scope (call after mutations). */

@@ -1,10 +1,6 @@
 import type { ReactNode } from "react"
 import type { TourStep } from "./GuideTour"
-import {
-  buildAutoSteps as buildSourceAutoSteps,
-  buildMemoSyncSteps as buildSourceMemoSyncSteps,
-  buildStaticSteps as buildSourceStaticSteps,
-} from "./tourSteps"
+import { buildMemoSyncSteps as buildSourceMemoSyncSteps } from "./tourSteps"
 
 type StepPatch = Partial<Omit<TourStep, "id" | "scene">>
 
@@ -51,21 +47,6 @@ const MEMOSYNC_STEP_IDS = [
   "memosync.audit",
   "memosync.enforce",
   "memosync.memory-record",
-] as const
-
-const AUTO_STEP_IDS = [
-  "auto.memory",
-  "auto.inspect",
-  "shared.work-log",
-  "shared.finished-reply",
-] as const
-
-const STATIC_STEP_IDS = [
-  "static.notebook",
-  "static.apply",
-  "static.update",
-  "shared.work-log",
-  "shared.finished-reply",
 ] as const
 
 function text(...paragraphs: ReactNode[]) {
@@ -445,66 +426,6 @@ const MEMOSYNC_PATCHES: Record<string, StepPatch> = {
   },
 }
 
-const AUTO_PATCHES: Record<string, StepPatch> = {
-  "auto.memory": {
-    title: "Automatic memory for the current project",
-    body: text(
-      <>After a completed turn, Agent automatically captures useful preferences, decisions, and project facts.</>,
-      <>Before the next turn, Agent uses the complete memory for the current project. There is no per-item selection or review step.</>,
-    ),
-  },
-  "auto.inspect": {
-    title: "Inspect or update automatic memory",
-    body: text(
-      <>The memory panel summarizes what Agent remembers for the current project.</>,
-      <>Use <strong>Ask or update your memory</strong> to inspect the memory or request that Agent remember, change, or forget something.</>,
-      <>Optional practice: try a request, or select <strong>Next</strong>.</>,
-      <>The first project starts with empty memory. Its final memory is copied once into the second project. The two project copies then change independently.</>,
-    ),
-  },
-  "auto.recap": {
-    title: "Automatic-memory recap",
-    body: text(
-      <>Agent captures memory after completed turns and uses the full current-project memory on the next turn.</>,
-      <>Use the memory panel to inspect it or request a change.</>,
-    ),
-  },
-}
-
-const STATIC_PATCHES: Record<string, StepPatch> = {
-  "static.notebook": {
-    title: "The shared Markdown memory",
-    body: text(
-      <>Static memory is stored in <strong>MEMORY.md</strong> and the eligible files under <strong>memory/*.md</strong>.</>,
-      <>Before every turn, Agent receives the complete current text from these files. There is no per-item selection or review step.</>,
-      <>Use <strong>Edit</strong> and <strong>Save</strong> to change the root memory file. Other memory files are available through Files.</>,
-      <>Optional practice: edit the file, or select <strong>Next</strong>.</>,
-      <>The first project starts with empty memory files. Their final contents are copied once into the second project. The two project copies then change independently.</>,
-    ),
-  },
-  "static.apply": {
-    title: "Agent uses the Markdown memory",
-    body: text(
-      <>Agent receives the memory text before the turn starts and follows it while working.</>,
-      <>The transcript does not need a separate read-file action for this delivery.</>,
-    ),
-  },
-  "static.update": {
-    title: "Agent can update the memory files",
-    body: text(
-      <>When something is worth keeping, Agent can edit MEMORY.md. You can also ask Agent to change or remove a note.</>,
-      <>The edit appears in Git like any other file change. Open the memory panel with the brain icon to read the current file.</>,
-    ),
-  },
-  "static.recap": {
-    title: "Static-memory recap",
-    body: text(
-      <>You and Agent share the Markdown memory files. Every turn receives their complete current text.</>,
-      <>Memory edits remain visible in Files and Git.</>,
-    ),
-  },
-}
-
 function indexSteps(steps: TourStep[]): StepMap {
   return new Map(steps.map((step) => [step.id, step]))
 }
@@ -579,28 +500,6 @@ export function buildMemoSyncSteps(): TourStep[] {
     ...MEMOSYNC_STEP_IDS.map((id) => patchedStep(steps, id, MEMOSYNC_PATCHES)),
     ...workspaceSteps(steps),
     patchedStep(steps, "memosync.recap", MEMOSYNC_PATCHES),
-    ...postSessionSteps(steps),
-  ]
-}
-
-export function buildAutoSteps(): TourStep[] {
-  const steps = indexSteps(buildSourceAutoSteps())
-  return [
-    ...sharedStart(steps),
-    ...AUTO_STEP_IDS.map((id) => patchedStep(steps, id, AUTO_PATCHES)),
-    ...workspaceSteps(steps),
-    patchedStep(steps, "auto.recap", AUTO_PATCHES),
-    ...postSessionSteps(steps),
-  ]
-}
-
-export function buildStaticSteps(): TourStep[] {
-  const steps = indexSteps(buildSourceStaticSteps())
-  return [
-    ...sharedStart(steps),
-    ...STATIC_STEP_IDS.map((id) => patchedStep(steps, id, STATIC_PATCHES)),
-    ...workspaceSteps(steps),
-    patchedStep(steps, "static.recap", STATIC_PATCHES),
     ...postSessionSteps(steps),
   ]
 }

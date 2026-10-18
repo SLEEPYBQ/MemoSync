@@ -3,7 +3,7 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
-import { resolveConditionPolicy, type ExperimentConditionName } from "../../server/experiment/condition"
+import { resolveConditionPolicy } from "../../server/experiment/condition"
 import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 
 const emptySnapshot: LocalProjectsSnapshot = {
@@ -15,7 +15,7 @@ const emptySnapshot: LocalProjectsSnapshot = {
   projects: [],
 }
 
-function renderEmptyLanding(condition: ExperimentConditionName | "") {
+function renderEmptyLanding(condition: string) {
   return renderToStaticMarkup(createElement(
     MemoryRouter,
     null,
@@ -43,23 +43,23 @@ function projectPickerOpeningTag(html: string) {
 }
 
 describe("LocalDev project picker", () => {
-  for (const condition of ["auto", "static", "memosync"] as const) {
-    test(`${condition} removes project creation and switching from the study landing page`, () => {
+  test("MemoSync study mode removes project creation and switching from the landing page", () => {
+    const html = renderEmptyLanding("memosync")
+
+    expect(html).toContain("Open the active task assignment to begin")
+    expect(html).toContain("Open current assignment")
+    expect(html).not.toContain("Add project")
+    expect(html).not.toContain("No project yet")
+    expect(html).not.toContain("<textarea")
+  })
+
+  test("keeps the normal MemoSync project picker actionable for default and retired conditions", () => {
+    for (const condition of ["", "auto", "static"]) {
       const html = renderEmptyLanding(condition)
 
-      expect(html).toContain("Open the active task assignment to begin")
-      expect(html).toContain("Open current assignment")
-      expect(html).not.toContain("Add project")
-      expect(html).not.toContain("No project yet")
-      expect(html).not.toContain("<textarea")
-    })
-  }
-
-  test("keeps the normal project picker actionable outside the study", () => {
-    const html = renderEmptyLanding("")
-
-    expect(projectPickerOpeningTag(html)).not.toContain("disabled")
-    expect(html).toContain("Add a project")
+      expect(projectPickerOpeningTag(html)).not.toContain("disabled")
+      expect(html).toContain("Add a project")
+    }
   })
 
   test("lists every project and keeps Add project as the final menu action", () => {

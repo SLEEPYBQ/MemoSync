@@ -98,16 +98,6 @@ export async function handleStudyRequest(
     }
   }
 
-  if (pathname === '/api/study/static-edit-entered' && req.method === 'POST') {
-    if (!deps.telemetry) return bad(404, 'Study telemetry does not exist in this deployment.');
-    const body = await bodyRecord(req);
-    try {
-      return ok(deps.telemetry.recordStaticEditEntered(body));
-    } catch (error) {
-      return serviceError(error);
-    }
-  }
-
   if (pathname === '/api/study/onboarding' && req.method === 'GET') {
     if (!deps.onboarding) return bad(503, 'Study onboarding is unavailable for this participant instance.');
     try {
