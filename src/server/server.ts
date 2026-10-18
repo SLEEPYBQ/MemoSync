@@ -1,6 +1,7 @@
 import path from "node:path"
+import { homedir } from "node:os"
 import { stat } from "node:fs/promises"
-import { APP_NAME, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, getDataDir, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
 import { parseStudyProjects, registerStudyProjects, resolveRegisteredStudyProjects, type RegisteredStudyProject } from "./study-projects"
 import { studyWorkspaceStarterReady } from "./study-workspace-provenance"
 import { createStudyPromptGate, type StudyPromptGate } from "./study-prompt-gate"
@@ -15,6 +16,7 @@ import type { ShareMode } from "../shared/share"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
+import { acquireDataDirectoryLock } from "./data-directory-lock"
 import { migrateLegacyDataRoot } from "./migrate-data-root"
 import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
@@ -240,6 +242,43 @@ export interface StartMemoSyncServerOptions {
 }
 
 export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
+  if (!options.dataDir) migrateLegacyDataRoot()
+  const lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homedir()))
+  const startupCleanups: Array<() => void | Promise<void>> = []
+  try {
+    const runtime = await startLockedMemoSyncServer(
+      { ...options, dataDir: lock.dataDir },
+      (cleanup) => startupCleanups.push(cleanup),
+    )
+    let stopping: Promise<void> | undefined
+    return {
+      ...runtime,
+      stop: () => stopping ??= (async () => {
+        await runtime.stop()
+        lock.release()
+      })(),
+    }
+  } catch (error) {
+    const cleanupErrors: unknown[] = []
+    for (const cleanup of startupCleanups.reverse()) {
+      try {
+        await cleanup()
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError)
+      }
+    }
+    if (cleanupErrors.length) {
+      throw new AggregateError([error, ...cleanupErrors], "MemoSync startup and cleanup failed")
+    }
+    lock.release()
+    throw error
+  }
+}
+
+async function startLockedMemoSyncServer(
+  options: StartMemoSyncServerOptions,
+  onStartupCleanup: (cleanup: () => void | Promise<void>) => void,
+) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
@@ -249,7 +288,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
-  if (!options.dataDir) migrateLegacyDataRoot()
   // Study-condition policy: decides which memory behaviors exist in this
   // instance (capture surfacing, preview gate, trace, board/working-set access)
   // and whether remote git/GitHub access exists at all. Resolved BEFORE any
@@ -303,6 +341,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const studyMemoryStore = conditionPolicy.studyMode
     ? new StudyMemoryStore(path.join(store.dataDir, "experiments", "study.sqlite"))
     : null
+  if (studyMemoryStore) onStartupCleanup(() => studyMemoryStore.close())
   // Formal allocations receive their immutable identity from the orchestrator.
   // Fixed-arm local images without that env remain bootable for diagnostics,
   // but onboarding/session routes fail closed rather than accepting a browser
@@ -362,6 +401,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
       durableSink: studyTelemetry ? (input) => studyTelemetry.recordServerEvent(input) : undefined,
     }),
   })
+  onStartupCleanup(() => memory.close())
   const beginStudyMemoryMutation = conditionPolicy.studyMode
     ? () => studyRegistry.beginTreatmentMemoryMutation()
     : undefined
@@ -377,8 +417,11 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
+  onStartupCleanup(() => terminals.closeAll())
   const keybindings = new KeybindingsManager()
+  onStartupCleanup(() => keybindings.dispose())
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  onStartupCleanup(() => appSettings.dispose())
   await appSettings.initialize()
   // A participant toggling the preview gate is research data (STUDY_PLAN §2.4)
   // — log every memoryPreview settings change, whether via UI or file edit.
@@ -611,6 +654,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     },
   })
   agent = activeAgent
+  onStartupCleanup(() => activeAgent.shutdownStudyRuntime())
   const studyWorkingMemoryAdmission = createStudyWorkingMemoryAdmission({
     policy: conditionPolicy,
     store,
@@ -711,20 +755,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     // Study arms only: the serial gate can refuse prompts (chat from a
     // completed session, pending questionnaire, or a finished study).
   })
-  // The first MemoSync prompt is already owned by a durable opening-Board
-  // claim before it reaches AgentCoordinator. Re-prime that exact logical
-  // turn after restart; its review id prevents a second prompt/turn/telemetry
-  // record and Working Memory still waits for the final Board Continue.
-  activeAgent.resumeOpeningBoardPreparation()
-  const staleEmptyChatPruneInterval = setInterval(() => {
-    void router.pruneStaleEmptyChats()
-      .then(() => router.broadcastSnapshots())
-  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
-
-  // Re-prime any chat whose queue was left stranded by a restart (BUG CORE-2).
-  // Fire-and-forget: engine boots can be slow and must not block the listener;
-  // drainOrphanedQueues logs its own per-chat errors.
-  void activeAgent.drainOrphanedQueues()
+  onStartupCleanup(() => router.dispose())
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -1006,8 +1037,19 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     }
   }
 
+  onStartupCleanup(() => server.stop(true))
+  // Do not launch writers until startup can no longer fail to bind.
+  activeAgent.resumeOpeningBoardPreparation()
+  const staleEmptyChatPruneInterval = setInterval(() => {
+    void router.pruneStaleEmptyChats()
+      .then(() => router.broadcastSnapshots())
+  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
+  onStartupCleanup(() => clearInterval(staleEmptyChatPruneInterval))
+  void activeAgent.drainOrphanedQueues()
+
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
+    await server.stop(true)
     for (const chatId of [...activeAgent.activeTurns.keys()]) {
       await activeAgent.cancel(chatId)
     }
@@ -1019,7 +1061,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     memory.close()
     studyMemoryStore?.close()
     await store.compact()
-    server.stop(true)
   }
 
   return {
