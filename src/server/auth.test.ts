@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { validateRequestOrigin } from "./auth"
+import { createAuthManager, validateRequestOrigin } from "./auth"
 import { persistProjectUpload } from "./uploads"
 import { startMemoSyncServer } from "./server"
 
@@ -22,6 +22,34 @@ describe("request origin validation", () => {
     expect(validateRequestOrigin(new Request("http://localhost:3210/ws", {
       headers: { Origin: "http://localhost:5173" },
     }), { allowedOrigins: ["http://localhost:5173"] })).toBe(true)
+  })
+})
+
+describe("login redirect boundary", () => {
+  test("rejects ASCII controls in next paths before URL normalization", async () => {
+    const auth = createAuthManager("secret")
+    const origin = "http://localhost:3210"
+    for (const code of [...Array.from({ length: 32 }, (_, index) => index), 127]) {
+      for (const control of [String.fromCharCode(code), `%${code.toString(16).padStart(2, "0")}`]) {
+        const next = `/${control}/foreign.invalid`
+        const response = auth.redirectToApp(new Request(`${origin}/auth/login?next=${encodeURIComponent(next)}`))
+        expect(response.headers.get("location")).toBe(`${origin}/`)
+        const login = await auth.handleLogin(new Request(`${origin}/auth/login`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: "secret", next }),
+        }), "/")
+        expect(await login.json()).toEqual({ ok: true, nextPath: "/" })
+      }
+    }
+  })
+
+  test("preserves local next paths with query, fragment and encoded spaces", () => {
+    const auth = createAuthManager("secret")
+    const origin = "http://localhost:3210"
+    const next = "/chat/a%20b?tab=files#details"
+    const response = auth.redirectToApp(new Request(`${origin}/auth/login?next=${encodeURIComponent(next)}`))
+    expect(response.headers.get("location")).toBe(`${origin}${next}`)
   })
 })
 
@@ -136,6 +164,66 @@ describe("password auth", () => {
       expect(await authenticated.text()).toBe("protected preview target")
     } finally {
       target.stop(true)
+      await server.stop()
+    }
+  })
+
+  test.each(["host", "path"] as const)("protects %s previews and upgrade requests without leaking the app cookie", async (form) => {
+    const seenCookies: Array<string | null> = []
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch(req) {
+        seenCookies.push(req.headers.get("cookie"))
+        return new Response("protected preview target")
+      },
+    })
+    const { server } = await startPasswordServer()
+    const appOrigin = `http://localhost:${server.port}`
+    const host = form === "host" ? `${target.port}.localhost:${server.port}` : `localhost:${server.port}`
+    const previewUrl = `${appOrigin}${form === "path" ? `/__memosync/preview/${target.port}` : ""}/`
+    try {
+      const login = await fetch(`${appOrigin}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin },
+        body: JSON.stringify({ password: "secret", next: "/" }),
+      })
+      const cookie = extractCookie(login)
+      for (const upgrade of [false, true]) {
+        const headers = new Headers({ Host: host, Origin: `http://${host}` })
+        if (upgrade) {
+          headers.set("Connection", "Upgrade")
+          headers.set("Upgrade", "websocket")
+          headers.set("Sec-WebSocket-Version", "13")
+          headers.set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+        }
+        expect((await fetch(previewUrl, { headers })).status).toBe(401)
+        headers.set("Cookie", `${cookie}; project_session=kept`)
+        headers.set("Origin", "http://foreign.invalid")
+        expect((await fetch(previewUrl, { headers })).status).toBe(403)
+        expect(seenCookies).toHaveLength(upgrade ? 1 : 0)
+        headers.set("Origin", `http://${host}`)
+        const authenticated = await fetch(previewUrl, { headers })
+        expect(authenticated.status).toBe(200)
+        expect(await authenticated.text()).toBe("protected preview target")
+        expect(seenCookies.at(-1)).toBe("project_session=kept")
+      }
+    } finally {
+      target.stop(true)
+      await server.stop()
+    }
+  })
+
+  test("keeps control-character login redirects on the app origin", async () => {
+    const { server } = await startPasswordServer()
+    const origin = `http://localhost:${server.port}`
+    try {
+      for (const control of ["%09", "%0A", "%0D"]) {
+        const response = await fetch(`${origin}/auth/login?next=%2F${control}%2Fforeign.invalid`, { redirect: "manual" })
+        expect(response.status).toBe(302)
+        expect(response.headers.get("location")).toBe(`${origin}/`)
+      }
+    } finally {
       await server.stop()
     }
   })

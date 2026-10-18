@@ -8,6 +8,41 @@ function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Reque
 }
 
 describe("preview proxy", () => {
+  it.each(["host", "path"] as const)("isolates MemoSync cookies in both directions for %s previews", async (form) => {
+    const url = form === "host"
+      ? "http://8901.localhost:3210/"
+      : "http://localhost:3210/__memosync/preview/8901/"
+    const req = reqWithHost(new URL(url).host, url, {
+      headers: { Cookie: "memosync_session=secret; project_session=kept; memosync_session=duplicate; memosync_session_extra=also-kept" },
+    })
+    const projectCookie = "project_session=new; Path=/; Expires=Wed, 21 Oct 2037 07:28:00 GMT; HttpOnly"
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("cookie")).toBe("project_session=kept; memosync_session_extra=also-kept")
+      const headers = new Headers()
+      headers.append("Set-Cookie", "memosync_session=overwrite; Path=/; HttpOnly")
+      headers.append("Set-Cookie", projectCookie)
+      headers.append("Set-Cookie", "memosync_session=; Domain=localhost; Path=/; Max-Age=0")
+      headers.append("Set-Cookie", "memosync_session_extra=project-owned; Path=/")
+      return new Response("ok", { headers })
+    }) as typeof fetch
+    const response = await proxyPreviewRequest(req, new URL(url), 8901, fetchImpl)
+    expect(response.status).toBe(200)
+    expect(response.headers.getSetCookie()).toEqual([projectCookie, "memosync_session_extra=project-owned; Path=/"])
+  })
+
+  it("omits Cookie upstream when only the MemoSync session is present", async () => {
+    const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", {
+      headers: { Cookie: "memosync_session=secret" },
+    })
+    let cookie: string | null | undefined
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      cookie = new Headers(init?.headers).get("cookie")
+      return new Response("ok")
+    }) as typeof fetch
+    await proxyPreviewRequest(req, new URL(req.url), 8901, fetchImpl)
+    expect(cookie).toBeNull()
+  })
+
   it("recognizes <port>.localhost hosts and nothing else", () => {
     expect(previewProxyTarget(reqWithHost("8901.localhost:3210"), 3210)).toBe(8901)
     expect(previewProxyTarget(reqWithHost("5173.localhost"), 3210)).toBe(5173)

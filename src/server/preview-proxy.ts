@@ -1,4 +1,5 @@
 import { PREVIEW_PROXY_PATH_PREFIX, previewProxyPath } from "../shared/preview-proxy"
+import { SESSION_COOKIE_NAME } from "./auth"
 
 // Dev-server preview proxy. In Docker, an agent can start a server on ANY
 // container port (8901, 5000, …) — publishing port ranges can never cover
@@ -67,6 +68,11 @@ export function previewProxyOrigin(targetPort: number, appHostWithPort: string):
 }
 
 const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer"]
+
+function isAppSessionCookie(cookie: string) {
+  const separator = cookie.indexOf("=")
+  return separator >= 0 && cookie.slice(0, separator).trim() === SESSION_COOKIE_NAME
+}
 
 function rootRelativeUrl(url: string, targetPort: number) {
   const base = pathProxyBase(targetPort)
@@ -334,6 +340,11 @@ export async function proxyPreviewRequest(
   const pathProxy = isPathProxyRequest(url, targetPort)
   const upstreamPathname = pathProxy ? stripPathProxyPrefix(url.pathname, targetPort) : url.pathname
   const headers = new Headers(req.headers)
+  const projectCookies = (headers.get("cookie") ?? "").split(";")
+    .filter((cookie) => cookie.trim() && !isAppSessionCookie(cookie))
+    .join(";").trim()
+  if (projectCookies) headers.set("cookie", projectCookies)
+  else headers.delete("cookie")
   headers.set("host", `localhost:${targetPort}`)
   // fetch decodes the body; forwarding the original encoding headers would lie.
   headers.delete("accept-encoding")
@@ -351,6 +362,10 @@ export async function proxyPreviewRequest(
       signal: upstreamSignal,
     })
     const out = new Headers(res.headers)
+    out.delete("set-cookie")
+    for (const cookie of res.headers.getSetCookie()) {
+      if (!isAppSessionCookie(cookie)) out.append("set-cookie", cookie)
+    }
     // The pane iframes this from another origin — frame-blocking headers from
     // the dev server would blank it. This is a local dev preview, not a
     // hosting surface.

@@ -28,7 +28,7 @@ import { StudyPreviewRuntime } from "./study-preview-runtime"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { isPathPreviewProxyRequest, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 import { MemoryService } from "./memory"
 import { handleMemoryRequest } from "./memory/routes"
 import { handleStudyRequest } from "./study-routes"
@@ -812,20 +812,14 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
           // inside this process's network namespace (see preview-proxy.ts).
           const previewPort = previewProxyTarget(req, actualPort)
           if (previewPort !== null) {
-            // The public path form shares the app origin, so it must inherit
-            // the app's CSRF and password boundary. The localhost-subdomain
-            // form remains a local-only compatibility route; host-only auth
-            // cookies are not sent to <port>.localhost.
-            if (isPathPreviewProxyRequest(req, previewPort)) {
-              if (!validateRequestOrigin(req, {
-                trustProxy: options.trustProxy ?? false,
-                allowedOrigins,
-              })) {
-                return new Response("Forbidden", { status: 403 })
-              }
-              if (auth && !auth.isAuthenticated(req)) {
-                return new Response("Unauthorized", { status: 401 })
-              }
+            if (!validateRequestOrigin(req, {
+              trustProxy: options.trustProxy ?? false,
+              allowedOrigins,
+            })) {
+              return new Response("Forbidden", { status: 403 })
+            }
+            if (auth && !auth.isAuthenticated(req)) {
+              return new Response("Unauthorized", { status: 401 })
             }
             return proxyPreviewRequest(req, url, previewPort)
           }
