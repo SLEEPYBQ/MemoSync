@@ -32,7 +32,7 @@ import { isPathPreviewProxyRequest, previewProxyTarget, proxyPreviewRequest } fr
 import { MemoryService } from "./memory"
 import { handleMemoryRequest } from "./memory/routes"
 import { handleStudyRequest } from "./study-routes"
-import { StudyQuestionnaireService, StudyQuestionnaireError } from "./study-questionnaire-service"
+import { StudyQuestionnaireService } from "./study-questionnaire-service"
 import { describeStudyWorkspace, resolveStudyWorkspaceProject, snapshotStudyWorkspace } from "./study-workspace-snapshot"
 import { StudySurveyService } from "./study-survey-service"
 import { StudyRegistry } from "./study-registry"
@@ -42,10 +42,6 @@ import { createStudyParticipantPromptReconciler } from "./study-participant-prom
 import { ExperimentLogger } from "./experiment/logger"
 import { resolveInstallId } from "./install-id"
 import { StudyMemoryStore } from "./experiment/study-memory-store"
-import { createStudyBaselineProjectCopyPreparer } from "./experiment/study-baseline-project-copy"
-import { createStaticMemoryExtractor } from "./experiment/static-memory-extractor"
-import { resolveFrozenStaticObjectStates } from "./experiment/static-freeze"
-import { createDeepSeekJsonCaller } from "./memory/deepseek"
 import { createBranchJsonCaller, memoryRequestContext } from "./memory/branch-caller"
 import { getServerProviderCatalog } from "./provider-catalog"
 import { createCaptureService } from "./memory/capture"
@@ -59,14 +55,12 @@ import { createCheckupService } from "./memory/checkup"
 import { createTransferDetectService } from "./memory/transfer-detect"
 import { createReviseInjectionService } from "./memory/revise-injection"
 import { createUsePlanService } from "./memory/use-plan"
-import { createSummaryService } from "./memory/summary"
 import { createMemoryBoardBacklogService } from "./memory/board-backlog"
-import { handleWorkspaceRequest, runDurableStaticEditOperation } from "./workspace-routes"
+import { handleWorkspaceRequest } from "./workspace-routes"
 import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload, resolveExistingProjectUpload } from "./uploads"
 import { ensureProjectDirectory, resolveExistingPathWithinRoot } from "./paths"
 import type { StudyProjectAccess } from "./study-project-access"
-import { isStaticMemoryMarkdownPath } from "../shared/staticMemoryPath"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -304,9 +298,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   // Memory layer (MemoSync): SQLite store + Markdown projection, rooted in the
   // same data dir as the event store. Engine-agnostic; consumed by the memory
   // HTTP routes and (P2+) the per-engine injection/tool adapters. Markdown
-  // write-back (startup ingest of hand edits) exists only where memory is
-  // user-operable — the auto/static arms must never gain a write path the
-  // condition locks elsewhere.
+  // write-back (startup ingest of hand edits) is part of normal MemoSync.
   const studyEventsPath = path.join(store.dataDir, "experiments", "events.jsonl")
   const studyMemoryStore = conditionPolicy.studyMode
     ? new StudyMemoryStore(path.join(store.dataDir, "experiments", "study.sqlite"))
@@ -410,9 +402,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
       devMode: runtimeProfile === "dev",
       })
     : null
-  // Post-turn memory passes (capture + trace) run on DeepSeek; without a key
-  // they are disabled and the app degrades to recall-only memory. The
-  // condition policy further gates which passes exist for this study arm.
+  // Post-turn memory passes run on the selected CLI runtime when available.
   const branchMemory = createBranchJsonCaller({ resolve: context => {
     const chat = context.sessionId ? store.getChat(context.sessionId) : undefined
     const project = store.getProject(context.projectId ?? chat?.projectId ?? "")
@@ -429,27 +419,18 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     }) : null
     return { provider, localPath, model: runtime?.model ?? model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime?.env }
   } })
-  // MemoSync uses its selected CLI runtime even without a DeepSeek API key.
-  const memoryLlm = conditionPolicy.condition === "memosync" ? branchMemory.callJson : createDeepSeekJsonCaller()
-  const staticMemoryExtractor =
-    memoryLlm && studyMemoryStore && conditionPolicy.condition === "static"
-      ? createStaticMemoryExtractor({
-          callJson: memoryLlm,
-          modelId: process.env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL_ID,
-          cache: studyMemoryStore,
-        })
-      : null
+  const memoryLlm = branchMemory.callJson
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
   // route degrades to a verbatim proposal without it.
-  const memoryTransfer = memoryLlm && conditionPolicy.boardWritable ? createTransferService({ callJson: memoryLlm }) : null
+  const memoryTransfer = conditionPolicy.boardWritable ? createTransferService({ callJson: memoryLlm }) : null
   // Sensitive-candidate redaction (DG1 "confirm" branch) — the route REFUSES
   // without it (a failed redaction must never look like a clean one).
-  const memorySanitize = memoryLlm && conditionPolicy.capture === "review" ? createSanitizeService({ callJson: memoryLlm }) : null
+  const memorySanitize = conditionPolicy.capture === "review" ? createSanitizeService({ callJson: memoryLlm }) : null
   // Revision drafting (DG4 "propose fixes"): after a repeat-violation streak
   // the system drafts a replacement that lands on the review lane. Exists only
   // where there IS a review lane and a trace pass to trigger it.
   const memoryRevision =
-    memoryLlm && conditionPolicy.capture === "review" && conditionPolicy.trace
+    conditionPolicy.capture === "review" && conditionPolicy.trace
       ? createRevisionService({ memory, callJson: memoryLlm })
       : null
   if (memoryRevision && conditionPolicy.condition === "memosync") {
@@ -458,11 +439,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   }
   // Applies participant-reviewed Checkup actions. Detection belongs to the
   // Checkup service; this service only validates and commits those actions.
-  // Auto-arm summary panel (baseline B1): the arm's only memory surface — a
-  // prose summary + a conversation-only control channel. Exists only where
-  // capture is silent (the auto condition) and an LLM is configured.
-  const memorySummary =
-    memoryLlm && conditionPolicy.condition === "auto" ? createSummaryService({ memory, callJson: memoryLlm }) : null
   // The session clock shared by Checkup and Transfer: prior sessions of
   // the project that actually RAN a turn (lastTurnOutcome is replayed from
   // turn events) — a fork that only copied a transcript sets hasMessages
@@ -480,21 +456,21 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     ? createMaintenanceService({
         memory,
         // Enables the redundant-pair merge action (LLM-drafted merge proposals).
-        callJson: memoryLlm ?? undefined,
+        callJson: memoryLlm,
       })
     : null
   // Step-one library checkup (redesign 2026-08-07 §3): three parallel LLM
   // queries + merge, cache keyed on library content — exists only where the
   // step-one gates exist (the review arm's chat flow).
   const memoryCheckup =
-    memoryLlm && conditionPolicy.preview && conditionPolicy.capture === "review"
+    conditionPolicy.preview && conditionPolicy.capture === "review"
       ? createCheckupService({ memory, callJson: memoryLlm, listRecentSessions })
       : null
   // Transfer detection: turn end prepares source-side rules from other
   // contexts; each next prompt reruns relevance and task-bound Decode/landing.
   // Rides the same arm gating as the checkup, plus the transfer service.
   const memoryTransferDetect =
-    memoryLlm && memoryTransfer && conditionPolicy.preview && conditionPolicy.capture === "review"
+    memoryTransfer && conditionPolicy.preview && conditionPolicy.capture === "review"
       ? createTransferDetectService({
           memory,
           callJson: memoryLlm,
@@ -506,9 +482,9 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   // "Ask agent to revise" on the Step 2 gate — natural-language adjustment of
   // the injected set. Same availability as the gate itself.
   const memoryReviseInjection =
-    memoryLlm && conditionPolicy.preview ? createReviseInjectionService({ callJson: memoryLlm }) : null
+    conditionPolicy.preview ? createReviseInjectionService({ callJson: memoryLlm }) : null
   const memoryUsePlan =
-    memoryLlm && conditionPolicy.preview ? createUsePlanService({ callJson: memoryLlm }) : null
+    conditionPolicy.preview ? createUsePlanService({ callJson: memoryLlm }) : null
   const studyOpeningAttachmentSnapshots = conditionPolicy.studyMode && conditionPolicy.condition === "memosync"
     ? createStudyOpeningAttachmentSnapshotStore(path.join(store.dataDir, "experiments", "opening-attachments"))
     : undefined
@@ -585,10 +561,10 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     registry: studyRegistry,
   })
   const studyPreviewRuntime = conditionPolicy.studyMode ? new StudyPreviewRuntime() : null
-  const memoryCapture = memoryLlm && conditionPolicy.capture !== "off" ? createCaptureService({
-    memory, callJson: memoryLlm, surface: conditionPolicy.capture,
+  const memoryCapture = createCaptureService({
+    memory, callJson: memoryLlm,
     durablePromptCapture: conditionPolicy.studyMode && conditionPolicy.condition === "memosync",
-  }) : null
+  })
   if (memoryCapture && conditionPolicy.condition === "memosync") {
     const route = memoryCapture.routeProposal.bind(memoryCapture)
     memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
@@ -599,7 +575,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     policy: conditionPolicy,
     memoryBranches: conditionPolicy.condition === "memosync",
     studyMemoryStore,
-    staticMemoryExtractor,
     studyPreviewRuntime,
     getActiveStudyTaskId: () => conditionPolicy.studyMode ? studyRegistry.activeTaskId() : null,
     studyPromptGate,
@@ -613,14 +588,14 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     capture: memoryCapture,
     // No logger: the coordinator CAS-validates trace verdicts against live
     // memory state and emits memory.trace itself.
-    memoryTrace: memoryLlm && conditionPolicy.trace ? createTraceService({ callJson: memoryLlm }) : null,
+    memoryTrace: conditionPolicy.trace ? createTraceService({ callJson: memoryLlm }) : null,
     memoryRevision,
     memoryCheckup,
     memoryTransferDetect,
     // Sidecar relevance prediction on the receipt (REDESIGN D6): the receipt
     // itself stays a pure plan readout; the prediction arrives as its own
     // entry, visually marked as a guess.
-    memoryRelevance: memoryLlm && conditionPolicy.preview ? createRelevanceService({ callJson: memoryLlm }) : null,
+    memoryRelevance: conditionPolicy.preview ? createRelevanceService({ callJson: memoryLlm }) : null,
     memoryUsePlan,
     memoryPreview: conditionPolicy.preview,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
@@ -655,7 +630,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
         registry: studyRegistry,
         logger: memory.logger,
         memoryStore: memory.store,
-        getAutoProjectCloneRef: (memoryId) => memory.getAutoProjectCloneRef(memoryId),
         studyFreezeBlocker: () => activeAgent.studyFreezeBlocker(),
         reconcileParticipantPrompts: () => {
           studyParticipantPromptReconciler?.reconcile()
@@ -677,46 +651,10 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
             frozenAt,
           })
         },
-        resolveAdditionalObjectStates: async (taskId, identities) => {
-          const staticIdentities = identities.filter((identity) => identity.scheme === "static")
-          if (staticIdentities.length === 0) return []
-          if (!staticMemoryExtractor) {
-            throw new StudyQuestionnaireError(
-              "Static memory measurement is unavailable. Please retry or let the experimenter know.",
-              503,
-            )
-          }
-          try {
-            return await resolveFrozenStaticObjectStates({
-              taskId,
-              identities: staticIdentities,
-              store: studyMemoryStore,
-              extractor: staticMemoryExtractor,
-              getWorkspaceDir: (namespace) => store.getProject(namespace)?.localPath,
-            })
-          } catch (error) {
-            throw new StudyQuestionnaireError(
-              error instanceof Error
-                ? `Could not freeze Static memory state: ${error.message}`
-                : "Could not freeze Static memory state.",
-              503,
-            )
-          }
-        },
         getChatInfo: (chatId) => {
           const chat = store.getChat(chatId)
           return chat ? { title: chat.title, projectId: chat.projectId } : undefined
         },
-      })
-    : null
-  const studyBaselineProjectCopyPreparer = studyMemoryStore
-    ? createStudyBaselineProjectCopyPreparer({
-        policy: conditionPolicy,
-        store: studyMemoryStore,
-        dataDir: store.dataDir,
-        memory,
-        summaries: memorySummary,
-        assignedProjects: assignedStudyProjects,
       })
     : null
   const studySurvey = studyMemoryStore
@@ -725,7 +663,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
         registry: studyRegistry,
         logger: memory.logger,
         allocationParticipantId: studyParticipantId,
-        nextSessionPreparer: studyBaselineProjectCopyPreparer,
         completionUrl: process.env.PROLIFIC_COMPLETION_URL,
       })
     : null
@@ -774,10 +711,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     // Study arms only: the serial gate can refuse prompts (chat from a
     // completed session, pending questionnaire, or a finished study).
   })
-  // Static atomization is measurement-only and may have been interrupted by
-  // a process restart after Claude accepted the exact text. Replay those
-  // durable payloads before the HTTP listener can accept a freeze request.
-  activeAgent.resumePendingStaticFocusMaterializations()
   // The first MemoSync prompt is already owned by a durable opening-Board
   // claim before it reaches AgentCoordinator. Re-prime that exact logical
   // turn after restart; its review id prevents a second prompt/turn/telemetry
@@ -909,8 +842,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
 
           const projectFileContentResponse = await handleProjectFileContent(req, url, store, {
             beginStudyMemoryMutation,
-            experimentLogger: memory.logger,
-            getActiveStudyTaskId: () => conditionPolicy.studyMode ? studyRegistry.activeTaskId() : null,
             studyProjectAccess,
           })
           if (projectFileContentResponse) {
@@ -919,8 +850,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
 
           const workspaceResponse = await handleWorkspaceRequest(req, url, store, {
             beginStudyMemoryMutation,
-            experimentLogger: memory.logger,
-            getActiveStudyTaskId: () => conditionPolicy.studyMode ? studyRegistry.activeTaskId() : null,
             studyProjectAccess,
           })
           if (workspaceResponse) {
@@ -933,8 +862,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
             transfer: memoryTransfer,
             sanitize: memorySanitize,
             maintenance: memoryMaintenance,
-            summary: memorySummary,
-            summaryProjectRefusal: studyProjectAccess?.projectRefusal,
             reviseInjection: memoryReviseInjection,
             usePlan: memoryUsePlan,
             revision: memoryRevision,
@@ -1272,15 +1199,6 @@ export async function handleProjectFileContent(
     if (!relativePath || relativePath === "." || relativePath.startsWith("../") || relativePath.includes("/../") || path.posix.isAbsolute(relativePath)) {
       return Response.json({ error: "Invalid project file path" }, { status: 400 })
     }
-    if (
-      req.method === "PUT"
-      && resolveConditionPolicy().condition === "static"
-      && isStaticMemoryMarkdownPath(relativePath)
-      && !isStaticMemoryMarkdownPath(requestedRelativePath)
-    ) {
-      return Response.json({ error: "Invalid Static memory file path" }, { status: 400 })
-    }
-
     const resolved = await resolveExistingPathWithinRoot(project.localPath, relativePath)
     if (!resolved.ok) {
       return Response.json(
@@ -1311,54 +1229,14 @@ export async function handleProjectFileContent(
       if (Buffer.byteLength(body, "utf8") > MAX_EDITOR_SAVE_BYTES) {
         return Response.json({ error: "File too large to save" }, { status: 413 })
       }
-      let previousContent = ""
       try {
-        previousContent = await file.text()
-      } catch {
-        // The file was resolved above; a raced read failure will still be
-        // handled by the write response below.
-      }
-      const isStaticMemoryMarkdown = isStaticMemoryMarkdownPath(relativePath)
-      const changedStaticMemory = resolveConditionPolicy().condition === "static"
-        && isStaticMemoryMarkdown
-        && body !== previousContent
-      const activeTaskId = options.getActiveStudyTaskId?.() ?? null
-      const operationId = req.headers.get("x-memosync-event-id")?.trim() || undefined
-      if (changedStaticMemory && activeTaskId && !operationId) {
-        return Response.json(
-          { error: { code: "EVENT_ID_REQUIRED", message: "A durable Static edit operationId is required during the study" } },
-          { status: 400 },
-        )
-      }
-      const durationHeader = req.headers.get("x-memosync-edit-duration-ms")
-      const rawDuration = durationHeader === null ? Number.NaN : Number(durationHeader)
-      const durationMs = Number.isFinite(rawDuration) && rawDuration >= 0 ? Math.round(rawDuration) : undefined
-      const writeAndStat = async () => {
         await Bun.write(filePath, body)
         const written = await stat(filePath)
-        if (!written.isFile()) throw new Error("Static memory target is not a file")
-      }
-      try {
-        if (changedStaticMemory) {
-          await runDurableStaticEditOperation({
-            logger: options.experimentLogger,
-            taskId: activeTaskId,
-            operationId,
-            chatId: req.headers.get("x-memosync-session-id") || undefined,
-            projectId: project.id,
-            path: relativePath,
-            durationMs,
-            run: writeAndStat,
-          })
-        } else {
-          await writeAndStat()
-        }
+        if (!written.isFile()) throw new Error("File save target is not a file")
       } catch (error) {
         const status = error !== null && typeof error === "object" && "status" in error && error.status === 409 ? 409 : 500
         return Response.json(
-          status === 409
-            ? { error: { code: "OPERATION_ALREADY_RECORDED", message: "This Static memory edit was already recorded. Refresh to recover its current outcome." } }
-            : { error: "Failed to write file" },
+          { error: "Failed to write file" },
           { status },
         )
       }

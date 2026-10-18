@@ -7,8 +7,6 @@ import { BrowserPanel } from "../../components/chat-ui/BrowserPanel"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
 import { FilesPanel } from "../../components/chat-ui/FilesPanel"
 import { SessionMemoriesPanel } from "../../components/memory-chat/SessionMemoriesPanel"
-import { MemorySummaryPanel } from "../../components/memory-chat/MemorySummaryPanel"
-import { StaticMemoryPanel } from "../../components/memory-chat/StaticMemoryPanel"
 import { OpenLocalLinkProvider, TurnInterruptContext, type TurnInterruptApi } from "../../components/messages/shared"
 import {
   TranscriptChatContextProvider,
@@ -77,7 +75,7 @@ export type TourTarget =
   | { css: string }
   | { panel: true }
 
-export type TourPanel = "memoryRecord" | "autoMemory" | "staticMemory" | "browser" | "files" | "board" | "studySessionSetup" | "studySessions" | "studyBrief" | "studySubmit" | "studyPostSession"
+export type TourPanel = "memoryRecord" | "browser" | "files" | "board" | "studySessionSetup" | "studySessions" | "studyBrief" | "studySubmit" | "studyPostSession"
 
 export const GUIDE_CHAPTERS = [
   {
@@ -274,8 +272,6 @@ export function withResumeDecision(scene: GuideScene, resolution: GuideResumeArg
 // individually; Board overlays own their local interaction policy.
 const INTERACTIVE_PANELS: ReadonlySet<TourPanel> = new Set([
   "memoryRecord",
-  "autoMemory",
-  "staticMemory",
   "files",
   "studySessionSetup",
 ])
@@ -713,10 +709,6 @@ export function GuideTour({
         streamingText={activeScene?.streamingText ?? null}
         exposureInitiator="system"
       />
-    ) : step?.panel === "autoMemory" ? (
-      <MemorySummaryPanel chatId={GUIDE_CHAT_ID} projectId={GUIDE_PROJECT_ID} exposureInitiator="system" onClose={noop} />
-    ) : step?.panel === "staticMemory" ? (
-      <StaticMemoryPanel chatId={GUIDE_CHAT_ID} projectId={GUIDE_PROJECT_ID} exposureInitiator="system" onClose={noop} />
     ) : step?.panel === "browser" ? (
       <BrowserPanel
         projectId={GUIDE_PROJECT_ID}
@@ -865,7 +857,7 @@ export function GuideTour({
                             ? "browser"
                             : step?.panel === "files"
                               ? "files"
-                              : step?.panel === "memoryRecord" || step?.panel === "autoMemory" || step?.panel === "staticMemory"
+                              : step?.panel === "memoryRecord"
                                 ? "memory"
                                 : "hidden"
                         }

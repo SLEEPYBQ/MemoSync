@@ -5,7 +5,6 @@ import type {
   StudyTelemetryKind,
 } from "./experiment/study-memory-store"
 import type { ExperimentDurableSinkInput, ExperimentEvent } from "./experiment/logger"
-import { isStaticMemoryMarkdownPath } from "../shared/staticMemoryPath"
 
 export type StudyTelemetryWindowState = "open" | "freezing" | "frozen" | "complete"
 
@@ -42,7 +41,9 @@ export interface StudyParticipantPromptInput {
   acceptedAt?: string
 }
 
-const CLIENT_MONITORING_ALLOWLIST: Record<StudyCondition, Readonly<Record<string, readonly string[]>>> = {
+const MEMORY_UPDATE_PROMPT_RULE_VERSION = "2026-08-20-v2"
+
+const CLIENT_MONITORING_ALLOWLIST: Partial<Record<StudyCondition, Readonly<Record<string, readonly string[]>>>> = {
   memosync: {
     board: ["open", "scroll", "hover"],
     board_visit: ["open"],
@@ -57,20 +58,10 @@ const CLIENT_MONITORING_ALLOWLIST: Record<StudyCondition, Readonly<Record<string
     trace_jump: ["click"],
     trace_expand: ["click"],
   },
-  auto: {
-    summary_panel_open: ["open"],
-    summary_panel: ["click", "scroll"],
-  },
-  static: {
-    static_memory_panel_open: ["open"],
-    static_memory_panel: ["click", "scroll"],
-  },
 }
 
-const CLIENT_SURFACE_EXPOSURE_ALLOWLIST: Record<StudyCondition, readonly string[]> = {
+const CLIENT_SURFACE_EXPOSURE_ALLOWLIST: Partial<Record<StudyCondition, readonly string[]>> = {
   memosync: ["memory_board", "memory_record", "audit_card", "audit_group", "citation_hover"],
-  auto: ["auto_summary_sidebar"],
-  static: ["static_memory_sidebar"],
 }
 
 const SURFACE_EXPOSURE_TRANSITIONS = ["opened", "hidden", "visible", "closed"] as const
@@ -120,23 +111,6 @@ function stableJson(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`
 }
 
-const MEMORY_UPDATE_PROMPT_RULE_VERSION = "2026-08-20-v2"
-
-export function isExplicitMemoryUpdateRequest(content: string): boolean {
-  const text = content.normalize("NFKC")
-  if (/\b(?:do\s+not|don['’]?t|never)\s+(?:remember|forget|update|change|edit|add|save|remove|delete|revise)\b/i.test(text)) return false
-  if (/(?:不要|别|无需|不用)(?:再)?(?:记住|忘记|更新|修改|编辑|添加|保存|删除|移除)/u.test(text)) return false
-  if (/\b(?:what|whether|if)\b[\s\S]{0,24}\b(?:you\s+)?remember\b/i.test(text)) return false
-  if (/(?:你|agent).{0,8}(?:记得|记住了)(?:什么|哪些|吗)/iu.test(text)) return false
-  if (/\b(?:please\s+)?(?:remember|forget)\b[\s\S]{1,160}/i.test(text)) return true
-  if (/(?:请|帮我|需要|要)?(?:记住|忘记).{1,80}/u.test(text)) return true
-  const verb = "(?:update|change|edit|add|save|remove|delete|revise)"
-  const memory = "(?:memory|memories|MEMORY\\.md)"
-  if (new RegExp(`\\b${verb}\\b[\\s\\S]{0,64}\\b${memory}\\b`, "i").test(text)) return true
-  if (new RegExp(`\\b${memory}\\b[\\s\\S]{0,64}\\b${verb}\\b`, "i").test(text)) return true
-  return /(?:更新|修改|编辑|添加|保存|删除|移除).{0,24}(?:记忆|memory)|(?:记忆|memory).{0,24}(?:更新|修改|编辑|添加|保存|删除|移除)/iu.test(text)
-}
-
 /**
  * Deep module for participant interaction evidence. Callers supply only the
  * observed action. Study identity, lifecycle admission, timestamps and the
@@ -157,7 +131,7 @@ export class StudyTelemetryService {
   }
 
   private assertMonitoringAllowed(surface: string, action: string): void {
-    const actions = CLIENT_MONITORING_ALLOWLIST[this.options.condition][surface]
+    const actions = CLIENT_MONITORING_ALLOWLIST[this.options.condition]?.[surface]
     if (!actions?.includes(action)) {
       throw new StudyTelemetryError(`Monitoring ${surface}/${action} is not available in this condition.`, 400)
     }
@@ -382,7 +356,7 @@ export class StudyTelemetryService {
     action: string
     payload: Record<string, unknown>
   }): { created: boolean; event: StudyTelemetryEvent } {
-    if (!CLIENT_SURFACE_EXPOSURE_ALLOWLIST[this.options.condition].includes(input.surface)) {
+    if (!CLIENT_SURFACE_EXPOSURE_ALLOWLIST[this.options.condition]?.includes(input.surface)) {
       throw new StudyTelemetryError(`Surface exposure ${input.surface} is not available in this condition.`, 400)
     }
     if (!input.chatId) throw new StudyTelemetryError("Surface exposure requires chatId.", 400)
@@ -516,85 +490,6 @@ export class StudyTelemetryService {
     })
   }
 
-  recordStaticEditEntered(raw: unknown): { created: boolean; event: StudyTelemetryEvent } {
-    if (this.options.condition !== "static") {
-      throw new StudyTelemetryError("Static edit entry is available only in the Static condition.", 404)
-    }
-    if (!isRecord(raw)) throw new StudyTelemetryError("Static edit entry must be an object.", 400)
-    const operationId = requiredText(raw.operationId, "operationId", 200)
-    if (!operationId.startsWith("control:static-edit:")) {
-      throw new StudyTelemetryError("operationId is not a Static memory edit operation", 400)
-    }
-    const path = requiredText(raw.path, "path", 500)
-    if (!isStaticMemoryMarkdownPath(path)) {
-      throw new StudyTelemetryError("path is not a Static memory Markdown path", 422)
-    }
-    const chatId = requiredText(raw.chatId, "chatId", 200)
-    const clientTimestamp = canonicalIso(raw.clientTimestamp, "clientTimestamp")
-    const eventId = `${operationId}:entered`
-    const existing = this.options.store.getStudyTelemetryEvent(eventId)
-    if (existing) {
-      const sameEvidence = existing.participantId === this.options.participantId
-        && existing.condition === "static"
-        && existing.chatId === chatId
-        && existing.clientTimestamp === clientTimestamp
-        && existing.kind === "stage_enter"
-        && existing.surface === "static_memory"
-        && existing.action === "edit_entered"
-        && existing.payload.operationId === operationId
-        && existing.payload.path === path
-      if (!sameEvidence) {
-        throw new StudyTelemetryError("A Static edit entry id was reused with different evidence.", 422)
-      }
-      return { created: false, event: existing }
-    }
-    const attempted = this.options.store.getStudyTelemetryEvent(`control-operation:${operationId}:attempted`)
-    const recordedAt = canonicalIso(this.now(), "server timestamp")
-    let taskId: string
-    if (attempted) {
-      const matchesOperation = attempted.participantId === this.options.participantId
-        && attempted.condition === "static"
-        && attempted.taskId !== null
-        && attempted.sessionId === attempted.taskId
-        && attempted.chatId === chatId
-        && attempted.kind === "control"
-        && attempted.surface === "static_memory"
-        && attempted.action === "edit"
-        && attempted.payload.operationId === operationId
-        && attempted.payload.outcome === "attempted"
-        && attempted.payload.controlType === "static_edit"
-        && attempted.payload.path === path
-      if (!matchesOperation) {
-        throw new StudyTelemetryError("Static edit entry conflicts with its durable operation evidence.", 422)
-      }
-      taskId = attempted.taskId!
-    } else {
-      const active = this.options.activeTask()
-      if (!active || active.state !== "open") {
-        throw new StudyTelemetryError("Static edit entry has no durable attempted operation or open task.", 422)
-      }
-      const boundTaskIds = this.options.store.listStudyTelemetryTaskIdsForChat(chatId)
-      if (boundTaskIds.length > 1 || (boundTaskIds.length === 1 && boundTaskIds[0] !== active.taskId)) {
-        throw new StudyTelemetryError("Static edit entry has no durable attempted operation for its bound task.", 422)
-      }
-      taskId = active.taskId
-    }
-    return this.options.store.recordStudyTelemetryEvent({
-      eventId,
-      recordedAt,
-      clientTimestamp,
-      participantId: this.options.participantId,
-      taskId,
-      sessionId: taskId,
-      chatId,
-      condition: this.options.condition,
-      kind: "stage_enter",
-      surface: "static_memory",
-      action: "edit_entered",
-      payload: { operationId, path },
-    })
-  }
-
   recordServerStageEntered(
     stage: "information" | "session_exposure" | "memory_questionnaire" | "monitoring_tlx" | "control_tlx" | "sus",
     taskId?: string,
@@ -620,12 +515,6 @@ export class StudyTelemetryService {
       const eventId = requiredText(input.event.eventId, "eventId", 200)
       if (!eventId.startsWith("monitor:")) {
         throw new StudyTelemetryError("ui.monitor requires a monitor: eventId", 400)
-      }
-    }
-    if (input.event.type === "study.participant_prompt") {
-      const eventId = requiredText(input.event.eventId, "eventId", 200)
-      if (!eventId.startsWith("prompt:auto-summary:")) {
-        throw new StudyTelemetryError("Auto summary prompts require a prompt:auto-summary: eventId", 400)
       }
     }
     const lateBindableMonitoring = input.event.type === "ui.monitor"
@@ -656,34 +545,6 @@ export class StudyTelemetryService {
       : "eventId" in input.event && typeof input.event.eventId === "string"
         ? requiredText(input.event.eventId, "eventId", 200)
         : null
-    let staticEntryTaskId: string | null = null
-    if (
-      input.event.type === "study.control_operation"
-      && input.event.phase === "attempted"
-      && input.event.controlType === "static_edit"
-    ) {
-      const entry = this.options.store.getStudyTelemetryEvent(`${input.event.operationId}:entered`)
-      if (entry) {
-        const path = isRecord(input.event.payload) ? input.event.payload.path : null
-        const matchesEntry = entry.participantId === this.options.participantId
-          && entry.condition === "static"
-          && entry.taskId === input.event.taskId
-          && entry.sessionId === input.event.sessionId
-          && entry.chatId === (input.event.chatId ?? null)
-          && entry.kind === "stage_enter"
-          && entry.surface === input.event.surface
-          && entry.action === "edit_entered"
-          && entry.payload.operationId === input.event.operationId
-          && entry.payload.path === path
-          && input.event.surface === "static_memory"
-          && input.event.action === "edit"
-          && input.event.controlType === "static_edit"
-        if (!matchesEntry) {
-          throw new StudyTelemetryError("Static edit operation conflicts with its durable entry evidence.", 422)
-        }
-        staticEntryTaskId = entry.taskId
-      }
-    }
     let attemptedPhase: StudyTelemetryEvent | null = null
     if (input.event.type === "study.control_operation" && input.event.phase !== "attempted") {
       const operationId = requiredText(input.event.operationId, "operationId", 200)
@@ -733,8 +594,6 @@ export class StudyTelemetryService {
       ? this.resolveMonitoringTask(chatId, clientTimestamp)
       : historicalWorkingMemoryToggle
         ? this.resolveHistoricalControlTask(chatId, clientTimestamp, canonicalIso(input.recordedAt, "server timestamp"))
-      : staticEntryTaskId !== null
-        ? staticEntryTaskId
       : active?.state === "open"
         ? active.taskId
         : null
@@ -798,8 +657,7 @@ export class StudyTelemetryService {
       ? canonicalIso(this.now(), "server timestamp")
       : canonicalIso(input.acceptedAt, "acceptedAt")
     const eventId = `prompt:${this.options.participantId}:${taskId}:${chatId}:${turnId}`
-    const memoryUpdateCandidate = (this.options.condition === "auto" || this.options.condition === "static")
-      && isExplicitMemoryUpdateRequest(content)
+    const memoryUpdateCandidate = false
     const payload = {
       turnId,
       content,
@@ -887,19 +745,6 @@ export class StudyTelemetryService {
     action: string
     payload: Record<string, unknown>
   } | null {
-    if (this.options.condition === "auto" && event.type === "study.participant_prompt") {
-      const requestEventId = requiredText(event.eventId, "eventId", 200)
-      return {
-        kind: "participant_prompt",
-        surface: event.surface,
-        action: event.action,
-        payload: {
-          content: requiredText(event.content, "content", 200_000),
-          projectId: requiredText(event.projectId, "projectId", 200),
-          clientEventId: requestEventId,
-        },
-      }
-    }
     if (event.type === "study.control_operation") {
       return {
         kind: "control",
@@ -924,35 +769,6 @@ export class StudyTelemetryService {
         surface: event.surface,
         action: event.interaction,
         payload: event.ids ? { memoryIds: [...event.ids] } : {},
-      }
-    }
-    if (
-      this.options.condition === "auto"
-      && event.type === "memory.control_request"
-      && event.via === "auto_summary_chat"
-      && event.requestedAction === "update_memory"
-    ) {
-      return {
-        kind: "control",
-        surface: "auto_summary_chat",
-        action: "update_memory",
-        payload: {
-          applied: event.applied ?? null,
-          causalRequestId: event.causalRequestId ?? null,
-        },
-      }
-    }
-    if (this.options.condition === "static" && event.type === "memory.static_edit") {
-      return {
-        kind: "control",
-        surface: "static_memory",
-        action: "edit_submitted",
-        payload: {
-          operationId: event.eventId ?? null,
-          projectId: event.projectId,
-          path: event.path,
-          durationMs: event.durationMs ?? null,
-        },
       }
     }
     if (this.options.condition === "memosync" && event.type === "memory.interrupt") {

@@ -20,7 +20,6 @@ import type {
   StudyMemoryStore,
 } from './experiment/study-memory-store';
 import type { MemoryItem } from './memory/types';
-import type { AutoProjectCloneProvenance } from './memory';
 import type { StudyRegistry } from './study-registry';
 import type { StudyWorkspaceSnapshotMetadata } from './study-workspace-snapshot';
 import type { StudyWorkspaceTreeState } from './study-workspace-snapshot';
@@ -100,7 +99,6 @@ export class StudyQuestionnaireService {
   private readonly registry: StudyRegistry;
   private readonly logger: Pick<ExperimentLogger, 'event'>;
   private readonly memoryStore: { getById(id: string): MemoryItem | undefined | null };
-  private readonly getAutoProjectCloneRef: (memoryId: string) => AutoProjectCloneProvenance | null;
   private readonly studyFreezeBlocker: () => string | null;
   private readonly awaitStudyMemorySettled: (taskId: string) => Promise<StudySettlementFlag[]>;
   private readonly retireStudyTaskRuntime: (taskId: string) => Promise<void>;
@@ -125,7 +123,6 @@ export class StudyQuestionnaireService {
     registry: StudyRegistry;
     logger: Pick<ExperimentLogger, 'event'>;
     memoryStore: { getById(id: string): MemoryItem | undefined | null };
-    getAutoProjectCloneRef?: (memoryId: string) => AutoProjectCloneProvenance | null;
     studyFreezeBlocker: () => string | null;
     awaitStudyMemorySettled: (taskId: string) => Promise<StudySettlementFlag[]>;
     retireStudyTaskRuntime?: (taskId: string) => Promise<void>;
@@ -149,7 +146,6 @@ export class StudyQuestionnaireService {
     this.registry = args.registry;
     this.logger = args.logger;
     this.memoryStore = args.memoryStore;
-    this.getAutoProjectCloneRef = args.getAutoProjectCloneRef ?? (() => null);
     this.studyFreezeBlocker = args.studyFreezeBlocker;
     this.awaitStudyMemorySettled = args.awaitStudyMemorySettled;
     this.retireStudyTaskRuntime = args.retireStudyTaskRuntime ?? (async () => {});
@@ -275,7 +271,6 @@ export class StudyQuestionnaireService {
       for (const identity of identities) {
         if (identity.scheme !== 'store') continue;
         const memory = this.memoryStore.getById(identity.id);
-        const cloneRef = memory ? this.getAutoProjectCloneRef(memory.id) : null;
         objectStates.push(memory
           ? {
               identity,
@@ -290,7 +285,6 @@ export class StudyQuestionnaireService {
                 storeVersion: memory.version,
                 projectId: memory.projectId ?? null,
                 sessionId: memory.sessionId ?? null,
-                ...(cloneRef ?? {}),
               },
             }
           : {

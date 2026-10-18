@@ -3,8 +3,6 @@ import { isUiMonitorSuppressed } from "../../lib/memoriesApi"
 import { enqueueStudyTelemetry, type StudyTelemetryOutboxRequest } from "./studyTelemetry"
 
 export type StudySurfaceExposure =
-  | "auto_summary_sidebar"
-  | "static_memory_sidebar"
   | "memory_board"
   | "memory_record"
   | "audit_card"

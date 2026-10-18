@@ -5,12 +5,9 @@
 // memory routes.
 import { existsSync } from "node:fs"
 import type { Dirent } from "node:fs"
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { resolveExistingPathWithinRoot } from "./paths"
-import { STATIC_MEMORY_FILENAME } from "./memory/static-files"
-import { resolveConditionPolicy } from "./experiment/condition"
-import type { ExperimentLogger } from "./experiment/logger"
 import type { StudyProjectAccess } from "./study-project-access"
 
 interface ProjectLike {
@@ -40,97 +37,8 @@ export interface WorkspaceFileEntry {
 export interface WorkspaceRouteOptions {
   /** Atomic study boundary: returns a release callback, or null once freeze starts. */
   beginStudyMemoryMutation?: () => (() => void) | null
-  /** Records successful participant edits made through the Static memory panel. */
-  experimentLogger?: Pick<ExperimentLogger, "event">
-  /** Server-owned active task identity for durable Static edit operations. */
-  getActiveStudyTaskId?: () => string | null
   /** Present only in study mode: gates project-scoped writes, never reads. */
   studyProjectAccess?: StudyProjectAccess
-}
-
-class StaticEditOperationError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
-export async function runDurableStaticEditOperation<T>(input: {
-  logger?: Pick<ExperimentLogger, "event">
-  taskId: string | null
-  operationId?: string
-  chatId?: string
-  projectId: string
-  path: string
-  durationMs?: number
-  run: () => T | Promise<T>
-}): Promise<T> {
-  const operationId = input.operationId?.trim()
-  if (!input.logger || !input.taskId || !operationId) {
-    const result = await input.run()
-    input.logger?.event({
-      type: "memory.static_edit",
-      ...(operationId ? { eventId: operationId } : {}),
-      ...(input.chatId ? { sessionId: input.chatId } : {}),
-      projectId: input.projectId,
-      path: input.path,
-      ...(input.durationMs === undefined ? {} : { durationMs: input.durationMs }),
-    })
-    return result
-  }
-  const base = {
-    type: "study.control_operation" as const,
-    operationId,
-    taskId: input.taskId,
-    sessionId: input.taskId,
-    ...(input.chatId ? { chatId: input.chatId } : {}),
-    surface: "static_memory" as const,
-    action: "edit",
-    controlType: "static_edit" as const,
-    payload: {
-      projectId: input.projectId,
-      path: input.path,
-      durationMs: input.durationMs ?? null,
-    },
-  }
-  const attempted = input.logger.event({ ...base, phase: "attempted" })
-  if (
-    attempted !== null
-    && typeof attempted === "object"
-    && "durableCreated" in attempted
-    && attempted.durableCreated === false
-  ) {
-    throw new StaticEditOperationError(
-      409,
-      "OPERATION_ALREADY_RECORDED",
-      "This Static memory edit was already recorded. Refresh to recover its current outcome.",
-    )
-  }
-  let result: T
-  try {
-    result = await input.run()
-  } catch (error) {
-    try {
-      input.logger.event({
-        ...base,
-        phase: "failed",
-        errorClass: error instanceof Error ? error.constructor.name : typeof error,
-      })
-    } catch {
-      // Preserve the file-write error; failed telemetry is secondary evidence.
-    }
-    throw error
-  }
-  try {
-    input.logger.event({ ...base, phase: "completed" })
-  } catch {
-    // The file write and stat already succeeded. Do not induce a duplicate
-    // participant edit; attempted/unknown remains honest durable evidence.
-  }
-  return result
 }
 
 const ok = <T>(data: T): Response => Response.json({ data })
@@ -141,9 +49,7 @@ const FILES_RE = /^\/api\/projects\/([^/]+)\/files$/
 const FILE_INDEX_RE = /^\/api\/projects\/([^/]+)\/files\/index$/
 const FILE_SEARCH_RE = /^\/api\/projects\/([^/]+)\/files\/search$/
 const FILE_OP_RE = /^\/api\/projects\/([^/]+)\/files\/op$/
-const MEMORY_FILE_RE = /^\/api\/projects\/([^/]+)\/memory-file$/
-
-const MEMORY_FILE_MAX_BYTES = 256 * 1024
+const MEMORY_FILE_RE = /^\/api\/projects\/[^/]+\/memory-file$/
 
 /** Directories skipped by the recursive file index (filter/quick-open only —
  * the lazy per-directory tree still lists them like any other folder). */
@@ -340,108 +246,11 @@ export async function handleWorkspaceRequest(
   const indexMatch = pathname.match(FILE_INDEX_RE)
   const searchMatch = pathname.match(FILE_SEARCH_RE)
   const opMatch = pathname.match(FILE_OP_RE)
-  const memoryFileMatch = pathname.match(MEMORY_FILE_RE)
-  if (pathname !== "/api/projects" && pathname !== "/api/chats" && !filesMatch && !indexMatch && !searchMatch && !opMatch && !memoryFileMatch) {
+  if (pathname !== "/api/projects" && pathname !== "/api/chats" && !filesMatch && !indexMatch && !searchMatch && !opMatch && !MEMORY_FILE_RE.test(pathname)) {
     return null
   }
 
-  // Static-arm memory file (baseline B2): the workspace MEMORY.md IS the
-  // memory; user edits land through the panel here, agent edits land through
-  // its normal file tools. mtime doubles as a light CAS token so two writers
-  // never silently clobber each other. Exclusive to the static condition.
-  if (memoryFileMatch) {
-    if (resolveConditionPolicy().condition !== "static") {
-      return fail(404, "NOT_AVAILABLE", "the memory file surface only exists in the 'static' condition")
-    }
-    const project = store.getProject(decodeURIComponent(memoryFileMatch[1]))
-    if (!project) return fail(404, "NOT_FOUND", "unknown project")
-    const abs = path.join(project.localPath, STATIC_MEMORY_FILENAME)
-
-    if (req.method === "GET") {
-      try {
-        const [content, s] = await Promise.all([readFile(abs, "utf8"), stat(abs)])
-        return ok({ path: STATIC_MEMORY_FILENAME, content, mtimeMs: s.mtimeMs, exists: true })
-      } catch {
-        return ok({ path: STATIC_MEMORY_FILENAME, content: "", mtimeMs: 0, exists: false })
-      }
-    }
-    if (req.method === "PUT") {
-      const projectId = decodeURIComponent(memoryFileMatch[1])
-      const projectRefusal = options.studyProjectAccess?.projectRefusal(projectId)
-      if (projectRefusal) return fail(409, "STUDY_PROJECT_LOCKED", projectRefusal)
-      const release = options.beginStudyMemoryMutation?.()
-      if (options.beginStudyMemoryMutation && !release) {
-        return fail(409, "STUDY_FROZEN", "The current session is ending. Memory can no longer be changed.")
-      }
-      try {
-        let body: { content?: string; baseMtimeMs?: number; sessionId?: string; editDurationMs?: number; eventId?: string }
-        try {
-          body = (await req.json()) as typeof body
-        } catch {
-          return fail(400, "BAD_REQUEST", "invalid JSON body")
-        }
-        if (typeof body.content !== "string") return fail(400, "BAD_REQUEST", "content must be a string")
-        if (Buffer.byteLength(body.content, "utf8") > MEMORY_FILE_MAX_BYTES) {
-          return fail(413, "TOO_LARGE", "memory file exceeds 256 KB")
-        }
-        if (typeof body.baseMtimeMs === "number") {
-          try {
-            const s = await stat(abs)
-            if (Math.abs(s.mtimeMs - body.baseMtimeMs) > 1) {
-              return fail(409, "CONFLICT", "the file changed since you loaded it — reload before saving")
-            }
-          } catch {
-            // Missing file with a base token: it was deleted meanwhile — treat
-            // the save as a fresh write rather than failing the user.
-          }
-        }
-        let previousContent = ""
-        try {
-          previousContent = await readFile(abs, "utf8")
-        } catch {
-          // A missing file starts as empty content.
-        }
-        const changed = body.content !== previousContent
-          || (typeof body.eventId === "string" && Boolean(body.eventId.trim()))
-        const activeTaskId = options.getActiveStudyTaskId?.() ?? null
-        const operationId = typeof body.eventId === "string" && body.eventId.trim() ? body.eventId.trim() : undefined
-        if (changed && activeTaskId && !operationId) {
-          return fail(400, "EVENT_ID_REQUIRED", "A durable Static edit operationId is required during the study")
-        }
-        const durationMs = typeof body.editDurationMs === "number"
-          && Number.isFinite(body.editDurationMs)
-          && body.editDurationMs >= 0
-          ? Math.round(body.editDurationMs)
-          : undefined
-        const writeAndStat = async () => {
-          await mkdir(path.dirname(abs), { recursive: true })
-          await writeFile(abs, body.content!, "utf8")
-          return stat(abs)
-        }
-        try {
-          const s = changed
-            ? await runDurableStaticEditOperation({
-                logger: options.experimentLogger,
-                taskId: activeTaskId,
-                operationId,
-                chatId: typeof body.sessionId === "string" ? body.sessionId : undefined,
-                projectId: project.id,
-                path: STATIC_MEMORY_FILENAME,
-                durationMs,
-                run: writeAndStat,
-              })
-            : await writeAndStat()
-          return ok({ path: STATIC_MEMORY_FILENAME, mtimeMs: s.mtimeMs })
-        } catch (error) {
-          if (error instanceof StaticEditOperationError) return fail(error.status, error.code, error.message)
-          return fail(500, "STATIC_EDIT_FAILED", "Failed to save Static memory")
-        }
-      } finally {
-        release?.()
-      }
-    }
-    return fail(405, "METHOD_NOT_ALLOWED", "use GET or PUT")
-  }
+  if (MEMORY_FILE_RE.test(pathname)) return fail(404, "NOT_FOUND", "route not found")
 
   if (opMatch) {
     if (req.method !== "POST") return fail(405, "METHOD_NOT_ALLOWED", "use POST")

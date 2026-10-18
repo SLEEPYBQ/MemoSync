@@ -5,15 +5,10 @@ import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import { MemoryService } from './index';
 import { handleMemoryRequest } from './routes';
-import type {
-  MemoryBoardBacklogService,
-  MemoryBoardBacklogSnapshot,
-  MemoryBoardResolution,
-  MemoryBoardReviewState,
-} from './board-backlog';
+import type { MemoryBoardBacklogService, MemoryBoardBacklogSnapshot, MemoryBoardResolution, MemoryBoardReviewState } from './board-backlog';
 import { createMemoryBoardBacklogService } from './board-backlog';
 import { resolveConditionPolicy } from '../experiment/condition';
-import { StudyTelemetryError } from '../study-telemetry';
+
 
 let dir: string;
 let memory: MemoryService;
@@ -754,32 +749,6 @@ describe('memory routes', () => {
     const dupes = (await json(await call('POST', '/api/memories/find-duplicates', {}))).data;
     expect(dupes.duplicates).toHaveLength(1);
     expect(dupes.duplicates[0]).toHaveLength(2);
-  });
-
-  it('locked policy (auto/static arms): mutations and bring-in are 403, reads stay open', async () => {
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    const locked = resolveConditionPolicy('auto');
-
-    const created = (await json(await call('POST', '/api/memories', { content: 'pre-existing', scope: 'personal', type: 'fact' }))).data;
-
-    const lockedCall = (method: string, path: string, body?: unknown) => {
-      const req = new Request(`http://localhost${path}`, {
-        method,
-        headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      return handleMemoryRequest(req, new URL(req.url), memory, locked);
-    };
-
-    expect((await lockedCall('POST', '/api/memories', { content: 'x', scope: 'personal', type: 'fact' }))!.status).toBe(403);
-    expect((await lockedCall('PATCH', `/api/memories/${created.id}`, { content: 'y' }))!.status).toBe(403);
-    expect((await lockedCall('DELETE', `/api/memories/${created.id}`))!.status).toBe(403);
-    expect((await lockedCall('POST', `/api/memories/${created.id}/revert`, { toSeq: 1 }))!.status).toBe(403);
-    expect((await lockedCall('PUT', '/api/memories/session-exclusions/chat-1', { ids: [] }))!.status).toBe(403);
-
-    // Reads stay open (citation chips etc. still resolve).
-    expect((await lockedCall('GET', '/api/memories'))!.status).toBe(200);
-    expect((await lockedCall('GET', `/api/memories/${created.id}/history`))!.status).toBe(200);
   });
 
   it('404s an unknown item and unknown sub-route', async () => {
@@ -1615,40 +1584,6 @@ describe('memory routes', () => {
     expect(missingChat!.status).toBe(400);
     expect(draftCalls).toBe(0);
     expect(memory.store.getKv(`pay_attention:chat-1`)).toBeNull();
-  });
-
-  it('keeps the Enforce endpoint unavailable outside the MemoSync condition', async () => {
-    // Non-study memosync (the deployment) now ALLOWS Enforce, so it is not
-    // here — only the auto/static baseline arms reject it.
-    const item = memory.store.create(
-      { content: 'Keep the filter labels visible', scope: 'personal', type: 'constraint' },
-      { actor: 'user' },
-    );
-    let admissionCalls = 0;
-    const services = {
-      auditAdmission: () => {
-        admissionCalls += 1;
-        return null;
-      },
-    };
-    const policies = [
-      resolveConditionPolicy('auto'),
-      resolveConditionPolicy('static'),
-    ];
-
-    for (const policy of policies) {
-      const req = new Request('http://localhost/api/memories/pay-attention', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: item.id, sessionId: 'chat-1' }),
-      });
-      const response = await handleMemoryRequest(req, new URL(req.url), memory, policy, services);
-
-      expect(response!.status).toBe(404);
-      expect((await json(response)).error.code).toBe('NOT_AVAILABLE');
-    }
-    expect(admissionCalls).toBe(0);
-    expect(memory.store.getKv('pay_attention:chat-1')).toBeNull();
   });
 
   it('keeps audit-row Enforce for an admitted MemoSync Claude study chat', async () => {
@@ -2976,7 +2911,7 @@ describe('memory routes', () => {
   });
 });
 
-describe('auto-arm summary routes (baseline B1)', () => {
+describe('retired summary routes', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'memv2-summary-routes-'));
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
@@ -2986,164 +2921,24 @@ describe('auto-arm summary routes (baseline B1)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('the summary surface is exclusive to the auto condition (404 elsewhere)', async () => {
+  it('returns 404 for all retired summary endpoints under any condition', async () => {
     const { resolveConditionPolicy } = await import('../experiment/condition');
-    const memosync = resolveConditionPolicy('memosync');
-    const req = new Request('http://localhost/api/memories/summary', { method: 'GET' });
-    const res = await handleMemoryRequest(req, new URL(req.url), memory, memosync, {});
-    expect(res!.status).toBe(404);
-  });
-
-  it('does not hold the study freeze barrier for a derived summary refresh', async () => {
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    const { createSummaryService } = await import('./summary');
-    const auto = resolveConditionPolicy('auto');
-    const summary = createSummaryService({
-      memory,
-      callJson: async (request) =>
-        request.system.includes('memory panel assistant')
-          ? { reply: 'Nothing changed.', operations: [] }
-          : { summary: 'A derived view of memory.' },
-    });
-    let acquisitions = 0;
-    let releases = 0;
-    const services = {
-      summary,
-      beginStudyMemoryMutation: () => {
-        acquisitions += 1;
-        return () => {
-          releases += 1;
-        };
-      },
-    };
-    const doCall = (path: string, body: unknown) => {
-      const req = new Request(`http://localhost${path}`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      return handleMemoryRequest(req, new URL(req.url), memory, auto, services);
-    };
-
-    const refreshed = await doCall('/api/memories/summary/refresh', { projectId: 'P1' });
-    expect(refreshed!.status).toBe(200);
-    expect(acquisitions).toBe(0);
-    expect(releases).toBe(0);
-
-    const chat = await doCall('/api/memories/summary/chat', { projectId: 'P1', message: 'Keep the memory unchanged.' });
-    expect(chat!.status).toBe(200);
-    expect(acquisitions).toBe(1);
-    expect(releases).toBe(1);
-  });
-
-  it('auto condition: GET/refresh/chat pass the board lock and hit the service', async () => {
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    const { createSummaryService } = await import('./summary');
-    const auto = resolveConditionPolicy('auto');
-    memory.store.create(
-      { content: 'Prefers bun', scope: 'project', projectId: 'P1', type: 'preference' },
-      { actor: 'agent' },
-    );
-    const summary = createSummaryService({
-      memory,
-      callJson: async (r) =>
-        r.system.includes('memory panel assistant')
-          ? { reply: 'You prefer bun.', operations: [] }
-          : { summary: 'You prefer bun.' },
-    });
-    const services = { summary };
-
-    const doCall = (method: string, path: string, body?: unknown) => {
-      const req = new Request(`http://localhost${path}`, {
-        method,
-        headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
-      });
-      return handleMemoryRequest(req, new URL(req.url), memory, auto, services);
-    };
-
-    const refreshed = (await json(await doCall('POST', '/api/memories/summary/refresh', { projectId: 'P1' }))).data;
-    expect(refreshed.text).toBe('You prefer bun.');
-    const got = (await json(await doCall('GET', '/api/memories/summary?project=P1'))).data;
-    expect(got.text).toBe('You prefer bun.');
-    expect(got.stale).toBe(false);
-    // The chat is the arm's sanctioned control channel — a POST that would be
-    // board-locked (auto has boardWritable=false) goes through here.
-    const chat = (await json(await doCall('POST', '/api/memories/summary/chat', { projectId: 'P1', message: 'what do you remember?' }))).data;
-    expect(chat.reply).toContain('bun');
-    // …while ordinary board mutations stay locked in the auto arm.
-    const req = new Request('http://localhost/api/memories', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ content: 'x', scope: 'personal', type: 'fact' }),
-    });
-    const locked = await handleMemoryRequest(req, new URL(req.url), memory, auto, services);
-    expect(locked!.status).toBe(403);
-  });
-
-  it('returns a telemetry conflict without invoking the summary provider again', async () => {
-    const response = await callStudy('POST', '/api/memories/summary/chat', {
-      eventId: 'prompt:auto-summary:request-1',
-      projectId: 'P1',
-      sessionId: 'chat-1',
-      message: 'Different retry content.',
-    }, {
-      summary: {
-        get: () => ({ text: '', updatedAt: '', stale: false }),
-        refresh: async () => ({ text: '', updatedAt: '', stale: false }),
-        chat: async () => { throw new StudyTelemetryError('A telemetry event id was reused with different evidence.', 422); },
-      },
-    }, 'auto');
-    expect(response!.status).toBe(422);
-    expect(await json(response)).toEqual({
-      error: {
-        code: 'TELEMETRY_CONFLICT',
-        message: 'A telemetry event id was reused with different evidence.',
-      },
-    });
-  });
-
-  it('refuses summary inspection, refresh, and chat outside the active study assignment', async () => {
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    const { createSummaryService } = await import('./summary');
-    const auto = resolveConditionPolicy('auto');
-    let llmCalls = 0;
-    const summary = createSummaryService({
-      memory,
-      callJson: async () => {
-        llmCalls += 1;
-        return { intent: 'update', reply: 'Changed it.', operations: [{ action: 'add', content: 'Wrong project write' }] };
-      },
-    });
-    const services = {
-      summary,
-      summaryProjectRefusal: (projectId: string) => (
-        projectId === 'project-apartment' ? null : 'Use the assigned Apartment project.'
-      ),
-    };
-    const requests = [
-      new Request('http://localhost/api/memories/summary?project=project-car'),
-      new Request('http://localhost/api/memories/summary/refresh', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: 'project-car' }),
-      }),
-      new Request('http://localhost/api/memories/summary/chat', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ projectId: 'project-car', message: 'Remember this in Car.' }),
-      }),
-    ];
-
-    for (const req of requests) {
-      const response = await handleMemoryRequest(req, new URL(req.url), memory, auto, services);
-      expect(response!.status).toBe(409);
-      expect((await json(response)).error).toEqual({
-        code: 'STUDY_PROJECT_LOCKED',
-        message: 'Use the assigned Apartment project.',
-      });
+    for (const condition of ['memosync', 'static', 'auto', 'unknown']) {
+      const policy = resolveConditionPolicy(condition);
+      for (const [path, method] of [
+        ['/api/memories/summary', 'GET'],
+        ['/api/memories/summary/refresh', 'POST'],
+        ['/api/memories/summary/chat', 'POST'],
+      ] as const) {
+        const req = new Request(`http://localhost${path}`, {
+          method,
+          ...(method === 'POST'
+            ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'inspect' }) }
+            : {}),
+        });
+        const res = await handleMemoryRequest(req, new URL(req.url), memory, policy, {});
+        expect(res!.status).toBe(404);
+      }
     }
-    expect(llmCalls).toBe(0);
-    expect(memory.autoProjectMemories('project-car')).toEqual([]);
   });
 });

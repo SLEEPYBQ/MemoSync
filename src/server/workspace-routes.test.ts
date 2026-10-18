@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { handleWorkspaceRequest } from "./workspace-routes"
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleWorkspaceRequest } from "./workspace-routes";
 
 let dir: string
 let outsideDir: string
@@ -237,7 +237,7 @@ describe("workspace routes", () => {
   })
 })
 
-describe("static-arm memory file (baseline B2)", () => {
+describe("retired memory-file endpoint", () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), "memv2-ws-memfile-"))
     outsideDir = mkdtempSync(join(tmpdir(), "memv2-outside-"))
@@ -261,154 +261,9 @@ describe("static-arm memory file (baseline B2)", () => {
     return handleWorkspaceRequest(req, new URL(req.url), store, options)
   }
 
-  it("is exclusive to the static condition (404 elsewhere)", async () => {
+  it("returns 404 for retired GET and PUT endpoints", async () => {
     process.env.EXPERIMENT_CONDITION = "memosync"
     expect((await memCall("GET"))!.status).toBe(404)
-  })
-
-  it("static condition: round-trips content with an mtime CAS that rejects a raced save", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-
-    // Missing file reads as empty, exists:false.
-    const empty = (await (await memCall("GET"))!.json()) as { data: { content: string; exists: boolean } }
-    expect(empty.data.exists).toBe(false)
-    expect(empty.data.content).toBe("")
-
-    // First save (no base token) creates the file.
-    const put = (await (await memCall("PUT", { content: "# Memory\n\n- prefers bun\n" }))!.json()) as {
-      data: { mtimeMs: number }
-    }
-    expect(put.data.mtimeMs).toBeGreaterThan(0)
-
-    const got = (await (await memCall("GET"))!.json()) as { data: { content: string; mtimeMs: number; exists: boolean } }
-    expect(got.data.exists).toBe(true)
-    expect(got.data.content).toContain("prefers bun")
-
-    // The agent writes the file directly (its normal file tools)…
-    writeFileSync(join(dir, "MEMORY.md"), "# Memory\n\n- prefers bun\n- deploys via staging\n")
-    // Same-tick writes can share an mtime — force the clock forward the way a
-    // real seconds-later agent edit would land.
-    const { utimesSync } = await import("node:fs")
-    utimesSync(join(dir, "MEMORY.md"), new Date(), new Date(Date.now() + 2000))
-    // …so a save based on the OLD mtime must 409 instead of clobbering.
-    const raced = await memCall("PUT", { content: "user version", baseMtimeMs: got.data.mtimeMs })
-    expect(raced!.status).toBe(409)
-    const after = (await (await memCall("GET"))!.json()) as { data: { content: string } }
-    expect(after.data.content).toContain("staging")
-  })
-
-  it("logs one participant direct edit with its edit duration after a changed Static save", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    const events: unknown[] = []
-
-    const response = await memCall("PUT", {
-      content: "# Memory\n\n- prefers bun\n",
-      sessionId: "c-1",
-      editDurationMs: 1_250,
-      eventId: "control:static-edit:success",
-    }, {
-      experimentLogger: { event: (event) => { events.push(event); return { durableCreated: true } } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(response!.status).toBe(200)
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "study.control_operation",
-        operationId: "control:static-edit:success",
-        taskId: "038-S1",
-        chatId: "c-1",
-        surface: "static_memory",
-        action: "edit",
-        controlType: "static_edit",
-        phase: "attempted",
-        payload: { projectId: "p-1", path: "MEMORY.md", durationMs: 1_250 },
-      }),
-      expect.objectContaining({ phase: "completed" }),
-    ])
-  })
-
-  it("leaves Static memory untouched when durable edit telemetry fails", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    const response = await memCall("PUT", {
-      content: "# Memory\n\n- prefers bun\n",
-      sessionId: "c-1",
-      editDurationMs: 1_250,
-      eventId: "control:static-edit:fail",
-    }, {
-      experimentLogger: { event: () => { throw new Error("study.sqlite unavailable") } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(response!.status).toBe(500)
-    expect(existsSync(join(dir, "MEMORY.md"))).toBe(false)
-  })
-
-  it("records a failed Static edit, never completed, when the file write fails", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    mkdirSync(join(dir, "MEMORY.md"))
-    const events: Array<Record<string, unknown>> = []
-
-    const response = await memCall("PUT", {
-      content: "# Memory\n\n- prefers bun\n",
-      sessionId: "c-1",
-      editDurationMs: 1_250,
-      eventId: "control:static-edit:write-failure",
-    }, {
-      experimentLogger: {
-        event: (event) => {
-          events.push(event as Record<string, unknown>)
-          return { durableCreated: true }
-        },
-      },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(response!.status).toBe(500)
-    expect(events.map((event) => event.phase)).toEqual(["attempted", "failed"])
-  })
-
-  it("does not count a Static save when the participant leaves the Markdown unchanged", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    writeFileSync(join(dir, "MEMORY.md"), "# Memory\n\n- prefers bun\n")
-    const events: unknown[] = []
-
-    const response = await memCall("PUT", {
-      content: "# Memory\n\n- prefers bun\n",
-      sessionId: "c-1",
-      editDurationMs: 900,
-    }, {
-      experimentLogger: { event: (event) => void events.push(event) },
-    })
-
-    expect(response!.status).toBe(200)
-    expect(events).toEqual([])
-  })
-
-  it("rejects a Static memory save after freeze admission", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-
-    const response = await memCall("PUT", { content: "must not be saved" }, {
-      beginStudyMemoryMutation: () => null,
-    })
-
-    expect(response!.status).toBe(409)
-    expect(existsSync(join(dir, "MEMORY.md"))).toBe(false)
-  })
-
-  it("rejects a Static memory save to the wrong project while keeping its read available", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    const access = { projectRefusal: () => "Use the assigned apartment project." }
-
-    expect((await memCall("GET", undefined, { studyProjectAccess: access }))!.status).toBe(200)
-    const response = await memCall("PUT", { content: "# wrong project\n" }, {
-      studyProjectAccess: access,
-    })
-
-    expect(response!.status).toBe(409)
-    expect(await response!.json()).toEqual({
-      error: { code: "STUDY_PROJECT_LOCKED", message: "Use the assigned apartment project." },
-    })
-    expect(existsSync(join(dir, "MEMORY.md"))).toBe(false)
+    expect((await memCall("PUT", { content: "unavailable" }))!.status).toBe(404)
   })
 })

@@ -21,14 +21,12 @@ import {
 } from "../ui/context-menu"
 import { cn } from "../../lib/utils"
 import { classifyFilePreview, type FilePreviewKind } from "../../lib/filePreview"
-import { recordStaticMemoryEditEntered } from "../../lib/memoriesApi"
 import {
   ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename,
 } from "../../lib/filesWorkbench"
 import { markdownComponentsWithLinks } from "../messages/shared"
 import { CodeEditor } from "./CodeEditor"
 import { FileTypeIcon } from "./FileTypeIcon"
-import { isStaticMemoryMarkdownPath } from "../../../shared/staticMemoryPath"
 
 interface FilesPanelProps {
   projectId: string
@@ -58,10 +56,6 @@ interface FileBuffer {
   saveError: string | null
   justSaved: boolean
   mdMode: "preview" | "source"
-  /** Simple elapsed time starts at the first unsaved content change. */
-  editStartedAtMs: number | null
-  /** Stable across a failed-save retry so one participant edit is counted once. */
-  editEventId: string | null
 }
 
 interface FileIndex {
@@ -189,7 +183,7 @@ function fetchFailMessage(err: unknown, fallback: string): string {
       : fallback
 }
 
-export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
+export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [tabs, setTabs] = useState<string[]>([])
@@ -228,25 +222,14 @@ export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
     setBuffers((prev) => {
       const existing = prev.get(path)
       if (!existing) return prev
-      const tracksStaticMemoryEdit = isStaticMemoryMarkdownPath(path)
-      const nextEditEventId = !tracksStaticMemoryEdit || current === existing.original
-        ? null
-        : (existing.editEventId ?? `control:static-edit:${crypto.randomUUID()}`)
-      if (nextEditEventId && existing.editEventId === null) {
-        recordStaticMemoryEditEntered(nextEditEventId, chatId, path)
-      }
       const next = new Map(prev)
       next.set(path, {
         ...existing,
         current,
-        editStartedAtMs: !tracksStaticMemoryEdit || current === existing.original
-          ? null
-          : (existing.editStartedAtMs ?? Date.now()),
-        editEventId: nextEditEventId,
       })
       return next
     })
-  }, [chatId])
+  }, [])
 
   const loadDir = useCallback(
     async (rel: string) => {
@@ -360,8 +343,6 @@ export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
           saveError: null,
           justSaved: false,
           mdMode: "preview",
-          editStartedAtMs: null,
-          editEventId: null,
         })
         return next
       })
@@ -433,11 +414,6 @@ export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
       updateBuffer(path, { saving: true, saveError: null })
       try {
         const headers: Record<string, string> = { "Content-Type": "text/plain;charset=utf-8" }
-        if (chatId) headers["X-MemoSync-Session-Id"] = chatId
-        if (buffer.editStartedAtMs !== null) {
-          headers["X-MemoSync-Edit-Duration-Ms"] = String(Math.max(0, Date.now() - buffer.editStartedAtMs))
-        }
-        if (buffer.editEventId) headers["X-MemoSync-Event-Id"] = buffer.editEventId
         const res = await fetch(contentUrl(projectId, path), {
           method: "PUT",
           headers,
@@ -451,15 +427,13 @@ export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
           saving: false,
           original: content,
           justSaved: true,
-          editStartedAtMs: null,
-          editEventId: null,
         })
         window.setTimeout(() => updateBuffer(path, { justSaved: false }), 1500)
       } catch (err) {
         updateBuffer(path, { saving: false, saveError: fetchFailMessage(err, "failed to save file") })
       }
     },
-    [buffers, chatId, projectId, updateBuffer],
+    [buffers, projectId, updateBuffer],
   )
 
   const refresh = useCallback(() => {
