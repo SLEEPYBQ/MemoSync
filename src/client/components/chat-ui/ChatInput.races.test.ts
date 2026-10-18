@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
-import type { Page } from "playwright"
+import type { Page, Route } from "playwright"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
 interface ChatInputFixtureApi {
@@ -222,6 +222,82 @@ describe("mounted ChatInput submission races", () => {
       await expectInputValue(target, edited ? "original draft" : "")
     })
   }
+
+  for (const edits of [["new draft"], ["temporary edit", "original draft"]]) {
+    test(`preserves remounted same-task native text edits before ACK: ${edits.join(" -> ")}`, async () => {
+      const target = await openFixture()
+      await target.getByPlaceholder("Build something...").fill("original draft")
+      await target.locator("button:has(svg.lucide-arrow-up)").click()
+      await target.waitForFunction(() => (
+        (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1
+      ))
+      await navigate(target, "chat-two")
+      await navigate(target, "chat-one")
+      await expectInputValue(target, "original draft")
+      const persistedDuringEvents = await target.evaluate((edits) => {
+        const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+        const input = document.querySelector("textarea")!
+        const setNativeValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!
+        const persisted: string[] = []
+        for (const text of edits) {
+          setNativeValue.call(input, text)
+          input.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }))
+          persisted.push(fixture.draft("chat-one"))
+        }
+        fixture.resolveSubmit(0)
+        return persisted
+      }, edits)
+      expect(persistedDuringEvents).toEqual(edits)
+      await expectInputValue(target, edits.at(-1)!)
+      expect(await readDraft(target, "chat-one")).toBe(edits.at(-1)!)
+    })
+  }
+
+  test("discards an old upload after keyed unmount without overwriting remounted attachments", async () => {
+    const target = await openFixture()
+    let holdFirst = true
+    let receiveUpload!: (route: Route) => void
+    const pendingUpload = new Promise<Route>((resolve) => { receiveUpload = resolve })
+    await target.route("**/api/projects/fixture-project/uploads", async (route) => {
+      if (holdFirst && route.request().method() === "POST") {
+        holdFirst = false
+        receiveUpload(route)
+        return
+      }
+      await route.fallback()
+    })
+    await target.locator('input[type="file"]').setInputFiles({
+      name: "old.txt", mimeType: "text/plain", buffer: Buffer.from("old"),
+    })
+    const oldUpload = await pendingUpload
+    await navigate(target, "chat-two")
+    await navigate(target, "chat-one")
+    await attach(target, "new.txt")
+    const newerAttachments = await readAttachments(target, "chat-one")
+    expect(newerAttachments).toHaveLength(1)
+    const settlement = Promise.race([
+      target.waitForRequest((request) => request.method() === "DELETE" && request.url().includes("stale-upload"))
+        .then(() => "deleted"),
+      target.waitForFunction(() => (
+        window as unknown as { __chatInputFixture: ChatInputFixtureApi }
+      ).__chatInputFixture.attachments("chat-one").some(({ id }) => id === "stale-upload"))
+        .then(() => "overwritten"),
+    ])
+    await oldUpload.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ attachments: [{
+        id: "stale-upload", kind: "file", displayName: "old.txt", absolutePath: "/fixture/old.txt",
+        relativePath: "old.txt", contentUrl: "/api/projects/fixture-project/uploads/stale-upload/content",
+        mimeType: "text/plain", size: 3,
+      }] }),
+    })
+    expect(await settlement).toBe("deleted")
+    expect(await readAttachments(target, "chat-one")).toEqual(newerAttachments)
+    await navigate(target, "chat-two")
+    await navigate(target, "chat-one")
+    await target.getByText(newerAttachments[0].displayName, { exact: true }).first().waitFor()
+    expect(await readAttachments(target, "chat-one")).toEqual(newerAttachments)
+  })
 
   test("allows only one same-tick submit and accepts another after settlement", async () => {
     const target = await openFixture()

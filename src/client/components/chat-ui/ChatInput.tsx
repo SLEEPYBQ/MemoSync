@@ -237,10 +237,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const draftRevisionRef = useRef(0)
   const submissionRef = useRef<object | null>(null)
   const [value, setValueState] = useState(() => (textDraftKey ? getDraft(textDraftKey) : ""))
+  const valueRef = useRef(value)
   const setValue = useCallback((next: React.SetStateAction<string>) => {
+    const updated = typeof next === "function" ? next(valueRef.current) : next
+    if (updated === valueRef.current) return
     draftRevisionRef.current += 1
-    setValueState(next)
-  }, [])
+    valueRef.current = updated
+    setValueState(updated)
+    if (textDraftKey) setDraft(textDraftKey, updated)
+  }, [textDraftKey, setDraft])
   // "/" autocomplete over engine-reported commands (closed by Esc until the draft changes).
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
@@ -269,13 +274,17 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
 
   useLayoutEffect(() => {
-    setValue(textDraftKey ? getDraft(textDraftKey) : "")
+    valueRef.current = textDraftKey ? getDraft(textDraftKey) : ""
+    setValueState(valueRef.current)
     submissionRef.current = null
     return () => {
       draftRevisionRef.current += 1
       submissionRef.current = null
+      uploadGenerationRef.current += 1
+      uploadQueueRef.current = []
+      activeUploadsRef.current = 0
     }
-  }, [chatId, textDraftKey, getDraft, setValue])
+  }, [chatId, textDraftKey, getDraft])
 
   const providerLocked = activeProvider !== null
   const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
@@ -327,7 +336,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   useLayoutEffect(() => useChatInputStore.subscribe((state, previous) => {
     if (textDraftKey && state.drafts[textDraftKey] !== previous.drafts[textDraftKey]) {
-      setValueState(state.drafts[textDraftKey] ?? "")
+      valueRef.current = state.drafts[textDraftKey] ?? ""
+      setValueState(valueRef.current)
     }
     if (chatId && previous.attachmentDrafts[chatId] && !state.attachmentDrafts[chatId]) {
       const retained = attachmentsRef.current.filter((attachment) => attachment.status !== "uploaded")
@@ -438,7 +448,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         },
       })
     })
-  }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft])
+  }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft, setValue])
 
   useEffect(() => () => {
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
@@ -587,12 +597,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!text) return
       setValue((current) => {
         if (current.trim()) return current
-        if (textDraftKey) setDraft(textDraftKey, text)
         return text
       })
       textareaRef.current?.focus()
     },
-  }), [enqueueFiles, setDraft, textDraftKey])
+  }), [enqueueFiles, setValue])
 
   async function handleSubmit() {
     if (!canSubmit || hasPendingUploads || submissionRef.current) return
@@ -663,7 +672,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   function applySlashCommand(command: string) {
     const next = `/${command} `
     setValue(next)
-    if (textDraftKey) setDraft(textDraftKey, next)
     textareaRef.current?.focus()
   }
 
@@ -720,7 +728,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && value.length === 0 && previousPrompt) {
       event.preventDefault()
       setValue(previousPrompt)
-      if (textDraftKey) setDraft(textDraftKey, previousPrompt)
       return
     }
 
@@ -754,7 +761,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       })
       const nextCaretPosition = textarea.selectionStart + trimmedText.length
       setValue(nextValue)
-      if (textDraftKey) setDraft(textDraftKey, nextValue)
       autoResize()
       requestAnimationFrame(() => {
         textarea.selectionStart = nextCaretPosition
@@ -890,7 +896,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               rows={1}
               onChange={(event) => {
                 setValue(event.target.value)
-                if (textDraftKey) setDraft(textDraftKey, event.target.value)
                 setSlashIndex(0)
                 setSlashDismissed(false)
                 autoResize()
