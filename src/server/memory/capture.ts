@@ -18,6 +18,7 @@
 // (D5).
 import { createHash } from 'node:crypto';
 import type { MemoryService } from './index';
+import type { CreateMemoryInput } from './MemoryStore';
 import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
 import type { AbstractionLevel, EvidenceClass, MemoryItem, MemoryScope, MemoryType } from './types';
 import { MEMORY_ATOM_SPEC } from './atom-spec';
@@ -848,12 +849,7 @@ export function createCaptureService(opts: {
         return;
       }
 
-      // An UPDATE binds revises → target only when the target is ACTIVE and
-      // has no open revision (pending candidates are still drafts).
-      const revisesId =
-        route === 'updates' && target!.status === 'active' && !memory.store.hasOpenRevision(target!.id)
-          ? target!.id
-          : null;
+      const isRevision = route === 'updates' && surfaceMode === 'review';
       const conflictWithId = route === 'conflicts' ? target!.id : null;
 
       // A candidate can claim project scope without a project in context
@@ -868,30 +864,35 @@ export function createCaptureService(opts: {
           ? 'session'
           : candidate.scope;
 
-      const item = memory.store.create(
-        {
-          content: candidate.content,
-          detail: candidate.detail,
-          abstractionLevel: candidate.abstractionLevel,
-          sensitive: candidate.sensitive,
-          type: candidate.type,
-          scope,
-          status: surfaceMode === 'silent' ? 'active' : 'candidate',
-          topic: candidate.topic,
-          projectId: scope === 'project' ? input.projectId : undefined,
-          sessionId: scope === 'session' ? input.sessionId : undefined,
-          provenanceSessionId: input.sessionId,
-          provenanceTurn: input.turn,
-          evidenceClass: candidate.evidenceClass,
-        },
-        { actor: 'agent', sessionId: input.sessionId, turn: input.turn },
-      );
+      const itemInput: CreateMemoryInput = {
+        content: candidate.content,
+        detail: candidate.detail,
+        abstractionLevel: candidate.abstractionLevel,
+        sensitive: candidate.sensitive,
+        type: candidate.type,
+        scope,
+        status: surfaceMode === 'silent' ? 'active' : 'candidate',
+        topic: candidate.topic,
+        projectId: scope === 'project' ? input.projectId : undefined,
+        sessionId: scope === 'session' ? input.sessionId : undefined,
+        provenanceSessionId: input.sessionId,
+        provenanceTurn: input.turn,
+        evidenceClass: candidate.evidenceClass,
+      };
+      const meta = { actor: 'agent' as const, sessionId: input.sessionId, turn: input.turn };
       // Revision proposals only exist in review mode — the silent arm has no
       // review lane, so an update lands as a plain new (active) memory there.
-      if (revisesId && surfaceMode === 'review') {
-        memory.store.addRelation(item.id, revisesId, 'revises');
-        revisions++;
+      const item = isRevision
+        ? memory.store.createRevisionProposal(itemInput, target!.id, meta, {
+            expectedTargetContent: contentAtGate.get(target!.id),
+          })
+        : memory.store.create(itemInput, meta);
+      if (!item) {
+        rememberObservation();
+        dropped++;
+        return;
       }
+      if (isRevision) revisions++;
       if (surfaceMode === 'silent') memory.syncProjection(item.projectId);
       created.push(item);
       rememberObservation(item.id);
