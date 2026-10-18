@@ -19,6 +19,9 @@ interface HistoryRequest {
 }
 
 interface AppStateFixtureApi {
+  transcriptRevision: () => number
+  streamingText: () => string | null
+  promptContents: () => string[]
   setChatId: (chatId: string | null) => void
   chatSubscriptionCount: (chatId: string) => number
   emitChat: (chatId: string, subscriptionIndex: number, snapshot: unknown) => void
@@ -32,6 +35,9 @@ const subscriptions: ChatSubscription[] = []
 const historyRequests: HistoryRequest[] = []
 
 const fixtureApi: AppStateFixtureApi = {
+  transcriptRevision: () => 0,
+  streamingText: () => null,
+  promptContents: () => [],
   setChatId: () => {},
   chatSubscriptionCount: (chatId) => subscriptions.filter(
     (subscription) => subscription.topic.type === "chat" && subscription.topic.chatId === chatId
@@ -108,9 +114,20 @@ Object.assign(AppSocket.prototype, {
 })
 
 export function mountAppStateFixture(root: HTMLElement) {
+  let lastMessages: unknown
+  let transcriptRevision = 0
   function AppStateHost() {
     const [activeChatId, setActiveChatId] = useState<string | null>("chat-a")
     const state = useAppState(activeChatId)
+    if (lastMessages !== state.messages) {
+      lastMessages = state.messages
+      transcriptRevision += 1
+    }
+    fixtureApi.transcriptRevision = () => transcriptRevision
+    fixtureApi.streamingText = () => state.chatSnapshot?.runtime.streamingText ?? null
+    fixtureApi.promptContents = () => state.messages
+      .filter((message) => message.kind === "user_prompt")
+      .map((message) => message.content)
     fixtureApi.setChatId = setActiveChatId
     const renderedState = {
       activeChatId: state.activeChatId,

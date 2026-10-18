@@ -58,7 +58,7 @@ function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined
   if (left === right) return true
   if (!left || !right) return false
   if (left.length !== right.length) return false
-  return left.every((entry, index) => entry._id === right[index]?._id)
+  return left.every((entry, index) => entry === right[index] || JSON.stringify(entry) === JSON.stringify(right[index]))
 }
 
 function sameMemoryRecordEntries(
@@ -1183,7 +1183,11 @@ export function useAppState(activeChatId: string | null): AppState {
           diffFileCount: 0,
           reusedSnapshot: reused,
         })
-        return reused ? current : snapshot
+        if (reused) return current
+        if (current && snapshot && sameTranscriptEntries(current.messages, snapshot.messages)) {
+          return { ...snapshot, messages: current.messages }
+        }
+        return snapshot
       })
       if (!snapshot) {
         owner.paged = false
@@ -1204,6 +1208,7 @@ export function useAppState(activeChatId: string | null): AppState {
         // Backfill live windows in order without moving the user's older-page cursor.
         owner.windowUpdates = owner.windowUpdates.then(async () => {
           if (!isCurrent()) return
+          if (sameTranscriptEntries(owner.recentMessages, snapshot.messages)) return
           const anchorId = owner.recentMessages.at(-1)?._id
           let bridge: TranscriptEntry[] = []
           if (anchorId && snapshot.messages.length > 0 && !snapshot.messages.some((entry) => entry._id === anchorId)) {

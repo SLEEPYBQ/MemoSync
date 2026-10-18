@@ -5,6 +5,9 @@ import { PROVIDERS } from "../../shared/types"
 import { startMountedRaceHarness } from "../test-utils/mountedRaceHarness"
 
 interface AppStateFixtureApi {
+  transcriptRevision: () => number
+  streamingText: () => string | null
+  promptContents: () => string[]
   chatSubscriptionCount: (chatId: string) => number
   emitChat: (chatId: string, subscriptionIndex: number, snapshot: unknown) => void
   historyRequestCount: () => number
@@ -175,6 +178,44 @@ async function rejectHistory(target: Page, index: number, reason: string) {
 }
 
 describe("mounted useAppState history races", () => {
+  test("keeps paged transcript identity during streaming while retaining same-ID content changes", async () => {
+    const target = await openFixture()
+    const recent = snapshot("chat-a", "idx:100", true, numberedIds(100, 125))
+    await emitChat(target, "chat-a", 0, recent)
+    await loadHistory(target)
+    await settleHistory(target, 0, historyPage(numberedIds(0, 100), null, false))
+    await expectTranscript(target, numberedIds(0, 125))
+    const baseline = await target.evaluate(() => (
+      window as unknown as { __appStateFixture: AppStateFixtureApi }
+    ).__appStateFixture.transcriptRevision())
+
+    for (const streamingText of ["stream one", "stream two", "stream three"]) {
+      await emitChat(target, "chat-a", 0, {
+        ...recent,
+        runtime: { ...recent.runtime, streamingText },
+      })
+      await target.waitForFunction((expected) => (
+        window as unknown as { __appStateFixture: AppStateFixtureApi }
+      ).__appStateFixture.streamingText() === expected, streamingText)
+      expect(await target.evaluate(() => (
+        window as unknown as { __appStateFixture: AppStateFixtureApi }
+      ).__appStateFixture.transcriptRevision())).toBe(baseline)
+    }
+    expect(await historyCount(target)).toBe(1)
+
+    const edited = snapshot("chat-a", "idx:100", true, numberedIds(100, 125))
+    edited.runtime.streamingText = "stream three"
+    edited.messages[0] = { ...prompt("message-100"), content: "Updated existing prompt" } as TranscriptEntry
+    await emitChat(target, "chat-a", 0, edited)
+    await target.waitForFunction(() => (
+      window as unknown as { __appStateFixture: AppStateFixtureApi }
+    ).__appStateFixture.promptContents().includes("Updated existing prompt"))
+    expect(await target.evaluate(() => (
+      window as unknown as { __appStateFixture: AppStateFixtureApi }
+    ).__appStateFixture.transcriptRevision())).toBeGreaterThan(baseline)
+    await expectTranscript(target, numberedIds(0, 125))
+  })
+
   test.each(["during", "after"] as const)("preserves evicted recent entries when the window moves %s pagination", async (timing) => {
     const target = await openFixture()
     await emitChat(target, "chat-a", 0, snapshot("chat-a", "idx:5", true, numberedIds(5, 30)))
