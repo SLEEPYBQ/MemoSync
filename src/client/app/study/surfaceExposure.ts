@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react"
 import { isUiMonitorSuppressed } from "../../lib/memoriesApi"
+import { generateUUID } from "../../lib/utils"
 import { enqueueStudyTelemetry, type StudyTelemetryOutboxRequest } from "./studyTelemetry"
 
 export type StudySurfaceExposure =
@@ -113,7 +114,7 @@ export function createSurfaceExposure({
   chatId,
   initiator,
   memoryIds = [],
-  randomId = () => crypto.randomUUID(),
+  randomId = generateUUID,
   now = Date.now,
   visibilityTarget = typeof document === "undefined" ? null : document,
   pageTarget = typeof window === "undefined" ? null : window,

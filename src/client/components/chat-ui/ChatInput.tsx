@@ -14,7 +14,7 @@ import {
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
-import { cn } from "../../lib/utils"
+import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
 import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
@@ -466,7 +466,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!file) break
 
       activeUploadsRef.current += 1
-      const tempId = crypto.randomUUID()
+      const tempId = generateUUID()
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined
       const generation = uploadGenerationRef.current
 

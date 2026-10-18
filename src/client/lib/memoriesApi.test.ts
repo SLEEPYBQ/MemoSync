@@ -11,6 +11,32 @@ class MemoryStorage {
   key(index: number): string | null { return [...this.values.keys()][index] ?? null }
 }
 
+test("memory controls still send requests when crypto.randomUUID is unavailable", async () => {
+  const originalFetch = globalThis.fetch
+  const originalRandomUUID = Object.getOwnPropertyDescriptor(crypto, "randomUUID")
+  const operations: string[] = []
+  Object.defineProperty(crypto, "randomUUID", { configurable: true, value: undefined })
+  globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body))
+    operations.push(body.operationId)
+    return Response.json({ data: { queued: body.id } })
+  }) as typeof fetch
+
+  try {
+    await memoriesApi.enforce("M-02", "chat-http", "Apply this memory.")
+    await memoriesApi.enforce("M-02", "chat-http", "Apply this memory again.")
+    expect(operations).toHaveLength(2)
+    for (const operationId of operations) {
+      expect(operationId).toMatch(/^control:audit-enforce:M-02:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+    }
+    expect(operations[0]).not.toBe(operations[1])
+  } finally {
+    globalThis.fetch = originalFetch
+    if (originalRandomUUID) Object.defineProperty(crypto, "randomUUID", originalRandomUUID)
+    else Reflect.deleteProperty(crypto, "randomUUID")
+  }
+})
+
 test("Candidate Undo sends its control surface and chat provenance to the server", async () => {
   const originalFetch = globalThis.fetch
   let body: unknown
