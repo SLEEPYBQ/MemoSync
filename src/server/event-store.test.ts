@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import * as fsPromises from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -227,6 +228,53 @@ describe("EventStore", () => {
     const reloaded = new EventStore(dataDir)
     await reloaded.initialize()
     expect(reloaded.getMessages(chat.id)).toEqual([valid, appended])
+  })
+
+  test("repairs a partial failed transcript append before the next write", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
+    const first = entry("user_prompt", 250, { content: "first intact" })
+    const interrupted = entry("assistant_text", 251, { text: "partial attempt" })
+    const recovered = entry("assistant_text", 252, { text: "recovered after failure" })
+
+    await store.appendMessage(chat.id, first)
+    expect(store.getMessages(chat.id)).toEqual([first])
+
+    const appendError = new Error("simulated interrupted transcript append")
+    const realAppendFile = fsPromises.appendFile.bind(fsPromises)
+    let failNextTranscriptAppend = true
+    const appendSpy = spyOn(fsPromises, "appendFile").mockImplementation(async (file, data, options) => {
+      if (file === transcriptPath && failNextTranscriptAppend) {
+        failNextTranscriptAppend = false
+        await realAppendFile(
+          transcriptPath,
+          '{"_id":"torn","createdAt":251,"kind":"assistant_text","text":"partial',
+          "utf8",
+        )
+        throw appendError
+      }
+      return realAppendFile(file, data, options)
+    })
+    try {
+      await expect(store.appendMessage(chat.id, interrupted)).rejects.toBe(appendError)
+      expect(failNextTranscriptAppend).toBe(false)
+    } finally {
+      appendSpy.mockRestore()
+    }
+
+    expect(store.getMessages(chat.id)).toEqual([first])
+    await store.appendMessage(chat.id, recovered)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getMessages(chat.id)).toEqual([first, recovered])
+    expect(await readFile(transcriptPath, "utf8")).toBe(
+      `${JSON.stringify(first)}\n${JSON.stringify(recovered)}\n`,
+    )
   })
 
   test("rejects interior and newline-terminated transcript corruption without mutation", async () => {

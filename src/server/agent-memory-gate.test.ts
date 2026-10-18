@@ -2396,7 +2396,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("Start keeps the preview claim through provider boot until active-turn ownership is installed", async () => {
+  const runStartKeepsPreviewClaim = async (activeStudyTaskId: string | null) => {
     let providerBootStarted!: () => void
     const bootStarted = new Promise<void>((resolve) => {
       providerBootStarted = resolve
@@ -2407,7 +2407,7 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
+      activeStudyTaskId,
       policy: resolveConditionPolicy("memosync"),
       beforeClaudeSessionStart: async () => {
         providerBootStarted()
@@ -2463,7 +2463,15 @@ describe("memory preview gate (coordinator)", () => {
       releaseProviderBoot()
       h.cleanup()
     }
-  })
+  }
+
+  test.each([
+    ["without an active study task", null],
+    ["with active study task 038-S1", "038-S1"],
+  ] as const)(
+    "Start keeps the preview claim through provider boot until active-turn ownership is installed (%s)",
+    (_scenario, activeStudyTaskId) => runStartKeepsPreviewClaim(activeStudyTaskId),
+  )
 
   test("does not append a Start decision or dispatch Claude when the durable attempted claim fails", async () => {
     let attemptedCalls = 0

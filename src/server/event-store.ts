@@ -1189,7 +1189,12 @@ export class EventStore {
       await mkdir(this.transcriptsDir, { recursive: true })
       await this.prepareTranscriptForAppend(chatId, transcriptPath)
       const beforeAppendAt = performance.now()
-      await appendFile(transcriptPath, payload, "utf8")
+      try {
+        await appendFile(transcriptPath, payload, "utf8")
+      } catch (error) {
+        this.transcriptPreparedForAppend.delete(transcriptPath)
+        throw error
+      }
       const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
       if (this.cachedTranscript?.chatId === chatId) {
