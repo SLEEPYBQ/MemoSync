@@ -121,7 +121,7 @@ interface SessionContext {
   pendingRequests: Map<CodexRequestId, PendingRequest<unknown>>
   pendingTurn: PendingTurn | null
   sessionToken: string | null
-  stderrLines: string[]
+  lastStderrLine: string | null
   closed: boolean
   subprocessEnv?: Record<string, string | undefined>
   externalToolsDisabled?: boolean
@@ -843,7 +843,7 @@ export class CodexAppServerManager {
       pendingRequests: new Map(),
       pendingTurn: null,
       sessionToken: null,
-      stderrLines: [],
+      lastStderrLine: null,
       closed: false,
       subprocessEnv: args.subprocessEnv,
     }
@@ -1146,7 +1146,7 @@ export class CodexAppServerManager {
     void (async () => {
       for await (const line of stderr) {
         if (line.trim()) {
-          context.stderrLines.push(line.trim())
+          context.lastStderrLine = line.trim().slice(-4096)
         }
       }
     })()
@@ -1159,7 +1159,7 @@ export class CodexAppServerManager {
       if (context.closed) return
       queueMicrotask(() => {
         if (context.closed) return
-        const message = context.stderrLines.at(-1) || `Codex app-server exited with code ${code ?? 1}`
+        const message = context.lastStderrLine || `Codex app-server exited with code ${code ?? 1}`
         this.failContext(context, message)
       })
     })
@@ -1593,6 +1593,8 @@ export class CodexAppServerManager {
   }
 
   private failContext(context: SessionContext, message: string) {
+    if (context.closed) return
+    context.closed = true
     const pendingTurn = context.pendingTurn
     if (pendingTurn && !pendingTurn.resolved) {
       pendingTurn.queue.push({
@@ -1613,7 +1615,14 @@ export class CodexAppServerManager {
       pending.reject(new Error(message))
     }
     context.pendingRequests.clear()
-    context.closed = true
+    if (this.sessions.get(context.chatId) === context) {
+      this.sessions.delete(context.chatId)
+    }
+    try {
+      context.child.kill("SIGKILL")
+    } catch {
+      // Preserve the original failure if the child has already exited.
+    }
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {

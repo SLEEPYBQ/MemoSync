@@ -3441,6 +3441,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
@@ -3488,6 +3489,7 @@ export class AgentCoordinator {
   }
 
   async shutdownStudyRuntime() {
+    this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),

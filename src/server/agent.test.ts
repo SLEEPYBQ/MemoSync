@@ -927,6 +927,29 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  test("closes an idle Codex session when its chat is closed", async () => {
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: { stopSession: (chatId: string) => stopped.push(chatId) } as never,
+    })
+    await coordinator.closeChat("chat-1")
+    expect(stopped).toEqual(["chat-1"])
+  })
+
+  test("stops idle Codex sessions during server shutdown outside study mode", async () => {
+    let stopped = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      policy: resolveConditionPolicy(""),
+      codexManager: { stopAll: () => { stopped = true } } as never,
+    })
+    await coordinator.shutdownStudyRuntime()
+    expect(stopped).toBe(true)
+  })
+
   test("generates a chat title in the background on the first user message", async () => {
     let releaseTitle!: () => void
     const titleGate = new Promise<void>((resolve) => {

@@ -9,6 +9,7 @@ class FakeCodexProcess extends EventEmitter {
   readonly stderr = new PassThrough()
   readonly messages: unknown[] = []
   killed = false
+  killCalls = 0
 
   constructor(
     private readonly onMessage?: (message: any, process: FakeCodexProcess) => void
@@ -29,6 +30,7 @@ class FakeCodexProcess extends EventEmitter {
   }
 
   kill() {
+    this.killCalls += 1
     this.killed = true
     this.emit("close", 0)
   }
@@ -55,6 +57,80 @@ async function collectStream(stream: AsyncIterable<any>) {
 }
 
 describe("CodexAppServerManager", () => {
+  test("fatal process errors terminate the failed child without stopping a replacement", async () => {
+    const children: FakeCodexProcess[] = []
+    let turnRequested!: () => void
+    const requested = new Promise<void>((resolve) => { turnRequested = resolve })
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+          } else if (message.method === "turn/start") {
+            turnRequested()
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const args = { chatId: "fatal-chat", cwd: "/tmp/project", model: "test", sessionToken: null }
+    try {
+      await manager.startSession(args)
+      const pending = manager.startTurn({
+        chatId: args.chatId, model: "test", content: "hello", planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const rejection = pending.then(
+        () => null,
+        (error) => error,
+      )
+      await requested
+      children[0]!.emit("error", new Error("transport failed"))
+      const failure = await rejection
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).toMatchObject({ message: "transport failed" })
+      expect(children[0]!.killed).toBe(true)
+      expect(children[0]!.killCalls).toBe(1)
+
+      await manager.startSession(args)
+      children[0]!.emit("error", new Error("late old failure"))
+      expect(await manager.startSession(args)).toBe("ready")
+      expect(children).toHaveLength(2)
+      expect(children[1]!.killed).toBe(false)
+      expect(children[0]!.killCalls).toBe(1)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("retains only a bounded final stderr diagnostic for long-lived sessions", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({ chatId: "diagnostics", cwd: "/tmp/project", model: "test", sessionToken: null })
+      for (let index = 0; index < 1000; index++) child.writeStderr(`diagnostic ${index}`)
+      const finalLine = "x".repeat(5000) + " final failure"
+      child.writeStderr(finalLine)
+      child.writeStderr("   ")
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      const context = (manager as unknown as {
+        sessions: Map<string, { lastStderrLine: string | null; stderrLines?: string[] }>
+      }).sessions.get("diagnostics")!
+      expect(context.lastStderrLine).toBe(finalLine.slice(-4096))
+      expect(context.stderrLines).toBeUndefined()
+    } finally {
+      manager.stopAll()
+    }
+  })
+
   for (const failedMethod of ["initialize", "thread/start", "thread/fork"] as const) {
     test(`cleans up a failed ${failedMethod} handshake so the same chat can retry`, async () => {
       const children: FakeCodexProcess[] = []
