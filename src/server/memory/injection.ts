@@ -1,78 +1,39 @@
-// planMemoryInjection — the single source of truth for what a study arm
-// injects into an engine session (STUDY_PLAN §2.2/§2.3).
-//
-// REDESIGN 2026-08-04 (docs/MEMORY_REDESIGN_PLAN_2026-08-04.md, D1):
-// - skills mode (memosync arm, Claude): the plan's block is a BOOT block
-//   (rules + versioned snapshot) baked once per session; later changes ride
-//   user turns as delta blocks (computeMemoryTurnDelta below). The Claude
-//   coordinator therefore no longer rebuilds sessions on memory content
-//   changes — only on mode/tools flips (see startClaudeTurn).
-// - plain/file modes (auto/static arms) keep their boot snapshot and content-
-//   change rebuild contract, and the same plan block is repeated as TEXT on
-//   every Claude turn because the baseline treatment focuses the full set.
-// - Codex passes the full block per turn (developer_instructions), so it is
-//   unaffected by the delta model.
+// planMemoryInjection is the source of truth for the selected MemoSync memory
+// context. Later changes ride user turns as deltas.
 import type { ConditionPolicy } from '../experiment/condition';
-import type { AgentProvider } from '../../shared/types';
 import type { MemoryService } from './index';
 import type { MemoryItem } from './types';
 import {
   buildMemoryBlock,
   buildMemoryDeltaBlock,
-  buildPlainMemoryBlock,
-  formatMemoryLine,
   type MemoryConflictPair,
   type MemoryDeltaEntry,
 } from './prompt';
-import {
-  buildStudyStaticFocusPayload,
-  buildStaticFocusPayload,
-  ensureStaticMemoryScaffold,
-  hashStaticMemoryFiles,
-  readStaticMemoryFiles,
-  readStudyStaticMemoryFiles,
-  type StaticFocusPayload,
-} from './static-files';
 
 export interface MemoryInjectionPlan {
-  mode: 'skills' | 'plain' | 'file';
-  /** Exact text block: boot context in every mode and per-turn focus in plain/file modes. */
+  mode: 'skills';
+  /** Exact text block baked once into the session context. */
   block: string;
   /** Whether the load_memory_detail tool should be registered. */
   registerTools: boolean;
   /** Items in play for the turn (per-turn restriction applied) — logging, preview, trace. */
   injectedMemories: MemoryItem[];
-  /**
-   * Items actually baked into `block` ([] in file mode). This is the confirmed
-   * selection in skills mode and seeds the next turn's delta baseline.
-   */
+  /** Items baked into `block`; seeds the next turn's delta baseline. */
   bakedMemories: MemoryItem[];
-  /** Workspace-relative paths backing a file-mode block ([] otherwise). */
-  staticFiles: string[];
-  /** Exact immutable text + participant-controlled slices for Static measurement only. */
-  staticPayload: StaticFocusPayload | null;
   /**
-   * Fingerprint of the injectable state. For plain/file modes a change requires
-   * an engine-session rebuild. For skills mode the CONTENT no longer forces a
-   * rebuild (deltas carry it) — consumers should use `sessionRebuildKey` below.
+   * Fingerprint of the injectable state. Content changes ride deltas;
+   * consumers use `sessionRebuildKey` to decide whether to rebuild.
    */
   hash: string;
-  /**
-   * What actually requires a Claude session rebuild under the delta model:
-   * mode/tool changes only for skills; full content hash for plain/file.
-   */
+  /** What requires a session rebuild under the delta model. */
   sessionRebuildKey: string;
 }
 
 export interface PlanMemoryInjectionOptions {
   policy: ConditionPolicy;
-  /** The Auto study treatment is defined only for Claude Code. */
-  provider: AgentProvider;
   memory: MemoryService;
   projectId?: string;
   chatId?: string;
-  /** Chat workspace root — where file-mode memory files live. */
-  workspaceDir: string;
   /**
    * Only these confirmed ids inject this turn, including the skills boot
    * block, subsequent deltas, Codex developer instructions and audit snapshot.
@@ -121,67 +82,7 @@ function conflictPairsAmong(memory: MemoryService, items: MemoryItem[]): MemoryC
 
 export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInjectionPlan {
   const { policy, memory } = opts;
-
-  if (policy.injection === 'file') {
-    // Static arm: the workspace files ARE the memory. A controlled-study
-    // project's first representation is intentionally empty; later projects
-    // receive their predecessor only through the durable Project Copy gate.
-    // Keep legacy seed scaffolding for non-study callers of file injection.
-    const studyStatic = policy.studyMode && policy.condition === 'static';
-    const scaffoldSeeds = studyStatic
-      ? []
-      : memory.injectedFor(opts.projectId);
-    ensureStaticMemoryScaffold(opts.workspaceDir, scaffoldSeeds);
-    const files = studyStatic
-      ? readStudyStaticMemoryFiles(opts.workspaceDir)
-      : readStaticMemoryFiles(opts.workspaceDir);
-    const staticPayload = studyStatic
-      ? buildStudyStaticFocusPayload(files)
-      : buildStaticFocusPayload(files);
-    const hash = `file:${hashStaticMemoryFiles(files)}`;
-    return {
-      mode: 'file',
-      block: staticPayload.text,
-      registerTools: false,
-      injectedMemories: [],
-      bakedMemories: [],
-      staticFiles: files.map((f) => f.relPath),
-      staticPayload,
-      hash,
-      sessionRebuildKey: hash,
-    };
-  }
-
-  // Auto's Project Copy treatment belongs only to the controlled Claude Code study
-  // path. Codex is a non-study product path and retains its original scoped
-  // injection semantics even when an Auto policy is passed accidentally.
-  const projectCopyAuto = policy.studyMode && policy.condition === 'auto' && opts.provider === 'claude';
-  let injected = projectCopyAuto
-    ? memory.autoProjectMemories(opts.projectId)
-    : memory.injectedFor(opts.projectId, opts.chatId);
-  if (opts.restrictToIds && policy.injection !== 'skills' && !projectCopyAuto) {
-    const allowed = new Set(opts.restrictToIds);
-    injected = injected.filter((m) => allowed.has(m.id));
-  }
-  const setHash = injected.map((m) => `${m.id}@v${m.version}`).join('|');
-
-  if (policy.injection === 'plain') {
-    const hash = `plain:${setHash}`;
-    return {
-      mode: 'plain',
-      block: buildPlainMemoryBlock(injected),
-      registerTools: false,
-      injectedMemories: injected,
-      bakedMemories: injected,
-      staticFiles: [],
-      staticPayload: null,
-      hash,
-      sessionRebuildKey: hash,
-    };
-  }
-
-  // Only confirmed working memories enter the main session. Later selections
-  // arrive through deltas; unselected content is never preloaded at boot.
+  const injected = memory.injectedFor(opts.projectId, opts.chatId);
   const restricted = opts.restrictToIds
     ? injected.filter((m) => new Set(opts.restrictToIds).has(m.id))
     : injected;
@@ -195,9 +96,7 @@ export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInj
     registerTools: policy.memoryTools,
     injectedMemories: restricted,
     bakedMemories: restricted,
-    staticFiles: [],
-    staticPayload: null,
-    hash: `skills:${restricted.map(m => `${m.id}@v${m.version}`).join('|')}`,
+    hash: `skills:${restricted.map((m) => `${m.id}@v${m.version}`).join('|')}`,
     // Content changes ride deltas; only a tools/mode flip rebuilds the session.
     sessionRebuildKey: `skills-live:${policy.memoryTools}`,
   };
@@ -283,5 +182,3 @@ export function computeMemoryTurnDelta(opts: MemoryTurnDeltaOptions): MemoryTurn
     effectiveIds: effective.map((m) => m.id),
   };
 }
-
-export { formatMemoryLine };

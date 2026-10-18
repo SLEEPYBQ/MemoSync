@@ -6,7 +6,6 @@ import {
   parseStudySusResponse,
 } from "../shared/studyScales"
 import type { ExperimentLogger } from "./experiment/logger"
-import type { NextSessionPreparer } from "./experiment/baseline-project-copy"
 import type { StudyMemoryStore } from "./experiment/study-memory-store"
 import type { StudyRegistry } from "./study-registry"
 
@@ -50,7 +49,6 @@ export class StudySurveyService {
   private readonly allocationParticipantId: string
   private readonly now: () => string
   private readonly randomId: () => string
-  private readonly nextSessionPreparer: NextSessionPreparer | null
   private readonly completionUrl: string
 
   constructor(args: {
@@ -61,7 +59,6 @@ export class StudySurveyService {
     allocationParticipantId: string
     now?: () => string
     randomId?: () => string
-    nextSessionPreparer: NextSessionPreparer | null
     completionUrl?: string
   }) {
     this.store = args.store
@@ -70,7 +67,6 @@ export class StudySurveyService {
     this.allocationParticipantId = args.allocationParticipantId
     this.now = args.now ?? (() => new Date().toISOString())
     this.randomId = args.randomId ?? randomUUID
-    this.nextSessionPreparer = args.nextSessionPreparer
     this.completionUrl = args.completionUrl?.trim() ?? ""
   }
 
@@ -145,33 +141,6 @@ export class StudySurveyService {
     if (!response) throw new StudySurveyError("Raw TLX response is malformed.", 400)
 
     const completionBefore = this.store.getSessionCompletion(input.taskId)
-    if (response.activity === "control" && !completionBefore && this.nextSessionPreparer) {
-      if (!this.store.getQuestionnaireSubmission(input.snapshotId)) {
-        throw new StudySurveyError(`Memory questionnaire is not submitted for snapshot ${input.snapshotId}`, 409)
-      }
-      if (!this.store.getRawTlxSubmission(input.snapshotId, "monitoring")) {
-        throw new StudySurveyError(`Monitoring Raw TLX is not submitted for snapshot ${input.snapshotId}`, 409)
-      }
-      const nextTaskId = this.registry.nextTaskIdAfter(input.taskId)
-      if (nextTaskId) {
-        try {
-          await this.nextSessionPreparer.prepareNextSession({
-            fromTaskId: input.taskId,
-            toTaskId: nextTaskId,
-            sourceFreezeRef: {
-              taskId: snapshot.taskId,
-              snapshotId: snapshot.snapshotId,
-              frozenAt: snapshot.frozenAt,
-            },
-          })
-        } catch (error) {
-          throw new StudySurveyError(
-            error instanceof Error ? error.message : "The next project's memory copy could not be prepared.",
-            503,
-          )
-        }
-      }
-    }
     let result
     try {
       result = this.store.recordRawTlxSubmission({

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
 import { createHash } from "node:crypto"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { StudyMemoryStore } from "./study-memory-store"
+import { buildStudyDataExport } from "./study-data-export"
 
 const tempDirs: string[] = []
 
@@ -51,6 +52,66 @@ afterEach(() => {
 })
 
 describe("StudyMemoryStore", () => {
+  test("reopens and exports retired-condition evidence without relabeling or rewriting it", () => {
+    for (const condition of ["auto", "static"] as const) {
+      const root = mkdtempSync(join(tmpdir(), `memosync-history-${condition}-`))
+      tempDirs.push(root)
+      const experimentsDir = join(root, "experiments")
+      mkdirSync(experimentsDir)
+      const participantId = `historical-${condition}`
+      writeFileSync(join(experimentsDir, "study-allocation.json"), JSON.stringify({
+        schemaVersion: 1,
+        participantId,
+        allocationMode: "study",
+        condition,
+        studyTaskOrder: ["038-S1", "038-S2", "098-S1", "098-S2"],
+        issuedAt: "2026-08-20T00:00:00.000Z",
+        claimedAt: "2026-08-20T00:01:00.000Z",
+      }))
+      const dbPath = join(experimentsDir, "study.sqlite")
+      const originalEvent = {
+        eventId: `historical-event-${condition}`,
+        participantId,
+        condition,
+        recordedAt: "2026-08-20T00:02:00.000Z",
+        clientTimestamp: null,
+        taskId: "038-S1",
+        sessionId: "038-S1",
+        chatId: "historical-chat",
+        kind: "control" as const,
+        surface: condition === "auto" ? "auto_summary_chat" : "static_memory",
+        action: condition === "auto" ? "update_memory" : "edit_submitted",
+        payload: { content: "Preserve this historical evidence", durationMs: 1200 },
+      }
+      const original = new StudyMemoryStore(dbPath)
+      original.recordStudyTelemetryEvent(originalEvent)
+      original.close()
+
+      const reopened = new StudyMemoryStore(dbPath)
+      try {
+        expect(reopened.listStudyTelemetryEvents()).toEqual([originalEvent])
+      } finally {
+        reopened.close()
+      }
+
+      const dataset = buildStudyDataExport({ participantDataDirs: [root] })
+      expect(dataset.participants).toEqual([expect.objectContaining({ participantId, condition })])
+      expect(dataset.interactions).toEqual([originalEvent])
+      expect(dataset.controlActions).toEqual([expect.objectContaining({
+        condition,
+        surface: originalEvent.surface,
+        action: originalEvent.action,
+        payload: originalEvent.payload,
+      })])
+      const afterExport = new StudyMemoryStore(dbPath)
+      try {
+        expect(afterExport.listStudyTelemetryEvents()).toEqual([originalEvent])
+      } finally {
+        afterExport.close()
+      }
+    }
+  })
+
   test("persists instruction-guard evidence without storing rejected prompt text", () => {
     const dbPath = tempDatabase()
     const copiedText = "Users should be able to browse different types of apartments."

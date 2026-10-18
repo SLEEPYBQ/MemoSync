@@ -192,7 +192,7 @@ export function createStudyTelemetryOutbox({
 }
 
 type StudyTelemetryOutbox = ReturnType<typeof createStudyTelemetryOutbox>
-type StudyTelemetryCondition = "memosync" | "auto" | "static"
+type StudyTelemetryCondition = "memosync"
 type BrowserStudyTelemetryStorage = StudyTelemetryStorage & Pick<Storage, "key" | "length">
 
 let activeStudyTelemetryOutbox: StudyTelemetryOutbox | null = null

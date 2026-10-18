@@ -13,7 +13,6 @@ import {
   type StudyQuestionnaireVersion,
 } from "../../shared/studyTasks"
 import type { StudyAttentionCheckResult } from "../../shared/studyAttentionChecks"
-import type { StaticFocusPayload } from "../memory/static-files"
 import type { StudyWorkspaceSnapshotMetadata, StudyWorkspaceTreeState } from "../study-workspace-snapshot"
 import type {
   StudyOnboardingInformation,
@@ -37,6 +36,18 @@ export type StudyFocusOutcome = "delivered" | "empty" | "disabled" | "failed"
 export type StudyCondition = "memosync" | "auto" | "static"
 
 export type StudyTelemetryKind = "monitoring" | "control" | "participant_prompt" | "stage_enter" | "surface_exposure"
+
+interface HistoricalStaticFocusPayload {
+  text: string
+  sources: readonly {
+    relPath: string
+    injectedContent: string
+    contentHash: string
+    truncated: boolean
+    start: number
+    end: number
+  }[]
+}
 
 /**
  * Server-authoritative participant interaction evidence. The participant,
@@ -428,7 +439,7 @@ export interface ReserveStaticFocusDeliveryInput {
   turn: number
   focusedAt: string
   deliveryHash: string
-  payload: StaticFocusPayload
+  payload: HistoricalStaticFocusPayload
 }
 
 export interface PendingStaticFocusDelivery extends ReserveStaticFocusDeliveryInput {
@@ -1863,7 +1874,7 @@ export class StudyMemoryStore {
    */
   reserveStaticFocusDelivery(input: ReserveStaticFocusDeliveryInput): PendingStaticFocusDelivery {
     const payloadJson = canonicalJson(input.payload)
-    const payload = JSON.parse(payloadJson) as StaticFocusPayload
+    const payload = JSON.parse(payloadJson) as HistoricalStaticFocusPayload
     const normalized = {
       injectionId: input.injectionId,
       taskId: input.taskId,
@@ -3124,7 +3135,7 @@ export class StudyMemoryStore {
   }
 
   private hydratePendingStaticFocus(row: StaticFocusLedgerRow): PendingStaticFocusDelivery {
-    const payload = JSON.parse(row.payload_json) as StaticFocusPayload
+    const payload = JSON.parse(row.payload_json) as HistoricalStaticFocusPayload
     return {
       dispatchSequence: row.dispatch_seq,
       injectionId: row.injection_id,
