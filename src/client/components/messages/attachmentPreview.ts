@@ -1,6 +1,6 @@
 import type { ChatAttachment } from "../../../shared/types"
-import { CODE_OR_CONFIG_EXTENSIONS, getFileExtension, type TextPreviewResult } from "../../../shared/attachment-preview"
-export { classifyAttachmentPreview, TEXT_PREVIEW_LIMIT_BYTES, JSON_PREVIEW_LIMIT_BYTES } from "../../../shared/attachment-preview"
+import { CODE_OR_CONFIG_EXTENSIONS, getFileExtension, normalizeAttachmentMimeType, type TextPreviewResult } from "../../../shared/attachment-preview"
+export { classifyAttachmentPreview, normalizeAttachmentMimeType, TEXT_PREVIEW_LIMIT_BYTES, JSON_PREVIEW_LIMIT_BYTES } from "../../../shared/attachment-preview"
 export type { AttachmentPreviewKind, AttachmentPreviewTarget, TextPreviewResult } from "../../../shared/attachment-preview"
 
 export const TABLE_PREVIEW_ROW_LIMIT = 200
@@ -32,7 +32,7 @@ export interface TablePreviewData {
 }
 
 export function classifyAttachmentIcon(attachment: ChatAttachment): AttachmentIconKind {
-  const mimeType = attachment.mimeType.toLowerCase()
+  const mimeType = normalizeAttachmentMimeType(attachment.mimeType)
   const extension = getFileExtension(attachment.displayName)
 
   if (mimeType.startsWith("image/")) return "image"

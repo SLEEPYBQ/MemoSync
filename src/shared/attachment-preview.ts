@@ -29,8 +29,12 @@ export interface TextPreviewResult {
   truncated: boolean
 }
 
+export function normalizeAttachmentMimeType(mimeType: string): string {
+  return mimeType.split(";", 1)[0]!.trim().toLowerCase()
+}
+
 export function classifyAttachmentPreview(attachment: ChatAttachment): AttachmentPreviewTarget {
-  const mimeType = attachment.mimeType.toLowerCase()
+  const mimeType = normalizeAttachmentMimeType(attachment.mimeType)
   const extension = getFileExtension(attachment.displayName)
 
   if (mimeType.startsWith("image/")) {

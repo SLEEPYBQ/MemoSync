@@ -21,6 +21,7 @@ import {
   TEXT_PREVIEW_LIMIT_BYTES,
   classifyAttachmentPreview,
   fetchTextPreview,
+  normalizeAttachmentMimeType,
   parseDelimitedPreview,
   prettifyJson,
   type AttachmentPreviewKind,
@@ -88,7 +89,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
         if (cancelled) return
 
         if (previewKind === "table") {
-          const delimiter = attachment.mimeType === "text/tab-separated-values" ? "\t" : ","
+          const delimiter = normalizeAttachmentMimeType(attachment.mimeType) === "text/tab-separated-values" ? "\t" : ","
           setPreviewCache((current) => ({
             ...current,
             [attachment.id]: {
