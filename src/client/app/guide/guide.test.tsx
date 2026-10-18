@@ -1,30 +1,17 @@
-import { describe, expect, test } from "bun:test"
-import { renderToStaticMarkup } from "react-dom/server"
-import { STUDY_GUIDE_VERSION } from "../../../shared/studyTasks"
-import {
-  canSkipGuide,
-  completeStudyGuide,
-  fetchStudyGuideStatus,
-  hasSeenGuide,
-  shouldAutoShowGuide,
-} from "../../lib/guideState"
-import { processTranscriptMessages } from "../../lib/parseTranscript"
-import { browserPreviewFrameAttributes } from "../../components/chat-ui/BrowserPanel"
-import { MemoryProposalsGate } from "../../components/messages/MemoryProposalsGate"
-import { buildCandidateActivationScopePatch } from "../../components/messages/MemoryCandidatesMessage"
-import { useTranscriptChatContext } from "../../components/messages/render-context"
-import { buildResolvedTranscriptRows } from "../ChatTranscript"
-import { GUIDE_BROWSER_DEMO_DOCUMENT } from "./guideDemoWorkspace"
-import { TOUR_ANCHORS } from "./guideScenes"
-import {
-  GUIDE_CHAPTERS,
-  GuideChapterHeading,
-  GuidePrimaryButton,
-  GuideSectionTabs,
-  GuideTranscriptContextProvider,
-  withResumeDecision,
-} from "./GuideTour"
-import { buildAutoSteps, buildMemoSyncSteps, buildStaticSteps } from "./tourSteps"
+import { describe, expect, test } from "bun:test";
+import { renderToStaticMarkup } from "react-dom/server";
+import { STUDY_GUIDE_VERSION } from "../../../shared/studyTasks";
+import { canSkipGuide, completeStudyGuide, fetchStudyGuideStatus, hasSeenGuide, shouldAutoShowGuide } from "../../lib/guideState";
+import { processTranscriptMessages } from "../../lib/parseTranscript";
+import { browserPreviewFrameAttributes } from "../../components/chat-ui/BrowserPanel";
+import { MemoryProposalsGate } from "../../components/messages/MemoryProposalsGate";
+import { buildCandidateActivationScopePatch } from "../../components/messages/MemoryCandidatesMessage";
+import { useTranscriptChatContext } from "../../components/messages/render-context";
+import { buildResolvedTranscriptRows } from "../ChatTranscript";
+import { GUIDE_BROWSER_DEMO_DOCUMENT } from "./guideDemoWorkspace";
+import { TOUR_ANCHORS } from "./guideScenes";
+import { GUIDE_CHAPTERS, GuideChapterHeading, GuidePrimaryButton, GuideSectionTabs, GuideTranscriptContextProvider, withResumeDecision } from "./GuideTour";
+import { buildMemoSyncSteps } from "./tourSteps";
 
 describe("guide auto-show", () => {
   test("auto-shows only in study mode and only before dismissal", () => {
@@ -99,7 +86,7 @@ describe("Guide optional practice navigation", () => {
   })
 
   test("describes real controls as optional practice instead of required Guide gates", () => {
-    const allSteps = [...buildMemoSyncSteps(), ...buildAutoSteps(), ...buildStaticSteps()]
+    const allSteps = [...buildMemoSyncSteps()]
     const textById = new Map(allSteps.map((step) => [
       step.id,
       renderToStaticMarkup(<div>{step.body}</div>)
@@ -130,8 +117,6 @@ describe("Guide optional practice navigation", () => {
       "memosync.audit",
       "memosync.enforce",
       "memosync.memory-record",
-      "auto.inspect",
-      "static.notebook",
       "task.finish-practice",
     ]
 
@@ -158,34 +143,21 @@ describe("Guide optional practice navigation", () => {
   })
 })
 
-function stepsHtml(steps: ReturnType<typeof buildAutoSteps>): string {
+function stepsHtml(steps: ReturnType<typeof buildMemoSyncSteps>): string {
   return steps
     .map((step) => `${step.title} ${renderToStaticMarkup(<div>{step.body}</div>)}`)
     .join("\n")
 }
 
-function stepFingerprint(step: ReturnType<typeof buildAutoSteps>[number]) {
-  return {
-    id: step.id,
-    title: step.title,
-    body: renderToStaticMarkup(<div>{step.body}</div>),
-    target: step.target,
-    interactive: step.interactive ?? false,
-    panel: step.panel ?? null,
-    panelInteractive: step.panelInteractive ?? false,
-    postSessionPhase: step.postSessionPhase ?? null,
-  }
-}
-
 function chapterSteps(
-  steps: ReturnType<typeof buildAutoSteps>,
+  steps: ReturnType<typeof buildMemoSyncSteps>,
   chapter: "system_use" | "experiment_workflow",
 ) {
   return steps.filter((step) => step.chapter === chapter)
 }
 
 describe("guide chapters", () => {
-  const tours = [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]
+  const tours = [buildMemoSyncSteps()]
 
   test("the visible chapter heading names both sections and their order", () => {
     expect(GUIDE_CHAPTERS).toEqual([
@@ -241,11 +213,9 @@ describe("guide chapters", () => {
     }
   })
 
-  test("all three conditions share one identical experiment workflow and real post-session sequence", () => {
+  test("MemoSync retains the complete experiment workflow and real post-session sequence", () => {
     const workflows = tours.map((steps) => chapterSteps(steps, "experiment_workflow"))
     expect(workflows.every((steps) => steps.every((step) => step.sharedAcrossConditions === true))).toBe(true)
-    expect(workflows[1]!.map(stepFingerprint)).toEqual(workflows[0]!.map(stepFingerprint))
-    expect(workflows[2]!.map(stepFingerprint)).toEqual(workflows[0]!.map(stepFingerprint))
 
     for (const steps of workflows) {
       expect(steps.map((step) => step.postSessionPhase).filter(Boolean)).toEqual([
@@ -267,7 +237,7 @@ describe("guide chapters", () => {
     }
   })
 
-  test("the common System-use subset is identical while memory lessons remain arm-specific", () => {
+  test("MemoSync retains shared System-use lessons alongside memory lessons", () => {
     const systemChapters = tours.map((steps) => chapterSteps(steps, "system_use"))
     const shared = systemChapters.map((steps) => steps.filter((step) => step.sharedAcrossConditions))
     const commonIds = [
@@ -279,8 +249,6 @@ describe("guide chapters", () => {
       "shared.files",
     ]
     const common = shared.map((steps) => steps.filter((step) => commonIds.includes(step.id)))
-    expect(common[1]!.map(stepFingerprint)).toEqual(common[0]!.map(stepFingerprint))
-    expect(common[2]!.map(stepFingerprint)).toEqual(common[0]!.map(stepFingerprint))
     expect(common[0]!.map((step) => step.title)).toEqual([
       "Welcome to the coding assistant",
       "Create the session chat",
@@ -290,31 +258,6 @@ describe("guide chapters", () => {
       "The Files panel",
     ])
     expect(systemChapters.every((steps) => steps.some((step) => step.sharedAcrossConditions === false))).toBe(true)
-  })
-
-  test("condition-specific vocabulary cannot leak into a baseline arm", () => {
-    const autoSteps = buildAutoSteps()
-    const auto = stepsHtml(chapterSteps(autoSteps, "system_use"))
-    expect(auto).toContain("complete plain Markdown block")
-    expect(auto).toContain("automatically captures")
-    expect(auto).toContain("derived summary")
-    expect(auto).toContain("Ask or update your memory")
-    expect(auto).toContain("copied once into the second project")
-    for (const forbidden of ["MemoSync", "Memory Board", "working memory", "four-way audit", "interrupt and resume", "MEMORY.md"]) {
-      expect(stepsHtml(autoSteps)).not.toContain(forbidden)
-    }
-
-    const staticSteps = buildStaticSteps()
-    const staticGuide = stepsHtml(chapterSteps(staticSteps, "system_use"))
-    expect(staticGuide).toContain("MEMORY.md")
-    expect(staticGuide).toContain("memory/*.md")
-    expect(staticGuide).toContain("exact Markdown text block")
-    expect(staticGuide).toContain("Edit")
-    expect(staticGuide).toContain("Save")
-    expect(staticGuide).toContain("copied once into the second project")
-    for (const forbidden of ["MemoSync", "Memory Board", "working memory", "four-way audit", "interrupt and resume", "automatically captures"]) {
-      expect(stepsHtml(staticSteps)).not.toContain(forbidden)
-    }
   })
 
   test("the current interaction lessons invalidate older Guide receipts", () => {
@@ -374,18 +317,9 @@ describe("guide chapters", () => {
 })
 
 describe("tour blinding", () => {
-  // Methodological invariant: baseline participants must never see the
-  // MemoSync identity or any hint of a fuller system.
-  test("baseline tours never mention MemoSync", () => {
-    for (const steps of [buildAutoSteps(), buildStaticSteps()]) {
-      const html = stepsHtml(steps)
-      expect(html.includes("MemoSync")).toBe(false)
-      expect(html).toContain("Agent")
-    }
-  })
 
-  test("every arm explains the same experiment workflow and instruction rule", () => {
-    for (const steps of [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]) {
+  test("MemoSync explains the same experiment workflow and instruction rule", () => {
+    for (const steps of [buildMemoSyncSteps()]) {
       const html = stepsHtml(steps)
       expect(html).toContain("official benchmark starter code")
       expect(html).toContain("Apartment rentals")
@@ -402,8 +336,8 @@ describe("tour blinding", () => {
     }
   })
 
-  test("every arm teaches the same complete Browser workflow on real controls", () => {
-    const tours = [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]
+  test("MemoSync teaches the same complete Browser workflow on real controls", () => {
+    const tours = [buildMemoSyncSteps()]
     const browserSteps = tours.map((steps) => steps.filter((step) => step.title.startsWith("Browser ")))
 
     expect(browserSteps.map((steps) => steps.map((step) => step.title))).toEqual([
@@ -416,29 +350,9 @@ describe("tour blinding", () => {
         "Browser 6 · Report a missing or broken preview",
         "Browser 7 · Repeat until the feature works",
       ],
-      [
-        "Browser 1 · Test the application yourself",
-        "Browser 2 · Open the panel and return Home",
-        "Browser 3 · Choose the current-project frontend",
-        "Browser 4 · Try the complete required flow",
-        "Browser 5 · Refresh after code changes",
-        "Browser 6 · Report a missing or broken preview",
-        "Browser 7 · Repeat until the feature works",
-      ],
-      [
-        "Browser 1 · Test the application yourself",
-        "Browser 2 · Open the panel and return Home",
-        "Browser 3 · Choose the current-project frontend",
-        "Browser 4 · Try the complete required flow",
-        "Browser 5 · Refresh after code changes",
-        "Browser 6 · Report a missing or broken preview",
-        "Browser 7 · Repeat until the feature works",
-      ],
     ])
 
     const rendered = browserSteps.map((steps) => stepsHtml(steps))
-    expect(rendered[1]).toBe(rendered[0])
-    expect(rendered[2]).toBe(rendered[0])
     expect(rendered[0]).toContain("Local Servers")
     expect(rendered[0]).toContain("small green dot")
     expect(rendered[0]).toContain("frontend card")
@@ -569,33 +483,6 @@ describe("tour blinding", () => {
     expect(boardSteps.map((step) => step.id)).toEqual(["memosync.board-library"])
     expect(boardSteps[0]?.target).toEqual({ css: '[data-memory-board-section="library"]' })
     expect(stepsHtml(boardSteps)).toContain("dashed placeholder")
-  })
-
-  test("each baseline spotlights its real condition-specific memory panel", () => {
-    expect(buildAutoSteps().some((step) => step.panel === "autoMemory" && step.interactive)).toBe(true)
-    expect(buildStaticSteps().some((step) => step.panel === "staticMemory" && step.interactive)).toBe(true)
-  })
-
-  test("both baseline tours explain the same project-copy boundary", () => {
-    for (const steps of [buildAutoSteps(), buildStaticSteps()]) {
-      const html = stepsHtml(steps)
-      expect(html).toContain("Your first project starts with empty memory")
-      expect(html).toContain("copied once into the second project")
-      expect(html).toContain("separate copy")
-    }
-  })
-
-  test("the Static tour describes text focus and never fabricates a read-file action", () => {
-    const steps = buildStaticSteps()
-    expect(stepsHtml(steps)).toContain("sends their contents to Claude as text")
-    for (const step of steps) {
-      const toolCalls = step.scene.entries.filter((entry) => entry.kind === "tool_call") as Array<{
-        tool?: { toolKind?: string; input?: { filePath?: string } }
-      }>
-      expect(toolCalls.some((entry) => (
-        entry.tool?.toolKind === "read_file" && entry.tool.input?.filePath === "MEMORY.md"
-      ))).toBe(false)
-    }
   })
 
   test("the violated-audit step uses the production verdict without outcome impact", () => {
@@ -734,14 +621,14 @@ describe("tour blinding", () => {
   })
 
   test("no step copy uses an em dash (user writing rule)", () => {
-    for (const steps of [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]) {
+    for (const steps of [buildMemoSyncSteps()]) {
       expect(stepsHtml(steps).includes("—")).toBe(false)
     }
   })
 })
 
 describe("tour scenes", () => {
-  const allTours = [buildMemoSyncSteps(), buildAutoSteps(), buildStaticSteps()]
+  const allTours = [buildMemoSyncSteps()]
 
   test("every scene hydrates through the real transcript pipeline", () => {
     for (const steps of allTours) {

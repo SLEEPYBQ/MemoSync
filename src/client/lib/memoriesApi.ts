@@ -16,7 +16,6 @@ import type {
   MemoryBoardBacklogSnapshot,
   MemoryBoardOpeningPromptState,
 } from "../../server/memory/board-backlog"
-import { isStaticMemoryMarkdownPath } from "../../shared/staticMemoryPath"
 import { enqueueStudyTelemetry } from "../app/study/studyTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
 
@@ -332,50 +331,6 @@ export const memoriesApi = {
       unwrap<{ ok: boolean }>(r),
     ),
 
-  /** Auto-arm summary panel (baseline B1): prose summary + conversation-only control. */
-  getSummary: (projectId?: string) =>
-    fetch(`/api/memories/summary${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`).then((r) =>
-      unwrap<{ text: string; updatedAt: string; stale: boolean }>(r),
-    ),
-
-  refreshSummary: (projectId?: string) =>
-    fetch(`/api/memories/summary/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId }),
-    }).then((r) => unwrap<{ text: string; updatedAt: string; stale: boolean }>(r)),
-
-  summaryChat: (message: string, projectId?: string, sessionId?: string) =>
-    fetch(`/api/memories/summary/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        eventId: `prompt:auto-summary:${crypto.randomUUID()}`,
-        message,
-        projectId,
-        sessionId,
-      }),
-    }).then((r) =>
-      unwrap<{ reply: string; applied: number; summary: { text: string; updatedAt: string; stale: boolean } }>(r),
-    ),
-
-  /** Static-arm memory file (baseline B2): the workspace MEMORY.md, user+agent shared. */
-  getMemoryFile: (projectId: string) =>
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/memory-file`).then((r) =>
-      unwrap<{ path: string; content: string; mtimeMs: number; exists: boolean }>(r),
-    ),
-
-  saveMemoryFile: (
-    projectId: string,
-    content: string,
-    options: { baseMtimeMs?: number; sessionId?: string; editDurationMs?: number; eventId?: string } = {},
-  ) =>
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/memory-file`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, ...options }),
-    }).then((r) => unwrap<{ path: string; mtimeMs: number }>(r)),
-
   /** The session's muted ids (REDESIGN D7) — [] means everything active injects. */
   getSessionExclusions: (sessionId: string) =>
     fetch(`/api/memories/session-exclusions/${encodeURIComponent(sessionId)}`).then((r) =>
@@ -510,20 +465,6 @@ export function setUiMonitorSuppressed(suppressed: boolean): void {
 
 export function isUiMonitorSuppressed(): boolean {
   return uiMonitorSuppressed
-}
-
-export function recordStaticMemoryEditEntered(operationId: string, sessionId: string | undefined, path: string): void {
-  if (uiMonitorSuppressed || !isStaticMemoryMarkdownPath(path)) return
-  enqueueStudyTelemetry({
-    eventId: `${operationId}:entered`,
-    endpoint: "/api/study/static-edit-entered",
-    body: {
-      operationId,
-      clientTimestamp: new Date().toISOString(),
-      ...(sessionId ? { chatId: sessionId } : {}),
-      path,
-    },
-  })
 }
 
 export function recordWorkingMemorySelection(input: {

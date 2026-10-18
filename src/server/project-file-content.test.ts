@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { handleProjectFileContent } from "./server"
-import type { EventStore } from "./event-store"
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { handleProjectFileContent } from "./server";
+import type { EventStore } from "./event-store";
 
 let dir: string
 
@@ -56,123 +56,6 @@ describe("project file content route", () => {
     const res = await call("hello.ts", { method: "PUT", body })
     expect(res!.status).toBe(200)
     expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe(body)
-  })
-
-  it("logs a participant edit to an injected Static memory Markdown file", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    mkdirSync(join(dir, "memory"))
-    writeFileSync(join(dir, "memory", "preferences.md"), "- use npm\n")
-    const events: unknown[] = []
-    const relPath = "memory/preferences.md"
-    const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
-    const req = new Request(url, {
-      method: "PUT",
-      headers: {
-        "x-memosync-session-id": "chat-1",
-        "x-memosync-edit-duration-ms": "2400",
-        "x-memosync-event-id": "control:static-edit:file-success",
-      },
-      body: "- use bun\n",
-    })
-
-    const res = await handleProjectFileContent(req, new URL(req.url), store, {
-      experimentLogger: { event: (event) => { events.push(event); return { durableCreated: true } } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(res!.status).toBe(200)
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "study.control_operation",
-        operationId: "control:static-edit:file-success",
-        taskId: "038-S1",
-        chatId: "chat-1",
-        surface: "static_memory",
-        action: "edit",
-        controlType: "static_edit",
-        phase: "attempted",
-        payload: { projectId: "p-1", path: "memory/preferences.md", durationMs: 2_400 },
-      }),
-      expect.objectContaining({ phase: "completed" }),
-    ])
-  })
-
-  it("logs a participant edit to nested memory Markdown using the shared Static path contract", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    mkdirSync(join(dir, "memory", "team"), { recursive: true })
-    writeFileSync(join(dir, "memory", "team", "preferences.md"), "- use npm\n")
-    const events: unknown[] = []
-    const relPath = "memory/team/preferences.md"
-    const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
-    const req = new Request(url, {
-      method: "PUT",
-      headers: {
-        "x-memosync-event-id": "control:static-edit:nested",
-        "x-memosync-session-id": "chat-1",
-      },
-      body: "- use bun\n",
-    })
-
-    const res = await handleProjectFileContent(req, new URL(req.url), store, {
-      experimentLogger: { event: (event) => { events.push(event); return { durableCreated: true } } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(res!.status).toBe(200)
-    expect(events).toEqual([
-      expect.objectContaining({
-        type: "study.control_operation",
-        operationId: "control:static-edit:nested",
-        phase: "attempted",
-        payload: expect.objectContaining({ path: relPath }),
-      }),
-      expect.objectContaining({ phase: "completed" }),
-    ])
-  })
-
-  it("rejects an unnormalized Static memory save instead of recording its normalized target", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    mkdirSync(join(dir, "memory"))
-    const target = join(dir, "memory", "preferences.md")
-    writeFileSync(target, "- use npm\n")
-    const events: unknown[] = []
-    const relPath = "memory/team/../preferences.md"
-    const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
-    const req = new Request(url, {
-      method: "PUT",
-      headers: { "x-memosync-event-id": "control:static-edit:traversal" },
-      body: "- use bun\n",
-    })
-
-    const res = await handleProjectFileContent(req, new URL(req.url), store, {
-      experimentLogger: { event: (event) => { events.push(event); return { durableCreated: true } } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-
-    expect(res!.status).toBe(400)
-    expect(events).toEqual([])
-    expect(readFileSync(target, "utf8")).toBe("- use npm\n")
-  })
-
-  it("does not write Static Markdown when durable edit telemetry fails", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    mkdirSync(join(dir, "memory"))
-    const filePath = join(dir, "memory", "preferences.md")
-    writeFileSync(filePath, "- use npm\n")
-    const relPath = "memory/preferences.md"
-    const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
-    const req = new Request(url, {
-      method: "PUT",
-      headers: { "x-memosync-event-id": "control:static-edit:fail" },
-      body: "- use bun\n",
-    })
-
-    const response = await handleProjectFileContent(req, new URL(req.url), store, {
-      experimentLogger: { event: () => { throw new Error("study.sqlite unavailable") } },
-      getActiveStudyTaskId: () => "038-S1",
-    })
-    expect(response!.status).toBe(500)
-    expect(readFileSync(filePath, "utf8")).toBe("- use npm\n")
   })
 
   it("does not count an ordinary project-file save as Static memory control", async () => {

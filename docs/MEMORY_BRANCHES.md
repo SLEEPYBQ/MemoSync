@@ -1,6 +1,6 @@
 # MemoSync memory branches
 
-The normal MemoSync application uses the selected coding CLI for memory reasoning. It does not require a DeepSeek sidecar key. The experimental Auto and Static implementations retain their separate legacy paths.
+The MemoSync application uses the selected coding CLI for memory reasoning. It does not require a DeepSeek sidecar key.
 
 ## Turn lifecycle
 

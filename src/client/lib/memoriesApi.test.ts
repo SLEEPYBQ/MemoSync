@@ -1,12 +1,6 @@
-import { expect, test } from "bun:test"
-import { initializeStudyTelemetryOutbox, stopStudyTelemetryOutbox } from "../app/study/studyTelemetry"
-import {
-  memoriesApi,
-  recordStaticMemoryEditEntered,
-  recordUiMonitor,
-  recordWorkingMemorySelection,
-  setUiMonitorSuppressed,
-} from "./memoriesApi"
+import { expect, test } from "bun:test";
+import { initializeStudyTelemetryOutbox, stopStudyTelemetryOutbox } from "../app/study/studyTelemetry";
+import { memoriesApi, recordWorkingMemorySelection, setUiMonitorSuppressed } from "./memoriesApi";
 
 class MemoryStorage {
   private readonly values = new Map<string, string>()
@@ -144,52 +138,6 @@ test("Working Memory use planning binds the request to its chat and preview", as
     sessionId: "chat-038-s1",
     previewId: "preview-1",
   })
-})
-
-test("Monitoring and Static edit entry use the scoped durable telemetry outbox", async () => {
-  const delivered: Array<{ endpoint: string; body: Record<string, unknown> }> = []
-  await initializeStudyTelemetryOutbox({
-    condition: "static",
-    resetForNewParticipant: true,
-    storage: new MemoryStorage(),
-    onlineTarget: null,
-    randomId: () => "participant-scope",
-    fetcher: async (input, init) => {
-      delivered.push({
-        endpoint: String(input),
-        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
-      })
-      return new Response(null, { status: 204 })
-    },
-  })
-
-  recordUiMonitor("static_memory_panel", { sessionId: "chat-1", interaction: "scroll" })
-  recordStaticMemoryEditEntered("control:static-edit:1", "chat-1", "MEMORY.md")
-  recordStaticMemoryEditEntered("control:ordinary-file:1", "chat-1", "src/app.ts")
-  await new Promise((resolve) => setTimeout(resolve, 0))
-
-  expect(delivered).toEqual([
-    {
-      endpoint: "/api/memories/ui-monitor",
-      body: {
-        eventId: expect.stringMatching(/^monitor:/),
-        clientTimestamp: expect.any(String),
-        surface: "static_memory_panel",
-        sessionId: "chat-1",
-        interaction: "scroll",
-      },
-    },
-    {
-      endpoint: "/api/study/static-edit-entered",
-      body: {
-        operationId: "control:static-edit:1",
-        clientTimestamp: expect.any(String),
-        chatId: "chat-1",
-        path: "MEMORY.md",
-      },
-    },
-  ])
-  stopStudyTelemetryOutbox()
 })
 
 test("Working Memory Add and Remove enqueue distinct semantic operation ids", async () => {

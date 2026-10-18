@@ -43,9 +43,7 @@ import {
   persistDeliveredStoreFocusEvent,
   recordDeliveredStoreFocus,
 } from "./experiment/focus"
-import type { PendingStaticFocusDelivery, StudyMemoryStore } from "./experiment/study-memory-store"
-import type { StaticMemoryExtractor } from "./experiment/static-memory-extractor"
-import { materializePendingStaticFocus, reserveDeliveredStaticFocus } from "./experiment/static-focus"
+import type { StudyMemoryStore } from "./experiment/study-memory-store"
 import type { StudyPromptGate, StudyPromptGateInput } from "./study-prompt-gate"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { ensureProjectDirectory } from "./paths"
@@ -230,13 +228,6 @@ interface MemoryPreparationCancellation {
   settle: () => void
 }
 
-interface DeferredAutoStartGuard {
-  signal: AbortSignal
-  authorizeDelivery: () => boolean
-  isCommittedCancellationRequested: () => boolean
-  markTurnStarted: () => void
-}
-
 function createMemoryPreparationCancellation(): MemoryPreparationCancellation {
   const controller = new AbortController()
   let resolveRequested!: () => void
@@ -259,45 +250,6 @@ function createMemoryPreparationCancellation(): MemoryPreparationCancellation {
       didSettle = true
       resolveSettled()
     },
-  }
-}
-
-class PendingAutoCaptureStart {
-  phase: "barrier" | "dispatching" = "barrier"
-  readonly cancellation = createMemoryPreparationCancellation()
-  cancellationReceipt?: Promise<void>
-  cancellationOperation?: Promise<void>
-  deliveryCommitted = false
-  cancelCommittedDelivery = false
-  readonly turnStartSettlement: Promise<boolean>
-  readonly guard: DeferredAutoStartGuard
-  private settleTurnStartOnce: (started: boolean) => void
-
-  constructor(public queuedMessageId: string) {
-    let settled = false
-    let resolveTurnStart!: (started: boolean) => void
-    this.turnStartSettlement = new Promise<boolean>((resolve) => {
-      resolveTurnStart = resolve
-    })
-    this.settleTurnStartOnce = (started) => {
-      if (settled) return
-      settled = true
-      resolveTurnStart(started)
-    }
-    this.guard = {
-      signal: this.cancellation.signal,
-      authorizeDelivery: () => {
-        if (this.cancellation.signal.aborted) return false
-        this.deliveryCommitted = true
-        return true
-      },
-      isCommittedCancellationRequested: () => this.cancelCommittedDelivery,
-      markTurnStarted: () => this.settleTurnStartOnce(true),
-    }
-  }
-
-  settleWithoutTurnStart(): void {
-    this.settleTurnStartOnce(false)
   }
 }
 
@@ -374,8 +326,6 @@ interface StartTurnArgs {
   profile?: SendToStartingProfile | null
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
-  /** Internal queue-to-turn linearization guard for deferred Auto delivery. */
-  deferredAutoStart?: DeferredAutoStartGuard
   /**
    * Called only after Claude accepts the prompt, with the exact focused ids
    * used by the delivery receipt. Interrupt recovery uses this server-owned
@@ -485,7 +435,7 @@ interface ClaudeSessionState {
    * Rebuild key of the memory shape baked into this session ("memory-off" when
    * disabled). Under the delta model (REDESIGN D1) skills-mode CONTENT changes
    * no longer rebuild — they ride the next user turn as a delta block; only a
-   * mode/tools flip (or plain/file content, which has no delta channel) forces
+   * tools flip forces
    * a rebuild. The resume token carries the conversation across rebuilds.
    */
   memorySetHash: string
@@ -548,11 +498,9 @@ interface AgentCoordinatorArgs {
   openingBoardBacklog?: MemoryBoardBacklogService | null
   /** Durable source of truth for study focus/freeze/questionnaire data. */
   studyMemoryStore?: StudyMemoryStore | null
-  /** Hidden measurement-only atomizer used by the Static condition. */
-  staticMemoryExtractor?: StaticMemoryExtractor | null
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
   claudeSessionFileExists?: (localPath: string, sessionToken: string) => boolean
-  /** Formal-study preview owner shared by Auto, Static, and MemoSync. */
+  /** Formal-study preview owner shared with the session coordinator. */
   studyPreviewRuntime?: StudyAgentPreviewRuntime | null
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
   claudeRetireTimeoutMs?: number
@@ -591,9 +539,6 @@ export interface StudyMemoryQualityFlag {
     | "post_turn_failed"
     | "post_turn_incomplete"
     | "focus_persistence_failed"
-    | "static_extraction_failed"
-    | "static_focus_persistence_failed"
-    | "static_focus_pending"
   blocking: boolean
   taskId: string
   chatId: string
@@ -1439,11 +1384,9 @@ export async function startClaudeSession(args: {
     : args.memory
       ? planMemoryInjection({
         policy,
-        provider: "claude",
         memory: args.memory,
         projectId: args.projectId,
         chatId: args.chatId,
-        workspaceDir: args.localPath,
         restrictToIds: args.restrictMemoryIds,
       })
       : null
@@ -1755,7 +1698,6 @@ export class AgentCoordinator {
   private readonly onParticipantPromptRecorded: AgentCoordinatorArgs["onParticipantPromptRecorded"]
   private readonly openingBoardBacklog: MemoryBoardBacklogService | null
   private readonly studyMemoryStore: StudyMemoryStore | null
-  private readonly staticMemoryExtractor: StaticMemoryExtractor | null
   private readonly claudeSessionFileExists: (localPath: string, sessionToken: string) => boolean
   private readonly studyPreviewRuntime: StudyAgentPreviewRuntime | null
   private readonly claudeRetireTimeoutMs: number
@@ -1862,21 +1804,6 @@ export class AgentCoordinator {
     turnId: string
     code: string
   }>()
-  /** Static atomization is asynchronous, but identity/version application must
-   * follow the durable Claude dispatch order within each workspace. */
-  private readonly staticFocusJobsByInjection = new Map<string, Promise<StudyMemoryQualityFlag[]>>()
-  private readonly staticFocusTailByNamespace = new Map<string, Promise<void>>()
-  /**
-   * Auto rows are project-local, but a completed turn's broad capture is a
-   * causal dependency of every later turn in the active study project, across
-   * its chats and sessions. The study serial gate activates only one project
-   * at a time, so one process tail preserves that order without joining the
-   * projects' memory identities or content.
-   */
-  private autoProjectCaptureTail: Promise<void> = Promise.resolve()
-  private pendingAutoProjectCaptureJobs = 0
-  /** Durable queued sends waiting for the ordered Auto capture tail. */
-  private readonly pendingAutoCaptureStarts = new Map<string, PendingAutoCaptureStart>()
   /** One startup/retry owner per durable opening-Board claim. */
   private readonly openingBoardRecoveryTasks = new Set<string>()
   private readonly openingBoardRecoveryRetryAttempts = new Map<string, number>()
@@ -1917,7 +1844,6 @@ export class AgentCoordinator {
     this.onParticipantPromptRecorded = args.onParticipantPromptRecorded
     this.openingBoardBacklog = args.openingBoardBacklog ?? null
     this.studyMemoryStore = args.studyMemoryStore ?? null
-    this.staticMemoryExtractor = args.staticMemoryExtractor ?? null
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.studyPreviewRuntime = args.studyPreviewRuntime ?? null
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
@@ -2762,53 +2688,7 @@ export class AgentCoordinator {
     })
   }
 
-  private enqueueAutoProjectCapture<T>(job: () => Promise<T>): Promise<T> {
-    this.pendingAutoProjectCaptureJobs += 1
-    const execution = this.autoProjectCaptureTail
-      .catch(() => undefined)
-      .then(job)
-    const tracked = execution.finally(() => {
-      this.pendingAutoProjectCaptureJobs = Math.max(0, this.pendingAutoProjectCaptureJobs - 1)
-    })
-    this.autoProjectCaptureTail = tracked.then(
-      () => undefined,
-      () => undefined,
-    )
-    return tracked
-  }
-
-  private async awaitAutoProjectCaptureBarrier(): Promise<void> {
-    while (true) {
-      const observed = this.autoProjectCaptureTail
-      await observed
-      if (observed === this.autoProjectCaptureTail) return
-    }
-  }
-
-  private shouldQueueBehindAutoCapture(provider: AgentProvider): boolean {
-    return this.policy.studyMode
-      && this.policy.condition === "auto"
-      && provider === "claude"
-      && this.pendingAutoProjectCaptureJobs > 0
-  }
-
-  private async recordDeferredTurnStartFailure(chatId: string, error: unknown): Promise<void> {
-    const message = error instanceof Error ? error.message : String(error)
-    try {
-      await this.store.appendMessage(
-        chatId,
-        timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-      )
-      await this.store.recordTurnFailed(chatId, message)
-      this.emitStateChange(chatId)
-    } catch (recordError) {
-      this.reportBackgroundError?.(
-        `[auto-deferred-start] chat ${chatId}: could not record failure: ${recordError instanceof Error ? recordError.message : String(recordError)}`,
-      )
-    }
-  }
-
-  private isCancelledDeferredQueueRow(chatId: string, queuedMessageId: string): boolean {
+  private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
       entry.kind === "interrupted"
       && entry.cancelledQueuedMessageId === queuedMessageId
@@ -2825,155 +2705,18 @@ export class AgentCoordinator {
     while (true) {
       const head = this.store.getQueuedMessages(chatId)[0]
       if (!head) return null
-      if (!this.isCancelledDeferredQueueRow(chatId, head.id)) return head
+      if (!this.isCancelledQueueRow(chatId, head.id)) return head
       try {
         await this.store.removeQueuedMessage(chatId, head.id)
       } catch (error) {
         if (this.store.getQueuedMessage(chatId, head.id)) {
           this.reportBackgroundError?.(
-            `[auto-deferred-stop] chat ${chatId}: stopped queue row remains blocked: ${error instanceof Error ? error.message : String(error)}`,
+            `[queue-dispatch] chat ${chatId}: stopped queue row remains blocked: ${error instanceof Error ? error.message : String(error)}`,
           )
           return null
         }
       }
     }
-  }
-
-  private resumeNextQueuedMessage(chatId: string): void {
-    void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
-      void this.recordDeferredTurnStartFailure(chatId, error)
-    })
-  }
-
-  /**
-   * A direct Auto send arriving while the previous turn is still being
-   * captured is first persisted in the normal queue, then dispatched only
-   * after the ordered Auto capture tail settles. The WebSocket can ack
-   * the durable queue row immediately without letting Claude see stale memory.
-   */
-  private scheduleAutoCaptureQueueDrain(chatId: string, queuedMessageId: string): void {
-    if (this.pendingAutoCaptureStarts.has(chatId)) return
-    const pending = new PendingAutoCaptureStart(queuedMessageId)
-    this.pendingAutoCaptureStarts.set(chatId, pending)
-    this.emitStateChange(chatId, { immediate: true })
-
-    void (async () => {
-      try {
-        const outcome = await Promise.race([
-          this.awaitAutoProjectCaptureBarrier().then(() => "ready" as const),
-          pending.cancellation.requested.then(() => "cancelled" as const),
-        ])
-        if (outcome === "cancelled" || pending.cancellation.signal.aborted) return
-        pending.phase = "dispatching"
-        while (!pending.cancellation.signal.aborted) {
-          // The head present when chat.send was acknowledged may be removed by
-          // an external queue action while capture is still settling. Dispatch
-          // the current durable head so a later row is never stranded behind a
-          // stale in-memory id.
-          const queued = await this.nextDispatchableQueuedMessage(chatId)
-          if (!queued) return
-          pending.queuedMessageId = queued.id
-          const dispatch = await this.dequeueAndStartQueuedMessage(chatId, queued, {
-            deferredAutoStart: pending.guard,
-          })
-          if (dispatch !== "missing") return
-        }
-      } catch (error) {
-        // Stop is a participant-requested terminal outcome, not a failed send.
-        // A store/start await that unwinds after its signal must not append a
-        // second, misleading error receipt.
-        if (!pending.cancellation.signal.aborted && !pending.cancelCommittedDelivery) {
-          await this.recordDeferredTurnStartFailure(chatId, error)
-        }
-      } finally {
-        pending.settleWithoutTurnStart()
-        let continueQueue = false
-        if (
-          pending.phase === "dispatching"
-          && (pending.cancellation.signal.aborted || pending.cancelCommittedDelivery)
-          && pending.cancellationReceipt
-        ) {
-          // If Stop won before queue removal began, discard that stopped row
-          // here. If removal was already in flight this is a no-op. Waiting for
-          // the receipt keeps the next row ordered after the visible Stop.
-          let receiptDurable = true
-          await pending.cancellationReceipt.catch(() => {
-            receiptDurable = false
-          })
-          if (pending.cancellation.signal.aborted && this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            try {
-              await this.store.removeQueuedMessage(chatId, pending.queuedMessageId)
-            } catch (error) {
-              if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-                this.reportBackgroundError?.(
-                  `[auto-deferred-stop] chat ${chatId}: could not remove stopped queue row: ${error instanceof Error ? error.message : String(error)}`,
-                )
-              }
-            }
-          }
-          // Never redispatch the stopped row itself. A failed cleanup leaves it
-          // visible for explicit retry/recovery, but it must not be mistaken
-          // for q2 merely because it is still the current durable head.
-          continueQueue = receiptDurable
-            && !this.store.getQueuedMessage(chatId, pending.queuedMessageId)
-        }
-        if (this.pendingAutoCaptureStarts.get(chatId) === pending) {
-          this.pendingAutoCaptureStarts.delete(chatId)
-        }
-        pending.cancellation.settle()
-        this.emitStateChange(chatId)
-
-        if (continueQueue) this.resumeNextQueuedMessage(chatId)
-      }
-    })()
-  }
-
-  private cancelAutoCaptureQueueDrain(
-    chatId: string,
-    pending: PendingAutoCaptureStart,
-    hideInterrupted?: boolean,
-  ): Promise<void> {
-    if (pending.cancellationOperation) return pending.cancellationOperation
-
-    const stoppedDuringDispatch = pending.phase === "dispatching"
-    const committedDelivery = pending.deliveryCommitted
-    if (committedDelivery) pending.cancelCommittedDelivery = true
-    const barrierSettlement = committedDelivery ? null : pending.cancellation.cancelAndWait()
-
-    pending.cancellationReceipt = (async () => {
-      if (!stoppedDuringDispatch) await barrierSettlement
-      if (committedDelivery) await pending.turnStartSettlement
-      await this.store.appendMessage(chatId, committedDelivery
-        ? timestamped({ kind: "interrupted", hidden: hideInterrupted })
-        : timestamped({
-            kind: "interrupted",
-            hidden: hideInterrupted,
-            cancelledQueuedMessageId: pending.queuedMessageId,
-          }))
-      await this.store.recordTurnCancelled(chatId)
-
-      // The marker above is the durable authority. Physical cleanup may fail;
-      // every future drain will see the tombstone and remain fail-closed.
-      if (!stoppedDuringDispatch && !committedDelivery) {
-        try {
-          if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            await this.store.removeQueuedMessage(chatId, pending.queuedMessageId)
-          }
-        } catch (error) {
-          if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            this.reportBackgroundError?.(
-              `[auto-deferred-stop] chat ${chatId}: could not remove stopped barrier row: ${error instanceof Error ? error.message : String(error)}`,
-            )
-          }
-        }
-      }
-    })()
-
-    pending.cancellationOperation = pending.cancellationReceipt.then(() => {
-      this.emitStateChange(chatId, { immediate: true })
-      if (!stoppedDuringDispatch) this.resumeNextQueuedMessage(chatId)
-    })
-    return pending.cancellationOperation
   }
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
@@ -2999,10 +2742,7 @@ export class AgentCoordinator {
       args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
     }
     if (args.engine !== "claude" || !args.taskId) {
-      const run = () => this.runPostTurnMemoryPasses(args)
-      void (this.policy.condition === "auto" && args.engine === "claude"
-        ? this.enqueueAutoProjectCapture(run)
-        : run())
+      void this.runPostTurnMemoryPasses(args)
       return
     }
 
@@ -3028,13 +2768,10 @@ export class AgentCoordinator {
     this.noteStudyMemoryQualityFlag(pendingFlag)
     this.trackStudyMemoryJob(taskId, promise, pendingFlag)
 
-    const run = () => this.runPostTurnMemoryPasses({
+    const execution = this.runPostTurnMemoryPasses({
       ...args,
       onStudyMeasurementSettled: settle,
     })
-    const execution = this.policy.condition === "auto"
-      ? this.enqueueAutoProjectCapture(run)
-      : run()
     void execution.catch((error) => {
       this.reportBackgroundError?.(
         `[memory-post-turn] chat ${args.chatId} turn ${args.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`
@@ -3048,124 +2785,6 @@ export class AgentCoordinator {
         ...(args.turnNumber !== undefined ? { turn: args.turnNumber } : {}),
       }])
     })
-  }
-
-  private staticFocusFailure(
-    pending: Pick<PendingStaticFocusDelivery, "taskId" | "chatId" | "turnId" | "turn">,
-    code: "static_extraction_failed" | "static_focus_persistence_failed" | "static_focus_pending",
-  ): StudyMemoryQualityFlag {
-    return {
-      code,
-      blocking: true,
-      taskId: pending.taskId,
-      chatId: pending.chatId,
-      turnId: pending.turnId,
-      turn: pending.turn,
-    }
-  }
-
-  private enqueuePendingStaticFocus(pending: PendingStaticFocusDelivery): void {
-    if (!this.studyMemoryStore || !this.staticMemoryExtractor) return
-    if (this.staticFocusJobsByInjection.has(pending.injectionId)) return
-
-    const previous = this.staticFocusTailByNamespace.get(pending.namespace) ?? Promise.resolve()
-    const job = previous
-      .catch(() => undefined)
-      .then(async () => {
-        await materializePendingStaticFocus({
-          store: this.studyMemoryStore!,
-          extractor: this.staticMemoryExtractor!,
-          logger: this.memory?.logger ?? { event: () => {} },
-          pending,
-        })
-        this.clearStudyMemoryQualityFlag({
-          taskId: pending.taskId,
-          chatId: pending.chatId,
-          turnId: pending.turnId,
-          code: "static_extraction_failed",
-        })
-        return [] as StudyMemoryQualityFlag[]
-      })
-      .catch((error) => {
-        this.reportBackgroundError?.(
-          `[study-static-focus] chat ${pending.chatId} turn ${pending.turn}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-        return [this.staticFocusFailure(pending, "static_extraction_failed")]
-      })
-    const tail = job.then(() => undefined)
-    this.staticFocusJobsByInjection.set(pending.injectionId, job)
-    this.staticFocusTailByNamespace.set(pending.namespace, tail)
-    this.trackStudyMemoryJob(pending.taskId, job)
-    void tail.finally(() => {
-      this.staticFocusJobsByInjection.delete(pending.injectionId)
-      if (this.staticFocusTailByNamespace.get(pending.namespace) === tail) {
-        this.staticFocusTailByNamespace.delete(pending.namespace)
-      }
-    })
-  }
-
-  /** Resume exact queued payloads after a process restart. Safe to call more
-   * than once; the per-injection map prevents duplicate workers. */
-  resumePendingStaticFocusMaterializations(taskId?: string): void {
-    if (!this.studyMemoryStore || !this.staticMemoryExtractor) return
-    for (const pending of this.studyMemoryStore.listPendingStaticFocusDeliveries(
-      taskId ? { taskId } : {},
-    )) {
-      this.enqueuePendingStaticFocus(pending)
-    }
-  }
-
-  private launchStaticFocusMaterialization(args: {
-    taskId: string | null
-    projectId?: string
-    chatId: string
-    turnId: string
-    turn: number
-    promptText: string
-    plan: MemoryInjectionPlan | null
-  }): void {
-    const taskId = args.taskId
-    if (!taskId) return
-    const occurrence = {
-      taskId,
-      chatId: args.chatId,
-      turnId: args.turnId,
-      turn: args.turn,
-    }
-    if (!this.studyMemoryStore || !args.plan?.staticPayload || !args.projectId) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(occurrence, "static_focus_persistence_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: Static measurement is unavailable`,
-      )
-      return
-    }
-    let pending: PendingStaticFocusDelivery
-    try {
-      pending = reserveDeliveredStaticFocus({
-        store: this.studyMemoryStore,
-        taskId,
-        namespace: args.projectId,
-        chatId: args.chatId,
-        turnId: args.turnId,
-        turn: args.turn,
-        promptText: args.promptText,
-        payload: args.plan.staticPayload,
-      })
-    } catch (error) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(occurrence, "static_focus_persistence_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: could not reserve delivery: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      return
-    }
-    if (!this.staticMemoryExtractor) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(pending, "static_extraction_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: Static extractor is unavailable`,
-      )
-      return
-    }
-    this.enqueuePendingStaticFocus(pending)
   }
 
   private async runPostTurnMemoryPasses(
@@ -3183,7 +2802,7 @@ export class AgentCoordinator {
     ): StudyMemoryQualityFlag | null => args.taskId
       ? {
           code,
-          blocking: code === "focus_persistence_failed" || code === "static_extraction_failed",
+          blocking: code === "focus_persistence_failed",
           taskId: args.taskId,
           chatId: args.chatId,
           turnId: args.turnId,
@@ -3207,9 +2826,6 @@ export class AgentCoordinator {
           sessionId: args.chatId,
           turn: args.turnNumber,
           engine: args.engine,
-          ...(this.policy.studyMode && this.policy.condition === "auto" && args.engine === "claude"
-            ? { profile: "auto-project-copy" as const }
-            : {}),
           userText: args.userText,
           assistantText: args.assistantText,
         }
@@ -3228,10 +2844,6 @@ export class AgentCoordinator {
           const raw = await this.forkCaptureFn({
             sessionToken: args.claudeSessionToken,
             localPath: args.localPath,
-            profile:
-              this.policy.studyMode && this.policy.condition === "auto"
-                ? "auto-project-copy"
-                : "review",
           })
           if (raw && this.capture.captureFromExtraction) {
             try {
@@ -3635,7 +3247,6 @@ export class AgentCoordinator {
   studyFreezeBlocker(): string | null {
     if (
       this.startingChats.size > 0
-      || this.pendingAutoCaptureStarts.size > 0
       || this.activeTurns.size > 0
       || this.pendingPreviews.size > 0
       || this.claimedPreviewResponses.size > 0
@@ -3715,10 +3326,6 @@ export class AgentCoordinator {
 
   /** Wait only for questionnaire-changing Claude capture/trace work. */
   async awaitStudyMemorySettled(taskId: string): Promise<StudyMemoryQualityFlag[]> {
-    // One explicit retry per freeze attempt also recovers a job that failed
-    // earlier in this process. Persistent pending rows remain blocking if the
-    // retry still cannot finish.
-    this.resumePendingStaticFocusMaterializations(taskId)
     while (true) {
       const pending = [...this.inFlightStudyMemoryJobs]
         .filter((job) => job.taskId === taskId)
@@ -3741,14 +3348,6 @@ export class AgentCoordinator {
           ))) continue
           flags.push(durable as StudyMemoryQualityFlag)
         }
-        for (const delivery of this.studyMemoryStore?.listPendingStaticFocusDeliveries({ taskId }) ?? []) {
-          if (flags.some((flag) => (
-            flag.blocking
-            && flag.chatId === delivery.chatId
-            && flag.turnId === delivery.turnId
-          ))) continue
-          flags.push(this.staticFocusFailure(delivery, "static_focus_pending"))
-        }
         return flags
       }
       await Promise.all(pending)
@@ -3761,9 +3360,6 @@ export class AgentCoordinator {
     // invariant, but defensive) wins.
     for (const [chatId, status] of this.startingChats.entries()) {
       statuses.set(chatId, status)
-    }
-    for (const chatId of this.pendingAutoCaptureStarts.keys()) {
-      statuses.set(chatId, "starting")
     }
     for (const [chatId, turn] of this.activeTurns.entries()) {
       statuses.set(chatId, turn.status)
@@ -3982,19 +3578,16 @@ export class AgentCoordinator {
     queuedMessage: QueuedChatMessage,
     options?: {
       steered?: boolean
-      deferredAutoStart?: DeferredAutoStartGuard
     },
   ): Promise<"started" | "cancelled" | "missing"> {
-    const deferred = options?.deferredAutoStart
-    if (deferred?.signal.aborted) return "cancelled"
     if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
-    if (this.isCancelledDeferredQueueRow(chatId, queuedMessage.id)) {
+    if (this.isCancelledQueueRow(chatId, queuedMessage.id)) {
       try {
         await this.store.removeQueuedMessage(chatId, queuedMessage.id)
       } catch (error) {
         if (this.store.getQueuedMessage(chatId, queuedMessage.id)) {
           this.reportBackgroundError?.(
-            `[auto-deferred-stop] chat ${chatId}: refused tombstoned queue row: ${error instanceof Error ? error.message : String(error)}`,
+            `[queue-dispatch] chat ${chatId}: refused tombstoned queue row: ${error instanceof Error ? error.message : String(error)}`,
           )
         }
       }
@@ -4008,7 +3601,6 @@ export class AgentCoordinator {
       channel: "queue.dispatch",
       attachments: queuedMessage.attachments,
     })
-    if (deferred?.signal.aborted) return "cancelled"
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
@@ -4019,11 +3611,9 @@ export class AgentCoordinator {
       if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
       throw error
     }
-    if (deferred?.signal.aborted) return "cancelled"
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
-    if (deferred?.signal.aborted) return "cancelled"
     await this.startTurnForChat({
       chatId,
       provider,
@@ -4037,11 +3627,8 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       appendUserPrompt: true,
       steered: options?.steered,
-      deferredAutoStart: deferred,
     })
-    return deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()
-      ? "cancelled"
-      : "started"
+    return "started"
   }
 
   /**
@@ -4059,7 +3646,6 @@ export class AgentCoordinator {
         this.activeTurns.has(chatId)
         || this.hasPendingPreviewActivity(chatId)
         || this.startingChats.has(chatId)
-        || this.pendingAutoCaptureStarts.has(chatId)
       ) {
         continue
       }
@@ -4451,23 +4037,11 @@ export class AgentCoordinator {
     if (this.activeTurns.has(chatId)) return false
     const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
     if (!nextQueuedMessage) return false
-    const chat = this.store.getChat(chatId)
-    const provider = this.resolveProvider(nextQueuedMessage, chat?.provider ?? null)
-    if (this.shouldQueueBehindAutoCapture(provider)) {
-      // q2 may have been enqueued while q1 was still active. q1 completion
-      // starts broad Auto capture before draining its queue; use the same
-      // durable, cancellable owner as an idle direct send instead of removing
-      // q2 and blocking invisibly inside startTurnForChat's barrier.
-      this.scheduleAutoCaptureQueueDrain(chatId, nextQueuedMessage.id)
-      return true
-    }
     await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
     return true
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
-    const deferred = args.deferredAutoStart
-    if (deferred?.signal.aborted) return
     const logicalTurnId = args.turnId ?? crypto.randomUUID()
     args.turnId = logicalTurnId
     logSendToStartingProfile(args.profile, "start_turn.begin", {
@@ -4540,15 +4114,6 @@ export class AgentCoordinator {
       throw new Error("Project not found")
     }
 
-    if (this.policy.condition === "auto" && args.provider === "claude") {
-      await this.awaitAutoProjectCaptureBarrier()
-    }
-
-    // Stop can arrive while durable dequeue or any pre-delivery store await is
-    // in flight. The queued row has already been claimed, but the participant
-    // prompt and Claude process must remain untouched.
-    if (deferred?.signal.aborted) return
-
     if (shouldAppendUserPrompt) {
       userPromptEntry = {
         ...timestamped(
@@ -4563,16 +4128,7 @@ export class AgentCoordinator {
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
-      const appended = await this.store.appendMessage(
-        args.chatId,
-        userPromptEntry,
-        deferred
-          ? { shouldAppend: deferred.authorizeDelivery }
-          : undefined,
-      )
-      // Stop won while this append was waiting on EventStore's serialized
-      // writer. No user_prompt became durable, so this is not a started turn.
-      if (appended === false) return
+      await this.store.appendMessage(args.chatId, userPromptEntry)
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
         chatId: args.chatId,
         entryId: userPromptEntry._id,
@@ -4637,22 +4193,14 @@ export class AgentCoordinator {
       if (openingIdentity) {
         this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, { turnStarted: true })
       }
-      deferred?.markTurnStarted()
       logSendToStartingProfile(args.profile, "start_turn.turn_started_recorded", {
         chatId: args.chatId,
       })
     }
 
-    // Once shouldAppend authorized the durable write, finish the normal
-    // turn-start record before honoring Stop. This keeps a delivered prompt
-    // from becoming an untracked half-turn, while still preventing Claude boot.
-    if (deferred?.isCommittedCancellationRequested()) return
-
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
-
-    if (deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()) return
 
     // Per-turn memory Preview gate (SPEC §4.10b): before the engine acts, show
     // the injection receipt — exactly which memories the turn carries — then
@@ -4670,18 +4218,16 @@ export class AgentCoordinator {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
         policy: this.policy,
-        provider: args.provider,
         memory: this.memory,
         projectId: chat.projectId,
         chatId: args.chatId,
-        workspaceDir: project.localPath,
       })
       // Run the gate whenever there are item-based memories to reason about
-      // (skills/plain modes) — EVEN when the injected set is empty. An empty
+      // — EVEN when the injected set is empty. An empty
       // plan is not "no gate": runPreviewGateThenBoot records the (empty)
       // preview and either auto-proceeds (setting on) or parks for an explicit
-      // decision (setting off) (BUG AGENT-5). File mode has no items to gate.
-      if (plan.mode !== "file") {
+      // decision (setting off) (BUG AGENT-5).
+      {
         // The gate waits on a human — that must not hold the caller's ws ack:
         // the client reads a held ack (10s timeout) as a dead socket,
         // misreports the DELIVERED message as failed, and resurrects the
@@ -4697,7 +4243,6 @@ export class AgentCoordinator {
       }
     }
 
-    if (deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()) return
     await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: false })
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
@@ -5985,11 +5530,9 @@ export class AgentCoordinator {
 
       const injected = planMemoryInjection({
         policy: this.policy,
-        provider: args.provider,
         memory: this.memory!,
         projectId: input.ctx.project.id,
         chatId: args.chatId,
-        workspaceDir: input.ctx.project.localPath,
       }).injectedMemories
 
       await this.refreshMemoryPreviewGate({
@@ -6492,11 +6035,9 @@ export class AgentCoordinator {
             ...ctx,
             injected: planMemoryInjection({
               policy: this.policy,
-              provider: args.provider,
               memory: this.memory!,
               projectId: ctx.project.id,
               chatId: args.chatId,
-              workspaceDir: ctx.project.localPath,
             }).injectedMemories,
           }
         }
@@ -6937,17 +6478,15 @@ export class AgentCoordinator {
     await ensureProjectDirectory(project.localPath)
 
     // Snapshot BEFORE any engine boot awaits: what this turn injects (trace's
-    // ground truth). Sourced from the injection plan, NOT injectedFor — in
-    // file mode the model sees workspace files, so no item ids are "in play".
+    // ground truth). Use the confirmed selection in the injection plan,
+    // not the full visible pool returned by injectedFor.
     const turnMemoryPlan =
       this.memory && !memoryDisabledForTurn
         ? planMemoryInjection({
             policy: this.policy,
-            provider: args.provider,
             memory: this.memory,
             projectId: chat.projectId,
             chatId: args.chatId,
-            workspaceDir: project.localPath,
             restrictToIds: turnRestriction,
           })
         : null
@@ -7014,11 +6553,9 @@ export class AgentCoordinator {
         this.memory && !memoryDisabledForTurn
           ? planMemoryInjection({
               policy: this.policy,
-              provider: "codex",
               memory: this.memory,
               projectId: chat.projectId,
               chatId: args.chatId,
-              workspaceDir: project.localPath,
               restrictToIds: turnRestriction,
             })
           : null
@@ -7070,7 +6607,6 @@ export class AgentCoordinator {
           memories: codexPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
           tokenEstimate: Math.ceil(codexMemoryBlock.length / 4),
           mode: codexPlan.mode,
-          staticFiles: codexPlan.staticFiles.length ? codexPlan.staticFiles : undefined,
         })
       }
       const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
@@ -7206,12 +6742,6 @@ export class AgentCoordinator {
       let deliveredExpectedUses: ExpectedMemoryUse[] = []
       let deliveredResumeInterruptId: string | undefined
       let nextMemoryBaseline: Map<string, number> | null = null
-      const repeatedFocusText = active.memoryPlan?.mode === "plain" || active.memoryPlan?.mode === "file"
-        ? active.memoryPlan.block
-        : ""
-      if (repeatedFocusText) {
-        promptText += `\n\n<system-reminder>\n${repeatedFocusText}\n</system-reminder>`
-      }
       if (session.memoryBaseline && this.memory) {
         const delta = computeMemoryTurnDelta({
           memory: this.memory,
@@ -7409,7 +6939,7 @@ export class AgentCoordinator {
       active.injectedIds = deliveredFocusIds
       if (active.memoryPlan) active.memoryPlan = { ...active.memoryPlan, injectedMemories: deliveredFocusedMemories.map(item => ({ ...item })) }
       args.onMemoryDeliveryAccepted?.([...deliveredFocusIds])
-      if (this.memory && (this.policy.condition === "memosync" || this.policy.condition === "auto")) {
+      if (this.memory) {
         try {
           if (openingFocusDelivery) {
             persistDeliveredStoreFocusEvent({
@@ -7422,21 +6952,17 @@ export class AgentCoordinator {
             recordDeliveredStoreFocus({
               logger: this.memory.logger,
               studyStore: this.studyMemoryStore ?? undefined,
-              condition: this.policy.condition,
+              condition: "memosync",
               taskId: active.taskId,
               chatId: args.chatId,
               turnId: active.turnId,
               turn: active.turnNumber ?? turnNumber,
-              mode: this.policy.condition === "memosync" ? "skills" : "plain",
+              mode: "skills",
               promptText,
               visiblePool: deliveredVisiblePool,
               focusedMemories: deliveredFocusedMemories,
-              getAutoProjectCloneRef: this.policy.condition === "auto"
-                ? (memoryId) => this.memory!.getAutoProjectCloneRef(memoryId)
-                : undefined,
-              expectedUses: this.policy.condition === "memosync" ? deliveredExpectedUses : undefined,
+              expectedUses: deliveredExpectedUses,
               disabled: active.memoryDisabled,
-              focusPayloadText: repeatedFocusText || undefined,
               resumeOfInterruptId: deliveredResumeInterruptId,
             })
           }
@@ -7455,16 +6981,6 @@ export class AgentCoordinator {
             `[study-focus] chat ${args.chatId} turn ${active.turnNumber ?? turnNumber}: ${error instanceof Error ? error.message : String(error)}`
           )
         }
-      } else if (this.policy.condition === "static") {
-        this.launchStaticFocusMaterialization({
-          taskId: active.taskId,
-          projectId: chat.projectId,
-          chatId: args.chatId,
-          turnId: active.turnId,
-          turn: active.turnNumber ?? turnNumber,
-          promptText,
-          plan: active.memoryPlan,
-        })
       }
       logSendToStartingProfile(args.profile, "start_turn.claude_prompt_sent", {
         chatId: args.chatId,
@@ -7512,8 +7028,7 @@ export class AgentCoordinator {
     ])))
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
-    // mode/tools flips (arm switch), and plain/file CONTENT changes — those
-    // modes have no delta channel. Skills-mode content changes deliberately do
+    // and tools flips. Skills-mode content changes deliberately do
     // NOT rebuild: they ride the next user turn as a delta block, so the
     // prompt cache survives every edit/accept/archive. The key comes from the
     // same plan the session boot uses, so check and boot can never disagree.
@@ -7522,11 +7037,9 @@ export class AgentCoordinator {
       : memoryEnabled && this.memory
         ? planMemoryInjection({
             policy: this.policy,
-            provider: "claude",
             memory: this.memory,
             projectId: args.projectId,
             chatId: args.chatId,
-            workspaceDir: args.localPath,
             restrictToIds: args.restrictMemoryIds,
           })
         : null
@@ -7722,7 +7235,6 @@ export class AgentCoordinator {
       this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
-      || this.pendingAutoCaptureStarts.has(chatId)
     ) {
       if (openingReview) throw new Error("The opening first message cannot be queued behind another turn")
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
@@ -7736,23 +7248,6 @@ export class AgentCoordinator {
     }
 
     const settings = this.getProviderSettings(provider, command)
-    if (this.shouldQueueBehindAutoCapture(provider)) {
-      const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
-        provider: command.provider,
-        model: command.model,
-        modelOptions: command.modelOptions,
-        effort: command.effort,
-        planMode: command.planMode,
-      })
-      this.scheduleAutoCaptureQueueDrain(chatId, queuedMessage.id)
-      logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
-        chatId,
-        provider,
-        model: settings.model,
-        deferredForAutoCapture: true,
-      })
-      return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
-    }
 
     await this.startTurnForChat({
       chatId,
@@ -7814,7 +7309,6 @@ export class AgentCoordinator {
       this.activeTurns.has(command.chatId)
       || this.hasPendingPreviewActivity(command.chatId)
       || this.startingChats.has(command.chatId)
-      || this.pendingAutoCaptureStarts.has(command.chatId)
 
     if (isBusy()) {
       await this.cancel(command.chatId, { hideInterrupted: true })
@@ -8243,9 +7737,8 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume is a memosync-condition Claude feature. It is
-    // available in the normal deployment (studyMode false) and in the memosync
-    // study arm alike — but never in the auto/static baseline arms or on Codex.
+    // Per-memory interrupt/resume is a MemoSync Claude feature available in
+    // normal deployments and the MemoSync study mode.
     if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || chat.provider !== "codex"))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
@@ -8467,21 +7960,6 @@ export class AgentCoordinator {
     if (draining) {
       draining.turn.close()
       this.drainingStreams.delete(chatId)
-    }
-
-    // A direct Auto send can be durably queued while it waits for the prior
-    // turn's Project Copy capture. Stop cancels that pending dispatch itself: the
-    // queue row is removed only after the barrier waiter confirms it cannot
-    // append a late user prompt or boot Claude.
-    const deferredAutoStart = this.pendingAutoCaptureStarts.get(chatId)
-    if (
-      deferredAutoStart
-      && !this.activeTurns.has(chatId)
-      && !this.hasPendingPreviewActivity(chatId)
-      && this.startingChats.get(chatId) !== "previewing_memory"
-    ) {
-      await this.cancelAutoCaptureQueueDrain(chatId, deferredAutoStart, options?.hideInterrupted)
-      return
     }
 
     // Stop while parked at a step-one gate: resolve EVERY parked gate as

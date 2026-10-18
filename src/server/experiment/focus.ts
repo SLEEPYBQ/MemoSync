@@ -1,11 +1,9 @@
 import { createHash, randomUUID } from "node:crypto"
 import type { ExpectedMemoryUse } from "../memory/use-plan"
-import type { AutoProjectCloneProvenance } from "../memory"
 import type { MemoryItem } from "../memory/types"
 import type {
   DeliveredFocusEvent,
   DeliveredFocusMemoryRef,
-  ExperimentCondition,
   ExperimentLogger,
 } from "./logger"
 import type { StudyMemoryStore } from "./study-memory-store"
@@ -29,20 +27,18 @@ function visiblePoolHash(items: MemoryItem[]): string {
 }
 
 export interface BuildDeliveredStoreFocusArgs {
-  condition: Extract<ExperimentCondition, "memosync" | "auto">
+  condition: "memosync"
   taskId: string | null
   chatId: string
   turnId: string
   turn: number
-  mode: Extract<DeliveredFocusEvent["mode"], "skills" | "plain">
+  mode: "skills"
   resumeOfInterruptId?: string
   promptText: string
   /** Exact repeated focus text when the condition has a dedicated turn block. */
   focusPayloadText?: string
   visiblePool: MemoryItem[]
   focusedMemories: MemoryItem[]
-  /** Auto-only lineage for identities created by Baseline Project Copy. */
-  getAutoProjectCloneRef?: (memoryId: string) => AutoProjectCloneProvenance | null
   expectedUses?: ExpectedMemoryUse[]
   disabled?: boolean
   focusedAt?: string
@@ -57,9 +53,6 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
     if (seen.has(item.id)) continue
     seen.add(item.id)
     const expectedUse = uses.get(item.id)?.trim()
-    const cloneRef = args.condition === "auto"
-      ? args.getAutoProjectCloneRef?.(item.id) ?? null
-      : null
     memories.push({
       id: item.id,
       identity: { scheme: "store", id: item.id },
@@ -71,10 +64,9 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
       actualFocus: true,
       ...(expectedUse ? { expectedUse } : {}),
       sourceRef: {
-        kind: args.condition === "memosync" ? "memosync_store" : "auto_store",
+        kind: "memosync_store",
         memoryId: item.id,
         storeVersion: item.version,
-        ...(cloneRef ?? {}),
       },
     })
   }
@@ -105,7 +97,7 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
 
 export function persistDeliveredStoreFocusEvent(args: {
   event: DeliveredFocusEvent
-  condition: Extract<ExperimentCondition, "memosync" | "auto">
+  condition: "memosync"
   logger: Pick<ExperimentLogger, "event">
   studyStore?: Pick<StudyMemoryStore, "recordFocusDelivery">
 }): DeliveredFocusEvent {

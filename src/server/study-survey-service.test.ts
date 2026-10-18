@@ -1,13 +1,13 @@
-import { describe, expect, test } from "bun:test"
-import { Database } from "bun:sqlite"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import type { StudyRawTlxActivityResponse } from "../shared/studyScales"
-import { BaselineProjectCopyCoordinator } from "./experiment/baseline-project-copy"
-import { StudyMemoryStore } from "./experiment/study-memory-store"
-import { StudyRegistry } from "./study-registry"
-import { StudySurveyService } from "./study-survey-service"
+import { describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { StudyRawTlxActivityResponse } from "../shared/studyScales";
+
+import { StudyMemoryStore } from "./experiment/study-memory-store";
+import { StudyRegistry } from "./study-registry";
+import { StudySurveyService } from "./study-survey-service";
 
 function rawTlx(activity: "monitoring" | "control"): StudyRawTlxActivityResponse {
   return {
@@ -41,330 +41,18 @@ function freezeAndSubmitQuiz(store: StudyMemoryStore, taskId: string, snapshotId
 }
 
 describe("StudySurveyService", () => {
-  test("requires every composition to state whether next-session preparation is enabled", () => {
+  test("does not require baseline project-copy preparation", () => {
     const store = new StudyMemoryStore(":memory:")
     const registry = new StudyRegistry(undefined, ["038-S1"], store)
-    const explicitMemoSyncInput: ConstructorParameters<typeof StudySurveyService>[0] = {
-      store,
-      registry,
-      allocationParticipantId: "P77",
-      logger: { event: () => {} },
-      nextSessionPreparer: null,
-    }
-
-    expect(new StudySurveyService(explicitMemoSyncInput)).toBeInstanceOf(StudySurveyService)
-
-    // @ts-expect-error The treatment decision must never fall back to omission.
-    const omittedTreatmentDecision: ConstructorParameters<typeof StudySurveyService>[0] = {
+    const input: ConstructorParameters<typeof StudySurveyService>[0] = {
       store,
       registry,
       allocationParticipantId: "P77",
       logger: { event: () => {} },
     }
-    void omittedTreatmentDecision
+
+    expect(new StudySurveyService(input)).toBeInstanceOf(StudySurveyService)
     store.close()
-  })
-
-  test("prepares a durable baseline project copy before completing the project boundary", async () => {
-    const store = new StudyMemoryStore(":memory:")
-    const registry = new StudyRegistry(undefined, ["038-S2", "098-S1"], store)
-    freezeAndSubmitQuiz(store, "038-S2", "snapshot-project-boundary")
-    const ids = ["tlx-monitoring", "tlx-control", "session-completion"]
-    const sourceHash = "a".repeat(64)
-    const targetHash = sourceHash
-    const transition = new BaselineProjectCopyCoordinator({
-      store,
-      adapter: {
-        condition: "auto",
-        prepare: async (input) => {
-          expect(input).toMatchObject({
-            fromTaskId: "038-S2",
-            fromProjectSlug: "apartment",
-            toTaskId: "098-S1",
-            toProjectSlug: "car",
-            sourceFreezeRef: {
-              taskId: "038-S2",
-              snapshotId: "snapshot-project-boundary",
-            },
-          })
-          expect(store.getRawTlxSubmission("snapshot-project-boundary", "control")).toBeNull()
-          expect(registry.taskStatus("098-S1")).toBe("locked")
-          return {
-            sourceRepresentationHash: sourceHash,
-            targetRepresentationHash: targetHash,
-            manifest: { schemaVersion: 1, copiedItems: [] },
-          }
-        },
-      },
-      now: () => "2026-08-16T10:09:00.000Z",
-    })
-    const service = new StudySurveyService({
-      store,
-      registry,
-      allocationParticipantId: "P77",
-      logger: { event: () => {} },
-      now: () => "2026-08-16T10:10:00.000Z",
-      randomId: () => ids.shift()!,
-      nextSessionPreparer: transition,
-    })
-
-    await service.submitRawTlx({
-      taskId: "038-S2",
-      snapshotId: "snapshot-project-boundary",
-      response: rawTlx("monitoring"),
-    })
-    const result = await service.submitRawTlx({
-      taskId: "038-S2",
-      snapshotId: "snapshot-project-boundary",
-      response: rawTlx("control"),
-    })
-
-    expect(result).toMatchObject({ requiredStep: "next_session", nextTaskId: "098-S1" })
-    expect(registry.taskStatus("038-S2")).toBe("completed")
-    expect(registry.taskStatus("098-S1")).toBe("active")
-    expect(store.getBaselineProjectCopyTransition("038-S2", "098-S1")).toMatchObject({
-      status: "ready",
-      condition: "auto",
-      sourceSnapshotId: "snapshot-project-boundary",
-      sourceRepresentationHash: sourceHash,
-      targetRepresentationHash: targetHash,
-      manifest: { schemaVersion: 1, copiedItems: [] },
-    })
-    store.close()
-  })
-
-  test("does not prepare a project copy between two sessions in the same project", async () => {
-    const store = new StudyMemoryStore(":memory:")
-    const registry = new StudyRegistry(undefined, ["038-S1", "038-S2"], store)
-    freezeAndSubmitQuiz(store, "038-S1", "snapshot-same-project")
-    const ids = ["tlx-monitoring", "tlx-control", "session-completion"]
-    const transition = new BaselineProjectCopyCoordinator({
-      store,
-      adapter: {
-        condition: "static",
-        prepare: async () => {
-          throw new Error("same-project transition must not invoke the copy adapter")
-        },
-      },
-    })
-    const service = new StudySurveyService({
-      store,
-      registry,
-      allocationParticipantId: "P77",
-      logger: { event: () => {} },
-      randomId: () => ids.shift()!,
-      nextSessionPreparer: transition,
-    })
-
-    await service.submitRawTlx({
-      taskId: "038-S1",
-      snapshotId: "snapshot-same-project",
-      response: rawTlx("monitoring"),
-    })
-    const result = await service.submitRawTlx({
-      taskId: "038-S1",
-      snapshotId: "snapshot-same-project",
-      response: rawTlx("control"),
-    })
-
-    expect(result).toMatchObject({ requiredStep: "next_session", nextTaskId: "038-S2" })
-    expect(store.getBaselineProjectCopyTransition("038-S1", "038-S2")).toBeNull()
-    store.close()
-  })
-
-  test("does not prepare a project copy after the final task", async () => {
-    const store = new StudyMemoryStore(":memory:")
-    const registry = new StudyRegistry(undefined, ["098-S2"], store)
-    freezeAndSubmitQuiz(store, "098-S2", "snapshot-final-copy")
-    const ids = ["tlx-monitoring", "tlx-control", "session-completion"]
-    const transition = new BaselineProjectCopyCoordinator({
-      store,
-      adapter: {
-        condition: "auto",
-        prepare: async () => {
-          throw new Error("final task must not invoke the copy adapter")
-        },
-      },
-    })
-    const service = new StudySurveyService({
-      store,
-      registry,
-      allocationParticipantId: "P77",
-      logger: { event: () => {} },
-      randomId: () => ids.shift()!,
-      nextSessionPreparer: transition,
-    })
-
-    await service.submitRawTlx({
-      taskId: "098-S2",
-      snapshotId: "snapshot-final-copy",
-      response: rawTlx("monitoring"),
-    })
-    const result = await service.submitRawTlx({
-      taskId: "098-S2",
-      snapshotId: "snapshot-final-copy",
-      response: rawTlx("control"),
-    })
-
-    expect(result).toMatchObject({ requiredStep: "sus", sessionCompleted: true })
-    store.close()
-  })
-
-  test("keeps Control TLX and the next task locked until a failed empty project copy succeeds", async () => {
-    const store = new StudyMemoryStore(":memory:")
-    const registry = new StudyRegistry(undefined, ["038-S2", "098-S1"], store)
-    freezeAndSubmitQuiz(store, "038-S2", "snapshot-copy-retry")
-    const ids = ["tlx-monitoring", "tlx-control", "session-completion"]
-    const emptyHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-    let shouldFail = true
-    let attempts = 0
-    const transition = new BaselineProjectCopyCoordinator({
-      store,
-      adapter: {
-        condition: "static",
-        prepare: async () => {
-          attempts += 1
-          if (shouldFail) throw new Error("destination workspace is unavailable")
-          return {
-            sourceRepresentationHash: emptyHash,
-            targetRepresentationHash: emptyHash,
-            manifest: { schemaVersion: 1, files: [], totalBytes: 0 },
-          }
-        },
-      },
-    })
-    const service = new StudySurveyService({
-      store,
-      registry,
-      allocationParticipantId: "P77",
-      logger: { event: () => {} },
-      randomId: () => ids.shift()!,
-      nextSessionPreparer: transition,
-    })
-    await service.submitRawTlx({
-      taskId: "038-S2",
-      snapshotId: "snapshot-copy-retry",
-      response: rawTlx("monitoring"),
-    })
-
-    await expect(service.submitRawTlx({
-      taskId: "038-S2",
-      snapshotId: "snapshot-copy-retry",
-      response: rawTlx("control"),
-    })).rejects.toThrow("destination workspace is unavailable")
-    expect(store.getRawTlxSubmission("snapshot-copy-retry", "control")).toBeNull()
-    expect(store.getSessionCompletion("038-S2")).toBeNull()
-    expect(registry.taskStatus("098-S1")).toBe("locked")
-    expect(store.getBaselineProjectCopyTransition("038-S2", "098-S1")).toMatchObject({
-      status: "preparing",
-      sourceRepresentationHash: null,
-      targetRepresentationHash: null,
-      manifest: null,
-    })
-
-    shouldFail = false
-    const result = await service.submitRawTlx({
-      taskId: "038-S2",
-      snapshotId: "snapshot-copy-retry",
-      response: rawTlx("control"),
-    })
-
-    expect(result).toMatchObject({ requiredStep: "next_session", nextTaskId: "098-S1" })
-    expect(attempts).toBe(2)
-    expect(store.getBaselineProjectCopyTransition("038-S2", "098-S1")).toMatchObject({
-      status: "ready",
-      sourceRepresentationHash: emptyHash,
-      targetRepresentationHash: emptyHash,
-      manifest: { schemaVersion: 1, files: [], totalBytes: 0 },
-    })
-    store.close()
-  })
-
-  test("reuses a durable ready receipt after the process stops between copy preparation and completion", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "memosync-project-copy-restart-"))
-    const dbPath = join(dir, "study.sqlite")
-    const representationHash = "c".repeat(64)
-    try {
-      const firstStore = new StudyMemoryStore(dbPath)
-      const firstRegistry = new StudyRegistry(undefined, ["038-S2", "098-S1"], firstStore)
-      freezeAndSubmitQuiz(firstStore, "038-S2", "snapshot-copy-restart")
-      let firstAdapterAttempts = 0
-      const firstTransition = new BaselineProjectCopyCoordinator({
-        store: firstStore,
-        adapter: {
-          condition: "auto",
-          prepare: async () => {
-            firstAdapterAttempts += 1
-            return {
-              sourceRepresentationHash: representationHash,
-              targetRepresentationHash: representationHash,
-              manifest: { schemaVersion: 1, itemCount: 0, clones: [] },
-            }
-          },
-        },
-      })
-      const firstIds = ["duplicate-submission-id", "duplicate-submission-id", "unused-completion-id"]
-      const firstService = new StudySurveyService({
-        store: firstStore,
-        registry: firstRegistry,
-      allocationParticipantId: "P77",
-        logger: { event: () => {} },
-        randomId: () => firstIds.shift()!,
-        nextSessionPreparer: firstTransition,
-      })
-      await firstService.submitRawTlx({
-        taskId: "038-S2",
-        snapshotId: "snapshot-copy-restart",
-        response: rawTlx("monitoring"),
-      })
-
-      await expect(firstService.submitRawTlx({
-        taskId: "038-S2",
-        snapshotId: "snapshot-copy-restart",
-        response: rawTlx("control"),
-      })).rejects.toThrow()
-      expect(firstAdapterAttempts).toBe(1)
-      expect(firstStore.getBaselineProjectCopyTransition("038-S2", "098-S1")?.status).toBe("ready")
-      expect(firstStore.getRawTlxSubmission("snapshot-copy-restart", "control")).toBeNull()
-      expect(firstStore.getSessionCompletion("038-S2")).toBeNull()
-      firstStore.close()
-
-      const secondStore = new StudyMemoryStore(dbPath)
-      const secondRegistry = new StudyRegistry(undefined, ["038-S2", "098-S1"], secondStore)
-      let secondAdapterAttempts = 0
-      const secondTransition = new BaselineProjectCopyCoordinator({
-        store: secondStore,
-        adapter: {
-          condition: "auto",
-          prepare: async () => {
-            secondAdapterAttempts += 1
-            throw new Error("a ready receipt must skip the adapter")
-          },
-        },
-      })
-      const secondIds = ["control-after-restart", "completion-after-restart"]
-      const secondService = new StudySurveyService({
-        store: secondStore,
-        registry: secondRegistry,
-      allocationParticipantId: "P77",
-        logger: { event: () => {} },
-        randomId: () => secondIds.shift()!,
-        nextSessionPreparer: secondTransition,
-      })
-
-      const result = await secondService.submitRawTlx({
-        taskId: "038-S2",
-        snapshotId: "snapshot-copy-restart",
-        response: rawTlx("control"),
-      })
-
-      expect(result).toMatchObject({ requiredStep: "next_session", nextTaskId: "098-S1" })
-      expect(secondAdapterAttempts).toBe(0)
-      expect(secondRegistry.taskStatus("098-S1")).toBe("active")
-      secondStore.close()
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
   })
 
   test("unlocks the next session only after both activity Raw TLX blocks", async () => {
@@ -379,7 +67,6 @@ describe("StudySurveyService", () => {
       logger: { event: () => {} },
       now: () => "2026-08-16T10:10:00.000Z",
       randomId: () => ids.shift()!,
-      nextSessionPreparer: null,
     })
 
     expect(service.get("038-S1")).toMatchObject({ requiredStep: "monitoring_tlx" })
@@ -413,7 +100,6 @@ describe("StudySurveyService", () => {
       logger: { event: () => {} },
       now: () => "2026-08-16T11:00:00.000Z",
       randomId: () => `generated-${++nextId}`,
-      nextSessionPreparer: null,
       completionUrl: "https://app.prolific.com/submissions/complete?cc=CAAML5VN",
     })
 
@@ -483,7 +169,6 @@ describe("StudySurveyService", () => {
       logger: { event: () => {} },
       now: () => "2026-08-16T11:00:00.000Z",
       randomId: () => `generated-${++nextId}`,
-      nextSessionPreparer: null,
     })
     await service.submitRawTlx({ taskId: "038-S1", snapshotId: "snapshot-final", response: rawTlx("monitoring") })
     await service.submitRawTlx({ taskId: "038-S1", snapshotId: "snapshot-final", response: rawTlx("control") })
@@ -505,7 +190,6 @@ describe("StudySurveyService", () => {
       logger: { event: () => {} },
       now: () => "2026-08-16T12:00:00.000Z",
       randomId: () => "post-restart",
-      nextSessionPreparer: null,
     })
     expect(reopened.getCompletionReceipt()).toEqual(issued)
     expect(restarted.get("038-S1")).toMatchObject({ requiredStep: "complete", completionCode: "CAAML5VN" })
@@ -533,7 +217,6 @@ describe("StudySurveyService", () => {
         logger: { event: () => {} },
         now: () => "2026-08-16T11:00:00.000Z",
         randomId: () => `legacy-${++nextId}`,
-        nextSessionPreparer: null,
       })
       await firstService.submitRawTlx({
         taskId: "038-S1",
@@ -567,7 +250,6 @@ describe("StudySurveyService", () => {
         allocationParticipantId: "P-LEGACY",
         logger: { event: () => {} },
         now: () => "2026-08-16T12:00:00.000Z",
-        nextSessionPreparer: null,
       })
       expect(reopened.get("038-S1")).toMatchObject({
         requiredStep: "complete",
@@ -589,7 +271,6 @@ describe("StudySurveyService", () => {
         allocationParticipantId: "P-LEGACY",
         logger: { event: () => {} },
         now: () => "2026-08-16T13:00:00.000Z",
-        nextSessionPreparer: null,
       })
       expect(restarted.get("038-S1").completionCode).toBe("CAAML5VN")
       expect(restartedStore.getCompletionReceipt()).toEqual(repaired)
@@ -611,7 +292,6 @@ describe("StudySurveyService", () => {
         registry: firstRegistry,
       allocationParticipantId: "P77",
         logger: { event: () => {} },
-        nextSessionPreparer: null,
       })
       await firstService.submitRawTlx({
         taskId: "038-S1",
@@ -627,7 +307,6 @@ describe("StudySurveyService", () => {
         registry: secondRegistry,
       allocationParticipantId: "P77",
         logger: { event: () => {} },
-        nextSessionPreparer: null,
       })
       expect(secondService.get("038-S1")).toMatchObject({ requiredStep: "control_tlx" })
       expect(secondRegistry.taskStatus("038-S2")).toBe("locked")
@@ -645,7 +324,6 @@ describe("StudySurveyService", () => {
         registry: thirdRegistry,
       allocationParticipantId: "P77",
         logger: { event: () => {} },
-        nextSessionPreparer: null,
       })
       expect(thirdService.get("038-S1")).toMatchObject({
         requiredStep: "next_session",
@@ -669,7 +347,6 @@ describe("StudySurveyService", () => {
       allocationParticipantId: "P77",
       logger: { event: () => {} },
       randomId: () => `retry-${++nextId}`,
-      nextSessionPreparer: null,
     })
 
     await expect(service.submitRawTlx({
