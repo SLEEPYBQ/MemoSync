@@ -138,6 +138,7 @@ function StandaloneTranscriptApp() {
         readonly: true,
         localLinkMode: "text",
         attachmentMode: state.bundle.attachmentMode,
+        textAttachmentPreviews: state.bundle.textAttachmentPreviews,
       }}
     >
       <div className="h-full bg-background">

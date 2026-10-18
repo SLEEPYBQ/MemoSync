@@ -1,17 +1,30 @@
 import { expect, test } from "bun:test"
-import { copyFile, mkdtemp, rm } from "node:fs/promises"
+import { copyFile, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { pathToFileURL } from "node:url"
 import { chromium, type Browser } from "playwright"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 
-test("opens the real standalone export offline with transcript and bundled image", async () => {
+test("opens the real standalone export offline with image and text previews, retaining HTTP fallback", async () => {
   const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-offline-export-"))
   let browser: Browser | undefined
+  let server: ReturnType<typeof Bun.serve> | undefined
   try {
     const attachmentPath = path.join(projectDir, "proof.png")
     await copyFile(new URL("../../public/icon-192.png", import.meta.url), attachmentPath)
+    const textFiles = [
+      { name: "notes.md", mime: "text/markdown", content: "# Offline markdown note", marker: "Offline markdown note" },
+      { name: "data.json", mime: "application/json", content: '{"proof":"offline-json-value"}', marker: "offline-json-value" },
+      { name: "table.csv", mime: "text/csv", content: "name,value\noffline-table-value,42", marker: "offline-table-value" },
+      { name: "plain.txt", mime: "text/plain", content: "Offline plain text", marker: "Offline plain text" },
+    ]
+    const textAttachments = await Promise.all(textFiles.map(async (file) => {
+      const absolutePath = path.join(projectDir, file.name)
+      await writeFile(absolutePath, file.content)
+      return { id: file.name, kind: "file" as const, displayName: file.name, mimeType: file.mime,
+        absolutePath, relativePath: file.name, contentUrl: `/api/uploads/${file.name}`, size: Buffer.byteLength(file.content) }
+    }))
     const exported = await writeStandaloneTranscriptExport({
       chatId: "offline-proof",
       title: "Offline export proof",
@@ -26,12 +39,12 @@ test("opens the real standalone export offline with transcript and bundled image
             id: "image", kind: "image", displayName: "proof.png", mimeType: "image/png",
             absolutePath: attachmentPath, relativePath: "proof.png", contentUrl: "/api/uploads/proof.png",
             size: (await Bun.file(attachmentPath).arrayBuffer()).byteLength,
-          }],
+          }, ...textAttachments],
         },
         { _id: "last", createdAt: 2, kind: "assistant_text", messageId: "last", text: "Final offline reply" },
       ],
     })
-    await rm(exported.transcriptJsonPath)
+    await rename(exported.transcriptJsonPath, `${exported.transcriptJsonPath}.saved`)
     browser = await chromium.launch({ headless: true })
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
     const networkRequests: string[] = []
@@ -51,11 +64,39 @@ test("opens the real standalone export offline with transcript and bundled image
       await (element as HTMLImageElement).decode()
       return (element as HTMLImageElement).naturalWidth
     })).toBeGreaterThan(0)
+    for (const file of textFiles) {
+      await page.getByRole("button", { name: new RegExp(file.name.replaceAll(".", "\\.")) }).click()
+      await page.getByRole("dialog").filter({ hasText: file.marker }).waitFor({ state: "visible", timeout: 5_000 })
+      await page.getByRole("button", { name: "Close", exact: true }).click()
+    }
     await page.evaluate(() => document.fonts.ready.then(() => undefined))
     expect(networkRequests).toEqual([])
     expect(failures).toEqual([])
+
+    await rename(`${exported.transcriptJsonPath}.saved`, exported.transcriptJsonPath)
+    const bundle = await Bun.file(exported.transcriptJsonPath).json()
+    const notes = bundle.messages[0].attachments.find((attachment: { displayName: string }) => attachment.displayName === "notes.md")
+    await writeFile(path.join(exported.outputDir, notes.contentUrl), "# HTTP attachment source")
+    const html = await readFile(exported.indexHtmlPath, "utf8")
+    await writeFile(exported.indexHtmlPath, html.replace(/<script id="memosync-transcript-data" type="application\/json">[\s\S]*?<\/script>/, ""))
+    const httpPaths: string[] = []
+    server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const pathname = new URL(request.url).pathname
+      httpPaths.push(pathname)
+      const file = Bun.file(path.join(exported.outputDir, pathname))
+      return await file.exists() ? new Response(file) : new Response("Not found", { status: 404 })
+    } })
+    await page.unroute(/^https?:\/\//)
+    await page.goto(`http://127.0.0.1:${server.port}/index.html`)
+    await page.getByRole("button", { name: /notes\.md/ }).click()
+    await page.getByRole("dialog").filter({ hasText: "HTTP attachment source" }).waitFor({ state: "visible", timeout: 5_000 })
+    expect(httpPaths).toContain("/transcript.json")
+    expect(httpPaths).toContain(notes.contentUrl.replace(/^\./, ""))
+    expect(httpPaths.filter((pathname) => pathname.startsWith("/api/"))).toEqual([])
+    expect(failures).toEqual([])
   } finally {
     await browser?.close()
+    server?.stop(true)
     await rm(projectDir, { recursive: true, force: true })
   }
 }, 25_000)

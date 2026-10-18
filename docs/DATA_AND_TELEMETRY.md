@@ -74,6 +74,10 @@ choose to bundle attachments. Metadata-only exports do not copy attachment
 contents. Transcript exports still contain the conversation you selected, so
 review them before sharing too.
 
+Bundled text previews (Markdown, text, JSON, and tables) also work offline.
+Previews are limited to the first 1 MiB; the complete original files remain
+in `attachments/`. Attachment contents may contain private information.
+
 ## Analysing a log
 
 `scripts/analyze-experiment.ts` computes per-session memory metrics from an

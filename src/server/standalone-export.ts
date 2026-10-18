@@ -8,6 +8,7 @@ import type {
   TranscriptEntry,
 } from "../shared/types"
 import { APP_VERSION } from "../shared/branding"
+import { classifyAttachmentPreview, TEXT_PREVIEW_LIMIT_BYTES, type TextPreviewResult } from "../shared/attachment-preview"
 import { getProjectExportDir } from "./paths"
 
 const STANDALONE_TRANSCRIPT_BUNDLE_VERSION = 1 as const
@@ -36,6 +37,7 @@ export interface StandaloneExportDeps {
 
 interface PreparedMessagesResult {
   messages: TranscriptEntry[]
+  textAttachmentPreviews: Record<string, TextPreviewResult>
   totalAttachmentCount: number
   bundledAttachmentCount: number
 }
@@ -92,6 +94,9 @@ export async function writeStandaloneTranscriptExport(
     theme: args.theme,
     attachmentMode: args.attachmentMode,
     messages: prepared.messages,
+    textAttachmentPreviews: Object.keys(prepared.textAttachmentPreviews).length
+      ? prepared.textAttachmentPreviews
+      : undefined,
   }
 
   const transcriptJson = `${JSON.stringify(bundle, null, 2)}\n`
@@ -131,6 +136,7 @@ async function prepareStandaloneMessages(
   },
 ): Promise<PreparedMessagesResult> {
   const preparedMessages = structuredClone(messages)
+  const textAttachmentPreviews: Record<string, TextPreviewResult> = {}
   let totalAttachmentCount = 0
   let bundledAttachmentCount = 0
   let attachmentsDirCreated = false
@@ -174,13 +180,23 @@ async function prepareStandaloneMessages(
       attachment.absolutePath = relativeDestinationPath
       attachment.relativePath = relativeDestinationPath
       attachment.contentUrl = relativeDestinationPath
+      const previewKind = classifyAttachmentPreview(attachment).kind
+      if (["markdown", "text", "json", "table"].includes(previewKind)) {
+        const bytes = new Uint8Array(await Bun.file(destinationPath).slice(0, TEXT_PREVIEW_LIMIT_BYTES + 1).arrayBuffer())
+        textAttachmentPreviews[relativeDestinationPath] = {
+          content: new TextDecoder().decode(bytes.subarray(0, TEXT_PREVIEW_LIMIT_BYTES)),
+          truncated: bytes.byteLength > TEXT_PREVIEW_LIMIT_BYTES,
+        }
+      }
     }
   }
 
   rewriteLocalPathsForExport(preparedMessages, args.localPath)
+  rewriteLocalPathsForExport(textAttachmentPreviews, args.localPath)
 
   return {
     messages: preparedMessages,
+    textAttachmentPreviews,
     totalAttachmentCount,
     bundledAttachmentCount,
   }

@@ -240,11 +240,12 @@ export function VerticalLineContainer({ children, className }: { children: React
 // concurrent calls itself, so this hook gates on `status` (effects in the same
 // commit run synchronously, so only the first mount actually fetches).
 export function useEnsureMemoriesLoaded() {
+  const { readonly } = useTranscriptRenderOptions()
   const status = useMemoryStore((s) => s.status)
   const loadAll = useMemoryStore((s) => s.loadAll)
   useEffect(() => {
-    if (status === "idle") void loadAll()
-  }, [status, loadAll])
+    if (!readonly && status === "idle") void loadAll()
+  }, [readonly, status, loadAll])
 }
 
 /**
