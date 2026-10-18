@@ -84,7 +84,7 @@ export async function persistUploadedFiles(args: {
       const attachment = await persistUpload({
         projectId: args.projectId,
         localPath: args.localPath,
-        fileName: file.name,
+        fileName: file.name || "upload",
         bytes,
         fallbackMimeType: file.type || undefined,
       })
@@ -1064,7 +1064,12 @@ export async function handleProjectUpload(
     return Response.json({ error: "Upload request is too large." }, { status: 413 })
   }
 
-  const formData = await req.formData()
+  let formData: FormData
+  try {
+    formData = await req.formData()
+  } catch {
+    return Response.json({ error: "Could not read the upload request. Please try again." }, { status: 400 })
+  }
   const files = formData
     .getAll("files")
     .filter((value): value is File => value instanceof File)
@@ -1076,6 +1081,18 @@ export async function handleProjectUpload(
   const validationError = validateUploadFiles(files)
   if (validationError) {
     return Response.json({ error: validationError.error }, { status: validationError.status })
+  }
+
+  const clientSizes = formData.getAll("clientFileSizes")
+  if (clientSizes.length > 0) {
+    if (clientSizes.length !== files.length || clientSizes.some((value) =>
+      typeof value !== "string" || !value.trim() || !Number.isSafeInteger(Number(value)) || Number(value) < 0
+    )) {
+      return Response.json({ error: "Invalid upload size metadata." }, { status: 400 })
+    }
+    if (files.some((file, index) => file.size !== Number(clientSizes[index]))) {
+      return Response.json({ error: "The uploaded file size does not match. Please try again." }, { status: 400 })
+    }
   }
 
   try {

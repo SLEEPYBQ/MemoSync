@@ -103,6 +103,13 @@ export function trimTrailingPastedNewlines(text: string) {
   return text.replace(/(?:\r\n|\r|\n)+$/, "")
 }
 
+export function createUploadFormData(file: File) {
+  const formData = new FormData()
+  formData.append("files", file)
+  formData.append("clientFileSizes", String(file.size))
+  return formData
+}
+
 function replaceTextSelection(args: {
   value: string
   insertedText: string
@@ -485,8 +492,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       void (async () => {
         try {
-          const formData = new FormData()
-          formData.append("files", file)
+          const formData = createUploadFormData(file)
 
           const response = await fetch(`/api/projects/${projectId}/uploads`, {
             method: "POST",

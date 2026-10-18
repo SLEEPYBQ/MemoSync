@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -43,6 +44,66 @@ async function startIsolatedServer() {
 }
 
 describe("uploads", () => {
+  test("returns a controlled 400 for malformed multipart without writing files", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-upload-malformed-"))
+    tempDirs.push(projectDir)
+    const server = await startIsolatedServer()
+    const project = await server.store.openProject(projectDir, "Project")
+    const response = await fetch(`http://localhost:${server.port}/api/projects/${project.id}/uploads`, {
+      method: "POST",
+      headers: { "Content-Type": "multipart/form-data" },
+      body: "private-payload-that-must-not-be-in-the-response",
+    })
+    expect(response.status).toBe(400)
+    expect(await response.json()).toEqual({ error: "Could not read the upload request. Please try again." })
+    expect(existsSync(getProjectUploadDir(projectDir))).toBe(false)
+  })
+
+  test("rejects mismatched or invalid upload sizes before writing any files", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-upload-sizes-"))
+    tempDirs.push(projectDir)
+    const server = await startIsolatedServer()
+    const project = await server.store.openProject(projectDir, "Project")
+    for (const sizes of [["5"], ["6", "0"], ["-1"], ["1.5"], [""], ["NaN"], ["9007199254740992"]]) {
+      const form = new FormData()
+      form.append("files", new File(["你好"], "notes.txt"))
+      for (const size of sizes) form.append("clientFileSizes", size)
+      const response = await fetch(`http://localhost:${server.port}/api/projects/${project.id}/uploads`, {
+        method: "POST", body: form,
+      })
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: sizes[0] === "5"
+          ? "The uploaded file size does not match. Please try again."
+          : "Invalid upload size metadata.",
+      })
+      expect(existsSync(getProjectUploadDir(projectDir))).toBe(false)
+    }
+  })
+
+  test("accepts matching upload byte sizes and requests without size metadata", async () => {
+    const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-upload-matching-"))
+    tempDirs.push(projectDir)
+    const server = await startIsolatedServer()
+    const project = await server.store.openProject(projectDir, "Project")
+    for (const withSizes of [true, false]) {
+      const form = new FormData()
+      const files = [new File(["你好"], "notes.txt"), new File([], "empty.txt")]
+      for (const file of files) {
+        form.append("files", file)
+        if (withSizes) form.append("clientFileSizes", String(file.size))
+      }
+      const response = await fetch(`http://localhost:${server.port}/api/projects/${project.id}/uploads`, {
+        method: "POST", body: form,
+      })
+      expect(response.status).toBe(200)
+      const payload = await response.json() as { attachments: Array<{ size: number; absolutePath: string }> }
+      expect(payload.attachments.map((attachment) => attachment.size)).toEqual([6, 0])
+      expect(await Bun.file(payload.attachments[0]!.absolutePath).text()).toBe("你好")
+      expect(await Bun.file(payload.attachments[1]!.absolutePath).text()).toBe("")
+    }
+  })
+
   test("rejects a batch whose combined size exceeds the request limit", () => {
     const files = ["a.bin", "b.bin", "c.bin"].map((name) => ({
       name,
