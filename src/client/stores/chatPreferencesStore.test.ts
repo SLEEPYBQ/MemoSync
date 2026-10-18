@@ -25,7 +25,8 @@ const chatPreferencesStore = await (async () => {
   })
 
   try {
-    return await import("./chatPreferencesStore")
+    const modulePath = "./chatPreferencesStore.ts?storage-rehydration-regression"
+    return await import(modulePath) as typeof import("./chatPreferencesStore")
   } finally {
     if (originalWindow) {
       Object.defineProperty(globalThis, "window", originalWindow)
