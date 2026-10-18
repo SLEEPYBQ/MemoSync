@@ -48,6 +48,7 @@ export function mountChatInputFixture(root: HTMLElement) {
         <div data-testid="fixture-ready" />
         <output data-testid="current-chat">{chatId}</output>
         <ChatInput
+          key={chatId}
           chatId={chatId}
           projectId="fixture-project"
           onSubmit={onSubmit}

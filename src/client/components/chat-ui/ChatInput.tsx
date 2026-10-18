@@ -247,15 +247,23 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
   const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
     draftRevisionRef.current += 1
-    setAttachmentsState(next)
-  }, [])
+    const updated = typeof next === "function" ? next(attachmentsRef.current) : next
+    attachmentsRef.current = updated
+    setAttachmentsState(updated)
+    if (chatId) {
+      // Pending uploads are edits too, even before they have a persisted file.
+      setAttachmentDrafts(chatId, updated
+        .filter((attachment) => attachment.status === "uploaded")
+        .map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment), true)
+    }
+  }, [chatId, setAttachmentDrafts])
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const uploadQueueRef = useRef<File[]>([])
   const activeUploadsRef = useRef(0)
-  const attachmentsRef = useRef<ComposerAttachment[]>([])
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
@@ -315,7 +323,20 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     activeUploadsRef.current = 0
     setSelectedAttachmentId(null)
     setUploadError(null)
-  }, [cleanupAttachmentPreview])
+  }, [cleanupAttachmentPreview, setAttachments])
+
+  useLayoutEffect(() => useChatInputStore.subscribe((state, previous) => {
+    if (textDraftKey && state.drafts[textDraftKey] !== previous.drafts[textDraftKey]) {
+      setValueState(state.drafts[textDraftKey] ?? "")
+    }
+    if (chatId && previous.attachmentDrafts[chatId] && !state.attachmentDrafts[chatId]) {
+      const retained = attachmentsRef.current.filter((attachment) => attachment.status !== "uploaded")
+      attachmentsRef.current.filter((attachment) => attachment.status === "uploaded").forEach(cleanupAttachmentPreview)
+      attachmentsRef.current = retained
+      setAttachmentsState(retained)
+      setSelectedAttachmentId(null)
+    }
+  }), [chatId, textDraftKey, cleanupAttachmentPreview])
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
@@ -374,10 +395,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     removedAttachmentIdsRef.current.clear()
     setSelectedAttachmentId(null)
     setUploadError(null)
-    setAttachments((current) => {
-      current.forEach(cleanupAttachmentPreview)
-      return hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
-    })
+    attachmentsRef.current.forEach(cleanupAttachmentPreview)
+    const hydrated = hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
+    attachmentsRef.current = hydrated
+    setAttachmentsState(hydrated)
   }, [chatId, cleanupAttachmentPreview, getAttachmentDrafts])
 
   useEffect(() => {
@@ -393,10 +414,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       clearAttachmentDrafts(chatId)
     }
   }, [projectId, chatId, clearAttachments, clearAttachmentDrafts])
-
-  useEffect(() => {
-    attachmentsRef.current = attachments
-  }, [attachments])
 
   useEffect(() => {
     if (!chatId) return
@@ -422,21 +439,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       })
     })
   }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft])
-
-  useEffect(() => {
-    if (!chatId) return
-
-    const persistedAttachments = attachments
-      .filter((attachment) => attachment.status === "uploaded")
-      .map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
-
-    if (persistedAttachments.length === 0) {
-      clearAttachmentDrafts(chatId)
-      return
-    }
-
-    setAttachmentDrafts(chatId, persistedAttachments)
-  }, [attachments, chatId, clearAttachmentDrafts, setAttachmentDrafts])
 
   useEffect(() => () => {
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
@@ -557,7 +559,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       })()
     }
-  }, [projectId])
+  }, [projectId, setAttachments])
 
   const enqueueFiles = useCallback((files: File[]) => {
     if (!projectId) {
@@ -599,6 +601,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     submissionRef.current = submission
     const revision = draftRevisionRef.current
     const ownsDraft = () => submissionRef.current === submission && draftRevisionRef.current === revision
+    const persistedRevision = useChatInputStore.getState().getDraftRevision(textDraftKey, chatId ?? null)
     const nextValue = value
     const previousAttachments = attachmentsRef.current
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
@@ -621,12 +624,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await runRetainedDraftSubmission({
       submit: () => onSubmit(nextValue, submitOptions),
       onAccepted: () => {
+        if (submissionRef.current === submission && !ownsDraft()) return
+        if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
         if (!ownsDraft()) return
         setValue("")
-        if (textDraftKey) clearDraft(textDraftKey)
         if (textareaRef.current) textareaRef.current.style.height = "auto"
         clearAttachments({ cleanupPreviews: false })
-        if (chatId) clearAttachmentDrafts(chatId)
         previousAttachments.forEach(cleanupAttachmentPreview)
       },
       onRejected: (error) => {
