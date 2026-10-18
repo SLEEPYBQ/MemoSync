@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readdir, rename, rm, writeFile } from "node:fs/promises"
+import { appendFile, mkdir, readFile, readdir, rename, rm, truncate, writeFile } from "node:fs/promises"
 import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -38,6 +38,40 @@ function normalizeSidebarProjectOrder(value: unknown) {
   }
 
   return projectIds
+}
+
+function parseTranscriptText(text: string, chatId: string): ParsedTranscript {
+  const entries: TranscriptEntry[] = []
+  let lineStart = 0
+  let recoverableTailOffset: number | null = null
+
+  while (lineStart < text.length) {
+    const newlineAt = text.indexOf("\n", lineStart)
+    const lineIsTerminated = newlineAt !== -1
+    const lineEnd = lineIsTerminated ? newlineAt : text.length
+    const line = text.slice(lineStart, lineEnd).trim()
+    if (line) {
+      try {
+        entries.push(JSON.parse(line) as TranscriptEntry)
+      } catch (error) {
+        if (!lineIsTerminated && lineEnd === text.length) {
+          recoverableTailOffset = Buffer.byteLength(text.slice(0, lineStart), "utf8")
+          console.warn(`${LOG_PREFIX} dropped corrupt trailing line in transcript ${chatId}.jsonl`)
+          break
+        }
+        throw error
+      }
+    }
+    if (!lineIsTerminated) break
+    lineStart = newlineAt + 1
+  }
+
+  return { entries, recoverableTailOffset }
+}
+
+interface ParsedTranscript {
+  entries: TranscriptEntry[]
+  recoverableTailOffset: number | null
 }
 
 function isSendToStartingProfilingEnabled() {
@@ -297,6 +331,7 @@ export class EventStore {
   private readonly turnsLogPath: string
   private readonly transcriptsDir: string
   private readonly sidebarProjectOrderPath: string
+  private readonly transcriptPreparedForAppend = new Set<string>()
   private legacyMessagesByChatId = new Map<string, TranscriptEntry[]>()
   private legacySidebarProjectOrder: string[] = []
   private sidebarProjectOrder: string[] = []
@@ -834,30 +869,30 @@ export class EventStore {
 
     const text = readFileSyncImmediate(transcriptPath, "utf8")
     if (!text.trim()) return []
+    return parseTranscriptText(text, chatId).entries
+  }
 
-    // Tolerate a corrupt trailing line the same way the event logs do
-    // (loadReplayEvents): a process killed mid-append (deploy/OOM/power loss)
-    // can leave a half-written last JSONL line. Without this, one bad byte made
-    // the whole chat unloadable AND crashed the subscribe/broadcast path for
-    // other sockets (BUG WS-2). A parse failure that is NOT the last line is a
-    // real corruption we still surface loudly.
-    const entries: TranscriptEntry[] = []
-    const lines = text.split("\n")
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]!.trim()
-      if (!line) continue
-      try {
-        entries.push(JSON.parse(line) as TranscriptEntry)
-      } catch (error) {
-        const isLastContentfulLine = lines.slice(i + 1).every((rest) => rest.trim() === "")
-        if (isLastContentfulLine) {
-          console.warn(`${LOG_PREFIX} dropped corrupt trailing line in transcript ${chatId}.jsonl`)
-          break
-        }
-        throw error
+  private async prepareTranscriptForAppend(chatId: string, transcriptPath: string) {
+    if (this.transcriptPreparedForAppend.has(transcriptPath)) return
+    let bytes: Buffer
+    try {
+      bytes = await readFile(transcriptPath)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.transcriptPreparedForAppend.add(transcriptPath)
+        return
       }
+      throw error
     }
-    return entries
+
+    const text = bytes.toString("utf8")
+    const parsed = parseTranscriptText(text, chatId)
+    if (parsed.recoverableTailOffset !== null) {
+      await truncate(transcriptPath, parsed.recoverableTailOffset)
+    } else if (text.length > 0 && !text.endsWith("\n")) {
+      await appendFile(transcriptPath, "\n", "utf8")
+    }
+    this.transcriptPreparedForAppend.add(transcriptPath)
   }
 
   async openProject(localPath: string, title?: string) {
@@ -1152,6 +1187,7 @@ export class EventStore {
       const startedAt = performance.now()
       const queueDelayMs = Number((startedAt - queuedAt).toFixed(1))
       await mkdir(this.transcriptsDir, { recursive: true })
+      await this.prepareTranscriptForAppend(chatId, transcriptPath)
       const beforeAppendAt = performance.now()
       await appendFile(transcriptPath, payload, "utf8")
       const afterAppendAt = performance.now()

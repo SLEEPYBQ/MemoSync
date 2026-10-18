@@ -1981,6 +1981,158 @@ describe("AgentCoordinator codex integration", () => {
 })
 
 describe("AgentCoordinator claude integration", () => {
+  test("cancels a deferred Claude startup once and allows a later turn", async () => {
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    const startupEntered = new Promise<void>((resolve) => {
+      markStartupEntered = resolve
+    })
+    const deferredStartup = new Promise<void>((resolve) => {
+      releaseStartup = resolve
+    })
+    let startupCount = 0
+    let firstSessionCloseCount = 0
+    const prompts: string[] = []
+    const firstEvents = new AsyncEventQueue<any>()
+    const secondEvents = new AsyncEventQueue<any>()
+    const createSession = (events: AsyncEventQueue<any>, close: () => void) => ({
+      provider: "claude" as const,
+      stream: events,
+      getAccountInfo: async () => null,
+      interrupt: async () => {},
+      close,
+      setModel: async () => {},
+      setPermissionMode: async () => {},
+      sendPrompt: async (content: string) => {
+        prompts.push(content)
+        events.push({
+          type: "transcript" as const,
+          entry: timestamped({
+            kind: "result",
+            subtype: "success",
+            isError: false,
+            durationMs: 0,
+            result: "done",
+          }),
+        })
+      },
+    })
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let cancelledCount = 0
+    let failedCount = 0
+    store.recordTurnCancelled = async () => {
+      cancelledCount += 1
+    }
+    store.recordTurnFailed = async () => {
+      failedCount += 1
+      return undefined as never
+    }
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        startupCount += 1
+        if (startupCount === 1) {
+          markStartupEntered()
+          await deferredStartup
+          return createSession(firstEvents, () => {
+            firstSessionCloseCount += 1
+          })
+        }
+        return createSession(secondEvents, () => {})
+      },
+    })
+
+    const firstSend = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "cancel before startup completes",
+      model: "claude-opus-4-1",
+    })
+    await startupEntered
+    await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+    releaseStartup()
+    await firstSend
+
+    expect(prompts).toEqual([])
+    expect(firstSessionCloseCount).toBe(1)
+    expect(cancelledCount).toBe(1)
+    expect(failedCount).toBe(0)
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "later successful turn",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(prompts).toEqual(["later successful turn"])
+    expect(failedCount).toBe(0)
+    firstEvents.close()
+    secondEvents.close()
+  })
+
+  test("cancels while Codex session startup is pending without dispatching a turn", async () => {
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    const startupEntered = new Promise<void>((resolve) => {
+      markStartupEntered = resolve
+    })
+    const deferredStartup = new Promise<void>((resolve) => {
+      releaseStartup = resolve
+    })
+    let startTurnCount = 0
+    let stopSessionCount = 0
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let cancelledCount = 0
+    store.recordTurnCancelled = async () => {
+      cancelledCount += 1
+    }
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: {
+        startSession: async () => {
+          markStartupEntered()
+          await deferredStartup
+          return "thread-1"
+        },
+        startTurn: async () => {
+          startTurnCount += 1
+          throw new Error("unexpected Codex dispatch")
+        },
+        stopSession: () => {
+          stopSessionCount += 1
+        },
+      } as never,
+    })
+
+    const send = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "cancel before dispatch",
+      model: "gpt-5.4",
+    })
+    await startupEntered
+    await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+    releaseStartup()
+    await send
+
+    expect(startTurnCount).toBe(0)
+    expect(stopSessionCount).toBe(1)
+    expect(cancelledCount).toBe(1)
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+  })
+
   test("reuses a persistent Claude session across turns", async () => {
     const events = new AsyncEventQueue<any>()
     const startSessionCalls: Array<{ model: string; planMode: boolean; sessionToken: string | null }> = []
@@ -2062,6 +2214,224 @@ describe("AgentCoordinator claude integration", () => {
     expect(prompts).toEqual(["start background task", "check task output"])
     expect(store.chat.sessionToken).toBe("claude-session-1")
 
+    events.close()
+  })
+
+  test("keeps reused Claude configuration caches in sync when cancellation races a setter", async () => {
+    for (const setting of ["model", "permission"] as const) {
+      const events = new AsyncEventQueue<any>()
+      const store = createFakeStore()
+      const prompts: string[] = []
+      let runtimeModel = "opus"
+      let runtimePlanMode = false
+      let releaseSetter!: () => void
+      let setterEntered!: () => void
+      const setterStarted = new Promise<void>((resolve) => { setterEntered = resolve })
+      const setterGate = new Promise<void>((resolve) => { releaseSetter = resolve })
+      let setterCalls = 0
+
+      const coordinator = new AgentCoordinator({
+        claudeSessionFileExists: () => true,
+        store: store as never,
+        onStateChange: () => {},
+        startClaudeSession: async () => ({
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async (model: string) => {
+            setterCalls += 1
+            runtimeModel = model
+            if (setting === "model" && setterCalls === 1) {
+              setterEntered()
+              await setterGate
+            }
+          },
+          setPermissionMode: async (planMode: boolean) => {
+            setterCalls += 1
+            runtimePlanMode = planMode
+            if (setting === "permission" && setterCalls === 1) {
+              setterEntered()
+              await setterGate
+            }
+          },
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }),
+      })
+
+      await coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "initial",
+        model: "opus",
+        planMode: false,
+      })
+      await waitFor(() => store.turnFinishedCount === 1)
+      await Bun.sleep(10)
+
+      const cancelled = coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "cancelled",
+        model: setting === "model" ? "sonnet" : "opus",
+        planMode: setting === "permission",
+      })
+      await setterStarted
+      const cancelling = coordinator.cancel("chat-1")
+      releaseSetter()
+      await Promise.all([cancelled, cancelling])
+
+      expect(prompts).toEqual(["initial"])
+      expect(setting === "model" ? runtimeModel : runtimePlanMode).toBe(
+        setting === "model" ? "sonnet" : true,
+      )
+
+      await coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "restored",
+        model: "opus",
+        planMode: false,
+      })
+      await waitFor(() => store.turnFinishedCount === 2)
+      expect(prompts).toEqual(["initial", "restored"])
+      expect(setting === "model" ? runtimeModel : runtimePlanMode).toBe(setting === "model" ? "opus" : false)
+      events.close()
+    }
+  })
+
+  test("does not duplicate cancellation while active sendPrompt is pending", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    let cancellationCount = 0
+    store.recordTurnCancelled = async () => {
+      cancellationCount += 1
+    }
+    let releasePrompt!: () => void
+    let promptStarted!: () => void
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const promptEntered = new Promise<void>((resolve) => { promptStarted = resolve })
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async () => {
+          promptStarted()
+          await promptGate
+        },
+      }),
+    })
+
+    const send = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "pending",
+      model: "claude-opus-4-1",
+    })
+    await promptEntered
+    await coordinator.cancel("chat-1")
+    await coordinator.cancel("chat-1")
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    expect(cancellationCount).toBe(1)
+    releasePrompt()
+    await send
+    events.close()
+  })
+
+  test("drains a queued message after canceled SDK startup fully unwinds", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    let releaseStartup!: () => void
+    let startupEntered!: () => void
+    const startupGate = new Promise<void>((resolve) => { releaseStartup = resolve })
+    const startupReady = new Promise<void>((resolve) => { startupEntered = resolve })
+    let startCalls = 0
+    let closeCount = 0
+    const prompts: string[] = []
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        startCalls += 1
+        if (startCalls === 1) {
+          startupEntered()
+          await startupGate
+        }
+        return {
+          provider: "claude" as const,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => { closeCount += 1 },
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }
+      },
+    })
+
+    const first = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first",
+      model: "claude-opus-4-1",
+    })
+    await startupReady
+    const second = await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "second",
+      model: "claude-opus-4-1",
+    })
+    expect("queuedMessageId" in second).toBe(true)
+    await coordinator.cancel("chat-1")
+    releaseStartup()
+    await first
+    await waitFor(() => store.turnFinishedCount === 1)
+    expect(prompts).toEqual(["second"])
+    expect(startCalls).toBe(2)
+    expect(closeCount).toBe(1)
+    expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
     events.close()
   })
 

@@ -93,6 +93,8 @@ interface PendingTurn {
   todoSequence: number
   pendingWebSearchResultToolId: string | null
   resolved: boolean
+  completionInProgress: boolean
+  bufferedNotifications: ServerNotification[]
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: (
     request:
@@ -982,6 +984,8 @@ export class CodexAppServerManager {
       todoSequence: 0,
       pendingWebSearchResultToolId: null,
       resolved: false,
+      completionInProgress: false,
+      bufferedNotifications: [],
       onToolRequest: args.onToolRequest,
       onApprovalRequest: args.onApprovalRequest,
       onDynamicToolCall: args.onDynamicToolCall,
@@ -1012,13 +1016,18 @@ export class CodexAppServerManager {
           },
         },
       } satisfies TurnStartParams)
-      if (context.pendingTurn) {
-        context.pendingTurn.turnId = response.turn.id
-      } else {
-        pendingTurn.turnId = response.turn.id
+      pendingTurn.turnId = response.turn.id
+      if (context.pendingTurn === pendingTurn && !pendingTurn.resolved) {
+        const buffered = pendingTurn.bufferedNotifications.splice(0)
+        for (const notification of buffered) {
+          if (this.notificationTurnId(notification) !== pendingTurn.turnId) continue
+          void this.handleNotification(context, notification)
+          if (context.pendingTurn !== pendingTurn || pendingTurn.resolved) break
+        }
       }
     } catch (error) {
-      context.pendingTurn = null
+      if (context.pendingTurn === pendingTurn) context.pendingTurn = null
+      pendingTurn.resolved = true
       queue.finish()
       throw error
     }
@@ -1027,10 +1036,8 @@ export class CodexAppServerManager {
       provider: "codex",
       stream: queue,
       interrupt: async () => {
-        const pendingTurn = context.pendingTurn
-        if (!pendingTurn) return
-
-        context.pendingTurn = null
+        if (pendingTurn.resolved) return
+        if (context.pendingTurn === pendingTurn) context.pendingTurn = null
         pendingTurn.resolved = true
         pendingTurn.queue.finish()
 
@@ -1347,6 +1354,22 @@ export class CodexAppServerManager {
     })
   }
 
+  private notificationTurnId(notification: ServerNotification) {
+    switch (notification.method) {
+      case "turn/started":
+      case "turn/completed":
+        return notification.params.turn.id
+      case "thread/started":
+        return null
+      default:
+        return "turnId" in notification.params ? notification.params.turnId : null
+    }
+  }
+
+  private notificationThreadId(notification: ServerNotification) {
+    return "threadId" in notification.params ? notification.params.threadId : null
+  }
+
   private async handleNotification(context: SessionContext, notification: ServerNotification) {
     if (notification.method === "thread/started") {
       context.sessionToken = notification.params.thread.id
@@ -1361,6 +1384,16 @@ export class CodexAppServerManager {
 
     const pendingTurn = context.pendingTurn
     if (!pendingTurn) return
+    const notificationThreadId = this.notificationThreadId(notification)
+    if (notificationThreadId && context.sessionToken && notificationThreadId !== context.sessionToken) return
+    const notificationTurnId = this.notificationTurnId(notification)
+    if (notificationTurnId) {
+      if (pendingTurn.turnId === null) {
+        pendingTurn.bufferedNotifications.push(notification)
+        return
+      }
+      if (pendingTurn.turnId !== notificationTurnId || pendingTurn.resolved) return
+    }
 
     switch (notification.method) {
       case "thread/tokenUsage/updated":
@@ -1386,12 +1419,13 @@ export class CodexAppServerManager {
         })
         return
       case "turn/completed":
-        await this.handleTurnCompleted(context, notification.params)
+        await this.handleTurnCompleted(context, pendingTurn, notification.params)
         return
       case "thread/compacted":
         this.handleContextCompacted(pendingTurn, notification.params)
         return
       case "error":
+        if (notification.params.willRetry) return
         this.failContext(context, notification.params.error.message)
         return
       default:
@@ -1534,9 +1568,8 @@ export class CodexAppServerManager {
     })
   }
 
-  private async handleTurnCompleted(context: SessionContext, notification: TurnCompletedNotification) {
-    const pendingTurn = context.pendingTurn
-    if (!pendingTurn) return
+  private async handleTurnCompleted(context: SessionContext, pendingTurn: PendingTurn, notification: TurnCompletedNotification) {
+    if (context.pendingTurn !== pendingTurn || pendingTurn.resolved || pendingTurn.completionInProgress) return
     const status = notification.turn.status
     const isCancelled = status === "interrupted"
     const isError = status === "failed"
@@ -1547,6 +1580,7 @@ export class CodexAppServerManager {
         || renderPlanMarkdownFromSteps(pendingTurn.latestPlanSteps).trim()
 
       if (planText) {
+        pendingTurn.completionInProgress = true
         pendingTurn.turnId = null
         const tool = {
           kind: "tool" as const,
@@ -1570,9 +1604,10 @@ export class CodexAppServerManager {
           }),
         })
         await pendingTurn.onToolRequest({ tool })
+        if (context.pendingTurn !== pendingTurn || pendingTurn.resolved) return
         pendingTurn.resolved = true
         pendingTurn.queue.finish()
-        context.pendingTurn = null
+        if (context.pendingTurn === pendingTurn) context.pendingTurn = null
         return
       }
     }
@@ -1589,7 +1624,7 @@ export class CodexAppServerManager {
       }),
     })
     pendingTurn.queue.finish()
-    context.pendingTurn = null
+    if (context.pendingTurn === pendingTurn) context.pendingTurn = null
   }
 
   private failContext(context: SessionContext, message: string) {
@@ -1606,7 +1641,8 @@ export class CodexAppServerManager {
         }),
       })
       pendingTurn.queue.finish()
-      context.pendingTurn = null
+      pendingTurn.resolved = true
+      if (context.pendingTurn === pendingTurn) context.pendingTurn = null
     }
 
     for (const pending of context.pendingRequests.values()) {
