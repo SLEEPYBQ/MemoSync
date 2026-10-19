@@ -350,6 +350,11 @@ interface StartupReservation {
   cancelled: boolean
   cancellation?: Promise<void>
   controller?: AbortController
+  promptWrite?: Promise<unknown>
+  cancellationPending?: boolean
+  cancellationComplete?: boolean
+  startupSettled?: boolean
+  superseded?: boolean
 }
 
 interface ActiveTurn {
@@ -1789,8 +1794,8 @@ export class AgentCoordinator {
   // reservation is in — getActiveStatuses folds this in so the pre-park
   // window doesn't read as "idle" to a freshly (re)subscribed client.
   private readonly startingChats = new Map<string, ChatActivityStatus>()
-  // Retain the latest token after startup so stale provider completions cannot
-  // stop a replacement session for the same chat.
+  // Hold only live startup owners; a settled startup releases its map entry,
+  // while a newer reservation marks any still-pending predecessor superseded.
   private readonly startupReservations = new Map<string, StartupReservation>()
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
@@ -3460,6 +3465,9 @@ export class AgentCoordinator {
 
   private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
     const reservation = args.startupReservation ?? { cancelled: false }
+    const previous = this.startupReservations.get(args.chatId)
+    if (previous && previous !== reservation) previous.superseded = true
+    reservation.startupSettled = false
     args.startupReservation = reservation
     this.startupReservations.set(args.chatId, reservation)
     this.startingChats.set(args.chatId, status)
@@ -3468,11 +3476,34 @@ export class AgentCoordinator {
 
   private releaseStartupStatus(chatId: string, reservation?: StartupReservation) {
     if (!reservation || this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
     this.startingChats.delete(chatId)
+  }
+
+  private settleStartupReservation(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return
+    reservation.startupSettled = true
+    this.releaseStartupStatus(chatId, reservation)
+    if (this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
+    if (
+      this.hasPendingPreviewActivity(chatId)
+      || this.activePreparations.get(chatId)?.args.startupReservation === reservation
+    ) return
+    this.startupReservations.delete(chatId)
+  }
+
+  private startupReservationIsCurrent(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return !this.startupReservations.has(chatId) && !this.isEngineStartBlocked(chatId)
+    return !reservation.cancelled
+      && !reservation.superseded
+      && this.startupReservations.get(chatId) === reservation
+      && !this.isEngineStartBlocked(chatId)
   }
 
   private cancelStartupReservation(chatId: string, reservation: StartupReservation) {
     reservation.cancelled = true
+    reservation.cancellationPending = true
     reservation.controller?.abort()
     this.releaseStartupStatus(chatId, reservation)
   }
@@ -3480,7 +3511,9 @@ export class AgentCoordinator {
   private canStopStartupSession(chatId: string, reservation?: StartupReservation) {
     const currentReservation = this.startupReservations.get(chatId)
     const active = this.activeTurns.get(chatId)
-    return (!currentReservation || currentReservation === reservation)
+    if (!reservation) return !currentReservation && !active
+    return !reservation.superseded
+      && currentReservation === reservation
       && (!active || active.startupReservation === reservation)
   }
 
@@ -3490,10 +3523,19 @@ export class AgentCoordinator {
     hidden?: boolean,
   ) {
     if (reservation.cancellation) return reservation.cancellation
+    reservation.cancellationPending = true
+    const promptWrite = reservation.promptWrite
     reservation.cancellation = (async () => {
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      try {
+        await promptWrite?.catch(() => {})
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      } finally {
+        reservation.cancellationComplete = true
+        this.releaseStartupStatus(chatId, reservation)
+        if (reservation.startupSettled) this.settleStartupReservation(chatId, reservation)
+      }
     })()
     return reservation.cancellation
   }
@@ -3505,6 +3547,15 @@ export class AgentCoordinator {
   async closeChat(chatId: string) {
     this.closedChats.add(chatId)
     this.abortEngineStart(chatId)
+    const reservation = this.startupReservations.get(chatId)
+    if (reservation) {
+      reservation.cancelled = true
+      reservation.superseded = true
+      reservation.controller?.abort()
+      this.startingChats.delete(chatId)
+      this.startupReservations.delete(chatId)
+    }
+    this.cancelledDuringPreview.delete(chatId)
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
@@ -4097,7 +4148,7 @@ export class AgentCoordinator {
       this.emitStateChange(opening.chatId, { immediate: true })
       throw error
     } finally {
-      this.releaseStartupStatus(opening.chatId, reservation)
+      this.settleStartupReservation(opening.chatId, reservation)
     }
   }
 
@@ -4200,7 +4251,13 @@ export class AgentCoordinator {
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
-      await this.store.appendMessage(args.chatId, userPromptEntry)
+      const promptWrite = this.store.appendMessage(args.chatId, userPromptEntry)
+      reservation.promptWrite = promptWrite
+      try {
+        await promptWrite
+      } finally {
+        if (reservation.promptWrite === promptWrite) reservation.promptWrite = undefined
+      }
       if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
         chatId: args.chatId,
@@ -4323,7 +4380,7 @@ export class AgentCoordinator {
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) this.releaseStartupStatus(args.chatId, reservation)
+      if (!reservationHandedOff) this.settleStartupReservation(args.chatId, reservation)
     }
   }
 
@@ -5623,7 +5680,7 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
     } finally {
-      this.releaseStartupStatus(args.chatId, args.startupReservation)
+      this.settleStartupReservation(args.chatId, args.startupReservation)
       if (this.startupReservations.get(args.chatId) === args.startupReservation) {
         this.cancelledDuringPreview.delete(args.chatId)
       }
@@ -6382,7 +6439,6 @@ export class AgentCoordinator {
       // Parked (pendingPreviews guards the chat), booted (activeTurns), or
       // failed — in every case the handed-over reservation is done.
       const ownsReservation = this.startupReservations.get(args.chatId) === args.startupReservation
-      this.releaseStartupStatus(args.chatId, args.startupReservation)
       const activePreparation = this.activePreparations.get(args.chatId)
       if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
         this.activePreparations.delete(args.chatId)
@@ -6393,6 +6449,7 @@ export class AgentCoordinator {
       if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
         activePreparation.cancellation.settle()
       }
+      this.settleStartupReservation(args.chatId, args.startupReservation)
       if (!this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) this.disposeMemoryBranches(args.chatId)
     }
   }
@@ -6517,6 +6574,7 @@ export class AgentCoordinator {
       this.emitStateChange(args.chatId)
     } finally {
       this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
+      this.settleStartupReservation(args.chatId, args.startupReservation)
     }
   }
 
@@ -6607,7 +6665,7 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-      turn = await this.startClaudeTurn({
+      const claudeTurn = await this.startClaudeTurn({
         chatId: args.chatId,
         localPath: project.localPath,
         model: args.model,
@@ -6620,7 +6678,10 @@ export class AgentCoordinator {
         memoryEnabled: !memoryDisabledForTurn,
         memoryPlan: turnMemoryPlan,
         restrictMemoryIds: turnRestriction,
+        startupReservation: reservation,
       })
+      if (!claudeTurn) return
+      turn = claudeTurn
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         turn.close()
         return
@@ -7152,11 +7213,13 @@ export class AgentCoordinator {
     memoryPlan?: MemoryInjectionPlan | null
     /** Exact turn-only selection confirmed by the gate or interrupt recovery card. */
     restrictMemoryIds?: string[]
-  }): Promise<HarnessTurn> {
+    startupReservation?: StartupReservation
+  }): Promise<HarnessTurn | null> {
     // Ensure/recover the one managed preview on every participant prompt, not
     // only when the Claude query happens to rebuild. Project switches retire
     // the old query before the supervisor replaces its process group.
     await this.prepareStudyProjectRuntime(args.localPath)
+    if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
     const subprocessEnv = buildClaudeSubprocessEnv({
@@ -7211,9 +7274,11 @@ export class AgentCoordinator {
         resumeToken = null
         await this.store.setSessionToken(args.chatId, null)
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
       if (session) {
         await this.retireClaudeSession(session, "session_rebuild")
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
 
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
@@ -7252,6 +7317,16 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
+        try {
+          started.close()
+        } catch (error) {
+          this.reportBackgroundError?.(
+            `[claude-retire] chat ${args.chatId}: stale startup close failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+        return null
+      }
       this.refreshClaudeModelCatalog(started)
 
       // Baseline = what the boot block actually baked (full set, ignoring any
@@ -8119,8 +8194,7 @@ export class AgentCoordinator {
       const preparation = this.activePreparations.get(chatId)
       const reservation = this.startupReservations.get(chatId)
       if (reservation) {
-        reservation.cancelled = true
-        reservation.controller?.abort()
+        this.cancelStartupReservation(chatId, reservation)
       }
       this.cancelledDuringPreview.add(chatId)
       proposalsParked?.respond("cancelled")
@@ -8151,7 +8225,7 @@ export class AgentCoordinator {
       }
       this.pendingPreviews.delete(chatId)
       const reservation = this.startupReservations.get(chatId)
-      if (reservation) reservation.cancelled = true
+      if (reservation) this.cancelStartupReservation(chatId, reservation)
       this.cancelledDuringPreview.add(chatId)
       if (reservation) {
         await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
@@ -8171,8 +8245,7 @@ export class AgentCoordinator {
       const preparation = this.activePreparations.get(chatId)
       const reservation = this.startupReservations.get(chatId)
       if (reservation) {
-        reservation.cancelled = true
-        reservation.controller?.abort()
+        this.cancelStartupReservation(chatId, reservation)
       }
       this.cancelledDuringPreview.add(chatId)
       await preparation?.cancellation.cancelAndWait()
@@ -8238,6 +8311,13 @@ export class AgentCoordinator {
 
     await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
     await this.store.recordTurnCancelled(chatId)
+    if (active.startupReservation) {
+      active.startupReservation.cancellationComplete = true
+      this.releaseStartupStatus(chatId, active.startupReservation)
+      if (active.startupReservation.startupSettled) {
+        this.settleStartupReservation(chatId, active.startupReservation)
+      }
+    }
     active.cancelRecorded = true
     active.hasFinalResult = true
 

@@ -185,6 +185,7 @@ interface Harness {
   studyMemoryStore: StudyMemoryStore | null
   workspaceDir: string
   sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null }>
+  claudeSessionCloses: number[]
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
   interrupts: number
@@ -294,6 +295,7 @@ function createHarness(
       })
     : null
   const sessionStarts: Harness["sessionStarts"] = []
+  const claudeSessionCloses: number[] = []
   const prompts: string[] = []
   const promptContexts: Harness["promptContexts"] = []
   let interrupts = 0
@@ -349,6 +351,7 @@ function createHarness(
       }
       const events = new AsyncEventQueue<any>()
       queues.push(events)
+      claudeSessionCloses.push(0)
       return {
         provider: "claude",
         stream: events,
@@ -356,7 +359,10 @@ function createHarness(
         interrupt: async () => {
           interrupts += 1
         },
-        close: () => queues[queues.length - 1] === events && events.close(),
+        close: () => {
+          claudeSessionCloses[attempt - 1] = (claudeSessionCloses[attempt - 1] ?? 0) + 1
+          events.close()
+        },
         setModel: async () => {},
         setPermissionMode: async () => {},
         sendPrompt: async (text: string, context?: ClaudePromptContext) => {
@@ -377,6 +383,7 @@ function createHarness(
     studyMemoryStore,
     workspaceDir,
     sessionStarts,
+    claudeSessionCloses,
     prompts,
     promptContexts,
     get interrupts() { return interrupts },
@@ -2401,7 +2408,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("Stop before provider boot prevents a delayed startup from dispatching and lets a fresh turn start", async () => {
+  test("Stop orders a delayed canceled prompt before a later turn", async () => {
     let promptWriteStarted!: () => void
     const started = new Promise<void>((resolve) => { promptWriteStarted = resolve })
     let releasePromptWrite!: () => void
@@ -2417,24 +2424,134 @@ describe("memory preview gate (coordinator)", () => {
     const first = h.coordinator.send({
       type: "chat.send", chatId: "chat-1", provider: "claude", content: "cancel this startup",
     })
+    let stopping: Promise<void> | undefined
+    try {
+      await started
+      stopping = h.coordinator.cancel("chat-1")
+
+      const queued = await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh turn",
+      })
+      expect(queued).toMatchObject({ queued: true })
+      expect(h.prompts).toEqual([])
+      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toEqual([])
+
+      releasePromptWrite()
+      await stopping
+      await first
+      expect(h.store.messages.filter((message) => message.kind === "user_prompt").map((message) => message.content)).toEqual([
+        "cancel this startup",
+      ])
+      expect(h.store.messages.slice(0, 2).map((message) => message.kind)).toEqual(["user_prompt", "interrupted"])
+      expect(h.store.turnCancelledCount).toBe(1)
+
+      if (!("queuedMessageId" in queued) || !queued.queuedMessageId) {
+        throw new Error("expected the fresh prompt to be queued")
+      }
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: queued.queuedMessageId })
+      await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "ordered fresh turn",
+      })
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("ordered fresh turn")))
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["ordered fresh turn"])
+      expect(h.promptContexts.map((context) => context?.turn)).toEqual([2])
+    } finally {
+      releasePromptWrite()
+      await stopping?.catch(() => {})
+      await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("late Claude startup closes its session without replacing the fresh owner", async () => {
+    let firstBootStarted!: () => void
+    const started = new Promise<void>((resolve) => { firstBootStarted = resolve })
+    let releaseFirstBoot!: () => void
+    const firstBoot = new Promise<void>((resolve) => { releaseFirstBoot = resolve })
+    let bootCount = 0
+    const h = createHarness({
+      beforeClaudeSessionStart: async () => {
+        bootCount += 1
+        if (bootCount === 1) {
+          firstBootStarted()
+          await firstBoot
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "stale startup",
+    })
     try {
       await started
       await h.coordinator.cancel("chat-1")
-
-      const later = await h.coordinator.send({
-        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh turn",
+      await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh owner",
       })
-      expect(later).not.toMatchObject({ queued: true })
-      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh turn")))
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh owner")))
+      const freshSessionId = h.coordinator.claudeSessions.get("chat-1")?.id
+      expect(freshSessionId).toBeDefined()
 
-      releasePromptWrite()
+      releaseFirstBoot()
       await first
-      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh turn"])
-      expect(h.sessionStarts).toHaveLength(1)
-      expect(h.store.turnCancelledCount).toBe(1)
+      expect(h.coordinator.claudeSessions.get("chat-1")?.id).toBe(freshSessionId)
+      expect(h.claudeSessionCloses).toEqual([1, 0])
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh owner"])
     } finally {
-      releasePromptWrite()
+      releaseFirstBoot()
       await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("settled startup reservations do not accumulate across chats", async () => {
+    let holdNextBoot = false
+    let deletedBootStarted!: () => void
+    const bootStarted = new Promise<void>((resolve) => { deletedBootStarted = resolve })
+    let releaseDeletedBoot!: () => void
+    const deletedBoot = new Promise<void>((resolve) => { releaseDeletedBoot = resolve })
+    const h = createHarness({
+      beforeClaudeSessionStart: async () => {
+        if (!holdNextBoot) return
+        holdNextBoot = false
+        deletedBootStarted()
+        await deletedBoot
+      },
+    })
+    const reservations = (h.coordinator as unknown as { startupReservations: Map<string, unknown> }).startupReservations
+    try {
+      for (const [index, chatId] of ["chat-1", "chat-2", "chat-3"].entries()) {
+        await h.coordinator.send({
+          type: "chat.send", chatId, provider: "claude", content: `turn ${index + 1}`,
+        })
+        await waitFor(() => h.prompts.length === index + 1)
+        expect(reservations.has(chatId)).toBe(false)
+        await h.coordinator.cancel(chatId)
+        await h.coordinator.closeChat(chatId)
+      }
+      expect(reservations.size).toBe(0)
+
+      holdNextBoot = true
+      const pendingDelete = h.coordinator.send({
+        type: "chat.send", chatId: "chat-deleted", provider: "claude", content: "deleted during boot",
+      })
+      await bootStarted
+      expect(reservations.has("chat-deleted")).toBe(true)
+      await h.coordinator.cancel("chat-deleted")
+      await h.coordinator.closeChat("chat-deleted")
+      expect(reservations.has("chat-deleted")).toBe(false)
+      releaseDeletedBoot()
+      await pendingDelete
+      await waitFor(() => h.claudeSessionCloses.length === 4)
+      expect(h.claudeSessionCloses[3]).toBe(1)
+      expect(reservations.size).toBe(0)
+    } finally {
+      releaseDeletedBoot()
+      for (const chatId of ["chat-1", "chat-2", "chat-3"]) {
+        if (h.coordinator.activeTurns.has(chatId)) await h.coordinator.cancel(chatId)
+      }
+      if (h.coordinator.activeTurns.has("chat-deleted")) await h.coordinator.cancel("chat-deleted")
       h.cleanup()
     }
   })
@@ -2498,14 +2615,18 @@ describe("memory preview gate (coordinator)", () => {
     })
     try {
       await started
-      await Promise.all([
+      const stopping = Promise.all([
         h.coordinator.cancel("chat-1"),
         h.coordinator.cancel("chat-1"),
         h.coordinator.cancel("chat-1"),
       ])
+      await Promise.resolve()
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(0)
+      releasePromptWrite()
+      await stopping
       expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(1)
       expect(h.store.turnCancelledCount).toBe(1)
-      releasePromptWrite()
+      expect(h.store.messages.slice(0, 2).map((message) => message.kind)).toEqual(["user_prompt", "interrupted"])
       await first
       expect(h.sessionStarts).toHaveLength(0)
     } finally {
