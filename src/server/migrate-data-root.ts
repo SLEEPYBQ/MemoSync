@@ -22,6 +22,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
@@ -44,6 +45,7 @@ const LEGACY_IMPORT_MARKER = ".legacy-data-import-in-progress"
 const LEGACY_IMPORT_STAGE_PREFIX = ".legacy-data-import-staging-"
 const LEGACY_IMPORT_TEMP_PREFIX = ".legacy-data-import-"
 const LEGACY_IMPORT_MARKER_PREFIX = "memosync-legacy-data-import-v1:"
+const IMPORT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function isTransientInstanceLockFile(name: string): boolean {
   return name === INSTANCE_LOCK_BASENAME || name.startsWith(`${INSTANCE_LOCK_BASENAME}-`)
@@ -80,10 +82,58 @@ function pathStatOrNull(target: string) {
   }
 }
 
+function effectiveSymlinkTarget(linkPath: string): string {
+  const target = readlinkSync(linkPath)
+  let linkParent = path.dirname(linkPath)
+  try {
+    linkParent = realpathSync(linkParent)
+  } catch {
+    // Keep lexical resolution for a dangling parent; the link target itself is still preserved.
+  }
+  return path.normalize(path.isAbsolute(target) ? target : path.resolve(linkParent, target))
+}
+
+function comparableSymlinkTarget(linkPath: string): string {
+  let target = effectiveSymlinkTarget(linkPath)
+  try {
+    target = realpathSync(target)
+  } catch {
+    // Dangling links are compared by their normalized effective path.
+  }
+  return process.platform === "win32" ? target.toLowerCase() : target
+}
+
+function symlinkTypeForTarget(effectiveTarget: string, linkTarget: string): "file" | "dir" | "junction" | undefined {
+  if (process.platform !== "win32") return undefined
+  try {
+    if (statSync(effectiveTarget).isDirectory()) return path.isAbsolute(linkTarget) ? "junction" : "dir"
+    return "file"
+  } catch {
+    // A dangling link has no reliable file-vs-directory type; preserve its target without dereferencing it.
+    return undefined
+  }
+}
+
+function createSymlinkForEffectiveTarget(effectiveTarget: string, destination: string): void {
+  let linkParent = path.dirname(destination)
+  try {
+    linkParent = realpathSync(linkParent)
+  } catch {
+    // The merge creates destination parents before calling this for normal data links.
+  }
+  const relativeTarget = path.relative(linkParent, effectiveTarget)
+  const linkTarget = relativeTarget || "."
+  symlinkSync(linkTarget, destination, symlinkTypeForTarget(effectiveTarget, linkTarget))
+}
+
+function copySymlinkPreservingTarget(source: string, destination: string): void {
+  createSymlinkForEffectiveTarget(effectiveSymlinkTarget(source), destination)
+}
+
 function copyLegacyEntryToStage(source: string, destination: string): void {
   const sourceStat = lstatSync(source)
   if (sourceStat.isSymbolicLink()) {
-    symlinkSync(readlinkSync(source), destination)
+    copySymlinkPreservingTarget(source, destination)
     return
   }
   if (sourceStat.isDirectory()) {
@@ -104,7 +154,7 @@ function entriesMatch(source: string, destination: string): boolean {
   const sourceStat = lstatSync(source)
   const destinationStat = lstatSync(destination)
   if (sourceStat.isSymbolicLink() || destinationStat.isSymbolicLink()) {
-    return sourceStat.isSymbolicLink() && destinationStat.isSymbolicLink() && readlinkSync(source) === readlinkSync(destination)
+    return sourceStat.isSymbolicLink() && destinationStat.isSymbolicLink() && comparableSymlinkTarget(source) === comparableSymlinkTarget(destination)
   }
   if (sourceStat.isDirectory() || destinationStat.isDirectory()) return sourceStat.isDirectory() && destinationStat.isDirectory()
   if (!sourceStat.isFile() || !destinationStat.isFile()) return false
@@ -131,7 +181,7 @@ function mergeStagedEntry(source: string, destination: string, importId: string,
       mergeStagedEntry(path.join(source, entry), path.join(destination, entry), importId, nextTemp)
     }
   } else if (sourceStat.isSymbolicLink()) {
-    symlinkSync(readlinkSync(source), destination)
+    createSymlinkForEffectiveTarget(effectiveSymlinkTarget(source), destination)
   } else if (sourceStat.isFile()) {
     const temporaryCopy = path.join(
       path.dirname(destination),
@@ -181,8 +231,9 @@ function importLegacyDataDirectory(currentRoot: string, currentData: string, leg
         if (!markerContent.startsWith(LEGACY_IMPORT_MARKER_PREFIX)) {
           throw new Error(`Unrecognized legacy data import marker at ${marker}`)
         }
-        importId = markerContent.slice(LEGACY_IMPORT_MARKER_PREFIX.length).trim()
-        if (!/^[a-f0-9-]+$/i.test(importId)) throw new Error(`Invalid legacy data import marker at ${marker}`)
+        const markerSuffix = markerContent.slice(LEGACY_IMPORT_MARKER_PREFIX.length)
+        importId = markerSuffix.endsWith("\n") ? markerSuffix.slice(0, -1) : ""
+        if (!IMPORT_ID_PATTERN.test(importId)) throw new Error(`Invalid legacy data import marker at ${marker}`)
       } else {
         importId = randomUUID()
         writeFileSync(marker, `${LEGACY_IMPORT_MARKER_PREFIX}${importId}\n`, { flag: "wx" })

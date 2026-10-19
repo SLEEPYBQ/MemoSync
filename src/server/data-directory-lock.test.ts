@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test"
 import { Database } from "bun:sqlite"
-import { existsSync } from "node:fs"
+import { existsSync, lstatSync, readlinkSync, realpathSync } from "node:fs"
 import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -285,6 +285,54 @@ test("preserves root-level current settings when the data directory is missing",
   expect(readHistoryDatabase(path.join(legacyData, "memory.sqlite"))).toBe("legacy history")
   expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
   expect(hasMemoSyncDataRoot(homeDir)).toBe(true)
+})
+
+test("preserves the effective target of a relative legacy data symlink", async () => {
+  const homeDir = await directory()
+  const currentRoot = path.join(homeDir, ".memosync")
+  const currentData = path.join(currentRoot, "data")
+  const legacyRoot = path.join(homeDir, ".kanna")
+  const legacyData = path.join(legacyRoot, "data")
+  const legacySibling = path.join(legacyRoot, "shared-memories")
+  await mkdir(currentRoot, { recursive: true })
+  await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+  await mkdir(legacySibling, { recursive: true })
+  await writeFile(path.join(legacySibling, "history.jsonl"), "legacy history\n")
+  await mkdir(legacyData, { recursive: true })
+  await symlink("../shared-memories", path.join(legacyData, "memories"))
+
+  prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+  const importedLink = path.join(currentData, "memories")
+  expect(lstatSync(importedLink).isSymbolicLink()).toBe(true)
+  expect(realpathSync(importedLink)).toBe(realpathSync(legacySibling))
+  expect(readlinkSync(importedLink)).not.toBe("../shared-memories")
+  expect(await Bun.file(path.join(importedLink, "history.jsonl")).text()).toBe("legacy history\n")
+  expect(readlinkSync(path.join(legacyData, "memories"))).toBe("../shared-memories")
+})
+
+test("rejects malformed legacy import marker IDs without touching sibling paths", async () => {
+  const malformedIds = ["..", "../sibling", "..\\sibling", "..\n/sibling"]
+  for (const malformedId of malformedIds) {
+    const homeDir = await directory()
+    const currentRoot = path.join(homeDir, ".memosync")
+    const legacyData = path.join(homeDir, ".kanna", "data")
+    const sibling = path.join(homeDir, "sibling")
+    await mkdir(currentRoot, { recursive: true })
+    await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+    await mkdir(legacyData, { recursive: true })
+    createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
+    await mkdir(sibling, { recursive: true })
+    await writeFile(path.join(sibling, "keep.txt"), "keep me\n")
+    await writeFile(
+      path.join(currentRoot, ".legacy-data-import-in-progress"),
+      `memosync-legacy-data-import-v1:${malformedId}\n`,
+    )
+
+    expect(() => prepareDefaultDataRoot(homeDir, { allowInTest: true })).toThrow("Unable to import legacy MemoSync data")
+    expect(await Bun.file(path.join(sibling, "keep.txt")).text()).toBe("keep me\n")
+    expect(existsSync(path.join(currentRoot, ".legacy-data-import-in-progress"))).toBe(true)
+  }
 })
 
 test("prefers existing current history and leaves legacy history intact", async () => {
