@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { query, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from "../codex-app-server"
 import type { HarnessEvent } from "../harness-types"
+import { MISSING_PI_CONNECTION_MESSAGE, type StartPiTurnArgs } from "../pi-agent"
 import {
   canUseMemoryBranchTool,
   createMemoryBranch,
@@ -62,6 +63,40 @@ function fakeCodex() {
     stopSession(id) { stopped.push(id) },
   }
   return { sessions, turns, stopped, codexManager }
+}
+
+function fakePi(streamEvents: (call: number) => HarnessEvent[] = (call) => [
+  { type: "session_token", sessionToken: "pi-child" } as HarnessEvent,
+  { type: "transcript", entry: { kind: "assistant_text", text: JSON.stringify({ revised: call }) } } as HarnessEvent,
+  { type: "transcript", entry: { kind: "result", subtype: "success", isError: false, result: "" } } as HarnessEvent,
+]) {
+  const turns: StartPiTurnArgs[] = []
+  const closed: string[] = []
+  let call = 0
+  const piManager: NonNullable<MemoryBranchDependencies["piManager"]> = {
+    async startTurn(args) {
+      call += 1
+      turns.push(args)
+      return {
+        provider: "pi",
+        stream: (async function* () {
+          for (const event of streamEvents(call)) yield event
+        })(),
+        async interrupt() {},
+        close() {},
+      }
+    },
+    closeChat(id) { closed.push(id) },
+  }
+  const resolvePiConnection: MemoryBranchDependencies["resolvePiConnection"] = async () => ({
+    provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "test-key",
+  })
+  return { turns, closed, piManager, resolvePiConnection }
+}
+
+function claudeMustNotRun() {
+  const claudeQuery: typeof query = () => { throw new Error("Claude transport must not run for provider pi") }
+  return claudeQuery
 }
 
 describe("persistent memory branches", () => {
@@ -143,6 +178,67 @@ describe("persistent memory branches", () => {
     expect((await fake.turns[0].onDynamicToolCall?.("propose_memory", {}))?.isError).toBe(true)
     branch.dispose()
     expect(fake.stopped).toEqual([branch.id])
+  })
+
+  test("Pi forks once on read-only tools and resumes the same branch session", async () => {
+    const fake = fakePi()
+    const branch = createMemoryBranch({ ...base, provider: "pi" }, {
+      claudeQuery: claudeMustNotRun(),
+      piManager: fake.piManager,
+      resolvePiConnection: fake.resolvePiConnection,
+    })
+    const schema = { type: "object", additionalProperties: true }
+    expect(await branch.ask("Prepare transfers", { schema })).toEqual({ revised: 1 })
+    expect(await branch.ask("Candidate was dismissed; recheck transfers")).toEqual({ revised: 2 })
+
+    expect(fake.turns).toHaveLength(2)
+    expect(fake.turns[0]).toMatchObject({
+      chatId: branch.id,
+      sessionToken: "main-session",
+      forkSession: true,
+      toolNames: ["read", "grep", "find", "ls"],
+    })
+    expect(fake.turns[1]).toMatchObject({ sessionToken: "pi-child", forkSession: false })
+    expect(fake.turns[0].content).toContain("memory-analysis branch")
+    expect(fake.turns[0].content).toContain("Assess memory only")
+    expect(fake.turns[0].content).toContain(JSON.stringify(schema))
+    expect(branch.sessionToken).toBe("pi-child")
+    branch.dispose()
+    expect(fake.closed).toEqual([branch.id])
+  })
+
+  test("Pi branch without a Model Registry connection reports the registry error, never Claude", async () => {
+    const branch = createMemoryBranch({ ...base, provider: "pi" }, {
+      claudeQuery: claudeMustNotRun(),
+      piManager: fakePi().piManager,
+      resolvePiConnection: async () => null,
+    })
+    await expect(branch.ask("Prepare transfers")).rejects.toThrow(MISSING_PI_CONNECTION_MESSAGE)
+  })
+
+  test("Pi rejects the parent session token and a changed branch token", async () => {
+    const parentToken = fakePi(() => [
+      { type: "session_token", sessionToken: "main-session" } as HarnessEvent,
+      { type: "transcript", entry: { kind: "result", subtype: "success", isError: false, result: "{}" } } as HarnessEvent,
+    ])
+    const branch = createMemoryBranch({ ...base, provider: "pi" }, {
+      claudeQuery: claudeMustNotRun(),
+      piManager: parentToken.piManager,
+      resolvePiConnection: parentToken.resolvePiConnection,
+    })
+    await expect(branch.ask("Prepare transfers")).rejects.toThrow("did not fork")
+
+    const changed = fakePi((call) => [
+      { type: "session_token", sessionToken: call === 1 ? "pi-child" : "pi-other" } as HarnessEvent,
+      { type: "transcript", entry: { kind: "result", subtype: "success", isError: false, result: "{}" } } as HarnessEvent,
+    ])
+    const resumed = createMemoryBranch({ ...base, provider: "pi" }, {
+      claudeQuery: claudeMustNotRun(),
+      piManager: changed.piManager,
+      resolvePiConnection: changed.resolvePiConnection,
+    })
+    await resumed.ask("Prepare transfers")
+    await expect(resumed.ask("Follow up")).rejects.toThrow("changed session identifier")
   })
 
   test("timeout kills a stalled transport and rejects queued follow-ups", async () => {

@@ -2,8 +2,10 @@ import { query, type Options, type Query } from "@anthropic-ai/claude-agent-sdk"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import type { AgentProvider, CodexReasoningEffort, ServiceTier } from "../../shared/types"
+import { normalizePiReasoningEffort } from "../../shared/types"
 import { CodexAppServerManager } from "../codex-app-server"
 import type { HarnessTurn } from "../harness-types"
+import { MISSING_PI_CONNECTION_MESSAGE, PiAgentManager, resolvePiConnection, type PiConnection } from "../pi-agent"
 import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv } from "../provider-runtime"
 
 export interface MemoryBranchInput {
@@ -65,9 +67,13 @@ export interface MemoryBranch {
 export interface MemoryBranchDependencies {
   claudeQuery?: typeof query
   codexManager?: Pick<CodexAppServerManager, "startSession" | "startTurn" | "stopSession">
+  piManager?: Pick<PiAgentManager, "startTurn" | "closeChat">
+  resolvePiConnection?: () => Promise<PiConnection | null>
 }
 
 const READ_TOOLS = ["Read", "Glob", "Grep"]
+/** Read-only pi built-ins; branches get no write/edit/bash or memory tools. */
+const PI_BRANCH_TOOLS = ["read", "grep", "find", "ls"] as const
 class MemoryBranchTimeoutError extends Error {}
 class MemoryBranchBudgetError extends Error {}
 const BRANCH_INSTRUCTIONS = [
@@ -127,6 +133,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   const mode = input.parentSessionToken ? "fork" : "empty-history"
   const runClaude = dependencies.claudeQuery ?? query
   const codex = dependencies.codexManager ?? new CodexAppServerManager()
+  const pi = dependencies.piManager ?? new PiAgentManager()
+  const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
   let sessionToken: string | null = null
   let disposed = false
   let sessionUnavailable = false
@@ -144,6 +152,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     activeTurn = null
     codex.stopSession(id)
     codexConnected = false
+    pi.closeChat(id)
   }
 
   const dispose = () => {
@@ -228,6 +237,90 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     return result
   }
 
+  async function interruptForBudget(reason: string): Promise<never> {
+    // Native command notifications arrive after command start. Interrupt at
+    // the first observable overflow; this is not a pre-execution tool gate.
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        activeTurn?.interrupt().catch(() => {}),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, 250) }),
+      ])
+    } finally { clearTimeout(timer) }
+    throw new MemoryBranchBudgetError(reason)
+  }
+
+  async function askPi(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
+    const connection = await resolveConnection()
+    controller.signal.throwIfAborted()
+    if (!connection) throw new Error(MISSING_PI_CONNECTION_MESSAGE)
+    activeTurn = await pi.startTurn({
+      chatId: id,
+      cwd: input.localPath,
+      // Pi has no developer-instructions channel: the branch contract rides
+      // the prompt, ahead of the caller's budget instruction and request.
+      content: [
+        BRANCH_INSTRUCTIONS,
+        "Assess memory only; do not carry out the user's task or address its end user from this branch.",
+        prompt,
+        ...(options.schema
+          ? [`Required response JSON Schema (return every required field; use null only where allowed):\n${JSON.stringify(options.schema)}`]
+          : []),
+      ].join("\n\n"),
+      model: input.model,
+      effort: normalizePiReasoningEffort(input.effort),
+      sessionToken: sessionToken ?? input.parentSessionToken,
+      forkSession: !sessionToken && Boolean(input.parentSessionToken),
+      connection,
+      toolNames: PI_BRANCH_TOOLS,
+    })
+    let text = ""
+    let completed = false
+    const observedTools = new Set<string>()
+    let toolCalls = 0
+    let visibleSteps = 0
+    for await (const event of activeTurn.stream) {
+      if (controller.signal.aborted) throw controller.signal.reason
+      if (event.type === "session_token" && event.sessionToken) {
+        if (input.parentSessionToken && event.sessionToken === input.parentSessionToken) {
+          throw new Error("Memory branch did not fork: provider returned the main session identifier")
+        }
+        if (sessionToken && sessionToken !== event.sessionToken) {
+          throw new Error("Memory branch unexpectedly changed session identifier")
+        }
+        sessionToken = event.sessionToken
+        continue
+      }
+      if (event.type !== "transcript" || !event.entry) continue
+      if (event.entry.kind === "tool_call" && !observedTools.has(event.entry.tool.toolId)) {
+        observedTools.add(event.entry.tool.toolId)
+        // Every independently issued call counts, even when several tools
+        // came from one native model response. Results do not count twice.
+        visibleSteps += 1
+        if (event.entry.tool.toolName !== "StructuredOutput") toolCalls += 1
+        if (toolCalls > budget.maxToolCalls) {
+          await interruptForBudget(`Memory branch exceeded its ${budget.maxToolCalls}-tool-call budget`)
+        }
+      }
+      if (event.entry.kind === "assistant_text") {
+        text = event.entry.text
+        visibleSteps += 1
+      }
+      if (visibleSteps > budget.maxTurns) {
+        await interruptForBudget(`Memory branch exceeded its ${budget.maxTurns}-step observable Pi budget (not an exact native model-turn count)`)
+      }
+      if (event.entry.kind === "result") {
+        if (event.entry.isError || event.entry.subtype !== "success") {
+          throw new Error(`Memory branch failed: ${event.entry.result || event.entry.subtype}`)
+        }
+        if (!text && event.entry.result.trim()) text = event.entry.result
+        completed = true
+      }
+    }
+    if (!completed) throw new Error("Memory branch ended without a completed turn")
+    return parseMemoryBranchJson(text)
+  }
+
   async function askCodex(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
     if (!codexConnected) {
       const resumedToken = sessionToken
@@ -274,18 +367,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     const observedTools = new Set<string>()
     let toolCalls = 0
     let visibleSteps = 0
-    const stopForBudget = async (reason: string): Promise<never> => {
-      // Native command notifications arrive after command start. Interrupt at
-      // the first observable overflow; this is not a pre-execution tool gate.
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try {
-        await Promise.race([
-          activeTurn?.interrupt().catch(() => {}),
-          new Promise<void>(resolve => { timer = setTimeout(resolve, 250) }),
-        ])
-      } finally { clearTimeout(timer) }
-      throw new MemoryBranchBudgetError(reason)
-    }
+    const stopForBudget = interruptForBudget
     for await (const event of activeTurn.stream) {
       if (controller.signal.aborted) throw controller.signal.reason
       if (event.type !== "transcript" || !event.entry) continue
@@ -337,7 +419,9 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     })
     try {
       return await Promise.race([
-        input.provider === "codex" ? askCodex(requestPrompt, options, controller, budget) : askClaude(requestPrompt, options, controller, budget),
+        input.provider === "codex" ? askCodex(requestPrompt, options, controller, budget)
+          : input.provider === "pi" ? askPi(requestPrompt, options, controller, budget)
+            : askClaude(requestPrompt, options, controller, budget),
         aborted,
       ])
     } catch (error) {
@@ -349,6 +433,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
         closeTransport()
       } else if (controller.signal.aborted) dispose()
       else if (input.provider === "codex" && !codexConnected) closeTransport()
+      else if (input.provider === "pi" && !sessionToken) closeTransport()
       throw error
     } finally {
       clearTimeout(timer)

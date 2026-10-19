@@ -322,6 +322,12 @@ export interface StartPiTurnArgs {
   /** Memory tools to register; the tool list is fixed at session creation. */
   memorySpecs?: MemoryToolSpec[]
   /**
+   * Built-in tools to expose (defaults to all read/write pi tools). Memory
+   * analysis branches pass a read-only subset; the list is part of the
+   * session-reuse key, so a differing set rebuilds the session.
+   */
+  toolNames?: readonly string[]
+  /**
    * Dispatch for this turn's memory tool calls. Set to undefined to disable
    * dispatch for a turn (e.g. the user proceeded without memory) without
    * rebuilding the session.
@@ -407,7 +413,8 @@ export class PiAgentManager {
   }
 
   private async openSession(args: StartPiTurnArgs & { connection: PiConnection }): Promise<PiChatSession> {
-    const toolNamesKey = [...(args.memorySpecs ?? [])].map((spec) => spec.name).sort().join(",")
+    const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
+    const toolNamesKey = [...builtinToolNames, ...(args.memorySpecs ?? []).map((spec) => spec.name)].sort().join(",")
 
     const existing = this.sessions.get(args.chatId)
     const connectionUnchanged = existing
@@ -484,7 +491,7 @@ export class PiAgentManager {
       resourceLoader,
       model: this.resolveModel(modelRegistry, args.connection, args.model),
       thinkingLevel: args.effort,
-      tools: [...PI_TOOL_NAMES, ...memorySpecs.map((spec) => spec.name)],
+      tools: [...builtinToolNames, ...memorySpecs.map((spec) => spec.name)],
       customTools,
     })
 

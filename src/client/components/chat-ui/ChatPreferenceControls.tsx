@@ -188,6 +188,38 @@ export function InputPopover({
   )
 }
 
+function PiCustomModelItem({ onSubmit }: { onSubmit: (modelId: string) => void }) {
+  const [value, setValue] = useState("")
+  const trimmed = value.trim()
+  const submit = () => {
+    if (trimmed) onSubmit(trimmed)
+  }
+  return (
+    <div className="flex items-center gap-1 p-1">
+      <input
+        value={value}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            submit()
+          }
+        }}
+        placeholder="provider/model-id"
+        aria-label="Custom Pi model id"
+        className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+      />
+      <button
+        onClick={submit}
+        disabled={!trimmed}
+        className="rounded-md border border-border px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        Use
+      </button>
+    </div>
+  )
+}
+
 export type ModelOptionChange =
   | { type: "claudeReasoningEffort"; effort: ClaudeReasoningEffort }
   | { type: "contextWindow"; contextWindow: ClaudeContextWindow }
@@ -325,32 +357,57 @@ export function ChatPreferenceControls({
           </>
         )}
       >
-        {(close) => modelList.map((candidate) => {
-          const Icon = Box
-          return (
-            <PopoverMenuItem
-              key={candidate.id}
-              onClick={() => {
-                onModelChange(selectedProvider, candidate.id)
-                close()
-              }}
-              selected={model === candidate.id}
-              icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-              label={
-                showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
-                  ? (
-                    <>
-                      {candidate.label}{" "}
-                      <span className="text-xs font-normal text-muted-foreground">
-                        codex-cli &gt;= 0.124
-                      </span>
-                    </>
-                  )
-                  : candidate.label
-              }
-            />
-          )
-        })}
+        {(close) => (
+          <>
+            {modelList.map((candidate) => {
+              const Icon = Box
+              return (
+                <PopoverMenuItem
+                  key={candidate.id}
+                  onClick={() => {
+                    onModelChange(selectedProvider, candidate.id)
+                    close()
+                  }}
+                  selected={model === candidate.id}
+                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  label={
+                    showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
+                      ? (
+                        <>
+                          {candidate.label}{" "}
+                          <span className="text-xs font-normal text-muted-foreground">
+                            codex-cli &gt;= 0.124
+                          </span>
+                        </>
+                      )
+                      : candidate.label
+                  }
+                />
+              )
+            })}
+            {selectedProvider === "pi" ? (
+              <>
+                {/* Pi accepts any non-empty registry model id; show the active
+                    custom id when it is not one of the catalog suggestions. */}
+                {!modelList.some((candidate) => candidate.id === model) && model.trim() ? (
+                  <PopoverMenuItem
+                    onClick={close}
+                    selected
+                    icon={<Box className="h-4 w-4 text-muted-foreground" />}
+                    label={model}
+                    description="Custom registry model"
+                  />
+                ) : null}
+                <PiCustomModelItem
+                  onSubmit={(modelId) => {
+                    onModelChange(selectedProvider, modelId)
+                    close()
+                  }}
+                />
+              </>
+            ) : null}
+          </>
+        )}
       </InputPopover>
 
       <InputPopover

@@ -131,7 +131,7 @@ The **Memory Record** in the sidebar lists, for each turn of a session, what was
 
 ## Quickstart
 
-Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile. The Pi engine runs in-process (no CLI to install): give it any OpenAI-compatible endpoint through the Model Registry in Settings → Providers, or export `OPENROUTER_API_KEY`.
+Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile. The Pi engine runs in-process (no CLI to install): give it any OpenAI-compatible endpoint through the Model Registry in Settings → Providers, or export `OPENROUTER_API_KEY`. Its model picker takes any registry model id, not just the catalog suggestions.
 
 ```bash
 git clone <this repository> MemoSync
