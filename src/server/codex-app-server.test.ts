@@ -106,6 +106,86 @@ describe("CodexAppServerManager", () => {
     }
   })
 
+  test("aborting during initialization kills the partially started child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const controller = new AbortController()
+    const starting = manager.startSession({
+      signal: controller.signal,
+      chatId: "abort-start",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+    })
+    while (!child.messages.some((message: any) => message.method === "thread/start")) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+
+    controller.abort()
+
+    await expect(starting).rejects.toThrow("Codex session stopped")
+    expect(child.killed).toBe(true)
+  })
+
+  test("an aborted queued startup does not spawn after the runtime lock frees", async () => {
+    const children: FakeCodexProcess[] = []
+    let firstRequested!: () => void
+    let releaseFirst!: () => void
+    const firstRequest = new Promise<void>((resolve) => { firstRequested = resolve })
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const subprocessEnv = { CODEX_HOME: "abort-queued-start-test" }
+    const manager = new CodexAppServerManager({
+      serializeStarts: true,
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            firstRequested()
+            void firstGate.then(() => process.writeServerMessage({
+              id: message.id,
+              result: { thread: { id: "first-ready" } },
+            }))
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const first = manager.startSession({
+      chatId: "first-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    await firstRequest
+    const controller = new AbortController()
+    const second = manager.startSession({
+      signal: controller.signal,
+      chatId: "queued-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    const secondResult = second.catch((error) => error)
+
+    controller.abort()
+    expect(children).toHaveLength(1)
+    releaseFirst()
+
+    await expect(first).resolves.toBe("first-ready")
+    const failure = await secondResult
+    expect(failure).toMatchObject({ name: "AbortError" })
+    expect(children).toHaveLength(1)
+    manager.stopAll()
+  })
+
   test("retains only a bounded final stderr diagnostic for long-lived sessions", async () => {
     const child = new FakeCodexProcess((message, process) => {
       if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })

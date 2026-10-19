@@ -1781,6 +1781,9 @@ export class AgentCoordinator {
   // reservation is in — getActiveStatuses folds this in so the pre-park
   // window doesn't read as "idle" to a freshly (re)subscribed client.
   private readonly startingChats = new Map<string, ChatActivityStatus>()
+  private readonly engineStartAbortControllers = new Map<string, AbortController>()
+  private readonly closedChats = new Set<string>()
+  private runtimeStopping = false
   // Chats where the user hit Stop while the preview gate was still being set
   // up (before pendingPreviews exists). The detached runPreviewGateThenBoot
   // observes this and unwinds instead of parking a gate / booting (BUG AGENT-2).
@@ -3440,7 +3443,17 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  private abortEngineStart(chatId: string) {
+    this.engineStartAbortControllers.get(chatId)?.abort()
+  }
+
+  private isEngineStartBlocked(chatId: string) {
+    return this.runtimeStopping || this.closedChats.has(chatId)
+  }
+
   async closeChat(chatId: string) {
+    this.closedChats.add(chatId)
+    this.abortEngineStart(chatId)
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
@@ -3489,6 +3502,8 @@ export class AgentCoordinator {
   }
 
   async shutdownStudyRuntime() {
+    this.runtimeStopping = true
+    for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     await Promise.all(
@@ -6468,10 +6483,16 @@ export class AgentCoordinator {
       memoryDisabledForTurn: boolean
     }
   ) {
+    if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
-    this.disposeMemoryBranches(args.chatId)
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
+    const startController = new AbortController()
+    this.engineStartAbortControllers.set(args.chatId, startController)
+    let bootedActive: ActiveTurn | undefined
+    let turn: HarnessTurn
+    try {
+    this.disposeMemoryBranches(args.chatId)
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
@@ -6512,7 +6533,6 @@ export class AgentCoordinator {
       })
     }
 
-    let turn: HarnessTurn
     if (args.provider === "claude") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
@@ -6624,6 +6644,7 @@ export class AgentCoordinator {
           }
         : undefined
       const sessionToken = await this.codexManager.startSession({
+        signal: startController.signal,
         chatId: args.chatId,
         cwd: project.localPath,
         model: args.model,
@@ -6660,6 +6681,13 @@ export class AgentCoordinator {
       })
     }
 
+    if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+      startController.abort()
+      turn.close()
+      if (args.provider === "codex") this.codexManager.stopSession(args.chatId)
+      return
+    }
+
     const active: ActiveTurn = {
       chatId: args.chatId,
       provider: args.provider,
@@ -6690,6 +6718,17 @@ export class AgentCoordinator {
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
+    bootedActive = active
+    } finally {
+      if (this.engineStartAbortControllers.get(args.chatId) === startController) {
+        this.engineStartAbortControllers.delete(args.chatId)
+      }
+      if (!bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
+        this.codexManager.stopSession(args.chatId)
+      }
+    }
+    const active = bootedActive
+    if (!active) return
     if (active.taskId) {
       const taskChats = this.studyTaskChats.get(active.taskId) ?? new Set<string>()
       taskChats.add(args.chatId)
@@ -7963,6 +8002,7 @@ export class AgentCoordinator {
       draining.turn.close()
       this.drainingStreams.delete(chatId)
     }
+    this.abortEngineStart(chatId)
 
     // Stop while parked at a step-one gate: resolve EVERY parked gate as
     // "cancelled" (Step 1 and the Transfer card park side by side since
@@ -8013,6 +8053,17 @@ export class AgentCoordinator {
       const preparation = this.activePreparations.get(chatId)
       this.cancelledDuringPreview.add(chatId)
       await preparation?.cancellation.cancelAndWait()
+      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+      await this.store.recordTurnCancelled(chatId)
+      this.emitStateChange(chatId, { immediate: true })
+      return
+    }
+
+    // Stop while the provider is queued or initializing: cancel its abort
+    // barrier now and record the interruption immediately. bootEngineTurn's
+    // in-flight codex startup receives this signal even when runtime starts
+    // are serialized behind another profile migration.
+    if (this.startingChats.get(chatId) === "starting") {
       await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
       await this.store.recordTurnCancelled(chatId)
       this.emitStateChange(chatId, { immediate: true })

@@ -802,10 +802,10 @@ export async function serializeCodexRuntimeStart<T>(profile: string, start: () =
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly spawnProcess: SpawnCodexAppServer
-  private readonly usesRealProcess: boolean
+  private readonly serializeStarts: boolean
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.usesRealProcess = !args.spawnProcess
+  constructor(args: { spawnProcess?: SpawnCodexAppServer; serializeStarts?: boolean } = {}) {
+    this.serializeStarts = args.serializeStarts ?? !args.spawnProcess
     this.spawnProcess = args.spawnProcess ?? ((cwd, env) => {
       const runtime = prepareCodexRuntime(env)
       return spawn("codex", runtime.args, {
@@ -817,7 +817,7 @@ export class CodexAppServerManager {
   }
 
   async startSession(args: StartCodexSessionArgs) {
-    if (!this.usesRealProcess) return this.startSessionUnlocked(args)
+    if (!this.serializeStarts) return this.startSessionUnlocked(args)
     const env = args.subprocessEnv ?? process.env
     const profile = env.MEMOSYNC_CLI_PROFILE_DIR || env.CODEX_HOME || join(homedir(), ".codex")
     return serializeCodexRuntimeStart(profile, () => this.startSessionUnlocked(args))
@@ -849,6 +849,11 @@ export class CodexAppServerManager {
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
+    const stopForAbort = () => {
+      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+    }
+    args.signal?.addEventListener("abort", stopForAbort, { once: true })
+    if (args.signal?.aborted) stopForAbort()
 
     try {
       return await this.initializeSession(args, context)
@@ -857,6 +862,8 @@ export class CodexAppServerManager {
       // Do not stop a replacement session if an older request fails late.
       if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
       throw error
+    } finally {
+      args.signal?.removeEventListener("abort", stopForAbort)
     }
   }
 
