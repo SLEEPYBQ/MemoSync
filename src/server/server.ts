@@ -16,8 +16,8 @@ import type { ShareMode } from "../shared/share"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
-import { acquireDataDirectoryLock } from "./data-directory-lock"
-import { migrateLegacyDataRoot } from "./migrate-data-root"
+import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
+import { prepareDefaultDataRoot } from "./migrate-data-root"
 import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
@@ -241,37 +241,71 @@ export interface StartMemoSyncServerOptions {
   }
 }
 
-export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
-  if (!options.dataDir) migrateLegacyDataRoot()
-  const lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homedir()))
-  const startupCleanups: Array<() => void | Promise<void>> = []
+export async function cleanupFailedMemoSyncStartup(args: {
+  error: unknown
+  cleanups: Array<() => void | Promise<void>>
+  releaseLock: () => void
+}): Promise<unknown> {
+  const failures = [args.error]
+  for (const cleanup of args.cleanups.reverse()) {
+    try {
+      await cleanup()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
   try {
+    args.releaseLock()
+  } catch (error) {
+    failures.push(error)
+  }
+  return failures.length > 1
+    ? new AggregateError(failures, "MemoSync startup and cleanup failed")
+    : args.error
+}
+
+export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
+  const homeDir = homedir()
+  const bootstrapLock = options.dataDir ? null : acquireDataRootBootstrapLock(homeDir)
+  const startupCleanups: Array<() => void | Promise<void>> = []
+  let lock: ReturnType<typeof acquireDataDirectoryLock> | undefined
+  try {
+    if (!options.dataDir) prepareDefaultDataRoot(homeDir)
+    lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homeDir))
+    const dataLock = lock
     const runtime = await startLockedMemoSyncServer(
-      { ...options, dataDir: lock.dataDir },
+      { ...options, dataDir: dataLock.dataDir },
       (cleanup) => startupCleanups.push(cleanup),
     )
     let stopping: Promise<void> | undefined
     return {
       ...runtime,
       stop: () => stopping ??= (async () => {
-        await runtime.stop()
-        lock.release()
+        const stopErrors: unknown[] = []
+        try {
+          await runtime.stop()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        try {
+          dataLock.release()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        if (stopErrors.length === 1) throw stopErrors[0]
+        if (stopErrors.length > 1) {
+          throw new AggregateError(stopErrors, "MemoSync shutdown and lock release failed")
+        }
       })(),
     }
   } catch (error) {
-    const cleanupErrors: unknown[] = []
-    for (const cleanup of startupCleanups.reverse()) {
-      try {
-        await cleanup()
-      } catch (cleanupError) {
-        cleanupErrors.push(cleanupError)
-      }
-    }
-    if (cleanupErrors.length) {
-      throw new AggregateError([error, ...cleanupErrors], "MemoSync startup and cleanup failed")
-    }
-    lock.release()
-    throw error
+    throw await cleanupFailedMemoSyncStartup({
+      error,
+      cleanups: startupCleanups,
+      releaseLock: () => lock?.release(),
+    })
+  } finally {
+    bootstrapLock?.release()
   }
 }
 

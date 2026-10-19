@@ -9,14 +9,32 @@
 // the root, no data/ subdir). That dir is not this app's data. When the target
 // exists but does not carry this app's layout, it is moved aside to a
 // timestamped backup (never deleted) before the legacy root is renamed in.
-import { existsSync, renameSync } from "node:fs"
+import { existsSync, readdirSync, renameSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataRootDir, getLegacyDataRootDir, LOG_PREFIX } from "../shared/branding"
 
-/** This app's root is recognized by its data/ subdir (settings, event logs). */
+const INSTANCE_LOCK_BASENAME = ".instance-lock.sqlite"
+
+function isTransientInstanceLockFile(name: string): boolean {
+  return name === INSTANCE_LOCK_BASENAME || name.startsWith(`${INSTANCE_LOCK_BASENAME}-`)
+}
+
+/**
+ * This app's root is recognized by substantive files in its data/ subdir.
+ * A lock-only directory can be left behind by a failed first start and is not
+ * proof that legacy migration already ran.
+ */
 function looksLikeThisAppsDataRoot(rootDir: string): boolean {
-  return existsSync(path.join(rootDir, "data"))
+  try {
+    return readdirSync(path.join(rootDir, "data")).some((entry) => !isTransientInstanceLockFile(entry))
+  } catch {
+    return false
+  }
+}
+
+export function hasMemoSyncDataRoot(homeDir: string = homedir()): boolean {
+  return looksLikeThisAppsDataRoot(getDataRootDir(homeDir))
 }
 
 function moveAsideAsBackup(dir: string): string | null {
@@ -40,9 +58,12 @@ function moveAsideAsBackup(dir: string): string | null {
  * migration happened. Never deletes anything: a foreign occupant of the target
  * name is renamed to a `-v1-backup-<date>` sibling first.
  */
-export function migrateLegacyDataRoot(homeDir: string = homedir()): boolean {
+export function migrateLegacyDataRoot(
+  homeDir: string = homedir(),
+  options: { allowInTest?: boolean } = {},
+): boolean {
   // Never touch real user data from inside a test run.
-  if (process.env.NODE_ENV === "test") return false
+  if (process.env.NODE_ENV === "test" && !options.allowInTest) return false
 
   const current = getDataRootDir(homeDir)
   const legacy = getLegacyDataRootDir(homeDir)
@@ -65,5 +86,20 @@ export function migrateLegacyDataRoot(homeDir: string = homedir()): boolean {
   } catch (error) {
     console.warn(`${LOG_PREFIX} failed to migrate data root ${legacy} -> ${current}:`, error)
     return false
+  }
+}
+
+/**
+ * Resolve the default root while a bootstrap lock is held. A failed migration
+ * must fail startup instead of creating a fresh empty root beside user data.
+ */
+export function prepareDefaultDataRoot(
+  homeDir: string = homedir(),
+  options: { allowInTest?: boolean } = {},
+): void {
+  const hadLegacyRoot = existsSync(getLegacyDataRootDir(homeDir))
+  const migrated = migrateLegacyDataRoot(homeDir, options)
+  if (hadLegacyRoot && !migrated && !hasMemoSyncDataRoot(homeDir)) {
+    throw new Error(`Unable to migrate the legacy MemoSync data root in ${homeDir}`)
   }
 }
