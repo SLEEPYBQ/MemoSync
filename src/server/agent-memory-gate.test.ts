@@ -187,6 +187,7 @@ interface Harness {
   sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null }>
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
+  interrupts: number
   openingBoardBacklog: MemoryBoardBacklogService | null
   finishTurn: () => void
   emitEntry: (entry: Record<string, unknown>) => void
@@ -295,6 +296,7 @@ function createHarness(
   const sessionStarts: Harness["sessionStarts"] = []
   const prompts: string[] = []
   const promptContexts: Harness["promptContexts"] = []
+  let interrupts = 0
   // One stream per session: recreation tests must not double-consume a queue.
   const queues: AsyncEventQueue<any>[] = []
 
@@ -351,7 +353,9 @@ function createHarness(
         provider: "claude",
         stream: events,
         getAccountInfo: async () => null,
-        interrupt: async () => {},
+        interrupt: async () => {
+          interrupts += 1
+        },
         close: () => queues[queues.length - 1] === events && events.close(),
         setModel: async () => {},
         setPermissionMode: async () => {},
@@ -375,6 +379,7 @@ function createHarness(
     sessionStarts,
     prompts,
     promptContexts,
+    get interrupts() { return interrupts },
     openingBoardBacklog,
     finishTurn: () =>
       queues[queues.length - 1]?.push({
@@ -2392,6 +2397,120 @@ describe("memory preview gate (coordinator)", () => {
       )).toHaveLength(1)
     } finally {
       releasePlanner()
+      h.cleanup()
+    }
+  })
+
+  test("Stop before provider boot prevents a delayed startup from dispatching and lets a fresh turn start", async () => {
+    let promptWriteStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptWriteStarted = resolve })
+    let releasePromptWrite!: () => void
+    const promptWrite = new Promise<void>((resolve) => { releasePromptWrite = resolve })
+    const h = createHarness({
+      beforeAppendMessage: async (entry) => {
+        if (entry.kind === "user_prompt" && entry.content === "cancel this startup") {
+          promptWriteStarted()
+          await promptWrite
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "cancel this startup",
+    })
+    try {
+      await started
+      await h.coordinator.cancel("chat-1")
+
+      const later = await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh turn",
+      })
+      expect(later).not.toMatchObject({ queued: true })
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh turn")))
+
+      releasePromptWrite()
+      await first
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh turn"])
+      expect(h.sessionStarts).toHaveLength(1)
+      expect(h.store.turnCancelledCount).toBe(1)
+    } finally {
+      releasePromptWrite()
+      await first.catch(() => {})
+      h.cleanup()
+    }
+  })
+
+  test("Stop during Claude sendPrompt interrupts the active owner and permits a new turn", async () => {
+    let promptStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptStarted = resolve })
+    let releasePrompt!: () => void
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const h = createHarness({
+      onSendPrompt: async (text) => {
+        if (text.startsWith("slow prompt")) {
+          promptStarted()
+          await promptGate
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "slow prompt",
+    })
+    try {
+      await started
+      await h.coordinator.cancel("chat-1")
+      expect(h.interrupts).toBe(1)
+      expect(h.store.turnCancelledCount).toBe(1)
+
+      const later = await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "after stop",
+      })
+      expect(later).not.toMatchObject({ queued: true })
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("after stop")))
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+      releasePrompt()
+      await first
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["slow prompt", "after stop"])
+      expect(h.store.turnCancelledCount).toBe(1)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+    } finally {
+      releasePrompt()
+      await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("repeated concurrent Stop during startup records one terminal cancellation", async () => {
+    let promptWriteStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptWriteStarted = resolve })
+    let releasePromptWrite!: () => void
+    const promptWrite = new Promise<void>((resolve) => { releasePromptWrite = resolve })
+    const h = createHarness({
+      beforeAppendMessage: async (entry) => {
+        if (entry.kind === "user_prompt") {
+          promptWriteStarted()
+          await promptWrite
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "cancel repeatedly",
+    })
+    try {
+      await started
+      await Promise.all([
+        h.coordinator.cancel("chat-1"),
+        h.coordinator.cancel("chat-1"),
+        h.coordinator.cancel("chat-1"),
+      ])
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(1)
+      expect(h.store.turnCancelledCount).toBe(1)
+      releasePromptWrite()
+      await first
+      expect(h.sessionStarts).toHaveLength(0)
+    } finally {
+      releasePromptWrite()
+      await first.catch(() => {})
       h.cleanup()
     }
   })

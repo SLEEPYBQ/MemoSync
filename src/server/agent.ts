@@ -343,6 +343,13 @@ interface StartTurnArgs {
     previewId: string
     decision: "go_on" | "without_memory"
   }
+  startupReservation?: StartupReservation
+}
+
+interface StartupReservation {
+  cancelled: boolean
+  cancellation?: Promise<void>
+  controller?: AbortController
 }
 
 interface ActiveTurn {
@@ -360,6 +367,7 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
+  startupReservation?: StartupReservation
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
    * that point keeps the persistent Query (the provider acknowledges the
@@ -1781,6 +1789,9 @@ export class AgentCoordinator {
   // reservation is in — getActiveStatuses folds this in so the pre-park
   // window doesn't read as "idle" to a freshly (re)subscribed client.
   private readonly startingChats = new Map<string, ChatActivityStatus>()
+  // Retain the latest token after startup so stale provider completions cannot
+  // stop a replacement session for the same chat.
+  private readonly startupReservations = new Map<string, StartupReservation>()
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
   private runtimeStopping = false
@@ -3447,6 +3458,46 @@ export class AgentCoordinator {
     this.engineStartAbortControllers.get(chatId)?.abort()
   }
 
+  private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
+    const reservation = args.startupReservation ?? { cancelled: false }
+    args.startupReservation = reservation
+    this.startupReservations.set(args.chatId, reservation)
+    this.startingChats.set(args.chatId, status)
+    return reservation
+  }
+
+  private releaseStartupStatus(chatId: string, reservation?: StartupReservation) {
+    if (!reservation || this.startupReservations.get(chatId) !== reservation) return
+    this.startingChats.delete(chatId)
+  }
+
+  private cancelStartupReservation(chatId: string, reservation: StartupReservation) {
+    reservation.cancelled = true
+    reservation.controller?.abort()
+    this.releaseStartupStatus(chatId, reservation)
+  }
+
+  private canStopStartupSession(chatId: string, reservation?: StartupReservation) {
+    const currentReservation = this.startupReservations.get(chatId)
+    const active = this.activeTurns.get(chatId)
+    return (!currentReservation || currentReservation === reservation)
+      && (!active || active.startupReservation === reservation)
+  }
+
+  private recordStartupCancellation(
+    chatId: string,
+    reservation: StartupReservation,
+    hidden?: boolean,
+  ) {
+    if (reservation.cancellation) return reservation.cancellation
+    reservation.cancellation = (async () => {
+      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
+      await this.store.recordTurnCancelled(chatId)
+      this.emitStateChange(chatId, { immediate: true })
+    })()
+    return reservation.cancellation
+  }
+
   private isEngineStartBlocked(chatId: string) {
     return this.runtimeStopping || this.closedChats.has(chatId)
   }
@@ -4028,7 +4079,7 @@ export class AgentCoordinator {
       openingLongTermAlreadyReady: true,
       openingWorkingMemory: { previewId: preview.previewId, decision: decision.decision },
     }
-    this.startingChats.set(opening.chatId, "starting")
+    const reservation = this.reserveStartup(args)
     try {
       await this.bootEngineTurn(this.refreshOpeningProviderAttachments(args), {
         chat,
@@ -4046,7 +4097,7 @@ export class AgentCoordinator {
       this.emitStateChange(opening.chatId, { immediate: true })
       throw error
     } finally {
-      this.startingChats.delete(opening.chatId)
+      this.releaseStartupStatus(opening.chatId, reservation)
     }
   }
 
@@ -4081,7 +4132,8 @@ export class AgentCoordinator {
     }
     // Hold the reservation across every await below (preview pass, engine boot)
     // until the turn hands off to pendingPreviews (parked) or activeTurns (booted).
-    this.startingChats.set(args.chatId, "starting")
+    const reservation = this.reserveStartup(args)
+    const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
     this.turnMemoryRestriction.delete(args.chatId)
@@ -4089,12 +4141,14 @@ export class AgentCoordinator {
     try {
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.provider_set", {
         chatId: args.chatId,
         provider: args.provider,
       })
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
+    if (startupCancelled()) return
     logSendToStartingProfile(args.profile, "start_turn.plan_mode_set", {
       chatId: args.chatId,
       planMode: args.planMode,
@@ -4120,6 +4174,7 @@ export class AgentCoordinator {
 
     if (optimisticTitle) {
       await this.store.renameChat(args.chatId, optimisticTitle)
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.optimistic_title_set", {
         chatId: args.chatId,
         title: optimisticTitle,
@@ -4146,6 +4201,7 @@ export class AgentCoordinator {
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
       await this.store.appendMessage(args.chatId, userPromptEntry)
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
         chatId: args.chatId,
         entryId: userPromptEntry._id,
@@ -4207,6 +4263,7 @@ export class AgentCoordinator {
       shouldReconcileOpeningPrompt && !openingBookkeeping?.turnStarted
     )) {
       await this.store.recordTurnStarted(args.chatId)
+      if (startupCancelled()) return
       if (openingIdentity) {
         this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, { turnStarted: true })
       }
@@ -4252,7 +4309,7 @@ export class AgentCoordinator {
         // + boot continue detached, taking the startingChats reservation with
         // them. The status broadcast is synchronous — subscribers learn about
         // the wait before the ack returns.
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         this.emitStateChange(args.chatId, { immediate: true })
         reservationHandedOff = true
         void this.runPreviewGateThenBoot(args, { chat, project, turnNumber, injected: plan.injectedMemories })
@@ -4266,7 +4323,7 @@ export class AgentCoordinator {
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) this.startingChats.delete(args.chatId)
+      if (!reservationHandedOff) this.releaseStartupStatus(args.chatId, reservation)
     }
   }
 
@@ -5566,8 +5623,10 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
     } finally {
-      this.startingChats.delete(args.chatId)
-      this.cancelledDuringPreview.delete(args.chatId)
+      this.releaseStartupStatus(args.chatId, args.startupReservation)
+      if (this.startupReservations.get(args.chatId) === args.startupReservation) {
+        this.cancelledDuringPreview.delete(args.chatId)
+      }
     }
   }
 
@@ -5765,7 +5824,7 @@ export class AgentCoordinator {
       },
       reopen: (from, stageId) => {
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         void this.runReopenedMemoryPreparation({
           ...input,
           ctx,
@@ -6148,7 +6207,7 @@ export class AgentCoordinator {
             reopen: (from, stageId) => {
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
-              this.startingChats.set(args.chatId, "previewing_memory")
+              this.reserveStartup(args, "previewing_memory")
               void this.runReopenedMemoryPreparation({
                 args,
                 ctx,
@@ -6322,13 +6381,18 @@ export class AgentCoordinator {
     } finally {
       // Parked (pendingPreviews guards the chat), booted (activeTurns), or
       // failed — in every case the handed-over reservation is done.
-      this.startingChats.delete(args.chatId)
+      const ownsReservation = this.startupReservations.get(args.chatId) === args.startupReservation
+      this.releaseStartupStatus(args.chatId, args.startupReservation)
       const activePreparation = this.activePreparations.get(args.chatId)
-      this.activePreparations.delete(args.chatId)
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
+        this.activePreparations.delete(args.chatId)
+      }
       // Never leak a cancel flag or an abort handle into a later turn.
-      this.cancelledDuringPreview.delete(args.chatId)
+      if (ownsReservation) this.cancelledDuringPreview.delete(args.chatId)
       // Resolve Stop only after every public busy/freeze guard is gone.
-      activePreparation?.cancellation.settle()
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
+        activePreparation.cancellation.settle()
+      }
       if (!this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) this.disposeMemoryBranches(args.chatId)
     }
   }
@@ -6485,9 +6549,12 @@ export class AgentCoordinator {
   ) {
     if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
+    const reservation = args.startupReservation
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
+    if (reservation?.cancelled) return
     const startController = new AbortController()
+    if (reservation) reservation.controller = startController
     this.engineStartAbortControllers.set(args.chatId, startController)
     let bootedActive: ActiveTurn | undefined
     let turn: HarnessTurn
@@ -6499,6 +6566,7 @@ export class AgentCoordinator {
     // a misleading "native binary failed to launch" / posix_spawn ENOENT
     // (QA BUG-001/002/004). Recreate it before any boot.
     await ensureProjectDirectory(project.localPath)
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
 
     // Snapshot BEFORE any engine boot awaits: what this turn injects (trace's
     // ground truth). Use the confirmed selection in the injection plan,
@@ -6553,6 +6621,10 @@ export class AgentCoordinator {
         memoryPlan: turnMemoryPlan,
         restrictMemoryIds: turnRestriction,
       })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        return
+      }
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,
@@ -6653,8 +6725,16 @@ export class AgentCoordinator {
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
       })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
+        return
+      }
       if (chat.pendingForkSessionToken && sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
+        if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+          if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
+          return
+        }
       }
       logSendToStartingProfile(args.profile, "start_turn.session_ready", {
         chatId: args.chatId,
@@ -6676,10 +6756,15 @@ export class AgentCoordinator {
         })
       } catch (error) {
         if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
-          this.codexManager.stopSession(args.chatId)
+          if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
           return
         }
         throw error
+      }
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
+        return
       }
       this.turnPayAttention.delete(args.chatId)
       args.onMemoryDeliveryAccepted?.(codexPlan?.injectedMemories.map(item => item.id) ?? [])
@@ -6690,10 +6775,12 @@ export class AgentCoordinator {
       })
     }
 
-    if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
       startController.abort()
       turn.close()
-      if (args.provider === "codex") this.codexManager.stopSession(args.chatId)
+      if (args.provider === "codex" && this.canStopStartupSession(args.chatId, reservation)) {
+        this.codexManager.stopSession(args.chatId)
+      }
       return
     }
 
@@ -6711,6 +6798,7 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
+      startupReservation: reservation,
       providerTurnStarted: false,
       clientTraceId: args.profile?.traceId,
       profilingStartedAt: args.profile?.startedAt,
@@ -6732,8 +6820,9 @@ export class AgentCoordinator {
       if (this.engineStartAbortControllers.get(args.chatId) === startController) {
         this.engineStartAbortControllers.delete(args.chatId)
       }
+      if (reservation?.controller === startController) reservation.controller = undefined
       if (!bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
-        this.codexManager.stopSession(args.chatId)
+        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
       }
     }
     const active = bootedActive
@@ -6847,7 +6936,7 @@ export class AgentCoordinator {
               // leaving the chat registered as running; the durable prompt id
               // remains reusable by a corrected retry.
               if (this.activeTurns.get(args.chatId) === active) this.activeTurns.delete(args.chatId)
-              this.startingChats.delete(args.chatId)
+              this.releaseStartupStatus(args.chatId, args.startupReservation)
               active.turn.close()
               this.emitStateChange(args.chatId, { immediate: true })
               throw new Error("The enforced memory is no longer in the current chat's effective Working Memory")
@@ -6979,6 +7068,12 @@ export class AgentCoordinator {
           this.emitStateChange(args.chatId, { immediate: true })
         }
         throw error
+      }
+      if (reservation?.cancelled || active.cancelRequested || this.activeTurns.get(args.chatId) !== active) {
+        if (openingProviderDispatch) {
+          this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
+        }
+        return
       }
       if (openingProviderDispatch) {
         this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
@@ -8011,8 +8106,6 @@ export class AgentCoordinator {
       draining.turn.close()
       this.drainingStreams.delete(chatId)
     }
-    this.abortEngineStart(chatId)
-
     // Stop while parked at a step-one gate: resolve EVERY parked gate as
     // "cancelled" (Step 1 and the Transfer card park side by side since
     // 2026-08-08), set the preview-cancel flag so a sibling coroutine still
@@ -8024,6 +8117,11 @@ export class AgentCoordinator {
     const checkupParked = this.pendingCheckupGates.get(chatId)
     if (proposalsParked || transferParked || checkupParked) {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        reservation.cancelled = true
+        reservation.controller?.abort()
+      }
       this.cancelledDuringPreview.add(chatId)
       proposalsParked?.respond("cancelled")
       transferParked?.respond("cancelled")
@@ -8031,9 +8129,13 @@ export class AgentCoordinator {
       // The shared phase signal releases Prompt Parse and task-local Transfer
       // together. Source preparation is shared across turns and keeps running.
       await preparation?.cancellation.cancelAndWait()
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
@@ -8048,23 +8150,39 @@ export class AgentCoordinator {
         return
       }
       this.pendingPreviews.delete(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) reservation.cancelled = true
       this.cancelledDuringPreview.add(chatId)
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
     // Stop DURING the preview-gate LLM pass (reservation held, gate not parked
     // yet): the in-flight runPreviewGateThenBoot observes this flag and unwinds
     // (BUG AGENT-2). Record the interruption here so the UI reflects it now.
-    if (this.startingChats.get(chatId) === "previewing_memory") {
+    const active = this.activeTurns.get(chatId)
+    if (!active && this.startingChats.get(chatId) === "previewing_memory") {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        reservation.cancelled = true
+        reservation.controller?.abort()
+      }
       this.cancelledDuringPreview.add(chatId)
       await preparation?.cancellation.cancelAndWait()
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
@@ -8072,14 +8190,19 @@ export class AgentCoordinator {
     // barrier now and record the interruption immediately. bootEngineTurn's
     // in-flight codex startup receives this signal even when runtime starts
     // are serialized behind another profile migration.
-    if (this.startingChats.get(chatId) === "starting") {
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+    if (!active && this.startingChats.get(chatId) === "starting") {
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
-    const active = this.activeTurns.get(chatId)
     if (!active) return
 
     logClaudeSteer("cancel_requested", {
@@ -8091,6 +8214,9 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+    if (active.startupReservation) {
+      this.cancelStartupReservation(chatId, active.startupReservation)
+    }
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
