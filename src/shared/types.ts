@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex"
+export type AgentProvider = "claude" | "codex" | "pi"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -154,8 +154,18 @@ export const CODEX_REASONING_OPTIONS = [
   { id: "xhigh", label: "XHigh" },
 ] as const satisfies readonly ProviderEffortOption[]
 
+export const PI_REASONING_OPTIONS = [
+  { id: "off", label: "Off" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra High" },
+] as const satisfies readonly ProviderEffortOption[]
+
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
 export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"]
+export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
 
@@ -169,9 +179,14 @@ export interface CodexModelOptions {
   fastMode: boolean
 }
 
+export interface PiModelOptions {
+  reasoningEffort: PiReasoningEffort
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
+  pi: PiModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -183,6 +198,7 @@ export interface ProviderPreference<TModelOptions> {
 export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
+  pi: ProviderPreference<PiModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -202,12 +218,34 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CodexModelOptions
 
+// Pi runs in-process against the Model Registry, so any non-empty registry
+// model id is a valid choice; the catalog entries are only suggestions.
+export const DEFAULT_PI_MODEL = "anthropic/claude-sonnet-4-6"
+
+export const DEFAULT_PI_MODEL_OPTIONS = {
+  reasoningEffort: "medium",
+} as const satisfies PiModelOptions
+
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
   return CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function isPiReasoningEffort(value: unknown): value is PiReasoningEffort {
+  return PI_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function normalizePiReasoningEffort(effort?: unknown): PiReasoningEffort {
+  return isPiReasoningEffort(effort) ? effort : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort
+}
+
+export function normalizePiModelOptions(options?: Partial<PiModelOptions> | null): PiModelOptions {
+  return {
+    reasoningEffort: normalizePiReasoningEffort(options?.reasoningEffort),
+  }
 }
 
 export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
@@ -310,6 +348,23 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     ],
     efforts: [],
   },
+  {
+    // Pi (pi-coding-agent) runs in-process against the Model Registry.
+    // Any registry model id remains valid (see normalizePiModelId) — these
+    // entries are picker suggestions only.
+    id: "pi",
+    label: "Pi",
+    defaultModel: DEFAULT_PI_MODEL,
+    defaultEffort: "medium",
+    supportsPlanMode: false,
+    models: [
+      { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", supportsEffort: true },
+      { id: "anthropic/claude-opus-4-8", label: "Claude Opus", supportsEffort: true },
+      { id: "openai/gpt-5.5", label: "GPT-5.5", supportsEffort: true },
+      { id: "google/gemini-3-flash", label: "Gemini Flash", supportsEffort: true },
+    ],
+    efforts: [...PI_REASONING_OPTIONS],
+  },
 ]
 
 export function getProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
@@ -346,6 +401,12 @@ export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5
   // Custom Responses providers supply their model catalog at runtime. Preserve
   // those IDs in preferences; the server validates them against its catalog.
   return getProviderModelMatch("codex", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
+}
+
+// Pi accepts any non-empty Model Registry model id verbatim — the catalog is
+// only suggestions, never a clamp.
+export function normalizePiModelId(modelId?: string, fallbackModelId = DEFAULT_PI_MODEL): string {
+  return getProviderModelMatch("pi", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -497,6 +558,7 @@ export interface AppSettingsPatch {
   providerDefaults?: {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
+    pi?: Partial<ProviderPreference<PiModelOptions>>
   }
   memoryPreview?: Partial<MemoryPreviewSettings>
 }

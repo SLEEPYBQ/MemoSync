@@ -24,8 +24,10 @@ import {
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizePiModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
+import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import type { MemoryService } from "./memory"
@@ -451,6 +453,9 @@ interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
+  piManager?: PiAgentManager
+  /** Injectable for tests; defaults to the Model Registry/env resolution. */
+  resolvePiConnection?: () => Promise<PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   /** MemoSync memory layer; when present, memory tools + context are injected per engine. */
   memory?: MemoryService | null
@@ -1665,6 +1670,8 @@ export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
+  private readonly piManager: PiAgentManager
+  private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly memory: MemoryService | null
@@ -1820,6 +1827,8 @@ export class AgentCoordinator {
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.piManager = args.piManager ?? new PiAgentManager()
+    this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.memory = args.memory ?? null
@@ -3442,6 +3451,7 @@ export class AgentCoordinator {
 
   async closeChat(chatId: string) {
     await this.stopDraining(chatId)
+    this.piManager.closeChat(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
       await this.retireClaudeSession(claudeSession, "chat_closed")
@@ -3489,6 +3499,7 @@ export class AgentCoordinator {
 
   async shutdownStudyRuntime() {
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
+    this.piManager.dispose()
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
@@ -3536,6 +3547,16 @@ export class AgentCoordinator {
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
+      }
+    }
+
+    if (provider === "pi") {
+      const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
+      return {
+        model: normalizeServerModel(provider, options.model),
+        effort: piModelOptions.reasoningEffort,
+        serviceTier: undefined,
+        planMode: false,
       }
     }
 
@@ -6536,6 +6557,93 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
+    } else if (args.provider === "pi") {
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+      // MemoSync memory for Pi: the same injection plan + tool specs as Codex,
+      // but Pi has no developer_instructions channel, so the memory block is
+      // prepended to the user prompt. Custom memory tools are registered on
+      // the pi session (see memory/pi-adapter) and dispatched per turn.
+      // "Proceed without memory" (preview gate) skips both the block and
+      // dispatch for this turn.
+      const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
+      const piMemorySpecs =
+        this.memory && this.policy.memoryTools
+          ? buildMemoryToolSpecs(this.memory, {
+              capture: this.capture,
+              onProposed: (created, info) => {
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoApplied = created.filter(({ id }) => autoIds.has(id))
+                if (!autoApplied.length) return
+                void this.store
+                  .appendMessage(
+                    args.chatId,
+                    timestamped({
+                      kind: "memory_candidates",
+                      candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
+                    })
+                  )
+                  .then(() => this.emitStateChange(args.chatId))
+                  .catch(() => {})
+              },
+            })
+          : []
+      const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
+      const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
+      const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
+      const piMemoryBlock = [
+        piPlan?.block ?? "",
+        piExpectedUses.length ? `How the selected memories are expected to guide this turn:\n${piExpectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
+        ...piEnforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
+        args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
+        args.resume?.enforce ? `ENFORCED THIS RUN: [${args.resume.memoryId}] MUST be followed. ${args.resume.correction}` : "",
+      ].filter(Boolean).join("\n\n")
+      if (args.resume?.enforce && !piSelected.has(args.resume.memoryId)) throw new Error("The enforced memory is no longer in Working Memory")
+      if (this.memory && piPlan && piMemoryBlock) {
+        this.memory.logger.event({
+          type: "memory.inject",
+          sessionId: args.chatId,
+          engine: "pi",
+          memories: piPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
+          tokenEstimate: Math.ceil(piMemoryBlock.length / 4),
+          mode: piPlan.mode,
+        })
+      }
+      const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
+        ? async (name: string, toolArgs: Record<string, unknown>) => {
+            return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
+              projectId: chat.projectId,
+              sessionId: args.chatId,
+              turn: turnNumber,
+              engine: "pi",
+              allowedMemoryIds: piPlan?.injectedMemories.map(item => item.id) ?? [],
+            })
+          }
+        : undefined
+      const connection = await this.resolvePiConnectionFn()
+      const piPrompt = buildPromptText(args.content, providerAttachments)
+      turn = await this.piManager.startTurn({
+        chatId: args.chatId,
+        cwd: project.localPath,
+        content: piMemoryBlock ? `${piMemoryBlock}\n\n${piPrompt}` : piPrompt,
+        model: args.model,
+        effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
+        connection,
+        memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+        memoryDispatch: piMemoryDispatch,
+      })
+      this.turnPayAttention.delete(args.chatId)
+      args.onMemoryDeliveryAccepted?.(piPlan?.injectedMemories.map(item => item.id) ?? [])
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
     } else {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
@@ -6684,7 +6792,9 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
-      memoryDeliveryAccepted: args.provider === "codex",
+      // Pi accepts its memory block inside the user prompt (there is no
+      // developer_instructions channel) — delivery counts like Codex's.
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
@@ -7628,7 +7738,7 @@ export class AgentCoordinator {
             this.launchPostTurnMemoryPasses({
               chatId: active.chatId,
               projectId: chat?.projectId,
-              engine: "codex",
+              engine: active.provider,
               turnNumber: active.turnNumber,
               turnId: active.turnId,
               taskId: active.taskId,

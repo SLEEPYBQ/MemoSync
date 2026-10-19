@@ -170,7 +170,7 @@ function isValidQueuedChatMessage(value: unknown): value is QueuedChatMessage {
     && isString(value.content)
     && Array.isArray(value.attachments)
     && isFiniteNumber(value.createdAt)
-    && (value.provider === undefined || value.provider === "claude" || value.provider === "codex")
+    && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi")
     && (value.model === undefined || isString(value.model))
     && (value.planMode === undefined || typeof value.planMode === "boolean")
 }
@@ -203,7 +203,7 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
     case "turn_cancelled":
       return hasChatId()
     case "chat_provider_set":
-      return hasChatId() && (event.provider === "claude" || event.provider === "codex")
+      return hasChatId() && (event.provider === "claude" || event.provider === "codex" || event.provider === "pi")
     case "chat_plan_mode_set":
       return hasChatId() && typeof event.planMode === "boolean"
     case "chat_read_state_set":

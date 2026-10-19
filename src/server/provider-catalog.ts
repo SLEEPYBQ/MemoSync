@@ -2,6 +2,7 @@ import type {
   AgentProvider,
   ClaudeModelOptions,
   CodexModelOptions,
+  PiModelOptions,
   ClaudeContextWindow,
   ModelOptions,
   ProviderCatalogEntry,
@@ -14,11 +15,14 @@ import {
   CLAUDE_REASONING_OPTIONS,
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_PI_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
+  normalizePiModelId,
 } from "../shared/types"
 
 const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
@@ -166,6 +170,9 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
   const catalog = deployedProviders().find((entry) => entry.id === provider) ?? getServerProviderCatalog(provider)
+  // Any non-empty registry id is a valid pi model — only missing values fall
+  // back to the catalog default.
+  if (provider === "pi") return normalizePiModelId(model, catalog.defaultModel)
   if (model && catalog.models.some((candidate) => candidate.id === model)) return model
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
@@ -206,4 +213,15 @@ export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEf
 
 export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
+}
+
+export function normalizePiModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): PiModelOptions {
+  const reasoningEffort = modelOptions?.pi?.reasoningEffort
+  return {
+    reasoningEffort: isPiReasoningEffort(reasoningEffort)
+      ? reasoningEffort
+      : isPiReasoningEffort(legacyEffort)
+        ? legacyEffort
+        : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort,
+  }
 }

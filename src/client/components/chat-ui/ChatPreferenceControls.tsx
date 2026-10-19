@@ -4,12 +4,15 @@ import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   CODEX_REASONING_OPTIONS,
+  PI_REASONING_OPTIONS,
   type AgentProvider,
   type ClaudeContextWindow,
   type ClaudeModelOptions,
   type ClaudeReasoningEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type PiModelOptions,
+  type PiReasoningEffort,
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
@@ -67,9 +70,32 @@ function GlmIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+// Pi's pixel-P mark (pi-coding-agent), rendered in currentColor to match the
+// other monochrome provider icons.
+function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="-10 -10 84 84"
+      fill="currentColor"
+      aria-hidden="true"
+      data-provider-icon="pi"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M0 0H47.9997V31.9993H31.9993V47.9997H16.0003V64H0V0ZM16.0003 16.0003V31.9993H31.9993V16.0003H16.0003Z"
+      />
+      <path d="M47.9997 31.9993H64V64H47.9997V31.9993Z" />
+    </svg>
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: DeepSeekIcon,
   codex: OpenAIIcon,
+  pi: PiIcon,
 }
 
 // The Claude-engine catalog spans vendors; the composer chip follows the
@@ -166,6 +192,7 @@ export type ModelOptionChange =
   | { type: "claudeReasoningEffort"; effort: ClaudeReasoningEffort }
   | { type: "contextWindow"; contextWindow: ClaudeContextWindow }
   | { type: "codexReasoningEffort"; effort: CodexReasoningEffort }
+  | { type: "piReasoningEffort"; effort: PiReasoningEffort }
   | { type: "fastMode"; fastMode: boolean }
 
 interface ChatPreferenceControlsProps {
@@ -175,7 +202,7 @@ interface ChatPreferenceControlsProps {
   providerLocked?: boolean
   showCodexCliRequirementHints?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
@@ -223,6 +250,7 @@ export function ChatPreferenceControls({
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
+  const piModelOptions = selectedProvider === "pi" ? modelOptions as PiModelOptions : null
   const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === model)?.contextWindowOptions ?? []
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
@@ -332,7 +360,9 @@ export function ChatPreferenceControls({
             <span>{
               selectedProvider === "claude"
                 ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-                : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+                : selectedProvider === "pi"
+                  ? PI_REASONING_OPTIONS.find((effort) => effort.id === piModelOptions?.reasoningEffort)?.label ?? piModelOptions?.reasoningEffort
+                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
             }</span>
           </>
         )}
@@ -356,7 +386,22 @@ export function ChatPreferenceControls({
                 disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
               />
             ))
-            : CODEX_REASONING_OPTIONS.map((effort) => (
+            : selectedProvider === "pi"
+              ? PI_REASONING_OPTIONS.filter((effort) =>
+                  !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
+                ).map((effort) => (
+                <PopoverMenuItem
+                  key={effort.id}
+                  onClick={() => {
+                    onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
+                    close()
+                  }}
+                  selected={piModelOptions?.reasoningEffort === effort.id}
+                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                  label={effort.label}
+                />
+              ))
+              : CODEX_REASONING_OPTIONS.map((effort) => (
               <PopoverMenuItem
                 key={effort.id}
                 onClick={() => {

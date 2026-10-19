@@ -6,6 +6,7 @@ import {
   type ClaudeContextWindow,
   type ClaudeReasoningEffort,
   type CodexReasoningEffort,
+  type PiReasoningEffort,
   type ModelOptions,
   type ProviderCatalogEntry,
   normalizeClaudeContextWindow,
@@ -461,7 +462,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   function setReasoningEffort(reasoningEffort: string) {
     updateComposerState((state) => ({
       ...state,
-      modelOptions: { ...state.modelOptions, reasoningEffort: reasoningEffort as ClaudeReasoningEffort & CodexReasoningEffort },
+      modelOptions: { ...state.modelOptions, reasoningEffort: reasoningEffort as ClaudeReasoningEffort & CodexReasoningEffort & PiReasoningEffort },
     } as ComposerState))
   }
 
@@ -617,6 +618,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "pi") {
+      modelOptions = { pi: { ...providerPrefs.modelOptions } }
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
@@ -971,6 +974,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 case "codexReasoningEffort":
                   setReasoningEffort(change.effort)
                   break
+                case "piReasoningEffort":
+                  setReasoningEffort(change.effort)
+                  break
                 case "contextWindow":
                   setClaudeContextWindow(change.contextWindow)
                   break
@@ -978,7 +984,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   updateComposerState(
                     (state) => state.provider === "claude"
                       ? state
-                      : { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                      : state.provider === "codex"
+                        ? { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                        : state
                   )
                   break
               }

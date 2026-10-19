@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
-import { normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
@@ -555,6 +555,19 @@ function composerStateFromSendOptions(options?: {
         fastMode: options.modelOptions.codex.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),
+    }
+  }
+
+  if (options?.provider === "pi" && options.model && options.modelOptions?.pi) {
+    return {
+      provider: "pi",
+      model: options.model,
+      modelOptions: {
+        reasoningEffort: isPiReasoningEffort(options.modelOptions.pi.reasoningEffort)
+          ? options.modelOptions.pi.reasoningEffort
+          : "medium",
+      },
+      planMode: false,
     }
   }
 

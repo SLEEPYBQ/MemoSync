@@ -43,6 +43,14 @@ export function mergeAppSettingsPatch(
           ...patch.providerDefaults?.codex?.modelOptions,
         },
       },
+      pi: {
+        ...settings.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...settings.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
+        },
+      },
     },
     memoryPreview: {
       ...settings.memoryPreview,

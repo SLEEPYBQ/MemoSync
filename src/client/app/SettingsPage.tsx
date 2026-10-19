@@ -1490,6 +1490,27 @@ export function SettingsPage() {
                       </SettingsRow>
                     ) : null}
 
+                    {state.availableProviders.some((provider) => provider.id === "pi") ? (
+                      <SettingsRow title="Pi Defaults" description="Saved model and reasoning settings for new Pi chats." alignStart>
+                        <ChatPreferenceControls
+                          availableProviders={state.availableProviders}
+                          selectedProvider="pi"
+                          showProviderPicker={false}
+                          providerLocked
+                          model={providerDefaults.pi.model}
+                          modelOptions={providerDefaults.pi.modelOptions}
+                          onModelChange={(_, model) => handleProviderDefaultModelChange("pi", model)}
+                          onModelOptionChange={(change) => {
+                            if (change.type === "piReasoningEffort") handleProviderDefaultModelOptionsChange("pi", { reasoningEffort: change.effort })
+                          }}
+                          planMode={providerDefaults.pi.planMode}
+                          onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("pi", planMode)}
+                          includePlanMode
+                          className="justify-start flex-wrap"
+                        />
+                      </SettingsRow>
+                    ) : null}
+
                   </div>
                 ) : selectedPage === "keybindings" ? (
                   <div className="border-b border-border">
