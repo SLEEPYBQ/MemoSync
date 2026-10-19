@@ -188,6 +188,8 @@ describe("PiAgentManager", () => {
       LC_ALL: "en_US.UTF-8",
       TERM: "xterm-256color",
       TMPDIR: "/tmp",
+      GIT_AUTHOR_NAME: "Baiqiao",
+      XAUTHORITY: "/tmp/xauth",
       OPENROUTER_API_KEY: "sk-or-live",
       DEEPSEEK_API_KEY: "ds-live",
       MEMOSYNC_CODEX_API_KEY: "codex-key",
@@ -208,6 +210,8 @@ describe("PiAgentManager", () => {
     expect(env.LC_ALL).toBe("en_US.UTF-8")
     expect(env.TERM).toBe("xterm-256color")
     expect(env.TMPDIR).toBe("/tmp")
+    expect(env.GIT_AUTHOR_NAME).toBe("Baiqiao")
+    expect(env.XAUTHORITY).toBe("/tmp/xauth")
     for (const leaked of [
       "OPENROUTER_API_KEY",
       "DEEPSEEK_API_KEY",

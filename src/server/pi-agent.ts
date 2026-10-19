@@ -65,8 +65,6 @@ function loadPiSdk() {
 export const PI_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const
 
 /** Claude-style tool names surfaced in system_init for the UI. */
-export const PI_DISPLAY_TOOLS = ["Read", "Bash", "Edit", "Write", "Grep", "Glob"]
-
 const PI_DISPLAY_TOOL_NAMES: Record<string, string> = {
   read: "Read",
   bash: "Bash",
@@ -79,8 +77,11 @@ const PI_DISPLAY_TOOL_NAMES: Record<string, string> = {
 
 // Pi bash otherwise inherits the MemoSync server process.env: a model on an
 // arbitrary registry endpoint could read provider keys with `env`. Scrub
-// credential-looking variables while keeping ordinary shell usability.
-const PI_SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|CERT|PEM|PRIVATE|SIGNING|APIKEY/i
+// credential-looking variables while keeping ordinary shell usability. The
+// AUTH keyword excludes AUTHOR so git identity vars (GIT_AUTHOR_NAME) and
+// XAUTHORITY survive; this is best-effort — the shell shares the server's
+// user account, so procfs and credential files stay readable regardless.
+const PI_SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH(?!OR)|COOKIE|CERT|PEM|PRIVATE|SIGNING|APIKEY/i
 const PI_SECRET_ENV_VALUE = /^(sk|pk|ghp|gho|ghu|ghs|ghr|glpat|xox[baprs]|AIza|ya29)[-_A-Za-z0-9.]{10,}$/
 
 export function scrubPiShellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -693,8 +694,8 @@ export class PiAgentManager {
         kind: "system_init",
         provider: "pi",
         model: args.model,
-        tools: (args.toolNames ?? PI_TOOL_NAMES)
-          .map((name) => PI_DISPLAY_TOOL_NAMES[name] ?? name)
+        tools: [...new Set((args.toolNames ?? PI_TOOL_NAMES)
+          .map((name) => PI_DISPLAY_TOOL_NAMES[name] ?? name))]
           .concat((args.memorySpecs ?? []).map((spec) => spec.name)),
         agents: [],
         slashCommands: [],
