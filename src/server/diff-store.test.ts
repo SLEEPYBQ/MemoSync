@@ -86,10 +86,35 @@ describe("GitHub authentication compatibility", () => {
     })
   }
 
-  test("does not authenticate when legacy status fails", async () => {
+  test("authenticates the active account when an inactive legacy account fails", async () => {
+    const sequence = commandSequence([
+      [version, {}], [jsonStatus, { exitCode: 1, stderr: "unknown flag: --json" }],
+      [legacyStatus, { exitCode: 1, stderr: "old-work token validation failed" }],
+      [login, { stdout: "current\n" }],
+    ])
+    expect(await getGhAuthInfo(sequence.command)).toEqual({
+      ghInstalled: true, authenticated: true, activeAccountLogin: "current",
+    })
+    sequence.assertComplete()
+  })
+
+  test("does not authenticate when the active-account lookup fails", async () => {
     const sequence = commandSequence([
       [version, {}], [jsonStatus, { exitCode: 1, stderr: "unknown flag: --json" }],
       [legacyStatus, { exitCode: 1, stderr: "Not logged in to github.com" }],
+      [login, { exitCode: 1, stderr: "HTTP 401" }],
+    ])
+    expect(await getGhAuthInfo(sequence.command)).toEqual({
+      ghInstalled: true, authenticated: false, activeAccountLogin: undefined,
+    })
+    sequence.assertComplete()
+  })
+
+  test("does not treat aggregate legacy status success as proof the active token works", async () => {
+    const sequence = commandSequence([
+      [version, {}], [jsonStatus, { exitCode: 1, stderr: "unknown flag: --json" }],
+      [legacyStatus, {}],
+      [login, { exitCode: 1, stderr: "HTTP 401" }],
     ])
     expect(await getGhAuthInfo(sequence.command)).toEqual({
       ghInstalled: true, authenticated: false, activeAccountLogin: undefined,

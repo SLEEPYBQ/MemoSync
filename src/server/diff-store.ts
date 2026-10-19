@@ -764,14 +764,15 @@ export async function getGhAuthInfo(command = runCommand) {
         }
       }
 
-      const legacyStatus = await command(["gh", "auth", "status", "--hostname", "github.com"])
-      if (legacyStatus.exitCode === 0) {
-        const user = await command(["gh", "api", "user", "--hostname", "github.com", "--jq", ".login"])
-        return {
-          ghInstalled,
-          authenticated: true,
-          activeAccountLogin: user.exitCode === 0 ? user.stdout.trim() || undefined : undefined,
-        }
+      // Legacy status validates every saved account on the host, so an expired
+      // inactive account can fail it while the active account still works.
+      // The active login is authoritative for the GitHub operations we launch.
+      await command(["gh", "auth", "status", "--hostname", "github.com"])
+      const user = await command(["gh", "api", "user", "--hostname", "github.com", "--jq", ".login"])
+      return {
+        ghInstalled,
+        authenticated: user.exitCode === 0,
+        activeAccountLogin: user.exitCode === 0 ? user.stdout.trim() || undefined : undefined,
       }
     }
   } catch {
