@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs"
+import type { BashSpawnContext } from "@mariozechner/pi-coding-agent"
 import { homedir } from "node:os"
 import path from "node:path"
 import type {
@@ -65,6 +66,32 @@ export const PI_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "
 
 /** Claude-style tool names surfaced in system_init for the UI. */
 export const PI_DISPLAY_TOOLS = ["Read", "Bash", "Edit", "Write", "Grep", "Glob"]
+
+const PI_DISPLAY_TOOL_NAMES: Record<string, string> = {
+  read: "Read",
+  bash: "Bash",
+  edit: "Edit",
+  write: "Write",
+  grep: "Grep",
+  find: "Glob",
+  ls: "Glob",
+}
+
+// Pi bash otherwise inherits the MemoSync server process.env: a model on an
+// arbitrary registry endpoint could read provider keys with `env`. Scrub
+// credential-looking variables while keeping ordinary shell usability.
+const PI_SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTH|COOKIE|CERT|PEM|PRIVATE|SIGNING|APIKEY/i
+const PI_SECRET_ENV_VALUE = /^(sk|pk|ghp|gho|ghu|ghs|ghr|glpat|xox[baprs]|AIza|ya29)[-_A-Za-z0-9.]{10,}$/
+
+export function scrubPiShellEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const clean: NodeJS.ProcessEnv = {}
+  for (const [name, value] of Object.entries(env)) {
+    if (value === undefined) continue
+    if (PI_SECRET_ENV_NAME.test(name) || PI_SECRET_ENV_VALUE.test(value)) continue
+    clean[name] = value
+  }
+  return clean
+}
 
 class AsyncQueue<T> implements AsyncIterable<T> {
   private values: T[] = []
@@ -332,7 +359,7 @@ export interface StartPiTurnArgs {
    * dispatch for a turn (e.g. the user proceeded without memory) without
    * rebuilding the session.
    */
-  memoryDispatch?: (name: string, args: Record<string, unknown>) => Promise<MemoryToolResult>
+  memoryDispatch?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>
 }
 
 interface PiChatSession {
@@ -348,7 +375,7 @@ interface PiChatSession {
   /** Sorted memory-tool names baked into the session at creation. */
   toolNamesKey: string
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
-  memoryInvoke: ((name: string, args: Record<string, unknown>) => Promise<MemoryToolResult>) | null
+  memoryInvoke: ((name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>) | null
 }
 
 /** A turn that failed before the agent could start (missing key, bad session file). */
@@ -442,7 +469,7 @@ export class PiAgentManager {
 
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
     // under MemoSync's data root, and no discovery of the user's ~/.pi setup.
-    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession } = await loadPiSdk()
+    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await loadPiSdk()
     const authStorage = AuthStorage.inMemory()
     authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)
@@ -460,9 +487,18 @@ export class PiAgentManager {
     })
     await resourceLoader.reload()
 
-    const sessionManager = args.forkSession && args.sessionToken && existsSync(args.sessionToken)
-      ? SessionManager.forkFrom(args.sessionToken, args.cwd, this.sessionsDir)
-      : args.sessionToken && existsSync(args.sessionToken)
+    // Fail closed when a persisted session file was expected but is gone:
+    // silently starting fresh history would discard context (and for memory
+    // branches would orphan the fork from its parent).
+    if (args.sessionToken && !existsSync(args.sessionToken)) {
+      throw new Error(args.forkSession
+        ? `Pi session file for fork not found: ${args.sessionToken}`
+        : `Pi session file not found: ${args.sessionToken}`)
+    }
+
+    const sessionManager = args.forkSession
+      ? SessionManager.forkFrom(args.sessionToken as string, args.cwd, this.sessionsDir)
+      : args.sessionToken
         ? SessionManager.open(args.sessionToken, this.sessionsDir, args.cwd)
         : SessionManager.create(args.cwd, this.sessionsDir)
 
@@ -471,15 +507,28 @@ export class PiAgentManager {
     // chat session's mutable `memoryInvoke`, which each startTurn re-binds to
     // that turn's dispatch context (or clears when memory is disabled).
     const chatSessionHolder: { session?: PiChatSession } = {}
-    const customTools: ToolDefinition[] | undefined = memorySpecs.length > 0
-      ? toPiToolDefinitions(memorySpecs, async (name, toolArgs) => {
-        const invoke = chatSessionHolder.session?.memoryInvoke
-        if (!invoke) {
-          return { text: "Memory tools are not available for this turn.", isError: true }
-        }
-        return invoke(name, toolArgs)
-      })
-      : undefined
+    const customTools: ToolDefinition[] | undefined = (() => {
+      const defs: ToolDefinition[] = []
+      // Shell commands spawned by the bash tool run with a scrubbed
+      // environment so registry endpoints cannot exfiltrate ambient
+      // credentials. A custom "bash" definition shadows the built-in one in
+      // pi's tool registry.
+      if (builtinToolNames.includes("bash")) {
+        defs.push(createBashToolDefinition(args.cwd, {
+          spawnHook: (context: BashSpawnContext) => ({ ...context, env: scrubPiShellEnv(context.env) }),
+        }) as unknown as ToolDefinition)
+      }
+      if (memorySpecs.length > 0) {
+        defs.push(...toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal) => {
+          const invoke = chatSessionHolder.session?.memoryInvoke
+          if (!invoke) {
+            return { text: "Memory tools are not available for this turn.", isError: true }
+          }
+          return invoke(name, toolArgs, signal)
+        }))
+      }
+      return defs.length > 0 ? defs : undefined
+    })()
 
     const { session } = await createAgentSession({
       cwd: args.cwd,
@@ -644,7 +693,9 @@ export class PiAgentManager {
         kind: "system_init",
         provider: "pi",
         model: args.model,
-        tools: [...PI_DISPLAY_TOOLS, ...(args.memorySpecs ?? []).map((spec) => spec.name)],
+        tools: (args.toolNames ?? PI_TOOL_NAMES)
+          .map((name) => PI_DISPLAY_TOOL_NAMES[name] ?? name)
+          .concat((args.memorySpecs ?? []).map((spec) => spec.name)),
         agents: [],
         slashCommands: [],
         mcpServers: [],

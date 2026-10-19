@@ -10,6 +10,7 @@ import {
   PiAgentManager,
   PI_TOOL_NAMES,
   resolvePiConnection,
+  scrubPiShellEnv,
   translatePiTool,
 } from "./pi-agent"
 import type { HarnessEvent } from "./harness-types"
@@ -175,5 +176,84 @@ describe("PiAgentManager", () => {
 
   test("built-in tool list covers the pi tools surfaced in system_init", () => {
     expect(PI_TOOL_NAMES).toEqual(["read", "bash", "edit", "write", "grep", "find", "ls"])
+  })
+
+  test("bash spawn env keeps ordinary variables and strips credentials", () => {
+    const env = scrubPiShellEnv({
+      PATH: "/usr/bin",
+      HOME: "/home/u",
+      USER: "u",
+      SHELL: "/bin/bash",
+      LANG: "en_US.UTF-8",
+      LC_ALL: "en_US.UTF-8",
+      TERM: "xterm-256color",
+      TMPDIR: "/tmp",
+      OPENROUTER_API_KEY: "sk-or-live",
+      DEEPSEEK_API_KEY: "ds-live",
+      MEMOSYNC_CODEX_API_KEY: "codex-key",
+      GITHUB_TOKEN: "ghp_abc123456789",
+      NESTED_SECRET: "not-a-shape-secret",
+      APP_PASSWORD: "pw",
+      CREDENTIALS_JSON: "{}",
+      AUTH_HEADER: "x",
+      SESSION_COOKIE: "c",
+      AWS_PRIVATE_KEY: "k",
+      LOOKS_SECRET: "sk-proj-plainvalue12345",
+    })
+    expect(env.PATH).toBe("/usr/bin")
+    expect(env.HOME).toBe("/home/u")
+    expect(env.USER).toBe("u")
+    expect(env.SHELL).toBe("/bin/bash")
+    expect(env.LANG).toBe("en_US.UTF-8")
+    expect(env.LC_ALL).toBe("en_US.UTF-8")
+    expect(env.TERM).toBe("xterm-256color")
+    expect(env.TMPDIR).toBe("/tmp")
+    for (const leaked of [
+      "OPENROUTER_API_KEY",
+      "DEEPSEEK_API_KEY",
+      "MEMOSYNC_CODEX_API_KEY",
+      "GITHUB_TOKEN",
+      "NESTED_SECRET",
+      "APP_PASSWORD",
+      "CREDENTIALS_JSON",
+      "AUTH_HEADER",
+      "SESSION_COOKIE",
+      "AWS_PRIVATE_KEY",
+      "LOOKS_SECRET",
+    ]) {
+      expect(env[leaked]).toBeUndefined()
+    }
+  })
+
+  test.each([
+    [false, "Pi session file not found"],
+    [true, "Pi session file for fork not found"],
+  ])("a missing persisted session file fails the turn instead of starting fresh (fork=%s)", async (forkSession, message) => {
+    const dir = await mkdtemp(path.join(tmpdir(), "memosync-pi-"))
+    tempDirs.push(dir)
+    const manager = new PiAgentManager({ dataDir: dir })
+
+    const missing = path.join(dir, "sessions", "gone.jsonl")
+    const turn = await manager.startTurn({
+      chatId: "chat-missing",
+      cwd: dir,
+      content: "hello",
+      model: "z-ai/glm-5.3-flash",
+      effort: "medium",
+      sessionToken: missing,
+      forkSession,
+      connection: { provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1", apiKey: "sk-or-test" },
+    })
+
+    const events = await collectEvents(turn.stream)
+    const results = events.filter((event) => event.type === "transcript")
+    expect(results).toHaveLength(1)
+    const entry = results[0]
+    if (entry.type !== "transcript") throw new Error("expected a transcript event")
+    expect(entry.entry).toMatchObject({ kind: "result", subtype: "error", isError: true })
+    expect(String((entry.entry as { result?: unknown }).result)).toContain(message)
+    // No fresh session replaced the lost history.
+    expect(manager.getResourceCounts().piSessions).toBe(0)
+    manager.dispose()
   })
 })

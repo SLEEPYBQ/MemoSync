@@ -7847,9 +7847,10 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume is a MemoSync Claude feature available in
-    // normal deployments and the MemoSync study mode.
-    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || chat.provider !== "codex"))) {
+    // Per-memory interrupt/resume works on every MemoSync engine in normal
+    // deployments (Claude, Codex and Pi all implement resume/enforce handling);
+    // in the study mode it stays restricted to Claude.
+    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || (chat.provider !== "codex" && chat.provider !== "pi")))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }

@@ -1505,7 +1505,6 @@ export function SettingsPage() {
                           }}
                           planMode={providerDefaults.pi.planMode}
                           onPlanModeChange={(planMode) => handleProviderDefaultPlanModeChange("pi", planMode)}
-                          includePlanMode
                           className="justify-start flex-wrap"
                         />
                       </SettingsRow>

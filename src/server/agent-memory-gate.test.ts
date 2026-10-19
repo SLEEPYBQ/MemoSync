@@ -79,7 +79,7 @@ function createFakeStore(
     id: "chat-1",
     projectId: "project-1",
     title: "New Chat",
-    provider: null as "claude" | "codex" | null,
+    provider: null as "claude" | "codex" | "pi" | null,
     planMode: false,
     sessionToken: null as string | null,
     pendingForkSessionToken: null as string | null,
@@ -99,7 +99,7 @@ function createFakeStore(
     getMessages() {
       return this.messages
     },
-    async setChatProvider(_c: string, provider: "claude" | "codex") {
+    async setChatProvider(_c: string, provider: "claude" | "codex" | "pi") {
       chat.provider = provider
     },
     async setPlanMode(_c: string, planMode: boolean) {
@@ -3921,6 +3921,50 @@ describe("memory preview gate (coordinator)", () => {
       expect(calls.capture).toBe(1)
     } finally {
       nonStudy.cleanup()
+    }
+  })
+
+  test("MemoSync non-study accepts the per-memory control gate for Pi", async () => {
+    const h = createHarness({ policy: { ...resolveConditionPolicy("memosync"), studyMode: false }, preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Pi memory", scope: "project", projectId: "project-1", type: "fact" },
+        { actor: "system" },
+      )
+      await h.store.setChatProvider("chat-1", "pi")
+      // The provider gate must let Pi through: without a running turn the
+      // interrupt fails on the active-turn check, not on the engine check.
+      await expect(h.coordinator.interruptMemory({
+        chatId: "chat-1",
+        memoryId: memory.id,
+        quote: "pi interrupt",
+      })).rejects.toThrow("A MemoSync turn must be running before a memory can interrupt it")
+      await expect(h.coordinator.resumeInterrupted({
+        chatId: "chat-1",
+        interruptId: "no-such-interrupt",
+        correction: "Continue.",
+        selectedIds: [],
+      })).rejects.not.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+    } finally {
+      h.cleanup()
+    }
+  })
+
+  test("MemoSync study mode still rejects per-memory interrupt for Pi", async () => {
+    const h = createHarness({ policy: resolveConditionPolicy("memosync"), preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Pi study memory", scope: "project", projectId: "project-1", type: "fact" },
+        { actor: "system" },
+      )
+      await h.store.setChatProvider("chat-1", "pi")
+      await expect(h.coordinator.interruptMemory({
+        chatId: "chat-1",
+        memoryId: memory.id,
+        quote: "unsupported control",
+      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+    } finally {
+      h.cleanup()
     }
   })
 
