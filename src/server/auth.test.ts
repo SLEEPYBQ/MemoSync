@@ -235,6 +235,21 @@ describe("password auth", () => {
       })
       expect(callback.status).toBe(302)
       expect(callback.headers.get("location")).toBe("/dashboard?tab=files&next=%2Fother")
+
+      const encodedQuery = await fetch(`${appOrigin}/__memosync/preview/${targetPort}/dashboard?tab=files&next=%0Aother`, {
+        headers: {
+          Cookie: sessionCookie,
+          "Sec-Fetch-Dest": "iframe",
+          "Sec-Fetch-Mode": "navigate",
+        },
+        redirect: "manual",
+      })
+      const encodedCallbackUrl = new URL(encodedQuery.headers.get("location")!)
+      const encodedCallback = await fetch(`${appOrigin}${encodedCallbackUrl.pathname}${encodedCallbackUrl.search}`, {
+        headers: { Host: encodedCallbackUrl.host },
+        redirect: "manual",
+      })
+      expect(encodedCallback.headers.get("location")).toBe("/dashboard?tab=files&next=%0Aother")
     } finally {
       await server.stop()
     }

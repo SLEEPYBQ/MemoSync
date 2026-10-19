@@ -65,7 +65,9 @@ function parseCookies(header: string | null) {
 
 function sanitizeNextPath(nextPath: string | null | undefined) {
   if (!nextPath || typeof nextPath !== "string") return "/"
-  if (/[\u0000-\u001f\u007f]|%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(nextPath)) return "/"
+  if (/[\u0000-\u001f\u007f]/.test(nextPath)) return "/"
+  const pathOnly = nextPath.split(/[?#]/, 1)[0]
+  if (/%(?:0[0-9a-f]|1[0-9a-f]|7f)/i.test(pathOnly)) return "/"
   if (!nextPath.startsWith("/")) return "/"
   // Reject protocol-relative URLs. The WHATWG URL parser treats backslashes as
   // forward slashes, so "/\evil.com" resolves to "//evil.com" → an open
