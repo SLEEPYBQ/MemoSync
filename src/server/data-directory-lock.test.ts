@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test"
+import { Database } from "bun:sqlite"
 import { existsSync } from "node:fs"
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
@@ -32,6 +33,28 @@ async function start(dataDir: string) {
   const server = await startMemoSyncServer({ dataDir, port: 0, discoverProjects: () => [] })
   servers.push(server)
   return server
+}
+
+function createHistoryDatabase(filePath: string, value: string) {
+  const database = new Database(filePath, { create: true })
+  database.exec("CREATE TABLE history (value TEXT NOT NULL)")
+  database.query("INSERT INTO history (value) VALUES (?)").run(value)
+  database.close()
+}
+
+function readHistoryDatabase(filePath: string) {
+  const database = new Database(filePath, { readonly: true })
+  try {
+    return (database.query("SELECT value FROM history").get() as { value: string }).value
+  } finally {
+    database.close()
+  }
+}
+
+function createLockDatabase(filePath: string, withLegacyMarker = false) {
+  const database = new Database(filePath, { create: true })
+  if (withLegacyMarker) database.exec("CREATE TABLE legacy_lock_marker (value TEXT)")
+  database.close()
 }
 
 test("rejects a second server before loading a live data directory and releases after stop", async () => {
@@ -189,13 +212,17 @@ test("preserves a current root with keybindings and an empty data directory", as
   await mkdir(path.join(currentRoot, "data"), { recursive: true })
   await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
   await mkdir(legacyData, { recursive: true })
-  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+  createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
 
   prepareDefaultDataRoot(homeDir, { allowInTest: true })
 
   expect(existsSync(path.join(currentRoot, "keybindings.json"))).toBe(true)
+  expect(await Bun.file(path.join(currentRoot, "keybindings.json")).text()).toBe('{"toggleRightSidebar":["ctrl+b"]}\n')
   expect(existsSync(path.join(currentRoot, "data"))).toBe(true)
-  expect(existsSync(path.join(homeDir, ".kanna", "data", "memory.sqlite"))).toBe(true)
+  const activeHistory = path.join(currentRoot, "data", "memory.sqlite")
+  expect(existsSync(activeHistory)).toBe(true)
+  expect(readHistoryDatabase(activeHistory)).toBe("legacy history")
+  expect(readHistoryDatabase(path.join(homeDir, ".kanna", "data", "memory.sqlite"))).toBe("legacy history")
   expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
 })
 
@@ -203,17 +230,38 @@ test("preserves a current root with provider settings and a lock-only data direc
   const homeDir = await directory()
   const currentRoot = path.join(homeDir, ".memosync")
   const legacyData = path.join(homeDir, ".kanna", "data")
-  await mkdir(path.join(currentRoot, "data"), { recursive: true })
-  await writeFile(path.join(currentRoot, "data", ".instance-lock.sqlite"), "stale first-start lock")
+  const currentData = path.join(currentRoot, "data")
+  const currentLock = path.join(currentData, ".instance-lock.sqlite")
+  await mkdir(currentData, { recursive: true })
+  createLockDatabase(currentLock)
   await writeFile(path.join(currentRoot, "llm-provider.json"), '{"provider":"custom"}\n')
   await mkdir(legacyData, { recursive: true })
-  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+  createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
+  createLockDatabase(path.join(legacyData, ".instance-lock.sqlite"), true)
 
   prepareDefaultDataRoot(homeDir, { allowInTest: true })
 
   expect(existsSync(path.join(currentRoot, "llm-provider.json"))).toBe(true)
-  expect(existsSync(path.join(currentRoot, "data", ".instance-lock.sqlite"))).toBe(true)
-  expect(existsSync(path.join(homeDir, ".kanna", "data", "memory.sqlite"))).toBe(true)
+  expect(await Bun.file(path.join(currentRoot, "llm-provider.json")).text()).toBe('{"provider":"custom"}\n')
+  const activeHistory = path.join(currentData, "memory.sqlite")
+  expect(existsSync(activeHistory)).toBe(true)
+  expect(readHistoryDatabase(activeHistory)).toBe("legacy history")
+  expect(readHistoryDatabase(path.join(legacyData, "memory.sqlite"))).toBe("legacy history")
+  const legacyLockDb = new Database(path.join(legacyData, ".instance-lock.sqlite"), { readonly: true })
+  try {
+    expect(legacyLockDb.query("SELECT name FROM sqlite_master WHERE name = 'legacy_lock_marker'").get()).not.toBeNull()
+  } finally {
+    legacyLockDb.close()
+  }
+  const currentLockDb = new Database(currentLock, { readonly: true })
+  try {
+    expect(currentLockDb.query("SELECT name FROM sqlite_master WHERE name = 'legacy_lock_marker'").get()).toBeNull()
+  } finally {
+    currentLockDb.close()
+  }
+  const recoveredLock = acquireDataDirectoryLock(currentData)
+  recoveredLock.release()
+  expect(existsSync(path.join(currentRoot, ".legacy-data-import-in-progress"))).toBe(false)
   expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
 })
 
@@ -221,19 +269,86 @@ test("preserves root-level current settings when the data directory is missing",
   const homeDir = await directory()
   const providerSettings = path.join(homeDir, ".memosync", "llm-provider.json")
   const legacyData = path.join(homeDir, ".kanna", "data")
+  const currentData = path.join(homeDir, ".memosync", "data")
   await mkdir(path.dirname(providerSettings), { recursive: true })
   await writeFile(providerSettings, '{"provider":"custom"}\n')
   await mkdir(legacyData, { recursive: true })
-  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+  createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
 
   prepareDefaultDataRoot(homeDir, { allowInTest: true })
 
   expect(existsSync(providerSettings)).toBe(true)
-  expect(existsSync(path.join(homeDir, ".memosync", "data"))).toBe(false)
-  expect(existsSync(path.join(legacyData, "memory.sqlite"))).toBe(true)
+  expect(await Bun.file(providerSettings).text()).toBe('{"provider":"custom"}\n')
+  const activeHistory = path.join(currentData, "memory.sqlite")
+  expect(existsSync(activeHistory)).toBe(true)
+  expect(readHistoryDatabase(activeHistory)).toBe("legacy history")
+  expect(readHistoryDatabase(path.join(legacyData, "memory.sqlite"))).toBe("legacy history")
   expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
   expect(hasMemoSyncDataRoot(homeDir)).toBe(true)
 })
+
+test("prefers existing current history and leaves legacy history intact", async () => {
+  const homeDir = await directory()
+  const currentData = path.join(homeDir, ".memosync", "data")
+  const legacyData = path.join(homeDir, ".kanna", "data")
+  await mkdir(currentData, { recursive: true })
+  await mkdir(legacyData, { recursive: true })
+  await writeFile(path.join(homeDir, ".memosync", "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+  createHistoryDatabase(path.join(currentData, "memory.sqlite"), "current history")
+  createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
+
+  prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+  expect(readHistoryDatabase(path.join(currentData, "memory.sqlite"))).toBe("current history")
+  expect(readHistoryDatabase(path.join(legacyData, "memory.sqlite"))).toBe("legacy history")
+})
+
+test("does not import legacy history while the current data directory is locked", async () => {
+  const homeDir = await directory()
+  const currentRoot = path.join(homeDir, ".memosync")
+  const currentData = path.join(currentRoot, "data")
+  const legacyData = path.join(homeDir, ".kanna", "data")
+  await mkdir(currentData, { recursive: true })
+  await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+  await mkdir(legacyData, { recursive: true })
+  createHistoryDatabase(path.join(legacyData, "memory.sqlite"), "legacy history")
+  const activeLock = acquireDataDirectoryLock(currentData)
+  locks.push(activeLock)
+
+  expect(() => prepareDefaultDataRoot(homeDir, { allowInTest: true })).toThrow("already using data directory")
+  expect(existsSync(path.join(currentData, "memory.sqlite"))).toBe(false)
+  expect(readHistoryDatabase(path.join(legacyData, "memory.sqlite"))).toBe("legacy history")
+  expect(await Bun.file(path.join(currentRoot, "keybindings.json")).text()).toBe('{"toggleRightSidebar":["ctrl+b"]}\n')
+})
+
+if (process.platform !== "win32") {
+  test("fails closed and retries a staged legacy import after a copy error", async () => {
+    const homeDir = await directory()
+    const currentRoot = path.join(homeDir, ".memosync")
+    const currentData = path.join(currentRoot, "data")
+    const legacyData = path.join(homeDir, ".kanna", "data")
+    const blockedHistory = path.join(legacyData, "z-blocked-history.sqlite")
+    await mkdir(currentData, { recursive: true })
+    await mkdir(legacyData, { recursive: true })
+    await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+    createHistoryDatabase(path.join(legacyData, "a-history.sqlite"), "first history")
+    createHistoryDatabase(blockedHistory, "blocked history")
+    await chmod(blockedHistory, 0)
+
+    expect(() => prepareDefaultDataRoot(homeDir, { allowInTest: true })).toThrow("Unable to import legacy MemoSync data")
+    expect(existsSync(path.join(currentData, "a-history.sqlite"))).toBe(false)
+    expect(existsSync(path.join(currentRoot, ".legacy-data-import-in-progress"))).toBe(true)
+    expect(await Bun.file(path.join(currentRoot, "keybindings.json")).text()).toBe('{"toggleRightSidebar":["ctrl+b"]}\n')
+
+    await chmod(blockedHistory, 0o600)
+    createHistoryDatabase(path.join(currentData, "a-history.sqlite"), "first history")
+    prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+    expect(readHistoryDatabase(path.join(currentData, "a-history.sqlite"))).toBe("first history")
+    expect(readHistoryDatabase(path.join(currentData, "z-blocked-history.sqlite"))).toBe("blocked history")
+    expect(existsSync(path.join(currentRoot, ".legacy-data-import-in-progress"))).toBe(false)
+  })
+}
 
 test("coordinates an explicit path or symlink to the default data directory", async () => {
   const homeDir = await directory()
