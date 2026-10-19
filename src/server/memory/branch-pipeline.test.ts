@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { MemoryBranchPipeline, type PreparationStage } from './branch-pipeline';
 import type { MemoryBranch, MemoryBranchAskOptions } from './branch-runtime';
+import { parseTransferBranchResult } from './branch-stages';
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -40,6 +41,55 @@ function harness() {
 async function flush() { await Promise.resolve(); await Promise.resolve(); }
 
 describe('MemoryBranchPipeline', () => {
+  it('continues the same transfer child after explicitly removing a malformed old proposal', async () => {
+    const h = harness();
+    try {
+      h.calls[0]!.reply.resolve({ candidates: [] });
+      h.calls[1]!.reply.resolve({ suggestions: [{ proposalId: 'T:NewBunTooling', sourceId: 'N/A_CurrentTask' }] });
+      h.calls[2]!.reply.resolve({ conflicts: [], redundancy: [], staleness: [] });
+      const previous = await h.pipeline.result('transfer');
+      expect(() => parseTransferBranchResult(previous.raw, { task: 'Use Bun', sources: [], memories: [] })).toThrow();
+      const result = h.pipeline.continue('transfer', { review: 'Candidate review', changes: {}, dependencyKey: 'after' });
+      await flush();
+      h.calls[3]!.reply.resolve({ remove: { suggestions: ['T:NewBunTooling'] }, upsert: {} });
+      for (let i = 0; i < 12; i++) await flush();
+      expect(h.calls).toHaveLength(4);
+      expect(await result).toEqual({ raw: { suggestions: [] }, dependencyKey: 'after' });
+      expect(parseTransferBranchResult((await result).raw, { task: 'Use Bun', sources: [], memories: [] })).toEqual([]);
+      const followup = h.pipeline.continue('transfer', { review: 'Next review', changes: {}, dependencyKey: 'next' });
+      await flush();
+      h.calls[4]!.reply.resolve({ upsert: {}, remove: {} });
+      expect(await followup).toEqual({ raw: { suggestions: [] }, dependencyKey: 'next' });
+      expect(h.calls.slice(3).map((call) => call.stage)).toEqual(['transfer', 'transfer']);
+      expect(h.created).toEqual(['candidate', 'transfer', 'changes']);
+    } finally {
+      h.pipeline.dispose();
+    }
+  });
+
+  it.each(['provider', 'cancellation'] as const)('does not hide %s failure while removing a malformed old transfer', async (failure) => {
+    const h = harness();
+    try {
+      h.calls[0]!.reply.resolve({ candidates: [] });
+      h.calls[1]!.reply.resolve({ suggestions: [{ proposalId: 'T:NewBunTooling', sourceId: 'N/A_CurrentTask' }] });
+      h.calls[2]!.reply.resolve({ conflicts: [], redundancy: [], staleness: [] });
+      await h.pipeline.result('transfer');
+      const result = h.pipeline.continue('transfer', { review: 'Candidate review', changes: {}, dependencyKey: 'after' });
+      await flush();
+      if (failure === 'provider') {
+        h.calls[3]!.reply.reject(new Error('Transfer transport failed'));
+      } else {
+        h.pipeline.dispose();
+        h.calls[3]!.reply.resolve({ remove: { suggestions: ['T:NewBunTooling'] }, upsert: {} });
+      }
+      await expect(result).rejects.toThrow(failure === 'provider' ? 'Transfer transport failed' : 'Memory preparation cancelled');
+      expect(h.calls).toHaveLength(4);
+      expect(h.created).toEqual(['candidate', 'transfer', 'changes']);
+    } finally {
+      h.pipeline.dispose();
+    }
+  });
+
   it('repairs a memory-store-shaped response once in the same transfer conversation', async () => {
     const h = harness();
     h.calls[0]!.reply.resolve({ candidates: [] });

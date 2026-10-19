@@ -121,6 +121,40 @@ describe('provider branch stage contracts', () => {
     expect(() => mergeMemoryBranchUpdate(old, { upsert: { suggestions: [{ proposalId: 'T:M-2', sourceId: 'M-forged' }] } })).toThrow('identity');
   });
 
+  it('removes a malformed old transfer by its declared identity without losing unaffected proposals', () => {
+    const malformed = { proposalId: 'T:NewBunTooling', sourceId: 'N/A_CurrentTask' };
+    const kept = { proposalId: 'T:M-1', sourceId: 'M-1', decoding: { content: 'unchanged' } };
+    const previous = { suggestions: [malformed, kept] };
+    const remove = { suggestions: [malformed.proposalId] };
+    expect(mergeMemoryBranchUpdate(previous, { remove, upsert: {} })).toEqual({ suggestions: [kept] });
+    const replacement = { proposalId: malformed.proposalId, sourceId: 'NewBunTooling' };
+    expect(mergeMemoryBranchUpdate(previous, { remove, upsert: { suggestions: [replacement] } })).toEqual({ suggestions: [kept, replacement] });
+    expect(previous.suggestions).toEqual([malformed, kept]);
+    expect(mergeMemoryBranchUpdate(previous, { suggestions: [kept] })).toEqual({ suggestions: [kept] });
+    expect(() => mergeMemoryBranchUpdate(previous, { remove, upsert: { suggestions: [malformed] } })).toThrow('identity');
+    expect(() => mergeMemoryBranchUpdate(previous, { remove: { suggestions: ['T:N/A_CurrentTask'] } })).toThrow('unknown');
+  });
+
+  it('rejects ambiguous transfer removals and malformed survivors instead of hiding them', () => {
+    const malformed = { proposalId: 'T:NewBunTooling', sourceId: 'N/A_CurrentTask' };
+    const previous = { suggestions: [malformed] };
+    for (const update of [
+      { upsert: {}, remove: {} },
+      { upsert: { suggestions: [] }, remove: { suggestions: [] } },
+      { upsert: { suggestions: [{ proposalId: malformed.proposalId, sourceId: 'NewBunTooling' }] } },
+      { suggestions: [malformed] },
+    ]) expect(() => mergeMemoryBranchUpdate(previous, update)).toThrow('identity');
+    const matching = { proposalId: malformed.proposalId, sourceId: 'NewBunTooling' };
+    for (const duplicate of [malformed, matching]) {
+      expect(() => mergeMemoryBranchUpdate({ suggestions: [malformed, duplicate] }, {
+        remove: { suggestions: [malformed.proposalId] },
+      })).toThrow('ambiguous');
+    }
+    expect(() => mergeMemoryBranchUpdate({ suggestions: [malformed, { proposalId: 'T:Other', sourceId: 'wrong' }] }, {
+      remove: { suggestions: [malformed.proposalId] },
+    })).toThrow('identity');
+  });
+
   it('rejects the observed GLM memory-ID-keyed delta and other malformed shapes instead of silently keeping old proposals', () => {
     const previous = { suggestions: [{ proposalId: 'T:M-02', sourceId: 'M-02' }] };
     for (const update of [
