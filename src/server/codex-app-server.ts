@@ -1000,7 +1000,10 @@ export class CodexAppServerManager {
       if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
     }
     args.signal?.addEventListener("abort", stopForAbort, { once: true })
-    if (args.signal?.aborted) stopForAbort()
+    if (args.signal?.aborted) {
+      stopForAbort()
+      args.signal.throwIfAborted()
+    }
 
     try {
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {

@@ -171,6 +171,40 @@ describe("CodexAppServerManager", () => {
     }
   })
 
+  test("a pre-aborted turn-start signal kills the ready child without sending turn/start", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "pre-aborted-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(manager.startTurn({
+        signal: controller.signal,
+        chatId: "pre-aborted-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })).rejects.toMatchObject({ name: "AbortError" })
+      expect(child.killed).toBe(true)
+      expect(child.messages.some((message: any) => message.method === "turn/start")).toBe(false)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
   test("an aborted queued startup does not spawn after the runtime lock frees", async () => {
     const children: FakeCodexProcess[] = []
     let firstRequested!: () => void
