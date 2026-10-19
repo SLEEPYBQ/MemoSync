@@ -58,7 +58,7 @@ function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined
   if (left === right) return true
   if (!left || !right) return false
   if (left.length !== right.length) return false
-  return left.every((entry, index) => entry._id === right[index]?._id)
+  return left.every((entry, index) => entry === right[index] || JSON.stringify(entry) === JSON.stringify(right[index]))
 }
 
 function sameMemoryRecordEntries(
@@ -814,8 +814,16 @@ export function useAppState(activeChatId: string | null): AppState {
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
   const [olderHistoryEntries, setOlderHistoryEntries] = useState<TranscriptEntry[]>([])
   const [isHistoryLoading, setIsHistoryLoading] = useState(false)
-  const [historyCursor, setHistoryCursor] = useState<string | null>(null)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
+  const historyOwnerRef = useRef<{
+    chatId: string | null
+    paged: boolean
+    request: object | null
+    cursor: string | null
+    recentMessages: TranscriptEntry[]
+    windowGeneration: object
+    windowUpdates: Promise<void>
+  } | null>(null)
   const [projectDiffSnapshots, setProjectDiffSnapshots] = useState<Record<string, ChatDiffSnapshot | null>>({})
   const [keybindings, setKeybindings] = useState<KeybindingsSnapshot | null>(null)
   const [appSettings, setAppSettings] = useState<AppSettingsSnapshot | null>(null)
@@ -1115,12 +1123,25 @@ export function useAppState(activeChatId: string | null): AppState {
     }
   }, [])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const owner = {
+      chatId: activeChatId,
+      paged: false,
+      request: null as object | null,
+      cursor: null as string | null,
+      recentMessages: [] as TranscriptEntry[],
+      windowGeneration: {},
+      windowUpdates: Promise.resolve(),
+    }
+    historyOwnerRef.current = owner
+    setOlderHistoryEntries([])
+    setIsHistoryLoading(false)
+    setHasOlderHistory(false)
     if (!activeChatId) {
       logAppState("clearing chat snapshot for non-chat route")
       setChatSnapshot(null)
       setChatReady(true)
-      return
+      return () => { historyOwnerRef.current = null }
     }
 
     const subscriptionId = ++chatSubscriptionDebugRef.current
@@ -1135,6 +1156,7 @@ export function useAppState(activeChatId: string | null): AppState {
     setChatSnapshot(null)
     setChatReady(false)
     const unsubscribe = socket.subscribe<ChatSnapshot | null>({ type: "chat", chatId: activeChatId, recentLimit: INITIAL_CHAT_RECENT_LIMIT }, (snapshot) => {
+      if (historyOwnerRef.current !== owner) return
       lastChatSnapshotAtRef.current = Date.now()
       if (snapshot?.runtime.chatId) {
         const matchingTrace = [...sendToStartingProfilesRef.current.values()]
@@ -1161,14 +1183,75 @@ export function useAppState(activeChatId: string | null): AppState {
           diffFileCount: 0,
           reusedSnapshot: reused,
         })
-        return reused ? current : snapshot
+        if (reused) return current
+        if (current && snapshot && sameTranscriptEntries(current.messages, snapshot.messages)) {
+          return { ...snapshot, messages: current.messages }
+        }
+        return snapshot
       })
-      setHistoryCursor(snapshot?.history.olderCursor ?? null)
-      setHasOlderHistory(snapshot?.history.hasOlder ?? false)
+      if (!snapshot) {
+        owner.paged = false
+        owner.request = null
+        owner.recentMessages = []
+        owner.windowGeneration = {}
+        owner.windowUpdates = Promise.resolve()
+        setOlderHistoryEntries([])
+        setIsHistoryLoading(false)
+      }
+      if (!owner.paged) {
+        owner.recentMessages = snapshot?.messages ?? []
+        owner.cursor = snapshot?.history.olderCursor ?? null
+        setHasOlderHistory(snapshot?.history.hasOlder ?? false)
+      } else if (snapshot) {
+        const generation = owner.windowGeneration
+        const isCurrent = () => historyOwnerRef.current === owner && owner.windowGeneration === generation
+        // Backfill live windows in order without moving the user's older-page cursor.
+        owner.windowUpdates = owner.windowUpdates.then(async () => {
+          if (!isCurrent()) return
+          if (sameTranscriptEntries(owner.recentMessages, snapshot.messages)) return
+          const anchorId = owner.recentMessages.at(-1)?._id
+          let bridge: TranscriptEntry[] = []
+          if (anchorId && snapshot.messages.length > 0 && !snapshot.messages.some((entry) => entry._id === anchorId)) {
+            let cursor = snapshot.history.olderCursor
+            let foundAnchor = false
+            const visited = new Set<string>()
+            while (cursor && !visited.has(cursor)) {
+              visited.add(cursor)
+              const page = await socket.command<ChatHistoryPage>({
+                type: "chat.loadHistory",
+                chatId: activeChatId,
+                beforeCursor: cursor,
+                limit: CHAT_HISTORY_PAGE_SIZE,
+              })
+              if (!isCurrent()) return
+              const anchorIndex = page.messages.findIndex((entry) => entry._id === anchorId)
+              bridge = mergeTranscriptEntries(
+                anchorIndex >= 0 ? page.messages.slice(anchorIndex + 1) : page.messages,
+                bridge,
+              )
+              if (anchorIndex >= 0) {
+                foundAnchor = true
+                break
+              }
+              cursor = page.hasOlder ? page.olderCursor : null
+            }
+            if (!foundAnchor) throw new Error("Chat history changed while loading. Reopen the chat to reload it.")
+          }
+          owner.recentMessages = snapshot.messages
+          setOlderHistoryEntries((current) => mergeTranscriptEntries(
+            current,
+            mergeTranscriptEntries(bridge, snapshot.messages),
+          ))
+        }).catch((error) => {
+          if (!isCurrent()) return
+          setCommandError(error instanceof Error ? error.message : "Failed to load intervening chat history")
+        })
+      }
       setChatReady(true)
       setCommandError(null)
     })
     return () => {
+      historyOwnerRef.current = null
       logAppState("unsubscribing from chat", {
         subscriptionId,
         activeChatId,
@@ -1222,13 +1305,6 @@ export function useAppState(activeChatId: string | null): AppState {
       setCommandError(error instanceof Error ? error.message : String(error))
     })
   }, [activeChatId, focusEpoch, sidebarProjectGroups, sidebarReady, socket])
-
-  useEffect(() => {
-    setOlderHistoryEntries([])
-    setIsHistoryLoading(false)
-    setHistoryCursor(null)
-    setHasOlderHistory(false)
-  }, [activeChatId])
 
   const activeChatSnapshot = useMemo(
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
@@ -1464,29 +1540,43 @@ export function useAppState(activeChatId: string | null): AppState {
   }, [optimisticScopeId, serverTranscriptEntries])
 
   const loadOlderHistory = useCallback(async () => {
-    if (!activeChatId || !historyCursor || isHistoryLoading || !hasOlderHistory) {
+    const owner = historyOwnerRef.current
+    if (!activeChatId || isHistoryLoading || !hasOlderHistory
+      || !owner || owner.chatId !== activeChatId || owner.request || !owner.cursor) {
       return
     }
 
+    const request = {}
+    owner.request = request
+    if (!owner.paged) {
+      setOlderHistoryEntries((current) => mergeTranscriptEntries(current, owner.recentMessages))
+    }
+    owner.paged = true
+    const isCurrent = () => historyOwnerRef.current === owner && owner.request === request
     setIsHistoryLoading(true)
     try {
       const page = await socket.command<ChatHistoryPage>({
         type: "chat.loadHistory",
         chatId: activeChatId,
-        beforeCursor: historyCursor,
+        beforeCursor: owner.cursor,
         limit: CHAT_HISTORY_PAGE_SIZE,
       })
+      if (!isCurrent()) return
       setOlderHistoryEntries((current) => mergeTranscriptEntries(page.messages, current))
-      setHistoryCursor(page.olderCursor)
+      owner.cursor = page.olderCursor
       setHasOlderHistory(page.hasOlder)
       setCommandError(null)
     } catch (error) {
+      if (!isCurrent()) return
       const message = error instanceof Error ? error.message : String(error)
       setCommandError(message)
     } finally {
-      setIsHistoryLoading(false)
+      if (isCurrent()) {
+        owner.request = null
+        setIsHistoryLoading(false)
+      }
     }
-  }, [activeChatId, hasOlderHistory, historyCursor, isHistoryLoading, socket])
+  }, [activeChatId, hasOlderHistory, isHistoryLoading, socket])
 
   const createChatForProject = useCallback(async (projectId: string) => {
     const chatPreferences = useChatPreferencesStore.getState()
