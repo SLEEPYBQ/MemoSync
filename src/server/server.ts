@@ -28,7 +28,16 @@ import { StudyPreviewRuntime } from "./study-preview-runtime"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { canonicalHostPreviewUrl, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import {
+  isPreviewHostForm,
+  isPreviewNavigationRequest,
+  isolatedPreviewTarget,
+  PREVIEW_CALLBACK_PATH,
+  PREVIEW_GRANT_PATH,
+  PREVIEW_TICKETS_PATH,
+  stripPreviewPathPrefix,
+} from "../shared/preview-proxy"
 import { MemoryService } from "./memory"
 import { handleMemoryRequest } from "./memory/routes"
 import { handleStudyRequest } from "./study-routes"
@@ -228,6 +237,12 @@ export interface StartMemoSyncServerOptions {
    * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /** Isolated origin that also reaches this server and may execute preview
+   * content; defaults to MEMOSYNC_PREVIEW_ORIGIN. */
+  previewOrigin?: string
+  /** Public app origin used to bootstrap preview credentials from the preview
+   * origin; defaults to MEMOSYNC_APP_ORIGIN. */
+  appOrigin?: string
   /** Extra browser origins allowed to access the development API and WebSocket. */
   allowedOrigins?: string[]
   /**
@@ -250,7 +265,17 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
-  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
+  const trustProxy = options.trustProxy ?? false
+  // Isolated origins for executable preview content (see preview-proxy.ts).
+  // MEMOSYNC_PREVIEW_ORIGIN is required when the app is reached through a
+  // non-loopback public origin; MEMOSYNC_APP_ORIGIN lets the preview origin
+  // find its way back to the grant endpoint.
+  const previewOrigin = (options.previewOrigin ?? process.env.MEMOSYNC_PREVIEW_ORIGIN ?? "").trim() || null
+  const appPublicOrigin = (options.appOrigin ?? process.env.MEMOSYNC_APP_ORIGIN ?? "").trim() || null
+  const previewOriginHost = previewOrigin ? new URL(previewOrigin).host : null
+  const auth = options.password
+    ? createAuthManager(options.password, { trustProxy, previewOrigin, appOrigin: appPublicOrigin })
+    : null
   const allowedOrigins = options.allowedOrigins ?? (process.env.MEMOSYNC_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((origin) => origin.trim())
@@ -810,20 +835,57 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
           // Dev-server preview requests encode the target port in either a
           // localhost subdomain or /__memosync/preview/<port> path, then proxy
           // inside this process's network namespace (see preview-proxy.ts).
+          // Executable preview content must live on an ISOLATED origin
+          // (<port>.localhost locally, or MEMOSYNC_PREVIEW_ORIGIN when the app
+          // is reached through a public gateway) so it can never read the
+          // host-only app session cookie or call authenticated /api routes.
           const previewPort = previewProxyTarget(req, actualPort)
-          if (previewPort !== null) {
+          const onPreviewOrigin = previewOriginHost !== null && url.host === previewOriginHost
+          if (previewPort !== null || onPreviewOrigin) {
+            if (auth && url.pathname === PREVIEW_CALLBACK_PATH) {
+              return auth.handlePreviewCallback(req)
+            }
+            if (previewPort === null) {
+              return new Response("Not found", { status: 404 })
+            }
+            if (!isPreviewHostForm(url.host) && !onPreviewOrigin) {
+              // Path form on the app origin: redirect navigations to the
+              // isolated origin and explicitly block everything else —
+              // upstream content never executes here.
+              if (!isPreviewNavigationRequest(req)) {
+                return new Response("Forbidden", { status: 403 })
+              }
+              if (auth && auth.isAuthenticated(req)) {
+                return auth.previewTicketRedirect(req, previewPort)
+              }
+              const isolated = isolatedPreviewTarget(
+                req,
+                previewPort,
+                previewOrigin,
+                stripPreviewPathPrefix(url.pathname, previewPort),
+              )
+              if (isolated) {
+                return Response.redirect(`${isolated.origin}${isolated.path}${url.search}`, 302)
+              }
+              return new Response(
+                `<!doctype html><meta charset="utf-8"><title>Preview unavailable</title>` +
+                `<body style="font-family:system-ui;color:#667085;display:grid;place-items:center;height:100vh;margin:0">` +
+                `<p style="max-width:32rem;padding:0 1.5rem;font-size:14px">` +
+                `Previews run on an isolated origin. Open MemoSync locally, or ask whoever hosts` +
+                ` this server to set MEMOSYNC_PREVIEW_ORIGIN.` +
+                `</p>`,
+                { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
+              )
+            }
             if (!validateRequestOrigin(req, {
-              trustProxy: options.trustProxy ?? false,
+              trustProxy,
               allowedOrigins,
             })) {
               return new Response("Forbidden", { status: 403 })
             }
-            if (auth) {
-              // Host-only app cookies become available on the canonical path.
-              const canonicalUrl = canonicalHostPreviewUrl(req, previewPort)
-              if (canonicalUrl) return Response.redirect(canonicalUrl, 302)
-            }
-            if (auth && !auth.isAuthenticated(req)) {
+            if (auth && !auth.isPreviewAuthenticated(req, previewPort)) {
+              const bootstrap = auth.previewBootstrapRedirect(req, previewPort)
+              if (bootstrap) return bootstrap
               return new Response("Unauthorized", { status: 401 })
             }
             return proxyPreviewRequest(req, url, previewPort)
@@ -853,6 +915,20 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
           }
 
           if (auth) {
+            if (url.pathname === PREVIEW_GRANT_PATH) {
+              if (req.method !== "GET") {
+                return new Response(null, { status: 405, headers: { Allow: "GET" } })
+              }
+              return auth.handlePreviewGrant(req)
+            }
+
+            if (url.pathname === PREVIEW_TICKETS_PATH) {
+              if (req.method !== "POST") {
+                return new Response(null, { status: 405, headers: { Allow: "POST" } })
+              }
+              return auth.handlePreviewTicketMint(req)
+            }
+
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
                 return auth.redirectToApp(req)

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test"
-import { canonicalHostPreviewUrl, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 
 function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Request {
   const req = new Request(url, init)
@@ -8,38 +8,22 @@ function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Reque
 }
 
 describe("preview proxy", () => {
-  it("canonicalizes only host-form navigations without trusting forwarded hosts", () => {
-    const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/nested?q=1", {
-      headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" },
-    })
-    expect(canonicalHostPreviewUrl(req, 8901)?.href).toBe("http://localhost:3210/__memosync/preview/8901/nested?q=1")
-    expect(canonicalHostPreviewUrl(reqWithHost("foreign.invalid", "http://foreign.invalid/"), 8901)).toBeNull()
-    expect(canonicalHostPreviewUrl(reqWithHost("localhost:3210", "http://localhost:3210/__memosync/preview/8901/"), 8901)).toBeNull()
-    const nonNavigationHeaders: HeadersInit[] = [
-      { "Sec-Fetch-Dest": "iframe" },
-      { "Sec-Fetch-Mode": "cors" },
-      { Upgrade: "websocket" },
-      { Connection: "Upgrade" },
-    ]
-    for (const headers of nonNavigationHeaders) {
-      expect(canonicalHostPreviewUrl(reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", { headers }), 8901)).toBeNull()
-    }
-  })
-
-  it.each(["host", "path"] as const)("isolates MemoSync cookies in both directions for %s previews", async (form) => {
+  it.each(["host", "path"] as const)("isolates reserved MemoSync cookies in both directions for %s previews", async (form) => {
     const url = form === "host"
       ? "http://8901.localhost:3210/"
       : "http://localhost:3210/__memosync/preview/8901/"
     const req = reqWithHost(new URL(url).host, url, {
-      headers: { Cookie: "memosync_session=secret; project_session=kept; memosync_session=duplicate; memosync_session_extra=also-kept" },
+      headers: { Cookie: "memosync_session=secret; project_session=kept; memosync_session=duplicate; memosync_preview=grant; memosync_session_extra=also-kept" },
     })
     const projectCookie = "project_session=new; Path=/; Expires=Wed, 21 Oct 2037 07:28:00 GMT; HttpOnly"
     const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
       expect(new Headers(init?.headers).get("cookie")).toBe("project_session=kept; memosync_session_extra=also-kept")
       const headers = new Headers()
       headers.append("Set-Cookie", "memosync_session=overwrite; Path=/; HttpOnly")
+      headers.append("Set-Cookie", "memosync_preview=planted; Path=/; HttpOnly")
       headers.append("Set-Cookie", projectCookie)
       headers.append("Set-Cookie", "memosync_session=; Domain=localhost; Path=/; Max-Age=0")
+      headers.append("Set-Cookie", "memosync_preview=; Domain=localhost; Path=/; Max-Age=0")
       headers.append("Set-Cookie", "memosync_session_extra=project-owned; Path=/")
       return new Response("ok", { headers })
     }) as typeof fetch

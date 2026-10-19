@@ -1,4 +1,4 @@
-import { PREVIEW_PROXY_PATH_PREFIX, previewProxyPath } from "../shared/preview-proxy"
+import { PREVIEW_COOKIE_NAME, PREVIEW_PROXY_PATH_PREFIX, previewProxyPath } from "../shared/preview-proxy"
 import { SESSION_COOKIE_NAME } from "./auth"
 
 // Dev-server preview proxy. In Docker, an agent can start a server on ANY
@@ -38,7 +38,7 @@ export function isPathPreviewProxyRequest(req: Request, targetPort: number) {
   return isPathProxyRequest(new URL(req.url), targetPort)
 }
 
-function stripPathProxyPrefix(pathname: string, targetPort: number) {
+export function stripPathProxyPrefix(pathname: string, targetPort: number) {
   const base = pathProxyBase(targetPort)
   if (pathname === base.slice(0, -1)) return "/"
   const stripped = pathname.slice(base.length - 1)
@@ -61,21 +61,9 @@ export function previewProxyTarget(req: Request, selfPort: number): number | nul
   return validTargetPort(port, selfPort) ? port : null
 }
 
-export function canonicalHostPreviewUrl(req: Request, targetPort: number): URL | null {
-  if (req.method !== "GET" && req.method !== "HEAD") return null
-  if (req.headers.has("upgrade") || req.headers.get("connection")?.toLowerCase().split(",").some((token) => token.trim() === "upgrade")) return null
-  const destination = req.headers.get("sec-fetch-dest")
-  const mode = req.headers.get("sec-fetch-mode")
-  if ((destination && destination !== "document") || (mode && mode !== "navigate")) return null
-
-  const url = new URL(req.url)
-  const match = url.host.match(HOST_PATTERN)
-  if (!match || Number(match[1]) !== targetPort) return null
-  // Keep the request's scheme and app port, never forwarded host headers.
-  url.hostname = "localhost"
-  url.pathname = previewProxyPath(targetPort, url.pathname)
-  return url
-}
+// Executable preview content must never be canonicalized onto the app origin:
+// the previous redirect let preview scripts call authenticated MemoSync APIs.
+// Isolated preview hosts carry their own memosync_preview credential instead.
 
 /** Build the client-facing proxy origin for a target port (used in tests;
  * the client derives it from window.location at runtime). */
@@ -85,9 +73,14 @@ export function previewProxyOrigin(targetPort: number, appHostWithPort: string):
 
 const HOP_BY_HOP = ["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-authenticate", "proxy-authorization", "te", "trailer"]
 
-function isAppSessionCookie(cookie: string) {
+const RESERVED_COOKIE_NAMES = new Set([SESSION_COOKIE_NAME, PREVIEW_COOKIE_NAME])
+
+/** Reserved MemoSync auth cookies must never reach the upstream project
+ * server, and upstream responses must not plant or overwrite them on the
+ * preview origin. */
+function isReservedCookie(cookie: string) {
   const separator = cookie.indexOf("=")
-  return separator >= 0 && cookie.slice(0, separator).trim() === SESSION_COOKIE_NAME
+  return separator >= 0 && RESERVED_COOKIE_NAMES.has(cookie.slice(0, separator).trim())
 }
 
 function rootRelativeUrl(url: string, targetPort: number) {
@@ -357,7 +350,7 @@ export async function proxyPreviewRequest(
   const upstreamPathname = pathProxy ? stripPathProxyPrefix(url.pathname, targetPort) : url.pathname
   const headers = new Headers(req.headers)
   const projectCookies = (headers.get("cookie") ?? "").split(";")
-    .filter((cookie) => cookie.trim() && !isAppSessionCookie(cookie))
+    .filter((cookie) => cookie.trim() && !isReservedCookie(cookie))
     .join(";").trim()
   if (projectCookies) headers.set("cookie", projectCookies)
   else headers.delete("cookie")
@@ -380,7 +373,7 @@ export async function proxyPreviewRequest(
     const out = new Headers(res.headers)
     out.delete("set-cookie")
     for (const cookie of res.headers.getSetCookie()) {
-      if (!isAppSessionCookie(cookie)) out.append("set-cookie", cookie)
+      if (!isReservedCookie(cookie)) out.append("set-cookie", cookie)
     }
     // The pane iframes this from another origin — frame-blocking headers from
     // the dev server would blank it. This is a local dev preview, not a

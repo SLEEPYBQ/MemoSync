@@ -1,6 +1,16 @@
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto"
+import {
+  isLoopbackHostname,
+  isPreviewNavigationRequest,
+  isolatedPreviewTarget,
+  PREVIEW_CALLBACK_PATH,
+  PREVIEW_COOKIE_NAME,
+  PREVIEW_GRANT_PATH,
+  PREVIEW_PROXY_PATH_PREFIX,
+} from "../shared/preview-proxy"
 
 export const SESSION_COOKIE_NAME = "memosync_session"
+export { PREVIEW_COOKIE_NAME }
 
 export interface AuthStatusPayload {
   enabled: boolean
@@ -9,11 +19,31 @@ export interface AuthStatusPayload {
 
 export interface AuthManager {
   isAuthenticated(req: Request): boolean
+  isPreviewAuthenticated(req: Request, targetPort: number): boolean
   validateOrigin(req: Request): boolean
   redirectToApp(req: Request): Response
   handleLogin(req: Request, nextPath: string): Promise<Response>
   handleLogout(req: Request): Response
   handleStatus(req: Request): Response
+  /** GET /auth/preview-grant on the app origin: mint a one-time ticket and
+   * redirect to the isolated preview origin's callback. */
+  handlePreviewGrant(req: Request): Response
+  /** GET <preview-origin>/__memosync/preview-callback: consume a ticket, set
+   * the host-only preview cookie, and continue to the original path. */
+  handlePreviewCallback(req: Request): Response
+  /** POST /api/preview-grants: app-origin mint for embedded frames that cannot
+   * run the navigation bootstrap themselves. */
+  handlePreviewTicketMint(req: Request): Promise<Response>
+  /** Navigation on an isolated preview origin without a preview credential:
+   * 302 to the app-origin grant endpoint, or null when no app origin is
+   * derivable (non-navigation requests always get null → callers answer 401). */
+  previewBootstrapRedirect(req: Request, targetPort: number): Response | null
+  /** For an app-origin path-form request, the isolated URL it should redirect
+   * to — or null when no isolated origin exists for this deployment. */
+  previewIsolationUrl(req: Request, targetPort: number): string | null
+  /** 302 to the isolated origin's callback carrying a freshly minted ticket;
+   * requires an authenticated session. */
+  previewTicketRedirect(req: Request, targetPort: number): Response
 }
 
 function parseCookies(header: string | null) {
@@ -125,6 +155,19 @@ export interface AuthManagerOptions {
    * proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /**
+   * Isolated origin that also reaches this server and is allowed to execute
+   * preview content (MEMOSYNC_PREVIEW_ORIGIN), e.g.
+   * `https://preview.example.com`. Required for previews when the app itself
+   * is reached through a non-loopback public origin.
+   */
+  previewOrigin?: string | null
+  /**
+   * Public origin of the app (MEMOSYNC_APP_ORIGIN). Used to send a
+   * credential-less navigation on the preview origin back to the app-origin
+   * grant endpoint. Optional when previews only run on `<port>.localhost`.
+   */
+  appOrigin?: string | null
 }
 
 export function createAuthManager(password: string, options: AuthManagerOptions = {}): AuthManager {
@@ -137,7 +180,26 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   // forever instead of returning to the password page (BUG HTTP-4). A signed
   // token validates without server state and survives restart while the
   // password is unchanged. Logout clears the cookie client-side.
+  const previewOrigin = options.previewOrigin?.trim() ? new URL(options.previewOrigin!.trim()).origin : null
+  const configuredAppOrigin = options.appOrigin?.trim() ? new URL(options.appOrigin!.trim()).origin : null
+  // Preview credentials are bound to a per-boot nonce: restarting the process
+  // invalidates every outstanding memosync_preview cookie even though the
+  // (password-derived) session tokens survive restarts by design.
+  const bootNonce = randomBytes(16).toString("base64url")
+  const PREVIEW_TICKET_TTL_MS = 60_000
+  const previewTickets = new Map<string, {
+    port: number
+    host: string
+    next: string
+    sessionNonce: string
+    expiresAt: number
+  }>()
+  // Session nonces whose preview grants were revoked by logout. Bounded: one
+  // entry per explicit logout, cleared on restart (bootNonce rotates anyway).
+  const revokedSessionNonces = new Set<string>()
   const sessionKey = createHash("sha256").update(`memosync-session\u0000${password}`).digest()
+
+  const previewKey = createHmac("sha256", sessionKey).update(`memosync-preview${bootNonce}`).digest()
 
   function signNonce(nonce: string) {
     return createHmac("sha256", sessionKey).update(nonce).digest("base64url")
@@ -158,6 +220,201 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   function isAuthenticated(req: Request) {
     const sessionToken = getSessionToken(req)
     return Boolean(sessionToken && isValidToken(sessionToken))
+  }
+
+  function getSessionNonce(req: Request) {
+    const token = getSessionToken(req)
+    if (!token || !isValidToken(token)) return null
+    return token.slice(0, token.lastIndexOf("."))
+  }
+
+  function signPreviewToken(targetPort: number, host: string, sessionNonce: string) {
+    return createHmac("sha256", previewKey)
+      .update(`${targetPort} ${host} ${sessionNonce}`)
+      .digest("base64url")
+  }
+
+  function isPreviewAuthenticated(req: Request, targetPort: number) {
+    const token = parseCookies(req.headers.get("cookie")).get(PREVIEW_COOKIE_NAME)
+    if (!token) return false
+    const firstDot = token.indexOf(".")
+    const lastDot = token.lastIndexOf(".")
+    if (firstDot <= 0 || lastDot === firstDot) return false
+    if (Number(token.slice(0, firstDot)) !== targetPort) return false
+    const nonce = token.slice(firstDot + 1, lastDot)
+    if (revokedSessionNonces.has(nonce)) return false
+    const host = new URL(req.url).host
+    const expected = Buffer.from(signPreviewToken(targetPort, host, nonce))
+    const actual = Buffer.from(token.slice(lastDot + 1))
+    return actual.length === expected.length && timingSafeEqual(actual, expected)
+  }
+
+  function purgeExpiredPreviewTickets() {
+    const now = Date.now()
+    for (const [id, ticket] of previewTickets) {
+      if (ticket.expiresAt <= now) previewTickets.delete(id)
+    }
+  }
+
+  function mintPreviewTicket(req: Request, target: { port: number; host: string; next: string }) {
+    const sessionNonce = getSessionNonce(req)
+    if (!sessionNonce) return null
+    purgeExpiredPreviewTickets()
+    const id = randomBytes(18).toString("base64url")
+    previewTickets.set(id, {
+      port: target.port,
+      host: target.host,
+      next: target.next,
+      sessionNonce,
+      expiresAt: Date.now() + PREVIEW_TICKET_TTL_MS,
+    })
+    return id
+  }
+
+  function buildPreviewCookie(value: string, req: Request, extras: string[] = []) {
+    const url = new URL(req.url)
+    const parts = [
+      `${PREVIEW_COOKIE_NAME}=${encodeURIComponent(value)}`,
+      "Path=/",
+      "HttpOnly",
+    ]
+    // Embedded previews are cross-site iframes (the preview host is a sibling
+    // of the app origin), which only SameSite=None;Secure cookies reach.
+    // Loopback preview hosts are potentially trustworthy, so Secure is safe
+    // there even over http.
+    if (shouldUseSecureCookie(req, trustProxy) || isLoopbackHostname(url.hostname)) {
+      parts.push("SameSite=None", "Secure")
+    } else {
+      parts.push("SameSite=Lax")
+    }
+    parts.push(...extras)
+    return parts.join("; ")
+  }
+
+  /** The app origin that can mint tickets for a navigation arriving on an
+   * isolated preview origin: the `localhost` sibling of `<port>.localhost`,
+   * or the configured public app origin. */
+  function appOriginForPreviewRequest(req: Request) {
+    const url = new URL(req.url)
+    if (/^\d{1,5}\.localhost$/i.test(url.hostname)) {
+      return `${url.protocol}//localhost${url.port ? `:${url.port}` : ""}`
+    }
+    return configuredAppOrigin
+  }
+
+  function previewBootstrapRedirect(req: Request, targetPort: number) {
+    if (!isPreviewNavigationRequest(req)) return null
+    const appOrigin = appOriginForPreviewRequest(req)
+    if (!appOrigin) return null
+    const grant = new URL(`${appOrigin}${PREVIEW_GRANT_PATH}`)
+    grant.searchParams.set("port", String(targetPort))
+    grant.searchParams.set("redirect", req.url)
+    return Response.redirect(grant, 302)
+  }
+
+  function previewIsolationUrl(req: Request, targetPort: number) {
+    const url = new URL(req.url)
+    const base = `${PREVIEW_PROXY_PATH_PREFIX}/${targetPort}`
+    const stripped = url.pathname === base ? "/"
+      : url.pathname.startsWith(`${base}/`) ? url.pathname.slice(base.length)
+      : url.pathname
+    const target = isolatedPreviewTarget(req, targetPort, previewOrigin, stripped)
+    return target ? `${target.origin}${target.path}${url.search}` : null
+  }
+
+  function validateGrantRedirect(req: Request, port: number, target: URL) {
+    if (target.protocol !== "http:" && target.protocol !== "https:") return false
+    const url = new URL(req.url)
+    const hostMatch = target.hostname.match(/^(\d{1,5})\.localhost$/i)
+    if (hostMatch) {
+      return Number(hostMatch[1]) === port && target.port === url.port
+    }
+    if (previewOrigin && target.origin === previewOrigin) {
+      const base = `${PREVIEW_PROXY_PATH_PREFIX}/${port}`
+      return target.pathname === base || target.pathname.startsWith(`${base}/`)
+    }
+    return false
+  }
+
+  function handlePreviewGrant(req: Request) {
+    const url = new URL(req.url)
+    if (!isAuthenticated(req)) {
+      const login = new URL(`${effectiveOrigin(req, trustProxy)}/auth/login`)
+      login.searchParams.set("next", `${url.pathname}${url.search}`)
+      return Response.redirect(login, 302)
+    }
+    const port = Number(url.searchParams.get("port"))
+    let target: URL
+    try {
+      target = new URL(url.searchParams.get("redirect") ?? "")
+    } catch {
+      return new Response("Bad Request", { status: 400 })
+    }
+    if (!Number.isInteger(port) || port <= 0 || port > 65535 || !validateGrantRedirect(req, port, target)) {
+      return new Response("Bad Request", { status: 400 })
+    }
+    const ticket = mintPreviewTicket(req, {
+      port,
+      host: target.host,
+      next: `${target.pathname}${target.search}`,
+    })
+    if (!ticket) return new Response("Unauthorized", { status: 401 })
+    return Response.redirect(`${target.origin}${PREVIEW_CALLBACK_PATH}?ticket=${ticket}`, 302)
+  }
+
+  function handlePreviewCallback(req: Request) {
+    const url = new URL(req.url)
+    const id = url.searchParams.get("ticket") ?? ""
+    const ticket = previewTickets.get(id)
+    previewTickets.delete(id)
+    if (!ticket || ticket.expiresAt <= Date.now() || ticket.host !== url.host) {
+      return new Response("Unauthorized", { status: 401 })
+    }
+    const value = `${ticket.port}.${ticket.sessionNonce}.${signPreviewToken(ticket.port, ticket.host, ticket.sessionNonce)}`
+    const response = new Response(null, {
+      status: 302,
+      headers: { Location: sanitizeNextPath(ticket.next) },
+    })
+    response.headers.set("Set-Cookie", buildPreviewCookie(value, req))
+    return response
+  }
+
+  function previewTicketRedirect(req: Request, targetPort: number) {
+    const url = new URL(req.url)
+    const base = `${PREVIEW_PROXY_PATH_PREFIX}/${targetPort}`
+    const next = url.pathname === base ? "/"
+      : url.pathname.startsWith(`${base}/`) ? url.pathname.slice(base.length)
+      : "/"
+    const target = isolatedPreviewTarget(req, targetPort, previewOrigin, next)
+    if (!target) return new Response("Forbidden", { status: 403 })
+    const ticket = mintPreviewTicket(req, { port: targetPort, host: target.host, next: target.path })
+    if (!ticket) return new Response("Unauthorized", { status: 401 })
+    return Response.redirect(`${target.origin}${PREVIEW_CALLBACK_PATH}?ticket=${ticket}`, 302)
+  }
+
+  async function handlePreviewTicketMint(req: Request) {
+    if (!validateOrigin(req)) {
+      return Response.json({ error: "Forbidden" }, { status: 403 })
+    }
+    if (!isAuthenticated(req)) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 })
+    }
+    let port = NaN
+    let nextPath = "/"
+    try {
+      const body = await req.json() as { port?: unknown; next?: unknown }
+      port = Number(body.port)
+      if (typeof body.next === "string") nextPath = body.next
+    } catch {
+      return Response.json({ error: "Bad Request" }, { status: 400 })
+    }
+    const target = Number.isInteger(port) && port > 0 && port <= 65535
+      ? isolatedPreviewTarget(req, port, previewOrigin, sanitizeNextPath(nextPath))
+      : null
+    if (!target) return Response.json({ url: null })
+    const ticket = mintPreviewTicket(req, { port, host: target.host, next: target.path })
+    if (!ticket) return Response.json({ error: "Unauthorized" }, { status: 401 })
+    return Response.json({ url: `${target.origin}${PREVIEW_CALLBACK_PATH}?ticket=${ticket}` })
   }
 
   function validateOrigin(req: Request) {
@@ -219,6 +476,11 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
       return Response.json({ error: "Forbidden" }, { status: 403 })
     }
 
+    // Revoke the preview grants bound to this session: the preview cookie
+    // lives on a different host and cannot be cleared from here.
+    const sessionNonce = getSessionNonce(req)
+    if (sessionNonce) revokedSessionNonces.add(sessionNonce)
+
     const response = Response.json({ ok: true })
     response.headers.set("Set-Cookie", clearSessionCookie(req))
     return response
@@ -226,10 +488,17 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
 
   return {
     isAuthenticated,
+    isPreviewAuthenticated,
     validateOrigin,
     redirectToApp,
     handleLogin,
     handleLogout,
     handleStatus,
+    handlePreviewGrant,
+    handlePreviewCallback,
+    handlePreviewTicketMint,
+    previewBootstrapRedirect,
+    previewIsolationUrl,
+    previewTicketRedirect,
   }
 }
