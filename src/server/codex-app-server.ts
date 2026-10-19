@@ -149,6 +149,7 @@ export interface StartCodexSessionArgs {
 export interface StartCodexTurnArgs {
   chatId: string
   model: string
+  signal?: AbortSignal
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
   content: string
@@ -995,6 +996,12 @@ export class CodexAppServerManager {
     }
     context.pendingTurn = pendingTurn
 
+    const stopForAbort = () => {
+      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+    }
+    args.signal?.addEventListener("abort", stopForAbort, { once: true })
+    if (args.signal?.aborted) stopForAbort()
+
     try {
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
@@ -1028,6 +1035,8 @@ export class CodexAppServerManager {
       context.pendingTurn = null
       queue.finish()
       throw error
+    } finally {
+      args.signal?.removeEventListener("abort", stopForAbort)
     }
 
     return {

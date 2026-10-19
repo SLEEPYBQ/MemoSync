@@ -131,6 +131,46 @@ describe("CodexAppServerManager", () => {
     expect(child.killed).toBe(true)
   })
 
+  test("aborting a pending turn-start response kills the ready child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "abort-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      const startingTurn = manager.startTurn({
+        signal: controller.signal,
+        chatId: "abort-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const result = startingTurn.catch((error) => error)
+      while (!child.messages.some((message: any) => message.method === "turn/start")) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+
+      controller.abort()
+
+      const failure = await result
+      expect(failure).toMatchObject({ message: "Codex session stopped" })
+      expect(child.killed).toBe(true)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
   test("an aborted queued startup does not spawn after the runtime lock frees", async () => {
     const children: FakeCodexProcess[] = []
     let firstRequested!: () => void

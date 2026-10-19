@@ -6661,17 +6661,26 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-      turn = await this.codexManager.startTurn({
-        chatId: args.chatId,
-        content: buildPromptText(args.content, providerAttachments),
-        model: args.model,
-        effort: args.effort as any,
-        serviceTier: args.serviceTier,
-        planMode: args.planMode,
-        onToolRequest,
-        developerInstructions: codexMemoryBlock || undefined,
-        onDynamicToolCall,
-      })
+      try {
+        turn = await this.codexManager.startTurn({
+          signal: startController.signal,
+          chatId: args.chatId,
+          content: buildPromptText(args.content, providerAttachments),
+          model: args.model,
+          effort: args.effort as any,
+          serviceTier: args.serviceTier,
+          planMode: args.planMode,
+          onToolRequest,
+          developerInstructions: codexMemoryBlock || undefined,
+          onDynamicToolCall,
+        })
+      } catch (error) {
+        if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+          this.codexManager.stopSession(args.chatId)
+          return
+        }
+        throw error
+      }
       this.turnPayAttention.delete(args.chatId)
       args.onMemoryDeliveryAccepted?.(codexPlan?.injectedMemories.map(item => item.id) ?? [])
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
