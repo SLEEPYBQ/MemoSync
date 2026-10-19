@@ -68,7 +68,8 @@ export interface IsolatedPreviewTarget {
  * `<port>.localhost` sibling of a loopback app origin. `nextPath` is the
  * user-facing path on the previewed project ("/" root form, no proxy prefix).
  * Returns null when no isolated origin is available (remote deployment without
- * a configured preview origin) — callers must not fall back to the app origin.
+ * a configured HTTPS or loopback preview origin) — callers must not fall back
+ * to the app origin.
  */
 export function isolatedPreviewTarget(
   req: Request,
@@ -80,6 +81,10 @@ export function isolatedPreviewTarget(
   const path = nextPath.startsWith("/") ? nextPath : `/${nextPath}`
   if (configuredPreviewOrigin) {
     const origin = new URL(configuredPreviewOrigin)
+    // A public HTTP preview origin cannot carry the required
+    // SameSite=None;Secure credential inside a cross-site iframe. Treat it as
+    // unavailable rather than sending the browser into a bootstrap/401 loop.
+    if (origin.protocol !== "https:" && !isLoopbackHostname(origin.hostname)) return null
     return {
       origin: origin.origin,
       host: origin.host,

@@ -60,15 +60,15 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
-async function startPasswordServer(options: { trustProxy?: boolean } = {}) {
+async function startPasswordServer(options: { trustProxy?: boolean; port?: number } = {}) {
   const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-auth-test-"))
   const dataDir = await mkdtemp(path.join(tmpdir(), "memosync-auth-data-"))
   tempDirs.push(projectDir)
   tempDirs.push(dataDir)
   const server = await startMemoSyncServer({
     dataDir,
-    // Ephemeral port: parallel files and leftover servers can never collide.
-    port: 0,
+    // Ephemeral by default; restart coverage may opt into the released port.
+    port: options.port ?? 0,
     strictPort: true,
     password: "secret",
     trustProxy: options.trustProxy ?? false,
@@ -200,6 +200,121 @@ describe("password auth", () => {
       }
       const method = await fetch(previewUrl, { method: "POST", headers: { Cookie: cookie }, redirect: "manual" })
       expect(method.status).toBe(403)
+    } finally {
+      target.stop(true)
+      await server.stop()
+    }
+  })
+
+  test("preserves query parameters through the authenticated preview bootstrap", async () => {
+    const { server } = await startPasswordServer()
+    const appOrigin = `http://localhost:${server.port}`
+    const targetPort = 8901
+    const previewUrl = `${appOrigin}/__memosync/preview/${targetPort}/dashboard?tab=files&next=%2Fother`
+    try {
+      const login = await fetch(`${appOrigin}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin },
+        body: JSON.stringify({ password: "secret", next: "/" }),
+      })
+      const sessionCookie = extractCookie(login)
+      const navigation = await fetch(previewUrl, {
+        headers: {
+          Cookie: sessionCookie,
+          "Sec-Fetch-Dest": "iframe",
+          "Sec-Fetch-Mode": "navigate",
+        },
+        redirect: "manual",
+      })
+      expect(navigation.status).toBe(302)
+      const callbackUrl = new URL(navigation.headers.get("location")!)
+      expect(callbackUrl.hostname).toBe(`${targetPort}.localhost`)
+      const callback = await fetch(`${appOrigin}${callbackUrl.pathname}${callbackUrl.search}`, {
+        headers: { Host: callbackUrl.host },
+        redirect: "manual",
+      })
+      expect(callback.status).toBe(302)
+      expect(callback.headers.get("location")).toBe("/dashboard?tab=files&next=%2Fother")
+    } finally {
+      await server.stop()
+    }
+  })
+
+  test("does not mint embedded credentials for a public HTTP preview origin", async () => {
+    const appOrigin = "https://memosync.example.com"
+    const auth = createAuthManager("secret", {
+      appOrigin,
+      previewOrigin: "http://preview.example.com",
+    })
+    const login = await auth.handleLogin(new Request(`${appOrigin}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: appOrigin },
+      body: JSON.stringify({ password: "secret", next: "/" }),
+    }), "/")
+    const sessionCookie = extractCookie(login)
+
+    const mint = await auth.handlePreviewTicketMint(new Request(`${appOrigin}/api/preview-grants`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: appOrigin, Cookie: sessionCookie },
+      body: JSON.stringify({ port: 8901, next: "/" }),
+    }))
+    expect(mint.status).toBe(200)
+    expect(await mint.json()).toEqual({ url: null })
+
+    const grant = auth.handlePreviewGrant(new Request(
+      `${appOrigin}/auth/preview-grant?port=8901&redirect=${encodeURIComponent("http://preview.example.com/__memosync/preview/8901/")}`,
+      { headers: { Cookie: sessionCookie } },
+    ))
+    expect(grant.status).toBe(400)
+  })
+
+  test("does not proxy when a preview Host conflicts with the app URL", async () => {
+    let upstreamHits = 0
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => {
+        upstreamHits += 1
+        return new Response("preview target")
+      },
+    })
+    const { server } = await startPasswordServer()
+    const appOrigin = `http://localhost:${server.port}`
+    const previewHost = `${target.port}.localhost:${server.port}`
+    try {
+      const login = await fetch(`${appOrigin}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin },
+        body: JSON.stringify({ password: "secret", next: "/" }),
+      })
+      const sessionCookie = extractCookie(login)
+      const url = `${appOrigin}/__memosync/preview/${target.port}/script.js`
+
+      const subresource = await fetch(url, {
+        headers: {
+          Host: previewHost,
+          Cookie: sessionCookie,
+          "Sec-Fetch-Dest": "script",
+          "Sec-Fetch-Mode": "no-cors",
+        },
+        redirect: "manual",
+      })
+      expect(subresource.status).toBe(401)
+
+      const navigation = await fetch(url, {
+        headers: {
+          Host: previewHost,
+          Cookie: sessionCookie,
+          "Sec-Fetch-Dest": "iframe",
+          "Sec-Fetch-Mode": "navigate",
+        },
+        redirect: "manual",
+      })
+      expect(navigation.status).toBe(302)
+      const bootstrap = new URL(navigation.headers.get("location")!)
+      expect(bootstrap.origin).toBe(appOrigin)
+      expect(bootstrap.pathname).toBe("/auth/preview-grant")
+      expect(upstreamHits).toBe(0)
     } finally {
       target.stop(true)
       await server.stop()
@@ -515,6 +630,79 @@ describe("password auth", () => {
     } finally {
       target.stop(true)
       await server.stop()
+    }
+  })
+
+  test("invalidates a previous boot's preview credential on the same origin", async () => {
+    const seen: string[] = []
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (req) => {
+        seen.push(new URL(req.url).pathname)
+        return new Response("preview target")
+      },
+    })
+    const { server: first } = await startPasswordServer()
+    const appPort = first.port
+    const appOrigin = `http://localhost:${appPort}`
+    const previewHost = `${target.port}.localhost:${appPort}`
+    const requestPreview = (cookie: string) => fetch(`${appOrigin}/`, {
+      headers: {
+        Host: previewHost,
+        Cookie: cookie,
+        "Sec-Fetch-Dest": "iframe",
+        "Sec-Fetch-Mode": "navigate",
+      },
+      redirect: "manual",
+    })
+    try {
+      const login = await fetch(`${appOrigin}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin },
+        body: JSON.stringify({ password: "secret", next: "/" }),
+      })
+      const sessionCookie = extractCookie(login)
+      const mint = await fetch(`${appOrigin}/api/preview-grants`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin, Cookie: sessionCookie },
+        body: JSON.stringify({ port: target.port, next: "/" }),
+      })
+      const { url: mintedUrl } = await mint.json() as { url: string }
+      const callbackUrl = new URL(mintedUrl)
+      const callback = await fetch(`${appOrigin}${callbackUrl.pathname}${callbackUrl.search}`, {
+        headers: { Host: previewHost },
+        redirect: "manual",
+      })
+      const oldPreviewCookie = extractCookie(callback)
+      expect((await requestPreview(oldPreviewCookie)).status).toBe(200)
+      await first.stop()
+
+      const { server: restarted } = await startPasswordServer({ port: appPort })
+      expect(restarted.port).toBe(appPort)
+      // The old preview credential cannot cross a boot boundary even though
+      // the stateless app session cookie still can.
+      expect((await requestPreview(oldPreviewCookie)).status).toBe(302)
+      expect(seen).toEqual(["/"])
+
+      const remint = await fetch(`${appOrigin}/api/preview-grants`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Origin: appOrigin, Cookie: sessionCookie },
+        body: JSON.stringify({ port: target.port, next: "/" }),
+      })
+      expect(remint.status).toBe(200)
+      const { url: remintedUrl } = await remint.json() as { url: string }
+      const freshCallbackUrl = new URL(remintedUrl)
+      const freshCallback = await fetch(`${appOrigin}${freshCallbackUrl.pathname}${freshCallbackUrl.search}`, {
+        headers: { Host: previewHost },
+        redirect: "manual",
+      })
+      const freshPreviewCookie = extractCookie(freshCallback)
+      expect((await requestPreview(freshPreviewCookie)).status).toBe(200)
+      expect(seen).toEqual(["/", "/"])
+    } finally {
+      target.stop(true)
+      await first.stop().catch(() => {})
     }
   })
 

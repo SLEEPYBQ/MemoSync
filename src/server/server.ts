@@ -237,8 +237,8 @@ export interface StartMemoSyncServerOptions {
    * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
-  /** Isolated origin that also reaches this server and may execute preview
-   * content; defaults to MEMOSYNC_PREVIEW_ORIGIN. */
+  /** Isolated HTTPS (or loopback) origin that also reaches this server and
+   * may execute preview content; defaults to MEMOSYNC_PREVIEW_ORIGIN. */
   previewOrigin?: string
   /** Public app origin used to bootstrap preview credentials from the preview
    * origin; defaults to MEMOSYNC_APP_ORIGIN. */
@@ -267,8 +267,8 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const runtimeProfile = getRuntimeProfile()
   const trustProxy = options.trustProxy ?? false
   // Isolated origins for executable preview content (see preview-proxy.ts).
-  // MEMOSYNC_PREVIEW_ORIGIN is required when the app is reached through a
-  // non-loopback public origin; MEMOSYNC_APP_ORIGIN lets the preview origin
+  // An HTTPS MEMOSYNC_PREVIEW_ORIGIN is required when the app is reached
+  // through a non-loopback public origin; MEMOSYNC_APP_ORIGIN lets the preview origin
   // find its way back to the grant endpoint.
   const previewOrigin = (options.previewOrigin ?? process.env.MEMOSYNC_PREVIEW_ORIGIN ?? "").trim() || null
   const appPublicOrigin = (options.appOrigin ?? process.env.MEMOSYNC_APP_ORIGIN ?? "").trim() || null
@@ -872,7 +872,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
                 `<body style="font-family:system-ui;color:#667085;display:grid;place-items:center;height:100vh;margin:0">` +
                 `<p style="max-width:32rem;padding:0 1.5rem;font-size:14px">` +
                 `Previews run on an isolated origin. Open MemoSync locally, or ask whoever hosts` +
-                ` this server to set MEMOSYNC_PREVIEW_ORIGIN.` +
+                ` this server to set MEMOSYNC_PREVIEW_ORIGIN to an HTTPS origin.` +
                 `</p>`,
                 { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
               )

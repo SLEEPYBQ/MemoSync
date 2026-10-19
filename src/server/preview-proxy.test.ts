@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test"
+import { isolatedPreviewTarget } from "../shared/preview-proxy"
 import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 
 function reqWithHost(host: string, url = "http://x/", init?: RequestInit): Request {
@@ -63,6 +64,21 @@ describe("preview proxy", () => {
       "https://memosync.example.com/__memosync/preview/8901/app/page?x=1",
     )
     expect(previewProxyTarget(req, 3210)).toBe(8901)
+  })
+
+  it("requires HTTPS or loopback for a configured public preview origin", () => {
+    const req = new Request("https://memosync.example.com/__memosync/preview/8901/app")
+    expect(isolatedPreviewTarget(req, 8901, "http://preview.example.com", "/app?x=1")).toBeNull()
+    expect(isolatedPreviewTarget(req, 8901, "https://preview.example.com", "/app?x=1")).toEqual({
+      origin: "https://preview.example.com",
+      host: "preview.example.com",
+      path: "/__memosync/preview/8901/app?x=1",
+    })
+    expect(isolatedPreviewTarget(req, 8901, "http://127.0.0.1:3211", "/app")).toEqual({
+      origin: "http://127.0.0.1:3211",
+      host: "127.0.0.1:3211",
+      path: "/__memosync/preview/8901/app",
+    })
   })
 
   it("forwards to 127.0.0.1:<port>, strips frame-blocking headers, rewrites absolute redirects", async () => {

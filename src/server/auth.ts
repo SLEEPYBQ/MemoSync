@@ -156,8 +156,8 @@ export interface AuthManagerOptions {
    */
   trustProxy?: boolean
   /**
-   * Isolated origin that also reaches this server and is allowed to execute
-   * preview content (MEMOSYNC_PREVIEW_ORIGIN), e.g.
+   * Isolated HTTPS origin that also reaches this server and is allowed to
+   * execute preview content (MEMOSYNC_PREVIEW_ORIGIN), e.g.
    * `https://preview.example.com`. Required for previews when the app itself
    * is reached through a non-loopback public origin.
    */
@@ -180,7 +180,12 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   // forever instead of returning to the password page (BUG HTTP-4). A signed
   // token validates without server state and survives restart while the
   // password is unchanged. Logout clears the cookie client-side.
-  const previewOrigin = options.previewOrigin?.trim() ? new URL(options.previewOrigin!.trim()).origin : null
+  const configuredPreviewOrigin = options.previewOrigin?.trim() ? new URL(options.previewOrigin!.trim()) : null
+  // SameSite=None preview credentials require Secure transport; browsers only
+  // accept Secure on HTTP for loopback hosts.
+  const previewOrigin = configuredPreviewOrigin && (configuredPreviewOrigin.protocol === "https:" || isLoopbackHostname(configuredPreviewOrigin.hostname))
+    ? configuredPreviewOrigin.origin
+    : null
   const configuredAppOrigin = options.appOrigin?.trim() ? new URL(options.appOrigin!.trim()).origin : null
   // Preview credentials are bound to a per-boot nonce: restarting the process
   // invalidates every outstanding memosync_preview cookie even though the
@@ -382,10 +387,10 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   function previewTicketRedirect(req: Request, targetPort: number) {
     const url = new URL(req.url)
     const base = `${PREVIEW_PROXY_PATH_PREFIX}/${targetPort}`
-    const next = url.pathname === base ? "/"
+    const path = url.pathname === base ? "/"
       : url.pathname.startsWith(`${base}/`) ? url.pathname.slice(base.length)
       : "/"
-    const target = isolatedPreviewTarget(req, targetPort, previewOrigin, next)
+    const target = isolatedPreviewTarget(req, targetPort, previewOrigin, `${path}${url.search}`)
     if (!target) return new Response("Forbidden", { status: 403 })
     const ticket = mintPreviewTicket(req, { port: targetPort, host: target.host, next: target.path })
     if (!ticket) return new Response("Unauthorized", { status: 401 })
