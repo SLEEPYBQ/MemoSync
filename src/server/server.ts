@@ -1097,6 +1097,7 @@ async function startLockedMemoSyncServer(
       await attempt(() => activeAgent.cancel(chatId))
     }
     await attempt(() => activeAgent.shutdownStudyRuntime())
+    await attempt(() => activeAgent.forceStopAllTurns())
     await attempt(() => router.dispose())
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())

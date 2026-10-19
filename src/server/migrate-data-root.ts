@@ -37,16 +37,29 @@ export function hasMemoSyncDataRoot(homeDir: string = homedir()): boolean {
   return looksLikeThisAppsDataRoot(getDataRootDir(homeDir))
 }
 
+/** Canonicalize a path through its deepest existing ancestor so a missing
+ * leaf still resolves symlinked parents (e.g. an aliased home directory). */
+function canonicalPath(target: string): string {
+  let current = path.resolve(target)
+  const missing: string[] = []
+  while (true) {
+    try {
+      return path.join(realpathSync(current), ...missing.reverse())
+    } catch {
+      const parent = path.dirname(current)
+      if (parent === current) return path.resolve(target)
+      missing.push(path.basename(current))
+      current = parent
+    }
+  }
+}
+
 /** Resolve an explicitly supplied data path against the default root. */
 export function isDefaultDataDirectory(dataDir: string, homeDir: string = homedir()): boolean {
   const configured = path.resolve(dataDir)
   const defaultDir = path.resolve(getDataDir(homeDir))
   if (configured === defaultDir) return true
-  try {
-    return realpathSync(configured) === realpathSync(defaultDir)
-  } catch {
-    return false
-  }
+  return canonicalPath(configured) === canonicalPath(defaultDir)
 }
 
 function moveAsideAsBackup(dir: string): string | null {

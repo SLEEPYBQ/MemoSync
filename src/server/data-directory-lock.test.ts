@@ -193,3 +193,14 @@ test("coordinates an explicit path or symlink to the default data directory", as
   expect(isDefaultDataDirectory(alias, homeDir)).toBe(true)
   expect(isDefaultDataDirectory(path.join(homeDir, "other-data"), homeDir)).toBe(false)
 })
+
+test("resolves an explicit path through a symlinked home when the default directory is missing", async () => {
+  const base = await directory()
+  const realHome = path.join(base, "real-home")
+  const aliasHome = path.join(base, "alias-home")
+  await mkdir(realHome, { recursive: true })
+  await symlink(realHome, aliasHome, "dir")
+
+  expect(isDefaultDataDirectory(path.join(aliasHome, ".memosync", "data"), realHome)).toBe(true)
+  expect(isDefaultDataDirectory(path.join(aliasHome, "other", "data"), realHome)).toBe(false)
+})
