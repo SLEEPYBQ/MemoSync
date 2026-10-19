@@ -17,7 +17,7 @@ import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
 import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
-import { prepareDefaultDataRoot } from "./migrate-data-root"
+import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
@@ -266,11 +266,12 @@ export async function cleanupFailedMemoSyncStartup(args: {
 
 export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
   const homeDir = homedir()
-  const bootstrapLock = options.dataDir ? null : acquireDataRootBootstrapLock(homeDir)
+  const usesDefaultDataDir = !options.dataDir || isDefaultDataDirectory(options.dataDir, homeDir)
+  const bootstrapLock = usesDefaultDataDir ? acquireDataRootBootstrapLock(homeDir) : null
   const startupCleanups: Array<() => void | Promise<void>> = []
   let lock: ReturnType<typeof acquireDataDirectoryLock> | undefined
   try {
-    if (!options.dataDir) prepareDefaultDataRoot(homeDir)
+    if (usesDefaultDataDir) prepareDefaultDataRoot(homeDir)
     lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homeDir))
     const dataLock = lock
     const runtime = await startLockedMemoSyncServer(
@@ -1083,18 +1084,30 @@ async function startLockedMemoSyncServer(
 
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
-    await server.stop(true)
-    for (const chatId of [...activeAgent.activeTurns.keys()]) {
-      await activeAgent.cancel(chatId)
+    const shutdownErrors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        shutdownErrors.push(error)
+      }
     }
-    await activeAgent.shutdownStudyRuntime()
-    router.dispose()
-    appSettings.dispose()
-    keybindings.dispose()
-    terminals.closeAll()
-    memory.close()
-    studyMemoryStore?.close()
-    await store.compact()
+    await attempt(() => server.stop(true))
+    for (const chatId of [...activeAgent.activeTurns.keys()]) {
+      await attempt(() => activeAgent.cancel(chatId))
+    }
+    await attempt(() => activeAgent.shutdownStudyRuntime())
+    await attempt(() => router.dispose())
+    await attempt(() => appSettings.dispose())
+    await attempt(() => keybindings.dispose())
+    await attempt(() => terminals.closeAll())
+    await attempt(() => memory.close())
+    await attempt(() => studyMemoryStore?.close())
+    await attempt(() => store.compact())
+    if (shutdownErrors.length === 1) throw shutdownErrors[0]
+    if (shutdownErrors.length > 1) {
+      throw new AggregateError(shutdownErrors, "MemoSync shutdown failed")
+    }
   }
 
   return {

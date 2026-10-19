@@ -9,10 +9,10 @@
 // the root, no data/ subdir). That dir is not this app's data. When the target
 // exists but does not carry this app's layout, it is moved aside to a
 // timestamped backup (never deleted) before the legacy root is renamed in.
-import { existsSync, readdirSync, renameSync } from "node:fs"
+import { existsSync, readdirSync, realpathSync, renameSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { getDataRootDir, getLegacyDataRootDir, LOG_PREFIX } from "../shared/branding"
+import { getDataDir, getDataRootDir, getLegacyDataRootDir, LOG_PREFIX } from "../shared/branding"
 
 const INSTANCE_LOCK_BASENAME = ".instance-lock.sqlite"
 
@@ -35,6 +35,18 @@ function looksLikeThisAppsDataRoot(rootDir: string): boolean {
 
 export function hasMemoSyncDataRoot(homeDir: string = homedir()): boolean {
   return looksLikeThisAppsDataRoot(getDataRootDir(homeDir))
+}
+
+/** Resolve an explicitly supplied data path against the default root. */
+export function isDefaultDataDirectory(dataDir: string, homeDir: string = homedir()): boolean {
+  const configured = path.resolve(dataDir)
+  const defaultDir = path.resolve(getDataDir(homeDir))
+  if (configured === defaultDir) return true
+  try {
+    return realpathSync(configured) === realpathSync(defaultDir)
+  } catch {
+    return false
+  }
 }
 
 function moveAsideAsBackup(dir: string): string | null {

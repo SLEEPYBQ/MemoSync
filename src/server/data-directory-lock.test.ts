@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
-import { prepareDefaultDataRoot } from "./migrate-data-root"
+import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { cleanupFailedMemoSyncStartup, startMemoSyncServer } from "./server"
 
 const directories: string[] = []
@@ -180,4 +180,16 @@ test("migrates legacy data when the current root only contains a transient lock"
   const backupName = (await readdir(homeDir)).find((entry) => entry.startsWith(".memosync-v1-backup-"))
   expect(backupName).toBeTruthy()
   expect(existsSync(path.join(homeDir, backupName!, "data", ".instance-lock.sqlite"))).toBe(true)
+})
+
+test("coordinates an explicit path or symlink to the default data directory", async () => {
+  const homeDir = await directory()
+  const defaultData = path.join(homeDir, ".memosync", "data")
+  await mkdir(defaultData, { recursive: true })
+  const alias = path.join(homeDir, "linked-default-data")
+  await symlink(defaultData, alias, "junction")
+
+  expect(isDefaultDataDirectory(defaultData, homeDir)).toBe(true)
+  expect(isDefaultDataDirectory(alias, homeDir)).toBe(true)
+  expect(isDefaultDataDirectory(path.join(homeDir, "other-data"), homeDir)).toBe(false)
 })
