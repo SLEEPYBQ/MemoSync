@@ -623,7 +623,7 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     const outcome = await capture.capture({
       sessionId: 's-update', turn: 2, userText: 'We moved the dev server to 5000', assistantText: 'Noted.',
     });
-    expect(outcome).toMatchObject({ surfaced: 1, revisions: 0, dropped: 0 });
+    expect(outcome).toMatchObject({ surfaced: 1, revisions: 1, dropped: 0 });
     expect(outcome.created).toHaveLength(1);
     const latest = outcome.created[0]!;
     expect(latest).toMatchObject({ content: 'Dev server now runs on port 5000', status: 'candidate', provenanceTurn: 2 });
@@ -632,9 +632,45 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     expect(memory.store.getEvents(draft.id)).toEqual(draftEvents);
     expect(memory.store.revisionTargetOf(draft.id)?.id).toBe(target.id);
     expect(memory.store.getKv(`revision_targets:${draft.id}`)).not.toBeNull();
-    expect(memory.store.getRelations(latest.id)).toEqual([]);
-    expect(memory.store.getKv(`revision_targets:${latest.id}`)).toBeNull();
+    expect(memory.store.revisionTargetOf(latest.id)?.id).toBe(target.id);
+    expect(memory.store.getKv(`revision_targets:${latest.id}`)).not.toBeNull();
     expect(memory.store.getById(target.id)).toEqual(target);
+  });
+
+  for (const winnerIndex of [0, 1]) it(`competing capture updates accept only one replacement (winner ${winnerIndex})`, async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const target = memory.store.create(
+      { content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' },
+    );
+    const { call } = stubCaller([
+      { candidates: [{ content: 'Use port 4000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+      { candidates: [{ content: 'Use port 5000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+    ]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const proposals = [];
+    for (const turn of [1, 2]) {
+      const result = await capture.capture({ sessionId: 's-update', turn, userText: `port changed ${turn}`, assistantText: 'Noted.' });
+      proposals.push(result.created[0]!);
+    }
+    const accept = (id: string) => {
+      const url = new URL(`http://localhost/api/memories/${id}`);
+      return handleMemoryRequest(new Request(url, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'active' }),
+      }), url, memory);
+    };
+    const winner = proposals[winnerIndex]!;
+    const loser = proposals[1 - winnerIndex]!;
+    expect((await accept(winner.id))!.status).toBe(200);
+    const snapshot = () => memory.store.list().map((item) => ({ item, events: memory.store.getEvents(item.id) }));
+    const before = snapshot();
+    expect((await accept(loser.id))!.status).toBe(409);
+    expect(snapshot()).toEqual(before);
+    expect(memory.store.list({ status: 'active' }).map(({ id }) => id)).toEqual([winner.id]);
+    expect(memory.store.getById(target.id)!.status).toBe('archived');
+    expect(memory.store.getById(loser.id)!.status).toBe('candidate');
+    expect(memory.store.getById(loser.id)!.content).toBe(loser.content);
   });
 
   it('updates verdict surfaces a REVISION candidate linked revises → target', async () => {

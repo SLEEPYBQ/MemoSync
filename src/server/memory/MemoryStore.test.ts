@@ -970,6 +970,24 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     }
   });
 
+  for (const patch of [{ content: 'Use port 443' }, { scope: 'project' as const, projectId: 'Other' }]) {
+    it(`competing capture updates reject a changed target (${Object.keys(patch)[0]})`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      store.createRevisionProposal(
+        { content: 'Use port 4000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      );
+      const proposal = store.createCaptureUpdateProposal(
+        { content: 'Use port 5000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      )!.item;
+      store.update(target.id, patch, { actor: 'user' });
+      const state = () => store.list().map((item) => ({ item, events: store.getEvents(item.id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+      expect(state()).toEqual(before);
+    });
+  }
+
   it('acceptRevision activates the candidate and archives its target in one act', () => {
     const store = freshStore();
     const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });

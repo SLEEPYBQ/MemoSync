@@ -849,7 +849,7 @@ export class MemoryStore {
     return this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
   }
 
-  /** Preserve a new capture observation without replacing an existing pending revision. */
+  /** Preserve competing capture updates as target-bound alternatives, not independent facts. */
   createCaptureUpdateProposal(
     input: CreateMemoryInput,
     targetId: string,
@@ -863,21 +863,18 @@ export class MemoryStore {
     input: CreateMemoryInput,
     targetId: string,
     meta: ActorMeta,
-    allowStandalone: boolean,
+    allowCompeting: boolean,
     opts?: { expectedTargetContent?: string },
   ): { item: MemoryItem; isRevision: boolean } | null {
     return this.db.transaction(() => {
       const target = this.getById(targetId);
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
-      const isRevision = !this.hasOpenRevision(targetId);
-      if (!isRevision && !allowStandalone) return null;
+      if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
       const proposal = this.create({ ...input, status: 'candidate' }, meta);
-      if (isRevision) {
-        this.addRelation(proposal.id, targetId, 'revises');
-        this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
-      }
-      return { item: proposal, isRevision };
+      this.addRelation(proposal.id, targetId, 'revises');
+      this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
+      return { item: proposal, isRevision: true };
     })();
   }
 
