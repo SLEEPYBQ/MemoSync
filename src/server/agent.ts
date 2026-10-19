@@ -3509,7 +3509,14 @@ export class AgentCoordinator {
       }
     }
     for (const [chatId, active] of [...this.activeTurns.entries()]) {
-      await attempt(() => active.turn.interrupt())
+      // interrupt() may never settle; bound it so a hung turn cannot stall
+      // close(), the remaining turns, or the data-lock release.
+      await attempt(() =>
+        Promise.race([
+          active.turn.interrupt(),
+          new Promise((resolve) => setTimeout(resolve, 5_000)),
+        ]).then(() => undefined),
+      )
       await attempt(() => active.turn.close())
       if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
     }
