@@ -12,7 +12,14 @@
 import { existsSync, readdirSync, realpathSync, renameSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
-import { getDataDir, getDataRootDir, getLegacyDataRootDir, LOG_PREFIX } from "../shared/branding"
+import {
+  getDataDir,
+  getDataRootDir,
+  getKeybindingsFilePath,
+  getLegacyDataRootDir,
+  getLlmProviderFilePath,
+  LOG_PREFIX,
+} from "../shared/branding"
 
 const INSTANCE_LOCK_BASENAME = ".instance-lock.sqlite"
 
@@ -21,11 +28,14 @@ function isTransientInstanceLockFile(name: string): boolean {
 }
 
 /**
- * This app's root is recognized by substantive files in its data/ subdir.
- * A lock-only directory can be left behind by a failed first start and is not
- * proof that legacy migration already ran.
+ * This app's root is recognized by substantive files in its data/ subdir or
+ * its root-level settings files. A lock-only data directory can be left behind
+ * by a failed first start and is not proof that legacy migration already ran.
  */
 function looksLikeThisAppsDataRoot(rootDir: string): boolean {
+  const homeDir = path.dirname(rootDir)
+  if ([getKeybindingsFilePath(homeDir), getLlmProviderFilePath(homeDir)].some(existsSync)) return true
+
   try {
     return readdirSync(path.join(rootDir, "data")).some((entry) => !isTransientInstanceLockFile(entry))
   } catch {

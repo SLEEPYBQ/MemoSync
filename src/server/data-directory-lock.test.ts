@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
-import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
+import { hasMemoSyncDataRoot, isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { cleanupFailedMemoSyncStartup, startMemoSyncServer } from "./server"
 
 const directories: string[] = []
@@ -180,6 +180,59 @@ test("migrates legacy data when the current root only contains a transient lock"
   const backupName = (await readdir(homeDir)).find((entry) => entry.startsWith(".memosync-v1-backup-"))
   expect(backupName).toBeTruthy()
   expect(existsSync(path.join(homeDir, backupName!, "data", ".instance-lock.sqlite"))).toBe(true)
+})
+
+test("preserves a current root with keybindings and an empty data directory", async () => {
+  const homeDir = await directory()
+  const currentRoot = path.join(homeDir, ".memosync")
+  const legacyData = path.join(homeDir, ".kanna", "data")
+  await mkdir(path.join(currentRoot, "data"), { recursive: true })
+  await writeFile(path.join(currentRoot, "keybindings.json"), '{"toggleRightSidebar":["ctrl+b"]}\n')
+  await mkdir(legacyData, { recursive: true })
+  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+
+  prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+  expect(existsSync(path.join(currentRoot, "keybindings.json"))).toBe(true)
+  expect(existsSync(path.join(currentRoot, "data"))).toBe(true)
+  expect(existsSync(path.join(homeDir, ".kanna", "data", "memory.sqlite"))).toBe(true)
+  expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
+})
+
+test("preserves a current root with provider settings and a lock-only data directory", async () => {
+  const homeDir = await directory()
+  const currentRoot = path.join(homeDir, ".memosync")
+  const legacyData = path.join(homeDir, ".kanna", "data")
+  await mkdir(path.join(currentRoot, "data"), { recursive: true })
+  await writeFile(path.join(currentRoot, "data", ".instance-lock.sqlite"), "stale first-start lock")
+  await writeFile(path.join(currentRoot, "llm-provider.json"), '{"provider":"custom"}\n')
+  await mkdir(legacyData, { recursive: true })
+  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+
+  prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+  expect(existsSync(path.join(currentRoot, "llm-provider.json"))).toBe(true)
+  expect(existsSync(path.join(currentRoot, "data", ".instance-lock.sqlite"))).toBe(true)
+  expect(existsSync(path.join(homeDir, ".kanna", "data", "memory.sqlite"))).toBe(true)
+  expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
+})
+
+test("preserves root-level current settings when the data directory is missing", async () => {
+  const homeDir = await directory()
+  const providerSettings = path.join(homeDir, ".memosync", "llm-provider.json")
+  const legacyData = path.join(homeDir, ".kanna", "data")
+  await mkdir(path.dirname(providerSettings), { recursive: true })
+  await writeFile(providerSettings, '{"provider":"custom"}\n')
+  await mkdir(legacyData, { recursive: true })
+  await writeFile(path.join(legacyData, "memory.sqlite"), "legacy user data")
+
+  prepareDefaultDataRoot(homeDir, { allowInTest: true })
+
+  expect(existsSync(providerSettings)).toBe(true)
+  expect(existsSync(path.join(homeDir, ".memosync", "data"))).toBe(false)
+  expect(existsSync(path.join(legacyData, "memory.sqlite"))).toBe(true)
+  expect((await readdir(homeDir)).some((entry) => entry.startsWith(".memosync-v1-backup-"))).toBe(false)
+  expect(hasMemoSyncDataRoot(homeDir)).toBe(true)
 })
 
 test("coordinates an explicit path or symlink to the default data directory", async () => {
