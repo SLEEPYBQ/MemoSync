@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import * as fsPromises from "node:fs/promises"
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -188,6 +189,140 @@ describe("EventStore", () => {
     expect(store.getMessages(chat.id)).toEqual([
       entry("assistant_text", 203, { text: "fresh" }),
     ])
+  })
+
+  test("repairs an unterminated UTF-8 transcript tail before appending across restarts", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
+    const valid = entry("user_prompt", 210, { content: "Résumé 🧠" })
+    const appended = entry("assistant_text", 212, { text: "Recovered" })
+    await writeFile(transcriptPath, `${JSON.stringify(valid)}\n{"_id":"torn","text":"unfinished`, "utf8")
+
+    const afterRestart = new EventStore(dataDir)
+    await afterRestart.initialize()
+    expect(afterRestart.getMessages(chat.id)).toEqual([valid])
+    await afterRestart.appendMessage(chat.id, appended)
+
+    const afterSecondRestart = new EventStore(dataDir)
+    await afterSecondRestart.initialize()
+    expect(afterSecondRestart.getMessages(chat.id)).toEqual([valid, appended])
+    expect(await readFile(transcriptPath, "utf8")).toBe(`${JSON.stringify(valid)}\n${JSON.stringify(appended)}\n`)
+  })
+
+  test("repairs an unterminated tail on append without a preceding transcript read", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
+    const valid = entry("assistant_text", 220, { text: "Keep this" })
+    const appended = entry("user_prompt", 222, { content: "Continue" })
+    await writeFile(transcriptPath, `${JSON.stringify(valid)}\n{"broken":`, "utf8")
+
+    await store.appendMessage(chat.id, appended)
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getMessages(chat.id)).toEqual([valid, appended])
+  })
+
+  test("repairs a partial failed transcript append before the next write", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
+    const first = entry("user_prompt", 250, { content: "first intact" })
+    const interrupted = entry("assistant_text", 251, { text: "partial attempt" })
+    const recovered = entry("assistant_text", 252, { text: "recovered after failure" })
+
+    await store.appendMessage(chat.id, first)
+    expect(store.getMessages(chat.id)).toEqual([first])
+
+    const appendError = new Error("simulated interrupted transcript append")
+    const realAppendFile = fsPromises.appendFile.bind(fsPromises)
+    let failNextTranscriptAppend = true
+    const appendSpy = spyOn(fsPromises, "appendFile").mockImplementation(async (file, data, options) => {
+      if (file === transcriptPath && failNextTranscriptAppend) {
+        failNextTranscriptAppend = false
+        await realAppendFile(
+          transcriptPath,
+          '{"_id":"torn","createdAt":251,"kind":"assistant_text","text":"partial',
+          "utf8",
+        )
+        throw appendError
+      }
+      return realAppendFile(file, data, options)
+    })
+    try {
+      await expect(store.appendMessage(chat.id, interrupted)).rejects.toBe(appendError)
+      expect(failNextTranscriptAppend).toBe(false)
+    } finally {
+      appendSpy.mockRestore()
+    }
+
+    expect(store.getMessages(chat.id)).toEqual([first])
+    await store.appendMessage(chat.id, recovered)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getMessages(chat.id)).toEqual([first, recovered])
+    expect(await readFile(transcriptPath, "utf8")).toBe(
+      `${JSON.stringify(first)}\n${JSON.stringify(recovered)}\n`,
+    )
+  })
+
+  test("rejects interior and newline-terminated transcript corruption without mutation", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const firstChat = await store.createChat(project.id)
+    const secondChat = await store.createChat(project.id)
+    const valid = entry("user_prompt", 230, { content: "valid" })
+    const appended = entry("assistant_text", 231, { text: "must not append" })
+    const corruptTranscripts = [
+      {
+        chatId: firstChat.id,
+        text: `${JSON.stringify(valid)}\n{"broken":true\n${JSON.stringify(appended)}\n`,
+      },
+      {
+        chatId: secondChat.id,
+        text: `${JSON.stringify(valid)}\n{"broken":true\n`,
+      },
+    ]
+
+    for (const { chatId, text } of corruptTranscripts) {
+      const transcriptPath = join(dataDir, "transcripts", `${chatId}.jsonl`)
+      await writeFile(transcriptPath, text, "utf8")
+      await expect(store.appendMessage(chatId, appended)).rejects.toThrow()
+      expect(await readFile(transcriptPath, "utf8")).toBe(text)
+    }
+  })
+
+  test("preserves and separates a valid final JSON record without a newline", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const chat = await store.createChat(project.id)
+    const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
+    const finalWithoutNewline = entry("user_prompt", 240, { content: "valid tail" })
+    const appended = entry("assistant_text", 241, { text: "next record" })
+    await writeFile(transcriptPath, JSON.stringify(finalWithoutNewline), "utf8")
+
+    await store.appendMessage(chat.id, appended)
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.getMessages(chat.id)).toEqual([finalWithoutNewline, appended])
+    expect(await readFile(transcriptPath, "utf8")).toBe(
+      `${JSON.stringify(finalWithoutNewline)}\n${JSON.stringify(appended)}\n`,
+    )
   })
 
   test("scrubs candidate content from legacy transcript rows during startup", async () => {

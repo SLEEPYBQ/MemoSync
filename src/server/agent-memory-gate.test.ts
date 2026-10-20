@@ -2439,21 +2439,16 @@ describe("memory preview gate (coordinator)", () => {
       releasePromptWrite()
       await stopping
       await first
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh turn")))
       expect(h.store.messages.filter((message) => message.kind === "user_prompt").map((message) => message.content)).toEqual([
         "cancel this startup",
+        "fresh turn",
       ])
       expect(h.store.messages.slice(0, 2).map((message) => message.kind)).toEqual(["user_prompt", "interrupted"])
       expect(h.store.turnCancelledCount).toBe(1)
 
-      if (!("queuedMessageId" in queued) || !queued.queuedMessageId) {
-        throw new Error("expected the fresh prompt to be queued")
-      }
-      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: queued.queuedMessageId })
-      await h.coordinator.send({
-        type: "chat.send", chatId: "chat-1", provider: "claude", content: "ordered fresh turn",
-      })
-      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("ordered fresh turn")))
-      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["ordered fresh turn"])
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh turn"])
+      expect(h.store.queuedMessages).toHaveLength(0)
       expect(h.promptContexts.map((context) => context?.turn)).toEqual([2])
     } finally {
       releasePromptWrite()
@@ -2636,7 +2631,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("Start keeps the preview claim through provider boot until active-turn ownership is installed", async () => {
+  const runStartKeepsPreviewClaim = async (activeStudyTaskId: string | null) => {
     let providerBootStarted!: () => void
     const bootStarted = new Promise<void>((resolve) => {
       providerBootStarted = resolve
@@ -2647,7 +2642,7 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
+      activeStudyTaskId,
       policy: resolveConditionPolicy("memosync"),
       beforeClaudeSessionStart: async () => {
         providerBootStarted()
@@ -2703,7 +2698,15 @@ describe("memory preview gate (coordinator)", () => {
       releaseProviderBoot()
       h.cleanup()
     }
-  })
+  }
+
+  test.each([
+    ["without an active study task", null],
+    ["with active study task 038-S1", "038-S1"],
+  ] as const)(
+    "Start keeps the preview claim through provider boot until active-turn ownership is installed (%s)",
+    (_scenario, activeStudyTaskId) => runStartKeepsPreviewClaim(activeStudyTaskId),
+  )
 
   test("does not append a Start decision or dispatch Claude when the durable attempted claim fails", async () => {
     let attemptedCalls = 0

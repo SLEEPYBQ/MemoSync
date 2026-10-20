@@ -3491,6 +3491,14 @@ export class AgentCoordinator {
       || this.activePreparations.get(chatId)?.args.startupReservation === reservation
     ) return
     this.startupReservations.delete(chatId)
+    if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
+      && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
+      void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+        this.reportBackgroundError?.(
+          `[startup-cancel] chat ${chatId}: could not drain queued messages: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    }
   }
 
   private startupReservationIsCurrent(chatId: string, reservation?: StartupReservation) {
@@ -6826,13 +6834,11 @@ export class AgentCoordinator {
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
       })
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
-        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
         return
       }
       if (chat.pendingForkSessionToken && sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
         if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
-          if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
           return
         }
       }
@@ -6856,14 +6862,12 @@ export class AgentCoordinator {
         })
       } catch (error) {
         if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
-          if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
           return
         }
         throw error
       }
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         turn.close()
-        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
         return
       }
       this.turnPayAttention.delete(args.chatId)
@@ -6878,9 +6882,6 @@ export class AgentCoordinator {
     if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
       startController.abort()
       turn.close()
-      if (args.provider === "codex" && this.canStopStartupSession(args.chatId, reservation)) {
-        this.codexManager.stopSession(args.chatId)
-      }
       return
     }
 
@@ -6921,7 +6922,7 @@ export class AgentCoordinator {
         this.engineStartAbortControllers.delete(args.chatId)
       }
       if (reservation?.controller === startController) reservation.controller = undefined
-      if (!bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
+      if (args.provider === "codex" && !bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
         if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
       }
     }

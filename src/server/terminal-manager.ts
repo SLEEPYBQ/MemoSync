@@ -36,6 +36,8 @@ interface TerminalSession {
   exitCode: number | null
   process: Bun.Subprocess | null
   terminal: Bun.Terminal
+  outputDecoder: TextDecoder
+  outputFinalized: boolean
   headless: Terminal
   serializeAddon: SerializeAddon
   focusReportingEnabled: boolean
@@ -228,23 +230,17 @@ export class TerminalManager {
         cols,
         rows,
         name: "xterm-256color",
-        data: (_terminal, data) => {
-          const chunk = Buffer.from(data).toString("utf8")
-          updateFocusReportingState(session, chunk)
-          headless.write(chunk)
-          this.emit({
-            type: "terminal.output",
-            terminalId: args.terminalId,
-            data: chunk,
-          })
-        },
+        data: (_terminal, data) => this.handleOutputData(session, data),
       }),
+      outputDecoder: new TextDecoder("utf-8"),
+      outputFinalized: false,
       headless,
       serializeAddon,
       focusReportingEnabled: false,
       modeSequenceTail: "",
     }
 
+    this.sessions.set(args.terminalId, session)
     try {
       session.process = Bun.spawn([shell, ...resolveShellArgs(shell)], {
         cwd: args.projectPath,
@@ -252,40 +248,68 @@ export class TerminalManager {
         terminal: session.terminal,
       })
     } catch (error) {
+      if (this.sessions.get(args.terminalId) === session) this.sessions.delete(args.terminalId)
       session.terminal.close()
       session.serializeAddon.dispose()
       session.headless.dispose()
       throw error
     }
-    void session.process.exited.then((exitCode) => {
-      const active = this.sessions.get(args.terminalId)
-      if (!active) return
-      active.status = "exited"
-      active.exitCode = exitCode
-      this.emit({
-        type: "terminal.exit",
-        terminalId: args.terminalId,
-        exitCode,
-      })
-    }).catch((error) => {
-      const active = this.sessions.get(args.terminalId)
-      if (!active) return
-      active.status = "exited"
-      active.exitCode = 1
-      this.emit({
-        type: "terminal.output",
-        terminalId: args.terminalId,
-        data: `\r\n[terminal error] ${error instanceof Error ? error.message : String(error)}\r\n`,
-      })
-      this.emit({
-        type: "terminal.exit",
-        terminalId: args.terminalId,
-        exitCode: 1,
-      })
-    })
+    void session.process.exited.then((exitCode) => this.finishSession(session, exitCode))
+      .catch((error) => this.failSession(session, error))
 
-    this.sessions.set(args.terminalId, session)
     return this.snapshotOf(session)
+  }
+
+  private writeOutput(session: TerminalSession, chunk: string) {
+    if (!chunk || this.sessions.get(session.terminalId) !== session) return
+    updateFocusReportingState(session, chunk)
+    session.headless.write(chunk)
+    this.emit({
+      type: "terminal.output",
+      terminalId: session.terminalId,
+      data: chunk,
+    })
+  }
+
+  private handleOutputData(session: TerminalSession, data: string | Uint8Array) {
+    if (this.sessions.get(session.terminalId) !== session || session.outputFinalized) return
+    const chunk = session.outputDecoder.decode(Buffer.from(data), { stream: true })
+    if (chunk) this.writeOutput(session, chunk)
+  }
+
+  private flushOutput(session: TerminalSession) {
+    if (this.sessions.get(session.terminalId) !== session || session.outputFinalized) return
+    session.outputFinalized = true
+    const tail = session.outputDecoder.decode()
+    if (tail) this.writeOutput(session, tail)
+  }
+
+  private finishSession(session: TerminalSession, exitCode: number) {
+    if (this.sessions.get(session.terminalId) !== session || session.outputFinalized) return
+    this.flushOutput(session)
+    if (this.sessions.get(session.terminalId) !== session) return
+    session.status = "exited"
+    session.exitCode = exitCode
+    this.emit({
+      type: "terminal.exit",
+      terminalId: session.terminalId,
+      exitCode,
+    })
+  }
+
+  private failSession(session: TerminalSession, error: unknown) {
+    if (this.sessions.get(session.terminalId) !== session || session.outputFinalized) return
+    this.flushOutput(session)
+    if (this.sessions.get(session.terminalId) !== session) return
+    this.writeOutput(session, `\r\n[terminal error] ${error instanceof Error ? error.message : String(error)}\r\n`)
+    if (this.sessions.get(session.terminalId) !== session) return
+    session.status = "exited"
+    session.exitCode = 1
+    this.emit({
+      type: "terminal.exit",
+      terminalId: session.terminalId,
+      exitCode: 1,
+    })
   }
 
   getSnapshot(terminalId: string): TerminalSnapshot | null {
