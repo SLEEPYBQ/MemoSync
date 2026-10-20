@@ -1,9 +1,8 @@
-// One-command data export for longitudinal deployments. Bundles the research
-// telemetry (experiments/events.jsonl and friends) plus the memory library
-// into a tar.gz the user sends back to the researcher.
+// Local data export. The default archive contains the usage log and memory
+// library, not raw historical study databases, workspace copies, or chats.
 //
 //   bun run export-data              → telemetry + memory library (default)
-//   bun run export-data --full       → also chat/session logs + transcripts
+//   bun run export-data --full       → also raw historical data and chat logs
 //   bun run export-data --out <dir>  → write the archive somewhere specific
 //   DATA_DIR=… bun run export-data   → export a non-default data directory
 //
@@ -30,15 +29,16 @@ if (!existsSync(dataDir)) {
   process.exit(1)
 }
 
-const DEFAULT_ENTRIES = [
-  "experiments", // events.jsonl + any study-era measurement files
+const COMMON_ENTRIES = [
   "install-id",
   "memory.sqlite",
   "memories", // Markdown projection of the memory library
   "settings.json",
 ]
+const DEFAULT_ENTRIES = [...COMMON_ENTRIES, "experiments/events.jsonl"]
 const FULL_ENTRIES = [
-  ...DEFAULT_ENTRIES,
+  ...COMMON_ENTRIES,
+  "experiments",
   "projects.jsonl",
   "chats.jsonl",
   "messages.jsonl",
@@ -78,6 +78,6 @@ if (tar.status !== 0) {
 const sizeMb = (statSync(archivePath).size / (1024 * 1024)).toFixed(1)
 console.log(`\nExported ${present.length} entries from ${dataDir}:`)
 for (const entry of present) console.log(`  - ${entry}`)
-if (!full) console.log("  (chat transcripts and session logs excluded — rerun with --full to include them)")
+if (!full) console.log("  (raw historical data, workspace snapshots, and chat logs excluded — --full includes them)")
 console.log(`\n→ ${archivePath} (${sizeMb} MB)`)
-console.log("Send this file to the researcher.")
+console.log("This archive can contain private memories and settings. Review it before sharing.")

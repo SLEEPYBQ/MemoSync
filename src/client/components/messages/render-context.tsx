@@ -3,6 +3,7 @@ import type {
   ExpectedMemoryUse,
   MemoryPreviewDecision,
   StandaloneTranscriptAttachmentMode,
+  StandaloneTranscriptBundle,
 } from "../../../shared/types"
 
 export interface PreviewDemoDecision {
@@ -46,6 +47,7 @@ export interface TranscriptRenderOptions {
   readonly: boolean
   localLinkMode: "open" | "text"
   attachmentMode: "live" | StandaloneTranscriptAttachmentMode
+  textAttachmentPreviews?: StandaloneTranscriptBundle["textAttachmentPreviews"]
   previewDemo?: PreviewDemoOptions
 }
 
