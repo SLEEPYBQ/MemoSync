@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { PROVIDERS } from "../../../shared/types"
-import { ChatInput, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
+import { ChatInput, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 
 function createClipboardItem(args: {
   kind?: string
@@ -15,6 +15,19 @@ function createClipboardItem(args: {
     getAsFile: () => args.file ?? null,
   }
 }
+
+describe("createUploadFormData", () => {
+  test("includes byte sizes for Unicode and empty files", async () => {
+    for (const content of ["你好", ""]) {
+      const file = new File([content], "notes.txt", { type: "text/plain" })
+      const form = createUploadFormData(file)
+      expect(form.getAll("clientFileSizes")).toEqual([String(new TextEncoder().encode(content).length)])
+      const uploaded = form.get("files") as File
+      expect(uploaded.name).toBe("notes.txt")
+      expect(await uploaded.text()).toBe(content)
+    }
+  })
+})
 
 describe("willExceedAttachmentLimit", () => {
   test("rejects a batch that would push the composer above the total attachment limit", () => {

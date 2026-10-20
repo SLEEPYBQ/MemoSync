@@ -1,6 +1,7 @@
 import path from "node:path"
+import { homedir } from "node:os"
 import { stat } from "node:fs/promises"
-import { APP_NAME, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, getDataDir, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
 import { parseStudyProjects, registerStudyProjects, resolveRegisteredStudyProjects, type RegisteredStudyProject } from "./study-projects"
 import { studyWorkspaceStarterReady } from "./study-workspace-provenance"
 import { createStudyPromptGate, type StudyPromptGate } from "./study-prompt-gate"
@@ -15,7 +16,8 @@ import type { ShareMode } from "../shared/share"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
-import { migrateLegacyDataRoot } from "./migrate-data-root"
+import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
+import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
@@ -28,7 +30,16 @@ import { StudyPreviewRuntime } from "./study-preview-runtime"
 import { UpdateManager } from "./update-manager"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { isPathPreviewProxyRequest, previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
+import {
+  isPreviewHostForm,
+  isPreviewNavigationRequest,
+  isolatedPreviewTarget,
+  PREVIEW_CALLBACK_PATH,
+  PREVIEW_GRANT_PATH,
+  PREVIEW_TICKETS_PATH,
+  stripPreviewPathPrefix,
+} from "../shared/preview-proxy"
 import { MemoryService } from "./memory"
 import { handleMemoryRequest } from "./memory/routes"
 import { handleStudyRequest } from "./study-routes"
@@ -84,7 +95,7 @@ export async function persistUploadedFiles(args: {
       const attachment = await persistUpload({
         projectId: args.projectId,
         localPath: args.localPath,
-        fileName: file.name,
+        fileName: file.name || "upload",
         bytes,
         fallbackMimeType: file.type || undefined,
       })
@@ -222,6 +233,12 @@ export interface StartMemoSyncServerOptions {
    * reachable solely through a trusted reverse proxy such as cloudflared.
    */
   trustProxy?: boolean
+  /** Isolated HTTPS (or loopback) origin that also reaches this server and
+   * may execute preview content; defaults to MEMOSYNC_PREVIEW_ORIGIN. */
+  previewOrigin?: string
+  /** Public app origin used to bootstrap preview credentials from the preview
+   * origin; defaults to MEMOSYNC_APP_ORIGIN. */
+  appOrigin?: string
   /** Extra browser origins allowed to access the development API and WebSocket. */
   allowedOrigins?: string[]
   /**
@@ -239,17 +256,98 @@ export interface StartMemoSyncServerOptions {
   }
 }
 
+export async function cleanupFailedMemoSyncStartup(args: {
+  error: unknown
+  cleanups: Array<() => void | Promise<void>>
+  releaseLock: () => void
+}): Promise<unknown> {
+  const failures = [args.error]
+  for (const cleanup of args.cleanups.reverse()) {
+    try {
+      await cleanup()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  try {
+    args.releaseLock()
+  } catch (error) {
+    failures.push(error)
+  }
+  return failures.length > 1
+    ? new AggregateError(failures, "MemoSync startup and cleanup failed")
+    : args.error
+}
+
 export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
+  const homeDir = homedir()
+  const usesDefaultDataDir = !options.dataDir || isDefaultDataDirectory(options.dataDir, homeDir)
+  const bootstrapLock = usesDefaultDataDir ? acquireDataRootBootstrapLock(homeDir) : null
+  const startupCleanups: Array<() => void | Promise<void>> = []
+  let lock: ReturnType<typeof acquireDataDirectoryLock> | undefined
+  try {
+    if (usesDefaultDataDir) prepareDefaultDataRoot(homeDir)
+    lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homeDir))
+    const dataLock = lock
+    const runtime = await startLockedMemoSyncServer(
+      { ...options, dataDir: dataLock.dataDir },
+      (cleanup) => startupCleanups.push(cleanup),
+    )
+    let stopping: Promise<void> | undefined
+    return {
+      ...runtime,
+      stop: () => stopping ??= (async () => {
+        const stopErrors: unknown[] = []
+        try {
+          await runtime.stop()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        try {
+          dataLock.release()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        if (stopErrors.length === 1) throw stopErrors[0]
+        if (stopErrors.length > 1) {
+          throw new AggregateError(stopErrors, "MemoSync shutdown and lock release failed")
+        }
+      })(),
+    }
+  } catch (error) {
+    throw await cleanupFailedMemoSyncStartup({
+      error,
+      cleanups: startupCleanups,
+      releaseLock: () => lock?.release(),
+    })
+  } finally {
+    bootstrapLock?.release()
+  }
+}
+
+async function startLockedMemoSyncServer(
+  options: StartMemoSyncServerOptions,
+  onStartupCleanup: (cleanup: () => void | Promise<void>) => void,
+) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
-  const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
+  const trustProxy = options.trustProxy ?? false
+  // Isolated origins for executable preview content (see preview-proxy.ts).
+  // An HTTPS MEMOSYNC_PREVIEW_ORIGIN is required when the app is reached
+  // through a non-loopback public origin; MEMOSYNC_APP_ORIGIN lets the preview origin
+  // find its way back to the grant endpoint.
+  const previewOrigin = (options.previewOrigin ?? process.env.MEMOSYNC_PREVIEW_ORIGIN ?? "").trim() || null
+  const appPublicOrigin = (options.appOrigin ?? process.env.MEMOSYNC_APP_ORIGIN ?? "").trim() || null
+  const previewOriginHost = previewOrigin ? new URL(previewOrigin).host : null
+  const auth = options.password
+    ? createAuthManager(options.password, { trustProxy, previewOrigin, appOrigin: appPublicOrigin })
+    : null
   const allowedOrigins = options.allowedOrigins ?? (process.env.MEMOSYNC_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
-  if (!options.dataDir) migrateLegacyDataRoot()
   // Study-condition policy: decides which memory behaviors exist in this
   // instance (capture surfacing, preview gate, trace, board/working-set access)
   // and whether remote git/GitHub access exists at all. Resolved BEFORE any
@@ -303,6 +401,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const studyMemoryStore = conditionPolicy.studyMode
     ? new StudyMemoryStore(path.join(store.dataDir, "experiments", "study.sqlite"))
     : null
+  if (studyMemoryStore) onStartupCleanup(() => studyMemoryStore.close())
   // Formal allocations receive their immutable identity from the orchestrator.
   // Fixed-arm local images without that env remain bootable for diagnostics,
   // but onboarding/session routes fail closed rather than accepting a browser
@@ -362,6 +461,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
       durableSink: studyTelemetry ? (input) => studyTelemetry.recordServerEvent(input) : undefined,
     }),
   })
+  onStartupCleanup(() => memory.close())
   const beginStudyMemoryMutation = conditionPolicy.studyMode
     ? () => studyRegistry.beginTreatmentMemoryMutation()
     : undefined
@@ -377,8 +477,11 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
+  onStartupCleanup(() => terminals.closeAll())
   const keybindings = new KeybindingsManager()
+  onStartupCleanup(() => keybindings.dispose())
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  onStartupCleanup(() => appSettings.dispose())
   await appSettings.initialize()
   // A participant toggling the preview gate is research data (STUDY_PLAN §2.4)
   // — log every memoryPreview settings change, whether via UI or file edit.
@@ -611,6 +714,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     },
   })
   agent = activeAgent
+  onStartupCleanup(() => activeAgent.shutdownStudyRuntime())
   const studyWorkingMemoryAdmission = createStudyWorkingMemoryAdmission({
     policy: conditionPolicy,
     store,
@@ -711,20 +815,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     // Study arms only: the serial gate can refuse prompts (chat from a
     // completed session, pending questionnaire, or a finished study).
   })
-  // The first MemoSync prompt is already owned by a durable opening-Board
-  // claim before it reaches AgentCoordinator. Re-prime that exact logical
-  // turn after restart; its review id prevents a second prompt/turn/telemetry
-  // record and Working Memory still waits for the final Board Continue.
-  activeAgent.resumeOpeningBoardPreparation()
-  const staleEmptyChatPruneInterval = setInterval(() => {
-    void router.pruneStaleEmptyChats()
-      .then(() => router.broadcastSnapshots())
-  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
-
-  // Re-prime any chat whose queue was left stranded by a restart (BUG CORE-2).
-  // Fire-and-forget: engine boots can be slow and must not block the listener;
-  // drainOrphanedQueues logs its own per-chat errors.
-  void activeAgent.drainOrphanedQueues()
+  onStartupCleanup(() => router.dispose())
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -743,22 +834,58 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
           // Dev-server preview requests encode the target port in either a
           // localhost subdomain or /__memosync/preview/<port> path, then proxy
           // inside this process's network namespace (see preview-proxy.ts).
+          // Executable preview content must live on an ISOLATED origin
+          // (<port>.localhost locally, or MEMOSYNC_PREVIEW_ORIGIN when the app
+          // is reached through a public gateway) so it can never read the
+          // host-only app session cookie or call authenticated /api routes.
           const previewPort = previewProxyTarget(req, actualPort)
-          if (previewPort !== null) {
-            // The public path form shares the app origin, so it must inherit
-            // the app's CSRF and password boundary. The localhost-subdomain
-            // form remains a local-only compatibility route; host-only auth
-            // cookies are not sent to <port>.localhost.
-            if (isPathPreviewProxyRequest(req, previewPort)) {
-              if (!validateRequestOrigin(req, {
-                trustProxy: options.trustProxy ?? false,
-                allowedOrigins,
-              })) {
+          const onPreviewOrigin = previewOriginHost !== null && url.host === previewOriginHost
+          if (previewPort !== null || onPreviewOrigin) {
+            if (auth && url.pathname === PREVIEW_CALLBACK_PATH) {
+              return auth.handlePreviewCallback(req)
+            }
+            if (previewPort === null) {
+              return new Response("Not found", { status: 404 })
+            }
+            if (!isPreviewHostForm(url.host) && !onPreviewOrigin) {
+              // Path form on the app origin: redirect navigations to the
+              // isolated origin and explicitly block everything else —
+              // upstream content never executes here.
+              if (!isPreviewNavigationRequest(req)) {
                 return new Response("Forbidden", { status: 403 })
               }
-              if (auth && !auth.isAuthenticated(req)) {
-                return new Response("Unauthorized", { status: 401 })
+              if (auth && auth.isAuthenticated(req)) {
+                return auth.previewTicketRedirect(req, previewPort)
               }
+              const isolated = isolatedPreviewTarget(
+                req,
+                previewPort,
+                previewOrigin,
+                stripPreviewPathPrefix(url.pathname, previewPort),
+              )
+              if (isolated) {
+                return Response.redirect(`${isolated.origin}${isolated.path}${url.search}`, 302)
+              }
+              return new Response(
+                `<!doctype html><meta charset="utf-8"><title>Preview unavailable</title>` +
+                `<body style="font-family:system-ui;color:#667085;display:grid;place-items:center;height:100vh;margin:0">` +
+                `<p style="max-width:32rem;padding:0 1.5rem;font-size:14px">` +
+                `Previews run on an isolated origin. Open MemoSync locally, or ask whoever hosts` +
+                ` this server to set MEMOSYNC_PREVIEW_ORIGIN to an HTTPS origin.` +
+                `</p>`,
+                { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
+              )
+            }
+            if (!validateRequestOrigin(req, {
+              trustProxy,
+              allowedOrigins,
+            })) {
+              return new Response("Forbidden", { status: 403 })
+            }
+            if (auth && !auth.isPreviewAuthenticated(req, previewPort)) {
+              const bootstrap = auth.previewBootstrapRedirect(req, previewPort)
+              if (bootstrap) return bootstrap
+              return new Response("Unauthorized", { status: 401 })
             }
             return proxyPreviewRequest(req, url, previewPort)
           }
@@ -787,6 +914,20 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
           }
 
           if (auth) {
+            if (url.pathname === PREVIEW_GRANT_PATH) {
+              if (req.method !== "GET") {
+                return new Response(null, { status: 405, headers: { Allow: "GET" } })
+              }
+              return auth.handlePreviewGrant(req)
+            }
+
+            if (url.pathname === PREVIEW_TICKETS_PATH) {
+              if (req.method !== "POST") {
+                return new Response(null, { status: 405, headers: { Allow: "POST" } })
+              }
+              return auth.handlePreviewTicketMint(req)
+            }
+
             if (url.pathname === "/auth/login") {
               if (req.method === "GET") {
                 return auth.redirectToApp(req)
@@ -1006,20 +1147,43 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     }
   }
 
+  onStartupCleanup(() => server.stop(true))
+  // Do not launch writers until startup can no longer fail to bind.
+  activeAgent.resumeOpeningBoardPreparation()
+  const staleEmptyChatPruneInterval = setInterval(() => {
+    void router.pruneStaleEmptyChats()
+      .then(() => router.broadcastSnapshots())
+  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
+  onStartupCleanup(() => clearInterval(staleEmptyChatPruneInterval))
+  void activeAgent.drainOrphanedQueues()
+
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
-    for (const chatId of [...activeAgent.activeTurns.keys()]) {
-      await activeAgent.cancel(chatId)
+    const shutdownErrors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        shutdownErrors.push(error)
+      }
     }
-    await activeAgent.shutdownStudyRuntime()
-    router.dispose()
-    appSettings.dispose()
-    keybindings.dispose()
-    terminals.closeAll()
-    memory.close()
-    studyMemoryStore?.close()
-    await store.compact()
-    server.stop(true)
+    await attempt(() => server.stop(true))
+    for (const chatId of [...activeAgent.activeTurns.keys()]) {
+      await attempt(() => activeAgent.cancel(chatId))
+    }
+    await attempt(() => activeAgent.shutdownStudyRuntime())
+    await attempt(() => activeAgent.forceStopAllTurns())
+    await attempt(() => router.dispose())
+    await attempt(() => appSettings.dispose())
+    await attempt(() => keybindings.dispose())
+    await attempt(() => terminals.closeAll())
+    await attempt(() => memory.close())
+    await attempt(() => studyMemoryStore?.close())
+    await attempt(() => store.compact())
+    if (shutdownErrors.length === 1) throw shutdownErrors[0]
+    if (shutdownErrors.length > 1) {
+      throw new AggregateError(shutdownErrors, "MemoSync shutdown failed")
+    }
   }
 
   return {
@@ -1064,7 +1228,12 @@ export async function handleProjectUpload(
     return Response.json({ error: "Upload request is too large." }, { status: 413 })
   }
 
-  const formData = await req.formData()
+  let formData: FormData
+  try {
+    formData = await req.formData()
+  } catch {
+    return Response.json({ error: "Could not read the upload request. Please try again." }, { status: 400 })
+  }
   const files = formData
     .getAll("files")
     .filter((value): value is File => value instanceof File)
@@ -1076,6 +1245,18 @@ export async function handleProjectUpload(
   const validationError = validateUploadFiles(files)
   if (validationError) {
     return Response.json({ error: validationError.error }, { status: validationError.status })
+  }
+
+  const clientSizes = formData.getAll("clientFileSizes")
+  if (clientSizes.length > 0) {
+    if (clientSizes.length !== files.length || clientSizes.some((value) =>
+      typeof value !== "string" || !value.trim() || !Number.isSafeInteger(Number(value)) || Number(value) < 0
+    )) {
+      return Response.json({ error: "Invalid upload size metadata." }, { status: 400 })
+    }
+    if (files.some((file, index) => file.size !== Number(clientSizes[index]))) {
+      return Response.json({ error: "The uploaded file size does not match. Please try again." }, { status: 400 })
+    }
   }
 
   try {

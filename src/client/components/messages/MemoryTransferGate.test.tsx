@@ -69,19 +69,20 @@ describe("MemoryTransferGate", () => {
   })
 
   test("automatic Bring in threads source and landing-target versions into the POST payload", () => {
+    const suggestion = {
+      sourceId: "M-09",
+      sourceContent: "Vite needs --host in Docker",
+      sourceScope: "project",
+      sourceVersion: 7,
+      sourceLabel: "Alpha Shop",
+      rule: "Bind a reachable interface in containers",
+      content: "Bind 0.0.0.0 for this project's container dev server",
+      abstractionLevel: "contextual",
+      suggestedScope: "project",
+      landing: { route: "reinforces", targetId: "M-02", targetContent: "Use pnpm", targetVersion: 3 },
+    } as const
     const body = buildAutomaticTransferCommitBody({
-      suggestion: {
-        sourceId: "M-09",
-        sourceContent: "Vite needs --host in Docker",
-        sourceScope: "project",
-        sourceVersion: 7,
-        sourceLabel: "Alpha Shop",
-        rule: "Bind a reachable interface in containers",
-        content: "Bind 0.0.0.0 for this project's container dev server",
-        abstractionLevel: "contextual",
-        suggestedScope: "project",
-        landing: { route: "reinforces", targetId: "M-02", targetContent: "Use pnpm", targetVersion: 3 },
-      },
+      suggestion,
       scope: "project",
       projectId: "project-1",
       chatId: "chat-1",
@@ -93,6 +94,19 @@ describe("MemoryTransferGate", () => {
     expect(body.landingTargetId).toBe("M-02")
     expect(body.targetProjectId).toBe("project-1")
     expect(body.targetSessionId).toBeUndefined()
+
+    const changedScope = buildAutomaticTransferCommitBody({
+      suggestion,
+      scope: "personal",
+      projectId: "project-1",
+      chatId: "chat-1",
+      content: "Bring this rule to my personal memories",
+    })
+    expect(changedScope.landingRoute).toBe("new")
+    expect(changedScope.landingTargetId).toBeUndefined()
+    expect(changedScope.landingTargetVersion).toBeUndefined()
+    expect(changedScope.targetProjectId).toBeUndefined()
+    expect(changedScope.targetSessionId).toBeUndefined()
   })
 
   test("legacy widening rows are passive receipts and cannot block an open review", () => {

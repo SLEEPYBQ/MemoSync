@@ -18,6 +18,7 @@
 // (D5).
 import { createHash } from 'node:crypto';
 import type { MemoryService } from './index';
+import type { CreateMemoryInput } from './MemoryStore';
 import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
 import type { AbstractionLevel, EvidenceClass, MemoryItem, MemoryScope, MemoryType } from './types';
 import { MEMORY_ATOM_SPEC } from './atom-spec';
@@ -53,7 +54,7 @@ export interface CaptureOutcome {
   created: MemoryItem[]; // candidates written to the store (status 'candidate')
   proposed: number; // raw pass-1 candidates (or 1 for a tool proposal)
   surfaced: number; // == created.length
-  dropped: number; // malformed / fingerprint / dismissed-similar / batch-duplicate / sensitive-silent
+  dropped: number; // malformed / fingerprint / dismissed-similar / batch-duplicate
   conflicts: number; // surfaced candidates that supersede an existing memory (drift)
   reinforced: number; // re-observations converted into reinforce bumps on stored ACTIVE items
   reinforcedIds: string[]; // which stored items got reinforced
@@ -729,40 +730,40 @@ export function createCaptureService(opts: {
         return;
       }
 
-      // An UPDATE binds revises → target only when the target is ACTIVE and
-      // has no open revision (pending candidates are still drafts).
-      const revisesId =
-        route === 'updates' && target!.status === 'active' && !memory.store.hasOpenRevision(target!.id)
-          ? target!.id
-          : null;
       const conflictWithId = route === 'conflicts' ? target!.id : null;
 
       const scope: MemoryScope = candidate.scope === 'project' && !input.projectId
         ? 'session'
         : candidate.scope;
 
-      const item = memory.store.create(
-        {
-          content: candidate.content,
-          detail: candidate.detail,
-          abstractionLevel: candidate.abstractionLevel,
-          sensitive: candidate.sensitive,
-          type: candidate.type,
-          scope,
-          status: 'candidate',
-          topic: candidate.topic,
-          projectId: scope === 'project' ? input.projectId : undefined,
-          sessionId: scope === 'session' ? input.sessionId : undefined,
-          provenanceSessionId: input.sessionId,
-          provenanceTurn: input.turn,
-          evidenceClass: candidate.evidenceClass,
-        },
-        { actor: 'agent', sessionId: input.sessionId, turn: input.turn },
-      );
-      if (revisesId) {
-        memory.store.addRelation(item.id, revisesId, 'revises');
-        revisions++;
+      const itemInput: CreateMemoryInput = {
+        content: candidate.content,
+        detail: candidate.detail,
+        abstractionLevel: candidate.abstractionLevel,
+        sensitive: candidate.sensitive,
+        type: candidate.type,
+        scope,
+        status: 'candidate',
+        topic: candidate.topic,
+        projectId: scope === 'project' ? input.projectId : undefined,
+        sessionId: scope === 'session' ? input.sessionId : undefined,
+        provenanceSessionId: input.sessionId,
+        provenanceTurn: input.turn,
+        evidenceClass: candidate.evidenceClass,
+      };
+      const meta = { actor: 'agent' as const, sessionId: input.sessionId, turn: input.turn };
+      const proposal = route === 'updates'
+        ? memory.store.createCaptureUpdateProposal(itemInput, target!.id, meta, {
+            expectedTargetContent: contentAtGate.get(target!.id),
+          })
+        : { item: memory.store.create(itemInput, meta), isRevision: false };
+      if (!proposal) {
+        rememberObservation();
+        dropped++;
+        return;
       }
+      const { item, isRevision } = proposal;
+      if (isRevision) revisions++;
       created.push(item);
       rememberObservation(item.id);
       if (item.sensitive) sensitiveSurfaced++;

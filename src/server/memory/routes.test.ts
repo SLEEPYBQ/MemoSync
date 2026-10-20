@@ -829,6 +829,7 @@ describe('memory routes', () => {
     expect(res!.status).toBe(200);
     const { data } = await res!.json();
     expect(data.verdict).toBe('as_is');
+    expect(data.sourceVersion).toBe(created.version);
     expect(data.content).toBe('dev port 3000 conflicts, use 3001');
     expect(data.note.toLowerCase()).toContain('unavailable');
   });
@@ -862,6 +863,7 @@ describe('memory routes', () => {
     expect(data.portable).toContain('port conflicts');
     expect(data.content).toContain('port conflicts');
     expect(data.landing.route).toBe('new');
+    expect(data.sourceVersion).toBe(created.version);
   });
 
   it('transfer landing: reinforces an equivalent target memory instead of duplicating', async () => {
@@ -873,12 +875,14 @@ describe('memory routes', () => {
     }))).data;
 
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'personal',
       content: 'Prefer pnpm over npm',
       abstractionLevel: 'general',
       verdict: 'rewrite',
       landingRoute: 'reinforces',
       landingTargetId: existingTarget.id,
+      landingTargetVersion: existingTarget.version,
     });
     expect(res!.status).toBe(200);
     const data = (await res!.json()).data;
@@ -897,12 +901,14 @@ describe('memory routes', () => {
     }))).data;
 
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'personal',
       content: 'Deploys go through Vercel',
       abstractionLevel: 'contextual',
       verdict: 'rewrite',
       landingRoute: 'conflicts',
       landingTargetId: existingTarget.id,
+      landingTargetVersion: existingTarget.version,
     });
     expect(res!.status).toBe(201);
     const created = (await res!.json()).data;
@@ -1077,7 +1083,7 @@ describe('memory routes', () => {
     expect(memory.store.list()).toHaveLength(2);
   });
 
-  it('transfer landing CAS: a reinforces verdict against a raced/archived target falls back to a plain create', async () => {
+  it('transfer landing CAS: an archived target rejects the transfer without archiving the source', async () => {
     const source = (await json(await call('POST', '/api/memories', {
       content: 'RenderX: prefer pnpm', scope: 'project', projectId: 'RenderX', type: 'preference',
     }))).data;
@@ -1086,21 +1092,24 @@ describe('memory routes', () => {
     }))).data;
     memory.store.archive(existingTarget.id, { actor: 'user' }); // raced away
 
+    const countBefore = memory.store.list().length;
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'personal',
       content: 'Prefer pnpm over npm',
       abstractionLevel: 'general',
       landingRoute: 'reinforces',
       landingTargetId: existingTarget.id,
+      landingTargetVersion: existingTarget.version,
+      archiveOriginal: true,
     });
-    // No live target to reinforce → a normal new memory is created instead.
-    expect(res!.status).toBe(201);
-    const created = (await res!.json()).data;
-    expect(created.content).toBe('Prefer pnpm over npm');
+    expect(res!.status).toBe(409);
+    expect(memory.store.list()).toHaveLength(countBefore);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
     expect(memory.store.getById(existingTarget.id)!.reinforcedCount).toBe(0);
   });
 
-  it('automatic Transfer rejects a raced sourceVersion while standalone manual omission remains compatible', async () => {
+  it('requires an active matching sourceVersion for every transfer', async () => {
     const source = (await json(await call('POST', '/api/memories', {
       content: 'Always confirm before deleting a booking',
       scope: 'project',
@@ -1118,8 +1127,50 @@ describe('memory routes', () => {
     });
     expect(raced!.status).toBe(409);
     expect((await json(raced)).error.code).toBe('CONFLICT');
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+    expect(memory.store.list()).toHaveLength(1);
 
+    const countBeforeMissing = memory.store.list().length;
+    const missing = await call('POST', `/api/memories/${source.id}/transfer`, {
+      targetScope: 'personal',
+      content: 'Confirm destructive actions first',
+      abstractionLevel: 'general',
+      verdict: 'rewrite',
+      archiveOriginal: true,
+    });
+    expect(missing!.status).toBe(400);
+    expect(memory.store.list()).toHaveLength(countBeforeMissing);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+
+    const invalidVersion = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: 0,
+      targetScope: 'personal',
+      content: 'Confirm destructive actions first',
+      abstractionLevel: 'general',
+      verdict: 'rewrite',
+      archiveOriginal: true,
+    });
+    expect(invalidVersion!.status).toBe(400);
+    expect(memory.store.list()).toHaveLength(countBeforeMissing);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+
+    const inFlight = call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: memory.store.getById(source.id)!.version,
+      targetScope: 'personal',
+      content: 'Confirm destructive actions first',
+      abstractionLevel: 'general',
+      verdict: 'rewrite',
+      archiveOriginal: true,
+    });
+    memory.store.update(source.id, { content: 'Changed while parsing request' }, { actor: 'user' });
+    const racedDuringBody = await inFlight;
+    expect(racedDuringBody!.status).toBe(409);
+    expect(memory.store.list()).toHaveLength(countBeforeMissing);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+
+    const currentVersion = memory.store.getById(source.id)!.version;
     const manual = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: currentVersion,
       targetScope: 'personal',
       content: 'Confirm destructive actions first',
       abstractionLevel: 'general',
@@ -1127,7 +1178,6 @@ describe('memory routes', () => {
     });
     expect(manual!.status).toBe(201);
 
-    const currentVersion = memory.store.getById(source.id)!.version;
     memory.store.archive(source.id, { actor: 'user' });
     const archived = await call('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: currentVersion,
@@ -1139,7 +1189,45 @@ describe('memory routes', () => {
     expect(archived!.status).toBe(409);
   });
 
-  it('automatic Transfer rejects a raced landing target version while standalone manual omission remains compatible', async () => {
+  it.each(['project', 'session'] as const)('rejects a transfer preview after only its source %s binding changes', async (scope) => {
+    const binding = scope === 'project' ? 'projectId' : 'sessionId';
+    const source = memory.store.create({ content: 'Source rule', scope, [binding]: 'A', type: 'lesson' }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Destination rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const preview = await call('POST', `/api/memories/${source.id}/transfer-preview`, { targetScope: 'personal' }, {
+      transfer: {
+        encode: async () => { throw new Error('unused'); },
+        decode: async () => { throw new Error('unused'); },
+        propose: async () => ({
+          verdict: 'rewrite' as const, portable: 'Portable rule', content: 'Destination rule',
+          abstractionLevel: 'general' as const, note: '',
+          landing: { route: 'reinforces' as const, targetId: target.id },
+        }),
+      },
+    });
+    expect(preview!.status).toBe(200);
+    const { data } = await json(preview);
+    const patch = await call('PATCH', `/api/memories/${source.id}`, { [binding]: 'B' });
+    expect(patch!.status).toBe(200);
+    expect(memory.store.getById(source.id)![binding]).toBe('B');
+    const state = () => memory.store.list().map((item) => ({
+      item, events: memory.store.getEvents(item.id), relations: memory.store.getRelations(item.id),
+    }));
+    const before = state();
+    const receipts = memory.db.query('SELECT * FROM memory_kv ORDER BY key').all();
+    const result = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: data.sourceVersion, targetScope: 'personal', content: data.content,
+      abstractionLevel: data.abstractionLevel, verdict: data.verdict,
+      landingRoute: data.landing.route, landingTargetId: data.landing.targetId,
+      landingTargetVersion: data.landing.targetVersion, archiveOriginal: true, chatId: 's-binding-transfer',
+    });
+    expect(result!.status).toBe(409);
+    expect((await json(result)).error.code).toBe('CONFLICT');
+    expect(state()).toEqual(before);
+    expect(memory.db.query('SELECT * FROM memory_kv ORDER BY key').all()).toEqual(receipts);
+    expect(memory.getTransferLandings('s-binding-transfer')).toEqual([]);
+  });
+
+  it('requires a reviewed active landing target version before reinforcing', async () => {
     const source = (await json(await call('POST', '/api/memories', {
       content: 'RenderX uses pnpm', scope: 'project', projectId: 'RenderX', type: 'preference',
     }))).data;
@@ -1161,15 +1249,146 @@ describe('memory routes', () => {
     expect((await json(raced)).error.code).toBe('CONFLICT');
     expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
 
-    const manual = await call('POST', `/api/memories/${source.id}/transfer`, {
+    const missingVersion = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'personal',
       content: 'Prefer pnpm',
       abstractionLevel: 'general',
       landingRoute: 'reinforces',
       landingTargetId: target.id,
     });
+    expect(missingVersion!.status).toBe(400);
+    expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
+
+    const missingTargetId = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+    });
+    expect(missingTargetId!.status).toBe(400);
+    expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
+
+    const invalidTargetVersion = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+      landingTargetId: target.id,
+      landingTargetVersion: 0,
+      archiveOriginal: true,
+    });
+    expect(invalidTargetVersion!.status).toBe(400);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+    expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
+
+    const missingStoredTarget = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+      landingTargetId: 'M-missing',
+      landingTargetVersion: 1,
+      archiveOriginal: true,
+    });
+    expect(missingStoredTarget!.status).toBe(409);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+    expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
+
+    const currentTargetVersion = memory.store.getById(target.id)!.version;
+    const inFlight = call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+      landingTargetId: target.id,
+      landingTargetVersion: currentTargetVersion,
+    });
+    memory.store.update(target.id, { content: 'Updated while parsing request' }, { actor: 'user' });
+    const racedDuringBody = await inFlight;
+    expect(racedDuringBody!.status).toBe(409);
+    expect(memory.store.getById(target.id)!.reinforcedCount).toBe(0);
+
+    const manual = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+      landingTargetId: target.id,
+      landingTargetVersion: memory.store.getById(target.id)!.version,
+    });
     expect(manual!.status).toBe(200);
     expect(memory.store.getById(target.id)!.reinforcedCount).toBe(1);
+
+    const countAfterReinforce = memory.store.list().length;
+    const selfTarget = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'project',
+      targetProjectId: 'RenderX',
+      content: 'Prefer pnpm',
+      abstractionLevel: 'general',
+      landingRoute: 'reinforces',
+      landingTargetId: source.id,
+      landingTargetVersion: source.version,
+      archiveOriginal: true,
+    });
+    expect(selfTarget!.status).toBe(409);
+    expect(memory.store.list()).toHaveLength(countAfterReinforce);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+  });
+
+  it('rejects landing targets outside the selected destination without mutations', async () => {
+    const source = memory.store.create(
+      { content: 'Source project rule', scope: 'project', projectId: 'SourceProject', type: 'lesson' },
+      { actor: 'user' },
+    );
+    const personalTarget = memory.store.create(
+      { content: 'Personal rule', scope: 'personal', type: 'lesson' },
+      { actor: 'user' },
+    );
+    const projectTarget = memory.store.create(
+      { content: 'Project rule', scope: 'project', projectId: 'LandingProject', type: 'lesson' },
+      { actor: 'user' },
+    );
+    const sessionTarget = memory.store.create(
+      { content: 'Session rule', scope: 'session', sessionId: 'chat-landing-a', type: 'lesson' },
+      { actor: 'user' },
+    );
+    const countBefore = memory.store.list().length;
+    const invalidDestinations = [
+      { targetScope: 'personal', landingTarget: projectTarget },
+      { targetScope: 'project', targetProjectId: 'LandingProject', landingTarget: personalTarget },
+      { targetScope: 'project', targetProjectId: 'OtherProject', landingTarget: projectTarget },
+      { targetScope: 'session', targetSessionId: 'chat-landing-b', landingTarget: sessionTarget },
+    ] as const;
+
+    for (const destination of invalidDestinations) {
+      const response = await call('POST', `/api/memories/${source.id}/transfer`, {
+        sourceVersion: source.version,
+        targetScope: destination.targetScope,
+        targetProjectId: 'targetProjectId' in destination ? destination.targetProjectId : undefined,
+        targetSessionId: 'targetSessionId' in destination ? destination.targetSessionId : undefined,
+        content: 'Transferred rule',
+        abstractionLevel: 'general',
+        landingRoute: 'reinforces',
+        landingTargetId: destination.landingTarget.id,
+        landingTargetVersion: destination.landingTarget.version,
+        archiveOriginal: true,
+      });
+      expect(response!.status).toBe(409);
+    }
+
+    expect(memory.store.list()).toHaveLength(countBefore);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+    expect(memory.store.getById(personalTarget.id)!.reinforcedCount).toBe(0);
+    expect(memory.store.getById(projectTarget.id)!.reinforcedCount).toBe(0);
+    expect(memory.store.getById(sessionTarget.id)!.reinforcedCount).toBe(0);
+    expect(memory.store.getRelations(source.id)).toEqual([]);
   });
 
   it('transfer creates a derived item, links it, and can archive the original', async () => {
@@ -1177,6 +1396,7 @@ describe('memory routes', () => {
       content: 'dev port 3000 conflicts, use 3001', scope: 'project', projectId: 'RenderX', type: 'lesson',
     }))).data;
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'personal',
       content: 'Check dev-server port conflicts before starting',
       abstractionLevel: 'general',
@@ -1196,6 +1416,7 @@ describe('memory routes', () => {
       content: 'Always confirm before deleting a booking', scope: 'project', projectId: 'RentalApp', type: 'lesson',
     }))).data;
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'session',
       targetSessionId: 'chat-42',
       content: 'Confirm before deleting a booking (this session)',
@@ -1216,6 +1437,7 @@ describe('memory routes', () => {
       content: 'x', scope: 'project', projectId: 'P', type: 'fact',
     }))).data;
     expect((await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'session', content: 'x', abstractionLevel: 'concrete',
     }))!.status).toBe(400);
   });
@@ -1248,6 +1470,79 @@ describe('memory routes', () => {
     expect(res!.status).toBe(200);
     // The target session's existing memory reached the landing judgment.
     expect(seen).toEqual([['ship small commits']]);
+    const data = (await json(res)).data;
+    expect(data.sourceVersion).toBe(source.version);
+  });
+
+  it('transfer-preview binds source and landing versions to snapshots captured before the LLM await', async () => {
+    const source = memory.store.create({ content: 'Source rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Existing personal rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const sourceVersion = source.version;
+    const targetVersion = target.version;
+
+    const res = await call('POST', `/api/memories/${source.id}/transfer-preview`, { targetScope: 'personal' }, {
+      transfer: {
+        encode: async () => { throw new Error('unused') },
+        decode: async () => { throw new Error('unused') },
+        propose: async () => {
+          memory.store.update(source.id, { content: 'Updated source rule' }, { actor: 'user' });
+          memory.store.update(target.id, { content: 'Updated target rule' }, { actor: 'user' });
+          return {
+            verdict: 'rewrite' as const,
+            portable: 'Portable rule',
+            content: 'Localized rule',
+            abstractionLevel: 'general' as const,
+            note: '',
+            landing: { route: 'reinforces' as const, targetId: target.id },
+          };
+        },
+      },
+    });
+
+    expect(res!.status).toBe(200);
+    const { data } = await json(res);
+    expect(data.sourceVersion).toBe(sourceVersion);
+    expect(data.landing).toMatchObject({
+      route: 'reinforces',
+      targetId: target.id,
+      targetVersion,
+      targetContent: 'Existing personal rule',
+    });
+    expect(memory.store.getById(source.id)!.version).toBeGreaterThan(sourceVersion);
+    expect(memory.store.getById(target.id)!.version).toBeGreaterThan(targetVersion);
+  });
+
+  it('transfer-preview fails closed on invalid landing targets and inactive sources', async () => {
+    const source = memory.store.create({ content: 'Source rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Existing rule', scope: 'personal', type: 'lesson' }, { actor: 'user' });
+    const transfer = {
+      encode: async () => { throw new Error('unused') },
+      decode: async () => { throw new Error('unused') },
+      propose: async () => ({
+        verdict: 'rewrite' as const,
+        portable: 'Portable rule',
+        content: 'Localized rule',
+        abstractionLevel: 'general' as const,
+        note: '',
+        landing: { route: 'reinforces' as const, targetId: 'M-missing', targetVersion: 999 },
+      }),
+    };
+
+    const invalid = await call('POST', `/api/memories/${source.id}/transfer-preview`, { targetScope: 'personal' }, { transfer });
+    expect(invalid!.status).toBe(200);
+    const { data } = await json(invalid);
+    expect(data.sourceVersion).toBe(source.version);
+    expect(data.landing).toEqual({ route: 'new' });
+    expect(data.landing.targetVersion).toBeUndefined();
+
+    memory.store.archive(source.id, { actor: 'user' });
+    let proposed = false;
+    const inactive = await call('POST', `/api/memories/${source.id}/transfer-preview`, { targetScope: 'personal' }, {
+      transfer: { ...transfer, propose: async () => { proposed = true; throw new Error('must not propose'); } },
+    });
+    expect(inactive!.status).toBe(409);
+    expect(proposed).toBe(false);
+    expect(memory.store.getById(target.id)!.status).toBe('active');
   });
 
   it('transfer validates its target', async () => {
@@ -1255,9 +1550,9 @@ describe('memory routes', () => {
       content: 'x', scope: 'personal', type: 'fact',
     }))).data;
     // project target requires a project id
-    expect((await call('POST', `/api/memories/${source.id}/transfer`, { targetScope: 'project', content: 'x' }))!.status).toBe(400);
+    expect((await call('POST', `/api/memories/${source.id}/transfer`, { sourceVersion: source.version, targetScope: 'project', content: 'x' }))!.status).toBe(400);
     // session is not a transfer target
-    expect((await call('POST', `/api/memories/${source.id}/transfer`, { targetScope: 'session', content: 'x' }))!.status).toBe(400);
+    expect((await call('POST', `/api/memories/${source.id}/transfer`, { sourceVersion: source.version, targetScope: 'session', content: 'x' }))!.status).toBe(400);
     // unknown source
     expect((await call('POST', '/api/memories/M-99/transfer', { targetScope: 'personal', content: 'x' }))!.status).toBe(404);
   });
@@ -2043,6 +2338,7 @@ describe('memory routes', () => {
     };
 
     await callStudy('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
       targetScope: 'project',
       targetProjectId: 'assigned-project',
       content: source.content,
@@ -2208,6 +2504,30 @@ describe('memory routes', () => {
       expect.objectContaining({ operationId: 'control:working-memory:add:2', action: 'add' }),
       expect.objectContaining({ operationId: 'control:working-memory:remove:3', action: 'remove' }),
     ]);
+  });
+
+  it('rejects stale revision acceptance before applying a PATCH draft or active status', async () => {
+    const target = memory.store.create(
+      { content: 'Use port 3000 for development', scope: 'personal', type: 'constraint' },
+      { actor: 'user' },
+    );
+    const proposal = memory.store.createRevisionProposal(
+      { content: 'Use port 4000 for development', scope: 'personal', type: 'constraint' },
+      target.id,
+      { actor: 'system' },
+    )!;
+    memory.store.update(target.id, { content: 'Use port 5000 for development' }, { actor: 'user' });
+    const ids = [proposal.id, target.id];
+    const before = ids.map((id) => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }));
+
+    const response = await call('PATCH', `/api/memories/${proposal.id}`, {
+      content: 'edited draft',
+      status: 'active',
+    });
+
+    expect(response!.status).toBe(409);
+    expect((await json(response)).error.code).toBe('CONFLICT');
+    expect(ids.map((id) => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }))).toEqual(before);
   });
 
   it('capture→accept→inject lifecycle: an accepted candidate reaches the injected set + projection', async () => {
@@ -2801,7 +3121,7 @@ describe('memory routes', () => {
       surface: 'board',
       boardResolution,
     }, services);
-    expect(missingCas!.status).toBe(409);
+    expect(missingCas!.status).toBe(400);
 
     const forgedLanding = await callStudy('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: source.version,
@@ -2821,6 +3141,91 @@ describe('memory routes', () => {
     }, services);
     expect(forgedLanding!.status).toBe(409);
     expect(memory.store.list().filter((item) => item.id !== source.id)).toEqual([]);
+  });
+
+  it('accepts a Board Transfer scope change only with a new landing', async () => {
+    const source = memory.store.create(
+      { content: 'Use high contrast', scope: 'personal', type: 'constraint' },
+      { actor: 'agent' },
+    );
+    const projectTarget = memory.store.create(
+      { content: 'Use accessible contrast in this project', scope: 'project', projectId: 'assigned-project', type: 'constraint' },
+      { actor: 'agent' },
+    );
+    const trustedSuggestion = {
+      sourceId: source.id,
+      sourceContent: source.content,
+      sourceScope: source.scope,
+      sourceVersion: source.version,
+      sourceLabel: 'Prior context',
+      rule: 'Prefer accessible contrast',
+      applicability: 'UI work',
+      content: 'Use high contrast in this project',
+      detail: 'Keep text readable',
+      abstractionLevel: 'contextual',
+      suggestedScope: 'project',
+      landing: { route: 'reinforces', targetId: projectTarget.id, targetVersion: projectTarget.version },
+    } as const;
+    const boardBacklog = {
+      ...boardBacklogStub(() => ({ transfers: [], checkups: [] })),
+      assertTransferPending: () => ({
+        pending: true as const,
+        trusted: {
+          chatId: 'chat-prior',
+          projectId: 'assigned-project',
+          destinationContextKey: 'assigned-project',
+          suggestion: trustedSuggestion,
+        },
+      }),
+    } as any;
+    const boardResolution = { taskId: '038-S1', chatId: 'chat-prior', gateId: 'transfer-scope-change' };
+    const forgedOldLanding = await callStudy('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer accessible contrast',
+      detail: trustedSuggestion.detail,
+      abstractionLevel: trustedSuggestion.abstractionLevel,
+      landingRoute: 'reinforces',
+      landingTargetId: projectTarget.id,
+      landingTargetVersion: projectTarget.version,
+      rule: trustedSuggestion.rule,
+      applicability: trustedSuggestion.applicability,
+      edited: true,
+      chatId: 'chat-prior',
+      surface: 'board',
+      boardResolution,
+    }, {
+      boardReviewAdmission: () => null,
+      boardBacklog,
+    });
+    expect(forgedOldLanding!.status).toBe(409);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
+    expect(memory.store.getById(projectTarget.id)!.reinforcedCount).toBe(0);
+
+    const response = await callStudy('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version,
+      targetScope: 'personal',
+      content: 'Prefer accessible contrast',
+      detail: trustedSuggestion.detail,
+      abstractionLevel: trustedSuggestion.abstractionLevel,
+      landingRoute: 'new',
+      rule: trustedSuggestion.rule,
+      applicability: trustedSuggestion.applicability,
+      edited: true,
+      chatId: 'chat-prior',
+      surface: 'board',
+      boardResolution,
+    }, {
+      boardReviewAdmission: () => null,
+      boardBacklog,
+    });
+
+    expect(response!.status).toBe(201);
+    const created = (await json(response)).data;
+    expect(created.scope).toBe('personal');
+    expect(created.relations).toContainEqual({ type: 'derived_from', targetId: source.id });
+    expect(memory.store.getById(projectTarget.id)!.reinforcedCount).toBe(0);
+    expect(memory.store.getById(source.id)!.status).toBe('active');
   });
 
   it('rejects Board row actions before mutation once freezing or questionnaire ownership starts', async () => {

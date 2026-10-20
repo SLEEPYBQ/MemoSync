@@ -255,6 +255,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     controller.signal.throwIfAborted()
     if (!connection) throw new Error(MISSING_PI_CONNECTION_MESSAGE)
     activeTurn = await pi.startTurn({
+      signal: controller.signal,
       chatId: id,
       cwd: input.localPath,
       // Pi has no developer-instructions channel: the branch contract rides

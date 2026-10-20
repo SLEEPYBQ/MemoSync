@@ -3,7 +3,7 @@
 // actions with live-state validation, persistence, and telemetry.
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
-import type { ActorMeta } from './types';
+import type { ActorMeta, MemoryItem } from './types';
 import { validateCandidate } from './capture';
 import type { StudySessionAttribution } from '../study-session-attribution';
 
@@ -32,6 +32,12 @@ export interface MaintenanceServiceOptions {
   memory: MemoryService;
   /** LLM caller for drafting merged text; without it the merge action is unavailable. */
   callJson?: LlmJsonCaller;
+}
+
+export function shareMergeContext(a: MemoryItem, b: MemoryItem): boolean {
+  return a.scope === b.scope
+    && (a.scope !== 'project' || Boolean(a.projectId && a.projectId === b.projectId))
+    && (a.scope !== 'session' || Boolean(a.sessionId && a.sessionId === b.sessionId));
 }
 
 export function createMaintenanceService(opts: MaintenanceServiceOptions) {
@@ -110,6 +116,9 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       if (a.status !== 'active' || b.status !== 'active') {
         throw new Error('Both memories must still be active to merge');
       }
+      if (!shareMergeContext(a, b)) {
+        throw new Error('Both memories must belong to the same scope and context to merge');
+      }
       const draftRaw = await callJson({
         system: MERGE_SYSTEM,
         user: JSON.stringify(
@@ -133,6 +142,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
           abstractionLevel: draft.abstractionLevel,
           sensitive: draft.sensitive,
           projectId: a.scope === 'project' ? a.projectId : undefined,
+          sessionId: a.scope === 'session' ? a.sessionId : undefined,
           provenanceSessionId: meta.sessionId,
         },
         [a.id, b.id],

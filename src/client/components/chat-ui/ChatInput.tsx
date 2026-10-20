@@ -15,7 +15,7 @@ import {
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
-import { cn } from "../../lib/utils"
+import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
 import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
@@ -102,6 +102,13 @@ export function getClipboardImageFiles(items: Iterable<ClipboardFileItem>, times
 
 export function trimTrailingPastedNewlines(text: string) {
   return text.replace(/(?:\r\n|\r|\n)+$/, "")
+}
+
+export function createUploadFormData(file: File) {
+  const formData = new FormData()
+  formData.append("files", file)
+  formData.append("clientFileSizes", String(file.size))
+  return formData
 }
 
 function replaceTextSelection(args: {
@@ -493,7 +500,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!file) break
 
       activeUploadsRef.current += 1
-      const tempId = crypto.randomUUID()
+      const tempId = generateUUID()
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined
       const generation = uploadGenerationRef.current
 
@@ -512,8 +519,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       void (async () => {
         try {
-          const formData = new FormData()
-          formData.append("files", file)
+          const formData = createUploadFormData(file)
 
           const response = await fetch(`/api/projects/${projectId}/uploads`, {
             method: "POST",

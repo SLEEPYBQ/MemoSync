@@ -17,7 +17,7 @@
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import type { MemoryItem } from './types';
-import type { SessionClockEntry } from './maintenance';
+import { shareMergeContext, type SessionClockEntry } from './maintenance';
 
 export type CheckupKind = 'conflict' | 'redundancy' | 'staleness';
 
@@ -237,6 +237,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       const b = typeof rec.otherMemoryId === 'string' ? rec.otherMemoryId : '';
       const reason = normalizeReason(rec.reason);
       if (!a || !b || a === b || !snapshot.poolById.has(a) || !snapshot.poolById.has(b) || !reason) continue;
+      if (kind === 'redundancy' && !shareMergeContext(snapshot.poolById.get(a)!, snapshot.poolById.get(b)!)) continue;
       const pairKey = normalizedPairKey(a, b);
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);

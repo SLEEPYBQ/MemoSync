@@ -33,6 +33,124 @@ async function collectEvents(stream: AsyncIterable<HarnessEvent>) {
   return events
 }
 
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  const promise = new Promise<T>((done) => { resolve = done })
+  return { promise, resolve }
+}
+
+function fakeSession() {
+  const calls = { prompts: 0, aborts: 0, disposals: 0 }
+  return {
+    calls,
+    isStreaming: false,
+    sessionFile: "/test/pi-session.jsonl",
+    subscribe: () => () => {},
+    prompt: async () => { calls.prompts += 1 },
+    abort: async () => { calls.aborts += 1 },
+    dispose: () => { calls.disposals += 1 },
+  }
+}
+
+function fakeSdk(options: {
+  reload?: () => Promise<void>
+  create?: () => Promise<ReturnType<typeof fakeSession>>
+} = {}) {
+  return {
+    AuthStorage: { inMemory: () => ({ setRuntimeApiKey() {} }) },
+    ModelRegistry: { inMemory: () => ({ find: () => undefined }) },
+    SettingsManager: { inMemory: () => ({}) },
+    DefaultResourceLoader: class { async reload() { await options.reload?.() } },
+    SessionManager: { create: () => ({}) },
+    createAgentSession: async () => ({ session: await options.create?.() ?? fakeSession() }),
+  }
+}
+
+const startupArgs = {
+  chatId: "startup-chat", cwd: "/tmp", content: "hello", model: "test-model",
+  effort: "medium" as const, sessionToken: null, forkSession: false, toolNames: [],
+  connection: { provider: "custom" as const, baseUrl: "https://example.test/v1", apiKey: "test-key" },
+}
+
+describe("Pi startup cancellation", () => {
+  test("pre-aborted startup never loads the SDK", async () => {
+    let loads = 0
+    const manager = new PiAgentManager({ loadSdk: async () => { loads += 1; return fakeSdk() as never } })
+    await expect(manager.startTurn({ ...startupArgs, signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" })
+    expect(loads).toBe(0)
+    manager.dispose()
+  })
+
+  test.each(["sdk", "resources", "session"] as const)("abort during %s initialization prevents prompt dispatch", async (stage) => {
+    const entered = deferred()
+    const gate = deferred()
+    const session = fakeSession()
+    const hold = async () => { entered.resolve(); await gate.promise }
+    const sdk = fakeSdk({
+      reload: stage === "resources" ? hold : undefined,
+      create: async () => { if (stage === "session") await hold(); return session },
+    })
+    const manager = new PiAgentManager({ loadSdk: async () => { if (stage === "sdk") await hold(); return sdk as never } })
+    const controller = new AbortController()
+    const starting = manager.startTurn({ ...startupArgs, signal: controller.signal })
+    const rejected = starting.catch((error: unknown) => error)
+    await entered.promise
+    controller.abort()
+    gate.resolve()
+    expect(await rejected).toMatchObject({ name: "AbortError" })
+    expect(session.calls.prompts).toBe(0)
+    expect(manager.getResourceCounts().piSessions).toBe(0)
+    expect(session.calls.disposals).toBe(stage === "session" ? 1 : 0)
+    manager.dispose()
+  })
+
+  test.each(["closeChat", "dispose"] as const)("%s cancels an in-flight session creation", async (action) => {
+    const entered = deferred()
+    const gate = deferred()
+    const session = fakeSession()
+    const sdk = fakeSdk({ create: async () => { entered.resolve(); await gate.promise; return session } })
+    const manager = new PiAgentManager({ loadSdk: async () => sdk as never })
+    const starting = manager.startTurn(startupArgs)
+    const rejected = starting.catch((error: unknown) => error)
+    await entered.promise
+    if (action === "closeChat") manager.closeChat(startupArgs.chatId)
+    else manager.dispose()
+    gate.resolve()
+    expect(await rejected).toMatchObject({ name: "AbortError" })
+    expect(session.calls).toEqual({ prompts: 0, aborts: 1, disposals: 1 })
+    expect(manager.getResourceCounts().piSessions).toBe(0)
+    manager.dispose()
+  })
+
+  test("a late cancelled session cannot replace or dispose its newer owner", async () => {
+    const entered = deferred()
+    const gate = deferred()
+    const stale = fakeSession()
+    const fresh = fakeSession()
+    let creations = 0
+    const sdk = fakeSdk({ create: async () => {
+      if (++creations === 1) { entered.resolve(); await gate.promise; return stale }
+      return fresh
+    } })
+    const manager = new PiAgentManager({ loadSdk: async () => sdk as never })
+    const starting = manager.startTurn(startupArgs)
+    const rejected = starting.catch((error: unknown) => error)
+    await entered.promise
+    manager.closeChat(startupArgs.chatId)
+    const turn = await manager.startTurn(startupArgs)
+    await collectEvents(turn.stream)
+    gate.resolve()
+    expect(await rejected).toMatchObject({ name: "AbortError" })
+    expect(stale.calls).toEqual({ prompts: 0, aborts: 1, disposals: 1 })
+    expect(fresh.calls).toEqual({ prompts: 1, aborts: 0, disposals: 0 })
+    expect(manager.getResourceCounts().piSessions).toBe(1)
+    manager.closeChat(startupArgs.chatId)
+    expect(fresh.calls.aborts).toBe(1)
+    expect(fresh.calls.disposals).toBe(1)
+    manager.dispose()
+  })
+})
+
 describe("translatePiTool", () => {
   test.each([
     ["read", { path: "/a.ts", offset: 5, limit: 10 }, "Read", { file_path: "/a.ts", offset: 5, limit: 10 }],

@@ -86,6 +86,7 @@ export interface StandaloneTranscriptBundle {
   theme: StandaloneTranscriptTheme
   attachmentMode: StandaloneTranscriptAttachmentMode
   messages: TranscriptEntry[]
+  textAttachmentPreviews?: Record<string, { content: string; truncated: boolean }>
 }
 
 export interface StandaloneTranscriptExportResult {

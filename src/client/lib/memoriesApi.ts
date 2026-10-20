@@ -18,6 +18,7 @@ import type {
 } from "../../server/memory/board-backlog"
 import { enqueueStudyTelemetry } from "../app/study/studyTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
+import { generateUUID } from "./utils"
 
 export type { AbstractionLevel, MemoryEvent, MemoryItem, MemoryScope, MemoryStatus, MemoryType }
 
@@ -106,7 +107,7 @@ function qs(params: Record<string, string | undefined>): string {
 }
 
 function controlOperationId(label: string): string {
-  return `control:${label}:${crypto.randomUUID()}`
+  return `control:${label}:${generateUUID()}`
 }
 
 export const memoriesApi = {
@@ -371,7 +372,7 @@ export const memoriesApi = {
     id: string,
     body: TransferTargetBody & {
       /** Transcript-card CAS; required for chat-gate and Board suggestions. */
-      sourceVersion?: number
+      sourceVersion: number
       content: string
       detail?: string
       abstractionLevel?: AbstractionLevel
@@ -433,10 +434,14 @@ export interface TransferLanding {
   /** The target-context memory this landing relates to (reinforces/conflicts). */
   targetId?: string
   targetContent?: string
+  /** Version of the target snapshot used for this landing judgment. */
+  targetVersion?: number
 }
 
 export interface TransferProposal {
   verdict: "as_is" | "rewrite" | "context_bound"
+  /** Version of the source snapshot used for this proposal. */
+  sourceVersion: number
   /** The abstract rule — the context-free middle representation. */
   portable: string
   /** When the rule applies; absent = unconditional. */
@@ -483,7 +488,7 @@ export function recordUiMonitor(
   extra: { ids?: string[]; sessionId?: string; interaction?: "open" | "click" | "scroll" | "hover" } = {},
 ): void {
   if (uiMonitorSuppressed) return
-  const eventId = `monitor:${crypto.randomUUID()}`
+  const eventId = `monitor:${generateUUID()}`
   enqueueStudyTelemetry({
     eventId,
     endpoint: "/api/memories/ui-monitor",

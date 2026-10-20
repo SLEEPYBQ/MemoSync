@@ -337,6 +337,8 @@ export const MISSING_PI_CONNECTION_MESSAGE =
 
 export interface StartPiTurnArgs {
   chatId: string
+  /** Cancels SDK initialization as well as the first prompt dispatch. */
+  signal?: AbortSignal
   cwd: string
   content: string
   /** Model id on the registry endpoint — any non-empty registry id is valid. */
@@ -403,13 +405,17 @@ function failedPiTurn(message: string): HarnessTurn {
 
 export class PiAgentManager {
   private readonly sessions = new Map<string, PiChatSession>()
+  private readonly pendingStarts = new Map<string, AbortController>()
+  private disposed = false
   private readonly agentDir: string
   private readonly sessionsDir: string
+  private readonly loadSdk: typeof loadPiSdk
 
-  constructor(args: { dataDir?: string } = {}) {
+  constructor(args: { dataDir?: string; loadSdk?: typeof loadPiSdk } = {}) {
     const dataDir = args.dataDir ?? path.join(getDataRootDir(homedir()), "pi")
     this.agentDir = path.join(dataDir, "agent")
     this.sessionsDir = path.join(dataDir, "sessions")
+    this.loadSdk = args.loadSdk ?? loadPiSdk
   }
 
   getResourceCounts() {
@@ -417,14 +423,19 @@ export class PiAgentManager {
   }
 
   closeChat(chatId: string) {
+    const pending = this.pendingStarts.get(chatId)
+    this.pendingStarts.delete(chatId)
+    pending?.abort()
     const existing = this.sessions.get(chatId)
     if (!existing) return
     this.sessions.delete(chatId)
+    void existing.session.abort().catch(() => {})
     existing.session.dispose()
   }
 
   dispose() {
-    for (const chatId of [...this.sessions.keys()]) {
+    this.disposed = true
+    for (const chatId of new Set([...this.sessions.keys(), ...this.pendingStarts.keys()])) {
       this.closeChat(chatId)
     }
   }
@@ -441,6 +452,7 @@ export class PiAgentManager {
   }
 
   private async openSession(args: StartPiTurnArgs & { connection: PiConnection }): Promise<PiChatSession> {
+    args.signal?.throwIfAborted()
     const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
     const toolNamesKey = [...builtinToolNames, ...(args.memorySpecs ?? []).map((spec) => spec.name)].sort().join(",")
 
@@ -454,6 +466,7 @@ export class PiAgentManager {
       existing.memoryInvoke = args.memoryDispatch ?? null
       if (existing.model !== args.model) {
         await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model))
+        args.signal?.throwIfAborted()
         existing.model = args.model
       }
       if (existing.effort !== args.effort) {
@@ -470,7 +483,8 @@ export class PiAgentManager {
 
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
     // under MemoSync's data root, and no discovery of the user's ~/.pi setup.
-    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await loadPiSdk()
+    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await this.loadSdk()
+    args.signal?.throwIfAborted()
     const authStorage = AuthStorage.inMemory()
     authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
     const modelRegistry = ModelRegistry.inMemory(authStorage)
@@ -487,6 +501,7 @@ export class PiAgentManager {
       noThemes: true,
     })
     await resourceLoader.reload()
+    args.signal?.throwIfAborted()
 
     // Fail closed when a persisted session file was expected but is gone:
     // silently starting fresh history would discard context (and for memory
@@ -544,6 +559,11 @@ export class PiAgentManager {
       tools: [...builtinToolNames, ...memorySpecs.map((spec) => spec.name)],
       customTools,
     })
+    if (args.signal?.aborted) {
+      void session.abort().catch(() => {})
+      session.dispose()
+      args.signal.throwIfAborted()
+    }
 
     const chatSession: PiChatSession = {
       session,
@@ -564,6 +584,28 @@ export class PiAgentManager {
   }
 
   async startTurn(args: StartPiTurnArgs): Promise<HarnessTurn> {
+    args.signal?.throwIfAborted()
+    if (this.disposed) throw new DOMException("Pi manager has been disposed", "AbortError")
+    if (this.pendingStarts.has(args.chatId)) this.closeChat(args.chatId)
+    const controller = new AbortController()
+    this.pendingStarts.set(args.chatId, controller)
+    const relayAbort = () => controller.abort(args.signal?.reason)
+    const stopForAbort = () => {
+      if (this.pendingStarts.get(args.chatId) === controller) this.closeChat(args.chatId)
+    }
+    controller.signal.addEventListener("abort", stopForAbort, { once: true })
+    args.signal?.addEventListener("abort", relayAbort, { once: true })
+    try {
+      return await this.startTurnWithSignal({ ...args, signal: controller.signal })
+    } finally {
+      args.signal?.removeEventListener("abort", relayAbort)
+      controller.signal.removeEventListener("abort", stopForAbort)
+      if (this.pendingStarts.get(args.chatId) === controller) this.pendingStarts.delete(args.chatId)
+    }
+  }
+
+  private async startTurnWithSignal(args: StartPiTurnArgs): Promise<HarnessTurn> {
+    args.signal?.throwIfAborted()
     if (!args.connection) {
       return failedPiTurn(MISSING_PI_CONNECTION_MESSAGE)
     }
@@ -572,6 +614,7 @@ export class PiAgentManager {
     try {
       chatSession = await this.openSession({ ...args, connection: args.connection })
     } catch (error) {
+      args.signal?.throwIfAborted()
       return failedPiTurn(error instanceof Error ? error.message : String(error))
     }
     const session = chatSession.session
@@ -581,6 +624,7 @@ export class PiAgentManager {
     if (session.isStreaming) {
       await session.abort()
     }
+    args.signal?.throwIfAborted()
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

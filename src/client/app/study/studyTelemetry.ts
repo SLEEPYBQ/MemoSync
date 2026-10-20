@@ -1,3 +1,5 @@
+import { generateUUID } from "../../lib/utils"
+
 export type StudyTimedStage = "information" | "memory_questionnaire" | "monitoring_tlx" | "control_tlx" | "sus"
 
 export interface StudyTelemetryOutboxRequest {
@@ -246,7 +248,7 @@ export async function initializeStudyTelemetryOutbox({
   storage = typeof window === "undefined" ? null : window.localStorage,
   fetcher = fetch,
   onlineTarget = typeof window === "undefined" ? null : window,
-  randomId = () => crypto.randomUUID(),
+  randomId = generateUUID,
 }: {
   condition: StudyTelemetryCondition
   resetForNewParticipant: boolean
@@ -314,7 +316,7 @@ export function startStudyTelemetryBootstrap({
   storage = typeof window === "undefined" ? null : window.localStorage,
   fetcher = fetch,
   onlineTarget = typeof window === "undefined" ? null : window,
-  randomId = () => crypto.randomUUID(),
+  randomId = generateUUID,
   retryDelayMs = (attempt) => Math.min(5_000, 250 * (2 ** Math.max(0, attempt - 1))),
 }: {
   condition: StudyTelemetryCondition
@@ -415,7 +417,7 @@ export function startStudyTelemetryBootstrap({
  */
 export async function recordStudyStageEntered(stage: StudyTimedStage, taskId?: string): Promise<void> {
   const body = {
-    eventId: `stage-entry:${crypto.randomUUID()}`,
+    eventId: `stage-entry:${generateUUID()}`,
     kind: "stage_enter",
     surface: "study",
     action: stage,
