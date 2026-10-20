@@ -121,7 +121,7 @@ interface SessionContext {
   pendingRequests: Map<CodexRequestId, PendingRequest<unknown>>
   pendingTurn: PendingTurn | null
   sessionToken: string | null
-  stderrLines: string[]
+  lastStderrLine: string | null
   closed: boolean
   subprocessEnv?: Record<string, string | undefined>
   externalToolsDisabled?: boolean
@@ -149,6 +149,7 @@ export interface StartCodexSessionArgs {
 export interface StartCodexTurnArgs {
   chatId: string
   model: string
+  signal?: AbortSignal
   effort?: CodexReasoningEffort
   serviceTier?: ServiceTier
   content: string
@@ -802,10 +803,10 @@ export async function serializeCodexRuntimeStart<T>(profile: string, start: () =
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly spawnProcess: SpawnCodexAppServer
-  private readonly usesRealProcess: boolean
+  private readonly serializeStarts: boolean
 
-  constructor(args: { spawnProcess?: SpawnCodexAppServer } = {}) {
-    this.usesRealProcess = !args.spawnProcess
+  constructor(args: { spawnProcess?: SpawnCodexAppServer; serializeStarts?: boolean } = {}) {
+    this.serializeStarts = args.serializeStarts ?? !args.spawnProcess
     this.spawnProcess = args.spawnProcess ?? ((cwd, env) => {
       const runtime = prepareCodexRuntime(env)
       return spawn("codex", runtime.args, {
@@ -817,7 +818,7 @@ export class CodexAppServerManager {
   }
 
   async startSession(args: StartCodexSessionArgs) {
-    if (!this.usesRealProcess) return this.startSessionUnlocked(args)
+    if (!this.serializeStarts) return this.startSessionUnlocked(args)
     const env = args.subprocessEnv ?? process.env
     const profile = env.MEMOSYNC_CLI_PROFILE_DIR || env.CODEX_HOME || join(homedir(), ".codex")
     return serializeCodexRuntimeStart(profile, () => this.startSessionUnlocked(args))
@@ -843,12 +844,17 @@ export class CodexAppServerManager {
       pendingRequests: new Map(),
       pendingTurn: null,
       sessionToken: null,
-      stderrLines: [],
+      lastStderrLine: null,
       closed: false,
       subprocessEnv: args.subprocessEnv,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
+    const stopForAbort = () => {
+      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+    }
+    args.signal?.addEventListener("abort", stopForAbort, { once: true })
+    if (args.signal?.aborted) stopForAbort()
 
     try {
       return await this.initializeSession(args, context)
@@ -857,6 +863,8 @@ export class CodexAppServerManager {
       // Do not stop a replacement session if an older request fails late.
       if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
       throw error
+    } finally {
+      args.signal?.removeEventListener("abort", stopForAbort)
     }
   }
 
@@ -988,7 +996,16 @@ export class CodexAppServerManager {
     }
     context.pendingTurn = pendingTurn
 
+    const stopForAbort = () => {
+      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+    }
+    args.signal?.addEventListener("abort", stopForAbort, { once: true })
+
     try {
+      if (args.signal?.aborted) {
+        stopForAbort()
+        args.signal.throwIfAborted()
+      }
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
         input: [
@@ -1021,6 +1038,8 @@ export class CodexAppServerManager {
       context.pendingTurn = null
       queue.finish()
       throw error
+    } finally {
+      args.signal?.removeEventListener("abort", stopForAbort)
     }
 
     return {
@@ -1146,7 +1165,7 @@ export class CodexAppServerManager {
     void (async () => {
       for await (const line of stderr) {
         if (line.trim()) {
-          context.stderrLines.push(line.trim())
+          context.lastStderrLine = line.trim().slice(-4096)
         }
       }
     })()
@@ -1159,7 +1178,7 @@ export class CodexAppServerManager {
       if (context.closed) return
       queueMicrotask(() => {
         if (context.closed) return
-        const message = context.stderrLines.at(-1) || `Codex app-server exited with code ${code ?? 1}`
+        const message = context.lastStderrLine || `Codex app-server exited with code ${code ?? 1}`
         this.failContext(context, message)
       })
     })
@@ -1593,6 +1612,8 @@ export class CodexAppServerManager {
   }
 
   private failContext(context: SessionContext, message: string) {
+    if (context.closed) return
+    context.closed = true
     const pendingTurn = context.pendingTurn
     if (pendingTurn && !pendingTurn.resolved) {
       pendingTurn.queue.push({
@@ -1613,7 +1634,14 @@ export class CodexAppServerManager {
       pending.reject(new Error(message))
     }
     context.pendingRequests.clear()
-    context.closed = true
+    if (this.sessions.get(context.chatId) === context) {
+      this.sessions.delete(context.chatId)
+    }
+    try {
+      context.child.kill("SIGKILL")
+    } catch {
+      // Preserve the original failure if the child has already exited.
+    }
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {

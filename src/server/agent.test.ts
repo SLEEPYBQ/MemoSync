@@ -961,6 +961,147 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  test("closes an idle Codex session when its chat is closed", async () => {
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: { stopSession: (chatId: string) => stopped.push(chatId) } as never,
+    })
+    await coordinator.closeChat("chat-1")
+    expect(stopped).toEqual(["chat-1"])
+  })
+
+  test("stops idle Codex sessions during server shutdown outside study mode", async () => {
+    let stopped = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      policy: resolveConditionPolicy(""),
+      codexManager: { stopAll: () => { stopped = true } } as never,
+    })
+    await coordinator.shutdownStudyRuntime()
+    expect(stopped).toBe(true)
+  })
+
+  test("aborts a queued Codex session start when its chat closes", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+    await coordinator.closeChat("chat-1")
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a pending Codex turn-start response instead of waiting for it", async () => {
+    let turnRequested!: () => void
+    const turnStart = new Promise<void>((resolve) => { turnRequested = resolve })
+    let turnSignal: AbortSignal | undefined
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession() {
+          return "codex-session-1"
+        },
+        async startTurn(args: { signal?: AbortSignal }) {
+          turnSignal = args.signal
+          turnRequested()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("turn-start aborted")), { once: true })
+          })
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await turnStart
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+
+    expect(turnSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.not.toBeInstanceOf(Error)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a queued Codex session start during server shutdown", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    let stopAll = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopAll: () => { stopAll = true },
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.shutdownStudyRuntime()
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopAll).toBe(true)
+  })
+
   test("generates a chat title in the background on the first user message", async () => {
     let releaseTitle!: () => void
     const titleGate = new Promise<void>((resolve) => {
