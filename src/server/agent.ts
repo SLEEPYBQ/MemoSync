@@ -635,6 +635,18 @@ function stringFromUnknown(value: unknown) {
   }
 }
 
+async function interruptTurnWithTimeout(turn: HarnessTurn) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      turn.interrupt(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000) }),
+    ])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 function buildSteeredMessageContent(content: string) {
   return content.trim().length > 0
     ? `${STEERED_MESSAGE_PREFIX}\n\n${content}`
@@ -3649,12 +3661,7 @@ export class AgentCoordinator {
     for (const [chatId, active] of [...this.activeTurns.entries()]) {
       // interrupt() may never settle; bound it so a hung turn cannot stall
       // close(), the remaining turns, or the data-lock release.
-      await attempt(() =>
-        Promise.race([
-          active.turn.interrupt(),
-          new Promise((resolve) => setTimeout(resolve, 5_000)),
-        ]).then(() => undefined),
-      )
+      await attempt(() => interruptTurnWithTimeout(active.turn))
       await attempt(() => active.turn.close())
       if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
     }
@@ -3885,6 +3892,8 @@ export class AgentCoordinator {
     ) return
     const opening = this.openingBoardBacklog.recoverOpeningPrompt(taskId)
     if (!opening) return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
 
     this.openingBoardRecoveryTasks.add(taskId)
     const recover = async () => {
@@ -3920,6 +3929,9 @@ export class AgentCoordinator {
         const turnEntries = promptIndex < 0
           ? []
           : messages.slice(promptIndex + 1, nextPromptIndex < 0 ? undefined : nextPromptIndex)
+        // A durable Stop owns the opening turn even when it happened before
+        // provider acceptance, so neither in-process nor restart recovery may replay it.
+        if (turnEntries.some((message) => message.kind === "interrupted")) return
         const preview = turnEntries.find(
           (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
         )
@@ -4173,6 +4185,8 @@ export class AgentCoordinator {
     decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>,
   ) {
     if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
     const chat = this.store.requireChat(opening.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("The opening Memory Board project no longer exists")
@@ -4207,6 +4221,7 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision.decision === "without_memory",
       })
     } catch (error) {
+      if (reservation.cancelled || reservation.superseded || this.isEngineStartBlocked(opening.chatId)) return
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(
         opening.chatId,
@@ -6544,6 +6559,11 @@ export class AgentCoordinator {
   }) {
     const { args, decision } = ctx
     try {
+      if (args.startupReservation) {
+        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      } else if (this.startupReservations.has(args.chatId) || this.activeTurns.has(args.chatId)
+        || this.isEngineStartBlocked(args.chatId)) return
+      this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
@@ -6552,6 +6572,7 @@ export class AgentCoordinator {
         args.chatId,
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses })
       )
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       this.memory?.logger.event({
         type: "memory.preview",
         ...(ctx.controlOperation ? { operationId: ctx.controlOperation.operationId } : {}),
@@ -6591,6 +6612,7 @@ export class AgentCoordinator {
         // Release before queue draining, which deliberately treats the claim
         // as a busy owner and would otherwise leave the next row parked.
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
+        this.releaseStartupStatus(args.chatId, args.startupReservation)
         this.emitStateChange(args.chatId, { immediate: true })
         await this.maybeStartNextQueuedMessage(args.chatId)
         return
@@ -6618,6 +6640,8 @@ export class AgentCoordinator {
         }
       }
     } catch (error) {
+      if (args.startupReservation?.cancelled || args.startupReservation?.superseded
+        || this.isEngineStartBlocked(args.chatId)) return
       this.restoreUndeliveredEnforcement(args.chatId)
       if (ctx.controlOperation) {
         try {
@@ -8542,10 +8566,7 @@ export class AgentCoordinator {
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
     try {
-      await Promise.race([
-        active.turn.interrupt(),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ])
+      await interruptTurnWithTimeout(active.turn)
     } catch {
       // interrupt() failed — force close
     }

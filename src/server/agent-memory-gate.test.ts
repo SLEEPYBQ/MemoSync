@@ -1588,6 +1588,68 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
+  test.each(["stop", "recover again"] as const)("restored preview provider startup remains owned during %s", async (action) => {
+    let entered!: () => void
+    let release!: () => void
+    const starting = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const h = createHarness({
+      preview: true, openingBoard: true, activeStudyTaskId: "038-S1",
+      policy: resolveConditionPolicy("memosync"),
+      beforeClaudeSessionStart: async () => { entered(); await gate },
+    })
+    const opening = {
+      taskId: "038-S1", chatId: "chat-1", reviewId: `restored-startup-${action}`,
+      content: "Build the dashboard", attachments: [],
+    }
+    const previewId = "restored-startup-preview"
+    try {
+      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
+      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
+      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
+      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
+      h.store.messages.push({
+        _id: opening.reviewId, createdAt: 1, kind: "user_prompt",
+        content: opening.content, attachments: [],
+      }, {
+        _id: previewId, createdAt: 2, kind: "memory_preview", previewId,
+        turn: 1, task: opening.content, memories: [],
+      })
+      h.store.turnStartedCount = 1
+      h.coordinator.resumeOpeningBoardPreparation()
+      await waitFor(() => h.coordinator.pendingPreviews.has(opening.chatId))
+      await h.coordinator.respondMemoryPreview({ chatId: opening.chatId, previewId, decision: "go_on" })
+      await starting
+      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(true)
+      if (action === "stop") {
+        await h.coordinator.cancel(opening.chatId)
+        release()
+        await waitFor(() => h.claudeSessionCloses[0] === 1)
+        expect(h.prompts).toEqual([])
+        expect(h.store.turnCancelledCount).toBe(1)
+        expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+        h.coordinator.resumeOpeningBoardPreparation()
+        await Bun.sleep(20)
+        expect(h.prompts).toEqual([])
+        expect(h.sessionStarts).toHaveLength(1)
+      } else {
+        h.coordinator.resumeOpeningBoardPreparation()
+        h.coordinator.resumeOpeningBoardPreparation()
+        await Bun.sleep(20)
+        expect(h.sessionStarts).toHaveLength(1)
+        release()
+        await waitFor(() => h.prompts.length === 1)
+        expect(h.sessionStarts).toHaveLength(1)
+        expect(h.store.messages.filter((entry) => entry.kind === "memory_preview_decision")).toHaveLength(1)
+      }
+    } finally {
+      release()
+      await h.coordinator.cancel(opening.chatId)
+      await h.coordinator.shutdownStudyRuntime()
+      h.cleanup()
+    }
+  })
+
   for (const decision of ["go_on", "without_memory"] as const) {
     test(`startup recovery dispatches exactly once after a durable ${decision} decision that crashed before provider acceptance`, async () => {
       const h = createHarness({
@@ -2673,8 +2735,7 @@ describe("memory preview gate (coordinator)", () => {
         operationId: "control:working-memory:start:provider-gap",
       })
       await bootStarted
-      await waitFor(() => !(h.coordinator as unknown as { startingChats: Map<string, string> })
-        .startingChats.has("chat-1"))
+      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
       expect((h.coordinator as unknown as { activeTurns: Map<string, unknown> })
         .activeTurns.has("chat-1")).toBe(false)
 
