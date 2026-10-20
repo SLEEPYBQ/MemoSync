@@ -1,6 +1,7 @@
 import path from "node:path"
+import { homedir } from "node:os"
 import { stat } from "node:fs/promises"
-import { APP_NAME, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, getDataDir, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
 import { parseStudyProjects, registerStudyProjects, resolveRegisteredStudyProjects, type RegisteredStudyProject } from "./study-projects"
 import { studyWorkspaceStarterReady } from "./study-workspace-provenance"
 import { createStudyPromptGate, type StudyPromptGate } from "./study-prompt-gate"
@@ -15,7 +16,8 @@ import type { ShareMode } from "../shared/share"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { EventStore } from "./event-store"
-import { migrateLegacyDataRoot } from "./migrate-data-root"
+import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
+import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
@@ -254,7 +256,79 @@ export interface StartMemoSyncServerOptions {
   }
 }
 
+export async function cleanupFailedMemoSyncStartup(args: {
+  error: unknown
+  cleanups: Array<() => void | Promise<void>>
+  releaseLock: () => void
+}): Promise<unknown> {
+  const failures = [args.error]
+  for (const cleanup of args.cleanups.reverse()) {
+    try {
+      await cleanup()
+    } catch (error) {
+      failures.push(error)
+    }
+  }
+  try {
+    args.releaseLock()
+  } catch (error) {
+    failures.push(error)
+  }
+  return failures.length > 1
+    ? new AggregateError(failures, "MemoSync startup and cleanup failed")
+    : args.error
+}
+
 export async function startMemoSyncServer(options: StartMemoSyncServerOptions = {}) {
+  const homeDir = homedir()
+  const usesDefaultDataDir = !options.dataDir || isDefaultDataDirectory(options.dataDir, homeDir)
+  const bootstrapLock = usesDefaultDataDir ? acquireDataRootBootstrapLock(homeDir) : null
+  const startupCleanups: Array<() => void | Promise<void>> = []
+  let lock: ReturnType<typeof acquireDataDirectoryLock> | undefined
+  try {
+    if (usesDefaultDataDir) prepareDefaultDataRoot(homeDir)
+    lock = acquireDataDirectoryLock(options.dataDir ?? getDataDir(homeDir))
+    const dataLock = lock
+    const runtime = await startLockedMemoSyncServer(
+      { ...options, dataDir: dataLock.dataDir },
+      (cleanup) => startupCleanups.push(cleanup),
+    )
+    let stopping: Promise<void> | undefined
+    return {
+      ...runtime,
+      stop: () => stopping ??= (async () => {
+        const stopErrors: unknown[] = []
+        try {
+          await runtime.stop()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        try {
+          dataLock.release()
+        } catch (error) {
+          stopErrors.push(error)
+        }
+        if (stopErrors.length === 1) throw stopErrors[0]
+        if (stopErrors.length > 1) {
+          throw new AggregateError(stopErrors, "MemoSync shutdown and lock release failed")
+        }
+      })(),
+    }
+  } catch (error) {
+    throw await cleanupFailedMemoSyncStartup({
+      error,
+      cleanups: startupCleanups,
+      releaseLock: () => lock?.release(),
+    })
+  } finally {
+    bootstrapLock?.release()
+  }
+}
+
+async function startLockedMemoSyncServer(
+  options: StartMemoSyncServerOptions,
+  onStartupCleanup: (cleanup: () => void | Promise<void>) => void,
+) {
   const port = options.port ?? 3210
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
@@ -274,7 +348,6 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
-  if (!options.dataDir) migrateLegacyDataRoot()
   // Study-condition policy: decides which memory behaviors exist in this
   // instance (capture surfacing, preview gate, trace, board/working-set access)
   // and whether remote git/GitHub access exists at all. Resolved BEFORE any
@@ -328,6 +401,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const studyMemoryStore = conditionPolicy.studyMode
     ? new StudyMemoryStore(path.join(store.dataDir, "experiments", "study.sqlite"))
     : null
+  if (studyMemoryStore) onStartupCleanup(() => studyMemoryStore.close())
   // Formal allocations receive their immutable identity from the orchestrator.
   // Fixed-arm local images without that env remain bootable for diagnostics,
   // but onboarding/session routes fail closed rather than accepting a browser
@@ -387,6 +461,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
       durableSink: studyTelemetry ? (input) => studyTelemetry.recordServerEvent(input) : undefined,
     }),
   })
+  onStartupCleanup(() => memory.close())
   const beginStudyMemoryMutation = conditionPolicy.studyMode
     ? () => studyRegistry.beginTreatmentMemoryMutation()
     : undefined
@@ -402,8 +477,11 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   let server: ReturnType<typeof Bun.serve<ClientState>>
   let router: ReturnType<typeof createWsRouter>
   const terminals = new TerminalManager()
+  onStartupCleanup(() => terminals.closeAll())
   const keybindings = new KeybindingsManager()
+  onStartupCleanup(() => keybindings.dispose())
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
+  onStartupCleanup(() => appSettings.dispose())
   await appSettings.initialize()
   // A participant toggling the preview gate is research data (STUDY_PLAN §2.4)
   // — log every memoryPreview settings change, whether via UI or file edit.
@@ -636,6 +714,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     },
   })
   agent = activeAgent
+  onStartupCleanup(() => activeAgent.shutdownStudyRuntime())
   const studyWorkingMemoryAdmission = createStudyWorkingMemoryAdmission({
     policy: conditionPolicy,
     store,
@@ -736,20 +815,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     // Study arms only: the serial gate can refuse prompts (chat from a
     // completed session, pending questionnaire, or a finished study).
   })
-  // The first MemoSync prompt is already owned by a durable opening-Board
-  // claim before it reaches AgentCoordinator. Re-prime that exact logical
-  // turn after restart; its review id prevents a second prompt/turn/telemetry
-  // record and Working Memory still waits for the final Board Continue.
-  activeAgent.resumeOpeningBoardPreparation()
-  const staleEmptyChatPruneInterval = setInterval(() => {
-    void router.pruneStaleEmptyChats()
-      .then(() => router.broadcastSnapshots())
-  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
-
-  // Re-prime any chat whose queue was left stranded by a restart (BUG CORE-2).
-  // Fire-and-forget: engine boots can be slow and must not block the listener;
-  // drainOrphanedQueues logs its own per-chat errors.
-  void activeAgent.drainOrphanedQueues()
+  onStartupCleanup(() => router.dispose())
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -1081,20 +1147,43 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     }
   }
 
+  onStartupCleanup(() => server.stop(true))
+  // Do not launch writers until startup can no longer fail to bind.
+  activeAgent.resumeOpeningBoardPreparation()
+  const staleEmptyChatPruneInterval = setInterval(() => {
+    void router.pruneStaleEmptyChats()
+      .then(() => router.broadcastSnapshots())
+  }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
+  onStartupCleanup(() => clearInterval(staleEmptyChatPruneInterval))
+  void activeAgent.drainOrphanedQueues()
+
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
-    for (const chatId of [...activeAgent.activeTurns.keys()]) {
-      await activeAgent.cancel(chatId)
+    const shutdownErrors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        shutdownErrors.push(error)
+      }
     }
-    await activeAgent.shutdownStudyRuntime()
-    router.dispose()
-    appSettings.dispose()
-    keybindings.dispose()
-    terminals.closeAll()
-    memory.close()
-    studyMemoryStore?.close()
-    await store.compact()
-    server.stop(true)
+    await attempt(() => server.stop(true))
+    for (const chatId of [...activeAgent.activeTurns.keys()]) {
+      await attempt(() => activeAgent.cancel(chatId))
+    }
+    await attempt(() => activeAgent.shutdownStudyRuntime())
+    await attempt(() => activeAgent.forceStopAllTurns())
+    await attempt(() => router.dispose())
+    await attempt(() => appSettings.dispose())
+    await attempt(() => keybindings.dispose())
+    await attempt(() => terminals.closeAll())
+    await attempt(() => memory.close())
+    await attempt(() => studyMemoryStore?.close())
+    await attempt(() => store.compact())
+    if (shutdownErrors.length === 1) throw shutdownErrors[0]
+    if (shutdownErrors.length > 1) {
+      throw new AggregateError(shutdownErrors, "MemoSync shutdown failed")
+    }
   }
 
   return {

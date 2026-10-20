@@ -3614,6 +3614,45 @@ export class AgentCoordinator {
     await this.studyPreviewRuntime?.stop()
   }
 
+  /** Shutdown safety net: a cancel() that fails while persisting the
+   * interruption can leave its provider turn unclosed. Close everything that
+   * is still live so the data-directory lock is not released over an active
+   * writer. */
+  async forceStopAllTurns() {
+    const errors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    for (const [chatId, active] of [...this.activeTurns.entries()]) {
+      // interrupt() may never settle; bound it so a hung turn cannot stall
+      // close(), the remaining turns, or the data-lock release.
+      await attempt(() =>
+        Promise.race([
+          active.turn.interrupt(),
+          new Promise((resolve) => setTimeout(resolve, 5_000)),
+        ]).then(() => undefined),
+      )
+      await attempt(() => active.turn.close())
+      if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
+    }
+    for (const [chatId, draining] of [...this.drainingStreams.entries()]) {
+      await attempt(() => draining.turn.close())
+      if (this.drainingStreams.get(chatId) === draining) this.drainingStreams.delete(chatId)
+    }
+    for (const session of this.claudeSessions.values()) {
+      await attempt(() => session.session.close())
+    }
+    await attempt(() => this.codexManager.stopAll())
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Failed to stop remaining agent turns")
+    }
+  }
+
   private async retireClaudeSession(session: ClaudeSessionState, reason: string) {
     if (!session.retired) {
       session.retired = true
