@@ -2235,7 +2235,7 @@ export function useAppState(activeChatId: string | null): AppState {
         decision,
         memoryIds,
         expectedUses,
-        operationId: `control:working-memory-${decision}:${previewId}:${crypto.randomUUID()}`,
+        operationId: `control:working-memory-${decision}:${previewId}:${generateUUID()}`,
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))

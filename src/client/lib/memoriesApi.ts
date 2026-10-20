@@ -18,6 +18,7 @@ import type {
 } from "../../server/memory/board-backlog"
 import { enqueueStudyTelemetry } from "../app/study/studyTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
+import { generateUUID } from "./utils"
 
 export type { AbstractionLevel, MemoryEvent, MemoryItem, MemoryScope, MemoryStatus, MemoryType }
 
@@ -106,7 +107,7 @@ function qs(params: Record<string, string | undefined>): string {
 }
 
 function controlOperationId(label: string): string {
-  return `control:${label}:${crypto.randomUUID()}`
+  return `control:${label}:${generateUUID()}`
 }
 
 export const memoriesApi = {
@@ -487,7 +488,7 @@ export function recordUiMonitor(
   extra: { ids?: string[]; sessionId?: string; interaction?: "open" | "click" | "scroll" | "hover" } = {},
 ): void {
   if (uiMonitorSuppressed) return
-  const eventId = `monitor:${crypto.randomUUID()}`
+  const eventId = `monitor:${generateUUID()}`
   enqueueStudyTelemetry({
     eventId,
     endpoint: "/api/memories/ui-monitor",
