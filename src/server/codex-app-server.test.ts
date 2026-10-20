@@ -582,6 +582,63 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
   })
 
+  for (const mode of ["start", "resume", "fork"] as const) {
+    test(`sends explicit Standard service tier for thread/${mode}`, async () => {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === `thread/${mode}`) {
+          child.writeServerMessage({ id: message.id, result: { thread: { id: "standard-thread" }, model: "gpt-5.4" } })
+        }
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      try {
+        await manager.startSession({
+          chatId: "standard-chat", cwd: "/tmp/project", model: "gpt-5.4",
+          sessionToken: mode === "resume" ? "saved-thread" : null,
+          pendingForkSessionToken: mode === "fork" ? "parent-thread" : null,
+        })
+        const request = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
+        expect(request.params).toHaveProperty("serviceTier", null)
+      } finally {
+        manager.stopAll()
+      }
+    })
+  }
+
+  test("sends explicit Standard service tier when Fast is disabled mid-chat", async () => {
+    let turnNumber = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "speed-thread" }, model: "gpt-5.4" } })
+      }
+      if (message.method === "turn/start") {
+        const turn = { id: `turn-${++turnNumber}`, status: "completed", error: null }
+        child.writeServerMessage({ id: message.id, result: { turn } })
+        child.writeServerMessage({ method: "turn/completed", params: { threadId: "speed-thread", turn } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "speed-chat", cwd: "/tmp/project", model: "gpt-5.4", serviceTier: "fast", sessionToken: null,
+      })
+      for (const serviceTier of ["fast", undefined] as const) {
+        const turn = await manager.startTurn({
+          chatId: "speed-chat", model: "gpt-5.4", content: "Hello", planMode: false,
+          serviceTier, onToolRequest: async () => ({}),
+        })
+        await collectStream(turn.stream)
+      }
+      const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
+      expect(turns).toHaveLength(2)
+      expect(turns[0].params).toHaveProperty("serviceTier", "fast")
+      expect(turns[1].params).toHaveProperty("serviceTier", null)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
   test("maps thread token usage updates into context window transcript entries", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {

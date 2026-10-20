@@ -910,11 +910,13 @@ export class CodexAppServerManager {
       }
     }
 
+    // An omitted tier inherits Codex configuration; null explicitly selects Standard.
+    const serviceTier = args.serviceTier ?? null
     const threadParams = {
       config: branchConfig,
       model: resolveCodexModel(args.model, args.subprocessEnv),
       cwd: args.cwd,
-      serviceTier: args.serviceTier,
+      serviceTier,
       approvalPolicy: "never",
       sandbox: args.sandbox ?? "danger-full-access",
       experimentalRawEvents: false,
@@ -929,7 +931,7 @@ export class CodexAppServerManager {
         threadId: args.pendingForkSessionToken,
         model: resolveCodexModel(args.model, args.subprocessEnv),
         cwd: args.cwd,
-        serviceTier: args.serviceTier,
+        serviceTier,
         approvalPolicy: "never",
         sandbox: args.sandbox ?? "danger-full-access",
         persistExtendedHistory: false,
@@ -942,7 +944,7 @@ export class CodexAppServerManager {
           threadId: args.sessionToken,
           model: resolveCodexModel(args.model, args.subprocessEnv),
           cwd: args.cwd,
-          serviceTier: args.serviceTier,
+          serviceTier,
           approvalPolicy: "never",
           sandbox: args.sandbox ?? "danger-full-access",
           persistExtendedHistory: false,
@@ -1018,7 +1020,7 @@ export class CodexAppServerManager {
         approvalPolicy: "never",
         model: resolveCodexModel(args.model, context.subprocessEnv),
         effort: args.effort,
-        serviceTier: args.serviceTier,
+        serviceTier: args.serviceTier ?? null,
         outputSchema: args.outputSchema,
         collaborationMode: {
           mode: args.planMode ? "plan" : codexProtocolCompat09x() ? "code" : "default",
