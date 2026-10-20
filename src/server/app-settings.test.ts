@@ -50,6 +50,13 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         },
         planMode: false,
       },
+      pi: {
+        model: "anthropic/claude-sonnet-4-6",
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     memoryPreview: {
       enabled: true,

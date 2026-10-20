@@ -3290,6 +3290,88 @@ describe("AgentCoordinator claude integration", () => {
   })
 })
 
+describe("AgentCoordinator Pi startup cancellation", () => {
+  test.each(["stop", "close", "shutdown"] as const)("%s during connection resolution cannot start Pi afterwards", async (action) => {
+    const store = createFakeStore()
+    let entered!: () => void
+    let release!: () => void
+    const resolving = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let starts = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      resolvePiConnection: async () => { entered(); await gate; return null },
+      generateTitle: async () => ({ title: "t", usedFallback: true, failureMessage: null }),
+      piManager: {
+        startTurn: async () => { starts += 1; throw new Error("cancelled startup dispatched") },
+        closeChat() {}, dispose() {},
+      } as never,
+    })
+    const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "cancel before Pi starts" })
+    await resolving
+    if (action === "stop") await coordinator.cancel("chat-1")
+    else if (action === "close") await coordinator.closeChat("chat-1")
+    else await coordinator.shutdownStudyRuntime()
+    release()
+    await sending
+    expect(starts).toBe(0)
+    expect(store.messages.some((entry) => entry.kind === "result")).toBe(false)
+    expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
+    await coordinator.shutdownStudyRuntime()
+  })
+
+  test("a late aborted Pi turn closes only itself while a newer turn stays active", async () => {
+    const store = createFakeStore()
+    let entered!: () => void
+    let release!: () => void
+    const starting = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const staleEvents = new AsyncEventQueue<any>()
+    const freshEvents = new AsyncEventQueue<any>()
+    let staleCloses = 0
+    let freshCloses = 0
+    let attempts = 0
+    let startupSignal: AbortSignal | undefined
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      generateTitle: async () => ({ title: "t", usedFallback: true, failureMessage: null }),
+      resolvePiConnection: async () => ({ provider: "custom", baseUrl: "https://example.test/v1", apiKey: "test" }),
+      piManager: {
+        startTurn: async (args: { signal?: AbortSignal }) => {
+          if (++attempts === 1) {
+            startupSignal = args.signal
+            entered()
+            await gate
+            return { provider: "pi", stream: staleEvents, interrupt: async () => {}, close: () => { staleCloses += 1; staleEvents.close() } }
+          }
+          return { provider: "pi", stream: freshEvents, interrupt: async () => {}, close: () => { freshCloses += 1; freshEvents.close() } }
+        },
+        closeChat() {}, dispose() {},
+      } as never,
+    })
+    const staleSend = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "stale prompt" })
+    try {
+      await starting
+      await coordinator.cancel("chat-1")
+      expect(startupSignal?.aborted).toBe(true)
+      await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "fresh prompt" })
+      const freshOwner = coordinator.activeTurns.get("chat-1")
+      expect(freshOwner).toBeDefined()
+      release()
+      await staleSend
+      expect(staleCloses).toBe(1)
+      expect(freshCloses).toBe(0)
+      expect(coordinator.activeTurns.get("chat-1")).toBe(freshOwner)
+      expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    } finally {
+      release()
+      await staleSend
+      await coordinator.cancel("chat-1")
+      await coordinator.shutdownStudyRuntime()
+    }
+  })
+})
+
 function createFakeStore() {
   const chat = {
     id: "chat-1",

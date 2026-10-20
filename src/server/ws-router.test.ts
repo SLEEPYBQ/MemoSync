@@ -134,6 +134,13 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       },
       planMode: false,
     },
+    pi: {
+      model: "anthropic/claude-sonnet-4-6",
+      modelOptions: {
+        reasoningEffort: "medium",
+      },
+      planMode: false,
+    },
   },
   memoryPreview: {
     enabled: true,

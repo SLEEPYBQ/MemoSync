@@ -126,12 +126,12 @@ The **Memory Record** in the sidebar lists, for each turn of a session, what was
 - **Memory Board + Memory files** — drag-to-rescope, search, archive/restore, Markdown projection that syncs both ways, import of existing config files.
 - **Memory Record** — a per-turn ledger that survives context compaction.
 - **Stable session injection** — confirmed memory rides the session as a snapshot plus per-turn deltas, so memory edits can take effect without restarting the conversation.
-- **Claude Code and Codex engines** — official CLI subscriptions or isolated GLM testing; memory reasoning forks from the chosen engine's conversation. Claude Code also offers DeepSeek and per-chat vendor selection.
+- **Claude Code, Codex, and Pi engines** — official CLI subscriptions, isolated GLM testing, or an in-process Pi agent on any OpenAI-compatible endpoint via the Model Registry; memory reasoning forks from the chosen engine's conversation. Claude Code also offers DeepSeek and per-chat vendor selection.
 - **A full coding workbench underneath** — project-first sidebar, plan mode, rich transcript rendering, embedded terminal, file and git panels, session resumption, local-first persistence.
 
 ## Quickstart
 
-Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile.
+Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile. The Pi engine runs in-process (no CLI to install): give it any OpenAI-compatible endpoint through the Model Registry in Settings → Providers, or export `OPENROUTER_API_KEY`. Its model picker takes any registry model id, not just the catalog suggestions.
 
 ```bash
 git clone <this repository> MemoSync
@@ -173,6 +173,7 @@ All configuration is read from `.env` in the project directory (see [`.env.examp
 | `MEMOSYNC_CODEX_API_KEY`, `MEMOSYNC_CODEX_BASE_URL` | — | Explicit key and Responses endpoint for isolated `custom` Codex; also set `MEMOSYNC_CODEX_MODEL`. |
 | `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `786432` | Token count at which the engine auto-compacts the conversation. MemoSync selects the 1M context window on every DeepSeek session; a "Context compacted" marker appears in the transcript when compaction happens. |
 | `MEMOSYNC_USE_OWN_ANTHROPIC` | — | Set to `1` to run the chat engine on your own exported `ANTHROPIC_*` variables (a real Anthropic key or another Anthropic-compatible endpoint) instead of the derived DeepSeek bundle. |
+| `OPENROUTER_API_KEY` | — | Fallback credential for the Pi engine when no Model Registry connection is configured in Settings. |
 
 With `DEEPSEEK_API_KEY` set, MemoSync derives the whole `ANTHROPIC_*` bundle itself and ignores leftover `ANTHROPIC_*` / `CLAUDE_CODE_*` exports from other Claude Code setups in your shell, so a stray `ANTHROPIC_BASE_URL` cannot hijack the engine.
 
@@ -207,7 +208,7 @@ bun run export-data [--full]   # bundle local data into a tar.gz (see below)
 ## How it is built
 
 - **Stack.** React 19 + TypeScript on the client, Bun on the server. Memory items and their histories live in SQLite; projects, chats, and transcripts are append-only JSONL logs with snapshot compaction.
-- **Agent runtime.** Claude Code runs through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) `query()` interface with an asynchronous prompt queue. Codex runs through the [Codex app-server](https://developers.openai.com/codex/app-server/) protocol with native thread creation, resume, fork, dynamic tools, and per-turn developer instructions. Both support official authentication or the isolated provider profile described above.
+- **Agent runtime.** Claude Code runs through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) `query()` interface with an asynchronous prompt queue. Codex runs through the [Codex app-server](https://developers.openai.com/codex/app-server/) protocol with native thread creation, resume, fork, dynamic tools, and per-turn developer instructions. Pi runs in-process through the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK against the Model Registry connection, with per-chat session files under the MemoSync data root, resume/fork through the session file, and the memory block prepended to the prompt (Pi has no developer-instructions channel). Its bash tool spawns with a scrubbed environment (credential-looking variables are removed), though — like the other engines — it shares the server's user account, so a model can still read files the server can. All three support official authentication or the isolated provider profile described above.
 - **Memory tools.** The agent sees the memory store through an MCP server: `load_memory_detail` fetches an item's detailed form on demand and `propose_memory` lets the agent nominate a candidate mid-turn (it still goes through your review).
 - **Parallel memory branches.** Candidate extraction (C), transfer (T), and memory changes (M) start together. Candidate decisions continue T and M in their existing conversations; transfer decisions continue M. A further branch selects working memory and writes expected uses after approved changes reach the store. An audit branch judges the completed turn, including uncited tool evidence. MemoSync has no direct-API fallback: every memory model call uses the chosen CLI runtime. Before the first main turn is persisted, branches explicitly start with empty history because Claude cannot fork an unpersisted session. [Implementation and validation details](docs/MEMORY_BRANCHES.md).
 - **Confirmed memory injection.** Only confirmed items enter the main Memory Block and detail-tool allowlist. Claude keeps its session and updates selections through deltas; Codex receives the selected block and expected uses through per-turn developer instructions. Branch analysis transcripts stay out of the main conversation. Provider cache reuse depends on the runtime and provider; no latency saving is assumed.

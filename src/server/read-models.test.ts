@@ -202,7 +202,7 @@ describe("read models", () => {
     expect(streaming?.runtime.streamingText).toBe("typing this out")
     expect(chat?.queuedMessages.map((message) => message.content)).toEqual(["follow up"])
     expect(chat?.history.recentLimit).toBe(200)
-    expect(chat?.availableProviders.map((provider) => provider.id)).toEqual(["claude", "codex"])
+    expect(chat?.availableProviders.map((provider) => provider.id)).toEqual(["claude", "codex", "pi"])
     expect(chat?.availableProviders[0]?.models.map((model) => model.id)).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-flash-vision-exp",

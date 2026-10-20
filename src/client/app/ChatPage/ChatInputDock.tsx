@@ -3,6 +3,7 @@ import { OctagonX, X } from "lucide-react"
 import { ChatInput, type ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { AppState } from "../useAppState"
+import type { AgentProvider } from "../../../shared/types"
 
 interface ChatInputDockProps {
   inputRef: RefObject<HTMLDivElement | null>
@@ -15,7 +16,7 @@ interface ChatInputDockProps {
   runtimeStatus: string | null
   canCancel: boolean
   projectId: string | null
-  activeProvider: "claude" | "codex" | null
+  activeProvider: AgentProvider | null
   availableProviders: AppState["availableProviders"]
   contextWindowSnapshot: ContextWindowSnapshot | null
   slashCommands: string[]

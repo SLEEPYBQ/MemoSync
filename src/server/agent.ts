@@ -24,8 +24,10 @@ import {
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizePiModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
+import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import type { MemoryService } from "./memory"
@@ -464,6 +466,9 @@ interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
+  piManager?: PiAgentManager
+  /** Injectable for tests; defaults to the Model Registry/env resolution. */
+  resolvePiConnection?: () => Promise<PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   /** MemoSync memory layer; when present, memory tools + context are injected per engine. */
   memory?: MemoryService | null
@@ -627,6 +632,18 @@ function stringFromUnknown(value: unknown) {
     return JSON.stringify(value, null, 2)
   } catch {
     return String(value)
+  }
+}
+
+async function interruptTurnWithTimeout(turn: HarnessTurn) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      turn.interrupt(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000) }),
+    ])
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -1678,6 +1695,8 @@ export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
+  private readonly piManager: PiAgentManager
+  private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly memory: MemoryService | null
@@ -1839,6 +1858,8 @@ export class AgentCoordinator {
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.piManager = args.piManager ?? new PiAgentManager()
+    this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.memory = args.memory ?? null
@@ -3566,6 +3587,7 @@ export class AgentCoordinator {
     this.cancelledDuringPreview.delete(chatId)
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
+    this.piManager.closeChat(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
       await this.retireClaudeSession(claudeSession, "chat_closed")
@@ -3616,6 +3638,7 @@ export class AgentCoordinator {
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
+    this.piManager.dispose()
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
@@ -3638,12 +3661,7 @@ export class AgentCoordinator {
     for (const [chatId, active] of [...this.activeTurns.entries()]) {
       // interrupt() may never settle; bound it so a hung turn cannot stall
       // close(), the remaining turns, or the data-lock release.
-      await attempt(() =>
-        Promise.race([
-          active.turn.interrupt(),
-          new Promise((resolve) => setTimeout(resolve, 5_000)),
-        ]).then(() => undefined),
-      )
+      await attempt(() => interruptTurnWithTimeout(active.turn))
       await attempt(() => active.turn.close())
       if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
     }
@@ -3702,6 +3720,16 @@ export class AgentCoordinator {
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
+      }
+    }
+
+    if (provider === "pi") {
+      const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
+      return {
+        model: normalizeServerModel(provider, options.model),
+        effort: piModelOptions.reasoningEffort,
+        serviceTier: undefined,
+        planMode: false,
       }
     }
 
@@ -3864,6 +3892,8 @@ export class AgentCoordinator {
     ) return
     const opening = this.openingBoardBacklog.recoverOpeningPrompt(taskId)
     if (!opening) return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
 
     this.openingBoardRecoveryTasks.add(taskId)
     const recover = async () => {
@@ -3899,6 +3929,9 @@ export class AgentCoordinator {
         const turnEntries = promptIndex < 0
           ? []
           : messages.slice(promptIndex + 1, nextPromptIndex < 0 ? undefined : nextPromptIndex)
+        // A durable Stop owns the opening turn even when it happened before
+        // provider acceptance, so neither in-process nor restart recovery may replay it.
+        if (turnEntries.some((message) => message.kind === "interrupted")) return
         const preview = turnEntries.find(
           (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
         )
@@ -4152,6 +4185,8 @@ export class AgentCoordinator {
     decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>,
   ) {
     if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
     const chat = this.store.requireChat(opening.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("The opening Memory Board project no longer exists")
@@ -4186,6 +4221,7 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision.decision === "without_memory",
       })
     } catch (error) {
+      if (reservation.cancelled || reservation.superseded || this.isEngineStartBlocked(opening.chatId)) return
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(
         opening.chatId,
@@ -6523,6 +6559,11 @@ export class AgentCoordinator {
   }) {
     const { args, decision } = ctx
     try {
+      if (args.startupReservation) {
+        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      } else if (this.startupReservations.has(args.chatId) || this.activeTurns.has(args.chatId)
+        || this.isEngineStartBlocked(args.chatId)) return
+      this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
@@ -6531,6 +6572,7 @@ export class AgentCoordinator {
         args.chatId,
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses })
       )
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       this.memory?.logger.event({
         type: "memory.preview",
         ...(ctx.controlOperation ? { operationId: ctx.controlOperation.operationId } : {}),
@@ -6570,6 +6612,7 @@ export class AgentCoordinator {
         // Release before queue draining, which deliberately treats the claim
         // as a busy owner and would otherwise leave the next row parked.
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
+        this.releaseStartupStatus(args.chatId, args.startupReservation)
         this.emitStateChange(args.chatId, { immediate: true })
         await this.maybeStartNextQueuedMessage(args.chatId)
         return
@@ -6597,6 +6640,8 @@ export class AgentCoordinator {
         }
       }
     } catch (error) {
+      if (args.startupReservation?.cancelled || args.startupReservation?.superseded
+        || this.isEngineStartBlocked(args.chatId)) return
       this.restoreUndeliveredEnforcement(args.chatId)
       if (ctx.controlOperation) {
         try {
@@ -6733,6 +6778,99 @@ export class AgentCoordinator {
         turn.close()
         return
       }
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+    } else if (args.provider === "pi") {
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+      // MemoSync memory for Pi: the same injection plan + tool specs as Codex,
+      // but Pi has no developer_instructions channel, so the memory block is
+      // prepended to the user prompt. Custom memory tools are registered on
+      // the pi session (see memory/pi-adapter) and dispatched per turn.
+      // "Proceed without memory" (preview gate) skips both the block and
+      // dispatch for this turn.
+      const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
+      const piMemorySpecs =
+        this.memory && this.policy.memoryTools
+          ? buildMemoryToolSpecs(this.memory, {
+              capture: this.capture,
+              onProposed: (created, info) => {
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoApplied = created.filter(({ id }) => autoIds.has(id))
+                if (!autoApplied.length) return
+                void this.store
+                  .appendMessage(
+                    args.chatId,
+                    timestamped({
+                      kind: "memory_candidates",
+                      candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
+                    })
+                  )
+                  .then(() => this.emitStateChange(args.chatId))
+                  .catch(() => {})
+              },
+            })
+          : []
+      const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
+      const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
+      const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
+      const piMemoryBlock = [
+        piPlan?.block ?? "",
+        piExpectedUses.length ? `How the selected memories are expected to guide this turn:\n${piExpectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
+        ...piEnforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
+        args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
+        args.resume?.enforce ? `ENFORCED THIS RUN: [${args.resume.memoryId}] MUST be followed. ${args.resume.correction}` : "",
+      ].filter(Boolean).join("\n\n")
+      if (args.resume?.enforce && !piSelected.has(args.resume.memoryId)) throw new Error("The enforced memory is no longer in Working Memory")
+      if (this.memory && piPlan && piMemoryBlock) {
+        this.memory.logger.event({
+          type: "memory.inject",
+          sessionId: args.chatId,
+          engine: "pi",
+          memories: piPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
+          tokenEstimate: Math.ceil(piMemoryBlock.length / 4),
+          mode: piPlan.mode,
+        })
+      }
+      const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
+        ? async (name: string, toolArgs: Record<string, unknown>) => {
+            return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
+              projectId: chat.projectId,
+              sessionId: args.chatId,
+              turn: turnNumber,
+              engine: "pi",
+              allowedMemoryIds: piPlan?.injectedMemories.map(item => item.id) ?? [],
+            })
+          }
+        : undefined
+      const connection = await this.resolvePiConnectionFn()
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
+      const piPrompt = buildPromptText(args.content, providerAttachments)
+      turn = await this.piManager.startTurn({
+        signal: startController.signal,
+        chatId: args.chatId,
+        cwd: project.localPath,
+        content: piMemoryBlock ? `${piMemoryBlock}\n\n${piPrompt}` : piPrompt,
+        model: args.model,
+        effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
+        connection,
+        memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+        memoryDispatch: piMemoryDispatch,
+      })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        return
+      }
+      this.turnPayAttention.delete(args.chatId)
+      args.onMemoryDeliveryAccepted?.(piPlan?.injectedMemories.map(item => item.id) ?? [])
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,
@@ -6912,11 +7050,16 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
-      memoryDeliveryAccepted: args.provider === "codex",
+      // Pi accepts its memory block inside the user prompt (there is no
+      // developer_instructions channel) — delivery counts like Codex's.
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
     bootedActive = active
+    } catch (error) {
+      if (args.provider === "pi" && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
+      throw error
     } finally {
       if (this.engineStartAbortControllers.get(args.chatId) === startController) {
         this.engineStartAbortControllers.delete(args.chatId)
@@ -7888,7 +8031,7 @@ export class AgentCoordinator {
             this.launchPostTurnMemoryPasses({
               chatId: active.chatId,
               projectId: chat?.projectId,
-              engine: "codex",
+              engine: active.provider,
               turnNumber: active.turnNumber,
               turnId: active.turnId,
               taskId: active.taskId,
@@ -7997,9 +8140,10 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume is a MemoSync Claude feature available in
-    // normal deployments and the MemoSync study mode.
-    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || chat.provider !== "codex"))) {
+    // Per-memory interrupt/resume works on every MemoSync engine in normal
+    // deployments (Claude, Codex and Pi all implement resume/enforce handling);
+    // in the study mode it stays restricted to Claude.
+    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || (chat.provider !== "codex" && chat.provider !== "pi")))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
@@ -8422,10 +8566,7 @@ export class AgentCoordinator {
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
     try {
-      await Promise.race([
-        active.turn.interrupt(),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ])
+      await interruptTurnWithTimeout(active.turn)
     } catch {
       // interrupt() failed — force close
     }

@@ -4,17 +4,22 @@ import {
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
   DEFAULT_DEEPSEEK_MODEL_ID,
+  DEFAULT_PI_MODEL,
+  DEFAULT_PI_MODEL_OPTIONS,
   normalizeClaudeContextWindow,
   normalizeClaudeModelId,
   normalizeCodexModelId,
+  normalizePiModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
   supportsClaudeMaxReasoningEffort,
   type AgentProvider,
   type ChatProviderPreferences,
   type ClaudeModelOptions,
   type CodexModelOptions,
   type DefaultProviderPreference,
+  type PiModelOptions,
   type ProviderPreference,
   type ProviderModelOptionsByProvider,
 } from "../../shared/types"
@@ -32,6 +37,12 @@ export type ComposerState =
     provider: "codex"
     model: string
     modelOptions: CodexModelOptions
+    planMode: boolean
+  }
+  | {
+    provider: "pi"
+    model: string
+    modelOptions: PiModelOptions
     planMode: boolean
   }
 
@@ -52,6 +63,12 @@ type LegacyPersistedChatPreferencesState = Partial<{
       modelOptions?: Partial<CodexModelOptions>
       planMode?: boolean
     }
+    pi?: {
+      model?: string
+      effort?: string
+      modelOptions?: Partial<PiModelOptions>
+      planMode?: boolean
+    }
   }
   composerState: PersistedComposerState
   liveProvider: AgentProvider
@@ -66,6 +83,12 @@ type LegacyPersistedChatPreferencesState = Partial<{
       model?: string
       effort?: string
       modelOptions?: Partial<CodexModelOptions>
+      planMode?: boolean
+    }
+    pi?: {
+      model?: string
+      effort?: string
+      modelOptions?: Partial<PiModelOptions>
       planMode?: boolean
     }
   }
@@ -86,6 +109,13 @@ type PersistedComposerState =
     modelOptions?: Partial<CodexModelOptions>
     planMode?: boolean
   }
+  | {
+    provider: "pi"
+    model?: string
+    effort?: string
+    modelOptions?: Partial<PiModelOptions>
+    planMode?: boolean
+  }
 
 type PersistedChatPreferencesState = Pick<
   ChatPreferencesState,
@@ -93,7 +123,7 @@ type PersistedChatPreferencesState = Pick<
 > & LegacyPersistedChatPreferencesState
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex") return value
+  if (value === "claude" || value === "codex" || value === "pi") return value
   return "last_used"
 }
 
@@ -145,6 +175,26 @@ export function normalizeCodexPreference(value?: {
   }
 }
 
+export function normalizePiPreference(value?: {
+  model?: string
+  effort?: string
+  modelOptions?: Partial<PiModelOptions>
+  planMode?: boolean
+}): ProviderPreference<PiModelOptions> {
+  const reasoningEffort = value?.modelOptions?.reasoningEffort
+  return {
+    model: normalizePiModelId(value?.model),
+    modelOptions: {
+      reasoningEffort: isPiReasoningEffort(reasoningEffort)
+        ? reasoningEffort
+        : isPiReasoningEffort(value?.effort)
+          ? value.effort
+          : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort,
+    },
+    planMode: Boolean(value?.planMode),
+  }
+}
+
 export function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
@@ -155,6 +205,11 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
     codex: {
       model: "gpt-5.5",
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
+      planMode: false,
+    },
+    pi: {
+      model: DEFAULT_PI_MODEL,
+      modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
       planMode: false,
     },
   }
@@ -173,10 +228,17 @@ export function normalizeProviderDefaults(value?: {
     modelOptions?: Partial<CodexModelOptions>
     planMode?: boolean
   }
+  pi?: {
+    model?: string
+    effort?: string
+    modelOptions?: Partial<PiModelOptions>
+    planMode?: boolean
+  }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
+    pi: normalizePiPreference(value?.pi),
   }
 }
 
@@ -203,6 +265,16 @@ function composerFromProviderDefaults(
     }
   }
 
+  if (provider === "pi") {
+    const preference = providerDefaults.pi
+    return {
+      provider: "pi",
+      model: preference.model,
+      modelOptions: { ...preference.modelOptions },
+      planMode: preference.planMode,
+    }
+  }
+
   const preference = providerDefaults.codex
   return {
     provider: "codex",
@@ -213,19 +285,12 @@ function composerFromProviderDefaults(
 }
 
 function cloneComposerState(state: ComposerState): ComposerState {
-  return state.provider === "claude"
-    ? {
-      provider: "claude",
-      model: state.model,
-      modelOptions: { ...state.modelOptions },
-      planMode: state.planMode,
-    }
-    : {
-      provider: "codex",
-      model: state.model,
-      modelOptions: { ...state.modelOptions },
-      planMode: state.planMode,
-    }
+  return {
+    provider: state.provider,
+    model: state.model,
+    modelOptions: { ...state.modelOptions },
+    planMode: state.planMode,
+  } as ComposerState
 }
 
 function sameComposerState(left: ComposerState | undefined, right: ComposerState): boolean {
@@ -240,6 +305,10 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
   if (left.provider === "codex" && right.provider === "codex") {
     return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
       && left.modelOptions.fastMode === right.modelOptions.fastMode
+  }
+
+  if (left.provider === "pi" && right.provider === "pi") {
+    return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
   }
 
   return false
@@ -271,6 +340,16 @@ function normalizeComposerState(
     }
   }
 
+  if (value?.provider === "pi") {
+    const preference = normalizePiPreference(value)
+    return {
+      provider: "pi",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
   if (legacyLiveProvider === "claude") {
     const preference = normalizeClaudePreference(legacyLivePreferences?.claude)
     return {
@@ -285,6 +364,16 @@ function normalizeComposerState(
     const preference = normalizeCodexPreference(legacyLivePreferences?.codex)
     return {
       provider: "codex",
+      model: preference.model,
+      modelOptions: preference.modelOptions,
+      planMode: preference.planMode,
+    }
+  }
+
+  if (legacyLiveProvider === "pi") {
+    const preference = normalizePiPreference(legacyLivePreferences?.pi)
+    return {
+      provider: "pi",
       model: preference.model,
       modelOptions: preference.modelOptions,
       planMode: preference.planMode,
@@ -387,7 +476,7 @@ interface ChatPreferencesState {
   setChatComposerModel: (chatId: string, model: string) => void
   setChatComposerModelOptions: (
     chatId: string,
-    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions>
+    modelOptions: Partial<ClaudeModelOptions> | Partial<CodexModelOptions> | Partial<PiModelOptions>
   ) => void
   setChatComposerPlanMode: (chatId: string, planMode: boolean) => void
   resetChatComposerFromProvider: (chatId: string, provider: AgentProvider) => void
@@ -460,10 +549,15 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                 ...state.providerDefaults.claude,
                 model,
               })
-              : normalizeCodexPreference({
-                ...state.providerDefaults.codex,
-                model,
-              }),
+              : provider === "pi"
+                ? normalizePiPreference({
+                  ...state.providerDefaults.pi,
+                  model,
+                })
+                : normalizeCodexPreference({
+                  ...state.providerDefaults.codex,
+                  model,
+                }),
           },
         })),
       setProviderDefaultModelOptions: (provider, modelOptions) =>
@@ -478,13 +572,21 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                   ...modelOptions as Partial<ClaudeModelOptions>,
                 },
               })
-              : normalizeCodexPreference({
-                ...state.providerDefaults.codex,
-                modelOptions: {
-                  ...state.providerDefaults.codex.modelOptions,
-                  ...modelOptions as Partial<CodexModelOptions>,
-                },
-              }),
+              : provider === "pi"
+                ? normalizePiPreference({
+                  ...state.providerDefaults.pi,
+                  modelOptions: {
+                    ...state.providerDefaults.pi.modelOptions,
+                    ...modelOptions as Partial<PiModelOptions>,
+                  },
+                })
+                : normalizeCodexPreference({
+                  ...state.providerDefaults.codex,
+                  modelOptions: {
+                    ...state.providerDefaults.codex.modelOptions,
+                    ...modelOptions as Partial<CodexModelOptions>,
+                  },
+                }),
           },
         })),
       setProviderDefaultPlanMode: (provider, planMode) =>
@@ -531,7 +633,14 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
                 modelOptions: normalizeClaudePreference(composerState).modelOptions,
                 planMode: composerState.planMode,
               }
-              : cloneComposerState(composerState),
+              : composerState.provider === "pi"
+                ? {
+                  provider: "pi",
+                  model: normalizePiPreference(composerState).model,
+                  modelOptions: normalizePiPreference(composerState).modelOptions,
+                  planMode: composerState.planMode,
+                }
+                : cloneComposerState(composerState),
           },
         })),
       setChatComposerProvider: (chatId, provider) =>
@@ -551,15 +660,28 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               }).modelOptions,
               planMode: composerState.planMode,
             }
-            : {
-              provider: "codex",
-              model,
-              modelOptions: normalizeCodexPreference({
-                ...composerState,
+            : composerState.provider === "pi"
+              ? {
+                provider: "pi",
+                model: normalizePiPreference({
+                  ...composerState,
+                  model,
+                }).model,
+                modelOptions: normalizePiPreference({
+                  ...composerState,
+                  model,
+                }).modelOptions,
+                planMode: composerState.planMode,
+              }
+              : {
+                provider: "codex",
                 model,
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
+                modelOptions: normalizeCodexPreference({
+                  ...composerState,
+                  model,
+                }).modelOptions,
+                planMode: composerState.planMode,
+              }
         ))),
       setChatComposerModelOptions: (chatId, modelOptions) =>
         set((state) => withChatComposerState(state, chatId, (composerState) => (
@@ -576,18 +698,31 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               }).modelOptions,
               planMode: composerState.planMode,
             }
-            : {
-              provider: "codex",
-              model: composerState.model,
-              modelOptions: normalizeCodexPreference({
-                ...composerState,
-                modelOptions: {
-                  ...composerState.modelOptions,
-                  ...modelOptions as Partial<CodexModelOptions>,
-                },
-              }).modelOptions,
-              planMode: composerState.planMode,
-            }
+            : composerState.provider === "pi"
+              ? {
+                provider: "pi",
+                model: composerState.model,
+                modelOptions: normalizePiPreference({
+                  ...composerState,
+                  modelOptions: {
+                    ...composerState.modelOptions,
+                    ...modelOptions as Partial<PiModelOptions>,
+                  },
+                }).modelOptions,
+                planMode: composerState.planMode,
+              }
+              : {
+                provider: "codex",
+                model: composerState.model,
+                modelOptions: normalizeCodexPreference({
+                  ...composerState,
+                  modelOptions: {
+                    ...composerState.modelOptions,
+                    ...modelOptions as Partial<CodexModelOptions>,
+                  },
+                }).modelOptions,
+                planMode: composerState.planMode,
+              }
         ))),
       setChatComposerPlanMode: (chatId, planMode) =>
         set((state) => withChatComposerState(state, chatId, (composerState) => ({

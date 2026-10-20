@@ -116,6 +116,11 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
           planMode: false,
         },
+        pi: {
+          model: "anthropic/claude-sonnet-4-6",
+          modelOptions: { reasoningEffort: "medium" },
+          planMode: false,
+        },
       },
       chatStates: {},
       legacyComposerState: {

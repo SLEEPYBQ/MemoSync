@@ -51,6 +51,8 @@
     "@codemirror/language-data": "^6.5.2",
     "@legendapp/list": "3.0.0-beta.44",
     "@lezer/highlight": "^1.2.3",
+    "@mariozechner/pi-ai": "0.73.1",
+    "@mariozechner/pi-coding-agent": "0.73.1",
     "@pierre/diffs": "^1.1.12",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@radix-ui/react-hover-card": "^1.1.18",
@@ -67,6 +69,7 @@
     "motion": "^12.42.2",
     "openai": "^6.34.0",
     "react-resizable-panels": "^4.7.3",
+    "typebox": "^1.3.6",
     "uqr": "^0.1.3",
     "zod": "^4.4.3"
   },

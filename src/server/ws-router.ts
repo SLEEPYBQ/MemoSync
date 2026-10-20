@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { ServerWebSocket } from "bun"
-import { DEFAULT_DEEPSEEK_MODEL_ID, PROTOCOL_VERSION } from "../shared/types"
+import { DEFAULT_DEEPSEEK_MODEL_ID, DEFAULT_PI_MODEL, PROTOCOL_VERSION } from "../shared/types"
 import type { ClientCommand, ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
 import type { AgentCoordinator } from "./agent"
@@ -556,6 +556,13 @@ export function createWsRouter({
         },
         planMode: false,
       },
+      pi: {
+        model: DEFAULT_PI_MODEL,
+        modelOptions: {
+          reasoningEffort: "medium",
+        },
+        planMode: false,
+      },
     },
     memoryPreview: {
       enabled: true,
@@ -590,6 +597,14 @@ export function createWsRouter({
         modelOptions: {
           ...snapshot.providerDefaults.codex.modelOptions,
           ...patch.providerDefaults?.codex?.modelOptions,
+        },
+      },
+      pi: {
+        ...snapshot.providerDefaults.pi,
+        ...patch.providerDefaults?.pi,
+        modelOptions: {
+          ...snapshot.providerDefaults.pi.modelOptions,
+          ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
     },
