@@ -7,7 +7,7 @@ import { createCaptureService, validateCandidate } from './capture';
 
 import { MEMORY_ATOM_SPEC } from './atom-spec';
 import { LlmJsonError, type DeepSeekJsonRequest, type LlmJsonCaller } from './deepseek';
-
+import { handleMemoryRequest } from './routes';
 
 /** A scripted LlmJsonCaller: returns the next queued response per call, records every call. */
 function stubCaller(responses: Array<Record<string, unknown>>): { call: LlmJsonCaller; calls: DeepSeekJsonRequest[] } {
@@ -565,6 +565,112 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     const after = memory.store.getById(existing.id)!;
     expect(after.reinforcedCount).toBe(1);
     expect(memory.store.getEvents(existing.id).some((e) => e.kind === 'reinforce')).toBe(true);
+  });
+
+  it.each([false, true])('capture UPDATE accepts only its reviewed target through PATCH (changed=%s)', async (changed) => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const target = memory.store.create(
+      { content: 'Dev server runs on port 3000', scope: 'project', projectId: 'RenderX', type: 'fact' },
+      { actor: 'user' },
+    );
+    const { call } = stubCaller([
+      { candidates: [{ content: 'Dev server now runs on port 3210', type: 'fact', scope: 'project', evidenceClass: 'user_stated' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+    ]);
+    const outcome = await createCaptureService({ memory, callJson: call }).capture({
+      projectId: 'RenderX', sessionId: 's-update', turn: 5, userText: 'We moved the dev server to 3210', assistantText: 'Noted.',
+    });
+    expect(outcome).toMatchObject({ surfaced: 1, revisions: 1, dropped: 0 });
+    const proposal = outcome.created[0]!;
+    expect(proposal).toMatchObject({
+      status: 'candidate', scope: 'project', projectId: 'RenderX', provenanceSessionId: 's-update',
+      provenanceTurn: 5, evidenceClass: 'user_stated',
+    });
+    if (changed) memory.store.update(target.id, { content: 'Use port 443 with mandatory TLS' }, { actor: 'user' });
+    const state = () => [proposal.id, target.id].map((id) => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }));
+    const before = state();
+    const url = new URL(`http://localhost/api/memories/${proposal.id}`);
+    const response = await handleMemoryRequest(new Request(url, {
+      method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'active' }),
+    }), url, memory);
+    expect(response!.status).toBe(changed ? 409 : 200);
+    if (changed) {
+      expect(state()).toEqual(before);
+    } else {
+      expect(memory.store.getById(proposal.id)!.status).toBe('active');
+      expect(memory.store.getById(target.id)!.status).toBe('archived');
+    }
+  });
+
+  it('capture UPDATE preserves a distinct observation when a revision is already pending', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const target = memory.store.create(
+      { content: 'Dev server runs on port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' },
+    );
+    const { call } = stubCaller([
+      { candidates: [{ content: 'Dev server now runs on port 4000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+      { candidates: [{ content: 'Dev server now runs on port 5000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+    ]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const first = await capture.capture({
+      sessionId: 's-update', turn: 1, userText: 'We moved the dev server to 4000', assistantText: 'Noted.',
+    });
+    expect(first).toMatchObject({ surfaced: 1, revisions: 1, dropped: 0 });
+    const draft = first.created[0]!;
+    const draftEvents = memory.store.getEvents(draft.id);
+    const outcome = await capture.capture({
+      sessionId: 's-update', turn: 2, userText: 'We moved the dev server to 5000', assistantText: 'Noted.',
+    });
+    expect(outcome).toMatchObject({ surfaced: 1, revisions: 1, dropped: 0 });
+    expect(outcome.created).toHaveLength(1);
+    const latest = outcome.created[0]!;
+    expect(latest).toMatchObject({ content: 'Dev server now runs on port 5000', status: 'candidate', provenanceTurn: 2 });
+    expect(memory.store.list({ status: 'candidate' }).map(({ id }) => id).sort()).toEqual([draft.id, latest.id].sort());
+    expect(memory.store.getById(draft.id)).toEqual(draft);
+    expect(memory.store.getEvents(draft.id)).toEqual(draftEvents);
+    expect(memory.store.revisionTargetOf(draft.id)?.id).toBe(target.id);
+    expect(memory.store.getKv(`revision_targets:${draft.id}`)).not.toBeNull();
+    expect(memory.store.revisionTargetOf(latest.id)?.id).toBe(target.id);
+    expect(memory.store.getKv(`revision_targets:${latest.id}`)).not.toBeNull();
+    expect(memory.store.getById(target.id)).toEqual(target);
+  });
+
+  for (const winnerIndex of [0, 1]) it(`competing capture updates accept only one replacement (winner ${winnerIndex})`, async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const target = memory.store.create(
+      { content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' },
+    );
+    const { call } = stubCaller([
+      { candidates: [{ content: 'Use port 4000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+      { candidates: [{ content: 'Use port 5000', type: 'fact', scope: 'personal' }] },
+      { decisions: [{ index: 0, route: 'updates', targetId: target.id }] },
+    ]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const proposals = [];
+    for (const turn of [1, 2]) {
+      const result = await capture.capture({ sessionId: 's-update', turn, userText: `port changed ${turn}`, assistantText: 'Noted.' });
+      proposals.push(result.created[0]!);
+    }
+    const accept = (id: string) => {
+      const url = new URL(`http://localhost/api/memories/${id}`);
+      return handleMemoryRequest(new Request(url, {
+        method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 'active' }),
+      }), url, memory);
+    };
+    const winner = proposals[winnerIndex]!;
+    const loser = proposals[1 - winnerIndex]!;
+    expect((await accept(winner.id))!.status).toBe(200);
+    const snapshot = () => memory.store.list().map((item) => ({ item, events: memory.store.getEvents(item.id) }));
+    const before = snapshot();
+    expect((await accept(loser.id))!.status).toBe(409);
+    expect(snapshot()).toEqual(before);
+    expect(memory.store.list({ status: 'active' }).map(({ id }) => id)).toEqual([winner.id]);
+    expect(memory.store.getById(target.id)!.status).toBe('archived');
+    expect(memory.store.getById(loser.id)!.status).toBe('candidate');
+    expect(memory.store.getById(loser.id)!.content).toBe(loser.content);
   });
 
   it('updates verdict surfaces a REVISION candidate linked revises → target', async () => {

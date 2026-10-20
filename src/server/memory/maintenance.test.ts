@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import type { LlmJsonCaller } from './deepseek';
 import { MemoryService } from './index';
 import { createMaintenanceService } from './maintenance';
+import { handleMemoryRequest } from './routes';
 
 let dir: string;
 let memory: MemoryService;
@@ -101,6 +102,69 @@ describe('maintenance actions used by the chat Checkup', () => {
 
     const { replaced } = memory.store.acceptRevision(proposal!.id, { actor: 'user' });
     expect(replaced.map((item) => item.id).sort()).toEqual([a.id, b.id].sort());
+  });
+
+  it('merge preserves a shared session and accepts through the ordinary memory PATCH route', async () => {
+    const a = memory.store.create(
+      { content: 'Use pnpm in chat A', scope: 'session', sessionId: 'chat-A', type: 'constraint' },
+      { actor: 'user' },
+    );
+    const b = memory.store.create(
+      { content: 'Prefer pnpm for this work session', scope: 'session', sessionId: 'chat-A', type: 'preference' },
+      { actor: 'agent' },
+    );
+    const mergedContent = Array.from({ length: 101 }, (_, index) => `merged${index + 1}`).join(' ');
+    const proposal = await service({
+      callJson: async () => ({
+        content: mergedContent,
+        detail: 'Use pnpm consistently for this session.',
+        type: 'constraint',
+        abstractionLevel: 'contextual',
+      }),
+    }).merge(a.id, b.id, { actor: 'user', sessionId: 'chat-A' });
+
+    expect(proposal).not.toBeNull();
+    expect(proposal!.sessionId).toBe('chat-A');
+
+    const url = new URL(`http://localhost/api/memories/${proposal!.id}`);
+    const response = await handleMemoryRequest(
+      new Request(url, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      }),
+      url,
+      memory,
+    );
+
+    expect(response!.status).toBe(200);
+    expect((await response!.json()).data).toMatchObject({ status: 'active', scope: 'session', sessionId: 'chat-A' });
+    expect(memory.store.getById(a.id)!.status).toBe('archived');
+    expect(memory.store.getById(b.id)!.status).toBe('archived');
+  });
+
+  it('rejects a cross-session merge before calling the model or creating a proposal', async () => {
+    const a = memory.store.create(
+      { content: 'Use pnpm in chat A', scope: 'session', sessionId: 'chat-A', type: 'constraint' },
+      { actor: 'user' },
+    );
+    const b = memory.store.create(
+      { content: 'Prefer pnpm in chat B', scope: 'session', sessionId: 'chat-B', type: 'preference' },
+      { actor: 'agent' },
+    );
+    let modelCalls = 0;
+    const before = memory.store.list().map((item) => ({ item, events: memory.store.getEvents(item.id) }));
+
+    await expect(service({
+      callJson: async () => {
+        modelCalls += 1;
+        return { content: 'A merged session rule with enough detail.', type: 'constraint' };
+      },
+    }).merge(a.id, b.id, { actor: 'user', sessionId: 'chat-A' })).rejects.toThrow('same scope and context');
+
+    expect(modelCalls).toBe(0);
+    expect(memory.store.list().map((item) => ({ item, events: memory.store.getEvents(item.id) }))).toEqual(before);
+    expect(memory.store.list({ status: 'candidate' })).toHaveLength(0);
   });
 
   it('merge rejects a missing LLM and a raced or archived member', async () => {

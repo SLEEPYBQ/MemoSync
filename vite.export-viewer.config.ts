@@ -2,6 +2,7 @@ import path from "node:path"
 import { rm } from "node:fs/promises"
 import { defineConfig } from "vite"
 import react from "@vitejs/plugin-react"
+import { viteSingleFile } from "vite-plugin-singlefile"
 
 const GOOGLE_FONT_IMPORT_PATTERN = /@import(?:\s+url\()?["']https:\/\/fonts\.googleapis\.com[^;]+;?/g
 const EXPORT_VIEWER_OUT_DIR = path.resolve(import.meta.dirname, "dist/export-viewer")
@@ -34,6 +35,7 @@ export default defineConfig({
         }
       },
     },
+    viteSingleFile(),
     {
       name: "prune-export-viewer-public-assets",
       async closeBundle() {

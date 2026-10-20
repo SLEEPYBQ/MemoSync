@@ -21,6 +21,10 @@ import {
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import { resolveConditionPolicy } from "./experiment/condition"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { MemoryService } from "./memory"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -86,6 +90,36 @@ test("memory candidate transcript references never duplicate draft content", () 
   expect(JSON.stringify(references)).not.toContain("sk-secret")
   expect(JSON.stringify(references)).not.toContain("person@example.com")
 })
+
+for (const latestFirst of [false, true]) {
+  test(`auto acceptance applies only one competing capture update (latest first: ${latestFirst})`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "memosync-competing-updates-"))
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: dir })
+    try {
+      memory.store.setKv("evolution_policy", { mode: "auto" })
+      const target = memory.store.create({ content: "Use port 3000", scope: "personal", type: "fact" }, { actor: "user" })
+      const first = memory.store.createRevisionProposal(
+        { content: "Use port 4000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!
+      const second = memory.store.createCaptureUpdateProposal(
+        { content: "Use port 5000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!.item
+      const proposals = latestFirst ? [second, first] : [first, second]
+      const coordinator = new AgentCoordinator({ store: createFakeStore() as never, onStateChange: () => {}, memory })
+      const applied: Set<string> = (coordinator as any).autoApplyProposals(proposals, { chatId: "chat-1", turnNumber: 1 })
+      expect([...applied]).toEqual([proposals[0]!.id])
+      expect(memory.store.list({ status: "active" }).map(({ id }) => id)).toEqual([proposals[0]!.id])
+      expect(memory.store.getById(target.id)!.status).toBe("archived")
+      expect(memory.store.getById(proposals[1]!.id)!.status).toBe("candidate")
+      const retry: Set<string> = (coordinator as any).autoApplyProposals([proposals[1]!], { chatId: "chat-1", turnNumber: 2 })
+      expect(retry.size).toBe(0)
+      expect(memory.store.getById(proposals[1]!.id)!.content).toBe(proposals[1]!.content)
+    } finally {
+      memory.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
 
 test("DeepSeek chat selection takes precedence over the configured fallback model", () => {
   expect(resolveClaudeSessionModel("deepseek-v4-pro", "deepseek-v4-flash")).toBe("deepseek-v4-pro")
@@ -927,6 +961,147 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  test("closes an idle Codex session when its chat is closed", async () => {
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: { stopSession: (chatId: string) => stopped.push(chatId) } as never,
+    })
+    await coordinator.closeChat("chat-1")
+    expect(stopped).toEqual(["chat-1"])
+  })
+
+  test("stops idle Codex sessions during server shutdown outside study mode", async () => {
+    let stopped = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      policy: resolveConditionPolicy(""),
+      codexManager: { stopAll: () => { stopped = true } } as never,
+    })
+    await coordinator.shutdownStudyRuntime()
+    expect(stopped).toBe(true)
+  })
+
+  test("aborts a queued Codex session start when its chat closes", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+    await coordinator.closeChat("chat-1")
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a pending Codex turn-start response instead of waiting for it", async () => {
+    let turnRequested!: () => void
+    const turnStart = new Promise<void>((resolve) => { turnRequested = resolve })
+    let turnSignal: AbortSignal | undefined
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession() {
+          return "codex-session-1"
+        },
+        async startTurn(args: { signal?: AbortSignal }) {
+          turnSignal = args.signal
+          turnRequested()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("turn-start aborted")), { once: true })
+          })
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await turnStart
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+
+    expect(turnSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.not.toBeInstanceOf(Error)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a queued Codex session start during server shutdown", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    let stopAll = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopAll: () => { stopAll = true },
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.shutdownStudyRuntime()
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopAll).toBe(true)
+  })
+
   test("generates a chat title in the background on the first user message", async () => {
     let releaseTitle!: () => void
     const titleGate = new Promise<void>((resolve) => {
@@ -2133,7 +2308,7 @@ describe("AgentCoordinator claude integration", () => {
     expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
   })
 
-  test("bounds an unacknowledged interrupt after cancelled Codex turn startup and drains the queue", async () => {
+  test("closes cancelled Codex turn startup without waiting for an interrupt acknowledgement and drains the queue", async () => {
     const store = createFakeStore()
     store.chat.title = "Existing Chat"
     let releaseStartup!: () => void
@@ -2184,16 +2359,16 @@ describe("AgentCoordinator claude integration", () => {
     })
     try {
       await startupEntered
-      await coordinator.cancel("chat-1")
       const queued = await coordinator.send({
         type: "chat.send", chatId: "chat-1", provider: "codex", content: "next queued turn", model: "gpt-5.4",
       })
       expect(queued).toMatchObject({ queued: true })
+      await coordinator.cancel("chat-1")
       releaseStartup()
       await waitFor(() => stopSessionCount === 1, 7_000)
       await send
       await waitFor(() => store.turnFinishedCount === 1)
-      expect(interruptCount).toBe(1)
+      expect(interruptCount).toBe(0)
       expect(prompts).toEqual(["cancel during turn start", "next queued turn"])
       expect(store.queuedMessages).toHaveLength(0)
       expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)

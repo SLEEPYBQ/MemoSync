@@ -14,34 +14,48 @@ interface MemoryStoreState {
   removeLocal: (id: string) => void
 }
 
-let pendingLoad: Promise<void> | null = null
-
-export const useMemoryStore = create<MemoryStoreState>()((set) => ({
-  items: [],
-  status: "idle",
-  error: null,
-  loadAll: async () => {
-    if (pendingLoad) return pendingLoad
-    pendingLoad = (async () => {
+export const useMemoryStore = create<MemoryStoreState>()((set) => {
+  let loadGeneration = 0
+  let pendingMutations: Map<string, MemoryItem | null> | null = null
+  return {
+    items: [],
+    status: "idle",
+    error: null,
+    loadAll: async () => {
+      const generation = ++loadGeneration
+      const mutations = new Map<string, MemoryItem | null>()
+      pendingMutations = mutations
       set({ status: "loading", error: null })
       try {
         const items = await memoriesApi.list()
-        set({ items, status: "ready" })
+        if (generation !== loadGeneration) return
+        const merged = new Map(items.map((item) => [item.id, item]))
+        for (const [id, item] of mutations) {
+          if (item) merged.set(id, item)
+          else merged.delete(id)
+        }
+        set({ items: mutations.size ? [...merged.values()] : items, status: "ready", error: null })
       } catch (err) {
-        set({ status: "error", error: err instanceof Error ? err.message : "Failed to load memories" })
+        if (generation === loadGeneration) {
+          set({ status: "error", error: err instanceof Error ? err.message : "Failed to load memories" })
+        }
       } finally {
-        pendingLoad = null
+        if (generation === loadGeneration) pendingMutations = null
       }
-    })()
-    return pendingLoad
-  },
-  upsertLocal: (item) =>
-    set((state) => {
-      const idx = state.items.findIndex((m) => m.id === item.id)
-      if (idx === -1) return { items: [...state.items, item] }
-      const next = state.items.slice()
-      next[idx] = item
-      return { items: next }
-    }),
-  removeLocal: (id) => set((state) => ({ items: state.items.filter((m) => m.id !== id) })),
-}))
+    },
+    upsertLocal: (item) => {
+      pendingMutations?.set(item.id, item)
+      set((state) => {
+        const idx = state.items.findIndex((m) => m.id === item.id)
+        if (idx === -1) return { items: [...state.items, item] }
+        const next = state.items.slice()
+        next[idx] = item
+        return { items: next }
+      })
+    },
+    removeLocal: (id) => {
+      pendingMutations?.set(id, null)
+      set((state) => ({ items: state.items.filter((m) => m.id !== id) }))
+    },
+  }
+})

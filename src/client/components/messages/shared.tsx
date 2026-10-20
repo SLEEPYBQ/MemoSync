@@ -41,6 +41,7 @@ import {
   Check,
 } from "lucide-react"
 import { cn } from "../../lib/utils"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useMessageViolatedCitations, useTranscriptRenderOptions } from "./render-context"
 import { useTranscriptChatContext } from "./render-context"
@@ -182,7 +183,7 @@ export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode;
   const textContent = copyText ?? extractText(children)
 
   const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(textContent)
+    if (!await copyTextToClipboard(textContent)) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [textContent])
@@ -240,11 +241,12 @@ export function VerticalLineContainer({ children, className }: { children: React
 // concurrent calls itself, so this hook gates on `status` (effects in the same
 // commit run synchronously, so only the first mount actually fetches).
 export function useEnsureMemoriesLoaded() {
+  const { readonly } = useTranscriptRenderOptions()
   const status = useMemoryStore((s) => s.status)
   const loadAll = useMemoryStore((s) => s.loadAll)
   useEffect(() => {
-    if (status === "idle") void loadAll()
-  }, [status, loadAll])
+    if (!readonly && status === "idle") void loadAll()
+  }, [readonly, status, loadAll])
 }
 
 /**
@@ -493,7 +495,7 @@ export const markdownComponents = {
     const textContent = extractText(children)
 
     const handleCopy = async () => {
-      await navigator.clipboard.writeText(textContent)
+      if (!await copyTextToClipboard(textContent)) return
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }

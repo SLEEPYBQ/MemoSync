@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type {
@@ -740,42 +740,48 @@ function sanitizeRepoName(name: string) {
     .replace(/^-|-$/gu, "")
 }
 
-async function getGhAuthInfo() {
-  const versionResult = await runCommand(["gh", "--version"])
-  if (versionResult.exitCode !== 0) {
-    return {
-      ghInstalled: false,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
-  }
-
-  const authStatusResult = await runCommand(["gh", "auth", "status", "--json", "hosts"])
-  if (authStatusResult.exitCode !== 0) {
-    return {
-      ghInstalled: true,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
-  }
-
+export async function getGhAuthInfo(command = runCommand) {
+  let ghInstalled = false
   try {
-    const parsed = JSON.parse(authStatusResult.stdout) as {
-      hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>>
-    }
-    const accounts = parsed.hosts?.["github.com"] ?? []
-    const activeAccount = accounts.find((account) => account.active) ?? accounts[0]
-    return {
-      ghInstalled: true,
-      authenticated: activeAccount?.state === "success",
-      activeAccountLogin: activeAccount?.login,
+    const versionResult = await command(["gh", "--version"])
+    if (versionResult.exitCode === 0) {
+      ghInstalled = true
+      const authStatusResult = await command(["gh", "auth", "status", "--json", "hosts"])
+      if (authStatusResult.exitCode === 0) {
+        try {
+          const parsed = JSON.parse(authStatusResult.stdout) as {
+            hosts?: Record<string, Array<{ active?: boolean; login?: string; state?: string }>>
+          }
+          const accounts = parsed.hosts?.["github.com"] ?? []
+          const activeAccount = accounts.find((account) => account.active) ?? accounts[0]
+          return {
+            ghInstalled,
+            authenticated: activeAccount?.state === "success",
+            activeAccountLogin: activeAccount?.login,
+          }
+        } catch {
+          // Fall back to the status command supported by older gh versions.
+        }
+      }
+
+      // Legacy status validates every saved account on the host, so an expired
+      // inactive account can fail it while the active account still works.
+      // The active login is authoritative for the GitHub operations we launch.
+      await command(["gh", "auth", "status", "--hostname", "github.com"])
+      const user = await command(["gh", "api", "user", "--hostname", "github.com", "--jq", ".login"])
+      return {
+        ghInstalled,
+        authenticated: user.exitCode === 0,
+        activeAccountLogin: user.exitCode === 0 ? user.stdout.trim() || undefined : undefined,
+      }
     }
   } catch {
-    return {
-      ghInstalled: true,
-      authenticated: false,
-      activeAccountLogin: undefined,
-    }
+    // Missing executables and failed status checks cannot establish a login.
+  }
+  return {
+    ghInstalled,
+    authenticated: false,
+    activeAccountLogin: undefined,
   }
 }
 
@@ -863,7 +869,10 @@ async function listDirtyPaths(repoRoot: string) {
 
 async function readWorktreeFile(repoRoot: string, relativePath: string): Promise<string | null> {
   const absolutePath = path.join(repoRoot, relativePath)
-  const fileInfo = await stat(absolutePath).catch(() => null)
+  const fileInfo = await lstat(absolutePath).catch(() => null)
+  if (fileInfo?.isSymbolicLink()) {
+    return await readlink(absolutePath)
+  }
   if (!fileInfo?.isFile()) {
     return null
   }
@@ -1005,16 +1014,17 @@ async function computeCurrentFiles(repoRoot: string, baseCommit: string | null):
     const beforeText = await readBaseFile(repoRoot, baseCommit, beforePath)
     const afterText = await readWorktreeFile(repoRoot, relativePath)
     const absolutePath = path.join(repoRoot, relativePath)
-    const fileInfo = await stat(absolutePath).catch(() => null)
+    const fileInfo = await lstat(absolutePath).catch(() => null)
+    const isSymlink = fileInfo?.isSymbolicLink() ?? false
     const file = fileInfo?.isFile() ? Bun.file(absolutePath) : null
-    const mimeType = file ? inferProjectFileContentType(relativePath, file.type) : undefined
-    const size = fileInfo?.isFile() ? fileInfo.size : undefined
+    const mimeType = isSymlink ? "text/plain" : file ? inferProjectFileContentType(relativePath, file.type) : undefined
+    const size = fileInfo?.isFile() || isSymlink ? fileInfo?.size : undefined
+    const trackedStats = trackedStatsByPath.get(relativePath)
 
-    if (beforeText === afterText && entry.changeType !== "renamed") {
+    if (beforeText === afterText && entry.changeType !== "renamed" && !trackedStats) {
       continue
     }
 
-    const trackedStats = trackedStatsByPath.get(relativePath)
     const additions = trackedStats?.additions ?? countTextLines(afterText)
     const deletions = trackedStats?.deletions ?? 0
     files.push({

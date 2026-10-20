@@ -5,6 +5,7 @@
 // inline, and text files are editable with ⌘S / save-button persistence.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import Markdown from "react-markdown"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import remarkGfm from "remark-gfm"
 import {
   DndContext, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent,
@@ -644,12 +645,11 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
     })
   }, [])
 
-  const copyActivePath = useCallback(() => {
+  const copyActivePath = useCallback(async () => {
     if (!active) return
-    void navigator.clipboard?.writeText(active).then(() => {
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1200)
-    })
+    if (!await copyTextToClipboard(active)) return
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1200)
   }, [active])
 
   const filterResults = useMemo(

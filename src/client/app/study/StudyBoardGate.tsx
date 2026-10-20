@@ -26,6 +26,7 @@ import {
   type FocusedMemoryReviewController,
 } from "./MemoryBoardLauncher"
 import { useSurfaceExposure } from "./surfaceExposure"
+import { generateUUID } from "../../lib/utils"
 
 export interface StudyBoardProgress {
   activeTaskId: string | null
@@ -644,7 +645,7 @@ export function StudyBoardGate() {
     const preparationClaim = preparationClaims.claim(
       held,
       existing?.reviewId,
-      () => crypto.randomUUID(),
+      generateUUID,
     )
     if (!preparationClaim.claimed) return
     const reviewId = preparationClaim.reviewId

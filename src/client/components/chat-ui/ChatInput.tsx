@@ -14,7 +14,7 @@ import {
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
-import { cn } from "../../lib/utils"
+import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
 import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
@@ -101,6 +101,13 @@ export function getClipboardImageFiles(items: Iterable<ClipboardFileItem>, times
 
 export function trimTrailingPastedNewlines(text: string) {
   return text.replace(/(?:\r\n|\r|\n)+$/, "")
+}
+
+export function createUploadFormData(file: File) {
+  const formData = new FormData()
+  formData.append("files", file)
+  formData.append("clientFileSizes", String(file.size))
+  return formData
 }
 
 function replaceTextSelection(args: {
@@ -234,22 +241,57 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const textDraftKey = draftKey ?? chatId ?? null
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
-  const [value, setValue] = useState(() => (textDraftKey ? getDraft(textDraftKey) : ""))
+  const draftRevisionRef = useRef(0)
+  const submissionRef = useRef<object | null>(null)
+  const [value, setValueState] = useState(() => (textDraftKey ? getDraft(textDraftKey) : ""))
+  const valueRef = useRef(value)
+  const setValue = useCallback((next: React.SetStateAction<string>) => {
+    const updated = typeof next === "function" ? next(valueRef.current) : next
+    if (updated === valueRef.current) return
+    draftRevisionRef.current += 1
+    valueRef.current = updated
+    setValueState(updated)
+    if (textDraftKey) setDraft(textDraftKey, updated)
+  }, [textDraftKey, setDraft])
   // "/" autocomplete over engine-reported commands (closed by Esc until the draft changes).
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
-  const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const attachmentsRef = useRef(attachments)
+  const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
+    draftRevisionRef.current += 1
+    const updated = typeof next === "function" ? next(attachmentsRef.current) : next
+    attachmentsRef.current = updated
+    setAttachmentsState(updated)
+    if (chatId) {
+      // Pending uploads are edits too, even before they have a persisted file.
+      setAttachmentDrafts(chatId, updated
+        .filter((attachment) => attachment.status === "uploaded")
+        .map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment), true)
+    }
+  }, [chatId, setAttachmentDrafts])
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const uploadQueueRef = useRef<File[]>([])
   const activeUploadsRef = useRef(0)
-  const attachmentsRef = useRef<ComposerAttachment[]>([])
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
   const previousProjectIdRef = useRef<string | null>(projectId ?? null)
-  const latestChatIdRef = useRef<string | null>(chatId ?? null)
+
+  useLayoutEffect(() => {
+    valueRef.current = textDraftKey ? getDraft(textDraftKey) : ""
+    setValueState(valueRef.current)
+    submissionRef.current = null
+    return () => {
+      draftRevisionRef.current += 1
+      submissionRef.current = null
+      uploadGenerationRef.current += 1
+      uploadQueueRef.current = []
+      activeUploadsRef.current = 0
+    }
+  }, [chatId, textDraftKey, getDraft])
 
   const providerLocked = activeProvider !== null
   const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
@@ -297,7 +339,21 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     activeUploadsRef.current = 0
     setSelectedAttachmentId(null)
     setUploadError(null)
-  }, [cleanupAttachmentPreview])
+  }, [cleanupAttachmentPreview, setAttachments])
+
+  useLayoutEffect(() => useChatInputStore.subscribe((state, previous) => {
+    if (textDraftKey && state.drafts[textDraftKey] !== previous.drafts[textDraftKey]) {
+      valueRef.current = state.drafts[textDraftKey] ?? ""
+      setValueState(valueRef.current)
+    }
+    if (chatId && previous.attachmentDrafts[chatId] && !state.attachmentDrafts[chatId]) {
+      const retained = attachmentsRef.current.filter((attachment) => attachment.status !== "uploaded")
+      attachmentsRef.current.filter((attachment) => attachment.status === "uploaded").forEach(cleanupAttachmentPreview)
+      attachmentsRef.current = retained
+      setAttachmentsState(retained)
+      setSelectedAttachmentId(null)
+    }
+  }), [chatId, textDraftKey, cleanupAttachmentPreview])
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
@@ -346,10 +402,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [chatId])
 
   useEffect(() => {
-    latestChatIdRef.current = chatId ?? null
-  }, [chatId])
-
-  useEffect(() => {
     initializeComposerForChat(composerChatId)
   }, [composerChatId, initializeComposerForChat])
 
@@ -360,10 +412,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     removedAttachmentIdsRef.current.clear()
     setSelectedAttachmentId(null)
     setUploadError(null)
-    setAttachments((current) => {
-      current.forEach(cleanupAttachmentPreview)
-      return hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
-    })
+    attachmentsRef.current.forEach(cleanupAttachmentPreview)
+    const hydrated = hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
+    attachmentsRef.current = hydrated
+    setAttachmentsState(hydrated)
   }, [chatId, cleanupAttachmentPreview, getAttachmentDrafts])
 
   useEffect(() => {
@@ -379,10 +431,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       clearAttachmentDrafts(chatId)
     }
   }, [projectId, chatId, clearAttachments, clearAttachmentDrafts])
-
-  useEffect(() => {
-    attachmentsRef.current = attachments
-  }, [attachments])
 
   useEffect(() => {
     if (!chatId) return
@@ -407,22 +455,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         },
       })
     })
-  }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft])
-
-  useEffect(() => {
-    if (!chatId) return
-
-    const persistedAttachments = attachments
-      .filter((attachment) => attachment.status === "uploaded")
-      .map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
-
-    if (persistedAttachments.length === 0) {
-      clearAttachmentDrafts(chatId)
-      return
-    }
-
-    setAttachmentDrafts(chatId, persistedAttachments)
-  }, [attachments, chatId, clearAttachmentDrafts, setAttachmentDrafts])
+  }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft, setValue])
 
   useEffect(() => () => {
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
@@ -466,7 +499,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!file) break
 
       activeUploadsRef.current += 1
-      const tempId = crypto.randomUUID()
+      const tempId = generateUUID()
       const previewUrl = file.type.startsWith("image/") ? URL.createObjectURL(file) : undefined
       const generation = uploadGenerationRef.current
 
@@ -485,8 +518,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
       void (async () => {
         try {
-          const formData = new FormData()
-          formData.append("files", file)
+          const formData = createUploadFormData(file)
 
           const response = await fetch(`/api/projects/${projectId}/uploads`, {
             method: "POST",
@@ -543,7 +575,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       })()
     }
-  }, [projectId])
+  }, [projectId, setAttachments])
 
   const enqueueFiles = useCallback((files: File[]) => {
     if (!projectId) {
@@ -571,20 +603,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       if (!text) return
       setValue((current) => {
         if (current.trim()) return current
-        if (textDraftKey) setDraft(textDraftKey, text)
         return text
       })
       textareaRef.current?.focus()
     },
-  }), [enqueueFiles, setDraft, textDraftKey])
+  }), [enqueueFiles, setValue])
 
   async function handleSubmit() {
-    if (!canSubmit || hasPendingUploads) return
+    if (!canSubmit || hasPendingUploads || submissionRef.current) return
 
+    const submission = {}
+    submissionRef.current = submission
+    const revision = draftRevisionRef.current
+    const ownsDraft = () => submissionRef.current === submission && draftRevisionRef.current === revision
+    const persistedRevision = useChatInputStore.getState().getDraftRevision(textDraftKey, chatId ?? null)
     const nextValue = value
     const previousAttachments = attachmentsRef.current
-    const previousSelectedAttachmentId = selectedAttachmentId
-    const previousUploadError = uploadError
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
     let modelOptions: ModelOptions
     if (providerPrefs.provider === "claude") {
@@ -605,24 +639,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await runRetainedDraftSubmission({
       submit: () => onSubmit(nextValue, submitOptions),
       onAccepted: () => {
+        if (submissionRef.current === submission && !ownsDraft()) return
+        if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
+        if (!ownsDraft()) return
         setValue("")
-        if (textDraftKey) clearDraft(textDraftKey)
         if (textareaRef.current) textareaRef.current.style.height = "auto"
         clearAttachments({ cleanupPreviews: false })
-        if (latestChatIdRef.current) clearAttachmentDrafts(latestChatIdRef.current)
         previousAttachments.forEach(cleanupAttachmentPreview)
       },
       onRejected: (error) => {
         console.error("[ChatInput] Submit failed:", error)
-        // Idempotent while the draft stayed present, and restorative when a
-        // route/lifecycle transition rejected the held message.
-        setValue(nextValue)
-        if (textDraftKey) setDraft(textDraftKey, nextValue)
-        setAttachments(previousAttachments)
-        setSelectedAttachmentId(previousSelectedAttachmentId)
-        setUploadError(previousUploadError)
       },
     })
+    if (submissionRef.current === submission) submissionRef.current = null
   }
 
   // Fresh chats have no system_init yet — fall back to the last list this
@@ -649,7 +678,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   function applySlashCommand(command: string) {
     const next = `/${command} `
     setValue(next)
-    if (textDraftKey) setDraft(textDraftKey, next)
     textareaRef.current?.focus()
   }
 
@@ -706,7 +734,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (event.key === "ArrowUp" && !event.shiftKey && !event.altKey && !event.ctrlKey && !event.metaKey && value.length === 0 && previousPrompt) {
       event.preventDefault()
       setValue(previousPrompt)
-      if (textDraftKey) setDraft(textDraftKey, previousPrompt)
       return
     }
 
@@ -740,7 +767,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       })
       const nextCaretPosition = textarea.selectionStart + trimmedText.length
       setValue(nextValue)
-      if (textDraftKey) setDraft(textDraftKey, nextValue)
       autoResize()
       requestAnimationFrame(() => {
         textarea.selectionStart = nextCaretPosition
@@ -876,7 +902,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               rows={1}
               onChange={(event) => {
                 setValue(event.target.value)
-                if (textDraftKey) setDraft(textDraftKey, event.target.value)
                 setSlashIndex(0)
                 setSlashDismissed(false)
                 autoResize()

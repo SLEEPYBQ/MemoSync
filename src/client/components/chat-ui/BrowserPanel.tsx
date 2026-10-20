@@ -10,7 +10,7 @@ import {
   removeCachedLocalHttpServer,
   writeCachedProjectQuickActions,
 } from "../../lib/browserPanelCache"
-import { canKillLocalHttpServer, localServerPreviewUrl, manualBrowserAddressUrl } from "../../lib/localServerPreview"
+import { canKillLocalHttpServer, isProxiedPreviewAddress, localServerPreviewUrl, manualBrowserAddressUrl, previewFrameUrl } from "../../lib/localServerPreview"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
@@ -110,6 +110,11 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
   const [isAddingQuickAction, setIsAddingQuickAction] = useState(false)
   const [isZoomTooltipOpen, setIsZoomTooltipOpen] = useState(false)
   const [showOtherServers, setShowOtherServers] = useState(false)
+  const needsPreviewTicket = Boolean(address) && isProxiedPreviewAddress(address)
+  const [ticketedFrameSrc, setTicketedFrameSrc] = useState<{ for: string; src: string } | null>(null)
+  const frameSrc = needsPreviewTicket
+    ? (ticketedFrameSrc?.for === address ? ticketedFrameSrc.src : undefined)
+    : address
   const postRunRefreshTimeoutsRef = useRef<number[]>([])
   const previewInspectionTimeoutsRef = useRef<number[]>([])
   const projectServers = localServers.filter((server) => server.sameProject)
@@ -185,6 +190,23 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
   useEffect(() => {
     setAddressDraft(address)
   }, [address])
+
+  // Proxied previews live on an isolated origin (<port>.localhost or the
+  // configured preview origin) where the app session cookie is never sent.
+  // Mint a one-time ticket on the app origin and load the isolated callback
+  // URL so the frame acquires its host-only memosync_preview credential
+  // without needing the session cookie inside a cross-site iframe. A refresh
+  // (iframeVersion bump) re-mints since tickets are single-use.
+  useEffect(() => {
+    if (!needsPreviewTicket) return
+    let cancelled = false
+    void previewFrameUrl(address).then((src) => {
+      if (!cancelled) setTicketedFrameSrc({ for: address, src })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [address, iframeVersion, needsPreviewTicket])
 
   useEffect(() => {
     if (address) return
@@ -581,7 +603,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
               <iframe
                 ref={iframeRef}
                 key={`${address}-${iframeVersion}`}
-                {...browserPreviewFrameAttributes(address, previewDocument)}
+                {...browserPreviewFrameAttributes(previewDocument ? address : (frameSrc ?? ""), previewDocument)}
                 title="Browser panel"
                 sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
                 onLoad={handlePreviewLoad}

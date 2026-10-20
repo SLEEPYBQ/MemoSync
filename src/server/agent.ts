@@ -298,13 +298,6 @@ interface ResumeInterruptedTurn {
   selectedIds: string[]
 }
 
-interface StartupAttempt {
-  cancelled: boolean
-  cancellationRecorded: boolean
-  cancellationPromise: Promise<void> | null
-  ownedClaudeSession?: ClaudeSessionState
-}
-
 interface StartTurnArgs {
   chatId: string
   provider: AgentProvider
@@ -333,8 +326,6 @@ interface StartTurnArgs {
   profile?: SendToStartingProfile | null
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
-  /** Identity-bearing owner retained across detached startup continuations. */
-  startupAttempt?: StartupAttempt
   /**
    * Called only after Claude accepts the prompt, with the exact focused ids
    * used by the delivery receipt. Interrupt recovery uses this server-owned
@@ -352,6 +343,18 @@ interface StartTurnArgs {
     previewId: string
     decision: "go_on" | "without_memory"
   }
+  startupReservation?: StartupReservation
+}
+
+interface StartupReservation {
+  cancelled: boolean
+  cancellation?: Promise<void>
+  controller?: AbortController
+  promptWrite?: Promise<unknown>
+  cancellationPending?: boolean
+  cancellationComplete?: boolean
+  startupSettled?: boolean
+  superseded?: boolean
 }
 
 interface ActiveTurn {
@@ -369,6 +372,7 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
+  startupReservation?: StartupReservation
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
    * that point keeps the persistent Query (the provider acknowledges the
@@ -615,20 +619,6 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
     createdAt,
     ...entry,
   } as TranscriptEntry
-}
-
-async function interruptTurnWithTimeout(turn: HarnessTurn) {
-  let timer: ReturnType<typeof setTimeout> | undefined
-  try {
-    await Promise.race([
-      turn.interrupt(),
-      new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000) }),
-    ])
-  } catch {
-    // The caller still closes the turn/session when interruption fails.
-  } finally {
-    if (timer !== undefined) clearTimeout(timer)
-  }
 }
 
 function stringFromUnknown(value: unknown) {
@@ -1804,7 +1794,12 @@ export class AgentCoordinator {
   // reservation is in — getActiveStatuses folds this in so the pre-park
   // window doesn't read as "idle" to a freshly (re)subscribed client.
   private readonly startingChats = new Map<string, ChatActivityStatus>()
-  private readonly startupAttempts = new Map<string, StartupAttempt>()
+  // Hold only live startup owners; a settled startup releases its map entry,
+  // while a newer reservation marks any still-pending predecessor superseded.
+  private readonly startupReservations = new Map<string, StartupReservation>()
+  private readonly engineStartAbortControllers = new Map<string, AbortController>()
+  private readonly closedChats = new Set<string>()
+  private runtimeStopping = false
   // Chats where the user hit Stop while the preview gate was still being set
   // up (before pendingPreviews exists). The detached runPreviewGateThenBoot
   // observes this and unwinds instead of parking a gate / booting (BUG AGENT-2).
@@ -3464,7 +3459,112 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  private abortEngineStart(chatId: string) {
+    this.engineStartAbortControllers.get(chatId)?.abort()
+  }
+
+  private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
+    const reservation = args.startupReservation ?? { cancelled: false }
+    const previous = this.startupReservations.get(args.chatId)
+    if (previous && previous !== reservation) previous.superseded = true
+    reservation.startupSettled = false
+    args.startupReservation = reservation
+    this.startupReservations.set(args.chatId, reservation)
+    this.startingChats.set(args.chatId, status)
+    return reservation
+  }
+
+  private releaseStartupStatus(chatId: string, reservation?: StartupReservation) {
+    if (!reservation || this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
+    this.startingChats.delete(chatId)
+  }
+
+  private settleStartupReservation(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return
+    reservation.startupSettled = true
+    this.releaseStartupStatus(chatId, reservation)
+    if (this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
+    if (
+      this.hasPendingPreviewActivity(chatId)
+      || this.activePreparations.get(chatId)?.args.startupReservation === reservation
+    ) return
+    this.startupReservations.delete(chatId)
+    if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
+      && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
+      void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+        this.reportBackgroundError?.(
+          `[startup-cancel] chat ${chatId}: could not drain queued messages: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    }
+  }
+
+  private startupReservationIsCurrent(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return !this.startupReservations.has(chatId) && !this.isEngineStartBlocked(chatId)
+    return !reservation.cancelled
+      && !reservation.superseded
+      && this.startupReservations.get(chatId) === reservation
+      && !this.isEngineStartBlocked(chatId)
+  }
+
+  private cancelStartupReservation(chatId: string, reservation: StartupReservation) {
+    reservation.cancelled = true
+    reservation.cancellationPending = true
+    reservation.controller?.abort()
+    this.releaseStartupStatus(chatId, reservation)
+  }
+
+  private canStopStartupSession(chatId: string, reservation?: StartupReservation) {
+    const currentReservation = this.startupReservations.get(chatId)
+    const active = this.activeTurns.get(chatId)
+    if (!reservation) return !currentReservation && !active
+    return !reservation.superseded
+      && currentReservation === reservation
+      && (!active || active.startupReservation === reservation)
+  }
+
+  private recordStartupCancellation(
+    chatId: string,
+    reservation: StartupReservation,
+    hidden?: boolean,
+  ) {
+    if (reservation.cancellation) return reservation.cancellation
+    reservation.cancellationPending = true
+    const promptWrite = reservation.promptWrite
+    reservation.cancellation = (async () => {
+      try {
+        await promptWrite?.catch(() => {})
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      } finally {
+        reservation.cancellationComplete = true
+        this.releaseStartupStatus(chatId, reservation)
+        if (reservation.startupSettled) this.settleStartupReservation(chatId, reservation)
+      }
+    })()
+    return reservation.cancellation
+  }
+
+  private isEngineStartBlocked(chatId: string) {
+    return this.runtimeStopping || this.closedChats.has(chatId)
+  }
+
   async closeChat(chatId: string) {
+    this.closedChats.add(chatId)
+    this.abortEngineStart(chatId)
+    const reservation = this.startupReservations.get(chatId)
+    if (reservation) {
+      reservation.cancelled = true
+      reservation.superseded = true
+      reservation.controller?.abort()
+      this.startingChats.delete(chatId)
+      this.startupReservations.delete(chatId)
+    }
+    this.cancelledDuringPreview.delete(chatId)
+    this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
@@ -3512,11 +3612,53 @@ export class AgentCoordinator {
   }
 
   async shutdownStudyRuntime() {
+    this.runtimeStopping = true
+    for (const controller of this.engineStartAbortControllers.values()) controller.abort()
+    this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
     await this.studyPreviewRuntime?.stop()
+  }
+
+  /** Shutdown safety net: a cancel() that fails while persisting the
+   * interruption can leave its provider turn unclosed. Close everything that
+   * is still live so the data-directory lock is not released over an active
+   * writer. */
+  async forceStopAllTurns() {
+    const errors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    for (const [chatId, active] of [...this.activeTurns.entries()]) {
+      // interrupt() may never settle; bound it so a hung turn cannot stall
+      // close(), the remaining turns, or the data-lock release.
+      await attempt(() =>
+        Promise.race([
+          active.turn.interrupt(),
+          new Promise((resolve) => setTimeout(resolve, 5_000)),
+        ]).then(() => undefined),
+      )
+      await attempt(() => active.turn.close())
+      if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
+    }
+    for (const [chatId, draining] of [...this.drainingStreams.entries()]) {
+      await attempt(() => draining.turn.close())
+      if (this.drainingStreams.get(chatId) === draining) this.drainingStreams.delete(chatId)
+    }
+    for (const session of this.claudeSessions.values()) {
+      await attempt(() => session.session.close())
+    }
+    await attempt(() => this.codexManager.stopAll())
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Failed to stop remaining agent turns")
+    }
   }
 
   private async retireClaudeSession(session: ClaudeSessionState, reason: string) {
@@ -4010,7 +4152,6 @@ export class AgentCoordinator {
     decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>,
   ) {
     if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
-    if (this.startupAttempts.has(opening.chatId) || this.activeTurns.has(opening.chatId)) return
     const chat = this.store.requireChat(opening.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("The opening Memory Board project no longer exists")
@@ -4036,14 +4177,7 @@ export class AgentCoordinator {
       openingLongTermAlreadyReady: true,
       openingWorkingMemory: { previewId: preview.previewId, decision: decision.decision },
     }
-    const startupAttempt = args.startupAttempt ?? {
-      cancelled: false,
-      cancellationRecorded: false,
-      cancellationPromise: null,
-    }
-    args.startupAttempt = startupAttempt
-    this.startingChats.set(opening.chatId, "starting")
-    this.startupAttempts.set(opening.chatId, startupAttempt)
+    const reservation = this.reserveStartup(args)
     try {
       await this.bootEngineTurn(this.refreshOpeningProviderAttachments(args), {
         chat,
@@ -4052,7 +4186,6 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision.decision === "without_memory",
       })
     } catch (error) {
-      if (!this.isStartupAttemptActive(args)) return
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(
         opening.chatId,
@@ -4062,11 +4195,7 @@ export class AgentCoordinator {
       this.emitStateChange(opening.chatId, { immediate: true })
       throw error
     } finally {
-      if (startupAttempt.cancelled) {
-        await this.finalizeStartupAttempt(opening.chatId, startupAttempt)
-      } else {
-        this.releaseStartupAttempt(opening.chatId, startupAttempt)
-      }
+      this.settleStartupReservation(opening.chatId, reservation)
     }
   }
 
@@ -4076,66 +4205,6 @@ export class AgentCoordinator {
     if (!nextQueuedMessage) return false
     await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
     return true
-  }
-
-  private isStartupAttemptActive(args: StartTurnArgs) {
-    const attempt = args.startupAttempt
-    return !attempt || (this.startupAttempts.get(args.chatId) === attempt && !attempt.cancelled)
-  }
-
-  private releaseStartupAttempt(chatId: string, attempt: StartupAttempt | undefined, preserveForPreview = false) {
-    if (!attempt || this.startupAttempts.get(chatId) !== attempt) return false
-    if (preserveForPreview && this.pendingPreviews.has(chatId)) return false
-    this.startupAttempts.delete(chatId)
-    this.startingChats.delete(chatId)
-    return true
-  }
-
-  private async finalizeStartupAttempt(chatId: string, attempt: StartupAttempt | undefined, preserveForPreview = false) {
-    if (!attempt || this.startupAttempts.get(chatId) !== attempt) return
-    if (attempt.cancellationPromise) {
-      try {
-        await attempt.cancellationPromise
-      } catch (error) {
-        this.reportBackgroundError?.(
-          `[startup-cancel] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }
-    if (!this.releaseStartupAttempt(chatId, attempt, preserveForPreview)) return
-    if (!attempt.cancelled) return
-    this.emitStateChange(chatId, { immediate: true })
-    if (!this.activeTurns.has(chatId) && !this.hasPendingPreviewActivity(chatId)) {
-      void this.maybeStartNextQueuedMessage(chatId).catch(async (error) => {
-        const message = error instanceof Error ? error.message : String(error)
-        try {
-          await this.store.appendMessage(
-            chatId,
-            timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-          )
-          await this.store.recordTurnFailed(chatId, message)
-          this.emitStateChange(chatId)
-        } catch (recordError) {
-          this.reportBackgroundError?.(
-            `[queued-start] chat ${chatId}: could not record failure: ${recordError instanceof Error ? recordError.message : String(recordError)}`,
-          )
-        }
-      })
-    }
-  }
-
-  private cancelStartupAttempt(chatId: string, attempt: StartupAttempt, hideInterrupted?: boolean) {
-    if (attempt.cancelled) return attempt.cancellationPromise ?? Promise.resolve()
-    attempt.cancelled = true
-    if (!attempt.cancellationRecorded) {
-      attempt.cancellationRecorded = true
-      attempt.cancellationPromise = (async () => {
-        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: hideInterrupted }))
-        await this.store.recordTurnCancelled(chatId)
-        this.emitStateChange(chatId, { immediate: true })
-      })()
-    }
-    return attempt.cancellationPromise ?? Promise.resolve()
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
@@ -4156,25 +4225,13 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(args.chatId)
-    if (
-      this.activeTurns.has(args.chatId)
-      || this.hasPendingPreviewActivity(args.chatId)
-      || this.startingChats.has(args.chatId)
-      || this.startupAttempts.has(args.chatId)
-    ) {
+    if (this.activeTurns.has(args.chatId) || this.hasPendingPreviewActivity(args.chatId) || this.startingChats.has(args.chatId)) {
       throw new Error("Chat is already running")
     }
     // Hold the reservation across every await below (preview pass, engine boot)
     // until the turn hands off to pendingPreviews (parked) or activeTurns (booted).
-    this.startingChats.set(args.chatId, "starting")
-    const startupAttempt = args.startupAttempt ?? {
-      cancelled: false,
-      cancellationRecorded: false,
-      cancellationPromise: null,
-    }
-    args.startupAttempt = startupAttempt
-    this.startupAttempts.set(args.chatId, startupAttempt)
-    this.cancelledDuringPreview.delete(args.chatId)
+    const reservation = this.reserveStartup(args)
+    const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
     this.turnMemoryRestriction.delete(args.chatId)
@@ -4182,14 +4239,14 @@ export class AgentCoordinator {
     try {
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
-      if (!this.isStartupAttemptActive(args)) return
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.provider_set", {
         chatId: args.chatId,
         provider: args.provider,
       })
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
-    if (!this.isStartupAttemptActive(args)) return
+    if (startupCancelled()) return
     logSendToStartingProfile(args.profile, "start_turn.plan_mode_set", {
       chatId: args.chatId,
       planMode: args.planMode,
@@ -4215,7 +4272,7 @@ export class AgentCoordinator {
 
     if (optimisticTitle) {
       await this.store.renameChat(args.chatId, optimisticTitle)
-      if (!this.isStartupAttemptActive(args)) return
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.optimistic_title_set", {
         chatId: args.chatId,
         title: optimisticTitle,
@@ -4226,8 +4283,6 @@ export class AgentCoordinator {
     if (!project) {
       throw new Error("Project not found")
     }
-
-    if (!this.isStartupAttemptActive(args)) return
 
     if (shouldAppendUserPrompt) {
       userPromptEntry = {
@@ -4243,8 +4298,14 @@ export class AgentCoordinator {
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
-      await this.store.appendMessage(args.chatId, userPromptEntry)
-      if (!this.isStartupAttemptActive(args)) return
+      const promptWrite = this.store.appendMessage(args.chatId, userPromptEntry)
+      reservation.promptWrite = promptWrite
+      try {
+        await promptWrite
+      } finally {
+        if (reservation.promptWrite === promptWrite) reservation.promptWrite = undefined
+      }
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
         chatId: args.chatId,
         entryId: userPromptEntry._id,
@@ -4306,7 +4367,7 @@ export class AgentCoordinator {
       shouldReconcileOpeningPrompt && !openingBookkeeping?.turnStarted
     )) {
       await this.store.recordTurnStarted(args.chatId)
-      if (!this.isStartupAttemptActive(args)) return
+      if (startupCancelled()) return
       if (openingIdentity) {
         this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, { turnStarted: true })
       }
@@ -4318,8 +4379,6 @@ export class AgentCoordinator {
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
-
-    if (!this.isStartupAttemptActive(args)) return
 
     // Per-turn memory Preview gate (SPEC §4.10b): before the engine acts, show
     // the injection receipt — exactly which memories the turn carries — then
@@ -4354,7 +4413,7 @@ export class AgentCoordinator {
         // + boot continue detached, taking the startingChats reservation with
         // them. The status broadcast is synchronous — subscribers learn about
         // the wait before the ack returns.
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         this.emitStateChange(args.chatId, { immediate: true })
         reservationHandedOff = true
         void this.runPreviewGateThenBoot(args, { chat, project, turnNumber, injected: plan.injectedMemories })
@@ -4362,20 +4421,13 @@ export class AgentCoordinator {
       }
     }
 
-    if (!this.isStartupAttemptActive(args)) return
     await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: false })
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) {
-        if (startupAttempt.cancelled) {
-          await this.finalizeStartupAttempt(args.chatId, startupAttempt)
-        } else {
-          this.releaseStartupAttempt(args.chatId, startupAttempt)
-        }
-      }
+      if (!reservationHandedOff) this.settleStartupReservation(args.chatId, reservation)
     }
   }
 
@@ -5667,7 +5719,6 @@ export class AgentCoordinator {
         ctx: { ...input.ctx, injected },
       })
     } catch (error) {
-      if (!this.isStartupAttemptActive(args)) return
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(
         args.chatId,
@@ -5676,9 +5727,9 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
     } finally {
-      if (this.startupAttempts.get(args.chatId) === args.startupAttempt) {
+      this.settleStartupReservation(args.chatId, args.startupReservation)
+      if (this.startupReservations.get(args.chatId) === args.startupReservation) {
         this.cancelledDuringPreview.delete(args.chatId)
-        await this.finalizeStartupAttempt(args.chatId, args.startupAttempt, true)
       }
     }
   }
@@ -5877,7 +5928,7 @@ export class AgentCoordinator {
       },
       reopen: (from, stageId) => {
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         void this.runReopenedMemoryPreparation({
           ...input,
           ctx,
@@ -5956,11 +6007,11 @@ export class AgentCoordinator {
       injected: MemoryItem[]
     },
   ) {
-    let claimed = false
     try {
       let gated = false
       // Flipped by the parked respond closure: once a decision claims the
       // gate, finishMemoryPreview owns the turn — no path here may boot it.
+      let claimed = false
       let automaticOpeningWorkingMemory: StartTurnArgs["openingWorkingMemory"]
       try {
         // The user hit Stop before the gate parked (BUG AGENT-2): cancel()
@@ -6260,7 +6311,7 @@ export class AgentCoordinator {
             reopen: (from, stageId) => {
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
-              this.startingChats.set(args.chatId, "previewing_memory")
+              this.reserveStartup(args, "previewing_memory")
               void this.runReopenedMemoryPreparation({
                 args,
                 ctx,
@@ -6379,7 +6430,6 @@ export class AgentCoordinator {
         }
         this.emitStateChange(args.chatId, { immediate: true })
       } catch (error) {
-        if (!this.isStartupAttemptActive(args)) return
         const cancelled = this.cancelledDuringPreview.delete(args.chatId)
         if (!cancelled) {
           this.reportBackgroundError?.(
@@ -6408,7 +6458,6 @@ export class AgentCoordinator {
         gated = false
       }
       if (gated) return
-      this.startingChats.set(args.chatId, "starting")
       await this.bootEngineTurn(
         automaticOpeningWorkingMemory ? { ...args, openingWorkingMemory: automaticOpeningWorkingMemory } : args,
         {
@@ -6421,7 +6470,6 @@ export class AgentCoordinator {
     } catch (error) {
       // The turn is detached from any chat.send ack here — record the failure
       // in the transcript the way the engine loops do.
-      if (args.startupAttempt?.cancelled) return
       this.restoreUndeliveredEnforcement(args.chatId)
       const message = error instanceof Error ? error.message : String(error)
       try {
@@ -6437,25 +6485,19 @@ export class AgentCoordinator {
     } finally {
       // Parked (pendingPreviews guards the chat), booted (activeTurns), or
       // failed — in every case the handed-over reservation is done.
-      const ownsAttempt = Boolean(
-        args.startupAttempt && this.startupAttempts.get(args.chatId) === args.startupAttempt,
-      )
-      if (ownsAttempt) this.cancelledDuringPreview.delete(args.chatId)
-      const preparation = this.activePreparations.get(args.chatId)
-      if (preparation && args.startupAttempt && preparation.args.startupAttempt === args.startupAttempt) {
+      const ownsReservation = this.startupReservations.get(args.chatId) === args.startupReservation
+      const activePreparation = this.activePreparations.get(args.chatId)
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
         this.activePreparations.delete(args.chatId)
-        preparation.cancellation.settle()
       }
-      if (!claimed) {
-        if (args.startupAttempt?.cancelled) {
-          await this.finalizeStartupAttempt(args.chatId, args.startupAttempt, true)
-        } else {
-          this.releaseStartupAttempt(args.chatId, args.startupAttempt, true)
-        }
+      // Never leak a cancel flag or an abort handle into a later turn.
+      if (ownsReservation) this.cancelledDuringPreview.delete(args.chatId)
+      // Resolve Stop only after every public busy/freeze guard is gone.
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
+        activePreparation.cancellation.settle()
       }
-      if (ownsAttempt && !this.startupAttempts.has(args.chatId) && !this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) {
-        this.disposeMemoryBranches(args.chatId)
-      }
+      this.settleStartupReservation(args.chatId, args.startupReservation)
+      if (!this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) this.disposeMemoryBranches(args.chatId)
     }
   }
 
@@ -6480,18 +6522,7 @@ export class AgentCoordinator {
     controlOperation?: PreviewControlOperation
   }) {
     const { args, decision } = ctx
-    const startupAttempt = args.startupAttempt ?? {
-      cancelled: false,
-      cancellationRecorded: false,
-      cancellationPromise: null,
-    }
-    args.startupAttempt = startupAttempt
     try {
-      if (this.startupAttempts.has(args.chatId) && this.startupAttempts.get(args.chatId) !== startupAttempt) return
-      if (!this.startupAttempts.has(args.chatId) && startupAttempt.cancelled) return
-      if (!this.startupAttempts.has(args.chatId)) this.startupAttempts.set(args.chatId, startupAttempt)
-      if (!this.startingChats.has(args.chatId)) this.startingChats.set(args.chatId, "starting")
-      if (!this.isStartupAttemptActive(args)) return
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
@@ -6500,7 +6531,6 @@ export class AgentCoordinator {
         args.chatId,
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses })
       )
-      if (!this.isStartupAttemptActive(args)) return
       this.memory?.logger.event({
         type: "memory.preview",
         ...(ctx.controlOperation ? { operationId: ctx.controlOperation.operationId } : {}),
@@ -6524,8 +6554,6 @@ export class AgentCoordinator {
       if (decision === "dismiss") {
         this.restoreUndeliveredEnforcement(args.chatId)
         this.disposeMemoryBranches(args.chatId)
-        startupAttempt.cancelled = true
-        startupAttempt.cancellationRecorded = true
         await this.store.recordTurnCancelled(args.chatId)
         if (ctx.controlOperation) {
           try {
@@ -6542,17 +6570,12 @@ export class AgentCoordinator {
         // Release before queue draining, which deliberately treats the claim
         // as a busy owner and would otherwise leave the next row parked.
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
-        this.releaseStartupAttempt(args.chatId, startupAttempt)
         this.emitStateChange(args.chatId, { immediate: true })
         await this.maybeStartNextQueuedMessage(args.chatId)
         return
       }
 
       this.emitStateChange(args.chatId)
-      if (!this.isStartupAttemptActive(args)) return
-      if (this.startupAttempts.get(args.chatId) === startupAttempt) {
-        this.startingChats.delete(args.chatId)
-      }
       const providerArgs = args.openingReview && (decision === "go_on" || decision === "without_memory")
         ? { ...args, openingWorkingMemory: { previewId: ctx.previewId, decision } }
         : args
@@ -6574,7 +6597,6 @@ export class AgentCoordinator {
         }
       }
     } catch (error) {
-      if (!this.isStartupAttemptActive(args)) return
       this.restoreUndeliveredEnforcement(args.chatId)
       if (ctx.controlOperation) {
         try {
@@ -6598,15 +6620,8 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
     } finally {
-      if (this.startupAttempts.get(args.chatId) === startupAttempt) {
-        this.cancelledDuringPreview.delete(args.chatId)
-      }
       this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
-      if (startupAttempt.cancelled) {
-        await this.finalizeStartupAttempt(args.chatId, startupAttempt)
-      } else {
-        this.releaseStartupAttempt(args.chatId, startupAttempt)
-      }
+      this.settleStartupReservation(args.chatId, args.startupReservation)
     }
   }
 
@@ -6637,18 +6652,26 @@ export class AgentCoordinator {
       memoryDisabledForTurn: boolean
     }
   ) {
+    if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
-    if (!this.isStartupAttemptActive(args)) return
-    this.disposeMemoryBranches(args.chatId)
+    const reservation = args.startupReservation
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
+    if (reservation?.cancelled) return
+    const startController = new AbortController()
+    if (reservation) reservation.controller = startController
+    this.engineStartAbortControllers.set(args.chatId, startController)
+    let bootedActive: ActiveTurn | undefined
+    let turn: HarnessTurn
+    try {
+    this.disposeMemoryBranches(args.chatId)
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
     // a misleading "native binary failed to launch" / posix_spawn ENOENT
     // (QA BUG-001/002/004). Recreate it before any boot.
     await ensureProjectDirectory(project.localPath)
-    if (!this.isStartupAttemptActive(args)) return
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
 
     // Snapshot BEFORE any engine boot awaits: what this turn injects (trace's
     // ground truth). Use the confirmed selection in the injection plan,
@@ -6683,40 +6706,31 @@ export class AgentCoordinator {
       })
     }
 
-    let turn: HarnessTurn
     if (args.provider === "claude") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
         provider: args.provider,
         model: args.model,
       })
-      try {
-        const startedTurn = await this.startClaudeTurn({
-          chatId: args.chatId,
-          localPath: project.localPath,
-          model: args.model,
-          effort: args.effort,
-          planMode: args.planMode,
-          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
-          forkSession: Boolean(chat.pendingForkSessionToken),
-          onToolRequest,
-          projectId: chat.projectId,
-          memoryEnabled: !memoryDisabledForTurn,
-          memoryPlan: turnMemoryPlan,
-          restrictMemoryIds: turnRestriction,
-          startupAttempt: args.startupAttempt,
-        })
-        if (!startedTurn) return
-        turn = startedTurn
-      } catch (error) {
-        if (!this.isStartupAttemptActive(args)) return
-        throw error
-      }
-      if (!this.isStartupAttemptActive(args)) {
-        const ownedSession = args.startupAttempt?.ownedClaudeSession
-        if (ownedSession && this.claudeSessions.get(args.chatId) === ownedSession) {
-          await this.retireClaudeSession(ownedSession, "cancelled_startup")
-        }
+      const claudeTurn = await this.startClaudeTurn({
+        chatId: args.chatId,
+        localPath: project.localPath,
+        model: args.model,
+        effort: args.effort,
+        planMode: args.planMode,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
+        onToolRequest,
+        projectId: chat.projectId,
+        memoryEnabled: !memoryDisabledForTurn,
+        memoryPlan: turnMemoryPlan,
+        restrictMemoryIds: turnRestriction,
+        startupReservation: reservation,
+      })
+      if (!claudeTurn) return
+      turn = claudeTurn
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
         return
       }
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
@@ -6809,29 +6823,22 @@ export class AgentCoordinator {
             return { text: r.text, isError: r.isError }
           }
         : undefined
-      let sessionToken: string | null
-      try {
-        sessionToken = await this.codexManager.startSession({
-          chatId: args.chatId,
-          cwd: project.localPath,
-          model: args.model,
-          serviceTier: args.serviceTier,
-          sessionToken: chat.sessionToken,
-          pendingForkSessionToken: chat.pendingForkSessionToken,
-          dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
-        })
-      } catch (error) {
-        if (!this.isStartupAttemptActive(args)) return
-        throw error
-      }
-      if (!this.isStartupAttemptActive(args)) {
-        this.codexManager.stopSession(args.chatId)
+      const sessionToken = await this.codexManager.startSession({
+        signal: startController.signal,
+        chatId: args.chatId,
+        cwd: project.localPath,
+        model: args.model,
+        serviceTier: args.serviceTier,
+        sessionToken: chat.sessionToken,
+        pendingForkSessionToken: chat.pendingForkSessionToken,
+        dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
+      })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         return
       }
       if (chat.pendingForkSessionToken && sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
-        if (!this.isStartupAttemptActive(args)) {
-          this.codexManager.stopSession(args.chatId)
+        if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
           return
         }
       }
@@ -6840,12 +6847,9 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-      if (!this.isStartupAttemptActive(args)) {
-        this.codexManager.stopSession(args.chatId)
-        return
-      }
       try {
         turn = await this.codexManager.startTurn({
+          signal: startController.signal,
           chatId: args.chatId,
           content: buildPromptText(args.content, providerAttachments),
           model: args.model,
@@ -6857,15 +6861,13 @@ export class AgentCoordinator {
           onDynamicToolCall,
         })
       } catch (error) {
-        if (!this.isStartupAttemptActive(args)) {
-          this.codexManager.stopSession(args.chatId)
+        if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
           return
         }
         throw error
       }
-      if (!this.isStartupAttemptActive(args)) {
-        await interruptTurnWithTimeout(turn)
-        this.codexManager.stopSession(args.chatId)
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
         return
       }
       this.turnPayAttention.delete(args.chatId)
@@ -6875,6 +6877,12 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
+    }
+
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+      startController.abort()
+      turn.close()
+      return
     }
 
     const active: ActiveTurn = {
@@ -6891,6 +6899,7 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
+      startupReservation: reservation,
       providerTurnStarted: false,
       clientTraceId: args.profile?.traceId,
       profilingStartedAt: args.profile?.startedAt,
@@ -6907,6 +6916,18 @@ export class AgentCoordinator {
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
+    bootedActive = active
+    } finally {
+      if (this.engineStartAbortControllers.get(args.chatId) === startController) {
+        this.engineStartAbortControllers.delete(args.chatId)
+      }
+      if (reservation?.controller === startController) reservation.controller = undefined
+      if (args.provider === "codex" && !bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
+        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
+      }
+    }
+    const active = bootedActive
+    if (!active) return
     if (active.taskId) {
       const taskChats = this.studyTaskChats.get(active.taskId) ?? new Set<string>()
       taskChats.add(args.chatId)
@@ -7016,7 +7037,7 @@ export class AgentCoordinator {
               // leaving the chat registered as running; the durable prompt id
               // remains reusable by a corrected retry.
               if (this.activeTurns.get(args.chatId) === active) this.activeTurns.delete(args.chatId)
-              this.releaseStartupAttempt(args.chatId, args.startupAttempt)
+              this.releaseStartupStatus(args.chatId, args.startupReservation)
               active.turn.close()
               this.emitStateChange(args.chatId, { immediate: true })
               throw new Error("The enforced memory is no longer in the current chat's effective Working Memory")
@@ -7118,19 +7139,6 @@ export class AgentCoordinator {
           throw new Error(`Opening prompt provider dispatch is already ${claim ?? "unavailable"}`)
         }
       }
-      if (active.cancelRequested || !this.isStartupAttemptActive(args)) {
-        if (openingProviderDispatch) {
-          this.openingBoardBacklog?.settleOpeningProviderDispatch(openingProviderDispatch, "failed")
-        }
-        if (this.activeTurns.get(args.chatId) === active) this.activeTurns.delete(args.chatId)
-        const ownedSession = args.startupAttempt?.ownedClaudeSession
-        if (ownedSession && this.claudeSessions.get(args.chatId) === ownedSession) {
-          await this.retireClaudeSession(ownedSession, "cancelled_startup")
-        }
-        active.turn.close()
-        this.emitStateChange(args.chatId, { immediate: true })
-        return
-      }
       try {
         await session.session.sendPrompt(promptText, {
           allowedMemoryIds: deliveredFocusIds,
@@ -7161,6 +7169,12 @@ export class AgentCoordinator {
           this.emitStateChange(args.chatId, { immediate: true })
         }
         throw error
+      }
+      if (reservation?.cancelled || active.cancelRequested || this.activeTurns.get(args.chatId) !== active) {
+        if (openingProviderDispatch) {
+          this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
+        }
+        return
       }
       if (openingProviderDispatch) {
         this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
@@ -7239,18 +7253,14 @@ export class AgentCoordinator {
     memoryPlan?: MemoryInjectionPlan | null
     /** Exact turn-only selection confirmed by the gate or interrupt recovery card. */
     restrictMemoryIds?: string[]
-    startupAttempt?: StartupAttempt
+    startupReservation?: StartupReservation
   }): Promise<HarnessTurn | null> {
-    const startupIsActive = () => !args.startupAttempt
-      || (this.startupAttempts.get(args.chatId) === args.startupAttempt && !args.startupAttempt.cancelled)
-    if (!startupIsActive()) return null
     // Ensure/recover the one managed preview on every participant prompt, not
     // only when the Claude query happens to rebuild. Project switches retire
     // the old query before the supervisor replaces its process group.
     await this.prepareStudyProjectRuntime(args.localPath)
-    if (!startupIsActive()) return null
+    if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
     let session = this.claudeSessions.get(args.chatId)
-    let createdSession: ClaudeSessionState | null = null
     const memoryEnabled = args.memoryEnabled ?? true
     const subprocessEnv = buildClaudeSubprocessEnv({
       localPath: args.localPath,
@@ -7303,12 +7313,12 @@ export class AgentCoordinator {
         )
         resumeToken = null
         await this.store.setSessionToken(args.chatId, null)
-        if (!startupIsActive()) return null
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
       if (session) {
         await this.retireClaudeSession(session, "session_rebuild")
-        if (!startupIsActive()) return null
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
 
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
@@ -7347,8 +7357,14 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
-      if (!startupIsActive()) {
-        started.close()
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
+        try {
+          started.close()
+        } catch (error) {
+          this.reportBackgroundError?.(
+            `[claude-retire] chat ${args.chatId}: stale startup close failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
         return null
       }
       this.refreshClaudeModelCatalog(started)
@@ -7379,29 +7395,19 @@ export class AgentCoordinator {
             ? new Map(bootPlan.bakedMemories.map((m) => [m.id, m.version]))
             : null,
       }
-      createdSession = session
-      if (args.startupAttempt) args.startupAttempt.ownedClaudeSession = session
       this.claudeSessions.set(args.chatId, session)
       session.pump = this.runClaudeSession(session)
     } else {
       if (session.model !== args.model) {
         await session.session.setModel(args.model)
         session.model = args.model
-        if (!startupIsActive()) return null
       }
       if (session.planMode !== args.planMode) {
         await session.session.setPermissionMode(args.planMode)
         session.planMode = args.planMode
-        if (!startupIsActive()) return null
       }
     }
 
-    if (!startupIsActive()) {
-      if (createdSession && this.claudeSessions.get(args.chatId) === createdSession) {
-        await this.retireClaudeSession(createdSession, "cancelled_startup")
-      }
-      return null
-    }
     return {
       provider: "claude",
       stream: {
@@ -8215,7 +8221,6 @@ export class AgentCoordinator {
       draining.turn.close()
       this.drainingStreams.delete(chatId)
     }
-
     // Stop while parked at a step-one gate: resolve EVERY parked gate as
     // "cancelled" (Step 1 and the Transfer card park side by side since
     // 2026-08-08), set the preview-cancel flag so a sibling coroutine still
@@ -8227,19 +8232,19 @@ export class AgentCoordinator {
     const checkupParked = this.pendingCheckupGates.get(chatId)
     if (proposalsParked || transferParked || checkupParked) {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+      }
       this.cancelledDuringPreview.add(chatId)
-      const startupAttempt = this.startupAttempts.get(chatId)
-      const cancellation = startupAttempt
-        ? this.cancelStartupAttempt(chatId, startupAttempt, options?.hideInterrupted)
-        : null
       proposalsParked?.respond("cancelled")
       transferParked?.respond("cancelled")
       checkupParked?.respond("cancelled")
       // The shared phase signal releases Prompt Parse and task-local Transfer
       // together. Source preparation is shared across turns and keeps running.
       await preparation?.cancellation.cancelAndWait()
-      if (cancellation) {
-        await cancellation
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
       } else {
         await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
         await this.store.recordTurnCancelled(chatId)
@@ -8259,10 +8264,11 @@ export class AgentCoordinator {
         return
       }
       this.pendingPreviews.delete(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) this.cancelStartupReservation(chatId, reservation)
       this.cancelledDuringPreview.add(chatId)
-      const startupAttempt = this.startupAttempts.get(chatId)
-      if (startupAttempt) {
-        await this.cancelStartupAttempt(chatId, startupAttempt, options?.hideInterrupted)
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
       } else {
         await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
         await this.store.recordTurnCancelled(chatId)
@@ -8274,16 +8280,17 @@ export class AgentCoordinator {
     // Stop DURING the preview-gate LLM pass (reservation held, gate not parked
     // yet): the in-flight runPreviewGateThenBoot observes this flag and unwinds
     // (BUG AGENT-2). Record the interruption here so the UI reflects it now.
-    if (this.startingChats.get(chatId) === "previewing_memory") {
+    const active = this.activeTurns.get(chatId)
+    if (!active && this.startingChats.get(chatId) === "previewing_memory") {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+      }
       this.cancelledDuringPreview.add(chatId)
-      const startupAttempt = this.startupAttempts.get(chatId)
-      const cancellation = startupAttempt
-        ? this.cancelStartupAttempt(chatId, startupAttempt, options?.hideInterrupted)
-        : null
       await preparation?.cancellation.cancelAndWait()
-      if (cancellation) {
-        await cancellation
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
       } else {
         await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
         await this.store.recordTurnCancelled(chatId)
@@ -8292,12 +8299,24 @@ export class AgentCoordinator {
       return
     }
 
-    const active = this.activeTurns.get(chatId)
-    if (!active) {
-      const startupAttempt = this.startupAttempts.get(chatId)
-      if (startupAttempt) await this.cancelStartupAttempt(chatId, startupAttempt, options?.hideInterrupted)
+    // Stop while the provider is queued or initializing: cancel its abort
+    // barrier now and record the interruption immediately. bootEngineTurn's
+    // in-flight codex startup receives this signal even when runtime starts
+    // are serialized behind another profile migration.
+    if (!active && this.startingChats.get(chatId) === "starting") {
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
+
+    if (!active) return
 
     logClaudeSteer("cancel_requested", {
       chatId,
@@ -8308,35 +8327,37 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
-    const startupAttempt = this.startupAttempts.get(chatId)
-    if (startupAttempt) {
-      startupAttempt.cancelled = true
-      startupAttempt.cancellationRecorded = true
+    if (active.startupReservation) {
+      this.cancelStartupReservation(chatId, active.startupReservation)
     }
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
 
-    const cancellationPromise = (async () => {
-      if (pendingTool) {
-        const result = discardedToolResult(pendingTool.tool)
-        await this.store.appendMessage(
-          chatId,
-          timestamped({
-            kind: "tool_result",
-            toolId: pendingTool.toolUseId,
-            content: result,
-          })
-        )
-        if (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode") {
-          pendingTool.resolve(result)
-        }
+    if (pendingTool) {
+      const result = discardedToolResult(pendingTool.tool)
+      await this.store.appendMessage(
+        chatId,
+        timestamped({
+          kind: "tool_result",
+          toolId: pendingTool.toolUseId,
+          content: result,
+        })
+      )
+      if (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode") {
+        pendingTool.resolve(result)
       }
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-    })()
-    if (startupAttempt) startupAttempt.cancellationPromise = cancellationPromise
-    await cancellationPromise
+    }
+
+    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+    await this.store.recordTurnCancelled(chatId)
+    if (active.startupReservation) {
+      active.startupReservation.cancellationComplete = true
+      this.releaseStartupStatus(chatId, active.startupReservation)
+      if (active.startupReservation.startupSettled) {
+        this.settleStartupReservation(chatId, active.startupReservation)
+      }
+    }
     active.cancelRecorded = true
     active.hasFinalResult = true
 
@@ -8400,7 +8421,14 @@ export class AgentCoordinator {
 
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
-    await interruptTurnWithTimeout(active.turn)
+    try {
+      await Promise.race([
+        active.turn.interrupt(),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ])
+    } catch {
+      // interrupt() failed — force close
+    }
     active.turn.close()
   }
 

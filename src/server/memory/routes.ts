@@ -25,7 +25,7 @@ import type { ExpectedMemoryUse } from '../../shared/types';
 import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType } from './types';
 import { resolveConditionPolicy, type ConditionPolicy } from '../experiment/condition';
 import type { StudySessionAttribution, StudySessionAttributionResolver } from '../study-session-attribution';
-import { CandidateDismissalTransitionError } from './MemoryStore';
+import { CandidateDismissalTransitionError, RevisionConflictError } from './MemoryStore';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
@@ -318,7 +318,10 @@ function assertBoardTransferCommitSnapshot(
   if (body.sourceVersion !== suggestion.sourceVersion) mismatch('sourceVersion');
   if (body.chatId !== trusted.chatId) mismatch('chatId');
   if (typeof suggestion.content !== 'string' || !suggestion.landing) mismatch('snapshot');
-  const landing = suggestion.landing!;
+  const targetScope = body.targetScope;
+  const landing = targetScope === (suggestion.suggestedScope ?? 'project')
+    ? suggestion.landing!
+    : { route: 'new' as const };
   if (body.detail !== suggestion.detail) mismatch('detail');
   if (body.abstractionLevel !== (suggestion.abstractionLevel ?? 'contextual')) mismatch('abstractionLevel');
   if (body.rule !== suggestion.rule) mismatch('rule');
@@ -328,7 +331,6 @@ function assertBoardTransferCommitSnapshot(
   if (body.landingTargetVersion !== landing.targetVersion) mismatch('landingTargetVersion');
   if (body.archiveOriginal === true) mismatch('archiveOriginal');
 
-  const targetScope = body.targetScope;
   if (targetScope === 'project') {
     if (!trusted.projectId || body.targetProjectId !== trusted.projectId || body.targetSessionId !== undefined) {
       mismatch('project destination');
@@ -339,9 +341,6 @@ function assertBoardTransferCommitSnapshot(
     if (body.targetProjectId !== undefined || body.targetSessionId !== undefined) mismatch('personal destination');
   } else {
     mismatch('targetScope');
-  }
-  if (landing.route !== 'new' && targetScope !== (suggestion.suggestedScope ?? 'project')) {
-    mismatch('landing scope');
   }
   const edited = typeof body.content === 'string' && body.content.trim() !== suggestion.content;
   if (body.edited !== edited) mismatch('edited state');
@@ -1259,9 +1258,13 @@ export async function handleMemoryRequest(
     const previewMatch = pathname.match(/^\/api\/memories\/([^/]+)\/transfer-preview$/);
     if (previewMatch && req.method === 'POST') {
       const id = decodeURIComponent(previewMatch[1]);
+      if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      const b = await readBody(req);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
-      const b = await readBody(req);
+      if (source.status !== 'active') {
+        throw new RouteError(409, 'CONFLICT', 'source memory is no longer active; review Transfer again');
+      }
       assertEnum(b.targetScope, MEMORY_SCOPES, 'targetScope');
       const targetScope = b.targetScope as MemoryScope;
       const targetProjectId = typeof b.targetProjectId === 'string' ? b.targetProjectId : undefined;
@@ -1285,6 +1288,7 @@ export async function handleMemoryRequest(
       };
       const fallback = {
         verdict: 'as_is',
+        sourceVersion: source.version,
         portable: source.content,
         content: source.content,
         detail: source.detail,
@@ -1307,12 +1311,29 @@ export async function handleMemoryRequest(
         .sort((a, b2) => b2.usageCount + b2.reinforcedCount - (a.usageCount + a.reinforcedCount))
         .slice(0, 5);
       try {
-        return ok(
-          await services.transfer.propose(source, target, {
-            projectTitle: typeof b.sourceProjectTitle === 'string' ? b.sourceProjectTitle : undefined,
-            representative: profile,
-          }),
-        );
+        const proposal = await services.transfer.propose(source, target, {
+          projectTitle: typeof b.sourceProjectTitle === 'string' ? b.sourceProjectTitle : undefined,
+          representative: profile,
+        });
+        if (proposal.landing.route === 'new') {
+          return ok({ ...proposal, sourceVersion: source.version, landing: { route: 'new' } });
+        }
+        if (proposal.landing.route !== 'reinforces' && proposal.landing.route !== 'conflicts') {
+          return ok(fallback);
+        }
+        const landingTarget = targetExisting.find((item) => item.id === proposal.landing.targetId);
+        if (!landingTarget || !Number.isInteger(landingTarget.version) || landingTarget.version < 1) {
+          return ok(fallback);
+        }
+        return ok({
+          ...proposal,
+          sourceVersion: source.version,
+          landing: {
+            ...proposal.landing,
+            targetVersion: landingTarget.version,
+            targetContent: landingTarget.content,
+          },
+        });
       } catch {
         return ok(fallback);
       }
@@ -1324,9 +1345,16 @@ export async function handleMemoryRequest(
     const transferMatch = pathname.match(/^\/api\/memories\/([^/]+)\/transfer$/);
     if (transferMatch && req.method === 'POST') {
       const id = decodeURIComponent(transferMatch[1]);
+      if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      const b = await readBody(req);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
-      const b = await readBody(req);
+      if (typeof b.sourceVersion !== 'number' || !Number.isInteger(b.sourceVersion) || b.sourceVersion < 1) {
+        throw new RouteError(400, 'BAD_REQUEST', 'sourceVersion must be a positive integer');
+      }
+      if (source.status !== 'active' || source.version !== b.sourceVersion) {
+        throw new RouteError(409, 'CONFLICT', 'source memory changed or is no longer active; review Transfer again');
+      }
       const surface = controlSurface(b.surface);
       const attribution = studyInteractionAttribution(policy, services);
       const boardBase = boardResolutionBase(b, policy, services);
@@ -1339,16 +1367,6 @@ export async function handleMemoryRequest(
         return ok(result ? { ...result, relations: memory.store.getRelations(result.id) } : source);
       }
       if (boardAdmission?.pending === true) assertBoardTransferCommitSnapshot(b, boardAdmission.trusted);
-      // Transcript Transfer cards carry the exact source snapshot they were
-      // computed from. Board resurfacing is bound to that same durable row.
-      if (b.sourceVersion !== undefined) {
-        if (typeof b.sourceVersion !== 'number' || !Number.isInteger(b.sourceVersion) || b.sourceVersion < 1) {
-          throw new RouteError(400, 'BAD_REQUEST', 'sourceVersion must be a positive integer');
-        }
-        if (source.status !== 'active' || source.version !== b.sourceVersion) {
-          throw new RouteError(409, 'CONFLICT', 'source memory changed or is no longer active; review Transfer again');
-        }
-      }
       assertEnum(b.targetScope, MEMORY_SCOPES, 'targetScope');
       assertString(b.content, 'content');
       assertEnum(b.abstractionLevel, ABSTRACTION_LEVELS, 'abstractionLevel');
@@ -1370,15 +1388,15 @@ export async function handleMemoryRequest(
       // reused. "reinforces" bumps the existing equivalent instead of
       // duplicating it; "conflicts" keeps both, linked and flagged for
       // arbitration; "new"/absent is the plain path.
-      const landingRoute =
-        b.landingRoute === 'reinforces' || b.landingRoute === 'conflicts' ? b.landingRoute : 'new';
-      const landingTarget =
-        landingRoute !== 'new' && typeof b.landingTargetId === 'string'
-          ? memory.store.getById(b.landingTargetId)
-          : null;
-      // Transcript cards bind a landing judgment to the exact target snapshot
-      // used by Decode. Board resurfacing cannot replace that trusted verdict.
-      if (b.landingTargetVersion !== undefined) {
+      const landingRoute = b.landingRoute === undefined ? 'new' : b.landingRoute;
+      if (landingRoute !== 'new' && landingRoute !== 'reinforces' && landingRoute !== 'conflicts') {
+        throw new RouteError(400, 'BAD_REQUEST', 'landingRoute must be new, reinforces, or conflicts');
+      }
+      let landingTarget = null;
+      if (landingRoute !== 'new') {
+        if (typeof b.landingTargetId !== 'string' || !b.landingTargetId) {
+          throw new RouteError(400, 'BAD_REQUEST', 'landingTargetId is required for a reviewed landing');
+        }
         if (
           typeof b.landingTargetVersion !== 'number'
           || !Number.isInteger(b.landingTargetVersion)
@@ -1386,17 +1404,26 @@ export async function handleMemoryRequest(
         ) {
           throw new RouteError(400, 'BAD_REQUEST', 'landingTargetVersion must be a positive integer');
         }
-        if (
-          !landingTarget
-          || landingTarget.status !== 'active'
-          || landingTarget.version !== b.landingTargetVersion
-        ) {
+        if (b.landingTargetId === source.id) {
+          throw new RouteError(409, 'CONFLICT', 'source memory cannot be its own landing target');
+        }
+        landingTarget = memory.store.getById(b.landingTargetId);
+        if (!landingTarget || landingTarget.status !== 'active' || landingTarget.version !== b.landingTargetVersion) {
           throw new RouteError(409, 'CONFLICT', 'landing target changed or is no longer active; review Transfer again');
         }
+        const selectedProjectId = targetScope === 'project' ? b.targetProjectId : undefined;
+        const selectedSessionId = targetScope === 'session' ? b.targetSessionId : undefined;
+        if (
+          landingTarget.scope !== targetScope
+          || (landingTarget.projectId ?? undefined) !== selectedProjectId
+          || (landingTarget.sessionId ?? undefined) !== selectedSessionId
+        ) {
+          throw new RouteError(409, 'CONFLICT', 'landing target is outside the selected destination; review Transfer again');
+        }
+      } else if (b.landingTargetId !== undefined || b.landingTargetVersion !== undefined) {
+        throw new RouteError(400, 'BAD_REQUEST', 'new landing cannot include a target');
       }
-      // CAS: a landing verdict only binds to a still-active target; a raced
-      // archive degrades to the plain path rather than failing the transfer.
-      const landingBinds = Boolean(landingTarget && landingTarget.status === 'active');
+      const landingBinds = landingRoute !== 'new';
 
       return await runDurableControlOperation({
         memory,
@@ -1883,15 +1910,15 @@ export async function handleMemoryRequest(
                 replaced = outcome.replaced;
               } else {
                 const { status: nextStatus, ...draftPatch } = patch;
-                updated = Object.keys(draftPatch).length > 0
-                  ? memory.store.replaceCandidateDraft(id, draftPatch as Partial<MemoryItem>, UI_ACTOR)
-                  : existing;
-                if (nextStatus !== undefined) {
-                  if (accepted && memory.store.revisionTargetOf(id)) {
-                    const outcome = memory.store.acceptRevision(id, UI_ACTOR);
-                    updated = outcome.updated;
-                    replaced = outcome.replaced;
-                  } else {
+                if (accepted) {
+                  const outcome = memory.store.acceptRevision(id, UI_ACTOR, draftPatch as Partial<MemoryItem>);
+                  updated = outcome.updated;
+                  replaced = outcome.replaced;
+                } else {
+                  updated = Object.keys(draftPatch).length > 0
+                    ? memory.store.replaceCandidateDraft(id, draftPatch as Partial<MemoryItem>, UI_ACTOR)
+                    : existing;
+                  if (nextStatus !== undefined) {
                     updated = memory.store.update(id, { status: nextStatus as MemoryStatus }, UI_ACTOR);
                   }
                 }
@@ -1977,6 +2004,7 @@ export async function handleMemoryRequest(
   } catch (e) {
     if (e instanceof RouteError) return fail(e.status, e.code, e.message);
     if (e instanceof CandidateDismissalTransitionError) return fail(409, e.code, e.message);
+    if (e instanceof RevisionConflictError) return fail(409, e.code, e.message);
     console.error('[memory] route error', e);
     return fail(500, 'INTERNAL_ERROR', 'Internal server error');
   } finally {

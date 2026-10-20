@@ -9,6 +9,7 @@ class FakeCodexProcess extends EventEmitter {
   readonly stderr = new PassThrough()
   readonly messages: unknown[] = []
   killed = false
+  killCalls = 0
 
   constructor(
     private readonly onMessage?: (message: any, process: FakeCodexProcess) => void
@@ -29,6 +30,7 @@ class FakeCodexProcess extends EventEmitter {
   }
 
   kill() {
+    this.killCalls += 1
     this.killed = true
     this.emit("close", 0)
   }
@@ -55,6 +57,234 @@ async function collectStream(stream: AsyncIterable<any>) {
 }
 
 describe("CodexAppServerManager", () => {
+  test("fatal process errors terminate the failed child without stopping a replacement", async () => {
+    const children: FakeCodexProcess[] = []
+    let turnRequested!: () => void
+    const requested = new Promise<void>((resolve) => { turnRequested = resolve })
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+          } else if (message.method === "turn/start") {
+            turnRequested()
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const args = { chatId: "fatal-chat", cwd: "/tmp/project", model: "test", sessionToken: null }
+    try {
+      await manager.startSession(args)
+      const pending = manager.startTurn({
+        chatId: args.chatId, model: "test", content: "hello", planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const rejection = pending.then(
+        () => null,
+        (error) => error,
+      )
+      await requested
+      children[0]!.emit("error", new Error("transport failed"))
+      const failure = await rejection
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).toMatchObject({ message: "transport failed" })
+      expect(children[0]!.killed).toBe(true)
+      expect(children[0]!.killCalls).toBe(1)
+
+      await manager.startSession(args)
+      children[0]!.emit("error", new Error("late old failure"))
+      expect(await manager.startSession(args)).toBe("ready")
+      expect(children).toHaveLength(2)
+      expect(children[1]!.killed).toBe(false)
+      expect(children[0]!.killCalls).toBe(1)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("aborting during initialization kills the partially started child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const controller = new AbortController()
+    const starting = manager.startSession({
+      signal: controller.signal,
+      chatId: "abort-start",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+    })
+    while (!child.messages.some((message: any) => message.method === "thread/start")) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+
+    controller.abort()
+
+    await expect(starting).rejects.toThrow("Codex session stopped")
+    expect(child.killed).toBe(true)
+  })
+
+  test("aborting a pending turn-start response kills the ready child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "abort-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      const startingTurn = manager.startTurn({
+        signal: controller.signal,
+        chatId: "abort-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const result = startingTurn.catch((error) => error)
+      while (!child.messages.some((message: any) => message.method === "turn/start")) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+
+      controller.abort()
+
+      const failure = await result
+      expect(failure).toMatchObject({ message: "Codex session stopped" })
+      expect(child.killed).toBe(true)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("a pre-aborted turn-start signal kills the ready child without sending turn/start", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "pre-aborted-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(manager.startTurn({
+        signal: controller.signal,
+        chatId: "pre-aborted-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })).rejects.toMatchObject({ name: "AbortError" })
+      expect(child.killed).toBe(true)
+      expect(child.messages.some((message: any) => message.method === "turn/start")).toBe(false)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("an aborted queued startup does not spawn after the runtime lock frees", async () => {
+    const children: FakeCodexProcess[] = []
+    let firstRequested!: () => void
+    let releaseFirst!: () => void
+    const firstRequest = new Promise<void>((resolve) => { firstRequested = resolve })
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const subprocessEnv = { CODEX_HOME: "abort-queued-start-test" }
+    const manager = new CodexAppServerManager({
+      serializeStarts: true,
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            firstRequested()
+            void firstGate.then(() => process.writeServerMessage({
+              id: message.id,
+              result: { thread: { id: "first-ready" } },
+            }))
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const first = manager.startSession({
+      chatId: "first-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    await firstRequest
+    const controller = new AbortController()
+    const second = manager.startSession({
+      signal: controller.signal,
+      chatId: "queued-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    const secondResult = second.catch((error) => error)
+
+    controller.abort()
+    expect(children).toHaveLength(1)
+    releaseFirst()
+
+    await expect(first).resolves.toBe("first-ready")
+    const failure = await secondResult
+    expect(failure).toMatchObject({ name: "AbortError" })
+    expect(children).toHaveLength(1)
+    manager.stopAll()
+  })
+
+  test("retains only a bounded final stderr diagnostic for long-lived sessions", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({ chatId: "diagnostics", cwd: "/tmp/project", model: "test", sessionToken: null })
+      for (let index = 0; index < 1000; index++) child.writeStderr(`diagnostic ${index}`)
+      const finalLine = "x".repeat(5000) + " final failure"
+      child.writeStderr(finalLine)
+      child.writeStderr("   ")
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      const context = (manager as unknown as {
+        sessions: Map<string, { lastStderrLine: string | null; stderrLines?: string[] }>
+      }).sessions.get("diagnostics")!
+      expect(context.lastStderrLine).toBe(finalLine.slice(-4096))
+      expect(context.stderrLines).toBeUndefined()
+    } finally {
+      manager.stopAll()
+    }
+  })
+
   for (const failedMethod of ["initialize", "thread/start", "thread/fork"] as const) {
     test(`cleans up a failed ${failedMethod} handshake so the same chat can retry`, async () => {
       const children: FakeCodexProcess[] = []
@@ -350,6 +580,63 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.effort).toBe("xhigh")
     expect(turnStart?.params.serviceTier).toBe("fast")
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
+  })
+
+  for (const mode of ["start", "resume", "fork"] as const) {
+    test(`sends explicit Standard service tier for thread/${mode}`, async () => {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === `thread/${mode}`) {
+          child.writeServerMessage({ id: message.id, result: { thread: { id: "standard-thread" }, model: "gpt-5.4" } })
+        }
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      try {
+        await manager.startSession({
+          chatId: "standard-chat", cwd: "/tmp/project", model: "gpt-5.4",
+          sessionToken: mode === "resume" ? "saved-thread" : null,
+          pendingForkSessionToken: mode === "fork" ? "parent-thread" : null,
+        })
+        const request = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
+        expect(request.params).toHaveProperty("serviceTier", null)
+      } finally {
+        manager.stopAll()
+      }
+    })
+  }
+
+  test("sends explicit Standard service tier when Fast is disabled mid-chat", async () => {
+    let turnNumber = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "speed-thread" }, model: "gpt-5.4" } })
+      }
+      if (message.method === "turn/start") {
+        const turn = { id: `turn-${++turnNumber}`, status: "completed", error: null }
+        child.writeServerMessage({ id: message.id, result: { turn } })
+        child.writeServerMessage({ method: "turn/completed", params: { threadId: "speed-thread", turn } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "speed-chat", cwd: "/tmp/project", model: "gpt-5.4", serviceTier: "fast", sessionToken: null,
+      })
+      for (const serviceTier of ["fast", undefined] as const) {
+        const turn = await manager.startTurn({
+          chatId: "speed-chat", model: "gpt-5.4", content: "Hello", planMode: false,
+          serviceTier, onToolRequest: async () => ({}),
+        })
+        await collectStream(turn.stream)
+      }
+      const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
+      expect(turns).toHaveLength(2)
+      expect(turns[0].params).toHaveProperty("serviceTier", "fast")
+      expect(turns[1].params).toHaveProperty("serviceTier", null)
+    } finally {
+      manager.stopAll()
+    }
   })
 
   test("maps thread token usage updates into context window transcript entries", async () => {
