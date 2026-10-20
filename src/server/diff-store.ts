@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type {
@@ -863,7 +863,10 @@ async function listDirtyPaths(repoRoot: string) {
 
 async function readWorktreeFile(repoRoot: string, relativePath: string): Promise<string | null> {
   const absolutePath = path.join(repoRoot, relativePath)
-  const fileInfo = await stat(absolutePath).catch(() => null)
+  const fileInfo = await lstat(absolutePath).catch(() => null)
+  if (fileInfo?.isSymbolicLink()) {
+    return await readlink(absolutePath)
+  }
   if (!fileInfo?.isFile()) {
     return null
   }
@@ -1005,16 +1008,17 @@ async function computeCurrentFiles(repoRoot: string, baseCommit: string | null):
     const beforeText = await readBaseFile(repoRoot, baseCommit, beforePath)
     const afterText = await readWorktreeFile(repoRoot, relativePath)
     const absolutePath = path.join(repoRoot, relativePath)
-    const fileInfo = await stat(absolutePath).catch(() => null)
+    const fileInfo = await lstat(absolutePath).catch(() => null)
+    const isSymlink = fileInfo?.isSymbolicLink() ?? false
     const file = fileInfo?.isFile() ? Bun.file(absolutePath) : null
-    const mimeType = file ? inferProjectFileContentType(relativePath, file.type) : undefined
-    const size = fileInfo?.isFile() ? fileInfo.size : undefined
+    const mimeType = isSymlink ? "text/plain" : file ? inferProjectFileContentType(relativePath, file.type) : undefined
+    const size = fileInfo?.isFile() || isSymlink ? fileInfo?.size : undefined
+    const trackedStats = trackedStatsByPath.get(relativePath)
 
-    if (beforeText === afterText && entry.changeType !== "renamed") {
+    if (beforeText === afterText && entry.changeType !== "renamed" && !trackedStats) {
       continue
     }
 
-    const trackedStats = trackedStatsByPath.get(relativePath)
     const additions = trackedStats?.additions ?? countTextLines(afterText)
     const deletions = trackedStats?.deletions ?? 0
     files.push({

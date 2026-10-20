@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests } from "./diff-store"
@@ -82,6 +82,68 @@ describe("DiffStore", () => {
       files: [],
       branchHistory: { entries: [] },
     })
+  })
+
+  for (const tracked of [false, true]) {
+    for (const targetKind of ["file", "directory", "missing"] as const) {
+      test(`diffs ${tracked ? "tracked" : "untracked"} symbolic links to a ${targetKind} as link text`, async () => {
+        const repoRoot = await createRepo()
+        tempDirs.push(repoRoot)
+        const targetRoot = await mkdtemp(path.join(tmpdir(), "memosync-link-target-"))
+        tempDirs.push(targetRoot)
+        const targetPath = path.join(targetRoot, "目标")
+        const targetContents = "target bytes must not enter the diff\nsecond line\n"
+        if (targetKind === "file") await writeFile(targetPath, targetContents)
+        if (targetKind === "directory") await mkdir(targetPath)
+
+        const linkPath = path.join(repoRoot, "shortcut.png")
+        if (tracked) {
+          await symlink("old-target", linkPath)
+          await run(["git", "add", "shortcut.png"], repoRoot)
+          await run(["git", "commit", "-m", "add link"], repoRoot)
+          await rm(linkPath)
+        }
+        await symlink(targetPath, linkPath)
+
+        const store = new DiffStore(repoRoot)
+        await store.initialize()
+        await store.refreshSnapshot("project-1", repoRoot)
+        const snapshot = store.getProjectSnapshot("project-1")
+        expect(snapshot.status).toBe("ready")
+        expect(snapshot.files).toHaveLength(1)
+        expect(snapshot.files[0]).toMatchObject({
+          path: "shortcut.png",
+          changeType: tracked ? "modified" : "added",
+          isUntracked: !tracked,
+          additions: 1,
+          deletions: tracked ? 1 : 0,
+          mimeType: "text/plain",
+          size: Buffer.byteLength(targetPath),
+        })
+        const { patch } = await store.readPatch({ projectPath: repoRoot, path: "shortcut.png" })
+        expect(patch).toContain(`+${targetPath}`)
+        expect(patch).not.toContain(targetContents)
+        if (tracked) expect(patch).toContain("-old-target")
+      })
+    }
+  }
+
+  test("retains a file-to-symbolic-link type change with identical text", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    const linkPath = path.join(repoRoot, "shortcut.txt")
+    await writeFile(linkPath, "target")
+    await run(["git", "add", "shortcut.txt"], repoRoot)
+    await run(["git", "commit", "-m", "add file"], repoRoot)
+    await rm(linkPath)
+    await symlink("target", linkPath)
+
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+    expect(store.getProjectSnapshot("project-1").files).toEqual([
+      expect.objectContaining({ path: "shortcut.txt", changeType: "modified", mimeType: "text/plain" }),
+    ])
   })
 
   test("commits only the selected files and refreshes the snapshot", async () => {
