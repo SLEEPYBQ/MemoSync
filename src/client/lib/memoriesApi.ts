@@ -371,7 +371,7 @@ export const memoriesApi = {
     id: string,
     body: TransferTargetBody & {
       /** Transcript-card CAS; required for chat-gate and Board suggestions. */
-      sourceVersion?: number
+      sourceVersion: number
       content: string
       detail?: string
       abstractionLevel?: AbstractionLevel
@@ -433,10 +433,14 @@ export interface TransferLanding {
   /** The target-context memory this landing relates to (reinforces/conflicts). */
   targetId?: string
   targetContent?: string
+  /** Version of the target snapshot used for this landing judgment. */
+  targetVersion?: number
 }
 
 export interface TransferProposal {
   verdict: "as_is" | "rewrite" | "context_bound"
+  /** Version of the source snapshot used for this proposal. */
+  sourceVersion: number
   /** The abstract rule — the context-free middle representation. */
   portable: string
   /** When the rule applies; absent = unconditional. */

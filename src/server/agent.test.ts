@@ -21,6 +21,10 @@ import {
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import { resolveConditionPolicy } from "./experiment/condition"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { MemoryService } from "./memory"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -86,6 +90,36 @@ test("memory candidate transcript references never duplicate draft content", () 
   expect(JSON.stringify(references)).not.toContain("sk-secret")
   expect(JSON.stringify(references)).not.toContain("person@example.com")
 })
+
+for (const latestFirst of [false, true]) {
+  test(`auto acceptance applies only one competing capture update (latest first: ${latestFirst})`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "memosync-competing-updates-"))
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: dir })
+    try {
+      memory.store.setKv("evolution_policy", { mode: "auto" })
+      const target = memory.store.create({ content: "Use port 3000", scope: "personal", type: "fact" }, { actor: "user" })
+      const first = memory.store.createRevisionProposal(
+        { content: "Use port 4000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!
+      const second = memory.store.createCaptureUpdateProposal(
+        { content: "Use port 5000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!.item
+      const proposals = latestFirst ? [second, first] : [first, second]
+      const coordinator = new AgentCoordinator({ store: createFakeStore() as never, onStateChange: () => {}, memory })
+      const applied: Set<string> = (coordinator as any).autoApplyProposals(proposals, { chatId: "chat-1", turnNumber: 1 })
+      expect([...applied]).toEqual([proposals[0]!.id])
+      expect(memory.store.list({ status: "active" }).map(({ id }) => id)).toEqual([proposals[0]!.id])
+      expect(memory.store.getById(target.id)!.status).toBe("archived")
+      expect(memory.store.getById(proposals[1]!.id)!.status).toBe("candidate")
+      const retry: Set<string> = (coordinator as any).autoApplyProposals([proposals[1]!], { chatId: "chat-1", turnNumber: 2 })
+      expect(retry.size).toBe(0)
+      expect(memory.store.getById(proposals[1]!.id)!.content).toBe(proposals[1]!.content)
+    } finally {
+      memory.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
 
 test("DeepSeek chat selection takes precedence over the configured fallback model", () => {
   expect(resolveClaudeSessionModel("deepseek-v4-pro", "deepseek-v4-flash")).toBe("deepseek-v4-pro")

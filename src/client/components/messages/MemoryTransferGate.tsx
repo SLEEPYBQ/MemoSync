@@ -406,6 +406,7 @@ export function buildAutomaticTransferCommitBody(input: {
 }): Parameters<typeof memoriesApi.transfer>[1] {
   const { suggestion, scope, projectId, chatId } = input
   const content = input.content.trim()
+  const landing = scope === (suggestion.suggestedScope ?? "project") ? suggestion.landing : undefined
   return {
     sourceVersion: suggestion.sourceVersion,
     targetScope: scope,
@@ -417,9 +418,9 @@ export function buildAutomaticTransferCommitBody(input: {
     abstractionLevel: suggestion.abstractionLevel ?? "contextual",
     verdict: "rewrite",
     edited: content !== suggestion.content,
-    landingRoute: suggestion.landing?.route,
-    landingTargetId: suggestion.landing?.targetId,
-    landingTargetVersion: suggestion.landing?.targetVersion,
+    landingRoute: landing?.route ?? "new",
+    landingTargetId: landing?.targetId,
+    landingTargetVersion: landing?.targetVersion,
     rule: suggestion.rule,
     applicability: suggestion.applicability,
   }
@@ -453,7 +454,7 @@ function TransferSuggestionRow({
   const scope: MemoryScope = scopeChoice ?? suggestion.suggestedScope ?? "project"
   const content = contentDraft ?? suggestion.content ?? ""
   const decoded = Boolean(suggestion.content !== undefined && suggestion.landing)
-  const landing = suggestion.landing
+  const landing = scope === (suggestion.suggestedScope ?? "project") ? suggestion.landing : undefined
   const reinforcing = landing?.route === "reinforces"
   const SourceIcon = SCOPE_ICONS[suggestion.sourceScope] ?? MessagesSquare
   const acceptLabel = reinforcing ? "Reinforce" : "Bring in"
