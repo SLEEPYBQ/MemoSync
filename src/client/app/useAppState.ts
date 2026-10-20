@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { copyTextToClipboard } from "../lib/clipboard"
 import { useShallow } from "zustand/react/shallow"
 import { normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../stores/chatPreferencesStore"
@@ -2064,10 +2065,9 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleCopyPath = useCallback(async (localPath: string) => {
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
+      if (!await copyTextToClipboard(localPath)) {
+        throw new Error("Copy failed. Select the path and copy it manually.")
       }
-      await navigator.clipboard.writeText(localPath)
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -2160,10 +2160,9 @@ export function useAppState(activeChatId: string | null): AppState {
     }
 
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
+      if (!await copyTextToClipboard(standaloneShareUrl)) {
+        throw new Error("Copy failed. Select the link and copy it manually.")
       }
-      await navigator.clipboard.writeText(standaloneShareUrl)
       return true
     } catch (error) {
       await dialog.alert({

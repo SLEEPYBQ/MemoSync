@@ -6,6 +6,7 @@ import type { ProcessedToolCall } from "./types"
 import { Button } from "../ui/button"
 import { markdownComponentsWithLinks } from "./shared"
 import { cn } from "../../lib/utils"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { useTranscriptRenderOptions } from "./render-context"
 
@@ -33,7 +34,7 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
 
   const handleCopy = async () => {
     if (!input?.plan) return
-    await navigator.clipboard.writeText(input.plan)
+    if (!await copyTextToClipboard(input.plan)) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }
