@@ -157,7 +157,7 @@ describe("persistent memory branches", () => {
       const fake = fakeClaude([response])
       const branch = createMemoryBranch(base, fake)
       await expect(branch.ask("Audit")).rejects.toThrow()
-      expect(fake.calls).toHaveLength(1)
+      expect(fake.calls).toHaveLength(response.some(message => message.result === "not JSON") ? 2 : 1)
       branch.dispose()
     }
   })
@@ -434,7 +434,47 @@ describe("branch read access and structured result contract", () => {
   test("JSON parsing accepts an optional fence and rejects non-object payloads", () => {
     expect(parseMemoryBranchJson('```json\n{"labels": []}\n```')).toEqual({ labels: [] })
     expect(() => parseMemoryBranchJson("[]")).toThrow("JSON object")
+    expect(() => parseMemoryBranchJson('```json\n[{"labels":[]}]\n```')).toThrow("JSON object")
     expect(() => parseMemoryBranchJson("null")).toThrow("JSON object")
-    expect(() => parseMemoryBranchJson('Explanation: {"labels":[]}')).toThrow()
+    expect(parseMemoryBranchJson('Explanation: {"labels":[]}')).toEqual({ labels: [] })
+  })
+})
+
+
+describe("branch output recovery", () => {
+  test("accepts one nested JSON object with escaped braces but rejects ambiguous alternatives", () => {
+    const value = { selected: [{ why: 'literal {brace} and "quote"' }] }
+    expect(parseMemoryBranchJson(`Finished.\n\`\`\`json\n${JSON.stringify(value)}\n\`\`\`\nDone.`)).toEqual(value)
+    expect(() => parseMemoryBranchJson('Example: {"a":1} Final: {"a":2}')).toThrow("unambiguous")
+    expect(() => parseMemoryBranchJson('{"a":')).toThrow()
+  })
+
+  test("Pi schema correction resumes the same child once, with zero reads", async () => {
+    const fake = fakePi(call => [
+      { type: "session_token", sessionToken: "pi-child" } as HarnessEvent,
+      { type: "transcript", entry: { kind: "assistant_text", text: call === 1 ? '{"wrong":[]}' : '{"selected":[]}' } } as HarnessEvent,
+      { type: "transcript", entry: { kind: "result", subtype: "success", isError: false, result: "" } } as HarnessEvent,
+    ])
+    const branch = createMemoryBranch({ ...base, provider: "pi" }, fake)
+    const schema = { type: "object", properties: { selected: { type: "array" } }, required: ["selected"], additionalProperties: false }
+    expect(await branch.ask("Select", { schema })).toEqual({ selected: [] })
+    expect(fake.turns).toHaveLength(2)
+    expect(fake.turns[0].outputSchema).toBe(schema)
+    expect(fake.turns[1]).toMatchObject({ sessionToken: "pi-child", forkSession: false })
+    expect(fake.turns[1].content).toContain("at most 2 visible steps and 0 actual read/tool calls")
+    expect(fake.turns[1].content).toContain("NO READS REMAIN")
+    expect(fake.turns[1].content).toContain("Do not estimate remaining turns")
+    expect(fake.turns[1].content).toContain("call it DIRECTLY")
+    branch.dispose()
+  })
+
+  test("a second malformed reply remains an error instead of an empty successful result", async () => {
+    const fake = fakeClaude([claudeSuccess({ wrong: [] }), claudeSuccess({ stillWrong: [] }), claudeSuccess({ selected: [] })])
+    const branch = createMemoryBranch(base, fake)
+    await expect(branch.ask("Select", { schema: { type: "object", properties: { selected: { type: "array" } }, required: ["selected"] } })).rejects.toThrow("schema")
+    expect(fake.calls).toHaveLength(2)
+    expect(fake.calls[1].options?.resume).toBe("child-session")
+    expect(fake.calls[1].options?.maxTurns).toBe(2)
+    branch.dispose()
   })
 })

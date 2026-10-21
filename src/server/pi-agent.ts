@@ -10,7 +10,9 @@ import type {
   AgentSessionEvent,
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent"
-import type { Model } from "@mariozechner/pi-ai"
+import type { Model, ThinkingLevelMap } from "@mariozechner/pi-ai"
+import { resolvePiEffort, toPiThinkingLevel, type RegistryModelCard } from "../shared/model-capabilities"
+import { loadRegistryModels } from "./registry-models"
 import type {
   ContextWindowUsageSnapshot,
   LlmProviderKind,
@@ -288,24 +290,37 @@ export interface PiConnection {
 
 /**
  * Build a Model definition for an arbitrary model id against the registry's
- * base URL. Reasoning is enabled — endpoints ignore the reasoning parameter
- * for models that don't support it, and pi clamps levels per model.
+ * base URL. The configured provider card controls reasoning, context and cost. Without
+ * capability metadata, omit reasoning rather than inventing supported levels.
  */
-export function buildRegistryModel(connection: PiConnection, modelId: string): Model<"openai-completions"> {
-  const isOpenRouter = connection.baseUrl.includes("openrouter.ai")
+export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions"> {
+  const isOpenRouter = new URL(connection.baseUrl).hostname === "openrouter.ai"
   return {
     id: modelId,
     name: modelId,
     api: "openai-completions",
     provider: connection.provider,
     baseUrl: connection.baseUrl,
-    reasoning: true,
-    input: ["text", "image"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 200_000,
-    maxTokens: 32_000,
+    reasoning: card?.reasoningEfforts.some(e => e !== "off") ?? true,
+    thinkingLevelMap: registryThinkingMap(card, effort),
+    input: card?.inputModalities?.length ? card.inputModalities.filter((m): m is "text" | "image" => m === "text" || m === "image") : ["text", "image"],
+    cost: card?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: card?.contextWindow ?? 200_000,
+    maxTokens: Math.min(card?.maxTokens ?? 32_000, 32_000),
     compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
+}
+
+/** Explicitly exclude unsupported SDK slots; max uses xhigh with a max wire value. */
+export function registryThinkingMap(card?: RegistryModelCard, effort?: PiReasoningEffort): ThinkingLevelMap {
+  const map: ThinkingLevelMap = { off: null, minimal: null, low: null, medium: null, high: null, xhigh: null }
+  for (const effort of card?.reasoningEfforts ?? []) {
+    if (effort === "default") continue
+    map[toPiThinkingLevel(effort)] = effort === "off" ? "none" : effort
+  }
+  // Providers can expose BOTH xhigh and max; Pi has one native slot for them.
+  if ((effort === "max" || effort === "xhigh") && card?.reasoningEfforts.includes(effort)) map.xhigh = effort
+  return map
 }
 
 /**
@@ -356,6 +371,7 @@ export interface StartPiTurnArgs {
    * analysis branches pass a read-only subset; the list is part of the
    * session-reuse key, so a differing set rebuilds the session.
    */
+  outputSchema?: Record<string, unknown>
   toolNames?: readonly string[]
   /**
    * Dispatch for this turn's memory tool calls. Set to undefined to disable
@@ -377,6 +393,9 @@ interface PiChatSession {
   connectionBaseUrl: string
   /** Sorted memory-tool names baked into the session at creation. */
   toolNamesKey: string
+  modelCardKey: string
+  outputSchema?: Record<string, unknown>
+  supportsStructuredOutput?: boolean
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
   memoryInvoke: ((name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>) | null
 }
@@ -410,12 +429,14 @@ export class PiAgentManager {
   private readonly agentDir: string
   private readonly sessionsDir: string
   private readonly loadSdk: typeof loadPiSdk
+  private readonly loadModels: typeof loadRegistryModels
 
-  constructor(args: { dataDir?: string; loadSdk?: typeof loadPiSdk } = {}) {
+  constructor(args: { dataDir?: string; loadSdk?: typeof loadPiSdk; loadModels?: typeof loadRegistryModels } = {}) {
     const dataDir = args.dataDir ?? path.join(getDataRootDir(homedir()), "pi")
     this.agentDir = path.join(dataDir, "agent")
     this.sessionsDir = path.join(dataDir, "sessions")
     this.loadSdk = args.loadSdk ?? loadPiSdk
+    this.loadModels = args.loadModels ?? loadRegistryModels
   }
 
   getResourceCounts() {
@@ -440,22 +461,20 @@ export class PiAgentManager {
     }
   }
 
-  private resolveModel(registry: ModelRegistry, connection: PiConnection, modelId: string): Model<any> {
-    // Only OpenRouter/OpenAI connections at their default base URL can borrow
-    // pi's bundled model metadata; custom endpoints always get a synthesized
-    // definition so requests target the configured base URL.
-    if (connection.provider === "openrouter" || connection.provider === "openai") {
-      const known = registry.find(connection.provider, modelId)
-      if (known) return known
-    }
-    return buildRegistryModel(connection, modelId)
+  private resolveModel(registry: ModelRegistry, connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<any> {
+    const official = (connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === OPENROUTER_BASE_URL)
+      || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")
+    const known = official ? registry.find(connection.provider, modelId) : undefined
+    if (known && card?.metadataSource === "pi") return { ...known, thinkingLevelMap: registryThinkingMap(card) }
+    return buildRegistryModel(connection, modelId, card, effort)
   }
 
-  private async openSession(args: StartPiTurnArgs & { connection: PiConnection }): Promise<PiChatSession> {
+  private async openSession(args: StartPiTurnArgs & { connection: PiConnection; modelCard?: RegistryModelCard }): Promise<PiChatSession> {
     args.signal?.throwIfAborted()
     const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
     const toolNamesKey = [...builtinToolNames, ...(args.memorySpecs ?? []).map((spec) => spec.name)].sort().join(",")
 
+    const modelCardKey = JSON.stringify({ card: args.modelCard, wireEffort: args.effort === "max" || args.effort === "xhigh" ? args.effort : undefined })
     const existing = this.sessions.get(args.chatId)
     const connectionUnchanged = existing
       && existing.connectionProvider === args.connection.provider
@@ -464,13 +483,15 @@ export class PiAgentManager {
       && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
       existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
       existing.memoryInvoke = args.memoryDispatch ?? null
-      if (existing.model !== args.model) {
-        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model))
+      if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
+        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model, args.modelCard, args.effort))
         args.signal?.throwIfAborted()
         existing.model = args.model
+        existing.modelCardKey = modelCardKey
+        existing.supportsStructuredOutput = args.modelCard?.supportsStructuredOutput
       }
       if (existing.effort !== args.effort) {
-        existing.session.setThinkingLevel(args.effort)
+        existing.session.setThinkingLevel(toPiThinkingLevel(args.effort))
         existing.effort = args.effort
       }
       return existing
@@ -554,8 +575,8 @@ export class PiAgentManager {
       settingsManager,
       sessionManager,
       resourceLoader,
-      model: this.resolveModel(modelRegistry, args.connection, args.model),
-      thinkingLevel: args.effort,
+      model: this.resolveModel(modelRegistry, args.connection, args.model, args.modelCard, args.effort),
+      thinkingLevel: toPiThinkingLevel(args.effort),
       tools: [...builtinToolNames, ...memorySpecs.map((spec) => spec.name)],
       customTools,
     })
@@ -576,7 +597,22 @@ export class PiAgentManager {
       connectionProvider: args.connection.provider,
       connectionBaseUrl: args.connection.baseUrl,
       toolNamesKey,
+      modelCardKey,
+      supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
       memoryInvoke: args.memoryDispatch ?? null,
+    }
+    if (session.agent) {
+      const previousPayloadHook = session.agent.onPayload
+      session.agent.onPayload = async (payload, model) => {
+        const prepared = await previousPayloadHook?.(payload, model) ?? payload
+        const current = chatSessionHolder.session
+        if (current?.outputSchema && current.supportsStructuredOutput && model.api === "openai-completions") {
+          return { ...asRecord(prepared), response_format: { type: "json_schema", json_schema: {
+            name: "memosync_branch", strict: true, schema: current.outputSchema,
+          } } }
+        }
+        return prepared
+      }
     }
     chatSessionHolder.session = chatSession
     this.sessions.set(args.chatId, chatSession)
@@ -612,7 +648,15 @@ export class PiAgentManager {
 
     let chatSession: PiChatSession
     try {
-      chatSession = await this.openSession({ ...args, connection: args.connection })
+      // Metadata is shared with the picker. A removed/unsupported stored choice
+      // falls back to the model's declared default before any request is sent.
+      // Load the SDK first to preserve the lazy/cancellable initialization boundary.
+      await this.loadSdk()
+      args.signal?.throwIfAborted()
+      const modelCard = (await this.loadModels(args.connection)).find(card => card.id === args.model)
+      args.signal?.throwIfAborted()
+      args = { ...args, effort: resolvePiEffort(modelCard, args.effort) }
+      chatSession = await this.openSession({ ...args, connection: args.connection!, modelCard })
     } catch (error) {
       args.signal?.throwIfAborted()
       return failedPiTurn(error instanceof Error ? error.message : String(error))
@@ -625,6 +669,7 @@ export class PiAgentManager {
       await session.abort()
     }
     args.signal?.throwIfAborted()
+    chatSession.outputSchema = args.outputSchema
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

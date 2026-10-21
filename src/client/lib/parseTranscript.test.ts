@@ -12,6 +12,17 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("folds legacy duplicate tool starts while preserving later reuse after completion", () => {
+    const call = () => entry({ kind: "tool_call", tool: { kind: "tool", toolKind: "unknown_tool", toolName: "propose_memory", toolId: "call-1", input: {} } })
+    const result = () => entry({ kind: "tool_result", toolId: "call-1", content: "ok", isError: false })
+    const messages = processTranscriptMessages([call(), call(), result(), call(), result()])
+    const tools = messages.filter(message => message.kind === "tool")
+    expect(tools).toHaveLength(2)
+    expect(tools.every(tool => tool.rawResult === "ok")).toBe(true)
+    const recovered = processTranscriptMessages([call(), entry({ kind: "user_prompt", content: "Next turn" }), call(), result()])
+    expect(recovered.filter(message => message.kind === "tool")).toHaveLength(2)
+  })
+
   test("preserves working-memory selection failure separately from an empty successful result", () => {
     const preview = entry({ kind: "memory_preview", previewId: "failed-w", memories: [{ id: "M-1", content: "Use cents", scope: "project" }], relevancePending: true })
     const failed = processTranscriptMessages([

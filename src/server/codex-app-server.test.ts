@@ -57,6 +57,29 @@ async function collectStream(stream: AsyncIterable<any>) {
 }
 
 describe("CodexAppServerManager", () => {
+  test.each(["notification-first", "request-first"])("dynamic tool records are deduplicated (%s)", async (order) => {
+    let calls = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") child.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+      if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "inProgress" } } })
+        const started = { method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "call-1", tool: "propose_memory", arguments: { content: "Bun" }, status: "inProgress" } } }
+        const request = { id: "dyn-1", method: "item/tool/call", params: { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool: "propose_memory", arguments: { content: "Bun" } } }
+        for (const event of order === "notification-first" ? [started, request] : [request, started]) child.writeServerMessage(event)
+      }
+      if (message.id === "dyn-1") child.writeServerMessage({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "dup", cwd: "/tmp", model: "test", sessionToken: null })
+    const turn = await manager.startTurn({ chatId: "dup", model: "test", content: "test", planMode: false, onToolRequest: async () => ({}), onDynamicToolCall: async () => { calls++; return { text: "ok" } } })
+    const events = await collectStream(turn.stream)
+    expect(calls).toBe(1)
+    expect(events.filter(e => e.type === "transcript" && e.entry.kind === "tool_call")).toHaveLength(1)
+    expect(events.filter(e => e.type === "transcript" && e.entry.kind === "tool_result")).toHaveLength(1)
+    manager.stopAll()
+  })
+
   test("fatal process errors terminate the failed child without stopping a replacement", async () => {
     const children: FakeCodexProcess[] = []
     let turnRequested!: () => void

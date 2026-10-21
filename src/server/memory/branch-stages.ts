@@ -105,7 +105,7 @@ export function buildTransferBranchPrompt(input: TransferBranchInput): string {
     `TARGET PROJECT:\n${JSON.stringify({ projectId: input.projectId, projectTitle: input.projectTitle })}`,
     `TARGET STORE:\n${JSON.stringify(input.memories)}`,
     `SOURCE MEMORIES AND PROFILES:\n${JSON.stringify(input.sources)}`,
-    'JSON: {"suggestions":[{"proposalId":"T:M-3","sourceId":"M-3","sourceVersion":1,"encoding":{"rule":"...","portable":true,"applicability":"...","stripped":[],"note":"..."},"decoding":{"content":"...","detail":"...","abstractionLevel":"contextual","suggestedScope":"project","bound":[],"landing":{"route":"new"},"note":"..."}}]}',
+    input.sources.length ? 'JSON: {"suggestions":[{"proposalId":"T:M-3","sourceId":"M-3","sourceVersion":1,"encoding":{"rule":"...","portable":true,"applicability":"...","stripped":[],"note":"..."},"decoding":{"content":"...","detail":"...","abstractionLevel":"contextual","suggestedScope":"project","bound":[],"landing":{"route":"new"},"note":"..."}}]}' : 'There are no source memories. Do not invent sources or carry out the target task. Return exactly {"suggestions":[]}.',
   ].join('\n\n');
 }
 

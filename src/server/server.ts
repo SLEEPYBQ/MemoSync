@@ -23,6 +23,8 @@ import { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { KeybindingsManager } from "./keybindings"
+import { loadRegistryModels } from "./registry-models"
+import { resolvePiConnection } from "./pi-agent"
 import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { TerminalManager } from "./terminal-manager"
@@ -1105,6 +1107,12 @@ async function startLockedMemoSyncServer(
           // (Memory Board nav, session-memories panel, review cards). The
           // provider catalog rides along so the launcher's picker honors the
           // study pin even before any chat snapshot exists.
+          if (url.pathname === "/api/model-registry/models" && req.method === "GET") {
+            if (conditionPolicy.studyMode) return Response.json({ models: [] })
+            const connection = await resolvePiConnection()
+            return Response.json({ models: connection ? await loadRegistryModels(connection) : [] })
+          }
+
           if (url.pathname === "/api/condition") {
             return Response.json({ data: conditionPolicy, providers: deployedProviders() })
           }

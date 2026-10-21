@@ -7,6 +7,7 @@
 // are task-local and must be recomputed for every send. These prepared rules
 // are process-local temporary intermediate results; they are unrelated to a
 // provider/API prompt cache.
+import { memoryTransferSchema } from './branch-schemas';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import type { SessionClockEntry } from './maintenance';
@@ -58,7 +59,7 @@ export interface TransferTaskOptions {
 
 export interface TransferDetectService {
   /** Full Encode/relevance/Decode prompt, with no preparation sidecars. */
-  buildTaskBranchPrompt?(ctx: TransferTaskContext): { prompt: string; dependencyKey: string };
+  buildTaskBranchPrompt?(ctx: TransferTaskContext): { prompt: string; dependencyKey: string; schema?: Record<string, unknown>; deltaSchema?: Record<string, unknown>; constraints?: string };
   /** Validate full branch proposals against the exact source and target snapshot. */
   materializeTaskFromBranch?(ctx: TransferTaskContext, raw: Record<string, unknown>, dependencyKey: string): Promise<TransferTaskResult | null>;
   /** Synchronous shelf probe used only to decide whether a slow cold-start
@@ -437,7 +438,14 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
   return {
     buildTaskBranchPrompt(ctx) {
       const snapshot = branchSnapshot(ctx);
-      return { prompt: buildTransferBranchPrompt(snapshot.input), dependencyKey: snapshot.key };
+      const sources = snapshot.input.sources.map(source => ({ sourceId: source.item.id, sourceVersion: source.item.version }));
+      return {
+        prompt: buildTransferBranchPrompt(snapshot.input), dependencyKey: snapshot.key,
+        schema: memoryTransferSchema(sources), deltaSchema: memoryTransferSchema(sources, true),
+        constraints: sources.length
+          ? `Only these source snapshots may be transferred: ${JSON.stringify(sources)}. The task and target store are not additional sources.`
+          : 'The source snapshot is EMPTY. There are no transferable sources, including after target-store review. Return empty suggestions for initial analysis. For review deltas return {"upsert":{"suggestions":[]},"remove":{"suggestions":[]}}. Do not infer a source from the task, target store, examples, or earlier invalid replies. Call StructuredOutput directly if available; do not read files.',
+      };
     },
 
     async materializeTaskFromBranch(ctx, raw, dependencyKey) {

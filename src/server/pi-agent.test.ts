@@ -75,13 +75,13 @@ const startupArgs = {
 describe("Pi startup cancellation", () => {
   test("pre-aborted startup never loads the SDK", async () => {
     let loads = 0
-    const manager = new PiAgentManager({ loadSdk: async () => { loads += 1; return fakeSdk() as never } })
+    const manager = new PiAgentManager({ loadModels: async () => [], loadSdk: async () => { loads += 1; return fakeSdk() as never } })
     await expect(manager.startTurn({ ...startupArgs, signal: AbortSignal.abort() })).rejects.toMatchObject({ name: "AbortError" })
     expect(loads).toBe(0)
     manager.dispose()
   })
 
-  test.each(["sdk", "resources", "session"] as const)("abort during %s initialization prevents prompt dispatch", async (stage) => {
+  test.each(["sdk", "metadata", "resources", "session"] as const)("abort during %s initialization prevents prompt dispatch", async (stage) => {
     const entered = deferred()
     const gate = deferred()
     const session = fakeSession()
@@ -90,7 +90,7 @@ describe("Pi startup cancellation", () => {
       reload: stage === "resources" ? hold : undefined,
       create: async () => { if (stage === "session") await hold(); return session },
     })
-    const manager = new PiAgentManager({ loadSdk: async () => { if (stage === "sdk") await hold(); return sdk as never } })
+    const manager = new PiAgentManager({ loadModels: async () => { if (stage === "metadata") await hold(); return [] }, loadSdk: async () => { if (stage === "sdk") await hold(); return sdk as never } })
     const controller = new AbortController()
     const starting = manager.startTurn({ ...startupArgs, signal: controller.signal })
     const rejected = starting.catch((error: unknown) => error)
@@ -109,7 +109,7 @@ describe("Pi startup cancellation", () => {
     const gate = deferred()
     const session = fakeSession()
     const sdk = fakeSdk({ create: async () => { entered.resolve(); await gate.promise; return session } })
-    const manager = new PiAgentManager({ loadSdk: async () => sdk as never })
+    const manager = new PiAgentManager({ loadModels: async () => [], loadSdk: async () => sdk as never })
     const starting = manager.startTurn(startupArgs)
     const rejected = starting.catch((error: unknown) => error)
     await entered.promise
@@ -132,7 +132,7 @@ describe("Pi startup cancellation", () => {
       if (++creations === 1) { entered.resolve(); await gate.promise; return stale }
       return fresh
     } })
-    const manager = new PiAgentManager({ loadSdk: async () => sdk as never })
+    const manager = new PiAgentManager({ loadModels: async () => [], loadSdk: async () => sdk as never })
     const starting = manager.startTurn(startupArgs)
     const rejected = starting.catch((error: unknown) => error)
     await entered.promise
@@ -379,3 +379,35 @@ describe("PiAgentManager", () => {
     manager.dispose()
   })
 })
+
+ test("model-card normalization and structured output survive session reuse", async () => {
+  const { parseRegistryModelCard } = await import("./registry-models")
+  const card = parseRegistryModelCard({ id: "model", supported_parameters: ["reasoning", "structured_outputs", "response_format"], reasoning: { mandatory: true, supported_efforts: ["low", "high", "xhigh", "max"], default_effort: "max" } })!
+  const payloads: Record<string, unknown>[] = []
+  const created: any[] = []
+  const thinking: string[] = []
+  let currentModel: any
+  const session = { ...fakeSession(), agent: {} as any,
+    setModel: async (model: any) => { currentModel = model },
+    setThinkingLevel: (level: string) => { thinking.push(level) },
+    prompt: async () => { payloads.push(await session.agent.onPayload({ messages: [] }, currentModel)) },
+  }
+  const sdk = { ...fakeSdk(), createAgentSession: async (options: any) => { created.push(options); currentModel = options.model; return { session } } }
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [card] })
+  const schema = { type: "object", properties: { selected: { type: "array" } }, required: ["selected"], additionalProperties: false }
+  try {
+    let turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "off", outputSchema: schema })
+    await collectEvents(turn.stream)
+    expect(created[0].thinkingLevel).toBe("xhigh")
+    expect(currentModel.thinkingLevelMap.xhigh).toBe("max")
+    expect(payloads[0].response_format).toMatchObject({ type: "json_schema", json_schema: { strict: true, schema } })
+    turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "xhigh" })
+    await collectEvents(turn.stream)
+    expect(currentModel.thinkingLevelMap.xhigh).toBe("xhigh")
+    expect(payloads[1]).not.toHaveProperty("response_format")
+    turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "low" })
+    await collectEvents(turn.stream)
+    expect(thinking.at(-1)).toBe("low")
+    expect(created).toHaveLength(1)
+  } finally { manager.dispose() }
+ })

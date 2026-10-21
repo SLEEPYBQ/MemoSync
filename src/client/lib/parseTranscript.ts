@@ -40,8 +40,9 @@ function getStructuredToolResultFromDebug(entry: Extract<TranscriptEntry, { kind
 }
 
 export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedTranscriptMessage[] {
-  const pendingToolCalls = new Map<string, { hydrated: HydratedToolCall; normalized: NormalizedToolCall }>()
+  const pendingToolCalls = new Map<string, { hydrated: HydratedToolCall; normalized: NormalizedToolCall; turn: number }>()
   const messages: HydratedTranscriptMessage[] = []
+  let toolTurn = 0
 
   // Memory-preview decisions and relevance predictions are separate
   // append-only entries; fold each into its matching memory_preview message
@@ -125,6 +126,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   for (const entry of entries) {
     switch (entry.kind) {
       case "user_prompt":
+        if (!entry.steered) toolTurn++
         messages.push({
           ...createBaseMessage(entry),
           kind: "user_prompt",
@@ -161,8 +163,10 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         })
         break
       case "tool_call": {
+        const previous = pendingToolCalls.get(entry.tool.toolId)
+        if (previous?.turn === toolTurn && !("rawResult" in previous.hydrated)) break
         const toolCall = hydrateToolCall(entry)
-        pendingToolCalls.set(entry.tool.toolId, { hydrated: toolCall, normalized: entry.tool })
+        pendingToolCalls.set(entry.tool.toolId, { hydrated: toolCall, normalized: entry.tool, turn: toolTurn })
         messages.push(toolCall)
         break
       }
