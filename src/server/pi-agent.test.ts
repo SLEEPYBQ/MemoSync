@@ -166,7 +166,7 @@ test.each([false, true])("pending catalog requests don't block a new or reused P
   const loadModels = createRegistryModelLoader({ now: () => now, catalog: async () => new ModelsDevCatalog({}), fallback: async () => [], fetch: async () => {
     requests++
     if (!warm || requests > 1) { entered.resolve(); await gate.promise }
-    return Response.json({ data: [{ id: card.id, reasoning: { supported_efforts: ["high"] } }] })
+    return Response.json({ data: [{ id: card.id, reasoning: { supported_efforts: ["high"] }, max_output_tokens: 8192 }] })
   } })
   if (warm) { await loadModels(startupArgs.connection); now = 300_001 }
   const session = { ...fakeSession(), setThinkingLevel: (level: string) => levels.push(level),
@@ -186,6 +186,7 @@ test.each([false, true])("pending catalog requests don't block a new or reused P
     expect(creations).toBe(1)
     expect(levels[0]).toBe(warm ? "high" : "off")
     expect(currentModel.thinkingLevelMap.off).toBeNull()
+    expect(currentModel.maxTokens).toBe(warm ? 8192 : 0)
     expect(requests).toBe(warm ? 2 : 1)
     gate.resolve(); await loadModels(startupArgs.connection)
     turn = await manager.startTurn(startupArgs)
@@ -193,6 +194,7 @@ test.each([false, true])("pending catalog requests don't block a new or reused P
     expect(session.calls.prompts).toBe(3)
     expect(creations).toBe(1)
     expect(currentModel.thinkingLevelMap.high).toBe("high")
+    expect(currentModel.maxTokens).toBe(8192)
     expect(levels.at(-1)).toBe("high")
   } finally { gate.resolve(); await loadModels(startupArgs.connection); manager.dispose() }
 })

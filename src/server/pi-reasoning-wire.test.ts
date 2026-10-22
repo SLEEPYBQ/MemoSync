@@ -36,7 +36,16 @@ test.each(["openai", "openrouter", "responses"] as const)("unknown-model default
     for (const field of ["reasoning", "reasoning_effort", "thinking", "enable_thinking"]) {
       expect(body).not.toHaveProperty(field)
     }
+    for (const field of ["max_tokens", "max_completion_tokens", "max_output_tokens"]) {
+      expect(body).not.toHaveProperty(field)
+    }
   }
+})
+
+test.each(["openai", "openrouter", "responses"] as const)("a known 8K output cap is respected in %s HTTP JSON", async format => {
+  const card = parseRegistryModelCard({ id: "small-model", max_output_tokens: 8192 })!
+  const body = await outgoingBody(format, card)
+  expect(body.max_completion_tokens ?? body.max_tokens ?? body.max_output_tokens).toBe(8192)
 })
 
 test.each(["openai", "openrouter", "responses"] as const)("explicit Off remains distinguishable from default in %s HTTP JSON", async format => {

@@ -306,7 +306,9 @@ export function buildRegistryModel(connection: PiConnection, modelId: string, ca
     input: card?.inputModalities !== undefined ? card.inputModalities.filter((m): m is "text" | "image" => m === "text" || m === "image") : ["text", "image"],
     cost: { input: card?.cost?.input ?? 0, output: card?.cost?.output ?? 0, cacheRead: card?.cost?.cacheRead ?? 0, cacheWrite: card?.cost?.cacheWrite ?? 0 },
     contextWindow: card?.contextWindow ?? 200_000,
-    maxTokens: Math.min(card?.maxTokens ?? 32_000, 32_000),
+    // Pi treats zero as an unspecified output limit. A cold/partial catalog
+    // must not send a guessed 32K limit to a model that only accepts 8K.
+    maxTokens: card?.maxTokens ? Math.min(card.maxTokens, 32_000) : 0,
     compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
 }
