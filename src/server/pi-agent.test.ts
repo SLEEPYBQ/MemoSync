@@ -353,7 +353,7 @@ describe("PiAgentManager", () => {
   ])("a missing persisted session file fails the turn instead of starting fresh (fork=%s)", async (forkSession, message) => {
     const dir = await mkdtemp(path.join(tmpdir(), "memosync-pi-"))
     tempDirs.push(dir)
-    const manager = new PiAgentManager({ dataDir: dir })
+    const manager = new PiAgentManager({ dataDir: dir, loadModels: async () => [] })
 
     const missing = path.join(dir, "sessions", "gone.jsonl")
     const turn = await manager.startTurn({
@@ -411,3 +411,33 @@ describe("PiAgentManager", () => {
     expect(created).toHaveLength(1)
   } finally { manager.dispose() }
  })
+
+test.each([true, false])("Pi preserves live fields after bundled reasoning supplementation (structured output=%s)", async (structured) => {
+  const { createRegistryModelLoader, parseRegistryModelCard } = await import("./registry-models")
+  const { ModelsDevCatalog } = await import("./models-dev")
+  const old = { ...parseRegistryModelCard({ id: "model", reasoning: { supported_efforts: ["low", "high", "max"] }, context_length: 200_000 })!,
+    metadataSource: "pi" as const, supportsStructuredOutput: !structured, cost: { input: 5, output: 15 }, inputModalities: ["text", "image"] }
+  const loadModels = createRegistryModelLoader({ catalog: async () => new ModelsDevCatalog({}), fallback: async () => [old],
+    fetch: async () => Response.json({ data: [{ id: "model", context_length: 1_048_576, architecture: { input_modalities: ["text"] },
+      pricing: { prompt: 0, completion: "0.0000002" }, supported_parameters: ["reasoning", ...(structured ? ["structured_outputs", "response_format"] : [])] }] }) })
+  let currentModel: any, payload: any
+  const official = { provider: "openrouter" as const, baseUrl: "https://openrouter.ai/api/v1", apiKey: "fixture-key" }
+  const knownModel = { ...buildRegistryModel(official, "model", old), compat: { supportsDeveloperRole: false } }
+  const session = { ...fakeSession(), agent: {} as any,
+    prompt: async () => { payload = await session.agent.onPayload({ messages: [] }, currentModel) } }
+  const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => knownModel }) },
+    createAgentSession: async (options: any) => { currentModel = options.model; return { session } } }
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels })
+  try {
+    const turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "high",
+      connection: official,
+      outputSchema: { type: "object", properties: {}, additionalProperties: false } })
+    await collectEvents(turn.stream)
+    expect(currentModel.contextWindow).toBe(1_048_576)
+    expect(currentModel.cost.input).toBe(0)
+    expect(currentModel.cost.output).toBeCloseTo(0.2)
+    expect(currentModel.input).toEqual(["text"])
+    expect(currentModel.compat.supportsDeveloperRole).toBe(false)
+    expect(Boolean(payload.response_format)).toBe(structured)
+  } finally { manager.dispose() }
+})

@@ -303,8 +303,8 @@ export function buildRegistryModel(connection: PiConnection, modelId: string, ca
     baseUrl: connection.baseUrl,
     reasoning: card?.reasoningEfforts.some(e => e !== "off") ?? true,
     thinkingLevelMap: registryThinkingMap(card, effort),
-    input: card?.inputModalities?.length ? card.inputModalities.filter((m): m is "text" | "image" => m === "text" || m === "image") : ["text", "image"],
-    cost: card?.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    input: card?.inputModalities !== undefined ? card.inputModalities.filter((m): m is "text" | "image" => m === "text" || m === "image") : ["text", "image"],
+    cost: { input: card?.cost?.input ?? 0, output: card?.cost?.output ?? 0, cacheRead: card?.cost?.cacheRead ?? 0, cacheWrite: card?.cost?.cacheWrite ?? 0 },
     contextWindow: card?.contextWindow ?? 200_000,
     maxTokens: Math.min(card?.maxTokens ?? 32_000, 32_000),
     compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
@@ -465,7 +465,14 @@ export class PiAgentManager {
     const official = (connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === OPENROUTER_BASE_URL)
       || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")
     const known = official ? registry.find(connection.provider, modelId) : undefined
-    if (known && card?.metadataSource === "pi") return { ...known, thinkingLevelMap: registryThinkingMap(card) }
+    if (known) {
+      if (!card) return known
+      const current = buildRegistryModel(connection, modelId, card, effort)
+      // Keep the official SDK's API/compatibility adapter, while using current
+      // provider fields for the model's capabilities and accounting.
+      return { ...known, reasoning: current.reasoning, thinkingLevelMap: current.thinkingLevelMap,
+        input: current.input, cost: current.cost, contextWindow: current.contextWindow, maxTokens: current.maxTokens }
+    }
     return buildRegistryModel(connection, modelId, card, effort)
   }
 
@@ -653,7 +660,7 @@ export class PiAgentManager {
       // Load the SDK first to preserve the lazy/cancellable initialization boundary.
       await this.loadSdk()
       args.signal?.throwIfAborted()
-      const modelCard = (await this.loadModels(args.connection)).find(card => card.id === args.model)
+      const modelCard = (await this.loadModels(args.connection, args.model)).find(card => card.id === args.model)
       args.signal?.throwIfAborted()
       args = { ...args, effort: resolvePiEffort(modelCard, args.effort) }
       chatSession = await this.openSession({ ...args, connection: args.connection!, modelCard })

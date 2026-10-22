@@ -265,7 +265,7 @@ export function ChatPreferenceControls({
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const registry = useRegistryModels(selectedProvider === "pi")
+  const registry = useRegistryModels(selectedProvider === "pi", model)
   const [modelSearch, setModelSearch] = useState("")
   const modelCard = registry.models.find(candidate => candidate.id === model)
   const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === model)

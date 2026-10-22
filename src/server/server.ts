@@ -1110,7 +1110,7 @@ async function startLockedMemoSyncServer(
           if (url.pathname === "/api/model-registry/models" && req.method === "GET") {
             if (conditionPolicy.studyMode) return Response.json({ models: [] })
             const connection = await resolvePiConnection()
-            return Response.json({ models: connection ? await loadRegistryModels(connection) : [] })
+            return Response.json({ models: connection ? await loadRegistryModels(connection, url.searchParams.get("model") || undefined) : [] })
           }
 
           if (url.pathname === "/api/condition") {

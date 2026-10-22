@@ -1,16 +1,20 @@
 import { PI_REASONING_OPTIONS, type PiReasoningEffort, type ProviderModelOption } from "./types"
 
 export interface RegistryModelCard extends ProviderModelOption {
-  /** Missing metadata means provider defaults, never a guess at supported levels. */
+  /** Unknown capabilities use the provider default; switches and budgets aren't effort lists. */
   reasoningEfforts: PiReasoningEffort[]
   defaultReasoningEffort: PiReasoningEffort
+  reasoningKind?: "unknown" | "none" | "effort" | "toggle" | "budget" | "unlevelled"
   reasoningMandatory?: boolean
-  metadataSource: "provider" | "pi"
+  reasoningDefaultEnabled?: boolean
+  preferredReasoningEffort?: PiReasoningEffort
+  /** Source of the reasoning fields; other fields can still come from the live provider. */
+  metadataSource: "provider" | "pi" | "models.dev"
   supportsStructuredOutput?: boolean
   contextWindow?: number
   maxTokens?: number
   inputModalities?: string[]
-  cost?: { input: number; output: number; cacheRead: number; cacheWrite: number }
+  cost?: { input?: number; output?: number; cacheRead?: number; cacheWrite?: number }
 }
 
 export function resolvePiEffort(card: RegistryModelCard | undefined, requested?: PiReasoningEffort): PiReasoningEffort {
