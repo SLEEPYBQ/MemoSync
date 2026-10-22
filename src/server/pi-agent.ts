@@ -12,7 +12,7 @@ import type {
 } from "@mariozechner/pi-coding-agent"
 import type { Model, ThinkingLevelMap } from "@mariozechner/pi-ai"
 import { resolvePiEffort, toPiThinkingLevel, type RegistryModelCard } from "../shared/model-capabilities"
-import { loadRegistryModels } from "./registry-models"
+import { loadRegistryModels, type RegistryModelLoader } from "./registry-models"
 import type {
   ContextWindowUsageSnapshot,
   LlmProviderKind,
@@ -429,9 +429,9 @@ export class PiAgentManager {
   private readonly agentDir: string
   private readonly sessionsDir: string
   private readonly loadSdk: typeof loadPiSdk
-  private readonly loadModels: typeof loadRegistryModels
+  private readonly loadModels: RegistryModelLoader
 
-  constructor(args: { dataDir?: string; loadSdk?: typeof loadPiSdk; loadModels?: typeof loadRegistryModels } = {}) {
+  constructor(args: { dataDir?: string; loadSdk?: typeof loadPiSdk; loadModels?: RegistryModelLoader } = {}) {
     const dataDir = args.dataDir ?? path.join(getDataRootDir(homedir()), "pi")
     this.agentDir = path.join(dataDir, "agent")
     this.sessionsDir = path.join(dataDir, "sessions")
@@ -466,7 +466,9 @@ export class PiAgentManager {
       || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")
     const known = official ? registry.find(connection.provider, modelId) : undefined
     if (known) {
-      if (!card) return known
+      // A cold cache means provider defaults, even if the SDK knows the model.
+      // Its usual off mapping must not turn this default into explicit "none".
+      if (!card) return { ...known, thinkingLevelMap: registryThinkingMap() }
       const current = buildRegistryModel(connection, modelId, card, effort)
       // Keep the official SDK's API/compatibility adapter, while using current
       // provider fields for the model's capabilities and accounting.
@@ -663,13 +665,13 @@ export class PiAgentManager {
 
     let chatSession: PiChatSession
     try {
-      // Metadata is shared with the picker. A removed/unsupported stored choice
-      // falls back to the model's declared default before any request is sent.
       // Load the SDK first to preserve the lazy/cancellable initialization boundary.
       await this.loadSdk()
       args.signal?.throwIfAborted()
-      const modelCard = (await this.loadModels(args.connection, args.model)).find(card => card.id === args.model)
-      args.signal?.throwIfAborted()
+      // The picker preloads metadata. Chat turns never wait on a registry or
+      // models.dev request: use its last snapshot, refreshing for later turns.
+      const modelCard = this.loadModels.peek?.(args.connection, args.model)
+      void Promise.resolve().then(() => this.loadModels(args.connection!, args.model)).catch(() => {})
       args = { ...args, effort: resolvePiEffort(modelCard, args.effort) }
       chatSession = await this.openSession({ ...args, connection: args.connection!, modelCard })
     } catch (error) {

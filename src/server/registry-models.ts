@@ -5,6 +5,9 @@ import type { RegistryModelCard } from "../shared/model-capabilities"
 import { loadModelsDevCatalog, type ModelsDevCatalog } from "./models-dev"
 
 export interface RegistryConnection { provider: LlmProviderKind; baseUrl: string; apiKey: string }
+export type RegistryModelLoader = ((connection: RegistryConnection, requestedModel?: string) => Promise<RegistryModelCard[]>) & {
+  peek?: (connection: RegistryConnection, model: string) => RegistryModelCard | undefined
+}
 const validEfforts = new Set<string>(PI_REASONING_OPTIONS.map(option => option.id))
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const positive = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined
@@ -93,7 +96,8 @@ export function piModelCard(model: Model<any>, levels: readonly string[]): Regis
 
 /** Cache per endpoint AND credential without retaining the credential in keys. */
 export function createRegistryModelLoader(deps: { fetch?: (input: string, init?: RequestInit) => Promise<Response>; now?: () => number; fallback?: (connection: RegistryConnection) => Promise<RegistryModelCard[]>; catalog?: () => Promise<ModelsDevCatalog> } = {}) {
-  const cache = new Map<string, { models: RegistryModelCard[]; expires: number; pending?: Promise<RegistryModelCard[]> }>()
+  const cache = new Map<string, { models: RegistryModelCard[]; expires: number; pending?: Promise<RegistryModelCard[]>; catalog?: ModelsDevCatalog; fallback?: RegistryModelCard[] }>()
+  const connectionKey = (connection: RegistryConnection) => `${connection.provider}:${connection.baseUrl.replace(/\/+$/, "")}:${createHash("sha256").update(connection.apiKey).digest("hex")}`
   const getCatalog = deps.catalog ?? loadModelsDevCatalog
   const getFallback = deps.fallback ?? bundledModelCards
   function decorate(models: RegistryModelCard[], connection: RegistryConnection, catalog: ModelsDevCatalog, fallback: RegistryModelCard[]) {
@@ -108,7 +112,7 @@ export function createRegistryModelLoader(deps: { fetch?: (input: string, init?:
   const getModels = async (connection: RegistryConnection): Promise<RegistryModelCard[]> => {
     const now = deps.now ?? Date.now
     const baseUrl = connection.baseUrl.replace(/\/+$/, "")
-    const key = `${connection.provider}:${baseUrl}:${createHash("sha256").update(connection.apiKey).digest("hex")}`
+    const key = connectionKey(connection)
     let entry = cache.get(key)
     if (entry?.pending) return entry.pending
     if (entry && entry.expires > now()) return entry.models
@@ -128,6 +132,8 @@ export function createRegistryModelLoader(deps: { fetch?: (input: string, init?:
         return models
       }
       const [catalog, fallback, models] = await Promise.all([getCatalog(), getFallback(connection), readLive().catch(() => undefined)])
+      current.catalog = catalog
+      current.fallback = fallback
       if (models) {
         current.models = decorate(models, connection, catalog, fallback)
         current.expires = now() + 5 * 60_000
@@ -139,15 +145,28 @@ export function createRegistryModelLoader(deps: { fetch?: (input: string, init?:
     })().finally(() => { current.pending = undefined })
     return current.pending
   }
-  return async (connection: RegistryConnection, requestedModel?: string): Promise<RegistryModelCard[]> => {
+  const load = async (connection: RegistryConnection, requestedModel?: string): Promise<RegistryModelCard[]> => {
     const models = await getModels(connection)
     if (!requestedModel || models.some(m => m.id === requestedModel)) return models
     const live = parseRegistryModelCard({ id: requestedModel })
     if (!live) return models
     const [catalog, fallback] = await Promise.all([getCatalog(), getFallback(connection)])
+    const current = cache.get(connectionKey(connection))
+    if (current) { current.catalog = catalog; current.fallback = fallback }
     // A manually entered model stays on this endpoint with its original ID.
     return [...models, ...decorate([live], connection, catalog, fallback)]
   }
+  return Object.assign(load, {
+    // No I/O here: a turn can use stale metadata while a refresh is pending.
+    peek(connection: RegistryConnection, model: string): RegistryModelCard | undefined {
+      const current = cache.get(connectionKey(connection))
+      const listed = current?.models.find(card => card.id === model)
+      if (listed) return listed
+      if (!current?.catalog) return undefined
+      const live = parseRegistryModelCard({ id: model })
+      return live ? decorate([live], connection, current.catalog, current.fallback ?? [])[0] : undefined
+    },
+  })
 }
 
 async function bundledModelCards(connection: RegistryConnection): Promise<RegistryModelCard[]> {

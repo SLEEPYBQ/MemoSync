@@ -14,6 +14,11 @@ import {
   translatePiTool,
 } from "./pi-agent"
 import type { HarnessEvent } from "./harness-types"
+import type { RegistryModelCard } from "../shared/model-capabilities"
+
+function cachedModels(cards: RegistryModelCard[]) {
+  return Object.assign(async () => cards, { peek: (_connection: unknown, id: string) => cards.find(card => card.id === id) })
+}
 
 const tempDirs: string[] = []
 const previousOpenRouterKey = process.env.OPENROUTER_API_KEY
@@ -81,7 +86,7 @@ describe("Pi startup cancellation", () => {
     manager.dispose()
   })
 
-  test.each(["sdk", "metadata", "resources", "session"] as const)("abort during %s initialization prevents prompt dispatch", async (stage) => {
+  test.each(["sdk", "resources", "session"] as const)("abort during %s initialization prevents prompt dispatch", async (stage) => {
     const entered = deferred()
     const gate = deferred()
     const session = fakeSession()
@@ -90,7 +95,7 @@ describe("Pi startup cancellation", () => {
       reload: stage === "resources" ? hold : undefined,
       create: async () => { if (stage === "session") await hold(); return session },
     })
-    const manager = new PiAgentManager({ loadModels: async () => { if (stage === "metadata") await hold(); return [] }, loadSdk: async () => { if (stage === "sdk") await hold(); return sdk as never } })
+    const manager = new PiAgentManager({ loadModels: async () => [], loadSdk: async () => { if (stage === "sdk") await hold(); return sdk as never } })
     const controller = new AbortController()
     const starting = manager.startTurn({ ...startupArgs, signal: controller.signal })
     const rejected = starting.catch((error: unknown) => error)
@@ -149,6 +154,47 @@ describe("Pi startup cancellation", () => {
     expect(fresh.calls.disposals).toBe(1)
     manager.dispose()
   })
+})
+
+test.each([false, true])("pending catalog requests don't block a new or reused Pi session (warm cache=%s)", async warm => {
+  const { createRegistryModelLoader, parseRegistryModelCard } = await import("./registry-models")
+  const { ModelsDevCatalog } = await import("./models-dev")
+  const gate = deferred(), entered = deferred()
+  let now = 0, requests = 0, creations = 0, currentModel: any
+  const levels: string[] = []
+  const card = parseRegistryModelCard({ id: startupArgs.model, reasoning: { supported_efforts: ["high"] } })!
+  const loadModels = createRegistryModelLoader({ now: () => now, catalog: async () => new ModelsDevCatalog({}), fallback: async () => [], fetch: async () => {
+    requests++
+    if (!warm || requests > 1) { entered.resolve(); await gate.promise }
+    return Response.json({ data: [{ id: card.id, reasoning: { supported_efforts: ["high"] } }] })
+  } })
+  if (warm) { await loadModels(startupArgs.connection); now = 300_001 }
+  const session = { ...fakeSession(), setThinkingLevel: (level: string) => levels.push(level),
+    setModel: async (model: any) => { currentModel = model } }
+  const sdk = { ...fakeSdk(), createAgentSession: async (options: any) => {
+    creations++; currentModel = options.model; levels.push(options.thinkingLevel); return { session }
+  } }
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels })
+  try {
+    let turn = await manager.startTurn(startupArgs)
+    await collectEvents(turn.stream)
+    await entered.promise // Catalog is still pending, but prompt already ran.
+    expect(session.calls.prompts).toBe(1)
+    turn = await manager.startTurn(startupArgs)
+    await collectEvents(turn.stream)
+    expect(session.calls.prompts).toBe(2)
+    expect(creations).toBe(1)
+    expect(levels[0]).toBe(warm ? "high" : "off")
+    expect(currentModel.thinkingLevelMap.off).toBeNull()
+    expect(requests).toBe(warm ? 2 : 1)
+    gate.resolve(); await loadModels(startupArgs.connection)
+    turn = await manager.startTurn(startupArgs)
+    await collectEvents(turn.stream)
+    expect(session.calls.prompts).toBe(3)
+    expect(creations).toBe(1)
+    expect(currentModel.thinkingLevelMap.high).toBe("high")
+    expect(levels.at(-1)).toBe("high")
+  } finally { gate.resolve(); await loadModels(startupArgs.connection); manager.dispose() }
 })
 
 describe("translatePiTool", () => {
@@ -393,7 +439,7 @@ describe("PiAgentManager", () => {
     prompt: async () => { payloads.push(await session.agent.onPayload({ messages: [] }, currentModel)) },
   }
   const sdk = { ...fakeSdk(), createAgentSession: async (options: any) => { created.push(options); currentModel = options.model; return { session } } }
-  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [card] })
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: cachedModels([card]) })
   const schema = { type: "object", properties: { selected: { type: "array" } }, required: ["selected"], additionalProperties: false }
   try {
     let turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "off", outputSchema: schema })
@@ -431,6 +477,7 @@ test.each([[true, "openai-completions"], [false, "openai-completions"], [true, "
     prompt: async () => { payload = await session.agent.onPayload({ messages: [], text: { verbosity: "low" } }, currentModel) } }
   const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => knownModel }) },
     createAgentSession: async (options: any) => { currentModel = options.model; return { session } } }
+  await loadModels(official, "model") // The picker has loaded the shared cache.
   const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels })
   try {
     const turn = await manager.startTurn({ ...startupArgs, model: "model", effort: "high",
@@ -455,16 +502,16 @@ test.each([[true, "openai-completions"], [false, "openai-completions"], [true, "
   } finally { manager.dispose() }
 })
 
-test("an official SDK model keeps limits and prices when no metadata source fills them", async () => {
+test.each([false, true])("an official SDK model keeps limits and prices when metadata is missing (cached=%s)", async cached => {
   const { parseRegistryModelCard } = await import("./registry-models")
   const card = parseRegistryModelCard({ id: "sdk-model" })!
   const connection = { provider: "openai" as const, baseUrl: "https://api.openai.com/v1", apiKey: "fixture-key" }
   const known = { ...buildRegistryModel(connection, card.id), contextWindow: 1_000_000, maxTokens: 64_000,
-    cost: { input: 5, output: 15, cacheRead: 1, cacheWrite: 2 }, input: ["text"] }
+    cost: { input: 5, output: 15, cacheRead: 1, cacheWrite: 2 }, input: ["text"], thinkingLevelMap: { off: "none" } }
   let selected: any
   const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => known }) },
     createAgentSession: async (options: any) => { selected = options.model; return { session: fakeSession() } } }
-  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [card] })
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: cached ? cachedModels([card]) : async () => [] })
   try {
     const turn = await manager.startTurn({ ...startupArgs, connection, model: card.id })
     await collectEvents(turn.stream)
@@ -472,5 +519,6 @@ test("an official SDK model keeps limits and prices when no metadata source fill
     expect(selected.maxTokens).toBe(64_000)
     expect(selected.cost).toEqual(known.cost)
     expect(selected.input).toEqual(["text"])
+    expect(selected.thinkingLevelMap.off).toBeNull()
   } finally { manager.dispose() }
 })

@@ -27,7 +27,8 @@ export function piEffortOptions(card: RegistryModelCard | undefined) {
   return PI_REASONING_OPTIONS.filter(option => supported.includes(option.id))
 }
 
-/** Pi's native xhigh slot can carry a provider's distinct max wire value. */
+/** Pi's native xhigh slot can carry max. "default" uses its off slot together
+ * with thinkingLevelMap.off=null, which omits reasoning rather than sending none. */
 export function toPiThinkingLevel(effort: PiReasoningEffort) {
   return effort === "max" ? "xhigh" : effort === "default" ? "off" : effort
 }

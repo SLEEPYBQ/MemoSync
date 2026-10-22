@@ -65,6 +65,25 @@ describe("registry model capabilities", () => {
     await load(connection); expect(calls).toBe(2)
   })
 
+  test("synchronous snapshots never fetch, keep stale cards during refresh, and isolate credentials", async () => {
+    let now = 0, calls = 0
+    let release!: () => void
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const load = createRegistryModelLoader({ now: () => now, fallback: async () => [], fetch: async () => {
+      if (++calls > 1) await gate
+      return Response.json({ data: [glm] })
+    } })
+    expect(load.peek(connection, glm.id)).toBeUndefined()
+    expect(calls).toBe(0)
+    const [card] = await load(connection)
+    now = 300_001
+    const refresh = load(connection)
+    expect(load.peek(connection, glm.id)).toBe(card)
+    expect(load.peek({ ...connection, apiKey: "different" }, glm.id)).toBeUndefined()
+    expect(calls).toBe(2)
+    release(); await refresh
+  })
+
   test("plain /models IDs retain the exact bundled capability metadata on fallback", async () => {
     const known = parseRegistryModelCard(glm)!
     const load = createRegistryModelLoader({ fallback: async () => [known], fetch: (async () => Response.json({ data: [{ id: glm.id }] })) })
@@ -164,6 +183,7 @@ describe("registry model capabilities", () => {
       calls++; return Response.json({ data: [{ id: "other-model" }] })
     } })
     const card = (await load(custom, "zhipuai/GLM-5.3-Flash")).find(c => c.id === "zhipuai/GLM-5.3-Flash")!
+    expect(load.peek(custom, card.id)).toEqual(card)
     expect(card.reasoningEfforts).toEqual(["low", "high", "max"])
     expect(card.contextWindow).toBeUndefined()
     expect(card.cost).toBeUndefined() // A reseller's price isn't the maker's price.
