@@ -412,7 +412,8 @@ describe("PiAgentManager", () => {
   } finally { manager.dispose() }
  })
 
-test.each([true, false])("Pi preserves live fields after bundled reasoning supplementation (structured output=%s)", async (structured) => {
+test.each([[true, "openai-completions"], [false, "openai-completions"], [true, "openai-responses"], [false, "openai-responses"]] as const)(
+  "Pi preserves live fields after bundled reasoning supplementation (structured output=%s, api=%s)", async (structured, api) => {
   const { createRegistryModelLoader, parseRegistryModelCard } = await import("./registry-models")
   const { ModelsDevCatalog } = await import("./models-dev")
   const old = { ...parseRegistryModelCard({ id: "model", reasoning: { supported_efforts: ["low", "high", "max"] }, context_length: 200_000 })!,
@@ -422,10 +423,12 @@ test.each([true, false])("Pi preserves live fields after bundled reasoning suppl
       pricing: { prompt: 0, completion: "0.0000002" }, ...(structured ? { max_output_tokens: 65_536 } : {}),
       supported_parameters: ["reasoning", ...(structured ? ["structured_outputs", "response_format"] : [])] }] }) })
   let currentModel: any, payload: any
-  const official = { provider: "openrouter" as const, baseUrl: "https://openrouter.ai/api/v1", apiKey: "fixture-key" }
-  const knownModel = { ...buildRegistryModel(official, "model", old), maxTokens: 64_000, compat: { supportsDeveloperRole: false } }
+  const official = api === "openai-responses"
+    ? { provider: "openai" as const, baseUrl: "https://api.openai.com/v1", apiKey: "fixture-key" }
+    : { provider: "openrouter" as const, baseUrl: "https://openrouter.ai/api/v1", apiKey: "fixture-key" }
+  const knownModel = { ...buildRegistryModel(official, "model", old), api, maxTokens: 64_000, compat: { supportsDeveloperRole: false } }
   const session = { ...fakeSession(), agent: {} as any,
-    prompt: async () => { payload = await session.agent.onPayload({ messages: [] }, currentModel) } }
+    prompt: async () => { payload = await session.agent.onPayload({ messages: [], text: { verbosity: "low" } }, currentModel) } }
   const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => knownModel }) },
     createAgentSession: async (options: any) => { currentModel = options.model; return { session } } }
   const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels })
@@ -440,7 +443,15 @@ test.each([true, false])("Pi preserves live fields after bundled reasoning suppl
     expect(currentModel.cost.output).toBeCloseTo(0.2)
     expect(currentModel.input).toEqual(["text"])
     expect(currentModel.compat.supportsDeveloperRole).toBe(false)
-    expect(Boolean(payload.response_format)).toBe(structured)
+    expect(currentModel.api).toBe(api)
+    if (api === "openai-responses") {
+      expect(Boolean(payload.text?.format)).toBe(structured)
+      expect(payload.text.verbosity).toBe("low")
+      expect(payload.response_format).toBeUndefined()
+      if (structured) expect(payload.text.format).toMatchObject({ type: "json_schema", strict: true, schema: { type: "object" } })
+    } else {
+      expect(Boolean(payload.response_format)).toBe(structured)
+    }
   } finally { manager.dispose() }
 })
 

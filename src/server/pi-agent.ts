@@ -616,10 +616,15 @@ export class PiAgentManager {
       session.agent.onPayload = async (payload, model) => {
         const prepared = await previousPayloadHook?.(payload, model) ?? payload
         const current = chatSessionHolder.session
-        if (current?.outputSchema && current.supportsStructuredOutput && model.api === "openai-completions") {
-          return { ...asRecord(prepared), response_format: { type: "json_schema", json_schema: {
-            name: "memosync_branch", strict: true, schema: current.outputSchema,
-          } } }
+        if (current?.outputSchema && current.supportsStructuredOutput) {
+          const schema = { name: "memosync_branch", strict: true, schema: current.outputSchema }
+          const body = asRecord(prepared)
+          if (model.api === "openai-completions") {
+            return { ...body, response_format: { type: "json_schema", json_schema: schema } }
+          }
+          if (model.api === "openai-responses") {
+            return { ...body, text: { ...asRecord(body.text), format: { type: "json_schema", ...schema } } }
+          }
         }
         return prepared
       }
