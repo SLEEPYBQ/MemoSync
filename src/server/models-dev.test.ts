@@ -19,7 +19,7 @@ describe("models.dev capability catalog", () => {
     expect(exact.card.reasoningEfforts).toEqual(["high"])
     expect(exact.card.cost?.input).toBe(0)
     expect(exact.card.contextWindow).toBe(123_000)
-    const custom = catalog.lookup({ ...connection, baseUrl: "https://other.example/v1" }, "Z-AI/GLM-5.3-FLASH")!
+    const custom = catalog.lookup({ ...connection, baseUrl: "https://other.example/v1" }, "ZHIPUAI/GLM-5.3-FLASH")!
     expect(custom.scope).toBe("model")
     expect(custom.card.reasoningEfforts).toEqual(["low", "high", "max"])
   })
@@ -49,6 +49,16 @@ describe("models.dev capability catalog", () => {
     expect(catalog.lookup(connection, "chat")).toBeUndefined()
     expect(catalog.lookup(connection, "a/chat")!.card.reasoningEfforts).toEqual(["off"])
     expect(catalog.lookup(connection, "made-up-glm-5.3-flash")).toBeUndefined()
+  })
+
+  test("namespaces require a full ID or canonical link, even on matching endpoints", () => {
+    const catalog = new ModelsDevCatalog({ ...data, openrouter: { api: "https://openrouter.ai/api/v1", models: { "z-ai/glm-5.3-flash": glm } } })
+    for (const baseUrl of [connection.baseUrl, "https://api.z.ai/api/paas/v4"]) {
+      expect(catalog.lookup({ ...connection, baseUrl }, "other/glm-5.3-flash")).toBeUndefined()
+    }
+    expect(catalog.lookup(connection, "z-ai/glm-5.3-flash")!.card.reasoningEfforts).toEqual(["low", "high", "max"])
+    expect(catalog.lookup(connection, "zhipuai/glm-5.3-flash")!.card.reasoningEfforts).toEqual(["low", "high", "max"])
+    expect(catalog.lookup(connection, "glm-5.3-flash")!.card.reasoningEfforts).toEqual(["low", "high", "max"])
   })
 
   test("public fetch is shared, cached on disk, and never sends provider credentials", async () => {

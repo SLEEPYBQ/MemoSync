@@ -70,7 +70,13 @@ export class ModelsDevCatalog {
     const exact = providers.map(p => this.own.get(`${p}/${id.toLowerCase()}`)).find(Boolean)
     if (exact) return { card: exact.card, scope: "provider" }
 
-    let candidates = [...new Set([...(this.aliases.get(id.toLowerCase()) ?? []), ...(this.aliases.get(bare(id)) ?? [])])]
+    const normalized = id.toLowerCase()
+    const direct = (this.aliases.get(normalized) ?? []).filter(r => r.id.toLowerCase() === normalized || r.canonical === normalized)
+    // A namespace is part of the model's identity. Expand only through an
+    // explicit canonical link, never another model with the same last segment.
+    let candidates = normalized.includes("/")
+      ? [...new Set(direct.flatMap(r => [r, ...(r.canonical ? this.aliases.get(r.canonical)?.filter(other => other.canonical === r.canonical) ?? [] : [])]))]
+      : this.aliases.get(normalized) ?? []
     // An explicit canonical ID can disambiguate models sharing the same bare name.
     if (candidates.some(r => r.canonical === id.toLowerCase())) {
       candidates = candidates.filter(r => r.canonical === id.toLowerCase())

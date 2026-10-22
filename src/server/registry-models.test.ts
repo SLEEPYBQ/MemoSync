@@ -163,12 +163,12 @@ describe("registry model capabilities", () => {
     const load = createRegistryModelLoader({ catalog, fallback: async () => [], fetch: async () => {
       calls++; return Response.json({ data: [{ id: "other-model" }] })
     } })
-    const card = (await load(custom, "z-ai/GLM-5.3-Flash")).find(c => c.id === "z-ai/GLM-5.3-Flash")!
+    const card = (await load(custom, "zhipuai/GLM-5.3-Flash")).find(c => c.id === "zhipuai/GLM-5.3-Flash")!
     expect(card.reasoningEfforts).toEqual(["low", "high", "max"])
     expect(card.contextWindow).toBeUndefined()
     expect(card.cost).toBeUndefined() // A reseller's price isn't the maker's price.
     const model = buildRegistryModel(custom, card.id, card, "max")
-    expect(model.id).toBe("z-ai/GLM-5.3-Flash")
+    expect(model.id).toBe("zhipuai/GLM-5.3-Flash")
     expect(model.baseUrl).toBe(custom.baseUrl)
     expect(model.thinkingLevelMap?.xhigh).toBe("max")
     expect(piEffortOptions(card).map(e => e.id)).toEqual(["low", "high", "max"])

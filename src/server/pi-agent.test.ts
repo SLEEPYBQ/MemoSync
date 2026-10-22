@@ -416,13 +416,14 @@ test.each([true, false])("Pi preserves live fields after bundled reasoning suppl
   const { createRegistryModelLoader, parseRegistryModelCard } = await import("./registry-models")
   const { ModelsDevCatalog } = await import("./models-dev")
   const old = { ...parseRegistryModelCard({ id: "model", reasoning: { supported_efforts: ["low", "high", "max"] }, context_length: 200_000 })!,
-    metadataSource: "pi" as const, supportsStructuredOutput: !structured, cost: { input: 5, output: 15 }, inputModalities: ["text", "image"] }
+    metadataSource: "pi" as const, maxTokens: 64_000, supportsStructuredOutput: !structured, cost: { input: 5, output: 15 }, inputModalities: ["text", "image"] }
   const loadModels = createRegistryModelLoader({ catalog: async () => new ModelsDevCatalog({}), fallback: async () => [old],
     fetch: async () => Response.json({ data: [{ id: "model", context_length: 1_048_576, architecture: { input_modalities: ["text"] },
-      pricing: { prompt: 0, completion: "0.0000002" }, supported_parameters: ["reasoning", ...(structured ? ["structured_outputs", "response_format"] : [])] }] }) })
+      pricing: { prompt: 0, completion: "0.0000002" }, ...(structured ? { max_output_tokens: 65_536 } : {}),
+      supported_parameters: ["reasoning", ...(structured ? ["structured_outputs", "response_format"] : [])] }] }) })
   let currentModel: any, payload: any
   const official = { provider: "openrouter" as const, baseUrl: "https://openrouter.ai/api/v1", apiKey: "fixture-key" }
-  const knownModel = { ...buildRegistryModel(official, "model", old), compat: { supportsDeveloperRole: false } }
+  const knownModel = { ...buildRegistryModel(official, "model", old), maxTokens: 64_000, compat: { supportsDeveloperRole: false } }
   const session = { ...fakeSession(), agent: {} as any,
     prompt: async () => { payload = await session.agent.onPayload({ messages: [] }, currentModel) } }
   const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => knownModel }) },
@@ -434,10 +435,31 @@ test.each([true, false])("Pi preserves live fields after bundled reasoning suppl
       outputSchema: { type: "object", properties: {}, additionalProperties: false } })
     await collectEvents(turn.stream)
     expect(currentModel.contextWindow).toBe(1_048_576)
+    expect(currentModel.maxTokens).toBe(structured ? 65_536 : 64_000)
     expect(currentModel.cost.input).toBe(0)
     expect(currentModel.cost.output).toBeCloseTo(0.2)
     expect(currentModel.input).toEqual(["text"])
     expect(currentModel.compat.supportsDeveloperRole).toBe(false)
     expect(Boolean(payload.response_format)).toBe(structured)
+  } finally { manager.dispose() }
+})
+
+test("an official SDK model keeps limits and prices when no metadata source fills them", async () => {
+  const { parseRegistryModelCard } = await import("./registry-models")
+  const card = parseRegistryModelCard({ id: "sdk-model" })!
+  const connection = { provider: "openai" as const, baseUrl: "https://api.openai.com/v1", apiKey: "fixture-key" }
+  const known = { ...buildRegistryModel(connection, card.id), contextWindow: 1_000_000, maxTokens: 64_000,
+    cost: { input: 5, output: 15, cacheRead: 1, cacheWrite: 2 }, input: ["text"] }
+  let selected: any
+  const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => known }) },
+    createAgentSession: async (options: any) => { selected = options.model; return { session: fakeSession() } } }
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [card] })
+  try {
+    const turn = await manager.startTurn({ ...startupArgs, connection, model: card.id })
+    await collectEvents(turn.stream)
+    expect(selected.contextWindow).toBe(1_000_000)
+    expect(selected.maxTokens).toBe(64_000)
+    expect(selected.cost).toEqual(known.cost)
+    expect(selected.input).toEqual(["text"])
   } finally { manager.dispose() }
 })

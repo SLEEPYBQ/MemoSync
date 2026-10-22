@@ -471,7 +471,10 @@ export class PiAgentManager {
       // Keep the official SDK's API/compatibility adapter, while using current
       // provider fields for the model's capabilities and accounting.
       return { ...known, reasoning: current.reasoning, thinkingLevelMap: current.thinkingLevelMap,
-        input: current.input, cost: current.cost, contextWindow: current.contextWindow, maxTokens: current.maxTokens }
+        input: card.inputModalities !== undefined ? current.input : known.input,
+        cost: { input: card.cost?.input ?? known.cost.input, output: card.cost?.output ?? known.cost.output,
+          cacheRead: card.cost?.cacheRead ?? known.cost.cacheRead, cacheWrite: card.cost?.cacheWrite ?? known.cost.cacheWrite },
+        contextWindow: card.contextWindow ?? known.contextWindow, maxTokens: card.maxTokens ?? known.maxTokens }
     }
     return buildRegistryModel(connection, modelId, card, effort)
   }
