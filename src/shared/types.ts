@@ -156,12 +156,14 @@ export const CODEX_REASONING_OPTIONS = [
 ] as const satisfies readonly ProviderEffortOption[]
 
 export const PI_REASONING_OPTIONS = [
+  { id: "default", label: "Provider default" },
   { id: "off", label: "Off" },
   { id: "minimal", label: "Minimal" },
   { id: "low", label: "Low" },
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
   { id: "xhigh", label: "Extra High" },
+  { id: "max", label: "Max" },
 ] as const satisfies readonly ProviderEffortOption[]
 
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]

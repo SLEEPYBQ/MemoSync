@@ -1294,10 +1294,13 @@ export class CodexAppServerManager {
       }
 
       const payload = dynamicToolPayload(request.params.arguments)
-      pendingTurn.queue.push({
-        type: "transcript",
-        entry: genericDynamicToolCall(request.params.callId, request.params.tool, payload),
-      })
+      if (!pendingTurn.startedToolIds.has(request.params.callId)) {
+        pendingTurn.startedToolIds.add(request.params.callId)
+        pendingTurn.queue.push({
+          type: "transcript",
+          entry: genericDynamicToolCall(request.params.callId, request.params.tool, payload),
+        })
+      }
 
       // Client-declared dynamic tools (e.g. MemoSync memory tools): dispatch to
       // the registered handler instead of rejecting. (Kanna's default is the

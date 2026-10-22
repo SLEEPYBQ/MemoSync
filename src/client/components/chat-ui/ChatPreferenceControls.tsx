@@ -1,4 +1,4 @@
-import { useState, type ComponentType, type SVGProps } from "react"
+import { useEffect, useState, type ComponentType, type SVGProps } from "react"
 import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
@@ -16,6 +16,8 @@ import {
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
+import { piEffortOptions, resolvePiEffort } from "../../../shared/model-capabilities"
+import { useRegistryModels } from "../../hooks/useRegistryModels"
 import { cn } from "../../lib/utils"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 
@@ -143,11 +145,13 @@ export function InputPopover({
   trigger,
   triggerClassName,
   disabled = false,
+  onOpen,
   children,
 }: {
   trigger: React.ReactNode
   triggerClassName?: string
   disabled?: boolean
+  onOpen?: () => void
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
   const [open, setOpen] = useState(false)
@@ -169,7 +173,7 @@ export function InputPopover({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) onOpen?.() }}>
       <PopoverTrigger asChild>
         <button
           className={cn(
@@ -188,7 +192,7 @@ export function InputPopover({
   )
 }
 
-function PiCustomModelItem({ onSubmit }: { onSubmit: (modelId: string) => void }) {
+function PiCustomModelItem({ onSubmit, onSearch }: { onSubmit: (modelId: string) => void; onSearch: (value: string) => void }) {
   const [value, setValue] = useState("")
   const trimmed = value.trim()
   const submit = () => {
@@ -198,7 +202,7 @@ function PiCustomModelItem({ onSubmit }: { onSubmit: (modelId: string) => void }
     <div className="flex items-center gap-1 p-1">
       <input
         value={value}
-        onChange={(event) => setValue(event.target.value)}
+        onChange={(event) => { setValue(event.target.value); onSearch(event.target.value) }}
         onKeyDown={(event) => {
           if (event.key === "Enter") {
             event.preventDefault()
@@ -261,7 +265,17 @@ export function ChatPreferenceControls({
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const selectedModelEntry = providerConfig?.models.find((candidate) => candidate.id === model)
+  const registry = useRegistryModels(selectedProvider === "pi", model)
+  const [modelSearch, setModelSearch] = useState("")
+  const modelCard = registry.models.find(candidate => candidate.id === model)
+  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === model)
+  const piRequested = (modelOptions as PiModelOptions).reasoningEffort
+  const piEffort = resolvePiEffort(modelCard, piRequested)
+  useEffect(() => {
+    if (selectedProvider === "pi" && registry.loaded && piRequested !== piEffort) {
+      onModelOptionChange({ type: "piReasoningEffort", effort: piEffort })
+    }
+  }, [selectedProvider, registry.loaded, piRequested, piEffort, onModelOptionChange])
   const selectedVendor = selectedModelEntry?.vendor
   // Two-level model picker when the engine's catalog spans vendors: the left
   // chip chooses the vendor (DeepSeek / GLM), the right chip lists only that
@@ -271,7 +285,7 @@ export function ChatPreferenceControls({
     return acc
   }, [])
   const useVendorPicker = vendors.length > 1
-  const modelList = useVendorPicker && selectedVendor
+  const baseModelList = useVendorPicker && selectedVendor
     ? (providerConfig?.models ?? []).filter((candidate) => candidate.vendor === selectedVendor)
     : (providerConfig?.models ?? [])
   const VendorIcon = (selectedVendor ? VENDOR_ICONS[selectedVendor] : undefined) ?? PROVIDER_ICONS[selectedProvider]
@@ -282,11 +296,15 @@ export function ChatPreferenceControls({
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
-  const piModelOptions = selectedProvider === "pi" ? modelOptions as PiModelOptions : null
   const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === model)?.contextWindowOptions ?? []
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
 
+  const allModels = selectedProvider === "pi" && registry.models.length ? registry.models : baseModelList
+  const query = modelSearch.trim().toLowerCase()
+  const modelList = selectedProvider === "pi"
+    ? allModels.filter(candidate => !query || `${candidate.id} ${candidate.label}`.toLowerCase().includes(query)).slice(0, 60)
+    : allModels
   return (
     <div className={cn("flex md:justify-center items-center gap-0.5", className)}>
       {useVendorPicker ? (
@@ -350,6 +368,7 @@ export function ChatPreferenceControls({
       ) : null}
 
       <InputPopover
+        onOpen={selectedProvider === "pi" ? () => { setModelSearch(""); registry.refresh() } : undefined}
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
@@ -359,6 +378,11 @@ export function ChatPreferenceControls({
       >
         {(close) => (
           <>
+            {selectedProvider === "pi" ? <PiCustomModelItem onSearch={setModelSearch} onSubmit={(modelId) => {
+              onModelChange(selectedProvider, modelId)
+              close()
+            }} /> : null}
+            <div className="max-h-72 overflow-y-auto">
             {modelList.map((candidate) => {
               const Icon = Box
               return (
@@ -385,11 +409,12 @@ export function ChatPreferenceControls({
                 />
               )
             })}
+            </div>
             {selectedProvider === "pi" ? (
               <>
                 {/* Pi accepts any non-empty registry model id; show the active
                     custom id when it is not one of the catalog suggestions. */}
-                {!modelList.some((candidate) => candidate.id === model) && model.trim() ? (
+                {!allModels.some((candidate) => candidate.id === model) && model.trim() ? (
                   <PopoverMenuItem
                     onClick={close}
                     selected
@@ -398,12 +423,7 @@ export function ChatPreferenceControls({
                     description="Custom registry model"
                   />
                 ) : null}
-                <PiCustomModelItem
-                  onSubmit={(modelId) => {
-                    onModelChange(selectedProvider, modelId)
-                    close()
-                  }}
-                />
+
               </>
             ) : null}
           </>
@@ -418,7 +438,7 @@ export function ChatPreferenceControls({
               selectedProvider === "claude"
                 ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
                 : selectedProvider === "pi"
-                  ? PI_REASONING_OPTIONS.find((effort) => effort.id === piModelOptions?.reasoningEffort)?.label ?? piModelOptions?.reasoningEffort
+                  ? PI_REASONING_OPTIONS.find((effort) => effort.id === piEffort)?.label ?? piEffort
                   : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
             }</span>
           </>
@@ -444,7 +464,7 @@ export function ChatPreferenceControls({
               />
             ))
             : selectedProvider === "pi"
-              ? PI_REASONING_OPTIONS.filter((effort) =>
+              ? piEffortOptions(modelCard).filter((effort) =>
                   !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
                 ).map((effort) => (
                 <PopoverMenuItem
@@ -453,7 +473,7 @@ export function ChatPreferenceControls({
                     onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
                     close()
                   }}
-                  selected={piModelOptions?.reasoningEffort === effort.id}
+                  selected={piEffort === effort.id}
                   icon={<Brain className="h-4 w-4 text-muted-foreground" />}
                   label={effort.label}
                 />

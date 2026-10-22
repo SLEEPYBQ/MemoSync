@@ -2,7 +2,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AgentCoordinator } from "../src/server/agent"
+import { createBranchJsonCaller } from "../src/server/memory/branch-caller"
+import { buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv, AgentCoordinator } from "../src/server/agent"
 import { EventStore } from "../src/server/event-store"
 import { CodexAppServerManager } from "../src/server/codex-app-server"
 import { MemoryService } from "../src/server/memory"
@@ -44,6 +45,15 @@ const rule = memory.store.create({ content: "After reading project-proof.txt, in
 let sidecarCalls = 0
 const forbidden = async (): Promise<Record<string, unknown>> => { sidecarCalls++; throw new Error("An independent memory sidecar was called") }
 const codexManager = new CodexAppServerManager()
+// Match server.ts: explicit propose_memory calls use a same-engine auxiliary
+// branch. They are not independent sidecars and must not hit the forbidden stub.
+const branchCaller = createBranchJsonCaller({ resolve: () => {
+  const runtime = provider === "claude" ? buildClaudeSdkRuntimeOptions({ requestedModel: model, env: buildClaudeSubprocessEnv({ localPath: workspace, rawStudyProjects: process.env.STUDY_PROJECTS }) }) : null
+  return { provider, localPath: workspace, model: runtime?.model ?? model, parentSessionToken: store.requireChat(chat.id).sessionToken, subprocessEnv: runtime?.env ?? process.env }
+} })
+const capture = createCaptureService({ memory, callJson: branchCaller.callJson })
+const routeProposal = capture.routeProposal.bind(capture)
+capture.routeProposal = (raw, input) => branchCaller.run(input, () => routeProposal(raw, input))
 const coordinator = new AgentCoordinator({
   store, memory, memoryBranches: true, memoryPreview: true, codexManager,
   createMemoryBranch: (input) => {
@@ -71,7 +81,7 @@ const coordinator = new AgentCoordinator({
   policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
   onStateChange: () => {},
   generateTitle: async () => ({ title: "GLM pipeline smoke", usedFallback: true, failureMessage: null }),
-  capture: createCaptureService({ memory, callJson: forbidden }),
+  capture,
   memoryCheckup: createCheckupService({ memory, callJson: forbidden, listRecentSessions: () => [] }),
   memoryTransferDetect: createTransferDetectService({ memory, callJson: forbidden, transfer: createTransferService({ callJson: forbidden }), listProjects: () => [project], listRecentSessions: () => [] }),
   memoryTrace: createTraceService({ callJson: forbidden }),
