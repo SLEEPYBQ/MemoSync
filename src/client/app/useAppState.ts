@@ -776,7 +776,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string; steer?: boolean }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -1750,7 +1750,7 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleSend = useCallback(async (
     content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string; steer?: boolean }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean }
   ) => {
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
@@ -1855,7 +1855,6 @@ export function useAppState(activeChatId: string | null): AppState {
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
         memoryDisabled: options?.memoryDisabled,
-        openingReviewId: options?.openingReviewId,
       })
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId

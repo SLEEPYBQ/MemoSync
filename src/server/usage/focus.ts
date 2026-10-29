@@ -92,4 +92,3 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
   }
   return event
 }
-

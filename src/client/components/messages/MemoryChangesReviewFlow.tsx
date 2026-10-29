@@ -428,16 +428,6 @@ export function MemoryChangesReviewFlow({
   useEffect(() => controllerRef.current?.update(review), [review])
 
   const openingReviewId = messages.find((message) => message.openingReviewId)?.openingReviewId
-  const reviewChatId = chatContext.chatId
-  useEffect(() => {
-    if (!openingReviewId || !reviewChatId) return
-    return boardLauncher.focusedReviews.register(
-      reviewChatId,
-      openingReviewId,
-      controllerRef.current!,
-    )
-  }, [boardLauncher.focusedReviews, openingReviewId, reviewChatId])
-
   const activeReview = !stale && (
     messages.some((message) => message.decision === undefined)
     || canReopenProposals

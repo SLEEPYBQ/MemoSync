@@ -9,7 +9,7 @@ import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { Button } from "../ui/button"
 import { MemoryRecordRail } from "./MemoryRecordRail"
 import { useMemoryBoardLauncher } from "../../app/memory/MemoryBoardLauncher"
-import { useSurfaceExposure, type StudySurfaceExposureInitiator } from "../../app/memory/surfaceExposure"
+import { useSurfaceExposure, type SurfaceExposureInitiator } from "../../app/memory/surfaceExposure"
 import { TranscriptChatContextProvider } from "../messages/render-context"
 import { recordUiMonitor } from "../../lib/memoriesApi"
 import { memorySidebarOpenMonitoring } from "../../app/memory/memorySidebarMonitoring"
@@ -23,7 +23,7 @@ interface Props {
   /** In-flight Claude text used for the live Reported Memory Use row. */
   streamingText?: string | null
   isTurnActive?: boolean
-  exposureInitiator: StudySurfaceExposureInitiator
+  exposureInitiator: SurfaceExposureInitiator
   onClose?: () => void
 }
 

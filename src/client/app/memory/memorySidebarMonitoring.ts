@@ -1,4 +1,4 @@
-import type { StudySurfaceExposureInitiator } from "./surfaceExposure"
+import type { SurfaceExposureInitiator } from "./surfaceExposure"
 
 export interface MemorySidebarOpenMonitoring {
   surface: "timeline"
@@ -11,7 +11,7 @@ export interface MemorySidebarOpenMonitoring {
  * defaults and restored layouts are represented by surface exposure instead.
  */
 export function memorySidebarOpenMonitoring(
-  initiator: StudySurfaceExposureInitiator,
+  initiator: SurfaceExposureInitiator,
   surface: MemorySidebarOpenMonitoring["surface"],
   sessionId: string,
 ): MemorySidebarOpenMonitoring | null {

@@ -35,52 +35,6 @@ export interface FocusedMemoryReviewController {
   update: (snapshot: FocusedMemoryReviewSnapshot) => void
 }
 
-export interface FocusedMemoryReviewRegistry {
-  register: (
-    chatId: string,
-    reviewId: string,
-    controller: FocusedMemoryReviewController,
-  ) => () => void
-  get: (chatId: string, reviewId: string) => FocusedMemoryReviewController | undefined
-  subscribe: (listener: () => void) => () => void
-}
-
-function focusedReviewKey(chatId: string, reviewId: string) {
-  return `${chatId}\u0000${reviewId}`
-}
-
-/**
- * Shared live controller index. The transcript owns the controller because it
- * already owns the canonical gate callbacks; the opening Board only borrows
- * the exact chat/review pair, so no second review implementation can drift.
- */
-export function createFocusedMemoryReviewRegistry(): FocusedMemoryReviewRegistry {
-  const controllers = new Map<string, FocusedMemoryReviewController>()
-  const listeners = new Set<() => void>()
-  const publish = () => listeners.forEach((listener) => listener())
-  return {
-    register(chatId, reviewId, controller) {
-      const key = focusedReviewKey(chatId, reviewId)
-      if (controllers.get(key) !== controller) {
-        controllers.set(key, controller)
-        publish()
-      }
-      return () => {
-        // A stale React cleanup must not remove a replacement controller that
-        // already registered for the same durable review after remount.
-        if (controllers.get(key) !== controller) return
-        controllers.delete(key)
-        publish()
-      }
-    },
-    get: (chatId, reviewId) => controllers.get(focusedReviewKey(chatId, reviewId)),
-    subscribe(listener) {
-      listeners.add(listener)
-      return () => listeners.delete(listener)
-    },
-  }
-}
-
 export function createFocusedMemoryReviewController(
   initialSnapshot: FocusedMemoryReviewSnapshot,
 ): FocusedMemoryReviewController {
@@ -104,7 +58,7 @@ export function useFocusedMemoryReview(controller: FocusedMemoryReviewController
   return useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
 }
 
-export type MemoryBoardLaunchSource = "study_sidebar" | "memory_record" | "chat_long_term"
+export type MemoryBoardLaunchSource = "sidebar" | "memory_record" | "chat_long_term"
 
 export interface MemoryBoardLaunchRequest {
   source: MemoryBoardLaunchSource
@@ -142,14 +96,11 @@ export function reconcileMemoryBoardRequestWithActiveChat(
 interface MemoryBoardLauncher {
   available: boolean
   openMemoryBoard: (request: MemoryBoardLaunchRequest) => void
-  focusedReviews: FocusedMemoryReviewRegistry
 }
 
-const unavailableFocusedReviews = createFocusedMemoryReviewRegistry()
 const unavailableLauncher: MemoryBoardLauncher = {
   available: false,
   openMemoryBoard: () => undefined,
-  focusedReviews: unavailableFocusedReviews,
 }
 
 const MemoryBoardLauncherContext = createContext<MemoryBoardLauncher>(unavailableLauncher)
@@ -161,12 +112,10 @@ export function MemoryBoardLauncherProvider({
   onOpenMemoryBoard: (request: MemoryBoardLaunchRequest) => void
   children: ReactNode
 }) {
-  const focusedReviews = useMemo(() => createFocusedMemoryReviewRegistry(), [])
   const launcher = useMemo<MemoryBoardLauncher>(() => ({
     available: true,
     openMemoryBoard: onOpenMemoryBoard,
-    focusedReviews,
-  }), [focusedReviews, onOpenMemoryBoard])
+  }), [onOpenMemoryBoard])
 
   return (
     <MemoryBoardLauncherContext.Provider value={launcher}>
@@ -177,16 +126,4 @@ export function MemoryBoardLauncherProvider({
 
 export function useMemoryBoardLauncher() {
   return useContext(MemoryBoardLauncherContext)
-}
-
-export function useRegisteredFocusedMemoryReview(
-  chatId: string | null,
-  reviewId: string | null,
-) {
-  const launcher = useMemoryBoardLauncher()
-  return useSyncExternalStore(
-    launcher.focusedReviews.subscribe,
-    () => chatId && reviewId ? launcher.focusedReviews.get(chatId, reviewId) : undefined,
-    () => undefined,
-  )
 }

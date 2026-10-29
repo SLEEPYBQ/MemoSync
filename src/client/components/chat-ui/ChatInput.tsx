@@ -29,10 +29,6 @@ import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPol
 import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
-import {
-  settleServerOwnedStudyPromptDraft,
-  subscribeStudyPromptServerOwnership,
-} from "../../app/study/studyPromptIntercept"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
@@ -229,7 +225,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const {
     getDraft,
     setDraft,
-    clearDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
     clearAttachmentDrafts,
@@ -441,31 +436,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [projectId, chatId, clearAttachments, clearAttachmentDrafts])
 
-  useEffect(() => {
-    if (!chatId) return
-    return subscribeStudyPromptServerOwnership(chatId, (ownership) => {
-      const getCurrent = () => ({
-        content: useChatInputStore.getState().getDraft(chatId),
-        attachments: attachmentsRef.current.map(
-          ({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment,
-        ),
-      })
-      void settleServerOwnedStudyPromptDraft({
-        promptHash: ownership.promptHash,
-        getCurrent,
-        clear: (matched) => {
-          // The helper re-read this exact snapshot after hashing, so a draft
-          // typed while the delayed Board response arrived is left untouched.
-          setValue((current) => current === matched.content ? "" : current)
-          clearDraft(chatId)
-          clearAttachments()
-          clearAttachmentDrafts(chatId)
-          if (textareaRef.current) textareaRef.current.style.height = "auto"
-        },
-      })
-    })
-  }, [chatId, clearAttachmentDrafts, clearAttachments, clearDraft, setValue])
-
   useEffect(() => () => {
     attachmentsRef.current.forEach(cleanupAttachmentPreview)
   }, [cleanupAttachmentPreview])
@@ -646,7 +616,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       attachments: attachmentsForSubmit,
       memoryDisabled: chatId ? undefined : draftMemoryDisabled || undefined,
     }
-    // The opening Long-term Memory Board may hold this Promise for minutes.
+    // Sending may wait for server-side preparation.
     // Keep both local and persisted drafts intact until the *real* send is
     // accepted, so reload/back/send failure cannot erase participant input.
     await runRetainedDraftSubmission({

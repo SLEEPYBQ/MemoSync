@@ -11,8 +11,6 @@ import { AlertTriangle, ArrowRight, CheckCheck, Clock3, Copy, Info, ListChecks, 
 import type { HydratedTranscriptMessage, MemoryCheckupKind, MemoryCheckupSuggestionSnapshot } from "../../../shared/types"
 import {
   memoriesApi,
-  type MemoryBoardActionContext,
-  type MemoryBoardCheckupActionContext,
   type MemoryControlSurface,
 } from "../../lib/memoriesApi"
 import { useMemoryStore } from "../../stores/memoryStore"
@@ -35,7 +33,6 @@ interface Props {
   /** Position in this turn's flow — 3 when a Transfer card sits before us, 2 otherwise. */
   stepNumber?: number
   surface?: MemoryControlSurface
-  boardResolution?: MemoryBoardActionContext
   /** Session-start Board: every resurfaced row must be handled before leaving. */
   requireAllRows?: boolean
   /** Shared when the same active gate is expanded in the Memory Board. */
@@ -51,21 +48,6 @@ const GROUPS: Array<{ kind: MemoryCheckupSuggestionSnapshot["kind"]; title: stri
   { kind: "staleness", title: "Staleness", icon: Clock3 },
   { kind: "promotion", title: "Retired suggestions", icon: CheckCheck },
 ]
-
-export function buildBoardCheckupActionContext(input: {
-  boardResolution?: MemoryBoardActionContext
-  suggestion: MemoryCheckupSuggestionSnapshot
-  memoryId: string
-  otherMemoryId?: string
-}): MemoryBoardCheckupActionContext | undefined {
-  if (!input.boardResolution || input.suggestion.kind === "promotion") return undefined
-  return {
-    ...input.boardResolution,
-    suggestionKind: input.suggestion.kind,
-    memoryId: input.memoryId,
-    otherMemoryId: input.otherMemoryId,
-  }
-}
 
 const DECISION_LABELS: Record<NonNullable<MemoryCheckupHydratedMessage["decision"]>, string> = {
   handled: "handled",
@@ -94,7 +76,6 @@ export function MemoryCheckupGate({
   onReopen,
   stepNumber = 2,
   surface = "chat_gate",
-  boardResolution,
   requireAllRows = false,
   resolvedRows,
   onSuggestionResolved,
@@ -247,7 +228,6 @@ export function MemoryCheckupGate({
                       <CheckupSuggestionRow
                         suggestion={suggestion}
                         surface={surface}
-                        boardResolution={boardResolution}
                         resolvedOutcome={effectiveResolvedRows.get(suggestion.memoryId)}
                         onResolved={(outcome) => {
                           if (onSuggestionResolved) {
@@ -320,13 +300,11 @@ function CheckupSuggestionRow({
   resolvedOutcome,
   onResolved,
   surface,
-  boardResolution,
 }: {
   suggestion: MemoryCheckupSuggestionSnapshot
   resolvedOutcome?: string
   onResolved: (outcome: string) => void
   surface: MemoryControlSurface
-  boardResolution?: MemoryBoardActionContext
 }) {
   const { chatId } = useTranscriptChatContext()
   const loadAll = useMemoryStore((s) => s.loadAll)
@@ -349,13 +327,6 @@ function CheckupSuggestionRow({
 
   const id = suggestion.memoryId
   const other = suggestion.otherMemoryId
-  const boardRow = (memoryId: string, otherMemoryId?: string) => buildBoardCheckupActionContext({
-    boardResolution,
-    suggestion,
-    memoryId,
-    otherMemoryId,
-  })
-
   if (suggestion.kind === "promotion") {
     return (
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
@@ -385,10 +356,10 @@ function CheckupSuggestionRow({
       actions = other ? (
         <>
           {actionButton(`Keep ${id}`, `kept ${id}, archived ${other}`, () =>
-            memoriesApi.resolveAttention("conflict", other, "archive", chatId, id, surface, boardRow(other, id)),
+            memoriesApi.resolveAttention("conflict", other, "archive", chatId, id, surface),
           )}
           {actionButton(`Keep ${other}`, `kept ${other}, archived ${id}`, () =>
-            memoriesApi.resolveAttention("conflict", id, "archive", chatId, other, surface, boardRow(id, other)),
+            memoriesApi.resolveAttention("conflict", id, "archive", chatId, other, surface),
           )}
         </>
       ) : null
@@ -397,10 +368,10 @@ function CheckupSuggestionRow({
       actions = other ? (
         <>
           {actionButton("Merge", "merge proposal drafted — review it in Step 1 next turn", () =>
-            memoriesApi.resolveAttention("redundant", id, "merge", chatId, other, surface, boardRow(id, other)),
+            memoriesApi.resolveAttention("redundant", id, "merge", chatId, other, surface),
           )}
           {actionButton("Keep both", "kept both, won't be flagged again", () =>
-            memoriesApi.resolveAttention("redundant", id, "keep", chatId, other, surface, boardRow(id, other)),
+            memoriesApi.resolveAttention("redundant", id, "keep", chatId, other, surface),
           )}
         </>
       ) : null
@@ -408,8 +379,8 @@ function CheckupSuggestionRow({
     case "staleness":
       actions = (
         <>
-          {actionButton("Archive", "archived", () => memoriesApi.resolveAttention("stale", id, "archive", chatId, undefined, surface, boardRow(id)))}
-          {actionButton("Keep", "kept — expiry clock reset", () => memoriesApi.resolveAttention("stale", id, "keep", chatId, undefined, surface, boardRow(id)))}
+          {actionButton("Archive", "archived", () => memoriesApi.resolveAttention("stale", id, "archive", chatId, undefined, surface))}
+          {actionButton("Keep", "kept — expiry clock reset", () => memoriesApi.resolveAttention("stale", id, "keep", chatId, undefined, surface))}
         </>
       )
       break

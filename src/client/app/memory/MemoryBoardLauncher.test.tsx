@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import {
-  createFocusedMemoryReviewRegistry,
   createFocusedMemoryReviewController,
   MemoryBoardLauncherProvider,
   reconcileMemoryBoardRequestWithActiveChat,
@@ -46,28 +45,6 @@ describe("MemoryBoardLauncher", () => {
     unsubscribe()
   })
 
-  test("shares one exact opening review controller without leaking it to another chat or review", () => {
-    const snapshot: FocusedMemoryReviewSnapshot = {
-      reviewId: "opening-review-1",
-      chatContext: { chatId: "chat-038-s1" },
-      messages: [],
-      stale: false,
-      progress: { settledTransferRows: new Map(), resolvedCheckupRows: new Map() },
-      onTransferSettled: () => undefined,
-      onCheckupResolved: () => undefined,
-    }
-    const controller = createFocusedMemoryReviewController(snapshot)
-    const registry = createFocusedMemoryReviewRegistry()
-    const unregister = registry.register("chat-038-s1", "opening-review-1", controller)
-
-    expect(registry.get("chat-038-s1", "opening-review-1")).toBe(controller)
-    expect(registry.get("chat-038-s2", "opening-review-1")).toBeUndefined()
-    expect(registry.get("chat-038-s1", "opening-review-2")).toBeUndefined()
-
-    unregister()
-    expect(registry.get("chat-038-s1", "opening-review-1")).toBeUndefined()
-  })
-
   test("routes every production Board entry through one owner", () => {
     const opened: MemoryBoardLaunchRequest[] = []
     const request: MemoryBoardLaunchRequest = {
@@ -96,7 +73,7 @@ describe("MemoryBoardLauncher", () => {
 
   test("fails closed when a Board launch has no active chat or targets a stale chat", () => {
     expect(resolveMemoryBoardLaunchRequest(
-      { source: "study_sidebar" },
+      { source: "sidebar" },
       null,
     )).toBeNull()
     expect(resolveMemoryBoardLaunchRequest(
@@ -115,7 +92,7 @@ describe("MemoryBoardLauncher", () => {
       "chat-a",
     )
     const sidebarRequest = resolveMemoryBoardLaunchRequest(
-      { source: "study_sidebar" },
+      { source: "sidebar" },
       "chat-a",
     )
 
@@ -154,17 +131,17 @@ describe("MemoryBoardLauncher", () => {
 
   test("AppLayout mounts the sole production manual Board overlay owner", async () => {
     const appSource = await Bun.file(new URL("../App.tsx", import.meta.url)).text()
-    const overlaySource = await Bun.file(new URL("../study/StudyBoardGate.tsx", import.meta.url)).text()
+    const overlaySource = await Bun.file(new URL("./MemoryBoardOverlay.tsx", import.meta.url)).text()
     const recordSource = await Bun.file(
       new URL("../../components/memory-chat/SessionMemoriesPanel.tsx", import.meta.url),
     ).text()
 
     expect(appSource).toContain("<MemoryBoardLauncherProvider")
-    expect(appSource.match(/<ManualMemoryBoardOverlay/g)).toHaveLength(1)
+    expect(appSource.match(/<MemoryBoardOverlay/g)).toHaveLength(1)
     expect(appSource).toContain("resolveMemoryBoardLaunchRequest(request, state.activeChatId)")
     expect(appSource).toContain("reconcileMemoryBoardRequestWithActiveChat(current, state.activeChatId)")
     expect(appSource).toContain("focusedReview={memoryBoardRequest.focusedReview}")
-    expect(overlaySource).toContain("focusedReview={focusedReview}")
-    expect(recordSource).not.toContain("<ManualMemoryBoardOverlay")
+    expect(overlaySource).toContain("overlay={{ chatId, focusedReview, onClose }}")
+    expect(recordSource).not.toContain("<MemoryBoardOverlay")
   })
 })

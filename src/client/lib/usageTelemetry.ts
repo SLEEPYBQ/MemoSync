@@ -186,3 +186,31 @@ export function createUsageTelemetryOutbox({
   }
 }
 
+
+const PRODUCT_OUTBOX_KEY = "memosync:usage-outbox:v1"
+let activeOutbox: ReturnType<typeof createUsageTelemetryOutbox> | null = null
+
+export async function initializeUsageTelemetryOutbox({
+  storage = typeof window === "undefined" ? null : window.localStorage,
+  fetcher = fetch,
+  onlineTarget = typeof window === "undefined" ? null : window,
+}: {
+  storage?: UsageTelemetryStorage | null
+  fetcher?: UsageTelemetryFetch
+  onlineTarget?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null
+} = {}): Promise<void> {
+  stopUsageTelemetryOutbox()
+  if (!storage) return
+  activeOutbox = createUsageTelemetryOutbox({ storage, storageKey: PRODUCT_OUTBOX_KEY, fetcher, onlineTarget })
+  try { await activeOutbox.start() } catch { /* Storage may be unavailable. Usage logging is optional. */ }
+}
+
+export function enqueueUsageTelemetry(request: UsageTelemetryOutboxRequest): void {
+  if (!activeOutbox) return
+  void activeOutbox.enqueue(request).catch(() => { /* best-effort local logging */ })
+}
+
+export function stopUsageTelemetryOutbox(): void {
+  activeOutbox?.stop()
+  activeOutbox = null
+}

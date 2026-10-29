@@ -20,7 +20,7 @@ import { MemoryCitationChip, useEnsureMemoriesLoaded } from "./shared"
 import {
   useSurfaceExposure,
   useSurfaceViewportVisibility,
-  type StudySurfaceExposureInitiator,
+  type SurfaceExposureInitiator,
 } from "../../app/memory/surfaceExposure"
 
 type MemoryTraceHydratedMessage = Extract<HydratedTranscriptMessage, { kind: "memory_trace" }>
@@ -84,7 +84,7 @@ function TraceSection({
   count: number
   folded?: boolean
   onToggle?: () => void
-  exposureInitiator: StudySurfaceExposureInitiator
+  exposureInitiator: SurfaceExposureInitiator
   memoryIds: string[]
   children: ReactNode
 }) {
@@ -268,7 +268,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   // the point of the trace. Hiding them behind a click made "was this memory
   // used?" an extra step (review feedback). Still collapsible for quiet turns.
   const [expanded, setExpanded] = useState(true)
-  const [cardInitiator, setCardInitiator] = useState<StudySurfaceExposureInitiator>("system")
+  const [cardInitiator, setCardInitiator] = useState<SurfaceExposureInitiator>("system")
   // All four groups open on initial render (study-owner decision 2026-08-20):
   // the two "didn't act" sections keep their own headers and stay separately
   // collapsible, but no verdict starts hidden behind a fold.

@@ -10,7 +10,7 @@ import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 const emptySnapshot: LocalProjectsSnapshot = {
   machine: {
     id: "local",
-    displayName: "Study workspace",
+    displayName: "Local workspace",
     platform: "linux",
   },
   projects: [],
@@ -44,18 +44,9 @@ function projectPickerOpeningTag(html: string) {
 }
 
 describe("LocalDev project picker", () => {
-  test("MemoSync study mode removes project creation and switching from the landing page", () => {
-    const html = renderEmptyLanding("memosync")
 
-    expect(html).toContain("Open the active task assignment to begin")
-    expect(html).toContain("Open current assignment")
-    expect(html).not.toContain("Add project")
-    expect(html).not.toContain("No project yet")
-    expect(html).not.toContain("<textarea")
-  })
-
-  test("keeps the normal MemoSync project picker actionable for default and retired conditions", () => {
-    for (const condition of ["", "auto", "static"]) {
+  test("keeps the normal MemoSync project picker actionable", () => {
+    for (const condition of [""]) {
       const html = renderEmptyLanding(condition)
 
       expect(projectPickerOpeningTag(html)).not.toContain("disabled")

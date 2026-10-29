@@ -17,7 +17,6 @@ import {
   memoriesApi,
   type CreateMemoryBody,
   type MemoryItem,
-  type MemoryBoardReviewStatus,
   type MemoryScope,
   type MutedProposal,
 } from "../lib/memoriesApi"
@@ -34,8 +33,6 @@ import { freshnessSince, getLastBoardVisit, markBoardVisit } from "../lib/boardV
 import { parseBoardFocus } from "../lib/boardFocus"
 import { TransferMemoryDialog, type TransferInitialTarget } from "../components/memory/TransferMemoryDialog"
 import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
-import { MemoryTransferGate } from "../components/messages/MemoryTransferGate"
-import { MemoryCheckupGate } from "../components/messages/MemoryCheckupGate"
 import {
   candidateReviewCohortItems,
   extendCandidateReviewCohort,
@@ -43,7 +40,6 @@ import {
   FocusedMemoryReviewStation,
 } from "../components/messages/MemoryChangesReviewFlow"
 import { MemoryCandidateReviewStation } from "../components/messages/MemoryProposalsGate"
-import { TranscriptChatContextProvider } from "../components/messages/render-context"
 import type { FocusedMemoryReviewController } from "./memory/MemoryBoardLauncher"
 
 // Manual creation: session memories are agent-created within a session (they
@@ -63,26 +59,14 @@ function matchesQuery(item: MemoryItem, query: string): boolean {
 }
 
 export interface MemoryBoardOverlayMode {
-  /** Session-start gate: no close until every server-authoritative backlog row is handled. */
-  blocking: boolean
-  taskId?: string
   chatId?: string
-  status?: MemoryBoardReviewStatus
-  actionError?: string | null
-  submitting?: boolean
-  /** Opening review only: the participant-authored message held behind it. */
-  pendingPrompt?: string
-  /** Active in-chat Long-term review expanded into this same overlay. */
   focusedReview?: FocusedMemoryReviewController
   onClose?: () => void
-  /** Blocking variant: called when the participant enters the session. */
-  onEnterSession?: () => void
-  onBacklogChanged?: () => void
+  onChanged?: () => void
 }
 
-export function memoryBoardSectionVisibility(_openingReview: boolean) {
+export function memoryBoardSectionVisibility() {
   return {
-    pendingBacklog: true,
     candidates: true,
     searchAndCreate: true,
     activeLibrary: true,
@@ -91,64 +75,6 @@ export function memoryBoardSectionVisibility(_openingReview: boolean) {
     markdown: true,
     workingMemory: false,
   }
-}
-
-export function openingMemoryBoardCopy(pending: number) {
-  return {
-    heading: "Long-term Memory Management",
-    message: pending > 0
-      ? `Your first message is waiting. Handle ${pending} pending long-term ${pending === 1 ? "memory item" : "memory items"} below. After this review, the same message continues and Working Memory is selected separately for this turn.`
-      : "Your first message is waiting. Long-term Memory review is complete. Continue with the same message, then select Working Memory separately for this turn.",
-    cta: "Continue with this message",
-  }
-}
-
-export function openingMemoryBoardGateModel({
-  pending,
-  openingPhase,
-  submitting,
-}: {
-  pending: number | null
-  openingPhase?: "dispatch_pending" | "preparing" | "long_term_ready" | "completed"
-  submitting: boolean
-}) {
-  if (pending === null) {
-    return {
-      message: null,
-      showContinue: false,
-      continueLabel: null,
-    }
-  }
-
-  if (openingPhase !== undefined) {
-    if (openingPhase === "long_term_ready") {
-      return {
-        message: "Your first message is waiting. Long-term Memory review is complete. Continue with the same message, then select Working Memory separately for this turn.",
-        showContinue: !submitting,
-        continueLabel: submitting ? "Continuing…" : "Continue with this message",
-      }
-    }
-    if (openingPhase !== "completed") {
-      return {
-        message: "Your first message is waiting. Review its Long-term Memory steps below. Working Memory will be selected separately after this review.",
-        showContinue: false,
-        continueLabel: null,
-      }
-    }
-  }
-
-  const copy = openingMemoryBoardCopy(pending)
-  return {
-    message: copy.message,
-    showContinue: pending === 0,
-    continueLabel: pending === 0
-      ? (submitting ? "Verifying…" : copy.cta)
-      : null,
-  }
-}
-
-export function deriveBoardReviewStepNumbers(_options: { hasTransfer: boolean }) {
-  return { transfer: 2, checkup: 3 }
 }
 
 export type MemoryBoardScopeEntry =
@@ -193,18 +119,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const upsertLocal = useMemoryStore((s) => s.upsertLocal)
   const removeLocal = useMemoryStore((s) => s.removeLocal)
   const conditionPolicy = useConditionPolicy()
-  const openingReview = overlay?.blocking === true
   const hasFocusedReview = Boolean(overlay?.focusedReview)
-  const sections = memoryBoardSectionVisibility(openingReview)
-  const gateModel = openingMemoryBoardGateModel({
-    pending: overlay?.status?.pending.total ?? null,
-    openingPhase: overlay?.status?.openingPrompt?.phase,
-    submitting: overlay?.submitting ?? false,
-  })
-  const reviewSteps = deriveBoardReviewStepNumbers({
-    hasTransfer: (overlay?.status?.backlog.transfers.length ?? 0) > 0,
-  })
-
+  const sections = memoryBoardSectionVisibility()
   const [creating, setCreating] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
@@ -466,7 +382,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       setDraft({ content: "", detail: "", scope: "personal", projectId: "" })
       setCreating(false)
       setActionError(null)
-      overlay?.onBacklogChanged?.()
+      overlay?.onChanged?.()
     } catch (err) {
       // Surface the failure — the Board's direct actions used to swallow every
       // error, so a failed create/accept/dismiss just did nothing (BUG MEMUI-2).
@@ -484,7 +400,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       const updated = await memoriesApi.update(item.id, reviewedPatch ?? { status: "active" }, { surface: "board" })
       upsertLocal(updated)
       setActionError(null)
-      overlay?.onBacklogChanged?.()
+      overlay?.onChanged?.()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't accept the memory.")
       throw err
@@ -495,7 +411,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       await memoriesApi.remove(item.id, { surface: "board" })
       removeLocal(item.id)
       setActionError(null)
-      overlay?.onBacklogChanged?.()
+      overlay?.onChanged?.()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't dismiss the memory.")
       throw err
@@ -508,7 +424,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       upsertLocal(updated)
       refreshNeedsAttention()
       setActionError(null)
-      overlay?.onBacklogChanged?.()
+      overlay?.onChanged?.()
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Couldn't archive the memory.")
       throw err
@@ -526,7 +442,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     const groups = new Map<string, MemoryItem[]>()
     // A newly created chat is already a valid Session binding even before it
     // owns any Session memory. Keep that empty target visible so a participant
-    // can move a Project memory into the current session from the opening Board.
+    // can move a Project memory into the current session from the chat-bound Board.
     if (scope === "session" && overlay?.chatId) groups.set(overlay.chatId, [])
     for (const item of list) {
       const key = (scope === "project" ? item.projectId : item.sessionId) ?? "unassigned"
@@ -675,9 +591,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 Memory Board
               </h1>
               <p className="text-sm text-muted-foreground">
-                {openingReview
-                  ? "Review long-term memory before the message you just sent starts the Claude turn."
-                  : hasFocusedReview
+                {hasFocusedReview
                     ? "Review the live chat suggestions and the same canonical saved memories together. Working Memory remains separate."
                     : "Review proposals and manage your persistent, user-controlled long-term memory. Working Memory remains separate."}
               </p>
@@ -688,7 +602,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 <Plus className="h-4 w-4" /> New memory
               </Button>
             ) : null}
-            {overlay && !overlay.blocking && overlay.onClose ? (
+            {overlay?.onClose ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -700,31 +614,6 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               </Button>
             ) : null}
           </header>
-
-          {overlay?.blocking && gateModel.message ? (
-            // Session-start gate (2026-08-19 E1): every candidate, Transfer,
-            // and Checkup row blocks entry. The count comes from the server,
-            // never this page's search/project filter.
-            <div
-              data-opening-memory-board-gate="true"
-              className="mb-5 flex flex-wrap items-start justify-between gap-4 px-1"
-            >
-              <div>
-                <p className="max-w-4xl text-[15px] leading-6 text-foreground">{gateModel.message}</p>
-                {overlay.actionError ? <p className="mt-1 text-xs text-destructive">{overlay.actionError}</p> : null}
-              </div>
-              {gateModel.showContinue ? (
-                <Button
-                  size="sm"
-                  disabled={overlay.submitting}
-                  onClick={overlay.onEnterSession}
-                >
-                  {overlay.submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                  {gateModel.continueLabel}
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
 
           {status === "loading" && items.length === 0 ? (
             <p className="text-sm text-muted-foreground">Loading memories…</p>
@@ -751,7 +640,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 controller={overlay.focusedReview}
                 items={items}
                 cohortIds={candidateReviewCohortIds}
-                onChanged={overlay.onBacklogChanged}
+                onChanged={overlay.onChanged}
               />
             ) : candidateReviewItems.length > 0 ? (
               <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
@@ -765,7 +654,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   freshAt={freshCandidates.at || undefined}
                   surface="board"
                   allowRestore
-                  onChanged={overlay?.onBacklogChanged}
+                  onChanged={overlay?.onChanged}
                 />
               </div>
             ) : (
@@ -920,21 +809,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
           <section data-memory-board-section="transfer" className="mb-6 flex flex-col gap-3">
             {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="transfer" /> : null}
-            {sections.pendingBacklog && overlay?.status && overlay.taskId && !(openingReview && overlay.focusedReview)
-              ? overlay.status.backlog.transfers.map((gate) => gate.message.kind === "memory_transfer" ? (
-                  <TranscriptChatContextProvider key={`transfer-${gate.chatId}-${gate.gateId}`} value={{ chatId: gate.chatId, projectId: gate.projectId }}>
-                    <MemoryTransferGate
-                      message={gate.message}
-                      stepNumber={reviewSteps.transfer}
-                      surface="board"
-                      requireAllRows
-                      boardResolution={{ taskId: overlay.taskId!, chatId: gate.chatId, gateId: gate.gateId }}
-                      onRespond={async () => { await overlay.onBacklogChanged?.() }}
-                    />
-                  </TranscriptChatContextProvider>
-                ) : null)
-              : null}
-            {!overlay?.focusedReview && (overlay?.status?.backlog.transfers.length ?? 0) === 0 ? (
+            {!overlay?.focusedReview ? (
               <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">Step 2 · Transfer Suggestions</span>
                 <span className="ml-1">✓ No pending Transfer suggestions.</span>
@@ -944,21 +819,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
           <section data-memory-board-section="checkup" className="mb-6 flex flex-col gap-3">
             {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="checkup" /> : null}
-            {sections.pendingBacklog && overlay?.status && overlay.taskId && !(openingReview && overlay.focusedReview)
-              ? overlay.status.backlog.checkups.map((gate) => gate.message.kind === "memory_checkup" ? (
-                  <TranscriptChatContextProvider key={`checkup-${gate.chatId}-${gate.gateId}`} value={{ chatId: gate.chatId, projectId: gate.projectId }}>
-                    <MemoryCheckupGate
-                      message={gate.message}
-                      stepNumber={reviewSteps.checkup}
-                      surface="board"
-                      requireAllRows
-                      boardResolution={{ taskId: overlay.taskId!, chatId: gate.chatId, gateId: gate.gateId }}
-                      onRespond={async () => { await overlay.onBacklogChanged?.() }}
-                    />
-                  </TranscriptChatContextProvider>
-                ) : null)
-              : null}
-            {!overlay?.focusedReview && (overlay?.status?.backlog.checkups.length ?? 0) === 0 ? (
+            {!overlay?.focusedReview ? (
               <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">Step 3 · Review Suggested Changes to Existing Memories</span>
                 <span className="ml-1">✓ No pending suggested changes.</span>

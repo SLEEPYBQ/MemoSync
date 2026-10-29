@@ -19,8 +19,8 @@ import { LocalProjectsPage } from "./LocalProjectsPage"
 import { SettingsPage } from "./SettingsPage"
 import { MemoryBoardPage } from "./MemoryBoardPage"
 import { useAppState } from "./useAppState"
-import { initializeStudyTelemetryOutbox, stopStudyTelemetryOutbox } from "./study/studyTelemetry"
-import { ManualMemoryBoardOverlay } from "./study/StudyBoardGate"
+import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
+import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
 import {
   MemoryBoardLauncherProvider,
   reconcileMemoryBoardRequestWithActiveChat,
@@ -46,23 +46,10 @@ type AppAuthState =
   | { status: "locked"; error: string | null }
 
 function TelemetryBootstrap() {
-  const policy = useConditionPolicyResolved()
-
   useLayoutEffect(() => {
-    if (!policy) {
-      stopStudyTelemetryOutbox()
-      return
-    }
-    // The monitoring record stays on in normal deployments: start the durable
-    // outbox directly — no onboarding, no participant scoping reset. Events
-    // flow to the never-condition-locked logging routes.
-    void initializeStudyTelemetryOutbox({
-      condition: policy.condition,
-      resetForNewParticipant: false,
-    })
-    return () => stopStudyTelemetryOutbox()
-  }, [policy])
-
+    void initializeUsageTelemetryOutbox()
+    return stopUsageTelemetryOutbox
+  }, [])
   return null
 }
 
@@ -307,7 +294,7 @@ function AppLayout() {
     setMemoryBoardRequest(resolveMemoryBoardLaunchRequest(request, state.activeChatId))
   }, [state.activeChatId])
   const handleOpenMemoryBoardFromSidebar = useCallback(() => {
-    handleOpenMemoryBoard({ source: "study_sidebar" })
+    handleOpenMemoryBoard({ source: "sidebar" })
   }, [handleOpenMemoryBoard])
   const sidebarElement = useMemo(() => (
     <AppSidebar
@@ -454,7 +441,7 @@ function AppLayout() {
         {sidebarElement}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {memoryBoardRequest ? (
-            <ManualMemoryBoardOverlay
+            <MemoryBoardOverlay
               chatId={memoryBoardRequest.chatId}
               focusedReview={memoryBoardRequest.focusedReview}
               onClose={() => setMemoryBoardRequest(null)}

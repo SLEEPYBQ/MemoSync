@@ -289,8 +289,6 @@ export function LocalDevContent({
   const isConnected = connectionStatus === "connected" && ready
 
   const [pickedPath, setPickedPath] = useState<string | null>(null)
-  const [openingAssignment, setOpeningAssignment] = useState(false)
-  const [assignmentError, setAssignmentError] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
   const machineName = snapshot?.machine.displayName ?? "this machine"
@@ -303,23 +301,6 @@ export function LocalDevContent({
     if (isConnected && selectedPath) composerElementRef.current?.focus()
   }, [isConnected, selectedPath])
 
-  async function openActiveStudyAssignment() {
-    if (openingAssignment) return
-    setOpeningAssignment(true)
-    setAssignmentError(null)
-    try {
-      const response = await fetch("/api/study/progress", { cache: "no-store" })
-      if (!response.ok) throw new Error(`request failed (${response.status})`)
-      const payload = (await response.json()) as { data?: { activeTaskId?: string | null } }
-      const activeTaskId = payload.data?.activeTaskId
-      if (!activeTaskId) throw new Error("no active assignment")
-      navigate(`/study/${encodeURIComponent(activeTaskId)}`)
-    } catch (error) {
-      setAssignmentError(error instanceof Error ? error.message : "could not open assignment")
-    } finally {
-      setOpeningAssignment(false)
-    }
-  }
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-background overflow-y-auto">
@@ -416,20 +397,6 @@ export function LocalDevContent({
             </h1>
 
             <div className="w-full">
-              {conditionPolicy.studyMode ? (
-                <div className="rounded-2xl border border-border bg-card px-5 py-4 text-center text-sm text-muted-foreground">
-                  <p>Open the active task assignment to begin. The assigned project and starter are managed by the study.</p>
-                  <Button
-                    className="mt-3"
-                    disabled={openingAssignment}
-                    onClick={() => void openActiveStudyAssignment()}
-                  >
-                    {openingAssignment ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Open current assignment
-                  </Button>
-                  {assignmentError ? <p className="mt-2 text-xs text-destructive">Could not open the assignment: {assignmentError}</p> : null}
-                </div>
-              ) : (
               <ChatInput
                 key="landing"
                 onSubmit={(value, options) => {
@@ -476,7 +443,6 @@ export function LocalDevContent({
                   </>
                 }
               />
-              )}
             </div>
 
             {commandError ? (

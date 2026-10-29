@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useState } from "react"
 import { isUiMonitorSuppressed } from "../../lib/memoriesApi"
 import { generateUUID } from "../../lib/utils"
-import { enqueueStudyTelemetry, type StudyTelemetryOutboxRequest } from "../study/studyTelemetry"
+import { enqueueUsageTelemetry, type UsageTelemetryOutboxRequest } from "../../lib/usageTelemetry"
 
-export type StudySurfaceExposure =
+export type SurfaceExposure =
   | "memory_board"
   | "memory_record"
   | "audit_card"
   | "audit_group"
   | "citation_hover"
 
-export type StudySurfaceExposureInitiator = "participant" | "system"
-export type StudySurfaceExposureCloseReason =
+export type SurfaceExposureInitiator = "participant" | "system"
+export type SurfaceExposureCloseReason =
   | "unmount"
   | "pagehide"
   | "toggle"
@@ -25,7 +25,7 @@ type VisibilityTarget = Pick<EventTarget, "addEventListener" | "removeEventListe
 
 export interface SurfaceExposureController {
   open(): void
-  close(reason: StudySurfaceExposureCloseReason): void
+  close(reason: SurfaceExposureCloseReason): void
 }
 
 type SurfaceIntersectionEntry = Pick<IntersectionObserverEntry, "target" | "isIntersecting" | "intersectionRatio">
@@ -36,7 +36,7 @@ export interface SurfaceIntersectionMetadata {
 
 export function getSurfaceIntersectionInitiator(
   metadata: SurfaceIntersectionMetadata,
-): StudySurfaceExposureInitiator {
+): SurfaceExposureInitiator {
   return metadata.initial ? "system" : "participant"
 }
 
@@ -74,12 +74,12 @@ export function observeSurfaceIntersection({
 export function useSurfaceViewportVisibility<T extends Element>(): {
   ref: (element: T | null) => void
   visible: boolean
-  initiator: StudySurfaceExposureInitiator
+  initiator: SurfaceExposureInitiator
 } {
   const [element, setElement] = useState<T | null>(null)
   const [visibility, setVisibility] = useState<{
     visible: boolean
-    initiator: StudySurfaceExposureInitiator
+    initiator: SurfaceExposureInitiator
   }>({ visible: false, initiator: "system" })
   const ref = useCallback((next: T | null) => setElement(next), [])
   useEffect(() => {
@@ -118,18 +118,18 @@ export function createSurfaceExposure({
   now = Date.now,
   visibilityTarget = typeof document === "undefined" ? null : document,
   pageTarget = typeof window === "undefined" ? null : window,
-  enqueue = enqueueStudyTelemetry,
+  enqueue = enqueueUsageTelemetry,
   suppressed = isUiMonitorSuppressed,
 }: {
-  surface: StudySurfaceExposure
+  surface: SurfaceExposure
   chatId: string
-  initiator: StudySurfaceExposureInitiator
+  initiator: SurfaceExposureInitiator
   memoryIds?: string[]
   randomId?: () => string
   now?: () => number
   visibilityTarget?: VisibilityTarget | null
   pageTarget?: Pick<EventTarget, "addEventListener" | "removeEventListener"> | null
-  enqueue?: (request: StudyTelemetryOutboxRequest) => void
+  enqueue?: (request: UsageTelemetryOutboxRequest) => void
   suppressed?: () => boolean
 }): SurfaceExposureController {
   const exposureId = randomId()
@@ -139,7 +139,7 @@ export function createSurfaceExposure({
 
   const emit = (
     action: "opened" | "hidden" | "visible" | "closed",
-    closeReason?: StudySurfaceExposureCloseReason,
+    closeReason?: SurfaceExposureCloseReason,
     sampledClientMs?: number,
   ): number => {
     const clientMs = sampledClientMs ?? Math.max(now(), lastClientMs + 1)
@@ -187,7 +187,7 @@ export function createSurfaceExposure({
     open() {
       if (state !== "idle" || suppressed() || !chatId.trim()) return
       state = "visible"
-      // enqueueStudyTelemetry persists into localStorage synchronously before
+      // enqueueUsageTelemetry persists into localStorage synchronously before
       // its first network await, so opened survives an immediate reload.
       const openedAt = emit("opened")
       if (visibilityTarget && visibilityTarget.visibilityState !== "visible") {
@@ -218,11 +218,11 @@ export function useSurfaceExposure({
   closeReason = "unmount",
 }: {
   active: boolean
-  surface: StudySurfaceExposure
+  surface: SurfaceExposure
   chatId?: string | null
-  initiator: StudySurfaceExposureInitiator
+  initiator: SurfaceExposureInitiator
   memoryIds?: string[]
-  closeReason?: StudySurfaceExposureCloseReason
+  closeReason?: SurfaceExposureCloseReason
 }): void {
   const memoryKey = JSON.stringify(memoryIds ?? [])
   useEffect(() => {
