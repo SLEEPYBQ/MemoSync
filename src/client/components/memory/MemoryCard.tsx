@@ -80,7 +80,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         <Chip className="font-mono">{item.id}</Chip>
         <ScopeBadge scope={item.scope} />
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}
-        {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:used")}{item.usageCount}×</span> : null}
+        {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</span> : null}
         {item.lastTraceLabel ? (
           <span
             title={t("memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}

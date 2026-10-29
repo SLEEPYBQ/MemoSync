@@ -13,7 +13,7 @@ test("server errors localize by code and preserve filename parameters", async ()
 test("stored UI receipts switch back while arbitrary content stays verbatim", async () => {
   await i18n.changeLanguage("zh-CN")
   const receipt = t("memory:startedWithValue0Injected", { v0: 2 })
-  expect(receipt).toBe("开始时注入了2条记忆")
+  expect(receipt).toBe("开始时注入了 2 条记忆")
   await i18n.changeLanguage("en")
   expect(translateUiText(receipt)).toBe("started with 2 injected")
   expect(translateUiText("This is a model's raw exception: check /tmp/example")).toBe("This is a model's raw exception: check /tmp/example")

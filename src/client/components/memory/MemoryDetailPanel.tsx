@@ -341,7 +341,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             </div>
 
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
-            <p className="text-xs text-muted-foreground">{t("memory:used")}{item.usageCount}×</p>
+            <p className="text-xs text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</p>
 
             {sensitiveCandidate ? (
               <MemoryBadge className="inline-flex items-center gap-1.5 rounded-md border border-cand-border bg-cand-surface px-1.5 py-1 text-[11px] font-medium text-cand-fg">
