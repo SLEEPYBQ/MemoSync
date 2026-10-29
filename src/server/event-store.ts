@@ -1,20 +1,20 @@
-import { appendFile, mkdir, readFile, readdir, rename, rm, truncate, writeFile } from "node:fs/promises"
-import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
+import { existsSync,readFileSync as readFileSyncImmediate } from "node:fs"
+import { appendFile,mkdir,readFile,readdir,rename,rm,truncate,writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { getDataDir, LOG_PREFIX } from "../shared/branding"
-import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import { LOG_PREFIX,getDataDir } from "../shared/branding"
+import type { AgentProvider,ChatHistoryPage,ChatHistorySnapshot,QueuedChatMessage,TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
-  type ChatEvent,
-  type ProjectEvent,
-  type QueuedMessageEvent,
-  type SnapshotFile,
-  type StoreEvent,
-  type StoreState,
-  type TurnEvent,
-  cloneTranscriptEntries,
-  createEmptyState,
+type ChatEvent,
+type ProjectEvent,
+type QueuedMessageEvent,
+type SnapshotFile,
+type StoreEvent,
+type StoreState,
+type TurnEvent,
+cloneTranscriptEntries,
+createEmptyState,
 } from "./events"
 import { resolveLocalPath } from "./paths"
 
@@ -954,7 +954,7 @@ export class EventStore {
     if (!project) {
       throw new Error("Project not found")
     }
-    const nextTitle = trimmed || null
+    const nextTitle = trimmed
     if ((project.sidebarTitle ?? null) === nextTitle) return
 
     const event: ProjectEvent = {
@@ -1470,14 +1470,6 @@ export class EventStore {
   /** Every non-deleted chat (archived included — their titles still label things). */
   listChats() {
     return [...this.state.chatsById.values()].filter((chat) => !chat.deletedAt)
-  }
-
-  /**
-   * Durable study evidence authority. Deleted chats stay hidden from every UI
-   * query, but their transcript lineage remains available for crash recovery.
-   */
-  listStudyTranscriptChats() {
-    return [...this.state.chatsById.values()]
   }
 
   listChatsByProject(projectId: string) {

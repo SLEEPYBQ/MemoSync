@@ -1,117 +1,48 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { ExperimentLogger, NoopExperimentLogger } from "./logger";
+import { expect,test } from "bun:test"
+import { existsSync,mkdtempSync,readFileSync,rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { ExperimentLogger,NoopExperimentLogger } from "./logger"
 
-describe("ExperimentLogger", () => {
-  test("appends one JSON line per event with ts + condition", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
+test("local usage events append in order with install identity and no research allocation", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-log-"))
+  try {
     const filePath = join(dir, "experiments", "events.jsonl")
-    const logger = new ExperimentLogger({ filePath, condition: "memosync", stdout: false })
+    const logger = new ExperimentLogger({ filePath, installId: "install-1", stdout: false })
+    logger.event({ type: "memory.cite", sessionId: "chat-1", citedIds: ["M-01"], countedIds: ["M-01"] })
+    logger.event({ type: "memory.decision", action: "accept", id: "M-01", via: "board" })
+    const records = readFileSync(filePath, "utf8").trim().split("\n").map(line => JSON.parse(line))
+    expect(records).toHaveLength(2)
+    expect(records[0]).toMatchObject({ type: "memory.cite", sessionId: "chat-1", installId: "install-1", citedIds: ["M-01"] })
+    expect(Number.isFinite(Date.parse(records[0].ts))).toBe(true)
+    expect(records[1].action).toBe("accept")
+    for (const key of ["participant", "allocationMode", "condition", "taskId"]) expect(records[0]).not.toHaveProperty(key)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
 
-    logger.event({ type: "memory.cite", sessionId: "s1", citedIds: ["M-01"], countedIds: ["M-01"] })
-    logger.event({ type: "memory.decision", action: "accept", id: "M-01", via: "ui" })
-
-    const lines = readFileSync(filePath, "utf8").trim().split("\n")
-    expect(lines.length).toBe(2)
-    const first = JSON.parse(lines[0]!)
-    expect(first.type).toBe("memory.cite")
-    expect(first.condition).toBe("memosync")
-    expect(typeof first.ts).toBe("string")
-    const second = JSON.parse(lines[1]!)
-    expect(second.action).toBe("accept")
-  })
-
-  test("noop logger swallows events", () => {
-    expect(() => NoopExperimentLogger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
-  })
-
-  test("stamps MemoSync on new events even when configured with a retired condition", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
-    const filePath = join(dir, "events.jsonl")
-    const logger = new ExperimentLogger({ filePath, condition: "auto", participant: "P07", stdout: false })
-    logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
-    const record = JSON.parse(readFileSync(filePath, "utf8").trim())
-    expect(record.participant).toBe("P07")
-    expect(record.condition).toBe("memosync")
-  })
-
-  test("ignores a retired condition in the environment for new events", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
-    const filePath = join(dir, "events.jsonl")
-    const previousCondition = process.env.EXPERIMENT_CONDITION
-    process.env.EXPERIMENT_CONDITION = "static"
-    try {
-      const logger = new ExperimentLogger({ filePath, stdout: false })
-      logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
-      const record = JSON.parse(readFileSync(filePath, "utf8").trim())
-      expect(record.condition).toBe("memosync")
-    } finally {
-      if (previousCondition === undefined) delete process.env.EXPERIMENT_CONDITION
-      else process.env.EXPERIMENT_CONDITION = previousCondition
+test("both product opt-out and legacy opt-out disable local output", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-disabled-"))
+  const before = { product: process.env.MEMOSYNC_USAGE_LOG, legacy: process.env.EXPERIMENT_LOG }
+  try {
+    for (const key of ["MEMOSYNC_USAGE_LOG", "EXPERIMENT_LOG"]) {
+      delete process.env.MEMOSYNC_USAGE_LOG
+      delete process.env.EXPERIMENT_LOG
+      process.env[key] = "0"
+      const filePath = join(dir, key)
+      new ExperimentLogger({ filePath, stdout: false }).event({ type: "memory.cite", citedIds: [], countedIds: [] })
+      expect(existsSync(filePath)).toBe(false)
     }
-  })
+  } finally {
+    if (before.product === undefined) delete process.env.MEMOSYNC_USAGE_LOG
+    else process.env.MEMOSYNC_USAGE_LOG = before.product
+    if (before.legacy === undefined) delete process.env.EXPERIMENT_LOG
+    else process.env.EXPERIMENT_LOG = before.legacy
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
-  test("stamps internal QA allocation mode on every exported event", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
-    const filePath = join(dir, "events.jsonl")
-    const logger = new ExperimentLogger({
-      filePath,
-      condition: "auto",
-      participant: "QA-preview",
-      allocationMode: "internal_qa",
-      stdout: false,
-    })
-
-    logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
-    logger.event({ type: "memory.decision", action: "accept", id: "M-01" })
-
-    const records = readFileSync(filePath, "utf8").trim().split("\n").map((line) => JSON.parse(line))
-    expect(records.map((record) => record.allocationMode)).toEqual(["internal_qa", "internal_qa"])
-  })
-
-  test("omits participant entirely when not configured (solo/dev instances)", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
-    const filePath = join(dir, "events.jsonl")
-    const logger = new ExperimentLogger({ filePath, stdout: false })
-    logger.event({ type: "memory.cite", sessionId: "s1", citedIds: [], countedIds: [] })
-    const record = JSON.parse(readFileSync(filePath, "utf8").trim())
-    expect("participant" in record).toBe(false)
-  })
-
-  test("fails closed before the best-effort JSONL projection when the durable sink rejects", () => {
-    const dir = mkdtempSync(join(tmpdir(), "exp-log-"))
-    const filePath = join(dir, "events.jsonl")
-    const logger = new ExperimentLogger({
-      filePath,
-      stdout: false,
-      durableSink: () => { throw new Error("sqlite unavailable") },
-    })
-
-    expect(() => logger.event({
-      type: "ui.monitor",
-      surface: "board",
-      interaction: "scroll",
-    })).toThrow("sqlite unavailable")
-    expect(existsSync(filePath) ? readFileSync(filePath, "utf8") : "").toBe("")
-  })
-
-  test("returns whether the authoritative sink created the durable event", () => {
-    const logger = new ExperimentLogger({
-      stdout: false,
-      durableSink: () => ({ created: false }),
-    })
-
-    expect(logger.event({
-      type: "study.control_operation",
-      operationId: "control:already-attempted",
-      phase: "attempted",
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      surface: "board",
-      action: "create",
-      controlType: "crud",
-    })).toEqual({ durableCreated: false })
-  })
+test("unwritable output and noop logging cannot break memory actions", () => {
+  const logger = new ExperimentLogger({ filePath: "/dev/null/events.jsonl", stdout: false })
+  expect(() => logger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
+  expect(() => NoopExperimentLogger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
 })

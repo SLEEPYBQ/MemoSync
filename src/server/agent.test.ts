@@ -8,9 +8,6 @@ import {
   buildAttachmentHintText,
   buildPromptText,
   createClaudeHarnessStream,
-  isStudyBackgroundToolRequest,
-  isStudyToolOriginAllowed,
-  isStudyPreviewLifecycleCommand,
   maxClaudeContextWindowFromModelUsage,
   normalizeClaudeAssistantUsageSnapshot,
   normalizeClaudeStreamMessage,
@@ -228,13 +225,9 @@ test("an inherited official model cannot hijack an explicit GLM vendor selection
   expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe("test-glm-key")
 })
 
-test("Claude Bash inherits the exact assigned project's runtime instead of the MemoSync server env", () => {
+test("Claude Bash preserves the product environment while scrubbing parent CLI session state", () => {
   const env = buildClaudeSubprocessEnv({
     localPath: "/workspace/car",
-    rawStudyProjects: JSON.stringify([
-      { localPath: "/workspace/apartment" },
-      { localPath: "/workspace/car" },
-    ]),
     baseEnv: {
       PORT: "3210",
       NODE_ENV: "production",
@@ -247,12 +240,12 @@ test("Claude Bash inherits the exact assigned project's runtime instead of the M
   })
 
   expect(env).toMatchObject({
-    NODE_ENV: "development",
+    NODE_ENV: "production",
     ANTHROPIC_AUTH_TOKEN: "secret",
     // Deliberate engine config survives the session-variable scrub.
     CLAUDE_CODE_AUTO_COMPACT_WINDOW: "786432",
   })
-  expect(env.PORT).toBeUndefined()
+  expect(env.PORT).toBe("3210")
   expect(env.CLAUDECODE).toBeUndefined()
   // Session-internal CLAUDE_* leakage from a Claude Code shell is dropped.
   expect(env.CLAUDE_CODE_MESSAGING_SOCKET).toBeUndefined()
@@ -350,15 +343,10 @@ describe("createClaudeHarnessStream", () => {
     expect(turnEvents.every((event) => event.origin === "task-notification")).toBe(true)
     expect(originChanges).toEqual(["task-notification", undefined])
     const backgroundOrigin = await pendingToolOrigin
-    for (const toolName of ["Bash", "Edit", "Write", "mcp__memory__propose_memory"]) {
-      expect({ toolName, denied: !isStudyToolOriginAllowed(backgroundOrigin) }).toEqual({
-        toolName,
-        denied: true,
-      })
-    }
+    expect(backgroundOrigin).toBe("task-notification")
     resolver.register("tool-human", "human")
-    expect(isStudyToolOriginAllowed(await resolver.take("tool-human", controller.signal, 10))).toBe(true)
-    expect(isStudyToolOriginAllowed(await resolver.take("tool-unknown", controller.signal, 1))).toBe(false)
+    expect(await resolver.take("tool-human", controller.signal, 10)).toBe("human")
+    expect(await resolver.take("tool-unknown", controller.signal, 1)).not.toBe("human")
     const closing = resolver.take("tool-closing", controller.signal, 1_000)
     resolver.clear()
     expect(await closing).toBeUndefined()
@@ -392,7 +380,7 @@ describe("createClaudeHarnessStream", () => {
     for await (const event of createClaudeHarnessStream(sdkMessages() as never)) events.push(event)
     const late = events.find((event) => event.type === "transcript" && event.entry?.kind === "assistant_text")
     expect(late?.origin).toBe("unknown")
-    expect(isStudyToolOriginAllowed(late?.origin)).toBe(false)
+    expect(late?.origin).not.toBe("human")
   })
 
   test("isolates interleaved nested tool lineages and registers subagent tools before authorization", async () => {
@@ -443,7 +431,7 @@ describe("createClaudeHarnessStream", () => {
       // Drain the SDK frames; provenance registration happens before yields.
     }
     expect(await peer).toBe("peer")
-    expect(isStudyToolOriginAllowed(await human)).toBe(true)
+    expect(await human).toBe("human")
   })
 
   test("does not let a late task child borrow the next participant root after its lineage is cleared", async () => {
@@ -497,8 +485,8 @@ describe("createClaudeHarnessStream", () => {
       // Drain both turns.
     }
 
-    expect(isStudyToolOriginAllowed(await lateChild)).toBe(false)
-    expect(isStudyToolOriginAllowed(await nextHuman)).toBe(true)
+    expect(await lateChild).not.toBe("human")
+    expect(await nextHuman).toBe("human")
     expect(outbound.current()).toBe("unknown")
   })
 
@@ -565,9 +553,9 @@ describe("createClaudeHarnessStream", () => {
       // Drain the interleaved roots.
     }
 
-    expect(isStudyToolOriginAllowed(await humanParent)).toBe(true)
-    expect(isStudyToolOriginAllowed(await background)).toBe(false)
-    expect(isStudyToolOriginAllowed(await liveHuman)).toBe(true)
+    expect(await humanParent).toBe("human")
+    expect(await background).not.toBe("human")
+    expect(await liveHuman).toBe("human")
     expect(await resolver.take("live-human-parent", controller.signal, 1)).toBeUndefined()
     expect(outbound.current()).toBe("unknown")
   })
@@ -636,8 +624,8 @@ describe("createClaudeHarnessStream", () => {
       // Drain the interleaved frames.
     }
 
-    expect(isStudyToolOriginAllowed(await afterMixed)).toBe(false)
-    expect(isStudyToolOriginAllowed(await afterMissing)).toBe(false)
+    expect(await afterMixed).not.toBe("human")
+    expect(await afterMissing).not.toBe("human")
   })
 
   test("seeds a human turn from the outbound prompt when the SDK omits its user echo", async () => {
@@ -672,7 +660,7 @@ describe("createClaudeHarnessStream", () => {
       outbound,
     )) events.push(event)
     expect(events.filter((event) => event.type !== "session_token").every((event) => event.origin === "human")).toBe(true)
-    expect(isStudyToolOriginAllowed(await toolOrigin)).toBe(true)
+    expect(await toolOrigin).toBe("human")
     expect(outbound.current()).toBe("unknown")
   })
 
@@ -704,7 +692,7 @@ describe("createClaudeHarnessStream", () => {
     )) events.push(event)
 
     expect(events.filter((event) => event.type !== "session_token").every((event) => event.origin === "unknown")).toBe(true)
-    expect(isStudyToolOriginAllowed(await toolOrigin)).toBe(false)
+    expect(await toolOrigin).not.toBe("human")
     expect(outbound.current()).toBe("unknown")
   })
 
@@ -742,25 +730,10 @@ describe("createClaudeHarnessStream", () => {
     )) {
       // Drain both sequential SDK turns.
     }
-    expect(isStudyToolOriginAllowed(await oldTask)).toBe(false)
-    expect(isStudyToolOriginAllowed(await human)).toBe(true)
+    expect(await oldTask).toBe("task-notification")
+    expect(await human).toBe("human")
     expect(outbound.current()).toBe("unknown")
   })
-})
-
-test("study lifecycle command guard blocks preview and production builds but permits tests and static checks", () => {
-  expect(isStudyPreviewLifecycleCommand("npm run dev")).toBe(true)
-  expect(isStudyPreviewLifecycleCommand("nohup npm run start:dev &")).toBe(true)
-  expect(isStudyPreviewLifecycleCommand("pkill -f next")).toBe(true)
-  expect(isStudyPreviewLifecycleCommand("npm run build && npm test")).toBe(true)
-  expect(isStudyPreviewLifecycleCommand("npx next build")).toBe(true)
-  expect(isStudyPreviewLifecycleCommand("bun test src/server/foo.test.ts")).toBe(false)
-  expect(isStudyPreviewLifecycleCommand("npx tsc --noEmit && npm run lint")).toBe(false)
-  expect(isStudyBackgroundToolRequest("Bash", { command: "npm test", run_in_background: true })).toBe(true)
-  expect(isStudyBackgroundToolRequest("Bash", { command: "npm test &" })).toBe(true)
-  expect(isStudyBackgroundToolRequest("Task", { run_in_background: true })).toBe(true)
-  expect(isStudyBackgroundToolRequest("Agent", { background: true })).toBe(true)
-  expect(isStudyBackgroundToolRequest("Bash", { command: "npm run build && npm test" })).toBe(false)
 })
 
 test("Board invalidation wakes only the exact coordinator-owned gate without a participant decision", () => {
@@ -782,10 +755,10 @@ test("Board invalidation wakes only the exact coordinator-owned gate without a p
     invalidate: () => wakes.push("checkup:invalidated"),
   })
 
-  coordinator.handleBoardBacklogInvalidated({ kind: "transfer", chatId: "chat-1", gateId: "other" })
-  coordinator.handleBoardBacklogInvalidated({ kind: "checkup", chatId: "chat-1", gateId: "checkup-1" })
-  coordinator.handleBoardBacklogInvalidated({ kind: "transfer", chatId: "chat-1", gateId: "transfer-1" })
-  coordinator.handleBoardBacklogInvalidated({ kind: "checkup", chatId: "chat-2", gateId: "checkup-1" })
+  coordinator.invalidateMemoryGate({ kind: "transfer", chatId: "chat-1", gateId: "other" })
+  coordinator.invalidateMemoryGate({ kind: "checkup", chatId: "chat-1", gateId: "checkup-1" })
+  coordinator.invalidateMemoryGate({ kind: "transfer", chatId: "chat-1", gateId: "transfer-1" })
+  coordinator.invalidateMemoryGate({ kind: "checkup", chatId: "chat-2", gateId: "checkup-1" })
 
   expect(wakes).toEqual(["transfer:invalidated", "checkup:invalidated"])
   expect(wakes.some((wake) => wake.startsWith("participant:"))).toBe(false)
@@ -980,7 +953,7 @@ describe("AgentCoordinator codex integration", () => {
       policy: resolveConditionPolicy(""),
       codexManager: { stopAll: () => { stopped = true } } as never,
     })
-    await coordinator.shutdownStudyRuntime()
+    await coordinator.shutdownRuntime()
     expect(stopped).toBe(true)
   })
 
@@ -1094,7 +1067,7 @@ describe("AgentCoordinator codex integration", () => {
     }).catch((error) => error)
     await startGate
 
-    await coordinator.shutdownStudyRuntime()
+    await coordinator.shutdownRuntime()
 
     expect(sessionSignal?.aborted).toBe(true)
     await expect(sendResult).resolves.toBeInstanceOf(Error)
@@ -2790,230 +2763,6 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
-  test("freeze retires the Claude pump before stopping preview and preserves resume across project switch", async () => {
-    const order: string[] = []
-    const sessions: AsyncEventQueue<any>[] = []
-    const startTokens: Array<string | null> = []
-    let previewPath: string | null = null
-    const store = createFakeStore()
-    const coordinator = new AgentCoordinator({
-      claudeSessionFileExists: () => true,
-      store: store as never,
-      onStateChange: () => {},
-      getActiveStudyTaskId: () => "038-S1",
-      studyPreviewRuntime: {
-        ensure: async (projectPath) => {
-          if (previewPath && previewPath !== projectPath) order.push(`stop:${previewPath}`)
-          previewPath = projectPath
-          order.push(`ensure:${projectPath}`)
-          return {} as never
-        },
-        status: async () => ({} as never),
-        restart: async () => ({} as never),
-        stop: async (projectPath) => {
-          order.push(`stop:${projectPath}`)
-          return {} as never
-        },
-      },
-      startClaudeSession: async (args) => {
-        startTokens.push(args.sessionToken)
-        const events = new AsyncEventQueue<any>()
-        sessions.push(events)
-        async function* stream() {
-          try {
-            yield* events
-          } finally {
-            order.push("pump-ended")
-          }
-        }
-        let closed = false
-        return {
-          provider: "claude",
-          stream: stream(),
-          getAccountInfo: async () => null,
-          interrupt: async () => {},
-          close: () => {
-            if (closed) return
-            closed = true
-            order.push("query-close")
-            events.close()
-          },
-          setModel: async () => {},
-          setPermissionMode: async () => {},
-          sendPrompt: async () => {
-            events.push({ type: "session_token", sessionToken: "resume-1" })
-          },
-        }
-      },
-    })
-
-    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "work" })
-    sessions[0]!.push({
-      type: "transcript",
-      origin: "human",
-      entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: "done" }),
-    })
-    await waitFor(() => store.turnFinishedCount === 1 && store.chat.sessionToken === "resume-1")
-    await coordinator.retireStudyTaskRuntime("038-S1")
-
-    expect(order.indexOf("query-close")).toBeLessThan(order.indexOf("pump-ended"))
-    expect(order.indexOf("pump-ended")).toBeLessThan(order.indexOf("stop:/tmp/project"))
-
-    store.getProject("project-1")!.localPath = "/tmp/project-2"
-    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "continue" })
-    expect(startTokens).toEqual([null, "resume-1"])
-    sessions[1]!.close()
-  })
-
-  test("retire timeout fails closed before any preview replacement", async () => {
-    let previewStops = 0
-    const store = createFakeStore()
-    const coordinator = new AgentCoordinator({
-      claudeSessionFileExists: () => true,
-      claudeRetireTimeoutMs: 1,
-      store: store as never,
-      onStateChange: () => {},
-      getActiveStudyTaskId: () => "038-S1",
-      studyPreviewRuntime: {
-        ensure: async () => ({} as never),
-        status: async () => ({} as never),
-        restart: async () => ({} as never),
-        stop: async () => {
-          previewStops += 1
-          return {} as never
-        },
-      },
-      startClaudeSession: async () => ({
-        provider: "claude",
-        stream: {
-          async *[Symbol.asyncIterator]() {
-            await new Promise(() => {})
-          },
-        },
-        getAccountInfo: async () => null,
-        interrupt: async () => {},
-        close: () => {},
-        setModel: async () => {},
-        setPermissionMode: async () => {},
-        sendPrompt: async () => {},
-      }),
-    })
-
-    await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "work" })
-    await expect(coordinator.retireStudyTaskRuntime("038-S1")).rejects.toThrow("claude-retire-timeout")
-    expect(previewStops).toBe(0)
-  })
-
-  function createStopHarness(opts: { emitInitForFirstPrompt: boolean }) {
-    const order: string[] = []
-    const sessions: AsyncEventQueue<any>[] = []
-    const startTokens: Array<string | null> = []
-    const prompts: string[] = []
-    const store = createFakeStore()
-    const init = (events: AsyncEventQueue<any>) => events.push({
-      type: "transcript" as const,
-      origin: "human",
-      entry: timestamped({
-        kind: "system_init",
-        provider: "claude",
-        model: "claude-opus-4-1",
-        tools: [],
-        agents: [],
-        slashCommands: [],
-        mcpServers: [],
-      }),
-    })
-    const coordinator = new AgentCoordinator({
-      claudeSessionFileExists: () => true,
-      store: store as never,
-      onStateChange: () => {},
-      policy: resolveConditionPolicy("memosync"),
-      getActiveStudyTaskId: () => "038-S1",
-      startClaudeSession: async (args) => {
-        const sessionNumber = sessions.length + 1
-        startTokens.push(args.sessionToken)
-        const events = new AsyncEventQueue<any>()
-        sessions.push(events)
-        async function* stream() {
-          try {
-            yield* events
-          } finally {
-            order.push(`pump-ended:${sessionNumber}`)
-          }
-        }
-        let closed = false
-        return {
-          provider: "claude",
-          stream: stream(),
-          getAccountInfo: async () => null,
-          // Deliberately emit no result/interrupted acknowledgement for a
-          // cancelled prompt: the pilot CLI always acknowledged within 100 ms,
-          // but the coordinator must stay correct when it does not.
-          interrupt: async () => {},
-          close: () => {
-            if (closed) return
-            closed = true
-            order.push(`query-close:${sessionNumber}`)
-            events.close()
-          },
-          setModel: async () => {},
-          setPermissionMode: async () => {},
-          sendPrompt: async (content: string) => {
-            prompts.push(content)
-            if (prompts.length === 1) {
-              events.push({ type: "session_token" as const, sessionToken: "resume-after-stop", origin: "human" })
-              if (opts.emitInitForFirstPrompt) init(events)
-              return
-            }
-            init(events)
-            events.push({
-              type: "transcript" as const,
-              origin: "human",
-              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: "second turn done" }),
-            })
-          },
-        }
-      },
-    })
-    return { order, sessions, startTokens, prompts, store, coordinator }
-  }
-
-  test("formal-study Stop on a started turn keeps the Claude Query; an unacknowledged cancel is realigned at the next prompt's system_init", async () => {
-    const h = createStopHarness({ emitInitForFirstPrompt: true })
-
-    await h.coordinator.send({
-      type: "chat.send",
-      chatId: "chat-1",
-      provider: "claude",
-      content: "first participant prompt",
-      model: "claude-opus-4-1",
-    })
-    await waitFor(() => h.store.chat.sessionToken === "resume-after-stop")
-    await waitFor(() => h.store.messages.some((entry) => entry.kind === "system_init"))
-
-    await h.coordinator.cancel("chat-1")
-
-    // The provider had started the turn, so the persistent Query survives Stop.
-    expect(h.coordinator.claudeSessions.has("chat-1")).toBe(true)
-    expect(h.order).toEqual([])
-
-    await h.coordinator.send({
-      type: "chat.send",
-      chatId: "chat-1",
-      provider: "claude",
-      content: "second participant prompt",
-      model: "claude-opus-4-1",
-    })
-    // The cancelled prompt was never acknowledged; the next turn's system_init
-    // drops that orphaned FIFO entry so this result finishes the right turn.
-    await waitFor(() => h.store.turnFinishedCount === 1)
-
-    expect(h.sessions).toHaveLength(1)
-    expect(h.startTokens).toEqual([null])
-    expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
-    h.sessions[0]!.close()
-  })
-
   test("started Stop no-result releases only its exact outbound provenance reservation", async () => {
     const sdkEvents = new AsyncEventQueue<any>()
     const outboundOrigins = new ClaudeOutboundOriginTracker()
@@ -3026,7 +2775,6 @@ describe("AgentCoordinator claude integration", () => {
       store: store as never,
       onStateChange: () => {},
       policy: resolveConditionPolicy("memosync"),
-      getActiveStudyTaskId: () => "038-S1",
       startClaudeSession: async () => ({
         provider: "claude",
         stream: createClaudeHarnessStream(
@@ -3112,44 +2860,11 @@ describe("AgentCoordinator claude integration", () => {
         content: [{ type: "tool_use", id: "post-stop-synthetic-tool", name: "Edit", input: {} }],
       },
     })
-    expect(isStudyToolOriginAllowed(await syntheticToolOrigin)).toBe(false)
+    expect(await syntheticToolOrigin).not.toBe("human")
     await waitFor(() => !store.messages.some((entry) => (
       entry.kind === "tool_call" && entry.tool.toolId === "post-stop-synthetic-tool"
     )))
     sdkEvents.close()
-  })
-
-  test("formal-study Stop before the provider started the turn retires the Claude Query and resumes the saved session", async () => {
-    const h = createStopHarness({ emitInitForFirstPrompt: false })
-
-    await h.coordinator.send({
-      type: "chat.send",
-      chatId: "chat-1",
-      provider: "claude",
-      content: "first participant prompt",
-      model: "claude-opus-4-1",
-    })
-    await waitFor(() => h.store.chat.sessionToken === "resume-after-stop")
-
-    await h.coordinator.cancel("chat-1")
-
-    // No system_init: a positional FIFO cannot tell this turn's late frames
-    // from the next turn's, so the Query is retired fail-closed.
-    expect(h.order.indexOf("query-close:1")).toBeLessThan(h.order.indexOf("pump-ended:1"))
-    expect(h.coordinator.claudeSessions.has("chat-1")).toBe(false)
-
-    await h.coordinator.send({
-      type: "chat.send",
-      chatId: "chat-1",
-      provider: "claude",
-      content: "second participant prompt",
-      model: "claude-opus-4-1",
-    })
-    await waitFor(() => h.store.turnFinishedCount === 1)
-
-    expect(h.startTokens).toEqual([null, "resume-after-stop"])
-    expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
-    h.sessions[1]!.close()
   })
 
   test("Claude steer interrupts the active run and immediately sends the steered message", async () => {
@@ -3311,13 +3026,13 @@ describe("AgentCoordinator Pi startup cancellation", () => {
     await resolving
     if (action === "stop") await coordinator.cancel("chat-1")
     else if (action === "close") await coordinator.closeChat("chat-1")
-    else await coordinator.shutdownStudyRuntime()
+    else await coordinator.shutdownRuntime()
     release()
     await sending
     expect(starts).toBe(0)
     expect(store.messages.some((entry) => entry.kind === "result")).toBe(false)
     expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
-    await coordinator.shutdownStudyRuntime()
+    await coordinator.shutdownRuntime()
   })
 
   test("a late aborted Pi turn closes only itself while a newer turn stays active", async () => {
@@ -3367,7 +3082,7 @@ describe("AgentCoordinator Pi startup cancellation", () => {
       release()
       await staleSend
       await coordinator.cancel("chat-1")
-      await coordinator.shutdownStudyRuntime()
+      await coordinator.shutdownRuntime()
     }
   })
 })
@@ -3472,111 +3187,3 @@ function createFakeStore() {
     },
   }
 }
-
-describe("AgentCoordinator prompt admission", () => {
-  test("rejects direct queue and steer channels before they mutate or cancel anything", async () => {
-    const store = createFakeStore()
-    const coordinator = new AgentCoordinator({
-      store: store as never,
-      onStateChange: () => {},
-      studyPromptGate: ({ content }) => content.includes("copied instruction")
-        ? "Please describe the task in your own words."
-        : null,
-    })
-
-    await expect(coordinator.enqueue({
-      type: "message.enqueue",
-      chatId: "chat-1",
-      content: "copied instruction",
-    })).rejects.toThrow("own words")
-    expect(store.queuedMessages).toHaveLength(0)
-
-    await store.enqueueMessage("chat-1", { id: "legacy-bad", content: "copied instruction", attachments: [] })
-    await expect(coordinator.steer({
-      type: "message.steer",
-      chatId: "chat-1",
-      queuedMessageId: "legacy-bad",
-    })).rejects.toThrow("own words")
-    expect(store.queuedMessages.map((message) => message.id)).toEqual(["legacy-bad"])
-  })
-
-  test("rechecks persisted queued prompts before restart drain and leaves rejected data reviewable", async () => {
-    const store = createFakeStore()
-    await store.enqueueMessage("chat-1", { id: "legacy-bad", content: "copied instruction", attachments: [] })
-    let engineStarts = 0
-    const coordinator = new AgentCoordinator({
-      store: store as never,
-      onStateChange: () => {},
-      studyPromptGate: ({ content }) => content.includes("copied instruction")
-        ? "Please describe the task in your own words."
-        : null,
-      startClaudeSession: async () => {
-        engineStarts += 1
-        throw new Error("must not start")
-      },
-    })
-
-    await coordinator.drainOrphanedQueues()
-
-    expect(engineStarts).toBe(0)
-    expect(store.queuedMessages.map((message) => message.id)).toEqual(["legacy-bad"])
-  })
-
-  test("rechecks admission after async chat creation before starting the turn", async () => {
-    let releaseCreate!: () => void
-    let markCreateStarted!: () => void
-    const createReleased = new Promise<void>((resolve) => {
-      releaseCreate = resolve
-    })
-    const createStarted = new Promise<void>((resolve) => {
-      markCreateStarted = resolve
-    })
-    let refusal: string | null = null
-    let turnStarts = 0
-    const chat = {
-      id: "chat-1",
-      projectId: "project-1",
-      title: "New Chat",
-      provider: null,
-      planMode: false,
-      sessionToken: null,
-      pendingForkSessionToken: null,
-    }
-    const store = {
-      async createChat() {
-        markCreateStarted()
-        await createReleased
-        return chat
-      },
-      requireChat() {
-        return chat
-      },
-      async setChatProvider() {
-        turnStarts += 1
-        throw new Error("turn started after freeze")
-      },
-    }
-    const coordinator = new AgentCoordinator({
-      store: store as never,
-      onStateChange: () => {},
-      generateTitle: async () => ({ title: "title", usedFallback: true, failureMessage: null }),
-      studyPromptGate: ({ chatId }) => {
-        if (chatId) expect(chatId).toBe("chat-1")
-        return refusal
-      },
-    })
-
-    const sending = coordinator.send({
-      type: "chat.send",
-      projectId: "project-1",
-      provider: "claude",
-      content: "start after chat creation",
-    })
-    await createStarted
-    refusal = "The current session is ending."
-    releaseCreate()
-
-    await expect(sending).rejects.toThrow("The current session is ending.")
-    expect(turnStarts).toBe(0)
-  })
-})

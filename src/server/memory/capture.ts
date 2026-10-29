@@ -17,12 +17,12 @@
 // items is a Maintain-stage concern (merge proposals), not a capture concern
 // (D5).
 import { createHash } from 'node:crypto';
+import { MEMORY_ATOM_SPEC } from './atom-spec';
+import { buildCandidateBranchPrompt,parseCandidateBranchResult,type CandidateBranchInput } from './branch-stages';
+import { describeLlmJsonFailure,type LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import type { CreateMemoryInput } from './MemoryStore';
-import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
-import type { AbstractionLevel, EvidenceClass, MemoryItem, MemoryScope, MemoryType } from './types';
-import { MEMORY_ATOM_SPEC } from './atom-spec';
-import { buildCandidateBranchPrompt, parseCandidateBranchResult, type CandidateBranchInput } from './branch-stages';
+import type { AbstractionLevel,EvidenceClass,MemoryItem,MemoryScope,MemoryType } from './types';
 
 function captureFailureFields(error: unknown) {
   const diagnostic = describeLlmJsonFailure(error);
@@ -313,11 +313,8 @@ function recentDismissed(memory: MemoryService, limit = 8): string[] {
 export function createCaptureService(opts: {
   memory: MemoryService;
   callJson: LlmJsonCaller;
-  /** Server-owned study seam; ordinary/non-study Capture keeps legacy retry semantics. */
-  durablePromptCapture?: boolean;
 }): CaptureService {
   const { memory, callJson } = opts;
-  const durablePromptCapture = opts.durablePromptCapture === true;
   const filterExactDismissals = (
     candidates: ValidatedCandidate[],
   ): ValidatedCandidate[] => candidates.filter((candidate) => !memory.store.wasCandidateDismissed(candidate.content));
@@ -349,89 +346,8 @@ export function createCaptureService(opts: {
     handledMemoryIds: Set<string>;
     inFlight: Map<string, TurnObservationClaim>;
   };
-  interface DurablePromptCaptureReceipt {
-    version: 1;
-    inputHash: string;
-    outcome: Omit<CaptureOutcome, 'created' | 'pending'> & {
-      createdIds: string[];
-      pendingIds: string[];
-    };
-    observations: Array<[fingerprint: string, resolution: TurnObservationResolution]>;
-    handledMemoryIds: string[];
-  }
   const turnCaptureLedgers = new Map<string, TurnCaptureLedger>();
   const MAX_TURN_LEDGERS = 256;
-
-  const durablePromptCaptureOperation = (input: PromptCaptureInput): { key: string; inputHash: string } | null => {
-    if (
-      !durablePromptCapture
-      || input.engine !== 'claude'
-      || !Number.isInteger(input.turn)
-    ) return null;
-    const inputHash = createHash('sha256')
-      .update(`${input.projectId ?? ''}\u0000${input.userText}`)
-      .digest('hex');
-    return {
-      key: `prompt_capture_result:v1:${encodeURIComponent(input.sessionId)}:${input.turn}`,
-      inputHash,
-    };
-  };
-
-  const storedPromptCaptureOutcome = (outcome: CaptureOutcome): DurablePromptCaptureReceipt['outcome'] => ({
-    proposed: outcome.proposed,
-    surfaced: outcome.surfaced,
-    dropped: outcome.dropped,
-    conflicts: outcome.conflicts,
-    reinforced: outcome.reinforced,
-    reinforcedIds: [...outcome.reinforcedIds],
-    revisions: outcome.revisions,
-    createdIds: outcome.created.map(({ id }) => id),
-    pendingIds: outcome.pending.map(({ id }) => id),
-    ...(outcome.sameTurnDuplicates ? { sameTurnDuplicates: structuredClone(outcome.sameTurnDuplicates) } : {}),
-  });
-
-  const writeDurablePromptCaptureReceipt = (
-    operation: { key: string; inputHash: string },
-    outcome: CaptureOutcome,
-    ledger: TurnCaptureLedger | null,
-  ) => {
-    memory.store.setKv(operation.key, {
-      version: 1,
-      inputHash: operation.inputHash,
-      outcome: storedPromptCaptureOutcome(outcome),
-      observations: ledger ? [...ledger.observations.entries()] : [],
-      handledMemoryIds: ledger ? [...ledger.handledMemoryIds] : [],
-    } satisfies DurablePromptCaptureReceipt);
-  };
-
-  const restoreDurablePromptCaptureReceipt = (
-    operation: { key: string; inputHash: string },
-    input: PromptCaptureInput,
-  ): CaptureOutcome | null => {
-    const receipt = memory.store.getKv<DurablePromptCaptureReceipt>(operation.key);
-    if (!receipt) return null;
-    if (receipt.version !== 1 || receipt.inputHash !== operation.inputHash) {
-      throw new Error('The durable prompt-capture operation does not match this logical turn');
-    }
-    const created = receipt.outcome.createdIds.map((id) => memory.store.getById(id));
-    const pending = receipt.outcome.pendingIds.map((id) => memory.store.getById(id));
-    if (created.some((item) => !item) || pending.some((item) => !item)) {
-      throw new Error('The durable prompt-capture result no longer matches the memory store');
-    }
-    const ledger = turnLedgerFor(input);
-    if (ledger) {
-      for (const [fingerprint, resolution] of receipt.observations) {
-        if (!ledger.observations.has(fingerprint)) ledger.observations.set(fingerprint, resolution);
-      }
-      for (const id of receipt.handledMemoryIds) ledger.handledMemoryIds.add(id);
-    }
-    const { createdIds: _createdIds, pendingIds: _pendingIds, ...outcome } = receipt.outcome;
-    return {
-      ...outcome,
-      created: created as MemoryItem[],
-      pending: pending as MemoryItem[],
-    };
-  };
 
   const observationFingerprint = (candidate: ValidatedCandidate): string => {
     // Deliberately exact after the same case/whitespace normalization used by
@@ -499,7 +415,6 @@ export function createCaptureService(opts: {
     },
     preCounts: { proposed: number; preDropped: number },
     via?: string,
-    durablePromptOperation?: { key: string; inputHash: string },
     branchRouting?: {
       existing: MemoryItem[];
       decisions: Map<ValidatedCandidate, { route: Route; targetId: string | null }>;
@@ -507,8 +422,6 @@ export function createCaptureService(opts: {
   ): Promise<CaptureOutcome> {
     input.signal?.throwIfAborted();
     const turnLedger = turnLedgerFor(input);
-    const observationsBeforeAttempt = turnLedger ? new Map(turnLedger.observations) : null;
-    const handledBeforeAttempt = turnLedger ? new Set(turnLedger.handledMemoryIds) : null;
     const sameTurnDuplicates: NonNullable<CaptureOutcome['sameTurnDuplicates']> = [];
     const routableCandidates: ValidatedCandidate[] = [];
     const candidateFingerprints: string[] = [];
@@ -535,26 +448,6 @@ export function createCaptureService(opts: {
         turnLedger.inFlight.delete(fingerprint);
         claim.settle({ status: 'released' });
       }
-    };
-    const restoreLedgerBeforeAttempt = () => {
-      if (!turnLedger || !observationsBeforeAttempt || !handledBeforeAttempt) return;
-      turnLedger.observations.clear();
-      for (const [fingerprint, resolution] of observationsBeforeAttempt) {
-        turnLedger.observations.set(fingerprint, resolution);
-      }
-      turnLedger.handledMemoryIds.clear();
-      for (const id of handledBeforeAttempt) turnLedger.handledMemoryIds.add(id);
-    };
-    const settleOwnedClaims = () => {
-      if (!turnLedger) return;
-      for (const [fingerprint, claim] of ownedClaims) {
-        if (turnLedger.inFlight.get(fingerprint) !== claim) continue;
-        const resolution = turnLedger.observations.get(fingerprint);
-        if (!resolution) continue;
-        turnLedger.inFlight.delete(fingerprint);
-        claim.settle({ status: 'completed', resolution });
-      }
-      ownedClaims.clear();
     };
     for (const candidate of gateCandidates) {
       const fingerprint = observationFingerprint(candidate);
@@ -609,11 +502,7 @@ export function createCaptureService(opts: {
           pending: [],
           ...(sameTurnDuplicates.length ? { sameTurnDuplicates } : {}),
         };
-        if (durablePromptOperation) {
-          memory.db.transaction(() => {
-            writeDurablePromptCaptureReceipt(durablePromptOperation, outcome, turnLedger);
-          })();
-        }
+
         return outcome;
       }
     const existing = branchRouting?.existing ?? existingShortList(memory, input.projectId);
@@ -667,7 +556,7 @@ export function createCaptureService(opts: {
         turnLedger?.observations.set(fingerprint, resolution);
         if (memoryId) turnLedger?.handledMemoryIds.add(memoryId);
         const claim = ownedClaims.get(fingerprint);
-        if (claim && turnLedger?.inFlight.get(fingerprint) === claim && !durablePromptOperation) {
+        if (claim && turnLedger?.inFlight.get(fingerprint) === claim) {
           turnLedger.inFlight.delete(fingerprint);
           ownedClaims.delete(fingerprint);
           claim.settle({ status: 'completed', resolution });
@@ -813,18 +702,12 @@ export function createCaptureService(opts: {
       ...(sameTurnDuplicates.length ? { sameTurnDuplicates } : {}),
     };
     };
-    const outcome = durablePromptOperation
-      ? memory.db.transaction(() => {
-          const persisted = persistRoutedOutcome();
-          writeDurablePromptCaptureReceipt(durablePromptOperation, persisted, turnLedger);
-          return persisted;
-        })()
-      : persistRoutedOutcome();
-    if (durablePromptOperation) settleOwnedClaims();
+    const outcome = persistRoutedOutcome();
+
     return outcome;
     } catch (error) {
       releaseOwnedClaims();
-      if (durablePromptOperation) restoreLedgerBeforeAttempt();
+
       throw error;
     }
   }
@@ -847,7 +730,7 @@ export function createCaptureService(opts: {
       }]));
       const outcome = await routeAndPersist(filtered, input, {
         proposed: parsed.length, preDropped: parsed.length - filtered.length,
-      }, 'branch_capture', undefined, { existing: snapshot.items, decisions });
+      }, 'branch_capture', { existing: snapshot.items, decisions });
       memory.logger.event({
         type: 'memory.capture', sessionId: input.sessionId, engine: input.engine, turn: input.turn,
         status: 'ok', channel: 'prompt', proposed: outcome.proposed, surfaced: outcome.surfaced,
@@ -1015,7 +898,6 @@ export function createCaptureService(opts: {
         reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
       };
       if (!input.userText.trim()) return empty;
-      const durableOperation = durablePromptCaptureOperation(input);
       let stage: 'capture_pass' | 'necessity_pass' | 'persist' = 'capture_pass';
       const terminal = (outcome: CaptureOutcome): CaptureOutcome => {
         memory.logger.event({
@@ -1036,14 +918,7 @@ export function createCaptureService(opts: {
         return outcome;
       };
       try {
-        if (durableOperation) {
-          const recovered = restoreDurablePromptCaptureReceipt(durableOperation, input);
-          // The original invocation already emitted its terminal capture
-          // telemetry before returning to AgentCoordinator in the ordinary
-          // mutation-before-stage-result crash window. Replaying the durable
-          // outcome must not invent a second measurement event.
-          if (recovered) return recovered;
-        }
+
         const pass1 = await callJson({
           system: PROMPT_PARSE_SYSTEM,
           user: `User message:\n${input.userText}`,
@@ -1072,11 +947,7 @@ export function createCaptureService(opts: {
         const exactDismissalDrops = validated.length - gateCandidates.length;
         if (gateCandidates.length === 0) {
           const outcome = { ...empty, proposed: rawCandidates.length, dropped: malformed + exactDismissalDrops };
-          if (durableOperation) {
-            memory.db.transaction(() => {
-              writeDurablePromptCaptureReceipt(durableOperation, outcome, turnLedgerFor(input));
-            })();
-          }
+
           return terminal(outcome);
         }
         stage = 'necessity_pass';
@@ -1085,7 +956,6 @@ export function createCaptureService(opts: {
           input,
           { proposed: validated.length, preDropped: malformed + exactDismissalDrops },
           'prompt_parse',
-          durableOperation ?? undefined,
         );
         stage = 'persist';
         return terminal(outcome);

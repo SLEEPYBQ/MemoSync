@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { afterEach,beforeEach,describe,expect,it } from 'bun:test';
+import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createCaptureService,validateCandidate } from './capture';
 import { MemoryService } from './index';
-import { createCaptureService, validateCandidate } from './capture';
 
 import { MEMORY_ATOM_SPEC } from './atom-spec';
-import { LlmJsonError, type DeepSeekJsonRequest, type LlmJsonCaller } from './deepseek';
+import { LlmJsonError,type DeepSeekJsonRequest,type LlmJsonCaller } from './deepseek';
 import { handleMemoryRequest } from './routes';
 
 /** A scripted LlmJsonCaller: returns the next queued response per call, records every call. */
@@ -1058,11 +1058,6 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     memory.close();
     rmSync(dir, { recursive: true, force: true });
   });
-  const createStudyPromptCapture = (callJson: LlmJsonCaller) => createCaptureService({
-    memory,
-    callJson,
-    durablePromptCapture: true,
-  });
 
   it('extracts an explicit remember-request as a candidate with user_stated evidence', async () => {
     const { logger, events } = fakeLogger();
@@ -1092,47 +1087,6 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     expect(calls[0]!.timeoutMs).toBe(15_000);
     const captureEvents = events.filter((e) => (e as { type?: string }).type === 'memory.capture');
     expect((captureEvents[0] as { channel?: string }).channel).toBe('prompt');
-  });
-
-  it('reuses a durable prompt-capture result after restart without calling the provider or creating another Candidate', async () => {
-    const dbPath = join(dir, 'memory.sqlite');
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    let providerCalls = 0;
-    const call: LlmJsonCaller = async () => {
-      providerCalls += 1;
-      if (providerCalls === 1) {
-        return {
-          candidates: [
-            { content: 'Use pnpm in this repo', type: 'constraint', scope: 'project' },
-          ],
-        };
-      }
-      if (providerCalls === 2) {
-        return { decisions: [{ index: 0, route: 'new', targetId: null }] };
-      }
-      throw new Error('the recovered prompt capture called the provider again');
-    };
-    const input = {
-      projectId: 'RenderX',
-      sessionId: 'opening-chat',
-      turn: 1,
-      engine: 'claude',
-      userText: 'Remember that this repository uses pnpm.',
-    };
-
-    const first = await createStudyPromptCapture(call).captureFromPrompt(input);
-    expect(first.created).toHaveLength(1);
-    const firstId = first.created[0]!.id;
-
-    // The caller has not yet persisted its memory_proposals_result. Reopening
-    // the same SQLite file models a process death in that exact crash window.
-    memory.close();
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const recovered = await createStudyPromptCapture(call).captureFromPrompt(input);
-
-    expect(recovered).toEqual(first);
-    expect(providerCalls).toBe(2);
-    expect(memory.store.list({ status: 'candidate' }).map(({ id }) => id)).toEqual([firstId]);
   });
 
   it('keeps durable prompt-capture replay disabled unless the study server explicitly enables it', async () => {
@@ -1169,179 +1123,6 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     memory = new MemoryService({ dbPath, dataDir: dir });
     await createCaptureService({ memory, callJson: call }).captureFromPrompt(input);
 
-    expect(providerCalls).toBe(4);
-  });
-
-  it('reuses a durable prompt-capture reinforcement after restart without incrementing it twice', async () => {
-    const dbPath = join(dir, 'memory.sqlite');
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const existing = memory.store.create(
-      {
-        content: 'Use pnpm in this repo',
-        scope: 'project',
-        projectId: 'RenderX',
-        type: 'constraint',
-      },
-      { actor: 'system' },
-    );
-    let providerCalls = 0;
-    const call: LlmJsonCaller = async () => {
-      providerCalls += 1;
-      if (providerCalls === 1) {
-        return {
-          candidates: [
-            { content: 'This repository uses pnpm', type: 'constraint', scope: 'project' },
-          ],
-        };
-      }
-      if (providerCalls === 2) {
-        return { decisions: [{ index: 0, route: 'reinforces', targetId: existing.id }] };
-      }
-      throw new Error('the recovered reinforcement called the provider again');
-    };
-    const input = {
-      projectId: 'RenderX',
-      sessionId: 'opening-chat',
-      turn: 1,
-      engine: 'claude',
-      userText: 'Remember that this repository uses pnpm.',
-    };
-
-    const first = await createStudyPromptCapture(call).captureFromPrompt(input);
-    expect(first.reinforced).toBe(1);
-    expect(memory.store.getById(existing.id)!.reinforcedCount).toBe(1);
-
-    memory.close();
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const recovered = await createStudyPromptCapture(call).captureFromPrompt(input);
-
-    expect(recovered).toEqual(first);
-    expect(providerCalls).toBe(2);
-    expect(memory.store.getById(existing.id)!.reinforcedCount).toBe(1);
-  });
-
-  it('reuses a durable prompt-capture update after restart without creating a second revision Candidate', async () => {
-    const dbPath = join(dir, 'memory.sqlite');
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const existing = memory.store.create(
-      {
-        content: 'Use npm in this repo',
-        scope: 'project',
-        projectId: 'RenderX',
-        type: 'constraint',
-      },
-      { actor: 'system' },
-    );
-    let providerCalls = 0;
-    const call: LlmJsonCaller = async () => {
-      providerCalls += 1;
-      if (providerCalls === 1) {
-        return {
-          candidates: [
-            { content: 'Use pnpm in this repo', type: 'constraint', scope: 'project' },
-          ],
-        };
-      }
-      if (providerCalls === 2) {
-        return { decisions: [{ index: 0, route: 'updates', targetId: existing.id }] };
-      }
-      throw new Error('the recovered update called the provider again');
-    };
-    const input = {
-      projectId: 'RenderX',
-      sessionId: 'opening-chat',
-      turn: 1,
-      engine: 'claude',
-      userText: 'Remember that this repository now uses pnpm instead of npm.',
-    };
-
-    const first = await createStudyPromptCapture(call).captureFromPrompt(input);
-    expect(first.revisions).toBe(1);
-    expect(first.created).toHaveLength(1);
-    const revisionId = first.created[0]!.id;
-    expect(memory.store.getRelations(revisionId)).toContainEqual(
-      expect.objectContaining({ targetId: existing.id, type: 'revises' }),
-    );
-
-    memory.close();
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const recovered = await createStudyPromptCapture(call).captureFromPrompt(input);
-
-    expect(recovered).toEqual(first);
-    expect(providerCalls).toBe(2);
-    expect(memory.store.list({ status: 'candidate' }).map(({ id }) => id)).toEqual([revisionId]);
-    expect(memory.store.getRelations(revisionId).filter(({ type }) => type === 'revises')).toHaveLength(1);
-  });
-
-  it('reuses a durable empty prompt-capture result after restart without parsing the prompt twice', async () => {
-    const dbPath = join(dir, 'memory.sqlite');
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    let providerCalls = 0;
-    const call: LlmJsonCaller = async () => {
-      providerCalls += 1;
-      if (providerCalls === 1) return { candidates: [] };
-      throw new Error('the recovered empty capture called the provider again');
-    };
-    const input = {
-      projectId: 'RenderX',
-      sessionId: 'opening-chat',
-      turn: 1,
-      engine: 'claude',
-      userText: 'Build the dashboard.',
-    };
-
-    const first = await createStudyPromptCapture(call).captureFromPrompt(input);
-    expect(first.created).toHaveLength(0);
-
-    memory.close();
-    memory = new MemoryService({ dbPath, dataDir: dir });
-    const recovered = await createStudyPromptCapture(call).captureFromPrompt(input);
-
-    expect(recovered).toEqual(first);
-    expect(providerCalls).toBe(1);
-    expect(memory.store.list()).toHaveLength(0);
-  });
-
-  it('rolls back prompt-capture mutations when its durable result cannot commit, then permits one clean retry', async () => {
-    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
-    memory.db.exec(`
-      CREATE TRIGGER fail_prompt_capture_receipt
-      BEFORE INSERT ON memory_kv
-      WHEN NEW.key LIKE 'prompt_capture_result:v1:%'
-      BEGIN
-        SELECT RAISE(ABORT, 'receipt unavailable');
-      END;
-    `);
-    let providerCalls = 0;
-    const call: LlmJsonCaller = async () => {
-      providerCalls += 1;
-      if (providerCalls === 1 || providerCalls === 3) {
-        return {
-          candidates: [
-            { content: 'Use pnpm in this repo', type: 'constraint', scope: 'project' },
-          ],
-        };
-      }
-      return { decisions: [{ index: 0, route: 'new', targetId: null }] };
-    };
-    const capture = createStudyPromptCapture(call);
-    const input = {
-      projectId: 'RenderX',
-      sessionId: 'opening-chat',
-      turn: 1,
-      engine: 'claude',
-      userText: 'Remember that this repository uses pnpm.',
-    };
-
-    const failed = await capture.captureFromPrompt(input);
-    expect(failed.created).toHaveLength(0);
-    expect(memory.store.list()).toHaveLength(0);
-
-    memory.db.exec('DROP TRIGGER fail_prompt_capture_receipt');
-    const retried = await capture.captureFromPrompt(input);
-
-    expect(retried.created).toHaveLength(1);
-    expect(memory.store.list({ status: 'candidate' })).toHaveLength(1);
     expect(providerCalls).toBe(4);
   });
 

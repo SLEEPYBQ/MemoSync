@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach,beforeEach,describe,expect,it } from "bun:test";
+import { existsSync,mkdirSync,mkdtempSync,rmSync,symlinkSync,writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { handleWorkspaceRequest } from "./workspace-routes";
@@ -210,29 +210,6 @@ describe("workspace routes", () => {
 
     it("405s GET on the op route", async () => {
       expect((await call("/api/projects/p-1/files/op"))!.status).toBe(405)
-    })
-
-    it("keeps wrong-project reads available but rejects wrong-project writes in study mode", async () => {
-      const access = { projectRefusal: () => "Use the assigned apartment project." }
-      const readRequest = new Request("http://localhost/api/projects/p-1/files")
-      const read = await handleWorkspaceRequest(readRequest, new URL(readRequest.url), store, {
-        studyProjectAccess: access,
-      })
-      const writeRequest = new Request("http://localhost/api/projects/p-1/files/op", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ op: "delete", path: "README.md" }),
-      })
-      const write = await handleWorkspaceRequest(writeRequest, new URL(writeRequest.url), store, {
-        studyProjectAccess: access,
-      })
-
-      expect(read!.status).toBe(200)
-      expect(write!.status).toBe(409)
-      expect(await write!.json()).toEqual({
-        error: { code: "STUDY_PROJECT_LOCKED", message: "Use the assigned apartment project." },
-      })
-      expect(existsSync(join(dir, "README.md"))).toBe(true)
     })
   })
 })

@@ -1,10 +1,10 @@
-import { createHash, randomUUID } from "node:crypto"
-import type { ExpectedMemoryUse } from "../memory/use-plan"
-import type { MemoryItem } from "../memory/types"
+import { createHash,randomUUID } from "node:crypto"
 import type {
-  DeliveredFocusEvent,
-  DeliveredFocusMemoryRef,
+DeliveredFocusEvent,
+DeliveredFocusMemoryRef,
 } from "../experiment/logger"
+import type { MemoryItem } from "../memory/types"
+import type { ExpectedMemoryUse } from "../memory/use-plan"
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
@@ -25,8 +25,6 @@ function visiblePoolHash(items: MemoryItem[]): string {
 }
 
 export interface BuildDeliveredStoreFocusArgs {
-  condition: "memosync"
-  taskId: string | null
   chatId: string
   turnId: string
   turn: number
@@ -74,7 +72,6 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
     schemaVersion: 2,
     semantics: "turn_focus",
     injectionId: args.injectionId ?? randomUUID(),
-    taskId: args.taskId,
     sessionId: args.chatId,
     chatId: args.chatId,
     turnId: args.turnId,
@@ -90,5 +87,13 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
     visiblePoolHash: visiblePoolHash(args.visiblePool),
     memories,
   }
+  return event
+}
+
+export function recordDeliveredStoreFocus(args: BuildDeliveredStoreFocusArgs & {
+  logger: Pick<import("../experiment/logger").ExperimentLogger, "event">
+}): DeliveredFocusEvent {
+  const event = buildDeliveredStoreFocusEvent(args)
+  args.logger.event(event)
   return event
 }

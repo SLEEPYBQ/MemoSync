@@ -8,22 +8,22 @@
 // core study measurement, so it is never inferred or defaulted.
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
-import type {
-  ActorMeta,
-  AbstractionLevel,
-  EvidenceClass,
-  MemoryEvent,
-  MemoryEventKind,
-  MemoryItem,
-  MemoryItemSnapshot,
-  MemoryScope,
-  MemoryType,
-  MemoryStatus,
-  MemoryRelation,
-  MemoryRelationType,
-  MemoryTraceLabel,
-} from './types';
 import { computeMemoryHash } from './hash';
+import type {
+AbstractionLevel,
+ActorMeta,
+EvidenceClass,
+MemoryEvent,
+MemoryEventKind,
+MemoryItem,
+MemoryItemSnapshot,
+MemoryRelation,
+MemoryRelationType,
+MemoryScope,
+MemoryStatus,
+MemoryTraceLabel,
+MemoryType,
+} from './types';
 
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
@@ -1118,13 +1118,6 @@ export class MemoryStore {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
       .run(key, JSON.stringify(value), new Date().toISOString());
-  }
-
-  /** Commit a related group of JSON receipts as one SQLite transaction. */
-  setKvBatch(entries: ReadonlyArray<readonly [key: string, value: unknown]>): void {
-    this.db.transaction(() => {
-      for (const [key, value] of entries) this.setKv(key, value);
-    })();
   }
 
   /**

@@ -1,12 +1,12 @@
-import { expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { expect,test } from "bun:test"
+import { mkdtempSync,rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
-import { MemoryService } from "./memory"
 import { resolveConditionPolicy } from "./experiment/condition"
 import type { HarnessEvent } from "./harness-types"
+import { MemoryService } from "./memory"
 
 class Queue implements AsyncIterable<HarnessEvent> {
   private values: HarnessEvent[] = []
@@ -98,7 +98,7 @@ test("Claude recovery removes deselected expected-use instructions and detail-to
     expect(starts).toBe(1)
   } finally {
     events.close()
-    await coordinator.shutdownStudyRuntime()
+    await coordinator.shutdownRuntime()
     memory.close()
     rmSync(directory, { recursive: true, force: true })
   }

@@ -1,16 +1,14 @@
 // Mutations for findings produced by the in-chat Memory Checkup. Detection is
 // owned by checkup.ts; this module only applies the participant's reviewed
 // actions with live-state validation, persistence, and telemetry.
+import { validateCandidate } from './capture';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
-import type { ActorMeta, MemoryItem } from './types';
-import { validateCandidate } from './capture';
-import type { StudySessionAttribution } from '../study-session-attribution';
+import type { ActorMeta,MemoryItem } from './types';
 
 export type AttentionKind = 'conflict' | 'redundant' | 'stale';
 type MaintenanceActorMeta = ActorMeta & {
   surface?: 'board' | 'chat_gate';
-  studyAttribution?: Partial<StudySessionAttribution>;
 };
 
 const MERGE_SYSTEM = `You merge two near-duplicate developer-memory items into ONE. Produce a single \
@@ -55,8 +53,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       const archived = memory.store.archive(memoryId, meta);
       memory.logger.event({
         type: 'memory.attention',
-        sessionId: meta.studyAttribution?.sessionId ?? meta.sessionId,
-        taskId: meta.studyAttribution?.taskId,
+        sessionId: meta.sessionId,
         kind,
         id: memoryId,
         action: 'archive',
@@ -71,8 +68,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       const item = memory.store.renewMemory(memoryId, meta);
       memory.logger.event({
         type: 'memory.attention',
-        sessionId: meta.studyAttribution?.sessionId ?? meta.sessionId,
-        taskId: meta.studyAttribution?.taskId,
+        sessionId: meta.sessionId,
         kind: 'stale',
         id: memoryId,
         action: 'renew',
@@ -95,8 +91,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       memory.store.addRelation(a.id, b.id, 'similar_to');
       memory.logger.event({
         type: 'memory.attention',
-        sessionId: meta.studyAttribution?.sessionId ?? meta.sessionId,
-        taskId: meta.studyAttribution?.taskId,
+        sessionId: meta.sessionId,
         kind: 'redundant',
         id: memoryId,
         action: 'keep',
@@ -152,8 +147,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       if (!proposal) return null;
       memory.logger.event({
         type: 'memory.attention',
-        sessionId: meta.studyAttribution?.sessionId ?? meta.sessionId,
-        taskId: meta.studyAttribution?.taskId,
+        sessionId: meta.sessionId,
         kind: 'redundant',
         id: memoryId,
         action: 'merge',

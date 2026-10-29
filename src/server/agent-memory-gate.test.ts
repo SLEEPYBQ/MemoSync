@@ -6,32 +6,27 @@
 // AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
 // what memory set actually reaches the (fake) Claude engine, and how the
 // MemoSync policy controls injection and session rebuild.
-import { describe, expect, test } from "bun:test";
+import { describe,expect,test } from "bun:test";
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync,mkdtempSync,rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentCoordinator, resolveTurnMemoryState } from "./agent";
+import { AgentCoordinator,resolveTurnMemoryState } from "./agent";
 
+import { type TranscriptEntry } from "../shared/types";
+import { resolveConditionPolicy,type ConditionPolicy } from "./experiment/condition";
 import { MemoryService } from "./memory";
-import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition";
-import type { TraceInput, TraceService } from "./memory/trace";
-import { createCaptureService, type CaptureService } from "./memory/capture";
-import type { LlmJsonCaller } from "./memory/deepseek";
+import { createCaptureService,type CaptureService } from "./memory/capture";
 import type { CheckupService } from "./memory/checkup";
-import type { TransferDetectService, TransferSuggestionCard } from "./memory/transfer-detect";
+import type { LlmJsonCaller } from "./memory/deepseek";
 import type { RelevanceService } from "./memory/relevance";
-import type { UsePlanService } from "./memory/use-plan";
 import type { MemoryToolContext } from "./memory/tools";
-import { type ChatAttachment, type TranscriptEntry } from "../shared/types";
-import { StudyMemoryStore } from "./experiment/study-memory-store";
-import { buildDeliveredStoreFocusEvent } from "./experiment/focus";
+import type { TraceInput,TraceService } from "./memory/trace";
+import type { TransferDetectService,TransferSuggestionCard } from "./memory/transfer-detect";
+import type { UsePlanService } from "./memory/use-plan";
 
 
 
-import type { StudyPromptGate } from "./study-prompt-gate";
-import { createMemoryBoardBacklogService, type MemoryBoardBacklogService } from "./memory/board-backlog";
-import { captureContainedAttachment, createStudyOpeningAttachmentSnapshotStore, type StudyOpeningAttachmentSnapshotStore } from "./study-opening-attachments";
 
 function timestampedKinds(messages: TranscriptEntry[]): string[] {
   return messages.map((m) => m.kind)
@@ -186,14 +181,12 @@ interface Harness {
   coordinator: AgentCoordinator
   store: ReturnType<typeof createFakeStore>
   memory: MemoryService
-  studyMemoryStore: StudyMemoryStore | null
   workspaceDir: string
   sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null; capture?: CaptureService | null }>
   claudeSessionCloses: number[]
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
   interrupts: number
-  openingBoardBacklog: MemoryBoardBacklogService | null
   finishTurn: () => void
   emitEntry: (entry: Record<string, unknown>) => void
   /** Push a raw harness event (e.g. assistant_delta) onto the live stream. */
@@ -232,8 +225,6 @@ function createHarness(
     forkQuery?: (input: { sessionToken: string; localPath: string; prompt: string }) => Promise<Record<string, unknown> | null>
     experimentEvents?: Array<Record<string, unknown>>
     experimentLogger?: MemoryService["logger"]
-    /** Active study task stamped onto delivered focus records. */
-    activeStudyTaskId?: string | null
     /** Hold or inspect the fake Claude queue acknowledgement. */
     onSendPrompt?: (text: string, context?: ClaudePromptContext) => Promise<void>
     /** Hold provider boot before a HarnessTurn exists or activeTurns can own it. */
@@ -249,19 +240,6 @@ function createHarness(
     policy?: ConditionPolicy
     previewSettings?: { enabled: boolean; autoProceedWhenEmpty: boolean }
     claudeSessionFileExists?: (localPath: string, token: string) => boolean
-    /** Server-authoritative study admission shared by WS send/enqueue/steer/drain. */
-    studyPromptGate?: StudyPromptGate | null
-    onParticipantPromptRecorded?: (input: {
-      taskId: string
-      turnId: string
-      chatId: string
-      content: string
-      attachments: ChatAttachment[]
-      acceptedAt: string
-    }) => void
-    /** Run the first prompt's Long-term gates behind the durable opening Board barrier. */
-    openingBoard?: boolean
-    openingAttachmentSnapshots?: StudyOpeningAttachmentSnapshotStore
   } = {},
 ): Harness {
   const dir = mkdtempSync(join(tmpdir(), "memv2-gate-"))
@@ -275,31 +253,12 @@ function createHarness(
       ? { logger: { event: (event) => opts.experimentEvents!.push(event as unknown as Record<string, unknown>) } }
       : {}),
   })
-  const studyMemoryStore = opts.activeStudyTaskId ? new StudyMemoryStore(":memory:") : null
   const store = createFakeStore(
     workspaceDir,
     opts.beforeAppendMessage,
     opts.afterAppendAuthorized,
     opts.onTurnFailed,
   )
-  // Production wires durable Board-row invalidation back into the coordinator
-  // (server.ts); mirror that bridge so parked gates can be reconciled here.
-  let coordinatorRef: AgentCoordinator | null = null
-  const openingBoardBacklog = opts.openingBoard
-    ? createMemoryBoardBacklogService({
-        transcript: {
-          listChats: () => [{ id: store.chat.id, projectId: store.chat.projectId }],
-          getMessages: () => store.messages,
-          getChat: (chatId) => chatId === store.chat.id ? { projectId: store.chat.projectId } : null,
-        },
-        receiptStore: memory.store,
-        memoryState: memory.store,
-        assignedProjectIds: () => new Set([store.chat.projectId]),
-        currentTaskId: () => opts.activeStudyTaskId ?? null,
-        openingAttachmentSnapshots: opts.openingAttachmentSnapshots,
-        onInvalidated: (entry) => coordinatorRef?.handleBoardBacklogInvalidated(entry),
-      })
-    : null
   const sessionStarts: Harness["sessionStarts"] = []
   const claudeSessionCloses: number[] = []
   const prompts: string[] = []
@@ -324,7 +283,6 @@ function createHarness(
     codexManager: opts.codexManager,
     onStateChange: opts.onStateChange ?? (() => {}),
     memory,
-    studyMemoryStore,
     capture: opts.capture ?? null,
     memoryCheckup: opts.checkup ?? null,
     memoryTransferDetect: opts.transferDetect ?? null,
@@ -336,10 +294,6 @@ function createHarness(
     forkCapture: (opts.forkCapture ?? (async () => null)) as never,
     forkQuery: (opts.forkQuery ?? (async () => null)) as never,
     policy: opts.policy,
-    getActiveStudyTaskId: () => opts.activeStudyTaskId ?? null,
-    studyPromptGate: opts.studyPromptGate ?? null,
-    onParticipantPromptRecorded: opts.onParticipantPromptRecorded,
-    openingBoardBacklog,
     getMemoryPreviewSettings: opts.previewSettings ? () => opts.previewSettings! : undefined,
     // Default: any token is "stale" (no real ~/.claude in tests). Tests that
     // need a valid token can override.
@@ -383,20 +337,16 @@ function createHarness(
     },
   })
 
-  coordinatorRef = coordinator
-
   return {
     coordinator,
     store,
     memory,
-    studyMemoryStore,
     workspaceDir,
     sessionStarts,
     claudeSessionCloses,
     prompts,
     promptContexts,
     get interrupts() { return interrupts },
-    openingBoardBacklog,
     finishTurn: () =>
       queues[queues.length - 1]?.push({
         type: "transcript",
@@ -412,1780 +362,15 @@ function createHarness(
     emitEvent: (event) => queues[queues.length - 1]?.push(event),
     closeStream: () => queues[queues.length - 1]?.close(),
     cleanup: () => {
-      studyMemoryStore?.close()
       memory.close()
       rmSync(dir, { recursive: true, force: true })
     },
   }
 }
 
-describe("study Finish evidence", () => {
-  test("attributes a successful interrupt continuation to its original participant prompt", () => {
-    const h = createHarness({ activeStudyTaskId: "038-S1" })
-    try {
-      h.studyMemoryStore!.recordStudyTelemetryEvent({
-        eventId: "prompt:main:turn-1",
-        recordedAt: "2026-08-22T10:00:00.000Z",
-        clientTimestamp: null,
-        participantId: "P01",
-        taskId: "038-S1",
-        sessionId: "038-S1",
-        chatId: "chat-1",
-        condition: "memosync",
-        kind: "participant_prompt",
-        surface: "main_chat",
-        action: "submit",
-        payload: { turnId: "turn-1" },
-      })
-      h.store.messages.push(
-        { _id: "turn-1", createdAt: 1, kind: "user_prompt", content: "Build it" } as never,
-        { _id: "interrupt-row", createdAt: 2, kind: "memory_interrupt", interruptId: "interrupt-1", memoryId: "M-01", prompt: "Build it", workingSet: [] } as never,
-        { _id: "interrupt-1", createdAt: 3, kind: "user_prompt", content: "Build it" } as never,
-        { _id: "result-1", createdAt: 4, kind: "result", subtype: "success", isError: false, durationMs: 1, result: "done" } as never,
-        { _id: "resolution-1", createdAt: 5, kind: "memory_interrupt_resolution", interruptId: "interrupt-1", selectedIds: [] } as never,
-      )
-
-      expect(h.coordinator.studyTaskRunEvidence("038-S1")).toEqual({
-        participantPromptCount: 1,
-        completedAgentTurnCount: 1,
-        unresolvedMemoryInterruptCount: 0,
-      })
-    } finally {
-      h.cleanup()
-    }
-  })
-})
-
 describe("memory preview gate (coordinator)", () => {
-  test("opening Board settles all Long-term stages before it releases the separate Working Memory preview", async () => {
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => emptyCapture,
-      routeProposal: async () => emptyCapture,
-      captureFromPrompt: async () => emptyCapture,
-    }
-    const checkup: CheckupService = {
-      needsRecompute: () => true,
-      run: async () => ({ suggestions: [], cached: false }),
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture,
-      checkup,
-    })
-    try {
-      h.memory.store.create(
-        { content: "Keep search filters accessible", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-1",
-        content: "Build the search page",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
 
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: opening.content,
-        openingReviewId: opening.reviewId,
-      } as any)
-      await waitFor(() => (
-        h.openingBoardBacklog!.reviewState("038-S1").openingPrompt?.phase === "long_term_ready"
-      ))
-
-      expect(h.openingBoardBacklog!.reviewState("038-S1").openingPrompt?.phase).toBe("long_term_ready")
-      const longTermParents = h.store.messages.filter((message) => (
-        message.kind === "memory_proposals"
-        || message.kind === "memory_transfer"
-        || message.kind === "memory_checkup"
-      ))
-      expect(longTermParents.length).toBeGreaterThanOrEqual(2)
-      expect(longTermParents.every((message) => message.openingReviewId === opening.reviewId)).toBe(true)
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(0)
-      expect(h.prompts).toHaveLength(0)
-
-      h.openingBoardBacklog!.completeOpeningPromptReview({
-        taskId: opening.taskId,
-        chatId: opening.chatId,
-        reviewId: opening.reviewId,
-        phase: "long_term_ready",
-      })
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      expect(h.prompts).toHaveLength(0)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("opening attachment-only recovery sends only the immutable snapshot while preserving transcript metadata", async () => {
-    const snapshotDir = mkdtempSync(join(tmpdir(), "opening-provider-snapshot-"))
-    const snapshotStore = createStudyOpeningAttachmentSnapshotStore(join(snapshotDir, "server-data"))
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      openingAttachmentSnapshots: snapshotStore,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({ suggestions: [], cached: false }),
-      },
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      const sourcePath = join(h.workspaceDir, "request.txt")
-      writeFileSync(sourcePath, "original notes")
-      const originalAttachment: ChatAttachment = {
-        id: "opening-attachment-only",
-        kind: "file",
-        displayName: "request.txt",
-        absolutePath: sourcePath,
-        relativePath: "./.memosync/uploads/request.txt",
-        contentUrl: "/api/projects/project-1/uploads/request.txt/content",
-        mimeType: "text/plain",
-        size: 14,
-      }
-      const captured = captureContainedAttachment(h.workspaceDir, originalAttachment)!
-      const attachmentSnapshots = snapshotStore.persist("opening-review-attachment-only", [captured])
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-attachment-only",
-        content: "",
-        attachments: [originalAttachment],
-        attachmentSnapshots,
-      }
-      h.memory.store.create(
-        { content: "Keep forms accessible", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      writeFileSync(sourcePath, "replaced notes")
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      const preview = h.store.messages.find(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
-      )!
-      await h.coordinator.respondMemoryPreview({
-        chatId: opening.chatId,
-        previewId: preview.previewId,
-        decision: "go_on",
-      })
-      await waitFor(() => h.prompts.length === 1)
-
-      const providerAttachment = snapshotStore.verify(attachmentSnapshots)
-      expect(providerAttachment.ok).toBe(true)
-      if (!providerAttachment.ok) throw new Error(providerAttachment.error)
-      expect(h.prompts[0]).toContain(providerAttachment.attachments[0]!.absolutePath)
-      expect(h.prompts[0]).not.toContain(sourcePath)
-      expect(readFileSync(providerAttachment.attachments[0]!.absolutePath, "utf8")).toBe("original notes")
-      expect(readFileSync(sourcePath, "utf8")).toBe("replaced notes")
-      expect(h.store.messages.find((message) => message.kind === "user_prompt")).toMatchObject({
-        content: "",
-        attachments: [{ absolutePath: sourcePath, relativePath: originalAttachment.relativePath }],
-      })
-    } finally {
-      h.cleanup()
-      rmSync(snapshotDir, { recursive: true, force: true })
-    }
-  })
-
-  test("opening direct dispatch sends only the immutable snapshot after the admitted source changes", async () => {
-    const snapshotDir = mkdtempSync(join(tmpdir(), "opening-direct-snapshot-"))
-    const snapshotStore = createStudyOpeningAttachmentSnapshotStore(join(snapshotDir, "server-data"))
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      openingAttachmentSnapshots: snapshotStore,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({ suggestions: [], cached: false }),
-      },
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      const sourcePath = join(h.workspaceDir, "request.txt")
-      writeFileSync(sourcePath, "original notes")
-      const originalAttachment: ChatAttachment = {
-        id: "opening-direct-attachment",
-        kind: "file",
-        displayName: "request.txt",
-        absolutePath: sourcePath,
-        relativePath: "./.memosync/uploads/request.txt",
-        contentUrl: "/api/projects/project-1/uploads/request.txt/content",
-        mimeType: "text/plain",
-        size: 14,
-      }
-      const attachmentSnapshots = snapshotStore.persist(
-        "opening-review-direct-attachment",
-        [captureContainedAttachment(h.workspaceDir, originalAttachment)!],
-      )
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-direct-attachment",
-        content: "",
-        attachments: [originalAttachment],
-        attachmentSnapshots,
-      }
-      h.memory.store.create(
-        { content: "Keep forms accessible", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      writeFileSync(sourcePath, "replaced notes")
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: opening.chatId,
-        provider: "claude",
-        content: opening.content,
-        attachments: opening.attachments,
-        openingReviewId: opening.reviewId,
-      })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      const preview = h.store.messages.find(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
-      )!
-      await h.coordinator.respondMemoryPreview({
-        chatId: opening.chatId,
-        previewId: preview.previewId,
-        decision: "go_on",
-      })
-      await waitFor(() => h.prompts.length === 1)
-
-      const verified = snapshotStore.verify(attachmentSnapshots)
-      expect(verified.ok).toBe(true)
-      if (!verified.ok) throw new Error(verified.error)
-      expect(h.prompts[0]).toContain(verified.attachments[0]!.absolutePath)
-      expect(h.prompts[0]).not.toContain(sourcePath)
-      expect(readFileSync(verified.attachments[0]!.absolutePath, "utf8")).toBe("original notes")
-      expect(h.store.messages.find((message) => message.kind === "user_prompt")).toMatchObject({
-        content: "",
-        attachments: [{ absolutePath: sourcePath, relativePath: originalAttachment.relativePath }],
-      })
-    } finally {
-      h.cleanup()
-      rmSync(snapshotDir, { recursive: true, force: true })
-    }
-  })
-
-  test("opening recovery never starts Candidate or the provider when its immutable attachment is missing", async () => {
-    const snapshotDir = mkdtempSync(join(tmpdir(), "opening-provider-missing-"))
-    const snapshotStore = createStudyOpeningAttachmentSnapshotStore(join(snapshotDir, "server-data"))
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      openingAttachmentSnapshots: snapshotStore,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      const sourcePath = join(h.workspaceDir, "request.txt")
-      writeFileSync(sourcePath, "original notes")
-      const originalAttachment: ChatAttachment = {
-        id: "opening-attachment-missing",
-        kind: "file",
-        displayName: "request.txt",
-        absolutePath: sourcePath,
-        relativePath: "./.memosync/uploads/request.txt",
-        contentUrl: "/api/projects/project-1/uploads/request.txt/content",
-        mimeType: "text/plain",
-        size: 14,
-      }
-      const attachmentSnapshots = snapshotStore.persist(
-        "opening-review-attachment-missing",
-        [captureContainedAttachment(h.workspaceDir, originalAttachment)!],
-      )
-      h.openingBoardBacklog!.prepareOpeningPrompt({
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-attachment-missing",
-        content: "",
-        attachments: [originalAttachment],
-        attachmentSnapshots,
-      })
-      rmSync(attachmentSnapshots[0]!.snapshotPath)
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await Promise.resolve()
-      await Promise.resolve()
-
-      expect(h.sessionStarts).toHaveLength(0)
-      expect(h.prompts).toHaveLength(0)
-      expect(h.store.messages.some((message) => message.kind === "user_prompt")).toBe(false)
-      expect(h.store.messages.some((message) => message.kind === "memory_proposals")).toBe(false)
-    } finally {
-      h.cleanup()
-      rmSync(snapshotDir, { recursive: true, force: true })
-    }
-  })
-
-  test("opening Working Memory revalidates its attachment snapshot immediately before provider dispatch", async () => {
-    const snapshotDir = mkdtempSync(join(tmpdir(), "opening-provider-late-corrupt-"))
-    const snapshotStore = createStudyOpeningAttachmentSnapshotStore(join(snapshotDir, "server-data"))
-    const turnFailures: string[] = []
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      openingAttachmentSnapshots: snapshotStore,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      onTurnFailed: (message) => turnFailures.push(message),
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      const sourcePath = join(h.workspaceDir, "request.txt")
-      writeFileSync(sourcePath, "original notes")
-      const originalAttachment: ChatAttachment = {
-        id: "opening-attachment-late-corrupt",
-        kind: "file",
-        displayName: "request.txt",
-        absolutePath: sourcePath,
-        relativePath: "./.memosync/uploads/request.txt",
-        contentUrl: "/api/projects/project-1/uploads/request.txt/content",
-        mimeType: "text/plain",
-        size: 14,
-      }
-      const attachmentSnapshots = snapshotStore.persist(
-        "opening-review-late-corrupt",
-        [captureContainedAttachment(h.workspaceDir, originalAttachment)!],
-      )
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-late-corrupt",
-        content: "",
-        attachments: [originalAttachment],
-        attachmentSnapshots,
-      }
-      const remembered = h.memory.store.create(
-        { content: "Keep forms accessible", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: "",
-        attachments: [originalAttachment],
-      }, {
-        _id: "opening-preview-late-corrupt",
-        createdAt: 2,
-        kind: "memory_preview",
-        previewId: "opening-preview-late-corrupt",
-        turn: 1,
-        task: "",
-        memories: [{ id: remembered.id, content: remembered.content, scope: remembered.scope }],
-      })
-      h.store.turnStartedCount = 1
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingPreviews.has(opening.chatId))
-
-      rmSync(attachmentSnapshots[0]!.snapshotPath)
-      await h.coordinator.respondMemoryPreview({
-        chatId: opening.chatId,
-        previewId: "opening-preview-late-corrupt",
-        decision: "go_on",
-      })
-      await waitFor(() => turnFailures.length === 1)
-
-      expect(h.prompts).toHaveLength(0)
-      expect(h.store.messages.filter((message) => message.kind === "result")).toEqual([
-        expect.objectContaining({ subtype: "error", isError: true }),
-      ])
-      expect(turnFailures[0]).toContain("snapshot")
-    } finally {
-      h.cleanup()
-      rmSync(snapshotDir, { recursive: true, force: true })
-    }
-  })
-
-  test("opening Continue invalidates and reruns Long-term preparation when the Visible Memory Pool changed after ready", async () => {
-    let checkupRuns = 0
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => {
-          checkupRuns += 1
-          return { suggestions: [], cached: false }
-        },
-      },
-    })
-    try {
-      const remembered = h.memory.store.create(
-        { content: "Keep search filters accessible", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-pool-cas",
-        content: "Build the search page",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      const checkupsBeforeMutation = checkupRuns
-
-      h.memory.store.update(
-        remembered.id,
-        { content: "Keep every search filter keyboard accessible" },
-        { actor: "user" },
-      )
-      const staleCompletion = h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      expect(staleCompletion).toMatchObject({
-        completed: false,
-        state: { openingPrompt: { phase: "preparing" } },
-      })
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(0)
-
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(checkupRuns).toBeGreaterThan(checkupsBeforeMutation)
-      expect(h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      ).completed).toBe(true)
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      expect(h.store.messages.find((message) => message.kind === "memory_preview")).toMatchObject({
-        memories: [expect.objectContaining({
-          id: remembered.id,
-          content: "Keep every search filter keyboard accessible",
-        })],
-      })
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("opening Continue completes after the participant skips this opening's own Checkup row (no self-reopening loop)", async () => {
-    // P20 (pilot 2026-08-22): Skip remaining & continue on the opening Checkup
-    // created a durable skipped row that the same opening counted as pending,
-    // rolled long_term_ready back to preparing, and reran the whole pipeline.
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({
-          suggestions: [{
-            kind: "redundancy" as const,
-            memoryId: pair.a.id,
-            otherMemoryId: pair.b.id,
-            reason: "Both state the palette.",
-          }],
-          cached: false,
-        }),
-      },
-    })
-    const pair = {
-      a: h.memory.store.create(
-        { content: "Background linen, components maroon", scope: "project", projectId: "project-1", type: "preference" },
-        { actor: "system" },
-      ),
-      b: h.memory.store.create(
-        { content: "Use the user-specified palette: linen background, maroon components", scope: "project", projectId: "project-1", type: "preference" },
-        { actor: "system" },
-      ),
-    }
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-checkup-skip",
-        content: "Build the apartment search page",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some((message) =>
-        message.kind === "memory_checkup_result" && message.suggestions.length === 1))
-      const checkupId = h.store.messages.find((message) => message.kind === "memory_checkup")!.checkupId
-
-      // Skip remaining & continue in the opening Board's Step 3 station.
-      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId, decision: "skipped" })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(h.openingBoardBacklog!.reviewState(opening.taskId).pending).toMatchObject({ checkups: 0, total: 0 })
-
-      // Continue with this message: the skipped row belongs to this opening and must not reopen it.
-      const completion = h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      expect(completion).toMatchObject({ completed: true, state: { openingPrompt: { phase: "completed" } } })
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-
-      const openingResets = h.store.messages.filter((message) =>
-        message.kind === "memory_preparation_reset" && message.openingReviewId === opening.reviewId)
-      expect(openingResets).toHaveLength(0)
-      expect(h.store.messages.filter((message) => message.kind === "memory_checkup_decision")).toHaveLength(1)
-      // The skip still means "later": the next task's opening sees the row.
-      expect(h.openingBoardBacklog!.reviewState("038-S2").pending).toMatchObject({ checkups: 1 })
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("invalidating a durable Checkup row recomputes the parked opening gate instead of leaving it waiting", async () => {
-    // P20 03:06:34 / P39 05:59:32: the durable backlog row was cleared from
-    // another chat while the owner chat's in-process gate kept waiting.
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    let checkupRuns = 0
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => {
-          checkupRuns += 1
-          const bothActive = ["a", "b"].every((key) => h.memory.store.getById(pair[key as "a" | "b"].id)?.status === "active")
-          return {
-            suggestions: bothActive
-              ? [{ kind: "redundancy" as const, memoryId: pair.a.id, otherMemoryId: pair.b.id, reason: "Both state the palette." }]
-              : [],
-            cached: false,
-          }
-        },
-      },
-    })
-    const pair = {
-      a: h.memory.store.create(
-        { content: "Background linen, components maroon", scope: "project", projectId: "project-1", type: "preference" },
-        { actor: "system" },
-      ),
-      b: h.memory.store.create(
-        { content: "Use the user-specified palette: linen background, maroon components", scope: "project", projectId: "project-1", type: "preference" },
-        { actor: "system" },
-      ),
-    }
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-checkup-invalidation",
-        content: "Build the apartment search page",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some((message) =>
-        message.kind === "memory_checkup_result" && message.suggestions.length === 1))
-      const checkupId = h.store.messages.find((message) => message.kind === "memory_checkup")!.checkupId
-      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId, decision: "skipped" })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-
-      // A genuine external pool mutation after ready forces the CAS rollback and a rerun
-      // that re-parks the same Checkup gate while the old skipped row stays durable.
-      h.memory.store.create(
-        { content: "Deploy previews from the main branch", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "user" },
-      )
-      expect(h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )).toMatchObject({ completed: false, state: { openingPrompt: { phase: "preparing" } } })
-      const runsBeforeRerun = checkupRuns
-      await waitFor(() => checkupRuns > runsBeforeRerun)
-      await waitFor(() => h.store.messages.filter((message) =>
-        message.kind === "memory_checkup_result" && message.suggestions.length === 1).length >= 2)
-      expect(h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase).toBe("preparing")
-
-      // From another surface the participant archives one memory of the pair; the
-      // next durable read invalidates the row and must wake the parked gate.
-      h.memory.store.archive(pair.b.id, { actor: "user" })
-      const runsBeforeInvalidation = checkupRuns
-      expect(h.openingBoardBacklog!.reviewState(opening.taskId).pending).toMatchObject({ checkups: 0 })
-      await waitFor(() => checkupRuns > runsBeforeInvalidation)
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-
-      const decisions = h.store.messages.filter((message) => message.kind === "memory_checkup_decision")
-      expect(decisions.map((message) => message.decision)).toEqual(["skipped", "empty"])
-      expect(h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      ).completed).toBe(true)
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery dispatches one exact durable opening prompt and releases Working Memory once", async () => {
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => emptyCapture,
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({ suggestions: [], cached: false }),
-      },
-    })
-    try {
-      const attachment: ChatAttachment = {
-        id: "upload-1",
-        kind: "file",
-        displayName: "brief.md",
-        absolutePath: "/workspace/brief.md",
-        relativePath: "brief.md",
-        contentUrl: "/api/attachments/upload-1",
-        mimeType: "text/markdown",
-        size: 23,
-      }
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-restart",
-        content: "Build exactly from the attached brief",
-        attachments: [attachment],
-        dispatch: { provider: "claude" as const, planMode: true },
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-
-      const prompts = h.store.messages.filter((message) => message.kind === "user_prompt")
-      expect(prompts).toHaveLength(1)
-      expect(prompts[0]).toMatchObject({
-        _id: opening.reviewId,
-        content: opening.content,
-        attachments: [attachment],
-      })
-      expect(h.store.turnStartedCount).toBe(1)
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(0)
-
-      const ready = h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!
-      h.openingBoardBacklog!.completeOpeningPromptReview(ready)
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery reconciles prompt telemetry and turn start after only the exact transcript prompt survived", async () => {
-    const telemetry: Array<{ turnId: string; content: string; acceptedAt: string }> = []
-    const h = createHarness({
-      preview: true,
-      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      onParticipantPromptRecorded: (input) => {
-        telemetry.push({ turnId: input.turnId, content: input.content, acceptedAt: input.acceptedAt })
-      },
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-prompt-only-crash",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 42,
-        kind: "user_prompt",
-        content: opening.content,
-        participantContent: opening.content,
-        attachments: [],
-      })
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-
-      expect(telemetry).toEqual([{
-        turnId: opening.reviewId,
-        content: opening.content,
-        acceptedAt: new Date(42).toISOString(),
-      }])
-      expect(h.store.turnStartedCount).toBe(1)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-
-      h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      h.coordinator.resumeOpeningBoardPreparation()
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(telemetry).toHaveLength(1)
-      expect(h.store.turnStartedCount).toBe(1)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("an opening Long-term barrier failure stays fail-closed and retryable instead of booting the provider", async () => {
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-    })
-    const failures: string[] = []
-    h.store.recordTurnFailed = async (_chatId: string, message: string) => { failures.push(message) }
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-mark-ready-failure",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      const markReady = h.openingBoardBacklog!.markOpeningPromptLongTermReady
-      let failMarkReady = true
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady = (input) => {
-        if (failMarkReady) throw new Error("opening receipt write failed")
-        markReady(input)
-      }
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some((message) => message.kind === "result"))
-
-      expect(h.prompts).toHaveLength(0)
-      expect(h.studyMemoryStore!.listTaskDeliveries(opening.taskId)).toHaveLength(0)
-      expect(h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase).toBe("preparing")
-      expect(failures).toEqual(["opening receipt write failed"])
-      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(false)
-
-      failMarkReady = false
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(h.prompts).toHaveLength(0)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery reparks an existing opening Candidate gate without duplicate parse or telemetry", async () => {
-    const events: Array<Record<string, unknown>> = []
-    let promptParses = 0
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      experimentEvents: events,
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => { promptParses += 1; return emptyCapture },
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({ suggestions: [], cached: false }),
-      },
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-mid-candidate",
-        content: "Remember that checkout must be keyboard accessible",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      })
-      h.store.turnStartedCount = 1
-      h.store.messages.push({
-        _id: "opening-proposals-parent",
-        createdAt: 2,
-        kind: "memory_proposals",
-        proposalsId: "opening-proposals-1",
-        openingReviewId: opening.reviewId,
-        turn: 1,
-        pending: true,
-        candidates: [],
-      }, {
-        _id: "opening-proposals-result",
-        createdAt: 3,
-        kind: "memory_proposals_result",
-        proposalsId: "opening-proposals-1",
-        candidates: [{ id: "M-candidate" }],
-      })
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingProposalGates.has(opening.chatId))
-      expect(promptParses).toBe(0)
-      expect(h.store.messages.filter((message) => message.kind === "memory_proposals")).toHaveLength(1)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-      expect(h.store.turnStartedCount).toBe(1)
-
-      await h.coordinator.respondMemoryProposals({
-        chatId: opening.chatId,
-        proposalsId: "opening-proposals-1",
-        decision: "reviewed",
-      })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(events.filter((event) => event.type === "memory.proposals")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery reparks an existing opening Transfer gate without duplicate detection or telemetry", async () => {
-    const events: Array<Record<string, unknown>> = []
-    let transferComputations = 0
-    const transferDetect: TransferDetectService = {
-      hasSourceCandidates: () => { transferComputations += 1; return false },
-      prepareSources: async () => { transferComputations += 1 },
-      buildTaskForkPrompt: () => null,
-      materializeTaskFromFork: async () => null,
-      runTask: async () => ({ cards: [], targetKey: "unused" }),
-      refreshLandingsIfTargetChanged: async (_ctx, result) => result,
-      landingsStillCurrent: () => true,
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      experimentEvents: events,
-      transferDetect,
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => ({ suggestions: [], cached: false }),
-      },
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-mid-transfer",
-        content: "Build the next page",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: "opening-transfer-parent",
-        createdAt: 2,
-        kind: "memory_transfer",
-        transferId: "opening-transfer-1",
-        openingReviewId: opening.reviewId,
-        turn: 1,
-        suggestions: [],
-        pending: true,
-      }, {
-        _id: "opening-transfer-result",
-        createdAt: 3,
-        kind: "memory_transfer_result",
-        transferId: "opening-transfer-1",
-        done: true,
-        suggestions: [{
-          sourceId: "M-source",
-          sourceContent: "Use accessible labels",
-          sourceScope: "personal",
-          sourceVersion: 1,
-          sourceLabel: "Prior task",
-          rule: "Label every control",
-          content: "Use accessible labels in this project",
-          suggestedScope: "project",
-          landing: { route: "new" },
-        }],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingTransferGates.has(opening.chatId))
-      expect(transferComputations).toBe(0)
-      expect(h.store.messages.filter((message) => message.kind === "memory_transfer")).toHaveLength(1)
-
-      await h.coordinator.respondMemoryTransfer({
-        chatId: opening.chatId,
-        transferId: "opening-transfer-1",
-        decision: "handled",
-      })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(events.filter((event) => event.type === "memory.transfer_card")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery reparks an existing opening Checkup gate without duplicate analysis or telemetry", async () => {
-    const events: Array<Record<string, unknown>> = []
-    let checkupRuns = 0
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      experimentEvents: events,
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => { checkupRuns += 1; return { suggestions: [], cached: false } },
-      },
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-mid-checkup",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: "opening-checkup-parent",
-        createdAt: 2,
-        kind: "memory_checkup",
-        checkupId: "opening-checkup-1",
-        openingReviewId: opening.reviewId,
-        turn: 1,
-        pending: true,
-      }, {
-        _id: "opening-checkup-result",
-        createdAt: 3,
-        kind: "memory_checkup_result",
-        checkupId: "opening-checkup-1",
-        suggestions: [{ kind: "staleness", memoryId: "M-01", reason: "Verify this before use" }],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingCheckupGates.has(opening.chatId))
-      expect(checkupRuns).toBe(0)
-      expect(h.store.messages.filter((message) => message.kind === "memory_checkup")).toHaveLength(1)
-
-      await h.coordinator.respondMemoryCheckup({
-        chatId: opening.chatId,
-        checkupId: "opening-checkup-1",
-        decision: "handled",
-      })
-      await waitFor(() => h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt?.phase === "long_term_ready")
-      expect(events.filter((event) => event.type === "memory.checkup")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery resumes the durable Long-term-ready barrier without rerunning any gate", async () => {
-    let gateRuns = 0
-    const emptyCapture = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      capture: {
-        capture: async () => emptyCapture,
-        routeProposal: async () => emptyCapture,
-        captureFromPrompt: async () => { gateRuns += 1; return emptyCapture },
-      },
-      checkup: {
-        needsRecompute: () => true,
-        run: async () => { gateRuns += 1; return { suggestions: [], cached: false } },
-      },
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-ready-restart",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      h.coordinator.resumeOpeningBoardPreparation()
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(gateRuns).toBe(0)
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(0)
-
-      h.openingBoardBacklog!.completeOpeningPromptReview(
-        h.openingBoardBacklog!.reviewState(opening.taskId).openingPrompt!,
-      )
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(1)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-      expect(h.store.turnStartedCount).toBe(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("startup recovery restores an already-published Working Memory receipt instead of duplicating it", async () => {
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-    })
-    try {
-      const remembered = h.memory.store.create(
-        { content: "Keep keyboard navigation", scope: "project", projectId: "project-1", type: "constraint" },
-        { actor: "system" },
-      )
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-working-memory-restart",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: "working-memory-preview-1",
-        createdAt: 2,
-        kind: "memory_preview",
-        previewId: "working-memory-preview-1",
-        turn: 1,
-        task: opening.content,
-        memories: [{ id: remembered.id, content: remembered.content, scope: remembered.scope }],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingPreviews.has(opening.chatId))
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview")).toHaveLength(1)
-
-      await h.coordinator.respondMemoryPreview({
-        chatId: opening.chatId,
-        previewId: "working-memory-preview-1",
-        decision: "go_on",
-      })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(1)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-      expect(h.store.turnStartedCount).toBe(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test.each(["stop", "recover again"] as const)("restored preview provider startup remains owned during %s", async (action) => {
-    let entered!: () => void
-    let release!: () => void
-    const starting = new Promise<void>((resolve) => { entered = resolve })
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const h = createHarness({
-      preview: true, openingBoard: true, activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      beforeClaudeSessionStart: async () => { entered(); await gate },
-    })
-    const opening = {
-      taskId: "038-S1", chatId: "chat-1", reviewId: `restored-startup-${action}`,
-      content: "Build the dashboard", attachments: [],
-    }
-    const previewId = "restored-startup-preview"
-    try {
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId, createdAt: 1, kind: "user_prompt",
-        content: opening.content, attachments: [],
-      }, {
-        _id: previewId, createdAt: 2, kind: "memory_preview", previewId,
-        turn: 1, task: opening.content, memories: [],
-      })
-      h.store.turnStartedCount = 1
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.coordinator.pendingPreviews.has(opening.chatId))
-      await h.coordinator.respondMemoryPreview({ chatId: opening.chatId, previewId, decision: "go_on" })
-      await starting
-      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(true)
-      if (action === "stop") {
-        await h.coordinator.cancel(opening.chatId)
-        release()
-        await waitFor(() => h.claudeSessionCloses[0] === 1)
-        expect(h.prompts).toEqual([])
-        expect(h.store.turnCancelledCount).toBe(1)
-        expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
-        h.coordinator.resumeOpeningBoardPreparation()
-        await Bun.sleep(20)
-        expect(h.prompts).toEqual([])
-        expect(h.sessionStarts).toHaveLength(1)
-      } else {
-        h.coordinator.resumeOpeningBoardPreparation()
-        h.coordinator.resumeOpeningBoardPreparation()
-        await Bun.sleep(20)
-        expect(h.sessionStarts).toHaveLength(1)
-        release()
-        await waitFor(() => h.prompts.length === 1)
-        expect(h.sessionStarts).toHaveLength(1)
-        expect(h.store.messages.filter((entry) => entry.kind === "memory_preview_decision")).toHaveLength(1)
-      }
-    } finally {
-      release()
-      await h.coordinator.cancel(opening.chatId)
-      await h.coordinator.shutdownStudyRuntime()
-      h.cleanup()
-    }
-  })
-
-  for (const decision of ["go_on", "without_memory"] as const) {
-    test(`startup recovery dispatches exactly once after a durable ${decision} decision that crashed before provider acceptance`, async () => {
-      const h = createHarness({
-        preview: true,
-        openingBoard: true,
-        activeStudyTaskId: "038-S1",
-        policy: resolveConditionPolicy("memosync"),
-      })
-      try {
-        const remembered = h.memory.store.create(
-          { content: "Keep keyboard navigation", scope: "project", projectId: "project-1", type: "constraint" },
-          { actor: "system" },
-        )
-        const opening = {
-          taskId: "038-S1",
-          chatId: "chat-1",
-          reviewId: `opening-review-decided-${decision}`,
-          content: "Build the dashboard",
-          attachments: [],
-        }
-        const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-        h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-        h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-        h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-        h.store.messages.push({
-          _id: opening.reviewId,
-          createdAt: 1,
-          kind: "user_prompt",
-          content: opening.content,
-          attachments: [],
-        }, {
-          _id: `working-memory-preview-${decision}`,
-          createdAt: 2,
-          kind: "memory_preview",
-          previewId: `working-memory-preview-${decision}`,
-          turn: 1,
-          task: opening.content,
-          memories: [{ id: remembered.id, content: remembered.content, scope: remembered.scope }],
-        }, {
-          _id: `working-memory-decision-${decision}`,
-          createdAt: 3,
-          kind: "memory_preview_decision",
-          previewId: `working-memory-preview-${decision}`,
-          decision,
-          ...(decision === "go_on" ? { selectedIds: [remembered.id] } : {}),
-          expectedUses: [],
-        })
-        h.store.turnStartedCount = 1
-
-        h.coordinator.resumeOpeningBoardPreparation()
-        h.coordinator.resumeOpeningBoardPreparation()
-        await waitFor(() => h.prompts.length === 1)
-        await waitFor(() => h.studyMemoryStore!.listTaskDeliveries(opening.taskId).length === 1)
-
-        h.coordinator.resumeOpeningBoardPreparation()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-        expect(h.prompts).toHaveLength(1)
-        expect(h.studyMemoryStore!.listTaskDeliveries(opening.taskId)).toEqual([
-          expect.objectContaining({
-            taskId: opening.taskId,
-            chatId: opening.chatId,
-            turnId: opening.reviewId,
-            outcome: decision === "without_memory" ? "disabled" : "delivered",
-            deliveryStage: "queued_to_claude",
-          }),
-        ])
-        expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(1)
-        expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-        expect(h.store.turnStartedCount).toBe(1)
-      } finally {
-        h.cleanup()
-      }
-    })
-  }
-
-  test("startup recovery fails closed on an ambiguous pre-provider claim instead of duplicating the first prompt", async () => {
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-ambiguous-provider",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      const previewId = "working-memory-preview-ambiguous"
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: previewId,
-        createdAt: 2,
-        kind: "memory_preview",
-        previewId,
-        turn: 1,
-        task: opening.content,
-        memories: [],
-      }, {
-        _id: "working-memory-decision-ambiguous",
-        createdAt: 3,
-        kind: "memory_preview_decision",
-        previewId,
-        decision: "without_memory",
-        expectedUses: [],
-      })
-      h.openingBoardBacklog!.claimOpeningProviderDispatch({
-        ...prepared,
-        phase: "completed",
-        previewId,
-        decision: "without_memory",
-      })
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some((message) => message.kind === "result"))
-      h.coordinator.resumeOpeningBoardPreparation()
-      await new Promise((resolve) => setTimeout(resolve, 20))
-
-      expect(h.prompts).toHaveLength(0)
-      expect(h.store.messages.filter((message) => message.kind === "result")).toHaveLength(1)
-      expect(h.openingBoardBacklog!.recoverOpeningPrompt(opening.taskId)?.providerDispatch).toMatchObject({
-        previewId,
-        decision: "without_memory",
-        phase: "failed",
-      })
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  for (const providerPhase of ["delivered", "failed"] as const) {
-    test(`startup recovery writes one terminal when provider dispatch was ${providerPhase} but no assistant terminal survived`, async () => {
-      const h = createHarness({
-        preview: true,
-        openingBoard: true,
-        activeStudyTaskId: "038-S1",
-        policy: resolveConditionPolicy("memosync"),
-      })
-      const failures: string[] = []
-      h.store.recordTurnFailed = async (_chatId: string, message: string) => { failures.push(message) }
-      try {
-        const opening = {
-          taskId: "038-S1",
-          chatId: "chat-1",
-          reviewId: `opening-review-provider-${providerPhase}`,
-          content: "Build the dashboard",
-          attachments: [],
-        }
-        const previewId = `working-memory-preview-provider-${providerPhase}`
-        const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-        h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-        h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-        h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-        h.store.messages.push({
-          _id: opening.reviewId,
-          createdAt: 1,
-          kind: "user_prompt",
-          content: opening.content,
-          attachments: [],
-        }, {
-          _id: previewId,
-          createdAt: 2,
-          kind: "memory_preview",
-          previewId,
-          turn: 1,
-          task: opening.content,
-          memories: [],
-        }, {
-          _id: `working-memory-decision-provider-${providerPhase}`,
-          createdAt: 3,
-          kind: "memory_preview_decision",
-          previewId,
-          decision: "go_on",
-          selectedIds: [],
-          expectedUses: [],
-        })
-        const providerDispatch = {
-          ...prepared,
-          phase: "completed" as const,
-          previewId,
-          decision: "go_on" as const,
-        }
-        h.openingBoardBacklog!.claimOpeningProviderDispatch(providerDispatch)
-        h.openingBoardBacklog!.settleOpeningProviderDispatch(providerDispatch, providerPhase)
-
-        h.coordinator.resumeOpeningBoardPreparation()
-        await waitFor(() => h.store.messages.some((message) => message.kind === "result"))
-        h.coordinator.resumeOpeningBoardPreparation()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        expect(h.prompts).toHaveLength(0)
-        expect(h.store.messages.filter((message) => message.kind === "result")).toHaveLength(1)
-        expect(failures).toHaveLength(1)
-        expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(false)
-        expect(h.coordinator.studyFreezeBlocker()).toBeNull()
-      } finally {
-        h.cleanup()
-      }
-    })
-  }
-
-  for (const decision of ["go_on", "without_memory"] as const) {
-    test(`startup recovery reconstructs one ${decision} focus delivery after provider acceptance won the crash`, async () => {
-      const events: Array<Record<string, unknown>> = []
-      const h = createHarness({
-        preview: true,
-        openingBoard: true,
-        activeStudyTaskId: "038-S1",
-        policy: resolveConditionPolicy("memosync"),
-        experimentEvents: events,
-      })
-      const failures: string[] = []
-      h.store.recordTurnFailed = async (_chatId: string, message: string) => { failures.push(message) }
-      try {
-        const remembered = h.memory.store.create(
-          { content: "Keep keyboard navigation", scope: "project", projectId: "project-1", type: "constraint" },
-          { actor: "system" },
-        )
-        const opening = {
-          taskId: "038-S1",
-          chatId: "chat-1",
-          reviewId: `opening-review-focus-crash-${decision}`,
-          content: "Build the dashboard",
-          attachments: [],
-        }
-        const previewId = `working-memory-preview-focus-crash-${decision}`
-        const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-        h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-        h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-        h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-        h.store.messages.push({
-          _id: opening.reviewId,
-          createdAt: 1,
-          kind: "user_prompt",
-          content: opening.content,
-          attachments: [],
-        }, {
-          _id: previewId,
-          createdAt: 2,
-          kind: "memory_preview",
-          previewId,
-          turn: 1,
-          task: opening.content,
-          memories: [{ id: remembered.id, content: remembered.content, scope: remembered.scope }],
-        }, {
-          _id: `working-memory-decision-focus-crash-${decision}`,
-          createdAt: 3,
-          kind: "memory_preview_decision",
-          previewId,
-          decision,
-          ...(decision === "go_on" ? { selectedIds: [remembered.id] } : {}),
-          expectedUses: decision === "go_on"
-            ? [{ id: remembered.id, expectedUse: "Keep the dashboard keyboard accessible" }]
-            : [],
-        })
-        const focusDelivery = buildDeliveredStoreFocusEvent({
-          condition: "memosync",
-          taskId: opening.taskId,
-          chatId: opening.chatId,
-          turnId: opening.reviewId,
-          turn: 1,
-          mode: "skills",
-          promptText: "exact provider prompt envelope",
-          visiblePool: [remembered],
-          focusedMemories: decision === "go_on" ? [remembered] : [],
-          expectedUses: decision === "go_on"
-            ? [{ id: remembered.id, expectedUse: "Keep the dashboard keyboard accessible" }]
-            : [],
-          disabled: decision === "without_memory",
-          injectionId: `opening-focus-injection-${decision}`,
-          focusedAt: "2026-08-21T12:00:00.000Z",
-        })
-        const providerDispatch = {
-          ...prepared,
-          phase: "completed" as const,
-          previewId,
-          decision,
-          focusDelivery,
-        }
-        h.openingBoardBacklog!.claimOpeningProviderDispatch(providerDispatch)
-        h.openingBoardBacklog!.settleOpeningProviderDispatch(providerDispatch, "delivered")
-
-        h.coordinator.resumeOpeningBoardPreparation()
-        await waitFor(() => h.store.messages.some((message) => message.kind === "result"))
-        h.coordinator.resumeOpeningBoardPreparation()
-        await new Promise((resolve) => setTimeout(resolve, 20))
-
-        expect(h.prompts).toHaveLength(0)
-        expect(h.studyMemoryStore!.listTaskDeliveries(opening.taskId)).toEqual([
-          expect.objectContaining({
-            injectionId: `opening-focus-injection-${decision}`,
-            turnId: opening.reviewId,
-            outcome: decision === "go_on" ? "delivered" : "disabled",
-            items: decision === "go_on"
-              ? [expect.objectContaining({ identity: { scheme: "store", id: remembered.id }, actualFocus: true })]
-              : [],
-          }),
-        ])
-        expect(events.filter((event) => event.type === "memory.inject")).toHaveLength(1)
-        expect(failures).toHaveLength(1)
-      } finally {
-        h.cleanup()
-      }
-    })
-  }
-
-  test("startup recovery completes a durable opening dismiss exactly once after a crash before cancellation", async () => {
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-    })
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-dismissed-before-cancel",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      const previewId = "working-memory-preview-dismissed-before-cancel"
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: previewId,
-        createdAt: 2,
-        kind: "memory_preview",
-        previewId,
-        turn: 1,
-        task: opening.content,
-        memories: [],
-      }, {
-        _id: "working-memory-decision-dismissed-before-cancel",
-        createdAt: 3,
-        kind: "memory_preview_decision",
-        previewId,
-        decision: "dismiss",
-        expectedUses: [],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some(
-        (message) => message.kind === "result" && message.subtype === "cancelled",
-      ))
-      h.coordinator.resumeOpeningBoardPreparation()
-      await new Promise((resolve) => setTimeout(resolve, 20))
-
-      expect(h.prompts).toHaveLength(0)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.subtype === "cancelled",
-      )).toHaveLength(1)
-      expect(h.store.turnCancelledCount).toBe(1)
-      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(false)
-      expect(h.coordinator.studyFreezeBlocker()).toBeNull()
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("a definitive opening sendPrompt rejection releases active ownership and permits a later prompt", async () => {
-    let sendAttempts = 0
-    const h = createHarness({
-      preview: true,
-      openingBoard: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      onSendPrompt: async () => {
-        sendAttempts += 1
-        if (sendAttempts === 1) throw new Error("provider rejected prompt")
-      },
-    })
-    const failures: string[] = []
-    h.store.recordTurnFailed = async (_chatId: string, message: string) => { failures.push(message) }
-    try {
-      const opening = {
-        taskId: "038-S1",
-        chatId: "chat-1",
-        reviewId: "opening-review-send-rejected",
-        content: "Build the dashboard",
-        attachments: [],
-      }
-      const previewId = "working-memory-preview-send-rejected"
-      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
-      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
-      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
-      h.store.messages.push({
-        _id: opening.reviewId,
-        createdAt: 1,
-        kind: "user_prompt",
-        content: opening.content,
-        attachments: [],
-      }, {
-        _id: previewId,
-        createdAt: 2,
-        kind: "memory_preview",
-        previewId,
-        turn: 1,
-        task: opening.content,
-        memories: [],
-      }, {
-        _id: "working-memory-decision-send-rejected",
-        createdAt: 3,
-        kind: "memory_preview_decision",
-        previewId,
-        decision: "go_on",
-        selectedIds: [],
-        expectedUses: [],
-      })
-      h.store.turnStartedCount = 1
-
-      h.coordinator.resumeOpeningBoardPreparation()
-      await waitFor(() => h.store.messages.some((message) => message.kind === "result"))
-
-      expect(h.openingBoardBacklog!.recoverOpeningPrompt(opening.taskId)?.providerDispatch?.phase).toBe("failed")
-      expect(h.store.messages.filter((message) => message.kind === "result")).toHaveLength(1)
-      expect(failures).toHaveLength(1)
-      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(false)
-      expect(h.coordinator.studyFreezeBlocker()).toBeNull()
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: opening.chatId,
-        provider: "claude",
-        content: "Try a later prompt",
-      })
-      await waitFor(() => sendAttempts === 2)
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(2)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("a transient prompt-telemetry failure never asks the participant to resend a durable transcript prompt", async () => {
-    const attempts: Array<{ turnId: string; content: string; acceptedAt: string }> = []
-    const h = createHarness({
-      preview: false,
-      activeStudyTaskId: "038-S1",
-      onParticipantPromptRecorded: (input) => {
-        attempts.push({ turnId: input.turnId, content: input.content, acceptedAt: input.acceptedAt })
-        if (attempts.length === 1) throw new Error("sqlite temporarily unavailable")
-      },
-    })
-    try {
-      await expect(h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "Implement the search page",
-      })).resolves.toMatchObject({ chatId: "chat-1" })
-      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
-      await waitFor(() => attempts.length === 2)
-      expect(new Set(attempts.map((entry) => entry.turnId)).size).toBe(1)
-      expect(new Set(attempts.map((entry) => entry.acceptedAt)).size).toBe(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("Board refusal leaves direct, F12, queued, and steered prompt paths side-effect free", async () => {
-    const h = createHarness({ studyPromptGate: () => "Review the Memory Board before sending a prompt." })
-    try {
-      await expect(h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "direct",
-      })).rejects.toThrow("Memory Board")
-      await expect(h.coordinator.send({
-        type: "chat.send",
-        projectId: "project-1",
-        provider: "claude",
-        content: "F12 new chat",
-      })).rejects.toThrow("Memory Board")
-      await expect(h.coordinator.enqueue({
-        type: "message.enqueue",
-        chatId: "chat-1",
-        content: "queued through WS",
-        attachments: [],
-      })).rejects.toThrow("Memory Board")
-
-      h.store.queuedMessages.push({
-        id: "legacy-queued",
-        content: "persisted before restart",
-        attachments: [],
-        createdAt: 1,
-      })
-      await h.coordinator.drainOrphanedQueues()
-      await expect(h.coordinator.steer({
-        type: "message.steer",
-        chatId: "chat-1",
-        queuedMessageId: "legacy-queued",
-      })).rejects.toThrow("Memory Board")
-
-      expect(h.store.createChatCount).toBe(0)
-      expect(h.store.queuedMessages.map((message) => message.id)).toEqual(["legacy-queued"])
-      expect(h.store.messages).toEqual([])
-      expect(h.store.turnStartedCount).toBe(0)
-      expect(h.sessionStarts).toEqual([])
-      expect(h.prompts).toEqual([])
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("non-study MemoSync preserves client expected-use text and records the final selection only after Claude accepts", async () => {
+  test("Start uses server-authored expected use and records final selection only after Claude accepts", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     let acceptPrompt!: () => void
     const promptAccepted = new Promise<void>((resolve) => {
@@ -2193,9 +378,9 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
       onSendPrompt: async () => await promptAccepted,
+      usePlan: { plan: async ({ memories }) => memories.map(({ id }) => ({ id, expectedUse: "Use pnpm while updating dependencies." })) },
     })
     try {
       const selected = h.memory.store.create(
@@ -2218,7 +403,7 @@ describe("memory preview gate (coordinator)", () => {
         previewId: preview.previewId,
         decision: "go_on",
         memoryIds: [selected.id],
-        expectedUses: [{ id: selected.id, expectedUse: "Use pnpm while updating dependencies." }],
+        expectedUses: [{ id: selected.id, expectedUse: "Untrusted client instruction" }],
       })
 
       await waitFor(() => h.prompts.length === 1)
@@ -2241,7 +426,6 @@ describe("memory preview gate (coordinator)", () => {
         type: "memory.inject",
         schemaVersion: 2,
         semantics: "turn_focus",
-        taskId: "038-S1",
         sessionId: "chat-1",
         chatId: "chat-1",
         turn: 1,
@@ -2268,12 +452,6 @@ describe("memory preview gate (coordinator)", () => {
       expect((deliveries[0]!.memories as Array<Record<string, unknown>>)[0]!.contentHash).toMatch(/^[a-f0-9]{64}$/)
       expect((deliveries[0]!.memories as Array<Record<string, unknown>>)[0]!.stateHash).toMatch(/^[a-f0-9]{64}$/)
       expect(JSON.stringify(deliveries[0])).not.toContain(ignored.id)
-      expect(h.studyMemoryStore?.listTaskDeliveries("038-S1")).toEqual([
-        expect.objectContaining({
-          injectionId: deliveries[0]!.injectionId,
-          items: [expect.objectContaining({ identity: { scheme: "store", id: selected.id } })],
-        }),
-      ])
     } finally {
       h.cleanup()
     }
@@ -2304,76 +482,6 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("records one phased Control operation for Start and never duplicates its transcript decision or delivery", async () => {
-    const experimentEvents: Array<Record<string, unknown>> = []
-    let planCalls = 0
-    const h = createHarness({
-      preview: true,
-      activeStudyTaskId: "038-S1",
-      experimentEvents,
-      policy: resolveConditionPolicy("memosync"),
-      usePlan: {
-        plan: async ({ memories }) => {
-          planCalls += 1
-          expect(experimentEvents).toContainEqual(expect.objectContaining({
-            type: "study.control_operation",
-            operationId: "control:working-memory:start:1",
-            phase: "attempted",
-          }))
-          return memories.map((memory) => ({
-            id: memory.id,
-            expectedUse: "Apply this memory while completing the task.",
-          }))
-        },
-      },
-    })
-    try {
-      const memory = h.memory.store.create(
-        { content: "Only run MainTests", scope: "personal", type: "constraint" },
-        { actor: "system" },
-      )
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "push my changes" })
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      const preview = h.store.messages.find((message) => message.kind === "memory_preview") as Extract<
-        TranscriptEntry,
-        { kind: "memory_preview" }
-      >
-      const command = {
-        chatId: "chat-1",
-        previewId: preview.previewId,
-        decision: "go_on" as const,
-        memoryIds: [memory.id],
-        operationId: "control:working-memory:start:1",
-      }
-
-      await h.coordinator.respondMemoryPreview(command as never)
-      await expect(h.coordinator.respondMemoryPreview(command as never)).rejects.toThrow()
-      await waitFor(() => h.prompts.length === 1)
-
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(1)
-      expect(experimentEvents.filter((event) => event.type === "study.control_operation")).toEqual([
-        expect.objectContaining({
-          operationId: command.operationId,
-          phase: "attempted",
-          action: "go_on",
-          surface: "working_memory",
-        }),
-        expect.objectContaining({
-          operationId: command.operationId,
-          phase: "completed",
-          action: "go_on",
-          surface: "working_memory",
-        }),
-      ])
-      expect(
-        experimentEvents.filter((event) => event.type === "memory.inject" && event.schemaVersion === 2),
-      ).toHaveLength(1)
-      expect(planCalls).toBe(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
   test("concurrent Start commands claim one preview before expected-use planning", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     let releasePlanner!: () => void
@@ -2383,7 +491,6 @@ describe("memory preview gate (coordinator)", () => {
     let planCalls = 0
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
       policy: resolveConditionPolicy("memosync"),
       usePlan: {
@@ -2443,9 +550,6 @@ describe("memory preview gate (coordinator)", () => {
       await waitFor(() => experimentEvents.some((event) => event.type === "memory.inject" && event.schemaVersion === 2))
 
       expect(planCalls).toBe(1)
-      expect(experimentEvents.filter(
-        (event) => event.type === "study.control_operation" && event.phase === "attempted",
-      )).toHaveLength(1)
       expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(1)
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.prompts).toHaveLength(1)
@@ -2459,7 +563,7 @@ describe("memory preview gate (coordinator)", () => {
         decision: "go_on",
         memoryIds: [memory.id],
         operationId: "control:working-memory:start:concurrent-1",
-      })).rejects.toThrow("already recorded")
+      })).rejects.toThrow("No matching pending memory preview")
       await expect(h.coordinator.respondMemoryPreview({
         chatId: "chat-1",
         previewId: preview.previewId,
@@ -2470,9 +574,6 @@ describe("memory preview gate (coordinator)", () => {
       expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toEqual([
         expect.objectContaining({ previewId: preview.previewId, decision: "go_on" }),
       ])
-      expect(experimentEvents.filter(
-        (event) => event.type === "study.control_operation" && event.phase === "attempted",
-      )).toHaveLength(1)
     } finally {
       releasePlanner()
       h.cleanup()
@@ -2702,7 +803,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  const runStartKeepsPreviewClaim = async (activeStudyTaskId: string | null) => {
+  const runStartKeepsPreviewClaim = async () => {
     let providerBootStarted!: () => void
     const bootStarted = new Promise<void>((resolve) => {
       providerBootStarted = resolve
@@ -2713,7 +814,6 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      activeStudyTaskId,
       policy: resolveConditionPolicy("memosync"),
       beforeClaudeSessionStart: async () => {
         providerBootStarted()
@@ -2752,7 +852,6 @@ describe("memory preview gate (coordinator)", () => {
       // active turn yet. The preview claim must still own both public gates.
       expect((h.coordinator as unknown as { claimedPreviewResponses: Map<string, string> })
         .claimedPreviewResponses.get("chat-1")).toBe(preview.previewId)
-      expect(h.coordinator.studyFreezeBlocker()).not.toBeNull()
       await expect(h.coordinator.send({
         type: "chat.send",
         chatId: "chat-1",
@@ -2763,75 +862,18 @@ describe("memory preview gate (coordinator)", () => {
 
       releaseProviderBoot()
       await waitFor(() => h.prompts.length === 1)
-      expect(h.coordinator.studyFreezeBlocker()).not.toBeNull()
     } finally {
       releaseProviderBoot()
       h.cleanup()
     }
   }
 
-  test.each([
-    ["without an active study task", null],
-    ["with active study task 038-S1", "038-S1"],
-  ] as const)(
-    "Start keeps the preview claim through provider boot until active-turn ownership is installed (%s)",
-    (_scenario, activeStudyTaskId) => runStartKeepsPreviewClaim(activeStudyTaskId),
-  )
-
-  test("does not append a Start decision or dispatch Claude when the durable attempted claim fails", async () => {
-    let attemptedCalls = 0
-    const h = createHarness({
-      preview: true,
-      activeStudyTaskId: "038-S1",
-      policy: resolveConditionPolicy("memosync"),
-      experimentLogger: {
-        event: (event) => {
-          if (event.type === "study.control_operation" && event.phase === "attempted") {
-            attemptedCalls += 1
-            if (attemptedCalls === 1) throw new Error("study.sqlite unavailable")
-          }
-        },
-      },
-    })
-    try {
-      h.memory.store.create({ content: "Only run MainTests", scope: "personal", type: "constraint" }, { actor: "system" })
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "push my changes" })
-      await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-      const preview = h.store.messages.find((message) => message.kind === "memory_preview") as Extract<
-        TranscriptEntry,
-        { kind: "memory_preview" }
-      >
-
-      await expect(h.coordinator.respondMemoryPreview({
-        chatId: "chat-1",
-        previewId: preview.previewId,
-        decision: "go_on",
-        operationId: "control:working-memory:start:logger-failure",
-      })).rejects.toThrow("study.sqlite unavailable")
-
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(0)
-      expect(h.prompts).toHaveLength(0)
-      expect(h.coordinator.pendingPreviews.get("chat-1")?.previewId).toBe(preview.previewId)
-
-      await expect(h.coordinator.respondMemoryPreview({
-        chatId: "chat-1",
-        previewId: preview.previewId,
-        decision: "go_on",
-        operationId: "control:working-memory:start:logger-failure",
-      })).resolves.toBeUndefined()
-      await waitFor(() => h.prompts.length === 1)
-      expect(attemptedCalls).toBe(2)
-      expect(h.store.messages.filter((message) => message.kind === "memory_preview_decision")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
+  test("Start keeps the preview claim through provider boot until active-turn ownership is installed", runStartKeepsPreviewClaim)
 
   test("Start restricts treatment to the server-held preview pool and records requested versus effective ids", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
       policy: resolveConditionPolicy("memosync"),
       usePlan: {
@@ -2892,13 +934,6 @@ describe("memory preview gate (coordinator)", () => {
       })
       expect(JSON.stringify(experimentEvents.find((event) => event.type === "memory.inject" && event.schemaVersion === 2)))
         .not.toContain("publish credentials")
-      expect(experimentEvents.find((event) => event.type === "study.control_operation" && event.phase === "attempted")).toMatchObject({
-        payload: {
-          previewId: preview.previewId,
-          requestedIds: [addedAfterPreview.id, shown.id, "M-forged"],
-          effectiveIds: [shown.id],
-        },
-      })
     } finally {
       h.cleanup()
     }
@@ -2908,7 +943,6 @@ describe("memory preview gate (coordinator)", () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
       policy: resolveConditionPolicy("memosync"),
       usePlan: { plan: async () => { throw new Error("planner unavailable") } },
@@ -2945,8 +979,6 @@ describe("memory preview gate (coordinator)", () => {
       }])
       expect(h.prompts[0]).toContain("Apply this memory while completing the task.")
       expect(h.prompts[0]).not.toContain("Publish credentials")
-      expect(experimentEvents.filter((event) => event.type === "study.control_operation").map((event) => event.phase))
-        .toEqual(["attempted", "completed"])
       await expect(h.coordinator.respondMemoryPreview({
         chatId: "chat-1",
         previewId: preview.previewId,
@@ -2960,47 +992,6 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  for (const decision of ["without_memory", "dismiss"] as const) {
-    test(`records phased Control evidence for ${decision}`, async () => {
-      const experimentEvents: Array<Record<string, unknown>> = []
-      const h = createHarness({
-        preview: true,
-        activeStudyTaskId: "038-S1",
-        experimentEvents,
-        policy: resolveConditionPolicy("memosync"),
-      })
-      try {
-        h.memory.store.create({ content: "Keep keyboard navigation", scope: "personal", type: "constraint" }, { actor: "system" })
-        await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "continue" })
-        await waitFor(() => h.store.messages.some((message) => message.kind === "memory_preview"))
-        const preview = h.store.messages.find((message) => message.kind === "memory_preview") as Extract<
-          TranscriptEntry,
-          { kind: "memory_preview" }
-        >
-        const operationId = `control:working-memory:${decision}:1`
-
-        await h.coordinator.respondMemoryPreview({
-          chatId: "chat-1",
-          previewId: preview.previewId,
-          decision,
-          operationId,
-        })
-        if (decision === "dismiss") await waitFor(() => h.store.turnCancelledCount === 1)
-        else await waitFor(() => h.prompts.length === 1)
-
-        expect(experimentEvents.filter((event) => event.type === "study.control_operation")).toEqual([
-          expect.objectContaining({ operationId, phase: "attempted", action: decision }),
-          expect.objectContaining({ operationId, phase: "completed", action: decision }),
-        ])
-        expect(experimentEvents.find((event) => event.type === "memory.preview")).toMatchObject({
-          operationId,
-          decision,
-        })
-      } finally {
-        h.cleanup()
-      }
-    })
-  }
 
   test("without_memory boots the Claude session with memory disabled", async () => {
     const h = createHarness({ preview: true })
@@ -3038,7 +1029,6 @@ describe("memory preview gate (coordinator)", () => {
   test("dismiss releases its terminal preview claim before draining the next queued message", async () => {
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),
     })
     try {
@@ -3691,7 +1681,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       policy: resolveConditionPolicy("memosync"),
       preview: false,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -3731,8 +1720,7 @@ describe("memory preview gate (coordinator)", () => {
       )
       expect(interruption).toBeDefined()
       expect(experimentEvents.find((event) => event.type === "memory.interrupt")).toMatchObject({
-        taskId: "038-S1",
-        sessionId: "038-S1",
+        sessionId: "chat-1",
         chatId: "chat-1",
         id: removed.id,
       })
@@ -3781,7 +1769,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       policy: resolveConditionPolicy("memosync"),
       preview: false,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -3844,7 +1831,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       policy: resolveConditionPolicy("memosync"),
       preview: false,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -3892,7 +1878,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       policy: resolveConditionPolicy("memosync"),
       preview: false,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -3946,13 +1931,15 @@ describe("memory preview gate (coordinator)", () => {
       expect(h.store.messages.find((message) => message.kind === "memory_interrupt_resolution")).not.toHaveProperty("action")
       expect(experimentEvents).toContainEqual(expect.objectContaining({
         type: "memory.audit_action",
-        taskId: "038-S1",
-        sessionId: "038-S1",
+        sessionId: "chat-1",
         chatId: "chat-1",
         id: flagged.id,
         action: "enforce",
       }))
 
+      // The persistent provider session starts the resumed turn and retires
+      // any unacknowledged cancelled prompt before returning its result.
+      h.emitEntry({ kind: "system_init", provider: "claude", model: "claude-opus-4-1", tools: [], agents: [], slashCommands: [], mcpServers: [] })
       h.finishTurn()
       await waitFor(() => h.store.turnFinishedCount === 1)
       await h.coordinator.send({
@@ -3973,7 +1960,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       policy: resolveConditionPolicy("memosync"),
       preview: false,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -4117,7 +2103,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("every study Stop skips post-turn model jobs while non-study Stop keeps legacy capture", async () => {
+  test("memory interrupt skips post-turn jobs while ordinary Stop still captures", async () => {
     const emptyCapture = {
       created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
       reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
@@ -4161,7 +2147,6 @@ describe("memory preview gate (coordinator)", () => {
       trace,
       checkup,
       transferDetect,
-      activeStudyTaskId: "038-S1",
       experimentEvents,
     })
     try {
@@ -4190,28 +2175,6 @@ describe("memory preview gate (coordinator)", () => {
       expect(experimentEvents.some((event) => event.type === "memory.inject" && event.schemaVersion === 2)).toBe(true)
     } finally {
       interrupted.cleanup()
-    }
-
-    const stopped = createHarness({
-      policy: resolveConditionPolicy("memosync"),
-      preview: false,
-      capture,
-    })
-    try {
-      await stopped.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "Implement another form",
-      })
-      await waitFor(() => stopped.prompts.length === 1)
-      stopped.emitEntry({ kind: "assistant_text", text: "partial result", messageId: "m2" })
-      await waitFor(() => stopped.store.messages.some((message) => message.kind === "assistant_text"))
-      await stopped.coordinator.cancel("chat-1")
-      await new Promise((resolve) => setTimeout(resolve, 30))
-      expect(calls.capture).toBe(0)
-    } finally {
-      stopped.cleanup()
     }
 
     const nonStudy = createHarness({
@@ -4258,62 +2221,6 @@ describe("memory preview gate (coordinator)", () => {
         correction: "Continue.",
         selectedIds: [],
       })).rejects.not.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("MemoSync study mode still rejects per-memory interrupt for Pi", async () => {
-    const h = createHarness({ policy: resolveConditionPolicy("memosync"), preview: false })
-    try {
-      const memory = h.memory.store.create(
-        { content: "Pi study memory", scope: "project", projectId: "project-1", type: "fact" },
-        { actor: "system" },
-      )
-      await h.store.setChatProvider("chat-1", "pi")
-      await expect(h.coordinator.interruptMemory({
-        chatId: "chat-1",
-        memoryId: memory.id,
-        quote: "unsupported control",
-      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("MemoSync study mode rejects per-memory interrupt and resume for Codex", async () => {
-    const h = createHarness({ policy: resolveConditionPolicy("memosync"), preview: false })
-    try {
-      const memory = h.memory.store.create(
-        { content: "Codex study memory", scope: "project", projectId: "project-1", type: "fact" },
-        { actor: "system" },
-      )
-      await h.store.setChatProvider("chat-1", "codex")
-      await h.store.appendMessage("chat-1", {
-        _id: crypto.randomUUID(),
-        createdAt: Date.now(),
-        kind: "memory_interrupt",
-        interruptId: "unsupported-codex",
-        memoryId: memory.id,
-        prompt: "unsupported prompt",
-        workingSet: [{ id: memory.id, cited: true }],
-        turn: 1,
-      })
-
-      await expect(h.coordinator.interruptMemory({
-        chatId: "chat-1",
-        memoryId: memory.id,
-        quote: "unsupported control",
-      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
-      await expect(h.coordinator.resumeInterrupted({
-        chatId: "chat-1",
-        interruptId: "unsupported-codex",
-        correction: "Continue with the confirmed working memory.",
-        selectedIds: [],
-      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
-      expect(h.store.messages.filter((message) => message.kind === "memory_interrupt")).toHaveLength(1)
-      expect(h.store.messages.some((message) => message.kind === "memory_interrupt_resolution")).toBe(false)
-      expect(h.prompts).toHaveLength(0)
     } finally {
       h.cleanup()
     }
@@ -5236,7 +3143,6 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
       preview: true,
       checkup,
       experimentEvents,
-      activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),
     })
     try {
@@ -5282,10 +3188,6 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
         operationId,
       })
       await waitFor(() => h.sessionStarts.length === 1)
-      expect(experimentEvents.filter((event) => event.type === "study.control_operation")).toEqual([
-        expect.objectContaining({ operationId, phase: "attempted", action: "go_on" }),
-        expect.objectContaining({ operationId, phase: "completed", action: "go_on" }),
-      ])
       expect(experimentEvents.find((event) => event.type === "memory.preview")).toMatchObject({ operationId })
     } finally {
       h.cleanup()
@@ -5522,108 +3424,6 @@ describe("reopening pre-turn memory preparation", () => {
 
       await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
       await waitFor(() => h.sessionStarts.length === 1)
-    } finally {
-      h.cleanup()
-    }
-  })
-})
-
-describe("study freeze settlement (Claude only)", () => {
-  test("blocks an active turn, then waits for its detached capture before reporting settled", async () => {
-    let releaseCapture!: () => void
-    const captureReleased = new Promise<void>((resolve) => {
-      releaseCapture = resolve
-    })
-    const zero = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => {
-        await captureReleased
-        return zero
-      },
-      routeProposal: async () => zero,
-      captureFromPrompt: async () => zero,
-    }
-    const h = createHarness({ capture, activeStudyTaskId: "038-S1" })
-    try {
-      const durableStore = h.studyMemoryStore!
-      const clearQuality = durableStore.clearStudyMemoryQualityFlag.bind(durableStore)
-      let pendingClearAttempts = 0
-      durableStore.clearStudyMemoryQualityFlag = (flag) => {
-        if (flag.code === "post_turn_incomplete" && ++pendingClearAttempts === 1) {
-          throw new Error("transient sqlite delete failure")
-        }
-        clearQuality(flag)
-      }
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.coordinator.studyFreezeBlocker()).not.toBeNull()
-
-      h.emitEntry({ kind: "assistant_text", text: "done", messageId: "m1" })
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 1)
-      await waitFor(() => h.coordinator.studyFreezeBlocker() === null)
-      expect(h.studyMemoryStore?.listStudyMemoryQualityFlags("038-S1")).toEqual([
-        expect.objectContaining({ code: "post_turn_incomplete", blocking: false }),
-      ])
-
-      let settled = false
-      const waiting = h.coordinator.awaitStudyMemorySettled("038-S1").then((result) => {
-        settled = true
-        return result
-      })
-      await Promise.resolve()
-      expect(settled).toBe(false)
-
-      releaseCapture()
-      expect(await waiting).toEqual([])
-      expect(settled).toBe(true)
-      expect(pendingClearAttempts).toBe(2)
-      expect(h.studyMemoryStore?.listStudyMemoryQualityFlags("038-S1")).toEqual([])
-    } finally {
-      releaseCapture()
-      h.cleanup()
-    }
-  })
-
-  test("capture failure settles with a quality flag instead of blocking freeze forever", async () => {
-    const zero = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => {
-        throw new Error("extractor unavailable")
-      },
-      routeProposal: async () => zero,
-      captureFromPrompt: async () => zero,
-    }
-    const h = createHarness({ capture, activeStudyTaskId: "038-S1" })
-    try {
-      const durableStore = h.studyMemoryStore!
-      const persistQuality = durableStore.recordStudyMemoryQualityFlag.bind(durableStore)
-      let captureFlagAttempts = 0
-      durableStore.recordStudyMemoryQualityFlag = (flag) => {
-        if (flag.code === "capture_failed" && ++captureFlagAttempts === 1) {
-          throw new Error("transient sqlite write failure")
-        }
-        persistQuality(flag)
-      }
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
-      await waitFor(() => h.prompts.length === 1)
-      h.emitEntry({ kind: "assistant_text", text: "done", messageId: "m1" })
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 1)
-
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([
-        expect.objectContaining({ code: "capture_failed", chatId: "chat-1" }),
-      ])
-      expect(captureFlagAttempts).toBe(2)
-      expect(h.studyMemoryStore?.listStudyMemoryQualityFlags("038-S1")).toEqual([
-        expect.objectContaining({ code: "capture_failed", chatId: "chat-1" }),
-      ])
     } finally {
       h.cleanup()
     }
@@ -6280,7 +4080,6 @@ describe("transfer card (Transfer design 2026-08-08)", () => {
       ])
 
       expect(h.coordinator.getActiveStatuses().has("chat-1")).toBe(false)
-      expect(h.coordinator.studyFreezeBlocker()).toBeNull()
       expect(h.store.messages.filter((message) => message.kind === "memory_proposals_decision")).toEqual([
         expect.objectContaining({ decision: "cancelled" }),
       ])
@@ -6335,7 +4134,7 @@ describe("transfer card (Transfer design 2026-08-08)", () => {
         h.coordinator.cancel("chat-1"),
         new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop waited for source preparation")), 500)),
       ])
-      await waitFor(() => h!.coordinator.studyFreezeBlocker() === null)
+      await waitFor(() => !h!.coordinator.getActiveStatuses().has("chat-1"))
 
       const result = h.store.messages.find((m) => m.kind === "memory_transfer_result") as Extract<
         TranscriptEntry,
@@ -7383,12 +5182,11 @@ describe("memory on/off turn controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
   }
 
-  test("effective state truth table; a pinned study condition ignores both settings and chat switches", () => {
+  test("effective state follows settings and the per-chat switch", () => {
     for (const enabled of [false, true]) for (const learn of [false, true]) for (const disabled of [false, true]) {
-      expect(resolveTurnMemoryState({ studyMode: false }, { enabled, learn }, disabled)).toEqual({
+      expect(resolveTurnMemoryState({ enabled, learn }, disabled)).toEqual({
         memoryActive: enabled && !disabled, learnActive: enabled && !disabled && learn,
       })
-      expect(resolveTurnMemoryState(resolveConditionPolicy("memosync"), { enabled, learn }, disabled)).toEqual({ memoryActive: true, learnActive: true })
     }
   })
 
@@ -7498,7 +5296,7 @@ describe("memory on/off turn controls", () => {
     } finally { h.cleanup() }
   })
 
-  test("new chat is incognito from its first turn; study rejects the command and ignores the send flag", async () => {
+  test("new chat is incognito from its first turn", async () => {
     const h = createHarness({ preview: true })
     try {
       seed(h)
@@ -7508,34 +5306,7 @@ describe("memory on/off turn controls", () => {
       expect(h.prompts).toHaveLength(1)
       await complete(h)
     } finally { h.cleanup() }
-    const study = createHarness({ policy: resolveConditionPolicy("memosync") })
-    try {
-      await expect(study.coordinator.setMemoryDisabled("chat-1", true)).rejects.toThrow("study mode")
-      expect(study.store.createChatCount).toBe(0)
-      await study.coordinator.send({ ...send, chatId: undefined, projectId: "project-1", memoryDisabled: true })
-      expect(study.store.createChatCount).toBe(1)
-      expect(study.store.chat.memoryDisabled).toBe(false)
-      expect(study.sessionStarts[0]?.memory).toBe(study.memory)
-      await complete(study)
-    } finally { study.cleanup() }
-  })
 
-  test("study MemoSync still gates, injects and captures despite disabled user switches", async () => {
-    const s = services()
-    const h = createHarness({ capture: s.capture, preview: true, policy: resolveConditionPolicy("memosync"), getMemorySettings: () => ({ enabled: false, learn: false }) })
-    try {
-      h.store.chat.memoryDisabled = true
-      seed(h)
-      await h.coordinator.send(send)
-      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
-      const preview = h.coordinator.pendingPreviews.get("chat-1")!
-      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.sessionStarts[0]?.memory).toBe(h.memory)
-      expect(h.sessionStarts[0]?.capture).toBe(s.capture)
-      await complete(h)
-      expect(s.calls.capture).toBe(1)
-    } finally { h.cleanup() }
   })
 
   for (const mode of ["off", "readonly", "on"] as const) test(`Codex ${mode} gates dynamic memory dispatch and injection`, async () => {
