@@ -823,10 +823,14 @@ export class CodexAppServerManager {
       method: "initialized",
     })
 
+    // Standard speed is an explicit null. An omitted tier inherits the user's
+    // config.toml (`service_tier = "priority"` runs fast while the UI shows
+    // Standard), and on turn/start it keeps the thread's tier.
+    const serviceTier = args.serviceTier ?? null
     const threadParams = {
       model: resolveCodexModel(args.model),
       cwd: args.cwd,
-      serviceTier: args.serviceTier,
+      serviceTier,
       approvalPolicy: "never",
       sandbox: "danger-full-access",
       experimentalRawEvents: false,
@@ -840,7 +844,7 @@ export class CodexAppServerManager {
         threadId: args.pendingForkSessionToken,
         model: resolveCodexModel(args.model),
         cwd: args.cwd,
-        serviceTier: args.serviceTier,
+        serviceTier,
         approvalPolicy: "never",
         sandbox: "danger-full-access",
         persistExtendedHistory: false,
@@ -852,7 +856,7 @@ export class CodexAppServerManager {
           threadId: args.sessionToken,
           model: resolveCodexModel(args.model),
           cwd: args.cwd,
-          serviceTier: args.serviceTier,
+          serviceTier,
           approvalPolicy: "never",
           sandbox: "danger-full-access",
           persistExtendedHistory: false,
@@ -918,7 +922,7 @@ export class CodexAppServerManager {
         approvalPolicy: "never",
         model: resolveCodexModel(args.model),
         effort: args.effort,
-        serviceTier: args.serviceTier,
+        serviceTier: args.serviceTier ?? null,
         collaborationMode: {
           mode: args.planMode ? "plan" : codexProtocolCompat09x() ? "code" : "default",
           settings: {
@@ -972,7 +976,7 @@ export class CodexAppServerManager {
         chatId,
         cwd: args.cwd,
         model: args.model ?? "gpt-5.5",
-        serviceTier: args.serviceTier ?? "fast",
+        serviceTier: args.serviceTier,
         sessionToken: null,
       })
 
@@ -980,7 +984,7 @@ export class CodexAppServerManager {
         chatId,
         model: args.model ?? "gpt-5.5",
         effort: args.effort,
-        serviceTier: args.serviceTier ?? "fast",
+        serviceTier: args.serviceTier,
         content: args.prompt,
         planMode: false,
         onToolRequest: async () => ({}),
