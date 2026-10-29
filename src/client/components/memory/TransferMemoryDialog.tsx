@@ -1,3 +1,4 @@
+import { translateUiText, translateServerUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
 // Cross-context transfer instrument (DG3 / the title's "Across Context"):
@@ -356,7 +357,7 @@ export function TransferMemoryDialog({
                   className={cn("text-sm", reinforcing && "opacity-50")}
                 />
               </div>
-              {proposal.note ? <p className="text-sm leading-relaxed text-muted-foreground">{proposal.note}</p> : null}
+              {proposal.note ? <p className="text-sm leading-relaxed text-muted-foreground">{translateServerUiText(proposal.noteUiText, proposal.note)}</p> : null}
 
               {/* Landing: how the instantiated form meets what already lives
                   in the target context (same vocabulary as capture). */}
@@ -397,7 +398,7 @@ export function TransferMemoryDialog({
             </label>
           ) : null}
 
-          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+          {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
         </DialogBody>
         <DialogFooter>
           <DialogGhostButton onClick={() => onOpenChange(false)}>{t("common:cancel")}</DialogGhostButton>

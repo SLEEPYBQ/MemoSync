@@ -24,7 +24,7 @@ function extractReadImageBlocks(value: unknown): ReadImageBlock[] {
   const blocks = (
     value
     && typeof value === "object"
-    && t("chat:content") in value
+    && "content" in value
     && Array.isArray((value as { content?: unknown }).content)
   )
     ? (value as { content: unknown[] }).content
@@ -151,7 +151,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   const resultText = useMemo(() => {
     if (typeof message.result === "string") return message.result
     if (!message.result) return ""
-    if (typeof message.result === "object" && message.result !== null && t("chat:content") in message.result) {
+    if (typeof message.result === "object" && message.result !== null && "content" in message.result) {
       const content = (message.result as { content?: unknown }).content
       if (typeof content === "string") return content
     }

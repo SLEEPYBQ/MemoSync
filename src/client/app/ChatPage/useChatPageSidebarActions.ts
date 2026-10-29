@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 import { useCallback, useEffect, useRef, useState } from "react"
 import type {
@@ -219,10 +220,10 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
+          title: translateUiText(result.title),
           description: result.localCommitCreated
-            ? `${result.message}\n\nA local commit was created, but the push did not complete.${result.detail ? `\n\n${result.detail}` : ""}`
-            : `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+            ? `${translateUiText(result.message)}\n\n${translateUiText("A local commit was created, but the push did not complete.")}${result.detail ? `\n\n${result.detail}` : ""}`
+            : `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -254,8 +255,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -316,8 +317,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -391,8 +392,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -458,8 +459,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok && !result.cancelled) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -511,8 +512,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }
@@ -571,8 +572,8 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
           closeLabel: t("common:ok"),
         })
       }

@@ -32,8 +32,13 @@ void i18n.use(initReactI18next).init({
   load: "currentOnly",
   defaultNS: "common",
   initImmediate: false,
-  interpolation: { escapeValue: false },
+  interpolation: {
+    escapeValue: false,
+    alwaysFormat: true,
+    format: (value, _format, language) => typeof value === "number" ? new Intl.NumberFormat(language).format(value) : String(value),
+  },
   react: { useSuspense: false },
+  showSupportNotice: false,
 })
 
 function syncLanguage(language: string) {

@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { LegendList, type LegendListRef } from "@legendapp/list/react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
@@ -350,7 +351,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       ) : null}
       {commandError ? (
         <div className="rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-          {commandError}
+          {translateUiText(commandError)}
         </div>
       ) : null}
     </div>

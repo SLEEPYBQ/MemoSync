@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import {
   createContext,
@@ -150,9 +151,9 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
           {dialogState ? (
             <>
               <DialogBody className="space-y-4">
-                <DialogTitle>{dialogState.options.title}</DialogTitle>
+                <DialogTitle>{translateUiText(dialogState.options.title)}</DialogTitle>
                 {dialogState.options.description ? (
-                  <DialogDescription>{dialogState.options.description}</DialogDescription>
+                  <DialogDescription>{translateUiText(dialogState.options.description)}</DialogDescription>
                 ) : null}
                 {dialogState.kind === "prompt" ? (
                   <Input
@@ -187,7 +188,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   onClick={resolveCancel}
                   className={dialogState.kind === "alert" ? "hidden" : undefined}
                 >
-                  {"cancelLabel" in dialogState.options ? (dialogState.options.cancelLabel ?? t("common:cancel")) : t("common:cancel")}
+                  {"cancelLabel" in dialogState.options ? translateUiText(dialogState.options.cancelLabel ?? t("common:cancel")) : t("common:cancel")}
                 </Button>
                 <Button
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
@@ -198,7 +199,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   {dialogState.kind === "alert"
                     ? (dialogState.options.closeLabel ?? t("common:ok"))
                     : "confirmLabel" in dialogState.options
-                      ? (dialogState.options.confirmLabel ?? t("common:confirm"))
+                      ? (translateUiText(dialogState.options.confirmLabel) || t("common:confirm"))
                       : t("common:confirm")}
                 </Button>
               </DialogFooter>

@@ -91,7 +91,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       {age || capturedIn ? (
         <p className="mt-1.5 truncate text-[11px] text-muted-foreground/80">
           {age ?? ""}
-          {capturedIn ? `${age ? " · " : ""}from ${capturedIn}` : ""}
+          {capturedIn ? t("memory:capturedFrom", { v0: age ? " · " : "", v1: capturedIn }) : ""}
         </p>
       ) : null}
       {footer ? (

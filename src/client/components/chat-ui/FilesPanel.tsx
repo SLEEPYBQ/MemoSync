@@ -1,3 +1,4 @@
+import { translateUiText, httpUiError, type HttpUiError } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 // Files workbench panel: Codex-style code viewing and editing. Open-file tabs
 // on top, breadcrumb row beneath, CodeMirror editor with syntax highlighting
@@ -425,8 +426,8 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           body: content,
         })
         if (!res.ok) {
-          const body = (await res.json().catch(() => null)) as { error?: string } | null
-          throw new Error(body?.error ?? t("files:saveFailedValue0", { v0: res.status }))
+          const body = (await res.json().catch(() => null)) as HttpUiError | null
+          throw new Error(httpUiError(body, t("files:saveFailedValue0", { v0: res.status })))
         }
         updateBuffer(path, {
           saving: false,
@@ -504,8 +505,8 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           body: JSON.stringify(body),
         })
         if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as { error?: { message?: string } } | null
-          throw new Error(payload?.error?.message ?? t("files:value0FailedValue1", { v0: body.op, v1: res.status }))
+          const payload = (await res.json().catch(() => null)) as HttpUiError | null
+          throw new Error(httpUiError(payload, t("files:value0FailedValue1", { v0: body.op, v1: res.status })))
         }
         return true
       } catch (err) {
@@ -882,7 +883,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
             onClick={() => setOpError(null)}
             title={t("files:value0ClickToDismiss", { v0: opError })}
           >
-            {opError}
+            {translateUiText(opError)}
           </button>
         ) : null}
       </div>
@@ -891,7 +892,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           filter.trim().length < 2 ? (
             <p className="px-2 py-1 text-xs text-muted-foreground">{t("files:typeAtLeast2CharactersToSearchFileContents")}</p>
           ) : contentError ? (
-            <p className="px-2 py-1 text-xs text-destructive">{contentError}</p>
+            <p className="px-2 py-1 text-xs text-destructive">{translateUiText(contentError)}</p>
           ) : contentSearching && !contentResults ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
               <Loader2 className="size-3 animate-spin" /> {t("files:searching")}</div>
@@ -932,7 +933,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
         ) : filter ? (
           indexError ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-destructive">
-              <span className="truncate">{indexError}</span>
+              <span className="truncate">{translateUiText(indexError)}</span>
               <button type="button" className="shrink-0 underline hover:text-foreground" onClick={() => void loadIndex()}>
                 {t("files:retry")}</button>
             </div>
@@ -1037,7 +1038,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       )}
       {activeBuffer?.saveError ? (
         <div className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-background/95 px-3 py-1.5 text-xs text-destructive shadow-sm">
-          <span className="truncate">{activeBuffer.saveError}</span>
+          <span className="truncate">{translateUiText(activeBuffer.saveError)}</span>
           <button
             type="button"
             className="shrink-0 underline hover:text-foreground"

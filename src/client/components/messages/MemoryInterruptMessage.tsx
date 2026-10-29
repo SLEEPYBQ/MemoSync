@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Recovery card: parked inline at the interruption point after a per-memory
@@ -182,7 +183,7 @@ export function MemoryInterruptMessage({ message }: Props) {
           })}
         </div>
       </div>
-      {error ? <p className="mt-2 text-destructive">{error}</p> : null}
+      {error ? <p className="mt-2 text-destructive">{translateUiText(error)}</p> : null}
     </section>
   )
 }

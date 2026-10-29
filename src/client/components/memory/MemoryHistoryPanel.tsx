@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { traceVerdictLabel } from "../../i18n/labels"
 import { t, useI18n, getLocale } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
@@ -286,7 +287,7 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
     return <p className="py-4 text-xs text-muted-foreground">{t("memory:loadingHistory")}</p>
   }
   if (status === "error") {
-    return <p className="py-4 text-xs text-destructive">{t("memory:failedToLoadHistory2")}{error}</p>
+    return <p className="py-4 text-xs text-destructive">{t("memory:failedToLoadHistory2")}{translateUiText(error)}</p>
   }
   if (events.length === 0) {
     return <p className="py-4 text-xs text-muted-foreground">{t("memory:noHistoryYet")}</p>
@@ -298,7 +299,7 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
 
   return (
     <div className="mt-2">
-      {error ? <p className="mb-2 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mb-2 text-xs text-destructive">{translateUiText(error)}</p> : null}
       {rows.map((row) =>
         row.type === "uses" ? (
           <UseGroupRow key={row.key} events={row.events} />

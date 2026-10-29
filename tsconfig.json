@@ -2,7 +2,11 @@
   "compilerOptions": {
     "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "lib": [
+      "ES2022",
+      "DOM",
+      "DOM.Iterable"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "Bundler",
@@ -14,7 +18,9 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": false,
-    "types": ["bun"],
+    "types": [
+      "bun"
+    ],
     "baseUrl": "."
   },
   "include": [
@@ -72,6 +78,8 @@
     "src/client/components/messages/TodoWriteMessage.tsx",
     "src/client/components/messages/EnvChangedMessage.tsx",
     "src/client/components/messages/EditDiffView.tsx",
-    "src/client/components/messages/ProcessingMessage.tsx"
+    "src/client/components/messages/ProcessingMessage.tsx",
+    "src/client/i18n/**/*.ts",
+    "src/client/i18n/**/*.tsx"
   ]
 }

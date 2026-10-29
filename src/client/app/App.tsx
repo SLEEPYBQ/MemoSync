@@ -1,3 +1,4 @@
+import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
@@ -107,7 +108,7 @@ function PasswordScreen({
           <form className="space-y-4" onSubmit={(event) => void handleSubmit(event)}>
             {error ? (
               <div className="rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-foreground">
-                {error}
+                {translateUiText(error)}
               </div>
             ) : null}
             <Input
@@ -125,7 +126,7 @@ function PasswordScreen({
               disabled={submitting || password.length === 0}
               className="h-11 w-full"
             >
-              {submitting ? "Unlocking..." : t("chat:unlock")}
+              {submitting ? t("chat:unlocking") : t("chat:unlock")}
             </Button>
           </form>
         </CardContent>

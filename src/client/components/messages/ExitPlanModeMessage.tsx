@@ -98,7 +98,7 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
               isDiscarded ? t("chat:discarded")
               : result?.clearContext ? t("chat:approvedClearedContext")
               : result?.confirmed ? t("chat:approved")
-              : result?.message ? `Adjusted: "${result.message}"`
+              : result?.message ? t("chat:adjustedPlan", { v0: result.message })
               : t("chat:adjustedPlan")
             }</em>
             <CornerDownLeft className="inline h-4 w-4 ml-1.5 -mt-0.5" />

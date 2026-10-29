@@ -131,7 +131,7 @@
   "noPlanProvided": "未提供计划",
   "approvedClearedContext": "已批准并清空上下文",
   "approved": "已批准",
-  "adjustedPlan": "已调整计划",
+  "adjustedPlan": "已调整：“{{v0}}”",
   "planPendingNewerPromptActive": "计划待确认（已有更新的消息）",
   "planPendingInOriginalSession": "计划在原会话中待确认",
   "approve": "批准",
@@ -265,5 +265,11 @@
   "toolGrouptodo_one": "{{count}}次待办更新",
   "toolGrouptodo_other": "{{count}}次待办更新",
   "toolGroupother_one": "{{count}}次工具调用",
-  "toolGroupother_other": "{{count}}次工具调用"
+  "toolGroupother_other": "{{count}}次工具调用",
+  "unlocking": "正在解锁…",
+  "serverTitle": "{{v0}}服务器",
+  "memoryAttention_one": "{{count}}条记忆需要处理",
+  "memoryAttention_other": "{{count}}条记忆需要处理",
+  "pendingMemoryDecisions_one": "{{count}}条候选记忆等待你的决定",
+  "pendingMemoryDecisions_other": "{{count}}条候选记忆等待你的决定"
 }

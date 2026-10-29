@@ -1,3 +1,4 @@
+import { translateUiText, translateServerUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
@@ -156,7 +157,8 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
   const violated = label.label === "violated"
   // Every row states its reason (2026-08-19 B2): the NA reason is the named
   // missing object; other labels fall back to the audit note.
-  const reason = label.label === "not_applicable" ? (label.missing ?? label.note) : label.note
+  const note = label.note ? translateServerUiText(label.noteUiText, label.note) : undefined
+  const reason = label.label === "not_applicable" ? (label.missing ?? note) : note
   return (
     <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 normal-case tracking-normal">
       <div className="pt-0.5">
@@ -171,7 +173,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
           {/* Fact/inference line: the reply's own [M-NN] citation is a
               self-report; a verdict only the audit produced is an inference. */}
           <span className="text-[11px] text-muted-foreground/70">
-            {label.cited ? "self-reported" : "audit-found"}
+            {label.cited ? t("memory:selfReported") : t("memory:auditFound")}
           </span>
         </div>
         {reason ? <p className="mt-0.5 leading-relaxed text-muted-foreground">{reason}</p> : null}
@@ -190,7 +192,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                 <CornerDownRight className="h-3 w-3" /> {t("memory:whereUsed")}</button>
             ) : null}
             {violated && !renderOptions.readonly ? done ? (
-              <span className="text-muted-foreground/80">{done}</span>
+              <span className="text-muted-foreground/80">{translateUiText(done)}</span>
             ) : (
               <>
                 {/* The cause remains authoritative for which repair is safe:
@@ -453,7 +455,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               ))}
             </TraceSection>
           ) : null}
-          {jumpFeedback ? <p className="text-[11px] text-muted-foreground">{jumpFeedback}</p> : null}
+          {jumpFeedback ? <p className="text-[11px] text-muted-foreground">{translateUiText(jumpFeedback)}</p> : null}
         </div>
       ) : null}
       {backVisible

@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { BrainCircuit, Slash } from "lucide-react"
 import { useState } from "react"
@@ -132,7 +133,7 @@ function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
       </Tooltip>
       {error ? (
         <span role="alert" className="text-xs text-destructive">
-          {error}
+          {translateUiText(error)}
         </span>
       ) : null}
     </>

@@ -429,5 +429,16 @@
   "fieldActive": "已启用",
   "fieldCandidate": "候选记忆",
   "fieldArchived": "已归档",
-  "fieldDiscarded": "已忽略"
+  "fieldDiscarded": "已忽略",
+  "scopeLabel": "范围",
+  "selfReported": "自行报告",
+  "auditFound": "审查发现",
+  "capturedFrom": "{{v0}}来自{{v1}}",
+  "inReview_one": "本次审阅{{count}}条",
+  "inReview_other": "本次审阅{{count}}条",
+  "proposedCount_one": "已提议{{count}}条",
+  "proposedCount_other": "已提议{{count}}条",
+  "suggestedCount_one": "已建议{{count}}条",
+  "suggestedCount_other": "已建议{{count}}条",
+  "violatedCount": "{{count}}条已违反"
 }

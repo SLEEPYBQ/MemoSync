@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { memoryStatusLabel } from "../../i18n/labels"
 import { t, useI18n } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
@@ -309,7 +310,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
             <div className="border-t border-border pt-3">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {item.scope === "session" ? t("memory:sessionScopedMoveToWidenReach") : "scope"}
+                {item.scope === "session" ? t("memory:sessionScopedMoveToWidenReach") : t("memory:scopeLabel")}
               </label>
               <div className="inline-flex max-w-full flex-wrap items-center rounded-lg border border-border p-[3px]">
                 {MOVE_SCOPES.map((scope) => {
@@ -387,7 +388,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               />
             ) : null}
 
-            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         ) : (
           <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} />

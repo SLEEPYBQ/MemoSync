@@ -1,3 +1,5 @@
+import { en } from "../../i18n/resources"
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
@@ -82,7 +84,7 @@ const DECISION_LABELS: Record<Exclude<NonNullable<MemoryTransferHydratedMessage[
 const SCOPE_ICONS = { session: MessagesSquare, project: FolderGit2, personal: User } as const
 
 export const MEMORY_TRANSFER_HELP_COPY =
-  t("memory:theseAreMemoriesSavedInOtherProjectsOrConversationsThat")
+  en.memory.theseAreMemoriesSavedInOtherProjectsOrConversationsThat
 
 /** Source and landing surfaces stay neutral; scope hues belong to chips. */
 const SCOPE_CARD_TINT: Record<MemoryScope, string> = {
@@ -635,7 +637,7 @@ function TransferSuggestionRow({
           </Button>
         </div>
       </div>
-      {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mt-1 text-xs text-destructive">{translateUiText(error)}</p> : null}
     </div>
   )
 }

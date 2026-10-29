@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import type { ButtonHTMLAttributes, KeyboardEvent, ReactNode } from "react"
 import { Loader2 } from "lucide-react"
@@ -205,7 +206,7 @@ export function SettingsNotice({
 
 export function SettingsErrorBanner({ message }: { message: string }) {
   useI18n()
-  return <SettingsNotice className="mb-6">{message}</SettingsNotice>
+  return <SettingsNotice className="mb-6">{translateUiText(message)}</SettingsNotice>
 }
 
 /** Loading and empty states: the same card everywhere, with an optional spinner. */

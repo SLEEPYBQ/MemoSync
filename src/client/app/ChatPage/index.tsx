@@ -38,7 +38,6 @@ import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
 import {
-  EMPTY_STATE_TEXT,
   EMPTY_STATE_TYPING_INTERVAL_MS,
   hasFileDragTypes,
   sameContextWindowSnapshot,
@@ -52,6 +51,7 @@ export {
 
 function useEmptyStateTyping(showEmptyState: boolean, activeChatId: string | null) {
   useI18n()
+  const emptyStateText = t("chat:whatAreWeBuilding")
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
 
@@ -64,16 +64,16 @@ function useEmptyStateTyping(showEmptyState: boolean, activeChatId: string | nul
     let characterIndex = 0
     const interval = window.setInterval(() => {
       characterIndex += 1
-      setTypedEmptyStateText(EMPTY_STATE_TEXT.slice(0, characterIndex))
+      setTypedEmptyStateText(emptyStateText.slice(0, characterIndex))
 
-      if (characterIndex >= EMPTY_STATE_TEXT.length) {
+      if (characterIndex >= emptyStateText.length) {
         window.clearInterval(interval)
         setIsEmptyStateTypingComplete(true)
       }
     }, EMPTY_STATE_TYPING_INTERVAL_MS)
 
     return () => window.clearInterval(interval)
-  }, [showEmptyState, activeChatId])
+  }, [showEmptyState, activeChatId, emptyStateText])
 
   return { typedEmptyStateText, isEmptyStateTypingComplete }
 }

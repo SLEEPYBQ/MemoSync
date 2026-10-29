@@ -77,5 +77,9 @@
   "noRecentBranches": "暂无最近分支。",
   "noOtherBranches": "没有匹配搜索的其他分支。",
   "noLocalBranches": "暂无本地分支。",
-  "noRemoteBranches": "暂无远程分支。"
+  "noRemoteBranches": "暂无远程分支。",
+  "mergeCommits_one": "将从{{source}}向{{target}}合并{{count}}个提交。",
+  "mergeCommits_other": "将从{{source}}向{{target}}合并{{count}}个提交。",
+  "mergeConflictingCommits_one": "将从{{source}}向{{target}}合并{{count}}个提交，但预计会产生冲突。",
+  "mergeConflictingCommits_other": "将从{{source}}向{{target}}合并{{count}}个提交，但预计会产生冲突。"
 }

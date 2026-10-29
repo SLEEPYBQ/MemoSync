@@ -138,6 +138,6 @@ describe("one Memory Board", () => {
   test("does not offer Unmute for a permanently erased sensitive proposal", async () => {
     const source = await Bun.file(new URL("./MemoryBoardPage.tsx", import.meta.url)).text()
     expect(source).toContain("m.canUnmute ? (")
-    expect(source).toContain("Permanently removed")
+    expect(source).toContain('t("board:permanentlyRemoved")')
   })
 })

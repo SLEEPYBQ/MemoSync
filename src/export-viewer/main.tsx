@@ -27,7 +27,7 @@ function syncThemeMetadata(theme: "light" | "dark") {
       tag.setAttribute("name", "theme-color")
       document.head.appendChild(tag)
     }
-    tag.setAttribute(t("export:content"), backgroundColor)
+    tag.setAttribute("content", backgroundColor)
   }
   document.documentElement.style.colorScheme = theme
 }

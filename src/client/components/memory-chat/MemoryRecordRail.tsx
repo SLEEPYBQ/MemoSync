@@ -308,7 +308,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                 ) : turn.candidates.items.length === 0 ? (
                   t("memory:noneProposed")
                 ) : (
-                  <>{turn.candidates.items.length} {t("memory:proposed")}<DecisionWord decision={turn.candidates.decision} /></>
+                  <>{t("memory:proposedCount", { count: turn.candidates.items.length })}<DecisionWord decision={turn.candidates.decision} /></>
                 )}
               </StageRow>
             ) : null}
@@ -335,7 +335,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                 ) : turn.transfers.items.length === 0 ? (
                   t("memory:nothingWorthBringingIn")
                 ) : (
-                  <>{turn.transfers.items.length} {t("memory:suggested")}<DecisionWord decision={turn.transfers.decision} /></>
+                  <>{t("memory:suggestedCount", { count: turn.transfers.items.length })}<DecisionWord decision={turn.transfers.decision} /></>
                 )}
               </StageRow>
             ) : null}
@@ -452,7 +452,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                     {auditCounts.violated > 0 ? (
                       <>
                         {auditCounts.shaped > 0 || auditCounts.noEffect > 0 ? " · " : ""}
-                        <span className="font-medium text-destructive">{auditCounts.violated} {t("memory:violated")}</span>
+                        <span className="font-medium text-destructive">{t("memory:violatedCount", { count: auditCounts.violated })}</span>
                       </>
                     ) : null}
                   </>

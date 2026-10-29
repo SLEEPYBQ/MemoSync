@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 // Memory files (DG5): the Markdown projections are the developer-native view
 // of the memory store — one file per scope (personal + each project), shared
@@ -156,8 +157,8 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
       ) : null}
 
       <p className="mt-1.5 break-all font-mono text-[11px] text-muted-foreground">{selectedEntry?.path ?? file?.path}</p>
-      {lastReport ? <p className="mt-1.5 text-xs text-foreground/80">{lastReport}</p> : null}
-      {error ? <p className="mt-1.5 text-xs text-destructive">{error}</p> : null}
+      {lastReport ? <p className="mt-1.5 text-xs text-foreground/80">{translateUiText(lastReport)}</p> : null}
+      {error ? <p className="mt-1.5 text-xs text-destructive">{translateUiText(error)}</p> : null}
 
       <div className="mt-2">
         <ExpandableRow

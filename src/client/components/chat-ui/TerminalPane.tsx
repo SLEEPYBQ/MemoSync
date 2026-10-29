@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useRef, useState, type MutableRefObject } from "react"
 import { useTheme } from "../../hooks/useTheme"
@@ -556,7 +557,7 @@ export function TerminalPane({
       <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden px-3 py-1">
         <div ref={containerRef} className="memosync-terminal min-h-0 min-w-0 flex-1 overflow-hidden w-full" />
       </div>
-      {error ? <div className="px-3 py-1 text-xs text-destructive">{t("terminal:terminalError")}{error}</div> : null}
+      {error ? <div className="px-3 py-1 text-xs text-destructive">{t("terminal:terminalError")}{translateUiText(error)}</div> : null}
     </div>
   )
 }

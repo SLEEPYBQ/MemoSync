@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
@@ -167,7 +168,7 @@ export function MemorySection({ state }: { state: MemoryState }) {
 
   return (
     <>
-      {error ? <SettingsErrorBanner message={error} /> : null}
+      {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       <MemorySettingsGroups
         settings={state.appSettings}
 

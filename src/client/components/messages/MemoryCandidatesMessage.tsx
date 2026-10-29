@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { memoryScopeLabel } from "../../lib/memoryCitations"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
@@ -226,7 +227,7 @@ function AcceptedCandidateCard({
                   {t("memory:undoAccept")}</Button>
               ) : null}
             </div>
-            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         }
       >
@@ -293,7 +294,7 @@ function AutoAppliedCard({
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{candidate.content}</p>
       <div className="mt-2 flex items-center justify-end gap-2">
-        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
         <Button variant="ghost" size="xs" disabled={busy} onClick={() => void handleRevert()}>
           {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} {t("memory:revert")}</Button>
       </div>
@@ -509,7 +510,7 @@ export function MemoryCandidateCard({
             {busy === "restore" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
             {t("memory:restoreForReview")}</Button>
         ) : null}
-        {error ? <span className="text-destructive">{error}</span> : null}
+        {error ? <span className="text-destructive">{translateUiText(error)}</span> : null}
       </div>
     )
   }
@@ -654,7 +655,7 @@ export function MemoryCandidateCard({
           </Button>
         </div>
       </div>
-      {error ? <p className="mt-2 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{translateUiText(error)}</p> : null}
     </div>
   )
 }

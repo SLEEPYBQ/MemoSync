@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 2 (redesign 2026-08-07 §3): suggested changes to saved memories. Three
@@ -338,7 +339,7 @@ function CheckupSuggestionRow({
   if (resolvedOutcome) {
     return (
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-        <MemoryCitationChip id={id} /> — {resolvedOutcome}
+        <MemoryCitationChip id={id} /> — {translateUiText(resolvedOutcome)}
       </div>
     )
   }
@@ -399,7 +400,7 @@ function CheckupSuggestionRow({
       </div>
       <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{suggestion.reason}</p>
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">{actions}</div>
-      {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mt-1 text-xs text-destructive">{translateUiText(error)}</p> : null}
     </div>
   )
 }

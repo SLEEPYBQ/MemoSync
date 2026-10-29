@@ -1,5 +1,5 @@
-import { formatRelativeTime as relativeTime } from "../../i18n"
-import { t, useI18n } from "../../i18n"
+import { translateUiText } from "../../i18n/uiText"
+import { formatRelativeTime as relativeTime, t, useI18n } from "../../i18n"
 import { PatchDiff } from "@pierre/diffs/react"
 import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
@@ -784,7 +784,7 @@ function BranchSwitcher({
                 <span>{t("git:loadingBranches")}</span>
               </div>
             ) : error ? (
-              <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{error}</div>
+              <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{translateUiText(error)}</div>
             ) : entryView === "pull_requests" ? (
               <BranchListSection
                 title={t("git:openPRs")}

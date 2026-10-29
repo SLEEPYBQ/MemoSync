@@ -59,7 +59,7 @@
   "terminalMinColumnWidth": "Terminal Min Column Width",
   "unableToSaveKeybindings": "Unable to save keybindings.",
   "commaSeparatedShortcuts": "Comma-separated shortcuts.",
-  "resetTo": "Reset to",
+  "resetTo": "Reset to ",
   "turnOnUseMemoryToChangeThis": " Turn on Use Memory to change this.",
   "turnOnLearnFromChatsToChangeThis": " Turn on Learn From Chats to change this.",
   "loadingMemoryChangesPreference": " Loading memory changes preference…",
@@ -172,5 +172,16 @@
   "effortExtraHigh": "Extra High",
   "effortProviderDefault": "Provider default",
   "effortOff": "Off",
-  "resetShortcut": "Reset to <code>{{shortcut}}</code>"
+  "resetShortcut": "Reset to <code>{{shortcut}}</code>",
+  "checking": "Checking…",
+  "updating": "Updating…",
+  "previewLabel": "Preview: ",
+  "defaultHint": " (default)",
+  "connectingLabel": "connecting",
+  "connectedLabel": "connected",
+  "disconnectedLabel": " disconnected",
+  "notificationPermissionDenied": "Show a system notification when a chat starts waiting on you or turns unread. Notifications are blocked. Allow notifications for this site in browser site settings.",
+  "notificationPermissionUnsupported": "Show a system notification when a chat starts waiting on you or turns unread. Notifications are unavailable in this browser or on this insecure connection. Use HTTPS and check browser site settings.",
+  "notificationPermissionDefault": "Show a system notification when a chat starts waiting on you or turns unread. Choosing When Unfocused or Always asks for browser permission.",
+  "notificationPermissionGranted": "Show a system notification when a chat starts waiting on you or turns unread."
 }

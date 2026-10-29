@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { Info } from "lucide-react"
 import { MemoryBadge } from "./MemoryBadge"
@@ -56,7 +57,7 @@ export function MemorySettingsBanner() {
         </Button>
         {error ? (
           <span role="alert" className="w-full text-destructive">
-            {error}
+            {translateUiText(error)}
           </span>
         ) : null}
       </div>

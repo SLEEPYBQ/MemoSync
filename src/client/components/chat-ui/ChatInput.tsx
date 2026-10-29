@@ -1,3 +1,4 @@
+import { httpUiError } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowUp, Paperclip } from "lucide-react"
@@ -106,7 +107,7 @@ export function trimTrailingPastedNewlines(text: string) {
 
 export function createUploadFormData(file: File) {
   const formData = new FormData()
-  formData.append(t("chat:files"), file)
+  formData.append("files", file)
   formData.append("clientFileSizes", String(file.size))
   return formData
 }
@@ -508,7 +509,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           if (!response.ok) {
             const payload = await response.json().catch(() => ({}))
-            throw new Error(typeof payload.error === "string" ? payload.error : t("chat:uploadFailed"))
+            throw new Error(httpUiError(payload, t("chat:uploadFailed")))
           }
 
           const payload = await response.json() as { attachments: ChatAttachment[] }

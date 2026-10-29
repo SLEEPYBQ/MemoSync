@@ -1,3 +1,4 @@
+import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
 import { MemoryBadge } from "../components/memory/MemoryBadge"
 import { MEMORY_CARD, MemoryEmpty } from "../components/memory/MemorySurface"
@@ -610,7 +611,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           {status === "loading" && items.length === 0 ? (
             <p className="text-sm text-muted-foreground">{t("board:loadingMemories")}</p>
           ) : null}
-          {status === "error" ? <p className="text-sm text-destructive">{t("board:failedToLoadMemories")}{error}</p> : null}
+          {status === "error" ? <p className="text-sm text-destructive">{t("board:failedToLoadMemories")}{translateUiText(error)}</p> : null}
           {actionError ? (
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
               <span>{actionError}</span>
@@ -639,7 +640,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 <div className="mb-3 flex flex-wrap items-baseline gap-2">
                   <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">{t("board:step1")}</span>
                   <h2 className="text-sm font-semibold text-foreground">{t("board:reviewNewMemoryCandidates")}</h2>
-                  <span className="ml-auto text-xs text-muted-foreground">{candidateReviewItems.length} {t("board:inThisReview")}</span>
+                  <span className="ml-auto text-xs text-muted-foreground">{t("memory:inReview", { count: candidateReviewItems.length })}</span>
                 </div>
                 <MemoryCandidateReviewStation
                   candidates={candidateReviewItems}

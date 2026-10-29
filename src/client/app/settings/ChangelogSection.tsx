@@ -164,7 +164,7 @@ export function ChangelogSection({
             onClick={onCheckForUpdates}
             disabled={isChecking || isUpdating}
           >
-            {isChecking ? "Checking…" : t("settings:checkForUpdates")}
+            {isChecking ? t("settings:checking") : t("settings:checkForUpdates")}
           </SettingsActionButton>
         </div>
       ) : null}
@@ -211,7 +211,7 @@ export function ChangelogSection({
                       disabled={isUpdating}
                       icon={<DownloadCloud />}
                     >
-                      {isUpdating ? "Updating…" : t("common:update")}
+                      {isUpdating ? t("settings:updating") : t("common:update")}
                     </SettingsActionButton>
                   ) : null}
                 </div>

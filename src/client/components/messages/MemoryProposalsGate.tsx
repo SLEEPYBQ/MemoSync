@@ -1,3 +1,4 @@
+import { en } from "../../i18n/resources"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 1 (redesign 2026-08-07 §3): Review New Memory Candidates. ONE
@@ -42,10 +43,10 @@ const DECISION_LABELS: Record<NonNullable<MemoryProposalsHydratedMessage["decisi
 }
 
 export const MEMORY_PROPOSALS_HELP_COPY =
-  t("memory:theseAreChangesThisConversationProposedToYourSavedMemory")
+  en.memory.theseAreChangesThisConversationProposedToYourSavedMemory
 
 export const PERMANENT_CANDIDATE_DISMISSAL_COPY =
-  t("memory:dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained")
+  en.memory.dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained
 
 export type CandidateReviewState = "candidate" | "accepted" | "discarded" | "optimistic-dismissed" | "missing"
 
@@ -152,7 +153,7 @@ export function MemoryProposalsGate({
   if (renderOptions.readonly) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        {t("memory:step1ReviewNewMemoryCandidates2")}{total} {total === 1 ? "candidate" : "candidates"} {t("memory:omittedFromThisExportForPrivacy")}</div>
+        {t("memory:step1ReviewNewMemoryCandidates2")}{t("memory:candidateCount", { count: total })} {t("memory:omittedFromThisExportForPrivacy")}</div>
     )
   }
 
@@ -217,7 +218,7 @@ export function MemoryProposalsGate({
           </HoverCardContent>
         </HoverCard>
         <span className="ml-auto text-xs text-muted-foreground">
-          {handled} {t("memory:of")}{total} {t("memory:handled")}</span>
+          {t("memory:handledProgress", { handled, total })}</span>
       </div>
 
       <div className="mt-3 flex flex-col gap-1.5">
@@ -240,7 +241,7 @@ export function MemoryProposalsGate({
           if (reviewState === "optimistic-dismissed") {
             return (
               <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-                {PERMANENT_CANDIDATE_DISMISSAL_COPY}
+                {t("memory:dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained")}
               </div>
             )
           }
@@ -258,7 +259,7 @@ export function MemoryProposalsGate({
           }
           return (
             <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-              {PERMANENT_CANDIDATE_DISMISSAL_COPY}
+              {t("memory:dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained")}
             </div>
           )
         })}

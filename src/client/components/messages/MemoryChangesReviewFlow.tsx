@@ -299,7 +299,7 @@ export function FocusedMemoryCandidateStep({
             <h2 className="text-sm font-medium text-foreground">
               {currentProposal ? t("memory:otherMemoryCandidates") : t("memory:reviewNewMemoryCandidates")}
             </h2>
-            <span className="ml-auto text-xs text-muted-foreground">{remaining.length} {t("memory:inThisReview")}</span>
+            <span className="ml-auto text-xs text-muted-foreground">{t("memory:inReview", { count: remaining.length })}</span>
           </div>
           <MemoryCandidateReviewStation
             candidates={remaining}

@@ -1,3 +1,4 @@
+import { chatTitle } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
 import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
@@ -700,7 +701,7 @@ function AppSidebarImpl({
                     onClose()
                   }}
                 >
-                  <span className="min-w-0 truncate text-sm">{chat.title}</span>
+                  <span className="min-w-0 truncate text-sm">{chatTitle(chat)}</span>
                   <span className="shrink-0 text-xs text-muted-foreground">
                     {formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)}
                   </span>

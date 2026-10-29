@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useState } from "react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
@@ -142,25 +143,25 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
   const update = state.updateSnapshot
   const isUpdating = update?.status === "updating" || update?.status === "restart_pending"
   const updateActionLabel = isUpdating
-    ? "Updating…"
+    ? t("settings:updating")
     : update?.status === "checking"
-      ? "Checking…"
+      ? t("settings:checking")
       : update?.updateAvailable
         ? t("common:update")
         : t("settings:checkForUpdates")
 
   return (
     <>
-      {error ? <SettingsErrorBanner message={error} /> : null}
+      {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       {state.appSettings?.warning ? (
-        <div className="mb-6 px-[17px] text-sm text-muted-foreground">{state.appSettings.warning}</div>
+        <div className="mb-6 px-[17px] text-sm text-muted-foreground">{translateUiText(state.appSettings.warning)}</div>
       ) : null}
       <SettingsGroups>
         {SELF_UPDATE_ENABLED ? (
           <SettingsGroup>
             <SettingsRow
               def={SETTINGS_ROWS.applicationUpdate}
-              description={`Current: ${update?.currentVersion ?? appVersion}. Latest: ${update?.latestVersion ?? t("common:unknown")}. ${update?.status ?? t("settings:notCheckedYet")}${update?.error ? `. ${update.error}` : ""}`}
+              description={t("settings:versionStatus", { current: update?.currentVersion ?? appVersion, latest: update?.latestVersion ?? t("common:unknown"), status: update?.status ?? t("settings:notCheckedYet"), error: update?.error ? `. ${update.error}` : "" })}
             >
               <SettingsActionButton
                 disabled={isUpdating || update?.status === "checking"}
@@ -298,7 +299,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
               <SettingsField
                 hint={
                   <>
-                    {"Preview: "}
+                    {t("settings:previewLabel")}
                     <span className="font-mono">
                       {editorDraft
                         .replaceAll("{path}", "/path/to/project")
@@ -325,7 +326,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
         <SettingsGroup title={t("settings:terminal")}>
           <SettingsRow def={SETTINGS_ROWS.terminalScrollback} wideControl>
             <SettingsField
-              hint={t("settings:value0Value1LinesValue2", { v0: MIN_TERMINAL_SCROLLBACK, v1: MAX_TERMINAL_SCROLLBACK, v2: terminal.scrollbackLines === DEFAULT_TERMINAL_SCROLLBACK ? " (default)" : "" })}
+              hint={t("settings:value0Value1LinesValue2", { v0: MIN_TERMINAL_SCROLLBACK, v1: MAX_TERMINAL_SCROLLBACK, v2: terminal.scrollbackLines === DEFAULT_TERMINAL_SCROLLBACK ? t("settings:defaultHint") : "" })}
             >
               <Input
                 aria-label={t("settings:terminalScrollback")}
@@ -343,7 +344,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
           </SettingsRow>
           <SettingsRow def={SETTINGS_ROWS.terminalMinColumnWidth} wideControl>
             <SettingsField
-              hint={t("settings:value0Value1PxValue2", { v0: MIN_TERMINAL_MIN_COLUMN_WIDTH, v1: MAX_TERMINAL_MIN_COLUMN_WIDTH, v2: terminal.minColumnWidth === DEFAULT_TERMINAL_MIN_COLUMN_WIDTH ? " (default)" : "" })}
+              hint={t("settings:value0Value1PxValue2", { v0: MIN_TERMINAL_MIN_COLUMN_WIDTH, v1: MAX_TERMINAL_MIN_COLUMN_WIDTH, v2: terminal.minColumnWidth === DEFAULT_TERMINAL_MIN_COLUMN_WIDTH ? t("settings:defaultHint") : "" })}
             >
               <Input
                 aria-label={t("settings:terminalMinColumnWidth")}

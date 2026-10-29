@@ -1,3 +1,5 @@
+import type { UiTextReference } from "../../../shared/ui-copy"
+import { translateUiText, translateServerUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
@@ -67,7 +69,7 @@ const DEFAULT_EXPECTED_USE = "Apply this memory while completing the task."
 export function WorkingMemorySelectionError({ error, onRetry, disabled = false }: { error: string; onRetry: () => void; disabled?: boolean }) {
   useI18n()
   return <div role="alert" className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
-    <p className="font-medium text-destructive">{error}</p>
+    <p className="font-medium text-destructive">{translateUiText(error)}</p>
     <p className="mt-1 text-muted-foreground">{t("memory:chooseItemsFromTheMemoryPoolOrRetryTheSelection")}</p>
     <Button type="button" size="xs" variant="outline" className="mt-2" onClick={onRetry} disabled={disabled}>{t("memory:retrySelection")}</Button>
   </div>
@@ -223,7 +225,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     [injectedIds, planningIds],
   )
   const failedSelected = injectedIds.filter((id) => failedPlanningIds.has(id))
-  const selectionError = failedSelected.length ? t("memory:expectedUsePlanningFailedForTheSelectedItems") : !selectionRecovered ? message.selectionError : undefined
+  const selectionError = failedSelected.length ? t("memory:expectedUsePlanningFailedForTheSelectedItems") : !selectionRecovered && message.selectionError ? translateServerUiText(message.selectionErrorUiText, message.selectionError) : undefined
 
   async function planExpectedUses(ids: string[]) {
     const uniqueIds = [...new Set(ids)].filter((id) => memoriesById.has(id))
@@ -308,7 +310,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const [reviseText, setReviseText] = useState("")
   const [revising, setRevising] = useState(false)
   const [reviseStatusIndex, setReviseStatusIndex] = useState(0)
-  const [exchanges, setExchanges] = useState<Array<{ q: string; a: string }>>([])
+  const [exchanges, setExchanges] = useState<Array<{ q: string; a: string; uiText?: UiTextReference }>>([])
   useEffect(() => {
     if (!revising) return
     const timer = setInterval(() => setReviseStatusIndex((i) => (i + 1) % REVISE_STATUS_WORDS().length), 1100)
@@ -361,7 +363,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         if (addedIds.length) void planExpectedUses(addedIds)
       }
       setSelectionRecovered(true)
-      setExchanges((prev) => [...prev, { q: instruction, a: result.reply }])
+      setExchanges((prev) => [...prev, { q: instruction, a: result.reply, uiText: result.replyUiText }])
     } catch (err) {
       setExchanges((prev) => [
         ...prev,
@@ -621,7 +623,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                     <div className="mr-auto flex max-w-[85%] items-start gap-1.5">
                       <MemoSyncIcon animated="none" className="mt-1 size-3.5 shrink-0" />
                       <div className="min-w-0 rounded-xl rounded-bl-sm border border-border/60 px-2.5 py-1">
-                        <ReplyMarkdown text={exchange.a} />
+                        <ReplyMarkdown text={translateServerUiText(exchange.uiText, exchange.a)} />
                       </div>
                     </div>
                   </div>

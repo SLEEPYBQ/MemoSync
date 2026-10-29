@@ -64,14 +64,6 @@ export function getChatBrowserNotificationPermission(): NotificationPermission |
 }
 
 export function getChatBrowserNotificationDescription(permission: NotificationPermission | "unsupported") {
-  const base = t("settings:showASystemNotificationWhenAChatStartsWaitingOn")
-  if (permission === "denied")
-    return base + t("settings:notificationsAreBlockedAllowNotificationsForThisSiteInBrowser")
-  if (permission === "unsupported")
-    return (
-      base +
-      t("settings:notificationsAreUnavailableInThisBrowserOrOnThisInsecure")
-    )
-  if (permission === "default") return base + t("settings:choosingWhenUnfocusedOrAlwaysAsksForBrowserPermission")
-  return base
+  const keys = { denied: "settings:notificationPermissionDenied", unsupported: "settings:notificationPermissionUnsupported", default: "settings:notificationPermissionDefault", granted: "settings:notificationPermissionGranted" } as const
+  return t(keys[permission])
 }

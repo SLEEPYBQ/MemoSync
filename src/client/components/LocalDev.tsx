@@ -1,3 +1,4 @@
+import { translateUiText } from "../i18n/uiText"
 import { Trans } from "react-i18next"
 import { t, useI18n } from "../i18n"
 import {
@@ -346,7 +347,7 @@ export function LocalDevContent({
                 <div className="flex items-center justify-around gap-6 py-4 px-2">
                   <HowItWorksItem icon={Terminal} title={`${DISPLAY_NAME} CLI`} subtitle={t("chat:onYourMachine")} />
                   <HowItWorksConnector />
-                  <HowItWorksItem icon={Monitor} title={`${DISPLAY_NAME} Server`} subtitle={t("chat:localWebSocket")} />
+                  <HowItWorksItem icon={Monitor} title={t("chat:serverTitle", { v0: DISPLAY_NAME })} subtitle={t("chat:localWebSocket")} />
                   <HowItWorksConnector />
                   <HowItWorksItem icon={CodeXml} title={`${DISPLAY_NAME} UI`} subtitle={t("chat:projectChat")} />
                 </div>
@@ -451,7 +452,7 @@ export function LocalDevContent({
 
             {commandError ? (
               <div className="mt-4 w-full max-w-[840px] rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
-                {commandError}
+                {translateUiText(commandError)}
               </div>
             ) : null}
 
@@ -471,7 +472,7 @@ export function LocalDevContent({
                       <span className={MEMORY_SCOPE_TEXT_CLASSES.session}>{summary.byScope.session} {t("chat:session")}</span>
                     </>
                   }
-                  badge={<CardBadge count={attentionCount} countTitle={t("chat:value0Value1Attention", { v0: attentionCount, v1: attentionCount === 1 ? t("chat:memoryNeeds") : t("chat:memoriesNeed") })} />}
+                  badge={<CardBadge count={attentionCount} countTitle={t("chat:memoryAttention", { count: attentionCount })} />}
                   onClick={() => navigate("/memory")}
                 />
               )}
@@ -481,7 +482,7 @@ export function LocalDevContent({
                   title={t("chat:reviewCandidates")}
                   description={
                     summary.candidates > 0
-                      ? t("chat:value0ProposedValue1WaitingForYourDecision", { v0: summary.candidates, v1: summary.candidates === 1 ? t("chat:memoryIs") : t("chat:memoriesAre") })
+                      ? t("chat:pendingMemoryDecisions", { count: summary.candidates })
                       : t("chat:proposedMemoriesWaitHereForReviewBeforeTheyBecomeActive")
                   }
                   badge={<CardBadge count={summary.candidates} countTitle={t("chat:value0ToReview", { v0: summary.candidates })} />}

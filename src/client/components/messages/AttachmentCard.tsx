@@ -1,5 +1,4 @@
-import { formatNumber } from "../../i18n"
-import { t, useI18n } from "../../i18n"
+import { formatNumber, t, useI18n } from "../../i18n"
 import {
   File,
   FileArchive,

@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useState } from "react"
 import type {
@@ -104,7 +105,7 @@ export function ProvidersSection({
 
   return (
     <>
-      {error ? <SettingsErrorBanner message={error} /> : null}
+      {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       <SettingsGroups>
         <SettingsGroup title={t("settings:defaultProvider")}>
           <SettingsRow def={SETTINGS_ROWS.defaultProvider}>

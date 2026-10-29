@@ -1,3 +1,4 @@
+import { chatTitle } from "../i18n/uiText"
 import { t } from "../i18n"
 import type { SidebarData } from "../../shared/types"
 
@@ -89,7 +90,7 @@ export function getChatNotificationEvents(previous: SidebarData | null, next: Si
       events.push({
         chatId: chat.chatId,
         projectTitle: group.title?.trim() || group.localPath,
-        chatTitle: chat.title.trim() || t("chat:untitledChat"),
+        chatTitle: chatTitle(chat).trim() || t("chat:untitledChat"),
         message: becameWaiting ? t("chat:waitingForYourResponse") : null,
       })
     }

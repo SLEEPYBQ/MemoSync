@@ -172,5 +172,16 @@
   "effortExtraHigh": "极高",
   "effortProviderDefault": "提供方默认",
   "effortOff": "关闭",
-  "resetShortcut": "重置为<code>{{shortcut}}</code>"
+  "resetShortcut": "重置为<code>{{shortcut}}</code>",
+  "checking": "正在检查…",
+  "updating": "正在更新…",
+  "previewLabel": "预览：",
+  "defaultHint": "（默认）",
+  "connectingLabel": "正在连接",
+  "connectedLabel": "已连接",
+  "disconnectedLabel": "已断开",
+  "notificationPermissionDenied": "对话开始等待回复或有未读消息时，显示系统通知。通知已被屏蔽。请在浏览器的网站设置中允许本站发送通知。",
+  "notificationPermissionUnsupported": "对话开始等待回复或有未读消息时，显示系统通知。此浏览器或不安全连接不支持通知。请使用HTTPS并检查浏览器的网站设置。",
+  "notificationPermissionDefault": "对话开始等待回复或有未读消息时，显示系统通知。选择“未聚焦时”或“始终”将请求浏览器通知权限。",
+  "notificationPermissionGranted": "对话开始等待回复或有未读消息时，显示系统通知。"
 }

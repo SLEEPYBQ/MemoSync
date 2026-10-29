@@ -3,7 +3,7 @@
   "addQuickAction": "Add quick action",
   "noQuickActions": "No quick actions.",
   "runQuickAction": "Run quick action",
-  "refresh": "Refresh",
+  "refresh": " Refresh",
   "enterAURL": "Enter a URL",
   "openExternal": "Open external",
   "zoomOut": "Zoom out",
@@ -16,5 +16,5 @@
   "hideOtherProjects": "Hide other projects",
   "browserPanel": "Browser panel",
   "otherProjectsValue0": "Other projects ({{v0}})",
-  "home": "Home"
+  "home": " Home"
 }

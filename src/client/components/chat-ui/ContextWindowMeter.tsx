@@ -1,5 +1,4 @@
-import { formatNumber } from "../../i18n"
-import { t, useI18n } from "../../i18n"
+import { formatNumber, t, useI18n } from "../../i18n"
 import { cn } from "../../lib/utils"
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "../../lib/contextWindow"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
@@ -11,7 +10,7 @@ function formatPercentage(value: number | null): string | null {
   if (value < 10) {
     return formatNumber(value / 100, { style: "percent", maximumFractionDigits: 1 })
   }
-  return `${Math.round(value)}%`
+  return formatNumber(value / 100, { style: "percent", maximumFractionDigits: 0 })
 }
 
 export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) {

@@ -1,3 +1,4 @@
+import { translateUiText } from "../../i18n/uiText"
 import { Trans } from "react-i18next"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useMemo, useState } from "react"
@@ -89,10 +90,10 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
 
   return (
     <>
-      {keybindingsError ? <SettingsErrorBanner message={keybindingsError} /> : null}
+      {keybindingsError ? <SettingsErrorBanner message={translateUiText(keybindingsError)} /> : null}
       {resolvedKeybindings.warning ? (
         <SettingsNotice tone="warning" className="mb-6">
-          {resolvedKeybindings.warning}
+          {translateUiText(resolvedKeybindings.warning)}
         </SettingsNotice>
       ) : null}
       <SettingsGroup>

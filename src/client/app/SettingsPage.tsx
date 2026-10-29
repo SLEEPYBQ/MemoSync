@@ -1,3 +1,4 @@
+import { translateUiText } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { Info, Loader2, LogOut, Menu } from "lucide-react"
@@ -276,7 +277,7 @@ export function SettingsPage() {
                   <ChangelogSection
                     status={changelogStatus}
                     releases={releases}
-                    error={changelogError}
+                    error={translateUiText(changelogError)}
                     onRetry={retryChangelog}
                     updateSnapshot={state.updateSnapshot}
                     currentVersion={appVersion}
@@ -315,7 +316,7 @@ export function SettingsPage() {
               </div>
               <div className="hidden md:block">
                 <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:connection")}</div>
-                <div className="text-foreground/80">{state.connectionStatus}</div>
+                <div className="text-foreground/80">{t(({ connecting: "settings:connectingLabel", connected: "settings:connectedLabel", disconnected: "settings:disconnectedLabel" } as const)[state.connectionStatus])}</div>
               </div>
               <div className="hidden md:block">
                 <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">
