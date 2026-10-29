@@ -226,7 +226,7 @@ function AcceptedCandidateCard({
           </div>
         }
       >
-        <span className="inline-flex items-start gap-2 text-sm text-muted-foreground">
+        <span className="inline-flex items-start gap-2 text-left text-sm text-muted-foreground">
           <Check aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-foreground" />
           saved as {candidate.id} · this turn&apos;s focus is decided in Working Memory
         </span>
@@ -275,10 +275,10 @@ function AutoAppliedCard({
       <div className="flex flex-wrap items-center gap-2">
         {/* Delegation move: the stamp pops into place — quick and confident. */}
         <StampIn freshAt={freshAt}>
-          <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
-            <Zap className="h-3 w-3" />
+          <span className="inline-flex items-center gap-2 text-sm font-semibold text-success-foreground">
+            <Zap aria-hidden className="h-4 w-4 text-muted-foreground" />
             auto-applied
-          </MemoryBadge>
+          </span>
         </StampIn>
         {revisionOf ? (
           <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">

@@ -83,8 +83,7 @@ const SCOPE_ICONS = { session: MessagesSquare, project: FolderGit2, personal: Us
 export const MEMORY_TRANSFER_HELP_COPY =
   "These are memories saved in other projects or conversations that could help here. The Encoder removes source-specific details and the Decoder adapts the rule to this project. Bring in saves the result to the Visible Memory Pool. Before Claude starts, the Working Memory review decides whether that saved memory is focused for this turn."
 
-/** Both memory cards wear their scope's color — the same three hues the
- * MemoSync icon fans out. The localized card switches live with the picker. */
+/** Source and landing surfaces stay neutral; scope hues belong to chips. */
 const SCOPE_CARD_TINT: Record<MemoryScope, string> = {
   session: "border-border/70 bg-background/60 dark:bg-muted/40",
   project: "border-border/70 bg-background/60 dark:bg-muted/40",
@@ -518,7 +517,7 @@ function TransferSuggestionRow({
             <span className="truncate">Source · {suggestion.sourceLabel}</span>
             <MemoryBadge
               className={cn(
-                "ml-0.5 inline-flex w-fit items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-4",
+                "ml-0.5 inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-4",
                 MEMORY_SCOPE_CHIP_CLASSES[suggestion.sourceScope],
               )}
             >

@@ -47,7 +47,7 @@ interface Props {
 
 const PULSE_CLASSES: Record<ReturnType<typeof turnPulse>, string> = {
   violated: "bg-destructive",
-  shaped: "bg-foreground/60",
+  shaped: "bg-success",
   quiet: "border border-muted-foreground/40 bg-background",
 }
 
@@ -67,7 +67,7 @@ function truncate(s: string, n: number): string {
 function SummaryLine({ text }: { text: string }) {
   const parts = text.split(CITATION_RE)
   return (
-    <p className="memory-ui text-xs leading-relaxed text-foreground">
+    <p className="text-xs leading-relaxed text-foreground">
       {parts.map((part, i) =>
         // Odd indexes are the captured M-NN groups from the split regex.
         i % 2 === 0 ? <Fragment key={i}>{part}</Fragment> : <MemoryCitationChip key={i} id={part} />,
@@ -206,7 +206,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
             ) : label.label === "not_applicable" ? (
               // Slate + the named missing object: "never entered play" must not
               // blur into "played, changed nothing" (mentor 2026-08-15).
-              <span className="text-slate-600 dark:text-muted-foreground">
+              <span className="text-muted-foreground">
                 not applicable
                 {label.missing ? <span className="text-muted-foreground"> — {label.missing}</span> : null}
               </span>
@@ -566,7 +566,7 @@ export function MemoryRecordRail({ chatId, messages, streamingText = null, isTur
 
   return (
     <div
-      className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+      className="memory-ui min-h-0 flex-1 overflow-y-auto px-3 py-3"
       onClick={() => recordInteraction("click")}
       onScroll={() => recordInteraction("scroll")}
     >

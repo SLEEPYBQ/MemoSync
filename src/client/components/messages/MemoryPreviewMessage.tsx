@@ -525,7 +525,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                               title="Remove from this turn's working memory"
                               disabled={revising}
                               onClick={() => removeFromInjected(id)}
-                              className="shrink-0 rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+                              className="shrink-0 rounded p-0.5 text-destructive transition-colors hover:bg-muted hover:text-destructive disabled:pointer-events-none disabled:opacity-40"
                             >
                               <X className="h-3.5 w-3.5" />
                             </button>
@@ -650,11 +650,12 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               />
               <Button
                 type="button"
+                variant="outline"
                 size="icon"
                 aria-label="Send"
                 disabled={revising || seeding || !reviseText.trim()}
                 onClick={() => void askAgentToRevise()}
-                className="h-7 w-7 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
+                className="h-7 w-7 shrink-0 rounded-lg"
               >
                 {revising ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
               </Button>

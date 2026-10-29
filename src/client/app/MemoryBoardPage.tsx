@@ -1,12 +1,12 @@
 import { MemoryBadge } from "../components/memory/MemoryBadge"
-import { MemoryEmpty } from "../components/memory/MemorySurface"
+import { MEMORY_CARD, MemoryEmpty } from "../components/memory/MemorySurface"
 // Memory Board — the user's memories as operable objects (SPEC §4.9): a
 // candidate-review lane, three scope columns (Personal/Project/Session) with
 // drag-to-rescope, free-text search across every lane, and a right-side
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BrainCircuit, ChevronRight, Inbox, Loader2, Plus, Search, Trash2, X } from "lucide-react"
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, BrainCircuit, ChevronRight, Inbox, ListChecks, Loader2, Plus, Search, Trash2, X } from "lucide-react"
 import type { DragEvent } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -635,7 +635,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 onChanged={overlay.onChanged}
               />
             ) : candidateReviewItems.length > 0 ? (
-              <div className="rounded-xl border border-border bg-card p-4 ">
+              <div className={MEMORY_CARD}>
                 <div className="mb-3 flex flex-wrap items-baseline gap-2">
                   <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">Step 1</span>
                   <h2 className="text-sm font-semibold text-foreground">Review New Memory Candidates</h2>
@@ -650,8 +650,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 />
               </div>
             ) : (
-              <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Step 1 · Review New Memory Candidates</span>
+              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
+                <Inbox aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="text-sm font-semibold text-foreground">Step 1 · Review New Memory Candidates</span>
                 <span className="ml-1">✓ No pending memory candidates.</span>
               </div>
             )}
@@ -802,8 +803,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           <section data-memory-board-section="transfer" className="mb-6 flex flex-col gap-3">
             {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="transfer" /> : null}
             {!overlay?.focusedReview ? (
-              <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Step 2 · Transfer Suggestions</span>
+              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
+                <ArrowRightLeft aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="text-sm font-semibold text-foreground">Step 2 · Transfer Suggestions</span>
                 <span className="ml-1">✓ No pending Transfer suggestions.</span>
               </div>
             ) : null}
@@ -812,8 +814,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           <section data-memory-board-section="checkup" className="mb-6 flex flex-col gap-3">
             {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="checkup" /> : null}
             {!overlay?.focusedReview ? (
-              <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Step 3 · Review Suggested Changes to Existing Memories</span>
+              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
+                <ListChecks aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+                <span className="text-sm font-semibold text-foreground">Step 3 · Review Suggested Changes to Existing Memories</span>
                 <span className="ml-1">✓ No pending suggested changes.</span>
               </div>
             ) : null}
@@ -898,7 +901,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             >
               <X className="h-4 w-4" />
               Muted proposals
-              {muted ? <span className="text-muted-foreground/70">{muted.length}</span> : null}
+              {muted ? <MemoryBadge>{muted.length}</MemoryBadge> : null}
               <ChevronRight className={cn("h-4 w-4 transition-transform", showMuted && "rotate-90")} />
             </button>
             {showMuted ? (

@@ -115,7 +115,7 @@ export function MemoryCheckupGate({
   if (message.waiting) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
+        <span className="text-sm font-semibold text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
         <span className="ml-1">Waiting for the earlier steps. This review will regenerate when you continue.</span>
       </div>
     )
@@ -123,7 +123,7 @@ export function MemoryCheckupGate({
 
   if (message.suggestions !== undefined && suggestions.length === 0 && failedKinds.length > 0) {
     return (
-      <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-3 py-2 text-xs text-cand-fg dark:border-cand-border dark:bg-cand-surface dark:text-cand-fg">
+      <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-sm text-info-foreground">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
           <span className="font-medium">Step {stepNumber} · Checkup incomplete</span>
@@ -135,10 +135,10 @@ export function MemoryCheckupGate({
 
   if (message.suggestions !== undefined && suggestions.length === 0 && (!message.decision || message.decision === "empty")) {
     return (
-      <div className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <CheckCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
-        <span className="font-medium text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
-        <span>✓ Nothing needs attention.</span>
+      <div className="flex flex-wrap items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
+        <CheckCheck className="h-4 w-4 shrink-0 text-success-foreground dark:text-success-foreground" />
+        <span className="text-sm font-semibold text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
+        <span className="basis-full @lg:basis-auto">✓ Nothing needs attention.</span>
       </div>
     )
   }
@@ -208,7 +208,7 @@ export function MemoryCheckupGate({
 
       <div className="mt-3 flex flex-col gap-3">
         {failedKinds.length ? (
-          <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-3 py-2 text-xs text-cand-fg dark:border-cand-border dark:bg-cand-surface dark:text-cand-fg">
+          <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-sm text-info-foreground">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>Some checks did not finish: {failedKindsLabel(failedKinds)}. The completed suggestions below remain reviewable; failed checks will retry next turn.</span>
           </div>

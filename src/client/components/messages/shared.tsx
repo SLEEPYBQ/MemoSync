@@ -401,7 +401,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           "memory-ui ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-1 align-baseline font-medium text-[11px] leading-4 transition-colors",
           interruptApi.readOnly && "cursor-default opacity-70",
           inlineArmed
-            ? "border-destructive bg-destructive text-destructive-foreground"
+            ? "border-destructive bg-destructive/8 text-destructive"
             : "border-destructive/40 text-destructive hover:bg-destructive/10",
         )}
       >

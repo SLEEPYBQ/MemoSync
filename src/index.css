@@ -694,10 +694,12 @@
 
 /* Memory surfaces opt back into visible keyboard focus. Keep the existing chat
    chrome untouched; outline survives the legacy global button shadow reset. */
-.memory-ui:focus-visible,
-.memory-ui :is(button, a, input, textarea, select, summary, [role="button"], [role="tab"]):focus-visible {
-  outline: 2px solid var(--color-ring) !important;
-  outline-offset: 3px;
+@layer base {
+  .memory-ui:focus-visible,
+  .memory-ui :is(button, a, input, textarea, select, summary, [role="button"], [role="tab"]):focus-visible {
+    outline: 2px solid var(--color-ring) !important;
+    outline-offset: 3px;
+  }
 }
 
 .memory-ui :is(button, input, textarea, select) {

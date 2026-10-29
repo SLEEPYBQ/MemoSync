@@ -105,7 +105,7 @@ describe("MemoryTraceMessage", () => {
     expect(html).not.toContain("border-l-2")
     expect(html).toContain("rounded-xl border border-border bg-card")
     expect(html).toStartWith('<div class="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card')
-    expect(html).not.toContain("justify-end")
+    expect(html).toContain("justify-end")
     expect(html).not.toContain("bg-destructive px-2 py-1")
   })
 

@@ -1,6 +1,6 @@
 // Small scope-related presentational atoms shared by the Memory Board, its
 // cards, and the detail panel: a scope pill, a generic tag chip, and the
-// scope metadata (label/icon) + tint-class lookups. Colors reuse the same
+// scope metadata (label/icon) + neutral card lookups. Chips reuse the same
 // literal class maps the citation-chip layer defined (memoryCitations.ts) so
 // the board and inline citations stay visually identical (SPEC §2).
 import type { ReactNode } from "react"
@@ -50,12 +50,12 @@ export function isMemoryType(value: string): value is MemoryType {
   return value === "constraint" || value === "preference" || value === "lesson" || value === "fact"
 }
 
-/** Card tint (surface + border) for a scope. */
+/** All cards use a neutral surface; scope color belongs to the chip. */
 export function scopeCardClasses(scope: MemoryScope): string {
   return SCOPE_CARD_CLASSES[scope]
 }
 
-/** Selection-ring color for a scope. */
+/** Neutral selection ring, shared across scopes. */
 export function scopeRingClasses(scope: MemoryScope): string {
   return SCOPE_RING_CLASSES[scope]
 }

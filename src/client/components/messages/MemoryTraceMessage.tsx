@@ -175,7 +175,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
           <p className="mt-0.5 leading-relaxed text-muted-foreground/80">{CAUSE_TEXT[label.cause]}</p>
         ) : null}
         {onJump || violated ? (
-          <div className="mt-2 flex min-h-7 flex-wrap items-center gap-2">
+          <div className="mt-2 flex min-h-7 flex-wrap items-center justify-end gap-2">
             {onJump ? (
               <button
                 type="button"
@@ -203,7 +203,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                         "enforced — locked into the next run; it must be followed",
                       )
                     }
-                    className="rounded-md border border-destructive/40 bg-background px-2 py-1 font-medium text-destructive transition-colors hover:bg-destructive/10"
+                    className="rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
                   >
                     {busy === "attention" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} Enforce this next run
                   </button>
