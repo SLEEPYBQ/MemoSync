@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 // Memory files (DG5): the Markdown projections are the developer-native view
 // of the memory store — one file per scope (personal + each project), shared
 // by every session of that project. The files are a generated EXPORT of the
@@ -36,6 +37,7 @@ function stripProjectionComments(text: string): string {
 }
 
 export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: string[]) => void }) {
+  useI18n()
   const [files, setFiles] = useState<FileEntry[] | null>(null)
   const [selectedKey, setSelectedKey] = useState<string>("personal")
   const [file, setFile] = useState<{ path: string; content: string } | null>(null)
@@ -96,14 +98,14 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
         importScope === "project" ? importProjectId : undefined,
       )
       setLastReport(
-        `import: ${result.created.length} candidate${result.created.length === 1 ? "" : "s"} created, ${result.skipped} skipped`,
+        t("memory:importResult", { count: result.created.length, skipped: result.skipped }),
       )
       setImportText("")
       refreshList()
       loadFile(selected)
       onSynced?.(result.created)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import failed")
+      setError(err instanceof Error ? err.message : t("memory:importFailed"))
     } finally {
       setBusy(null)
     }
@@ -113,8 +115,8 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
     <section className="memory-ui @container mb-6 rounded-xl border border-border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2">
         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="text-sm font-semibold text-foreground">Memory files</span>
-        <span className="text-[11px] text-muted-foreground">generated export — edit memories in the app</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:memoryFiles")}</span>
+        <span className="text-[11px] text-muted-foreground">{t("memory:generatedExportEditMemoriesInTheApp")}</span>
       </div>
 
       {/* One file per scope: Personal plus every project — all sessions of a
@@ -122,7 +124,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {files.map((f) => {
           const key = targetKey(f)
-          const label = f.scope === "personal" ? "Personal" : (projects[f.projectId ?? ""] ?? f.projectId)
+          const label = f.scope === "personal" ? t("common:personal") : (projects[f.projectId ?? ""] ?? f.projectId)
           return (
             <button
               key={key}
@@ -148,7 +150,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
               <Markdown components={markdownComponents}>{stripProjectionComments(file.content)}</Markdown>
             </div>
           ) : (
-            <p className="py-2 text-xs text-muted-foreground">This file is empty — no memories in this scope yet.</p>
+            <p className="py-2 text-xs text-muted-foreground">{t("memory:thisFileIsEmptyNoMemoriesInThisScopeYet")}</p>
           )}
         </div>
       ) : null}
@@ -165,7 +167,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
               <Textarea
                 value={importText}
                 onChange={(e) => setImportText(e.target.value)}
-                placeholder={"Paste an existing CLAUDE.md / .cursorrules — every bullet line ('- …') becomes a candidate to review."}
+                placeholder={t("memory:pasteAnExistingCLAUDEMdCursorrulesEveryBulletLineBecomes")}
                 className="min-h-24 text-xs"
               />
               <div className="flex flex-wrap items-center gap-2 text-xs">
@@ -181,10 +183,10 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
                   }}
                   className="h-7 rounded-md border border-border bg-background px-2 text-xs"
                 >
-                  <option value="personal">Personal scope</option>
+                  <option value="personal">{t("memory:personalScope")}</option>
                   {Object.entries(projects).map(([id, title]) => (
                     <option key={id} value={id}>
-                      Project: {title}
+                      {t("memory:project")}{title}
                     </option>
                   ))}
                 </select>
@@ -196,13 +198,12 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
                   onClick={() => void handleImport()}
                 >
                   {busy === "import" ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderInput className="h-3 w-3" />}
-                  Import as candidates
-                </Button>
+                  {t("memory:importAsCandidates")}</Button>
               </div>
             </div>
           }
         >
-          <span className="text-xs text-muted-foreground">Import an existing config file…</span>
+          <span className="text-xs text-muted-foreground">{t("memory:importAnExistingConfigFile")}</span>
         </ExpandableRow>
       </div>
     </section>

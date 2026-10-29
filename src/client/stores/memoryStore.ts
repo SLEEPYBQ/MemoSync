@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 // Zustand store for the memory collection, following the app's server-fetched
 // collection pattern (see appSettingsStore.ts). Fetched from the memory HTTP API.
 import { create } from "zustand"
@@ -37,7 +38,7 @@ export const useMemoryStore = create<MemoryStoreState>()((set) => {
         set({ items: mutations.size ? [...merged.values()] : items, status: "ready", error: null })
       } catch (err) {
         if (generation === loadGeneration) {
-          set({ status: "error", error: err instanceof Error ? err.message : "Failed to load memories" })
+          set({ status: "error", error: err instanceof Error ? err.message : t("memory:failedToLoadMemories") })
         }
       } finally {
         if (generation === loadGeneration) pendingMutations = null

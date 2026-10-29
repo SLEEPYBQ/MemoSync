@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Info, LibraryBig } from "lucide-react"
@@ -58,6 +59,7 @@ function MemoryChangesReviewSurface({
   placement: "chat" | "board"
   onOpenBoard?: () => void
 }) {
+  useI18n()
   return (
     <section
       className="memory-ui @container min-w-0 space-y-3"
@@ -66,28 +68,24 @@ function MemoryChangesReviewSurface({
       <header className="border-b border-border/70 px-3 py-3">
         {placement === "board" ? (
           <p className="mb-1 text-[11px] font-medium text-muted-foreground">
-            Memory Board review
-          </p>
+            {t("memory:memoryBoardReview")}</p>
         ) : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <LibraryBig aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-            <h2 className="text-sm font-semibold text-foreground">Long-term Memory Management</h2>
+            <h2 className="text-sm font-semibold text-foreground">{t("memory:longTermMemoryManagement")}</h2>
             <HoverCard>
               <HoverCardTrigger asChild>
                 <button
                   type="button"
-                  aria-label="About this review"
+                  aria-label={t("memory:aboutThisReview")}
                   className="text-muted-foreground/60 transition-colors hover:text-muted-foreground"
                 >
                   <Info className="h-3.5 w-3.5" />
                 </button>
               </HoverCardTrigger>
               <HoverCardContent className="text-xs leading-5 text-muted-foreground">
-                Everything that would change your memory this turn stops here first: new candidates, memories worth
-                bringing in from elsewhere, and suggested fixes to what is already saved. The agent starts only
-                after you decide.
-              </HoverCardContent>
+                {t("memory:everythingThatWouldChangeYourMemoryThisTurnStopsHere")}</HoverCardContent>
             </HoverCard>
           </div>
           {placement === "chat" && onOpenBoard ? (
@@ -101,14 +99,13 @@ function MemoryChangesReviewSurface({
               data-memory-board-source="chat_long_term"
             >
               <LibraryBig className="size-3.5" />
-              Go to Memory Board
-            </Button>
+              {t("memory:goToMemoryBoard")}</Button>
           ) : null}
         </div>
         <p className="mt-2 max-w-3xl text-xs leading-5 text-muted-foreground">
           {placement === "board"
-            ? "This is the same live review shown in chat. Row progress and saved changes stay synchronized. Working Memory remains separate and follows after these stations."
-            : "Open the Memory Board to review these same rows and the canonical saved memories together. Working Memory remains the separate next step."}
+            ? t("memory:thisIsTheSameLiveReviewShownInChatRow")
+            : t("memory:openTheMemoryBoardToReviewTheseSameRowsAnd")}
         </p>
       </header>
 
@@ -137,6 +134,7 @@ function MemoryReviewStation({
   station: FocusedMemoryReviewStationName
   onCandidateChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   const surface = placement === "board" ? "board" : "chat_gate"
   const message = review.messages.find((candidate) => candidate.kind === stationNameToKind(station))
   if (!message) return null
@@ -211,6 +209,7 @@ export function FocusedMemoryReviewStation({
   station: FocusedMemoryReviewStationName
   onCandidateChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   const review = useFocusedMemoryReview(controller)
   return (
     <TranscriptChatContextProvider value={review.chatContext}>
@@ -278,6 +277,7 @@ export function FocusedMemoryCandidateStep({
   cohortIds: ReadonlySet<string>
   onChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   const review = useFocusedMemoryReview(controller)
   const currentProposal = review.messages.find((message) => message.kind === "memory_proposals")
   const remaining = remainingCandidateReviewItems(review, items, cohortIds)
@@ -295,11 +295,11 @@ export function FocusedMemoryCandidateStep({
       {remaining.length > 0 ? (
         <div className={MEMORY_CARD} data-remaining-candidate-review="true">
           <div className="mb-3 flex flex-wrap items-baseline gap-2">
-            {!currentProposal ? <span className="text-[11px] font-semibold text-muted-foreground">Step 1</span> : null}
+            {!currentProposal ? <span className="text-[11px] font-semibold text-muted-foreground">{t("memory:step1")}</span> : null}
             <h2 className="text-sm font-medium text-foreground">
-              {currentProposal ? "Other Memory Candidates" : "Review New Memory Candidates"}
+              {currentProposal ? t("memory:otherMemoryCandidates") : t("memory:reviewNewMemoryCandidates")}
             </h2>
-            <span className="ml-auto text-xs text-muted-foreground">{remaining.length} in this review</span>
+            <span className="ml-auto text-xs text-muted-foreground">{remaining.length} {t("memory:inThisReview")}</span>
           </div>
           <MemoryCandidateReviewStation
             candidates={remaining}
@@ -311,8 +311,8 @@ export function FocusedMemoryCandidateStep({
       ) : null}
       {!currentProposal && remaining.length === 0 ? (
         <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-          <span className="font-medium text-foreground">Step 1 · Review New Memory Candidates</span>
-          <span className="ml-1">✓ No pending memory candidates.</span>
+          <span className="font-medium text-foreground">{t("memory:step1ReviewNewMemoryCandidates")}</span>
+          <span className="ml-1">{t("memory:noPendingMemoryCandidates")}</span>
         </div>
       ) : null}
     </TranscriptChatContextProvider>
@@ -320,6 +320,7 @@ export function FocusedMemoryCandidateStep({
 }
 
 export function FocusedMemoryChangesReview({ controller }: { controller: FocusedMemoryReviewController }) {
+  useI18n()
   const review = useFocusedMemoryReview(controller)
   return (
     <TranscriptChatContextProvider value={review.chatContext}>
@@ -347,6 +348,7 @@ export function MemoryChangesReviewFlow({
   canReopenCheckup = false,
   onMemoryPreparationReopen,
 }: Props) {
+  useI18n()
   const boardLauncher = useMemoryBoardLauncher()
   const chatContext = useTranscriptChatContext()
   const [settledTransferRows, setSettledTransferRows] = useState<ReadonlyMap<string, string>>(() => new Map())
@@ -450,9 +452,8 @@ export function MemoryChangesReviewFlow({
         className="memory-ui rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         data-opening-board-review-receipt="true"
       >
-        <span className="font-medium text-foreground">Long-term Memory reviewed in the Memory Board.</span>{" "}
-        Working Memory was selected separately for this message.
-      </section>
+        <span className="font-medium text-foreground">{t("memory:longTermMemoryReviewedInTheMemoryBoard")}</span>{" "}
+        {t("memory:workingMemoryWasSelectedSeparatelyForThisMessage")}</section>
     )
   }
 

@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 1 (redesign 2026-08-07 §3): Review New Memory Candidates. ONE
 // container wrapping this conversation's pending change cards
@@ -33,18 +34,18 @@ interface Props {
 }
 
 const DECISION_LABELS: Record<NonNullable<MemoryProposalsHydratedMessage["decision"]>, string> = {
-  reviewed: "reviewed",
-  skipped: "skipped for now",
-  cancelled: "cancelled with the turn",
-  expired: "expired (server restarted)",
-  empty: "nothing new",
+  get reviewed() { return t("memory:reviewed") },
+  get skipped() { return t("memory:skippedForNow") },
+  get cancelled() { return t("memory:cancelledWithTheTurn") },
+  get expired() { return t("memory:expiredServerRestarted") },
+  get empty() { return t("memory:nothingNew") },
 }
 
 export const MEMORY_PROPOSALS_HELP_COPY =
-  "These are changes this conversation proposed to your saved memory. Accept saves a change to the Visible Memory Pool. Before Claude starts, the Working Memory review decides whether that saved memory is focused for this turn."
+  t("memory:theseAreChangesThisConversationProposedToYourSavedMemory")
 
 export const PERMANENT_CANDIDATE_DISMISSAL_COPY =
-  "Dismissed candidate permanently removed. Its sensitive draft is not retained and cannot be restored."
+  t("memory:dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained")
 
 export type CandidateReviewState = "candidate" | "accepted" | "discarded" | "optimistic-dismissed" | "missing"
 
@@ -78,6 +79,7 @@ export function MemoryCandidateReviewStation({
   onCandidateDismissed?: (memoryId: string) => void
   onChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   return (
     <div className="flex flex-col gap-1.5">
       {candidates.map((candidate, index) => (
@@ -105,6 +107,7 @@ export function MemoryProposalsGate({
   onChanged,
   surface = "chat_gate",
 }: Props) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   useEnsureMemoriesLoaded()
   const items = useMemoryStore((s) => s.items)
@@ -135,11 +138,11 @@ export function MemoryProposalsGate({
   if (message.pending && message.candidates.length === 0 && !message.decision) {
     return (
       <div className={MEMORY_CARD}>
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Inbox className="h-4 w-4" /> Step 1 · Reviewing New Memory Candidates</span>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Inbox className="h-4 w-4" /> {t("memory:step1ReviewingNewMemoryCandidates")}</span>
         <div className="mt-3">
           <MemoryReviewSkeleton
-            label="Reviewing memory candidates"
-            status="checking this prompt for memory candidates…"
+            label={t("memory:reviewingMemoryCandidates")}
+            status={t("memory:checkingCandidates")}
           />
         </div>
       </div>
@@ -149,9 +152,7 @@ export function MemoryProposalsGate({
   if (renderOptions.readonly) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        Step 1 · Review New Memory Candidates — {total} {total === 1 ? "candidate" : "candidates"} omitted from this
-        export for privacy.
-      </div>
+        {t("memory:step1ReviewNewMemoryCandidates2")}{total} {total === 1 ? "candidate" : "candidates"} {t("memory:omittedFromThisExportForPrivacy")}</div>
     )
   }
 
@@ -160,8 +161,8 @@ export function MemoryProposalsGate({
   if (message.decision === "empty" || total === 0) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">Step 1 · Review New Memory Candidates</span>
-        <span className="ml-1">✓ No new memory candidates were proposed.</span>
+        <span className="font-medium text-foreground">{t("memory:step1ReviewNewMemoryCandidates")}</span>
+        <span className="ml-1">{t("memory:noNewMemoryCandidatesWereProposed")}</span>
       </div>
     )
   }
@@ -171,9 +172,9 @@ export function MemoryProposalsGate({
     const mayReopen = canReopen && onReopen && (message.decision === "reviewed" || message.decision === "skipped")
     return (
       <MemoryReviewStepSummary
-        title="Step 1 · Review New Memory Candidates"
-        outcome={<>✓ {total} {total === 1 ? "candidate" : "candidates"}, {DECISION_LABELS[message.decision]}.</>}
-        consequence="Changes will regenerate Step 2 and Working Memory for this turn."
+        title={t("memory:step1ReviewNewMemoryCandidates")}
+        outcome={<>✓ {t("memory:candidateReceipt", { count: total, decision: DECISION_LABELS[message.decision] })}</>}
+        consequence={t("memory:changesRegenerate")}
         reopening={reopening}
         onReopen={mayReopen ? async () => {
           setReopening(true)
@@ -199,25 +200,24 @@ export function MemoryProposalsGate({
   return (
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-4 w-4" /> Step 1</span>
-        <span className="text-sm font-semibold text-foreground">Review New Memory Candidates</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-4 w-4" /> {t("memory:step1")}</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:reviewNewMemoryCandidates")}</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
               type="button"
-              aria-label="About memory candidates"
+              aria-label={t("memory:aboutMemoryCandidates")}
               className="text-muted-foreground/60 transition-colors hover:text-muted-foreground"
             >
               <Info className="h-3.5 w-3.5" />
             </button>
           </HoverCardTrigger>
           <HoverCardContent className="text-xs leading-5 text-muted-foreground">
-            {MEMORY_PROPOSALS_HELP_COPY}
+            {t("memory:theseAreChangesThisConversationProposedToYourSavedMemory")}
           </HoverCardContent>
         </HoverCard>
         <span className="ml-auto text-xs text-muted-foreground">
-          {handled} of {total} handled
-        </span>
+          {handled} {t("memory:of")}{total} {t("memory:handled")}</span>
       </div>
 
       <div className="mt-3 flex flex-col gap-1.5">
@@ -247,15 +247,13 @@ export function MemoryProposalsGate({
           if (status === "error") {
             return (
               <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-                Proposed change unavailable. Refresh to try again.
-              </div>
+                {t("memory:proposedChangeUnavailableRefreshToTryAgain")}</div>
             )
           }
           if (status !== "ready" || !refreshAttempted) {
             return (
               <div key={candidate.id} className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading proposed change…
-              </div>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("memory:loadingProposedChange")}</div>
             )
           }
           return (
@@ -268,11 +266,11 @@ export function MemoryProposalsGate({
 
       <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {stale ? (
-          <p className="text-xs text-muted-foreground">This gate belongs to an earlier turn and is no longer active.</p>
+          <p className="text-xs text-muted-foreground">{t("memory:thisGateBelongsToAnEarlierTurnAndIsNo")}</p>
         ) : (
           <Button variant="default" size="xs" disabled={submitting} onClick={() => void settle(pendingCount === 0 ? "reviewed" : "skipped")}>
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
-            {pendingCount === 0 ? "Continue" : `Skip ${pendingCount} remaining & continue`}
+            {pendingCount === 0 ? t("common:continue") : t("memory:skipValue0RemainingContinue", { v0: pendingCount })}
           </Button>
         )}
       </div>

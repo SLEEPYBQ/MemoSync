@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Info } from "lucide-react"
 import { MemoryBadge } from "./MemoryBadge"
 import { MemoryCallout } from "./MemorySurface"
@@ -8,13 +9,15 @@ import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { Button } from "../ui/button"
 
 export function MemoryOffBadge() {
+  useI18n()
   const enabled = useAppSettingsStore((s) => s.settings?.memory.enabled ?? true)
   return !enabled ? (
-    <MemoryBadge>Off</MemoryBadge>
+    <MemoryBadge>{t("settings:off")}</MemoryBadge>
   ) : null
 }
 
 export function MemorySettingsBanner() {
+  useI18n()
   const app = useOutletContext<AppState | null>()
   const memory = useAppSettingsStore((s) => s.settings?.memory)
   const [pending, setPending] = useState(false)
@@ -38,8 +41,8 @@ export function MemorySettingsBanner() {
       <div className="flex flex-wrap items-center gap-3">
         <span className="min-w-0 flex-1 basis-48">
           {off
-            ? "Memory is off. The agent isn't using or learning memories — you can still browse and edit them here."
-            : "Learning is paused. The agent uses these memories but won't suggest new ones."}
+            ? t("settings:memoryIsOffTheAgentIsnTUsingOrLearning")
+            : t("settings:learningIsPausedTheAgentUsesTheseMemoriesButWon")}
         </span>
         <Button
           size="sm"
@@ -49,7 +52,7 @@ export function MemorySettingsBanner() {
             void resume()
           }}
         >
-          {off ? "Turn on" : "Resume"}
+          {off ? t("settings:turnOn") : t("settings:resume")}
         </Button>
         {error ? (
           <span role="alert" className="w-full text-destructive">

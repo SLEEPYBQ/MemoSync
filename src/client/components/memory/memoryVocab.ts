@@ -1,3 +1,4 @@
+import { t } from "../../i18n"
 // Single source of truth for MemoSync's visual vocabulary: the per-card trace
 // "health" dot and the board "freshness" marks, plus the plain-language meaning
 // of every scope, type, dot, and freshness mark. The Board cards, the in-chat
@@ -31,26 +32,26 @@ export const FRESHNESS_CLASSES: Record<Freshness, string> = {
 }
 
 export const SCOPE_LEGEND: { scope: MemoryScope; meaning: string }[] = [
-  { scope: "personal", meaning: "Applies across all your projects." },
-  { scope: "project", meaning: "Applies only inside this project." },
-  { scope: "session", meaning: "Applies only inside this one chat." },
+  { scope: "personal", get meaning() { return t("memory:appliesAcrossAllYourProjects") } },
+  { scope: "project", get meaning() { return t("memory:appliesOnlyInsideThisProject") } },
+  { scope: "session", get meaning() { return t("memory:appliesOnlyInsideThisOneChat") } },
 ]
 
 export const TYPE_LEGEND: { type: MemoryType; meaning: string }[] = [
-  { type: "constraint", meaning: "A rule the agent should not break." },
-  { type: "preference", meaning: "How you like things done." },
-  { type: "lesson", meaning: "Something learned the hard way." },
-  { type: "fact", meaning: "Plain ground truth about your setup." },
+  { type: "constraint", get meaning() { return t("memory:aRuleTheAgentShouldNotBreak") } },
+  { type: "preference", get meaning() { return t("memory:howYouLikeThingsDone") } },
+  { type: "lesson", get meaning() { return t("memory:somethingLearnedTheHardWay") } },
+  { type: "fact", get meaning() { return t("memory:plainGroundTruthAboutYourSetup") } },
 ]
 
 export const TRACE_DOT_LEGEND: { verdict: TraceVerdict; label: string; meaning: string }[] = [
-  { verdict: "operational", label: "shaped the reply", meaning: "The agent followed it in its last reply." },
-  { verdict: "violated", label: "violated", meaning: "The agent acted against it last time." },
-  { verdict: "injected_without_effect", label: "no visible effect", meaning: "Included, but no detectable influence on the reply." },
-  { verdict: "not_applicable", label: "not applicable", meaning: "Nothing in that turn it could apply to." },
+  { verdict: "operational", get label() { return t("memory:shapedTheReply") }, get meaning() { return t("memory:theAgentFollowedItInItsLastReply") } },
+  { verdict: "violated", get label() { return t("memory:violated") }, get meaning() { return t("memory:theAgentActedAgainstItLastTime") } },
+  { verdict: "injected_without_effect", get label() { return t("memory:noVisibleEffect") }, get meaning() { return t("memory:includedButNoDetectableInfluenceOnTheReply") } },
+  { verdict: "not_applicable", get label() { return t("memory:notApplicable") }, get meaning() { return t("memory:nothingInThatTurnItCouldApplyTo") } },
 ]
 
 export const FRESHNESS_LEGEND: { freshness: Freshness; label: string; meaning: string }[] = [
-  { freshness: "new", label: "new", meaning: "Added since your last visit here." },
-  { freshness: "changed", label: "changed", meaning: "Edited since your last visit here." },
+  { freshness: "new", get label() { return t("memory:new") }, get meaning() { return t("memory:addedSinceYourLastVisitHere") } },
+  { freshness: "changed", get label() { return t("memory:changed") }, get meaning() { return t("memory:editedSinceYourLastVisitHere") } },
 ]

@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { BrainCircuit, Slash } from "lucide-react"
 import { useState } from "react"
 import { useInRouterContext, useNavigate, useOutletContext } from "react-router-dom"
@@ -14,15 +15,15 @@ export function deriveMemoryToggleState(
 ) {
   const off = !memory.enabled || memoryDisabled
   const tooltip = !memory.enabled
-    ? "Memory is turned off in Settings"
+    ? t("memory:memoryIsTurnedOffInSettings")
     : memoryDisabled
-      ? "This chat doesn't use or learn memories. Click to turn memory back on."
-      : "Memory on — click to turn it off for this chat"
+      ? t("memory:thisChatDoesnTUseOrLearnMemoriesClickTo")
+      : t("memory:memoryOnClickToTurnItOffForThisChat")
   return {
     off,
-    label: off ? "Memory off" : null,
+    label: off ? t("common:memoryOff") : null,
     action: memory.enabled ? ("toggle" as const) : ("settings" as const),
-    tooltip: tooltip + (memory.enabled && !memory.learn ? " Learning is paused in Settings" : ""),
+    tooltip: tooltip + (memory.enabled && !memory.learn ? t("memory:learningIsPausedInSettings") : ""),
   }
 }
 
@@ -36,6 +37,7 @@ const useMemoryDrafts = create<{
 }))
 
 export function useDraftMemoryDisabled(draftKey?: string | null): [boolean, (disabled: boolean) => void] {
+  useI18n()
   const key = draftKey ?? "new-chat"
   const disabled = useMemoryDrafts((s) => s.disabled[key] ?? false)
   const setDisabled = useMemoryDrafts((s) => s.setDisabled)
@@ -43,6 +45,7 @@ export function useDraftMemoryDisabled(draftKey?: string | null): [boolean, (dis
 }
 
 export function MemoryIcon({ off = false }: { off?: boolean }) {
+  useI18n()
   return (
     <span className="relative inline-flex h-3.5 w-3.5 shrink-0" aria-hidden="true">
       <BrainCircuit className="h-3.5 w-3.5" />
@@ -52,8 +55,9 @@ export function MemoryIcon({ off = false }: { off?: boolean }) {
 }
 
 export function MemoryOffRowIcon() {
+  useI18n()
   return (
-    <span className="inline-flex shrink-0 text-muted-foreground/60" title="Memory off for this chat">
+    <span className="inline-flex shrink-0 text-muted-foreground/60" title={t("memory:memoryOffForThisChat")}>
       <MemoryIcon off />
     </span>
   )
@@ -62,6 +66,7 @@ export function MemoryOffRowIcon() {
 type MemoryToggleProps = { chatId?: string | null; draftKey?: string | null }
 
 export function MemoryToggle(props: MemoryToggleProps) {
+  useI18n()
   // The toggle reads chat state from the app's outlet and links to Settings,
   // both of which need the router. ChatInput is also mounted bare in isolated
   // fixtures; there it simply has no memory control.
@@ -69,6 +74,7 @@ export function MemoryToggle(props: MemoryToggleProps) {
 }
 
 function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
+  useI18n()
   const app = useOutletContext<AppState | null>()
   const navigate = useNavigate()
   const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { enabled: true, learn: true }
@@ -106,7 +112,7 @@ function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
         <TooltipTrigger asChild>
           <button
             type="button"
-            aria-label={state.label ?? "Memory on"}
+            aria-label={state.label ?? t("common:memoryOn")}
             aria-pressed={!state.off}
             disabled={pending || (Boolean(chatId) && !runtime && state.action !== "settings")}
             className={cn(

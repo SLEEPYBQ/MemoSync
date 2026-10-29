@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
@@ -27,13 +28,14 @@ interface Props {
 // = a neutral dot (no icon component — a plain filled circle, same idiom as
 // the amber candidate-pill dot), violated = a destructive warning triangle.
 const LABEL_TEXT: Record<MemoryTraceLabel["label"], string> = {
-  operational: "shaped this turn",
-  injected_without_effect: "no visible effect",
-  not_applicable: "not applicable this turn",
-  violated: "violated",
+  get operational() { return t("memory:traceShaped") },
+  get injected_without_effect() { return t("memory:traceNoEffect") },
+  get not_applicable() { return t("memory:traceNotApplicable") },
+  get violated() { return t("memory:violated") },
 }
 
 function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
+  useI18n()
   if (label === "operational") return <Check className="mt-0.5 h-3 w-3 shrink-0 text-success-foreground" />
   if (label === "violated") return <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
   if (label === "not_applicable")
@@ -81,6 +83,7 @@ function TraceSection({
   memoryIds: string[]
   children: ReactNode
 }) {
+  useI18n()
   const { chatId } = useTranscriptChatContext()
   const [initiator, setInitiator] = useState(exposureInitiator)
   const viewport = useSurfaceViewportVisibility<HTMLElement>()
@@ -124,11 +127,12 @@ function TraceSection({
 }
 
 const CAUSE_TEXT: Record<NonNullable<MemoryTraceLabel["cause"]>, string> = {
-  not_followed: "the memory holds — the agent didn't comply",
-  memory_conflict: "the memory itself clashes with the task or another memory",
+  get not_followed() { return t("memory:causeNotFollowed") },
+  get memory_conflict() { return t("memory:causeConflict") },
 }
 
 function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label: MemoryTraceLabel) => void }) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   const { chatId } = useTranscriptChatContext()
   const [busy, setBusy] = useState<string | null>(null)
@@ -180,11 +184,10 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
               <button
                 type="button"
                 onClick={() => onJump(label)}
-                title="Jump to the reply or tool evidence for this verdict"
+                title={t("memory:jumpEvidence")}
                 className="inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
               >
-                <CornerDownRight className="h-3 w-3" /> where used
-              </button>
+                <CornerDownRight className="h-3 w-3" /> {t("memory:whereUsed")}</button>
             ) : null}
             {violated && !renderOptions.readonly ? done ? (
               <span className="text-muted-foreground/80">{done}</span>
@@ -200,13 +203,12 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                       void act(
                         "attention",
                         () => memoriesApi.enforce(label.id, chatId, label.quote),
-                        "enforced — locked into the next run; it must be followed",
+                        t("memory:nextRunEnforced"),
                       )
                     }
                     className="rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
                   >
-                    {busy === "attention" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} Enforce this next run
-                  </button>
+                    {busy === "attention" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} {t("memory:enforceNext")}</button>
                 ) : null}
                 {label.cause === "memory_conflict" ? (
                   <button
@@ -216,18 +218,16 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                       void act(
                         "fix",
                         () => memoriesApi.draftRevision(label.id, chatId),
-                        "fix drafted — review it at Step 1 next turn",
+                        t("memory:fixDrafted"),
                       )
                     }
                     className="rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground shadow-sm transition-colors hover:bg-muted"
                   >
-                    {busy === "fix" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} Draft a fix
-                  </button>
+                    {busy === "fix" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} {t("memory:draftFix")}</button>
                 ) : null}
                 {!label.cause ? (
                   <span className="text-muted-foreground/80">
-                    Cause unclear. Review the memory and reply before taking action.
-                  </span>
+                    {t("memory:causeUnclear")}</span>
                 ) : null}
               </>
             ) : null}
@@ -252,6 +252,7 @@ const DEMO_TRACE_LABELS: MemoryTraceHydratedMessage["labels"] = [
 ]
 
 export function MemoryTraceMessage({ message: sourceMessage }: Props) {
+  useI18n()
   useEnsureMemoriesLoaded()
   const { chatId } = useTranscriptChatContext()
   const message = (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo"))
@@ -310,7 +311,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
       backTimerRef.current = window.setTimeout(() => setBackVisible(false), 12000)
       return
     }
-    setJumpFeedback("The evidence is not available in the loaded transcript.")
+    setJumpFeedback(t("memory:missingEvidence"))
   }
 
   function jumpBack() {
@@ -336,7 +337,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm" role="status">
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
-        <AnimatedShinyText className="mx-0 max-w-none italic">auditing memory use…</AnimatedShinyText>
+        <AnimatedShinyText className="mx-0 max-w-none italic">{t("memory:auditing")}</AnimatedShinyText>
       </div>
     )
   }
@@ -347,15 +348,14 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm text-muted-foreground" role="status">
         <ShieldCheck className="h-3 w-3 shrink-0" />
-        No memories were in play this turn. Nothing to audit.
-      </div>
+        {t("memory:noMemoryAudit")}</div>
     )
   }
 
   if (message.status === "failed" || message.status === "discarded") {
     const text = message.status === "failed"
-      ? "Memory audit unavailable for this turn."
-      : "Memory audit discarded because the memory changed before the verdict was saved."
+      ? t("memory:auditUnavailable")
+      : t("memory:auditDiscarded")
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm text-muted-foreground" role="status">
         <AlertTriangle className="h-3 w-3 shrink-0" />
@@ -377,10 +377,10 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   const noEffectRows = message.labels.filter((l) => l.label === "injected_without_effect")
 
   const summaryParts: string[] = []
-  if (counts.violated > 0) summaryParts.push(`${counts.violated} violated`)
-  if (counts.operational > 0) summaryParts.push(`${counts.operational} shaped`)
-  if (counts.not_applicable > 0) summaryParts.push(`${counts.not_applicable} not applicable`)
-  if (counts.injected_without_effect > 0) summaryParts.push(`${counts.injected_without_effect} no visible effect`)
+  if (counts.violated > 0) summaryParts.push(t("memory:traceViolations", { v0: counts.violated }))
+  if (counts.operational > 0) summaryParts.push(t("memory:traceShapes", { v0: counts.operational }))
+  if (counts.not_applicable > 0) summaryParts.push(t("memory:traceNotApplicableCount", { v0: counts.not_applicable }))
+  if (counts.injected_without_effect > 0) summaryParts.push(t("memory:traceNoEffectCount", { v0: counts.injected_without_effect }))
   const hasViolation = counts.violated > 0
 
   return (
@@ -390,7 +390,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
       <button type="button" onClick={toggleExpanded} className="group flex w-full flex-wrap items-baseline gap-2 text-left">
         <ShieldCheck aria-hidden className="h-4 w-4 text-muted-foreground" />
         <ChevronRight className={cn("h-3 w-3 self-center text-muted-foreground transition-transform", expanded && "rotate-90")} />
-        <span className="text-sm font-semibold text-foreground">Auditing Memory Use</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:auditHeading")}</span>
         <span className={cn("text-xs", hasViolation ? "font-medium text-destructive" : "text-muted-foreground")}>
           {summaryParts.join(" · ")}
         </span>
@@ -400,7 +400,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
           {violatedRows.length > 0 ? (
             <TraceSection
               tone="violated"
-              title="Violated"
+              title={t("memory:violatedHeading")}
               count={violatedRows.length}
               exposureInitiator={cardInitiator}
               memoryIds={violatedRows.map((label) => label.id)}
@@ -413,7 +413,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
           {shapedRows.length > 0 ? (
             <TraceSection
               tone="operational"
-              title="Shaped this turn"
+              title={t("memory:shapedHeading")}
               count={shapedRows.length}
               exposureInitiator={cardInitiator}
               memoryIds={shapedRows.map((label) => label.id)}
@@ -426,7 +426,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
           {notApplicableRows.length > 0 ? (
             <TraceSection
               tone="not_applicable"
-              title="Not applicable this turn"
+              title={t("memory:notApplicableHeading")}
               count={notApplicableRows.length}
               folded={!showNotApplicable}
               onToggle={() => setShowNotApplicable((v) => !v)}
@@ -441,7 +441,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
           {noEffectRows.length > 0 ? (
             <TraceSection
               tone="injected_without_effect"
-              title="No visible effect"
+              title={t("memory:noEffectHeading")}
               count={noEffectRows.length}
               folded={!showNoEffect}
               onToggle={() => setShowNoEffect((v) => !v)}
@@ -463,8 +463,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               onClick={jumpBack}
               className="fixed right-6 top-1/2 z-50 flex -translate-y-1/2 items-center gap-1.5 rounded-full border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition hover:bg-muted"
             >
-              <CornerUpLeft className="h-3.5 w-3.5" /> Back to trace
-            </button>,
+              <CornerUpLeft className="h-3.5 w-3.5" /> {t("memory:backTrace")}</button>,
             document.body,
           )
         : null}

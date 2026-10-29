@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
 // Independent pre-turn component: Working Memory for This Turn (redesign
@@ -51,23 +52,24 @@ interface Props {
 type InjectSource = "suggested" | "attention" | "manual" | "standing"
 
 const SOURCE_LABELS: Record<InjectSource, string | null> = {
-  suggested: "suggested",
-  attention: "enforced",
-  manual: "you added",
+  get suggested() { return t("memory:suggested") },
+  get attention() { return t("memory:enforced") },
+  get manual() { return t("memory:youAdded") },
   // Compat default when no suggestion pass exists on this turn — everything
   // rides, and a label would just be noise on every row.
   standing: null,
 }
 
-const REVISE_STATUS_WORDS = ["thinking…", "reading the pool…", "revising the set…"]
+const REVISE_STATUS_WORDS = () => [t("memory:thinking"), t("memory:readingThePool"), t("memory:revisingTheSet")]
 
 const DEFAULT_EXPECTED_USE = "Apply this memory while completing the task."
 
 export function WorkingMemorySelectionError({ error, onRetry, disabled = false }: { error: string; onRetry: () => void; disabled?: boolean }) {
+  useI18n()
   return <div role="alert" className="mt-3 rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-xs">
     <p className="font-medium text-destructive">{error}</p>
-    <p className="mt-1 text-muted-foreground">Choose items from the memory pool, or retry the selection.</p>
-    <Button type="button" size="xs" variant="outline" className="mt-2" onClick={onRetry} disabled={disabled}>Retry selection</Button>
+    <p className="mt-1 text-muted-foreground">{t("memory:chooseItemsFromTheMemoryPoolOrRetryTheSelection")}</p>
+    <Button type="button" size="xs" variant="outline" className="mt-2" onClick={onRetry} disabled={disabled}>{t("memory:retrySelection")}</Button>
   </div>
 }
 
@@ -78,6 +80,7 @@ function replyUrlTransform(url: string): string {
 /** Render the embedded assistant with the same Markdown and live memory
  * citations as the main conversation, while keeping its typography compact. */
 export function ReplyMarkdown({ text, className }: { text: string; className?: string }) {
+  useI18n()
   return (
     <div
       className={cn(
@@ -97,14 +100,15 @@ export function ReplyMarkdown({ text, className }: { text: string; className?: s
 }
 
 const DECISION_TEXT: Record<MemoryPreviewDecision | "expired", string> = {
-  go_on: "started with this working memory",
-  without_memory: "started with empty working memory",
-  dismiss: "turn dismissed — message returned to the composer",
+  get go_on() { return t("memory:startedWithThisWorkingMemory") },
+  get without_memory() { return t("memory:startedWithEmptyWorkingMemory") },
+  get dismiss() { return t("memory:turnDismissedMessageReturnedToTheComposer") },
   // System-recorded: the server restarted while this gate was parked.
-  expired: "expired — send the message again",
+  get expired() { return t("memory:expiredSendTheMessageAgain") },
 }
 
 export function MemoryPreviewMessage({ message, onRespond, stale = false }: Props) {
+  useI18n()
   // Guide-tour demo mode: internal UI state is seeded from the tour step and
   // the ask box answers locally — no server call ever leaves this card.
   const { previewDemo } = useTranscriptRenderOptions()
@@ -219,7 +223,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     [injectedIds, planningIds],
   )
   const failedSelected = injectedIds.filter((id) => failedPlanningIds.has(id))
-  const selectionError = failedSelected.length ? "Expected-use planning failed for the selected items." : !selectionRecovered ? message.selectionError : undefined
+  const selectionError = failedSelected.length ? t("memory:expectedUsePlanningFailedForTheSelectedItems") : !selectionRecovered ? message.selectionError : undefined
 
   async function planExpectedUses(ids: string[]) {
     const uniqueIds = [...new Set(ids)].filter((id) => memoriesById.has(id))
@@ -242,7 +246,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         previewId: message.previewId,
       })
       const plannedIds = new Set(planned.filter((use) => use.expectedUse.trim()).map((use) => use.id))
-      if (uniqueIds.some((id) => !plannedIds.has(id))) throw new Error("Expected-use plan is incomplete")
+      if (uniqueIds.some((id) => !plannedIds.has(id))) throw new Error(t("memory:expectedUsePlanIsIncomplete"))
       setExpectedUsesById((current) => {
         const next = new Map(current)
         for (const use of planned) {
@@ -307,7 +311,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const [exchanges, setExchanges] = useState<Array<{ q: string; a: string }>>([])
   useEffect(() => {
     if (!revising) return
-    const timer = setInterval(() => setReviseStatusIndex((i) => (i + 1) % REVISE_STATUS_WORDS.length), 1100)
+    const timer = setInterval(() => setReviseStatusIndex((i) => (i + 1) % REVISE_STATUS_WORDS().length), 1100)
     return () => clearInterval(timer)
   }, [revising])
 
@@ -361,7 +365,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     } catch (err) {
       setExchanges((prev) => [
         ...prev,
-        { q: instruction, a: err instanceof Error ? `Couldn't process that (${err.message}).` : "Couldn't process that." },
+        { q: instruction, a: err instanceof Error ? t("memory:couldnTProcessThatValue0", { v0: err.message }) : t("memory:couldnTProcessThat") },
       ])
     } finally {
       setRevising(false)
@@ -418,11 +422,11 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
   const decidedText = message.decision
     ? message.decision === "go_on" && message.decisionAuto
-      ? "proceeded automatically (no memory in plan)"
+      ? t("memory:proceededAutomaticallyNoMemoryInPlan")
       : message.decision === "go_on" && message.decisionSelectedIds
-        ? `started with ${message.decisionSelectedIds.length} injected`
+        ? t("memory:startedWithValue0Injected", { v0: message.decisionSelectedIds.length })
         : DECISION_TEXT[message.decision]
-    : "expired (turn superseded)"
+    : t("memory:expiredTurnSuperseded")
 
   return (
     <RiseIn freshAt={message.timestamp}>
@@ -434,15 +438,13 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
       >
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-            <LibraryBig className="h-4 w-4" /> Confirmation
-          </span>
-          <span className="text-sm font-semibold text-foreground">Working Memory for This Turn</span>
+            <LibraryBig className="h-4 w-4" /> {t("memory:confirmation")}</span>
+          <span className="text-sm font-semibold text-foreground">{t("memory:workingMemoryForThisTurn")}</span>
           {!pending ? <span className="ml-auto text-xs text-muted-foreground">{decidedText}</span> : null}
         </div>
         {pending ? (
           <p className="mt-1 text-xs text-muted-foreground">
-            These memories will guide this run — adjust if needed, then start.
-          </p>
+            {t("memory:theseMemoriesWillGuideThisRunAdjustIfNeededThen")}</p>
         ) : null}
 
         {pending && selectionError ? <WorkingMemorySelectionError
@@ -455,17 +457,17 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         /> : null}
 
         {message.memories.length === 0 ? (
-          <p className="mt-2 text-sm text-muted-foreground">no memories are available for this turn</p>
+          <p className="mt-2 text-sm text-muted-foreground">{t("memory:noMemoriesAreAvailableForThisTurn")}</p>
         ) : (
           <div className={cn("mt-2 flex flex-col gap-1.5", !pending && "opacity-60 dark:opacity-100")}>
             {seeding ? (
               <MemoryReviewSkeleton
-                label="Preparing the working memory"
-                status="choosing memories for this turn…"
+                label={t("memory:preparingTheWorkingMemory")}
+                status={t("memory:choosingMemories")}
               />
             ) : injectedIds.length === 0 ? (
               <p className="text-sm text-muted-foreground">
-                {selectionError ? "No selection is ready. Pick items below, retry, or explicitly start without memory." : "working memory is empty — pick from the pool below, or start without memory"}
+                {selectionError ? t("memory:noSelectionIsReadyPickItemsBelowRetryOrExplicitly") : t("memory:workingMemoryIsEmptyPickFromThePoolBelowOr")}
               </p>
             ) : (
               injectedIds.map((id, index) => {
@@ -488,11 +490,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                           // existing memory instead of adding a row (otherwise
                           // an accepted transfer looks like it vanished).
                           <MemoryBadge
-                            title="Landed by this turn's transfer review (a merge strengthens an existing memory)"
+                            title={t("memory:landedByThisTurnSTransferReviewAMergeStrengthens")}
                             className="shrink-0 rounded-md border border-info/40 bg-info/10 px-1.5 py-0.5 text-[11px] leading-4 text-info-foreground dark:text-info-foreground"
                           >
-                            via transfer
-                          </MemoryBadge>
+                            {t("memory:viaTransfer")}</MemoryBadge>
                         ) : null}
                         {label ? (
                           <MemoryBadge
@@ -512,17 +513,16 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             // Cancelling the enforce is an explicit, named act.
                             <button
                               type="button"
-                              title="This memory is enforced for this run — cancel the enforce to remove it"
+                              title={t("memory:thisMemoryIsEnforcedForThisRunCancelTheEnforce")}
                               disabled={revising}
                               onClick={() => removeFromInjected(id)}
                               className="shrink-0 rounded border border-destructive/40 px-1.5 py-0.5 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-40"
                             >
-                              Cancel enforce
-                            </button>
+                              {t("memory:cancelEnforce")}</button>
                           ) : (
                             <button
                               type="button"
-                              title="Remove from this turn's working memory"
+                              title={t("memory:removeFromThisTurnSWorkingMemory")}
                               disabled={revising}
                               onClick={() => removeFromInjected(id)}
                               className="shrink-0 rounded p-0.5 text-destructive transition-colors hover:bg-muted hover:text-destructive disabled:pointer-events-none disabled:opacity-40"
@@ -535,15 +535,14 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                       </div>
                       <div className="mt-2 border-t border-border/60 pt-2">
                         <p className="text-xs font-medium text-muted-foreground/75 dark:text-muted-foreground">
-                          How the agent is expected to use it
-                        </p>
+                          {t("memory:howTheAgentIsExpectedToUseIt")}</p>
                         {planning ? (
                           <div
                             className="memory-review-skeleton mt-1.5 h-4 w-3/4 rounded-md"
-                            aria-label={`Planning how to use ${id}`}
+                            aria-label={t("memory:planningHowToUseValue0", { v0: id })}
                           />
                         ) : planningFailed ? (
-                          <p className="mt-1 text-xs leading-relaxed text-destructive">Expected use is unavailable. Retry planning before starting.</p>
+                          <p className="mt-1 text-xs leading-relaxed text-destructive">{t("memory:expectedUseIsUnavailableRetryPlanningBeforeStarting")}</p>
                         ) : (
                           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{expectedUse}</p>
                         )}
@@ -555,8 +554,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
             )}
             {message.relevant !== undefined && !selectionError && injectedIds.length > 0 ? (
               <p className="text-[11px] italic text-muted-foreground/70 dark:text-muted-foreground">
-                suggestions are a model prediction — adjust the list before starting
-              </p>
+                {t("memory:suggestionsAreAModelPredictionAdjustTheListBeforeStarting")}</p>
             ) : null}
 
             {!seeding && poolRest.length > 0 ? (
@@ -564,10 +562,9 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               <div data-preview-pool className="mt-1.5 border-t border-border/70 pt-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <LibraryBig className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <span className="text-xs font-medium text-foreground">Add from memory pool</span>
+                  <span className="text-xs font-medium text-foreground">{t("memory:addFromMemoryPool")}</span>
                   <MemoryBadge className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                    {poolRest.length} available
-                  </MemoryBadge>
+                    {poolRest.length} {t("memory:available")}</MemoryBadge>
                   <Button
                     type="button"
                     variant="outline"
@@ -580,7 +577,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                       if (next) recordUiMonitor("preview_pool_expand", { sessionId: chatId, interaction: "click" })
                     }}
                   >
-                    {poolExpanded ? "Close" : "Browse"}
+                    {poolExpanded ? t("common:close") : t("memory:browse")}
                   </Button>
                 </div>
                 {poolExpanded ? (
@@ -601,8 +598,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                           className="shrink-0"
                         >
                           <Plus className="h-3.5 w-3.5" />
-                          Add
-                        </Button>
+                          {t("common:add")}</Button>
                       </div>
                     ))}
                   </div>
@@ -645,14 +641,14 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                   }
                 }}
                 disabled={revising || seeding}
-                placeholder="Ask about the pool, or tell me what to change… (e.g. anything on testing? drop the UI ones)"
+                placeholder={t("memory:askAboutThePoolOrTellMeWhatToChange")}
                 className="h-7 min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
               />
               <Button
                 type="button"
                 variant="outline"
                 size="icon"
-                aria-label="Send"
+                aria-label={t("common:send")}
                 disabled={revising || seeding || !reviseText.trim()}
                 onClick={() => void askAgentToRevise()}
                 className="h-7 w-7 shrink-0 rounded-lg"
@@ -662,7 +658,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
             </div>
             {revising ? (
               <AnimatedShinyText className="mx-0 mt-1 max-w-none text-[11px] italic">
-                {REVISE_STATUS_WORDS[reviseStatusIndex]}
+                {REVISE_STATUS_WORDS()[reviseStatusIndex]}
               </AnimatedShinyText>
             ) : null}
           </div>
@@ -676,11 +672,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               size="xs"
               className="text-destructive hover:text-destructive/80"
               disabled={submitting !== null}
-              title="Cancels this turn — your message goes back to the composer."
+              title={t("memory:cancelsThisTurnYourMessageGoesBackToTheComposer")}
               onClick={() => respond("dismiss")}
             >
-              Dismiss turn
-              <kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px] text-muted-foreground">esc</kbd>
+              {t("memory:dismissTurn")}<kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px] text-muted-foreground">esc</kbd>
             </Button>
 
             <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || planningSelected || failedSelected.length > 0} onClick={start}>
@@ -688,10 +683,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : null}
               {planningSelected
-                ? "Preparing expected use…"
+                ? t("memory:preparingExpectedUse")
                 : injectedIds.length === 0
-                  ? "Start without memory"
-                  : `Start (${injectedIds.length} injected)`}
+                  ? t("memory:startWithoutMemory")
+                  : t("memory:startValue0Injected", { v0: injectedIds.length })}
               <kbd className="ml-1.5 rounded bg-black/15 px-1 font-sans text-[11px]">⏎</kbd>
             </Button>
           </div>

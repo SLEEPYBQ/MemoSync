@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import type { ReactNode } from "react"
 import { CheckCheck, Loader2, RotateCcw } from "lucide-react"
@@ -17,6 +18,7 @@ interface Props {
  * the outlined control is the only actionable element in the row.
  */
 export function MemoryReviewStepSummary({ title, outcome, consequence, reopening, onReopen }: Props) {
+  useI18n()
   return (
     <div className={MEMORY_CARD}>
       <div className="flex flex-col gap-2 @lg:flex-row @lg:items-center @lg:justify-between @lg:gap-4">
@@ -40,8 +42,7 @@ export function MemoryReviewStepSummary({ title, outcome, consequence, reopening
             onClick={() => void onReopen()}
           >
             {reopening ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
-            Review again
-          </Button>
+            {t("memory:reviewAgain")}</Button>
         ) : null}
       </div>
     </div>

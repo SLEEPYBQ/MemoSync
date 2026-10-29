@@ -1,3 +1,4 @@
+import { useI18n } from "../../i18n"
 // Small scope-related presentational atoms shared by the Memory Board, its
 // cards, and the detail panel: a scope pill, a generic tag chip, and the
 // scope metadata (label/icon) + neutral card lookups. Chips reuse the same
@@ -69,6 +70,7 @@ export function scopeRingClasses(scope: MemoryScope): string {
  * would never inject into any chat (BUG MEMUI-1). Undefined forces the picker.
  */
 export function ScopeBadge({ scope, className }: { scope: MemoryScope; className?: string }) {
+  useI18n()
   const Icon = SCOPE_ICONS[scope]
   return (
     <MemoryBadge

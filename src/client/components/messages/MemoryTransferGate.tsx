@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
 // The Transfer card (Transfer design 2026-08-08; pipeline form follows the
@@ -72,16 +73,16 @@ interface Props {
 }
 
 const DECISION_LABELS: Record<Exclude<NonNullable<MemoryTransferHydratedMessage["decision"]>, "empty">, string> = {
-  handled: "handled",
-  skipped: "skipped for now",
-  cancelled: "cancelled with the turn",
-  expired: "expired (the server restarted mid-review)",
+  get handled() { return t("memory:handled") },
+  get skipped() { return t("memory:skippedForNow") },
+  get cancelled() { return t("memory:cancelledWithTheTurn") },
+  get expired() { return t("memory:expiredTheServerRestartedMidReview") },
 }
 
 const SCOPE_ICONS = { session: MessagesSquare, project: FolderGit2, personal: User } as const
 
 export const MEMORY_TRANSFER_HELP_COPY =
-  "These are memories saved in other projects or conversations that could help here. The Encoder removes source-specific details and the Decoder adapts the rule to this project. Bring in saves the result to the Visible Memory Pool. Before Claude starts, the Working Memory review decides whether that saved memory is focused for this turn."
+  t("memory:theseAreMemoriesSavedInOtherProjectsOrConversationsThat")
 
 /** Source and landing surfaces stay neutral; scope hues belong to chips. */
 const SCOPE_CARD_TINT: Record<MemoryScope, string> = {
@@ -96,6 +97,7 @@ const HEX_COLOR_RE = /#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g
  * SEE beats one you have to imagine. Tiny enough that no library earns its
  * dependency here. */
 function ColorizedText({ text }: { text: string }) {
+  useI18n()
   const parts: React.ReactNode[] = []
   let last = 0
   for (const match of text.matchAll(HEX_COLOR_RE)) {
@@ -151,6 +153,7 @@ function segmentByMarks(text: string, marks: string[] | undefined): Array<{ text
 }
 
 function ValueChippedText({ text, marks }: { text: string; marks?: string[] }) {
+  useI18n()
   const segments = segmentByMarks(text, marks)
   return (
     <>
@@ -171,6 +174,7 @@ function ValueChippedText({ text, marks }: { text: string; marks?: string[] }) {
 }
 
 function StageLabel({ icon: IconCmp, children }: { icon: typeof Lightbulb; children: React.ReactNode }) {
+  useI18n()
   return (
     <p className="mb-1.5 flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
       <IconCmp className="h-3 w-3" /> {children}
@@ -185,6 +189,7 @@ function StageLabel({ icon: IconCmp, children }: { icon: typeof Lightbulb; child
  * they become small inline badges between the stacked cards.
  */
 function StageMachine({ name, hint, expand }: { name: string; hint: string; expand?: boolean }) {
+  useI18n()
   // Rounded funnel: the polygon is drawn inset and fattened by a same-color
   // stroke with round joins — clip-path corners cannot round, a stroked SVG
   // path can. Encoder narrows rightward (compressing), decoder widens
@@ -232,6 +237,7 @@ export function MemoryTransferGate({
   settledRows,
   onSuggestionSettled,
 }: Props) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   const suggestions = message.suggestions
   const [localSettledRows, setLocalSettledRows] = useState<Map<string, string>>(() => new Map())
@@ -242,8 +248,7 @@ export function MemoryTransferGate({
   if (renderOptions.readonly) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        Step {stepNumber} · Transfer Suggestions — {suggestions.length} omitted from this export for privacy.
-      </div>
+        {t("memory:stepNumber", { step: stepNumber })} {t("memory:transferSuggestions2")}{suggestions.length} {t("memory:omittedFromThisExportForPrivacy")}</div>
     )
   }
 
@@ -253,8 +258,8 @@ export function MemoryTransferGate({
     if (!message.pending && suggestions.length === 0 && message.decision === undefined) return null
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">Step {stepNumber} · Transfer Suggestions</span>
-        <span className="ml-1">✓ Nothing worth bringing in from your other projects or conversations.</span>
+        <span className="font-medium text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:transferSuggestions3")}</span>
+        <span className="ml-1">{t("memory:nothingWorthBringingInFromYourOtherProjectsOrConversations")}</span>
       </div>
     )
   }
@@ -264,9 +269,9 @@ export function MemoryTransferGate({
     const mayReopen = canReopen && onReopen && (message.decision === "handled" || message.decision === "skipped")
     return (
       <MemoryReviewStepSummary
-        title={`Step ${stepNumber} · Transfer Suggestions`}
-        outcome={<>✓ {suggestions.length} {suggestions.length === 1 ? "suggestion" : "suggestions"}, {DECISION_LABELS[message.decision]}.</>}
-        consequence="Review again rechecks the current saved state. Previous saved actions remain. Any new changes regenerate Step 3 and Working Memory."
+        title={t("memory:stepValue0TransferSuggestions", { v0: stepNumber })}
+        outcome={<>✓ {t("memory:suggestionReceipt", { count: suggestions.length, decision: DECISION_LABELS[message.decision] })}</>}
+        consequence={t("memory:reviewAgainTransfer")}
         reopening={reopening}
         onReopen={mayReopen ? async () => {
           setReopening(true)
@@ -298,27 +303,26 @@ export function MemoryTransferGate({
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-          <ArrowRightLeft className="h-4 w-4" /> Step {stepNumber}
+          <ArrowRightLeft className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })}
         </span>
-        <span className="text-sm font-semibold text-foreground">Transfer Suggestions</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:transferSuggestions")}</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
               type="button"
-              aria-label="What is a transfer?"
+              aria-label={t("memory:whatIsATransfer")}
               className="text-muted-foreground/60 transition-colors hover:text-muted-foreground"
             >
               <Info className="h-3.5 w-3.5" />
             </button>
           </HoverCardTrigger>
           <HoverCardContent className="text-xs leading-5 text-muted-foreground">
-            {MEMORY_TRANSFER_HELP_COPY}
+            {t("memory:theseAreMemoriesSavedInOtherProjectsOrConversationsThat")}
           </HoverCardContent>
         </HoverCard>
         {suggestions.length > 0 ? (
           <span className="ml-auto text-xs text-muted-foreground">
-            {suggestions.length - pendingCount} of {suggestions.length} handled
-          </span>
+            {t("memory:handledProgress", { handled: suggestions.length - pendingCount, total: suggestions.length })}</span>
         ) : null}
       </div>
 
@@ -352,15 +356,15 @@ export function MemoryTransferGate({
         suggestions.length === 0 ? (
           <div className="mt-3">
             <MemoryReviewSkeleton
-              label="Searching for transferable memories"
-              status="searching your other projects and conversations…"
+              label={t("memory:searchingForTransferableMemories")}
+              status={t("memory:searchingOtherProjects")}
             />
           </div>
         ) : null
       ) : (
         <div className="mt-3 flex flex-wrap items-center justify-end">
           {stale ? (
-            <p className="text-xs text-muted-foreground">This card belongs to an earlier turn and is no longer active.</p>
+            <p className="text-xs text-muted-foreground">{t("memory:thisCardBelongsToAnEarlierTurnAndIsNo")}</p>
           ) : (
             <Button
               variant="default"
@@ -370,10 +374,10 @@ export function MemoryTransferGate({
             >
               {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
               {pendingCount === 0
-                ? "Continue"
+                ? t("common:continue")
                 : requireAllRows
-                  ? `Review ${pendingCount} remaining`
-                  : `Skip ${pendingCount} remaining & continue`}
+                  ? t("memory:reviewValue0Remaining", { v0: pendingCount })
+                  : t("memory:skipValue0RemainingContinue", { v0: pendingCount })}
             </Button>
           )}
         </div>
@@ -383,11 +387,12 @@ export function MemoryTransferGate({
 }
 
 function LegacyWideningReceipt({ suggestion }: { suggestion: MemoryTransferSuggestionSnapshot }) {
+  useI18n()
   return (
     <div className="flex items-center gap-2 py-2.5 text-xs text-muted-foreground">
       <Check className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
       <span className="font-mono text-[11px]">{suggestion.sourceId}</span>
-      <span>— Automatic scope-widening flow is retired; no further action is available in this card.</span>
+      <span>{t("memory:automaticScopeWideningFlowIsRetiredNoFurtherActionIs")}</span>
     </div>
   )
 }
@@ -436,6 +441,7 @@ function TransferSuggestionRow({
   onSettled: (text: string) => void
   surface: MemoryControlSurface
 }) {
+  useI18n()
   const { chatId, projectId } = useTranscriptChatContext()
   const loadAll = useMemoryStore((s) => s.loadAll)
   const [scopeChoice, setScopeChoice] = useState<MemoryScope | null>(null)
@@ -452,7 +458,7 @@ function TransferSuggestionRow({
   const landing = scope === (suggestion.suggestedScope ?? "project") ? suggestion.landing : undefined
   const reinforcing = landing?.route === "reinforces"
   const SourceIcon = SCOPE_ICONS[suggestion.sourceScope] ?? MessagesSquare
-  const acceptLabel = reinforcing ? "Reinforce" : "Bring in"
+  const acceptLabel = reinforcing ? t("memory:reinforce") : t("memory:bringIn")
 
   async function accept() {
     if (!decoded) return
@@ -469,11 +475,11 @@ function TransferSuggestionRow({
       await loadAll()
       onSettled(
         reinforcing
-          ? `reinforced ${created.id}; this turn's focus is reviewed in Working Memory`
-          : `saved as ${created.id} in the ${scope} pool; this turn's focus is reviewed in Working Memory`,
+          ? t("memory:reinforcedValue0ThisTurnSFocusIsReviewedInWorking", { v0: created.id })
+          : t("memory:savedAsValue0InTheValue1PoolThisTurnS", { v0: created.id, v1: scope }),
       )
     } catch (err) {
-      setError(err instanceof Error ? err.message : "transfer failed")
+      setError(err instanceof Error ? err.message : t("memory:transferFailed"))
     } finally {
       setBusy(null)
     }
@@ -488,9 +494,9 @@ function TransferSuggestionRow({
         projectId ?? chatId ?? "",
         surface,
       )
-      onSettled("passed — won't be suggested again")
+      onSettled(t("memory:passedWonTBeSuggestedAgain"))
     } catch (err) {
-      setError(err instanceof Error ? err.message : "decline failed")
+      setError(err instanceof Error ? err.message : t("memory:declineFailed"))
     } finally {
       setBusy(null)
     }
@@ -514,7 +520,7 @@ function TransferSuggestionRow({
             and the move is visible. */}
         <RiseIn freshAt={freshAt} delay={0} className="flex min-w-0 flex-col">
           <StageLabel icon={SourceIcon}>
-            <span className="truncate">Source · {suggestion.sourceLabel}</span>
+            <span className="truncate">{t("memory:source")}{suggestion.sourceLabel}</span>
             <MemoryBadge
               className={cn(
                 "ml-0.5 inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-4",
@@ -535,13 +541,13 @@ function TransferSuggestionRow({
             inside), or the funnel centers on its own min-height and drifts
             upward next to a tall source card. */}
         <RiseIn freshAt={freshAt} delay={0.12} className="flex">
-          <StageMachine name="Encoder" hint="Removes source-specific details and extracts the stable idea." />
+          <StageMachine name={t("memory:encoder")} hint={t("memory:removesSourceSpecificDetailsAndExtractsTheStableIdea")} />
         </RiseIn>
 
         {/* Station 3 — the abstract representation: a card of its own kind
             (amber = metadata, never a memory item). */}
         <RiseIn freshAt={freshAt} delay={0.24} className="flex min-w-0 flex-col">
-          <StageLabel icon={Lightbulb}>Abstract rule</StageLabel>
+          <StageLabel icon={Lightbulb}>{t("memory:abstractRule")}</StageLabel>
           <div className="flex flex-1 flex-col rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 p-2.5">
             {suggestion.rule ? (
               <p className="text-sm italic leading-snug text-foreground">
@@ -551,21 +557,20 @@ function TransferSuggestionRow({
               <>
                 <div className="memory-review-skeleton h-6 rounded-lg" />
                 <AnimatedShinyText className="mx-0 mt-1.5 max-w-none text-[11px] italic">
-                  encoding the source…
-                </AnimatedShinyText>
+                  {t("memory:encodingTheSource")}</AnimatedShinyText>
               </>
             )}
           </div>
         </RiseIn>
 
         <RiseIn freshAt={freshAt} delay={0.36} className="flex">
-          <StageMachine name="Decoder" hint="Adapts the abstract rule to this project's structure and task." expand />
+          <StageMachine name={t("memory:decoder")} hint={t("memory:adaptsTheAbstractRuleToThisProjectSStructureAnd")} expand />
         </RiseIn>
 
         {/* Station 5 — the localized memory, wearing the LANDING scope's
             color (switches live with the picker below). Bound values chip. */}
         <RiseIn freshAt={freshAt} delay={0.48} className="flex min-w-0 flex-col">
-          <StageLabel icon={Target}>In this project</StageLabel>
+          <StageLabel icon={Target}>{t("memory:inThisProject")}</StageLabel>
           <div
             className={cn(
               "flex flex-1 flex-col rounded-lg border p-2.5",
@@ -576,8 +581,7 @@ function TransferSuggestionRow({
               <>
                 <div className="memory-review-skeleton h-6 rounded-lg" />
                 <AnimatedShinyText className="mx-0 mt-1.5 max-w-none text-[11px] italic">
-                  localizing for this project…
-                </AnimatedShinyText>
+                  {t("memory:localizingForThisProject")}</AnimatedShinyText>
               </>
             ) : editing ? (
               <Textarea
@@ -602,19 +606,18 @@ function TransferSuggestionRow({
       <div className="mt-2 flex flex-wrap items-center gap-2">
         {reinforcing || !decoded ? null : (
           <>
-            <span className="text-[11px] font-medium text-muted-foreground">Lands in</span>
+            <span className="text-[11px] font-medium text-muted-foreground">{t("memory:landsIn")}</span>
             <ScopeControl value={scope} onValueChange={setScopeChoice} />
           </>
         )}
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           <Button variant="ghost" size="xs" disabled={busy !== null} onClick={() => void decline()}>
             {busy === "decline" ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
-            Not this one
-          </Button>
+            {t("memory:notThisOne")}</Button>
           {!reinforcing ? (
             <Button variant="secondary" size="xs" disabled={busy !== null || !decoded} onClick={() => setEditing((v) => !v)}>
               <Pencil className="h-3 w-3" />
-              {editing ? "Done editing" : "Edit"}
+              {editing ? t("memory:doneEditing") : t("common:edit")}
             </Button>
           ) : null}
           <Button
@@ -638,16 +641,14 @@ function TransferSuggestionRow({
 }
 
 function LandingNote({ landing }: { landing: MemoryTransferSuggestionSnapshot["landing"] | undefined }) {
+  useI18n()
   if (!landing) return null
   if (landing.route === "reinforces") {
     return (
       <div className="mt-2 flex items-start gap-1.5 py-0.5 text-sm leading-snug text-muted-foreground">
         <GitMerge className="mt-0.5 h-3 w-3 shrink-0 text-success-foreground dark:text-success-foreground" />
         <span>
-          This project already knows this
-          {landing.targetContent ? <> — “{landing.targetContent}”</> : null}. Accepting reinforces that memory
-          instead of adding a duplicate.
-        </span>
+          {t("memory:thisProjectAlreadyKnowsThis")}{landing.targetContent ? <> — “{landing.targetContent}”</> : null}{t("memory:acceptingReinforcesThatMemoryInsteadOfAddingADuplicate")}</span>
       </div>
     )
   }
@@ -656,9 +657,7 @@ function LandingNote({ landing }: { landing: MemoryTransferSuggestionSnapshot["l
       <div className="mt-2 flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface p-3 text-sm leading-snug text-muted-foreground">
         <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0 text-cand-fg dark:text-cand-fg" />
         <span>
-          May conflict with an existing memory
-          {landing.targetContent ? <> — “{landing.targetContent}”</> : null}. Both are kept and flagged for you.
-        </span>
+          {t("memory:mayConflictWithAnExistingMemory")}{landing.targetContent ? <> — “{landing.targetContent}”</> : null}{t("memory:bothAreKeptAndFlaggedForYou")}</span>
       </div>
     )
   }

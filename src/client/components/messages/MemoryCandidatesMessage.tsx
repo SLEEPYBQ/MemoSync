@@ -1,3 +1,5 @@
+import { memoryScopeLabel } from "../../lib/memoryCitations"
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
 // Review cards for capture-surfaced memory candidates (SPEC §4.1, §4.10).
@@ -49,12 +51,12 @@ export function buildCandidateActivationScopePatch(input: {
   }
   if (input.scope === "project") {
     const projectId = input.contextProjectId ?? input.candidateProjectId
-    if (!projectId) return { error: "Choose a project before accepting this memory." }
+    if (!projectId) return { error: t("memory:chooseAProjectBeforeAcceptingThisMemory") }
     patch.projectId = projectId
   }
   if (input.scope === "session") {
     const sessionId = input.contextChatId ?? input.candidateSessionId
-    if (!sessionId) return { error: "Choose a conversation before accepting this memory." }
+    if (!sessionId) return { error: t("memory:chooseAConversationBeforeAcceptingThisMemory") }
     patch.sessionId = sessionId
   }
   return { patch }
@@ -70,19 +72,20 @@ export async function runCandidateMutation<T>(
 }
 
 export function MemoryCandidatesMessage({ message }: Props) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   if (message.candidates.length === 0) return null
   if (renderOptions.readonly) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        {message.candidates.length === 1 ? "1 memory candidate" : `${message.candidates.length} memory candidates`} omitted from this export for privacy.
-      </div>
+        {t("memory:candidateCount", { count: message.candidates.length })} {t("memory:omittedFromThisExportForPrivacy")}</div>
     )
   }
   return <LiveMemoryCandidatesMessage message={message} />
 }
 
 function LiveMemoryCandidatesMessage({ message }: Props) {
+  useI18n()
   useEnsureMemoriesLoaded()
   const items = useMemoryStore((s) => s.items)
   const status = useMemoryStore((s) => s.status)
@@ -104,7 +107,7 @@ function LiveMemoryCandidatesMessage({ message }: Props) {
   return (
     <div className="flex flex-col gap-2">
       <div className="flex justify-end">
-        <MemoryLegendButton sections={["scope"]} label="What do the colors mean?" />
+        <MemoryLegendButton sections={["scope"]} label={t("memory:whatDoTheColorsMean")} />
       </div>
       {message.candidates.map((candidate, index) => {
         const liveCandidate = itemsById.get(candidate.id)
@@ -140,25 +143,26 @@ function LiveMemoryCandidatesMessage({ message }: Props) {
 type ResolvedState = "pending" | "accepted" | "dismissed"
 
 function LoadingCandidate() {
+  useI18n()
   return (
     <div className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading memory candidate…
-    </div>
+      <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("memory:loadingMemoryCandidate")}</div>
   )
 }
 
 function UnavailableCandidate() {
+  useI18n()
   return (
     <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-      Memory candidate unavailable. Refresh to try again.
-    </div>
+      {t("memory:memoryCandidateUnavailableRefreshToTryAgain")}</div>
   )
 }
 
 function ResolvedCandidate({ resolved, id }: { resolved: Exclude<ResolvedState, "pending">; id: string }) {
+  useI18n()
   return (
     <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-      {resolved === "accepted" ? `saved as ${id} · this turn's focus is decided in Working Memory` : "dismissed"}
+      {resolved === "accepted" ? t("memory:savedAsValue0ThisTurnSFocusIsDecidedIn", { v0: id }) : t("memory:dismissed")}
     </div>
   )
 }
@@ -179,6 +183,7 @@ function AcceptedCandidateCard({
   surface: MemoryControlSurface
   onChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   const loadAll = useMemoryStore((s) => s.loadAll)
   const { chatId } = useTranscriptChatContext()
   const [busy, setBusy] = useState(false)
@@ -195,7 +200,7 @@ function AcceptedCandidateCard({
         await loadAll()
       }, onChanged)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to undo")
+      setError(err instanceof Error ? err.message : t("memory:failedToUndo"))
     } finally {
       setBusy(false)
     }
@@ -212,14 +217,13 @@ function AcceptedCandidateCard({
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] text-muted-foreground">
-                {candidate.scope}
-                {candidate.status === "archived" ? " · since archived" : ""}
+                {memoryScopeLabel(candidate.scope)}
+                {candidate.status === "archived" ? t("memory:sinceArchived") : ""}
               </span>
               {candidate.status === "active" ? (
                 <Button variant="ghost" size="xs" disabled={busy} onClick={() => void handleUndo()}>
                   {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
-                  Undo accept
-                </Button>
+                  {t("memory:undoAccept")}</Button>
               ) : null}
             </div>
             {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -228,8 +232,7 @@ function AcceptedCandidateCard({
       >
         <span className="inline-flex items-start gap-2 text-left text-sm text-muted-foreground">
           <Check aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-foreground" />
-          saved as {candidate.id} · this turn&apos;s focus is decided in Working Memory
-        </span>
+          {t("memory:savedAs")}{candidate.id} {t("memory:thisTurnSFocusIsDecidedInWorkingMemory")}</span>
       </ExpandableRow>
     </div>
   )
@@ -248,6 +251,7 @@ function AutoAppliedCard({
   surface: MemoryControlSurface
   onChanged?: () => Promise<void> | void
 }) {
+  useI18n()
   const loadAll = useMemoryStore((s) => s.loadAll)
   const { chatId } = useTranscriptChatContext()
   const [busy, setBusy] = useState(false)
@@ -264,7 +268,7 @@ function AutoAppliedCard({
         await loadAll()
       }, onChanged)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to revert")
+      setError(err instanceof Error ? err.message : t("memory:failedToRevert"))
     } finally {
       setBusy(false)
     }
@@ -277,13 +281,12 @@ function AutoAppliedCard({
         <StampIn freshAt={freshAt}>
           <span className="inline-flex items-center gap-2 text-sm font-semibold text-success-foreground">
             <Zap aria-hidden className="h-4 w-4 text-muted-foreground" />
-            auto-applied
-          </span>
+            {t("memory:autoApplied")}</span>
         </StampIn>
         {revisionOf ? (
           <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
             <RefreshCw className="h-3 w-3" />
-            revision — replaced {revisionOf.id}
+            {t("memory:revisionReplaced")}{revisionOf.id}
           </MemoryBadge>
         ) : null}
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{candidate.id}</span>
@@ -292,8 +295,7 @@ function AutoAppliedCard({
       <div className="mt-2 flex items-center justify-end gap-2">
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         <Button variant="ghost" size="xs" disabled={busy} onClick={() => void handleRevert()}>
-          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} Revert
-        </Button>
+          {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />} {t("memory:revert")}</Button>
       </div>
     </div>
   )
@@ -322,6 +324,7 @@ export function MemoryCandidateCard({
   allowRestore?: boolean
   surface?: MemoryControlSurface
 }) {
+  useI18n()
   const storeStatus = candidate.status
   const upsertLocal = useMemoryStore((s) => s.upsertLocal)
   const removeLocal = useMemoryStore((s) => s.removeLocal)
@@ -376,7 +379,7 @@ export function MemoryCandidateCard({
       // fall back to the original text — that would store the pre-edit content,
       // and for a sensitive candidate the still-unredacted original (MSG-12).
       if ((editing || sanitized) && !trimmed) {
-        setError("Memory content can't be empty.")
+        setError(t("memory:memoryContentCanTBeEmpty"))
         return
       }
       // Changing the scope to project/session requires the matching id, or the
@@ -410,7 +413,7 @@ export function MemoryCandidateCard({
       setDisplayContent(updated.content)
       setDisplayDetail(updated.detail)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to accept")
+      setError(err instanceof Error ? err.message : t("memory:failedToAccept"))
     } finally {
       setBusy(null)
     }
@@ -428,7 +431,7 @@ export function MemoryCandidateCard({
       setSanitized({ redactions: proposal.redactions })
       setEditing(true)
     } catch (err) {
-      setError(err instanceof Error ? `Redaction unavailable — edit manually (${err.message})` : "Redaction unavailable — edit manually")
+      setError(err instanceof Error ? t("memory:redactionUnavailableEditManuallyValue0", { v0: err.message }) : t("memory:redactionUnavailableEditManually"))
     } finally {
       setBusy(null)
     }
@@ -445,7 +448,7 @@ export function MemoryCandidateCard({
         else upsertLocal({ ...candidate, status: "discarded" })
       }, onChanged)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to dismiss")
+      setError(err instanceof Error ? err.message : t("memory:failedToDismiss"))
     } finally {
       setBusy(null)
     }
@@ -460,7 +463,7 @@ export function MemoryCandidateCard({
         upsertLocal(restored)
       }, onChanged)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to restore the candidate")
+      setError(err instanceof Error ? err.message : t("memory:failedToRestoreTheCandidate"))
     } finally {
       setBusy(null)
     }
@@ -482,7 +485,7 @@ export function MemoryCandidateCard({
       setEditing(false)
       setSanitized(null)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save")
+      setError(err instanceof Error ? err.message : t("memory:failedToSave"))
     } finally {
       setBusy(null)
     }
@@ -500,12 +503,11 @@ export function MemoryCandidateCard({
     }
     return (
       <div className="flex items-center justify-between gap-3 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span>dismissed</span>
+        <span>{t("memory:dismissed")}</span>
         {allowRestore && !candidate.sensitive ? (
           <Button variant="ghost" size="xs" disabled={busy !== null} onClick={() => void handleRestore()}>
             {busy === "restore" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
-            Restore for review
-          </Button>
+            {t("memory:restoreForReview")}</Button>
         ) : null}
         {error ? <span className="text-destructive">{error}</span> : null}
       </div>
@@ -519,20 +521,18 @@ export function MemoryCandidateCard({
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-2 text-sm font-semibold">
           <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" />
-          Memory candidate
-          <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-cand-dot" />
+          {t("memory:memoryCandidate")}<span aria-hidden className="h-1.5 w-1.5 rounded-full bg-cand-dot" />
         </span>
         {revisionOf ? (
           <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
             <RefreshCw className="h-3 w-3" />
-            revision — replaces {revisionOf.id}
+            {t("memory:revisionReplaces")}{revisionOf.id}
           </MemoryBadge>
         ) : null}
         {candidate.sensitive ? (
           <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-cand-border bg-cand-surface px-1.5 py-0.5 text-[11px] font-medium text-cand-fg">
             <AlertTriangle className="h-3 w-3" />
-            sensitive — needs your confirmation
-          </MemoryBadge>
+            {t("memory:sensitiveNeedsYourConfirmation")}</MemoryBadge>
         ) : null}
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{candidate.id}</span>
       </div>
@@ -541,9 +541,7 @@ export function MemoryCandidateCard({
         <p className="mt-1.5 flex items-start gap-1.5 rounded-md border border-info/25 bg-info/5 px-2 py-1 text-xs text-muted-foreground">
           <RefreshCw className="mt-0.5 h-3 w-3 shrink-0 text-info-foreground dark:text-info-foreground" />
           <span className="min-w-0 flex-1">
-            Proposed before{candidate.provenanceSessionId && candidate.provenanceSessionId !== chatId ? " in another chat" : " in this chat"} and
-            still waiting for your review — this is the same pending proposal, brought back because it came up again.
-          </span>
+            {t("memory:proposedBefore")}{candidate.provenanceSessionId && candidate.provenanceSessionId !== chatId ? t("memory:inAnotherChat") : t("memory:inThisChat")} {t("memory:andStillWaitingForYourReviewThisIsTheSame")}</span>
         </p>
       ) : null}
 
@@ -554,13 +552,13 @@ export function MemoryCandidateCard({
         <div className="mt-2 flex flex-col gap-1.5">
           <div className="memory-reference rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
             <p className="text-[11px] font-medium text-muted-foreground">
-              current · <span className="font-mono normal-case">{revisionOf.id}</span>
+              {t("memory:current")}<span className="font-mono normal-case">{revisionOf.id}</span>
             </p>
             <p className="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{revisionOf.content}</p>
           </div>
           {!editing ? (
             <div className="memory-reference rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
-              <p className="text-[11px] font-medium text-info-foreground dark:text-info-foreground">proposed</p>
+              <p className="text-[11px] font-medium text-info-foreground dark:text-info-foreground">{t("memory:proposed")}</p>
               <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground">{displayContent}</p>
             </div>
           ) : null}
@@ -573,8 +571,7 @@ export function MemoryCandidateCard({
             {sanitized ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                 <ShieldCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
-                redaction proposal — review, edit, then Accept to activate it
-                {sanitized.redactions.map((r) => (
+                {t("memory:redactionProposalReviewEditThenAcceptToActivateIt")}{sanitized.redactions.map((r) => (
                   <MemoryBadge key={r.placeholder} className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                     {r.placeholder} {r.kind}
                   </MemoryBadge>
@@ -588,12 +585,12 @@ export function MemoryCandidateCard({
               autoFocus
             />
             <label className="block space-y-1 text-xs text-muted-foreground">
-              <span>Detail (optional)</span>
+              <span>{t("memory:detailOptional")}</span>
               <Textarea
                 value={draftDetail}
                 onChange={(e) => setDraftDetail(e.target.value)}
                 className="min-h-20 text-sm text-foreground"
-                placeholder="Clear this field to remove the detail"
+                placeholder={t("memory:clearThisFieldToRemoveTheDetail")}
               />
             </label>
             <div className="flex justify-end gap-2">
@@ -608,11 +605,9 @@ export function MemoryCandidateCard({
                   setDraftDetail(displayDetail ?? "")
                 }}
               >
-                Cancel
-              </Button>
+                {t("common:cancel")}</Button>
               <Button variant="outline" size="xs" disabled={busyState || !draftContent.trim()} onClick={() => void handleSaveEdit()}>
-                Save
-              </Button>
+                {t("common:save")}</Button>
             </div>
           </div>
         ) : revisionOf ? null : ( // for revisions the "proposed" card above carries the text
@@ -625,7 +620,7 @@ export function MemoryCandidateCard({
           <ExpandableRow
             expandedContent={<p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{displayDetail}</p>}
           >
-            <span className="text-xs text-muted-foreground">detail</span>
+            <span className="text-xs text-muted-foreground">{t("memory:detail2")}</span>
           </ExpandableRow>
         </div>
       ) : null}
@@ -636,8 +631,7 @@ export function MemoryCandidateCard({
           {!editing && candidate.sensitive ? (
             <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleSanitize()}>
               {busy === "sanitize" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-              Prepare sanitized
-            </Button>
+              {t("memory:prepareSanitized")}</Button>
           ) : null}
           {!editing ? (
             <Button variant="ghost" size="xs" disabled={busyState} onClick={() => {
@@ -645,20 +639,18 @@ export function MemoryCandidateCard({
               setDraftDetail(displayDetail ?? "")
               setEditing(true)
             }}>
-              <Pencil className="h-3.5 w-3.5" />Edit
-            </Button>
+              <Pencil className="h-3.5 w-3.5" />{t("common:edit")}</Button>
           ) : null}
           <Button variant="ghost" size="xs" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleDismiss()}>
-            <X className="h-3.5 w-3.5" />Dismiss
-          </Button>
+            <X className="h-3.5 w-3.5" />{t("common:dismiss")}</Button>
           <Button
             variant="default"
             size="xs"
             disabled={busyState}
-            title={revisionOf ? `Accepting archives ${revisionOf.id} and replaces it with this text.` : undefined}
+            title={revisionOf ? t("memory:acceptingArchivesValue0AndReplacesItWithThisText", { v0: revisionOf.id }) : undefined}
             onClick={() => void handleAccept()}
           >
-            <Check className="h-3.5 w-3.5" /> {revisionOf ? "Accept & replace" : "Accept"}
+            <Check className="h-3.5 w-3.5" /> {revisionOf ? t("memory:acceptReplace") : t("common:accept")}
           </Button>
         </div>
       </div>
