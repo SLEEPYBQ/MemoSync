@@ -1,36 +1,35 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
-import { BrandIcon, useBrandFavicon, useBrandName } from "../components/BrandMark"
+import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from "react"
+import { Navigate,Outlet,Route,Routes,useLocation,useNavigate,useParams } from "react-router-dom"
+import { SDK_CLIENT_APP,SELF_UPDATE_ENABLED } from "../../shared/branding"
+import type { AppSettingsSnapshot } from "../../shared/types"
+import { BrandIcon,useBrandFavicon,useBrandName } from "../components/BrandMark"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
 import { AppDialogProvider } from "../components/ui/app-dialog"
 import { Button } from "../components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
+import { Card,CardContent,CardDescription,CardHeader,CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input"
 import { TooltipProvider } from "../components/ui/tooltip"
-import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
-import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
+import { shouldShowChatBrowserNotification,showChatBrowserNotification } from "../lib/chatBrowserNotifications"
+import { playChatNotificationSound,shouldPlayChatSound } from "../lib/chatSounds"
+import { initializeUsageTelemetryOutbox,stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
-import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
-import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import { AppSidebar } from "./AppSidebar"
+import { getChatNotificationEvents,getChatSoundBurstCount,getNotificationTitleCount } from "./chatNotifications"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
-import { SettingsPage } from "./SettingsPage"
-import { MemoryBoardPage } from "./MemoryBoardPage"
-import { useAppState } from "./useAppState"
-import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
-import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
 import {
-  MemoryBoardLauncherProvider,
-  reconcileMemoryBoardRequestWithActiveChat,
-  resolveMemoryBoardLaunchRequest,
-  type MemoryBoardLaunchRequest,
-  type ResolvedMemoryBoardLaunchRequest,
+MemoryBoardLauncherProvider,
+reconcileMemoryBoardRequestWithActiveChat,
+resolveMemoryBoardLaunchRequest,
+type MemoryBoardLaunchRequest,
+type ResolvedMemoryBoardLaunchRequest,
 } from "./memory/MemoryBoardLauncher"
-import { useConditionPolicyLoadFailed, useConditionPolicyResolved } from "../lib/conditionApi"
+import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
+import { MemoryBoardPage } from "./MemoryBoardPage"
+import { SettingsPage } from "./SettingsPage"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
-import type { AppSettingsSnapshot } from "../../shared/types"
+import { useAppState } from "./useAppState"
 
 const VERSION_SEEN_STORAGE_KEY = "memosync:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
@@ -235,10 +234,6 @@ function AppLayout() {
   // it rather than stamping the MemoSync name onto a baseline arm's tab.
   const brandName = useBrandName()
   useBrandFavicon()
-  // Study completion is stored in this participant instance's study.sqlite,
-  // not browser-local state that a later participant could accidentally reuse.
-  const conditionPolicyForGuide = useConditionPolicyResolved()
-  const conditionPolicyLoadFailed = useConditionPolicyLoadFailed()
   const [memoryBoardRequest, setMemoryBoardRequest] = useState<ResolvedMemoryBoardLaunchRequest | null>(null)
   useEffect(() => {
     setMemoryBoardRequest((current) => reconcileMemoryBoardRequestWithActiveChat(current, state.activeChatId))
@@ -418,22 +413,6 @@ function AppLayout() {
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
   }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData])
-
-  // Memory surfaces fail closed until the server's feature policy resolves.
-  if (conditionPolicyForGuide === null) {
-    return (
-      <div className="flex h-[100dvh] min-h-[100dvh] items-center justify-center bg-background px-6 text-sm text-muted-foreground">
-        {conditionPolicyLoadFailed ? (
-          <div className="flex max-w-sm flex-col items-center gap-3 text-center">
-            <p>Could not reach the MemoSync server. Retry once it is running.</p>
-            <Button variant="outline" onClick={() => window.location.reload()}>Reload</Button>
-          </div>
-        ) : (
-          <p>Loading…</p>
-        )}
-      </div>
-    )
-  }
 
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>

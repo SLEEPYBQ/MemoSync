@@ -134,11 +134,6 @@ interface CreateWsRouterArgs {
   /** The port this app itself serves on — excluded from local-server discovery
    * so the panel doesn't "discover" MemoSync itself. */
   getSelfPort?: () => number
-  /**
-   * Study deployments cut every non-essential outbound connection: the
-   * skills.sh registry (search/install) refuses here. Defaults to enabled.
-   */
-  remoteSkillsEnabled?: boolean
   listLocalHttpServersFn?: typeof listLocalHttpServers
   killLocalHttpServerFn?: typeof killLocalHttpServer
 }
@@ -430,7 +425,6 @@ export function createWsRouter({
   machineDisplayName,
   updateManager,
   getSelfPort,
-  remoteSkillsEnabled = true,
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
 }: CreateWsRouterArgs) {
@@ -1326,17 +1320,13 @@ export function createWsRouter({
           return
         }
         case "skills.search": {
-          if (!remoteSkillsEnabled) {
-            throw new Error("The skills registry is disabled on this deployment.")
-          }
+
           const snapshot = await searchSkills(command.query, command.limit)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
         case "skills.install": {
-          if (!remoteSkillsEnabled) {
-            throw new Error("The skills registry is disabled on this deployment.")
-          }
+
           const result = await installSkill(command.source, command.skillId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return

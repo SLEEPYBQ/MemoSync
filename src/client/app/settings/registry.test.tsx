@@ -1,21 +1,19 @@
-import { describe, expect, test } from "bun:test"
+import { describe,expect,test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
-import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { readAppSettingsSnapshot } from "../../../server/app-settings"
-import { PROVIDERS, type AppSettingsSnapshot } from "../../../shared/types"
+import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
+import { PROVIDERS,type AppSettingsSnapshot } from "../../../shared/types"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
-import { type ConditionPolicy } from "../../lib/conditionApi"
 import { GeneralSection } from "./GeneralSection"
+import { KeybindingsSection } from "./KeybindingsSection"
 import { MemorySettingsGroups } from "./MemorySection"
 import { ProvidersSection } from "./ProvidersSection"
-import { KeybindingsSection } from "./KeybindingsSection"
 import { SkillsSection } from "./SkillsSection"
-import { ALL_SETTINGS_ROWS, SETTINGS_ROWS, SETTINGS_SECTIONS, getSettingsRowHref, resolveSettingsSectionId } from "./registry"
+import { ALL_SETTINGS_ROWS,SETTINGS_SECTIONS,getSettingsRowHref,resolveSettingsSectionId } from "./registry"
 
 const settings: AppSettingsSnapshot = await readAppSettingsSnapshot("/tmp/memosync-settings-registry-nonexistent/settings.json")
-const policy: ConditionPolicy = { condition: "memosync", capture: "review", preview: true, trace: true, boardVisible: true, boardWritable: true, bringIn: true, injection: "skills", memoryTools: true, studyMode: false }
-const memoryHtml = (overrides: { enabled?: boolean; learn?: boolean; studyMode?: boolean; preview?: boolean; boardVisible?: boolean } = {}) => renderToStaticMarkup(<MemoryRouter><MemorySettingsGroups settings={{ ...settings, memory: { enabled: overrides.enabled ?? true, learn: overrides.learn ?? true } }} policy={{ ...policy, studyMode: overrides.studyMode ?? false, preview: overrides.preview ?? true, boardVisible: overrides.boardVisible ?? true }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>)
+const memoryHtml = (overrides: { enabled?: boolean; learn?: boolean } = {}) => renderToStaticMarkup(<MemoryRouter><MemorySettingsGroups settings={{ ...settings, memory: { enabled: overrides.enabled ?? true, learn: overrides.learn ?? true } }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>)
 
 describe("settings registry and section rendering", () => {
   test("stable unique ids, section order and deep links", () => {
@@ -62,14 +60,5 @@ describe("settings registry and section rendering", () => {
     const html = memoryHtml({ learn: false })
     expect(html.match(/aria-disabled="true"/g)?.length).toBe(1)
     expect(html).toContain("Turn on Learn From Chats to change this.")
-  })
-  test("study policy hides personal switches and controls preview and board access", () => {
-    const html = memoryHtml({ studyMode: true, enabled: false, learn: false, preview: false, boardVisible: false })
-    expect(html).not.toContain(`id="${SETTINGS_ROWS.memoryEnabled.id}"`)
-    expect(html).not.toContain(`id="${SETTINGS_ROWS.memoryLearn.id}"`)
-    expect(html).not.toContain(`id="${SETTINGS_ROWS.memoryPreview.id}"`)
-    expect(html).not.toContain("Turn on Use Memory")
-    expect(html).not.toContain('href="/memory"')
-    expect(html).toContain("Ask First")
   })
 })

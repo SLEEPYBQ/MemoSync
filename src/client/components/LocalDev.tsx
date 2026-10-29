@@ -1,35 +1,34 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { useNavigate } from "react-router-dom"
-import { copyTextToClipboard } from "../lib/clipboard"
 import {
-  ArrowLeftRight,
-  BrainCircuit,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  CodeXml,
-  Copy,
-  Folder,
-  Inbox,
-  Loader2,
-  Monitor,
-  Plus,
-  Terminal,
+ArrowLeftRight,
+BrainCircuit,
+Check,
+ChevronDown,
+ChevronRight,
+CodeXml,
+Copy,
+Folder,
+Inbox,
+Loader2,
+Monitor,
+Plus,
+Terminal,
 } from "lucide-react"
-import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
+import { useEffect,useMemo,useRef,useState,type ComponentType,type ReactNode } from "react"
+import { useNavigate } from "react-router-dom"
+import { DISPLAY_NAME,getCliInvocation,SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
+import { PageHeader } from "../app/PageHeader"
 import type { SocketStatus } from "../app/socket"
 import type { AppState } from "../app/useAppState"
-import { PageHeader } from "../app/PageHeader"
+import { copyTextToClipboard } from "../lib/clipboard"
 import { getPathBasename } from "../lib/formatters"
-import { landingHeadline, resolveLandingProjectPath, summarizeMemoriesForLanding } from "../lib/landing"
-import { MEMORY_SCOPE_TEXT_CLASSES } from "../lib/memoryCitations"
+import { landingHeadline,resolveLandingProjectPath,summarizeMemoriesForLanding } from "../lib/landing"
 import { memoriesApi } from "../lib/memoriesApi"
-import { useConditionPolicy, type ConditionPolicy } from "../lib/conditionApi"
+import { MEMORY_SCOPE_TEXT_CLASSES } from "../lib/memoryCitations"
 import { useMemoryStore } from "../stores/memoryStore"
 import { BrandIcon } from "./BrandMark"
 import { ChatInput } from "./chat-ui/ChatInput"
-import { InputPopover, PopoverMenuItem } from "./chat-ui/ChatPreferenceControls"
+import { InputPopover,PopoverMenuItem } from "./chat-ui/ChatPreferenceControls"
 import { NewProjectModal } from "./NewProjectModal"
 import { Button } from "./ui/button"
 
@@ -261,8 +260,7 @@ function FeatureCard({
 }
 
 export function LocalDev(props: LocalDevProps) {
-  const conditionPolicy = useConditionPolicy()
-  return <LocalDevContent {...props} conditionPolicy={conditionPolicy} />
+  return <LocalDevContent {...props} />
 }
 
 export function LocalDevContent({
@@ -276,13 +274,8 @@ export function LocalDevContent({
   onSend,
   availableProviders,
   projectIdByPath,
-  conditionPolicy,
-}: LocalDevProps & { conditionPolicy: ConditionPolicy }) {
+}: LocalDevProps & { }) {
   const navigate = useNavigate()
-  // Baseline arms strip the landing down to the hero + composer: no feature
-  // cards ("Add a project" stays reachable from the composer's project picker
-  // and the sidebar), and the hero centers in the freed space.
-  const studyNeutral = conditionPolicy.condition !== "memosync"
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
   const projectPaths = useMemo(() => projects.map((project) => project.localPath), [projects])
   const isConnecting = connectionStatus === "connecting" || !ready
@@ -293,8 +286,8 @@ export function LocalDevContent({
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
   const machineName = snapshot?.machine.displayName ?? "this machine"
 
-  const { summary, attentionCount } = useLandingMemorySummary(isConnected && conditionPolicy.boardVisible)
-  const showCandidatesCard = conditionPolicy.boardVisible && conditionPolicy.capture === "review"
+  const { summary, attentionCount } = useLandingMemorySummary(isConnected)
+  const showCandidatesCard = true
 
   const composerElementRef = useRef<HTMLTextAreaElement | null>(null)
   useEffect(() => {
@@ -385,9 +378,7 @@ export function LocalDevContent({
       ) : (
         <div
           className={
-            studyNeutral
-              ? "flex flex-1 flex-col items-center justify-center px-4 pb-12 sm:px-6"
-              : "flex flex-1 flex-col items-center justify-start px-4 pb-12 pt-[12vh] sm:px-6 sm:pt-[16vh]"
+            "flex flex-1 flex-col items-center justify-start px-4 pb-12 pt-[12vh] sm:px-6 sm:pt-[16vh]"
           }
         >
           <div className="flex w-full max-w-3xl flex-col items-center">
@@ -451,9 +442,9 @@ export function LocalDevContent({
               </div>
             ) : null}
 
-            {studyNeutral || conditionPolicy.studyMode ? null : (
+            {(
             <div className="mt-12 flex w-full flex-wrap justify-center gap-3">
-              {conditionPolicy.boardVisible ? (
+              {(
                 <FeatureCard
                   icon={BrainCircuit}
                   title="Memory Board"
@@ -470,7 +461,7 @@ export function LocalDevContent({
                   badge={<CardBadge count={attentionCount} countTitle={`${attentionCount} ${attentionCount === 1 ? "memory needs" : "memories need"} attention`} />}
                   onClick={() => navigate("/memory")}
                 />
-              ) : null}
+              )}
               {showCandidatesCard ? (
                 <FeatureCard
                   icon={Inbox}
@@ -496,13 +487,13 @@ export function LocalDevContent({
         </div>
       )}
 
-      {!conditionPolicy.studyMode ? <NewProjectModal
+      {<NewProjectModal
         open={newProjectOpen}
         onOpenChange={onNewProjectOpenChange}
         onConfirm={(project) => {
           void onCreateProject(project)
         }}
-      /> : null}
+      />}
 
       <div className="py-4 text-center">
         <span className="text-xs text-muted-foreground/50">v{SDK_CLIENT_APP.split("/")[1]}</span>

@@ -1,14 +1,13 @@
 // planMemoryInjection is the source of truth for the selected MemoSync memory
 // context. Later changes ride user turns as deltas.
-import type { ConditionPolicy } from '../experiment/condition';
 import type { MemoryService } from './index';
-import type { MemoryItem } from './types';
 import {
-  buildMemoryBlock,
-  buildMemoryDeltaBlock,
-  type MemoryConflictPair,
-  type MemoryDeltaEntry,
+buildMemoryBlock,
+buildMemoryDeltaBlock,
+type MemoryConflictPair,
+type MemoryDeltaEntry,
 } from './prompt';
+import type { MemoryItem } from './types';
 
 export interface MemoryInjectionPlan {
   mode: 'skills';
@@ -30,7 +29,6 @@ export interface MemoryInjectionPlan {
 }
 
 export interface PlanMemoryInjectionOptions {
-  policy: ConditionPolicy;
   memory: MemoryService;
   projectId?: string;
   chatId?: string;
@@ -81,7 +79,7 @@ function conflictPairsAmong(memory: MemoryService, items: MemoryItem[]): MemoryC
 }
 
 export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInjectionPlan {
-  const { policy, memory } = opts;
+  const { memory } = opts;
   const injected = memory.injectedFor(opts.projectId, opts.chatId);
   const restricted = opts.restrictToIds
     ? injected.filter((m) => new Set(opts.restrictToIds).has(m.id))
@@ -90,15 +88,15 @@ export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInj
     mode: 'skills',
     block: buildMemoryBlock({
       memories: restricted,
-      tools: policy.memoryTools,
+      tools: true,
       conflicts: conflictPairsAmong(memory, restricted),
     }),
-    registerTools: policy.memoryTools,
+    registerTools: true,
     injectedMemories: restricted,
     bakedMemories: restricted,
     hash: `skills:${restricted.map((m) => `${m.id}@v${m.version}`).join('|')}`,
     // Content changes ride deltas; only a tools/mode flip rebuilds the session.
-    sessionRebuildKey: `skills-live:${policy.memoryTools}`,
+    sessionRebuildKey: 'skills-live:true',
   };
 }
 

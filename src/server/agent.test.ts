@@ -1,26 +1,25 @@
-import { describe, expect, test } from "bun:test"
-import {
-  AgentCoordinator,
-  ClaudeOutboundOriginTracker,
-  ClaudeToolOriginResolver,
-  buildClaudeSdkRuntimeOptions,
-  buildClaudeSubprocessEnv,
-  buildAttachmentHintText,
-  buildPromptText,
-  createClaudeHarnessStream,
-  maxClaudeContextWindowFromModelUsage,
-  normalizeClaudeAssistantUsageSnapshot,
-  normalizeClaudeStreamMessage,
-  normalizeClaudeUsageSnapshot,
-  resolveClaudeSessionModel,
-  toMemoryCandidateReferences,
-} from "./agent"
-import type { HarnessTurn } from "./harness-types"
-import type { ChatAttachment, TranscriptEntry } from "../shared/types"
-import { resolveConditionPolicy } from "./experiment/condition"
-import { mkdtempSync, rmSync } from "node:fs"
+import { describe,expect,test } from "bun:test"
+import { mkdtempSync,rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { ChatAttachment,TranscriptEntry } from "../shared/types"
+import {
+AgentCoordinator,
+ClaudeOutboundOriginTracker,
+ClaudeToolOriginResolver,
+buildAttachmentHintText,
+buildClaudeSdkRuntimeOptions,
+buildClaudeSubprocessEnv,
+buildPromptText,
+createClaudeHarnessStream,
+maxClaudeContextWindowFromModelUsage,
+normalizeClaudeAssistantUsageSnapshot,
+normalizeClaudeStreamMessage,
+normalizeClaudeUsageSnapshot,
+resolveClaudeSessionModel,
+toMemoryCandidateReferences,
+} from "./agent"
+import type { HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
@@ -950,7 +949,6 @@ describe("AgentCoordinator codex integration", () => {
     const coordinator = new AgentCoordinator({
       store: createFakeStore() as never,
       onStateChange: () => {},
-      policy: resolveConditionPolicy(""),
       codexManager: { stopAll: () => { stopped = true } } as never,
     })
     await coordinator.shutdownRuntime()
@@ -2774,7 +2772,6 @@ describe("AgentCoordinator claude integration", () => {
       claudeSessionFileExists: () => true,
       store: store as never,
       onStateChange: () => {},
-      policy: resolveConditionPolicy("memosync"),
       startClaudeSession: async () => ({
         provider: "claude",
         stream: createClaudeHarnessStream(

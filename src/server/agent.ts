@@ -19,10 +19,6 @@ import { isKnownCatalogModel,resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
 import { EventStore } from "./event-store"
-import { resolveConditionPolicy,type ConditionPolicy } from "./experiment/condition"
-import {
-recordDeliveredStoreFocus,
-} from "./experiment/focus"
 import { fallbackTitleFromMessage,generateTitleForChatDetailed,type GenerateChatTitleResult } from "./generate-title"
 import type { HarnessEvent,HarnessToolRequest,HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
@@ -75,6 +71,9 @@ normalizeServerModel,
 type ClaudeSdkModelInfo,
 } from "./provider-catalog"
 import { assertIsolatedClaudeCredentials,buildIsolatedClaudeEnv,isCliIsolationEnabled,resolveOfficialClaudeEnv } from "./provider-runtime"
+import {
+recordDeliveredStoreFocus,
+} from "./usage/focus"
 
 export function toMemoryCandidateReferences(items: Array<Pick<MemoryItem, "id">>) {
   return items.map(({ id }) => ({ id }))
@@ -478,8 +477,6 @@ interface AgentCoordinatorArgs {
   memoryCheckup?: CheckupService | null
   /** Transfer detection over out-of-context memories (Transfer design 2026-08-08); null disables. */
   memoryTransferDetect?: TransferDetectService | null
-  /** Study-arm policy; decides injection shape + tool registration (default: resolved from env). */
-  policy?: ConditionPolicy
   /** User switches, sampled only when a new turn begins. */
   getMemorySettings?: () => { enabled: boolean; learn: boolean }
   /** Live preview-gate settings (STUDY_PLAN §2.4); default: always on, auto-proceed on empty plans. */
@@ -501,7 +498,6 @@ interface AgentCoordinatorArgs {
     capture?: CaptureService | null
     projectId?: string
     chatId?: string
-    policy?: ConditionPolicy
     subprocessEnv?: Record<string, string | undefined>
     /** Precomputed once for this turn so boot, prompt, and measurement share exact text. */
     memoryPlan?: MemoryInjectionPlan | null
@@ -1312,8 +1308,6 @@ export async function startClaudeSession(args: {
   capture?: CaptureService | null
   projectId?: string
   chatId?: string
-  /** Study-arm policy; decides injection shape + tool registration (default memosync). */
-  policy?: ConditionPolicy
   /** Exact environment inherited by Claude Code and its Bash/tool children. */
   subprocessEnv?: Record<string, string | undefined>
   /** Precomputed once by the coordinator; tests/direct callers may omit it. */
@@ -1324,19 +1318,12 @@ export async function startClaudeSession(args: {
    * coordinator appends the transcript review card. */
   onMemoryProposal?: (created: MemoryItem[]) => void
 }): Promise<ClaudeSessionHandle> {
-  // MemoSync memory: what gets injected (and whether the mcp__memory__* tools
-  // exist) is the study arm's call — planMemoryInjection is the single source
-  // of truth shared with the coordinator's rebuild check. The session is
-  // persistent (reused across turns); skills-mode content changes ride per-turn
-  // deltas, so this boot block is set once and survives edits (REDESIGN D1).
-  const policy = args.policy ?? resolveConditionPolicy()
   const toolOriginResolver = new ClaudeToolOriginResolver()
   const outboundOrigins = new ClaudeOutboundOriginTracker()
   const plan: MemoryInjectionPlan | null = args.memoryPlan !== undefined
     ? args.memoryPlan
     : args.memory
       ? planMemoryInjection({
-        policy,
         memory: args.memory,
         projectId: args.projectId,
         chatId: args.chatId,
@@ -1602,7 +1589,6 @@ export class AgentCoordinator {
   private readonly memoryPreview: boolean
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
-  private readonly policy: ConditionPolicy
   private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   private readonly claudeSessionFileExists: (localPath: string, sessionToken: string) => boolean
@@ -1724,9 +1710,8 @@ export class AgentCoordinator {
     this.memoryPreview = args.memoryPreview ?? false
     this.memoryCheckup = args.memoryCheckup ?? null
     this.memoryTransferDetect = args.memoryTransferDetect ?? null
-    this.policy = args.policy ?? resolveConditionPolicy()
     this.getMemorySettings = args.getMemorySettings ?? (() => ({ enabled: true, learn: true }))
-    this.memoryBranches = this.policy.condition === "memosync" && (args.memoryBranches ?? Boolean(args.createMemoryBranch))
+    this.memoryBranches = (args.memoryBranches ?? Boolean(args.createMemoryBranch))
     this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
     this.getMemoryPreviewSettings =
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
@@ -2404,7 +2389,7 @@ export class AgentCoordinator {
     args: { chatId: string; turnNumber?: number; memoryState?: TurnMemoryState },
   ): Set<string> {
     const applied = new Set<string>()
-    if (!this.memory || args.memoryState?.learnActive === false || this.policy.capture !== "review") return applied
+    if (!this.memory || args.memoryState?.learnActive === false || false) return applied
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
     if (mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
@@ -2880,7 +2865,7 @@ export class AgentCoordinator {
       // key). Partial by design: acceptances at the next gate's Step 1 change
       // the library and still trigger a live recompute there.
       // MEMOSYNC_CHECKUP_FORK=0 skips the fork leg (sidecar still runs).
-      if (args.memoryState?.learnActive !== false && this.memoryCheckup && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryCheckup) {
         try {
           const checkupCtx = { projectId: args.projectId, sessionId: args.chatId }
           if (this.memoryCheckup.needsRecompute(checkupCtx)) {
@@ -2921,7 +2906,7 @@ export class AgentCoordinator {
       // read memories from other conversations/projects and Encode only their
       // source-side portable rules. Relevance and Decode/landing deliberately
       // wait for the next prompt, whose task is required to judge both.
-      if (args.memoryState?.learnActive !== false && this.memoryTransferDetect && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryTransferDetect) {
         try {
           await this.memoryTransferDetect.prepareSources({
             projectId: args.projectId,
@@ -3503,7 +3488,6 @@ export class AgentCoordinator {
     if (args.memoryState.memoryActive && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
-        policy: this.policy,
         memory: this.memory,
         projectId: chat.projectId,
         chatId: args.chatId,
@@ -4684,7 +4668,6 @@ export class AgentCoordinator {
       }
 
       const injected = planMemoryInjection({
-        policy: this.policy,
         memory: this.memory!,
         projectId: input.ctx.project.id,
         chatId: args.chatId,
@@ -5021,7 +5004,7 @@ export class AgentCoordinator {
         })
         this.startMemoryBranches(args, ctx)
         const proposalsRun =
-          this.capture && this.policy.capture === "review"
+          this.capture
             ? this.runProposalsGate(args, ctx, recomputeProposals
                 ? { proposalsId, recompute: true }
                 : undefined)
@@ -5037,7 +5020,7 @@ export class AgentCoordinator {
           }).catch(() => {})
         }
         const transferRun =
-          this.memoryTransferDetect && this.policy.capture === "review"
+          this.memoryTransferDetect
             ? this.runTransferGate(
                 args,
                 ctx,
@@ -5132,7 +5115,6 @@ export class AgentCoordinator {
           ctx = {
             ...ctx,
             injected: planMemoryInjection({
-              policy: this.policy,
               memory: this.memory!,
               projectId: ctx.project.id,
               chatId: args.chatId,
@@ -5522,7 +5504,6 @@ export class AgentCoordinator {
     const turnMemoryPlan =
       this.memory && !memoryDisabledForTurn
         ? planMemoryInjection({
-            policy: this.policy,
             memory: this.memory,
             projectId: chat.projectId,
             chatId: args.chatId,
@@ -5597,7 +5578,7 @@ export class AgentCoordinator {
       // dispatch for this turn.
       const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
       const piMemorySpecs =
-        this.memory && this.policy.memoryTools
+        this.memory
           ? buildMemoryToolSpecs(this.memory, {
               capture: this.capture,
               onProposed: (created, info) => {
@@ -5692,7 +5673,6 @@ export class AgentCoordinator {
       const codexPlan: MemoryInjectionPlan | null =
         this.memory && !memoryDisabledForTurn
           ? planMemoryInjection({
-              policy: this.policy,
               memory: this.memory,
               projectId: chat.projectId,
               chatId: args.chatId,
@@ -5704,7 +5684,7 @@ export class AgentCoordinator {
       // DECLARATIONS are thread-level and persist across turns by protocol, but
       // with no dispatch handler a call this turn is a no-op.)
       const codexMemorySpecs =
-        this.memory && this.policy.memoryTools
+        this.memory
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
@@ -5997,9 +5977,7 @@ export class AgentCoordinator {
         else this.turnExpectedUses.delete(args.chatId)
         if (expectedUses?.length) {
           deliveredExpectedUses = expectedUses
-          const detailIds = this.policy.memoryTools
-            ? expectedUses.filter((use) => Boolean(this.memory!.store.getById(use.id)?.detail)).map((use) => use.id)
-            : []
+          const detailIds = expectedUses.filter((use) => Boolean(this.memory!.store.getById(use.id)?.detail)).map((use) => use.id)
           const withDetail = new Set(detailIds)
           reminderParts.push(
             "How the selected memories are expected to guide this turn:\n" +
@@ -6014,7 +5992,7 @@ export class AgentCoordinator {
         // Cite nudge rides every memory-bearing turn; an edited gate that
         // selected ZERO memories is the one case with nothing to cite.
         const memoryBearingTurn =
-          this.policy.memoryTools && (turnRestriction === undefined || turnRestriction.length > 0)
+          (turnRestriction === undefined || turnRestriction.length > 0)
         if (memoryBearingTurn) {
           reminderParts.push(CITE_NUDGE)
           // Tool salience for DeepSeek: only when the working set really has
@@ -6024,7 +6002,7 @@ export class AgentCoordinator {
             reminderParts.push(DETAIL_NUDGE)
           }
         }
-        if (active.memoryState.learnActive && this.capture && this.policy.memoryTools) reminderParts.push(CAPTURE_NUDGE)
+        if (active.memoryState.learnActive && this.capture) reminderParts.push(CAPTURE_NUDGE)
         if (reminderParts.length > 0) {
           promptText += `\n\n<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`
         }
@@ -6154,7 +6132,6 @@ export class AgentCoordinator {
       ? args.memoryPlan
       : memoryEnabled && this.memory
         ? planMemoryInjection({
-            policy: this.policy,
             memory: this.memory,
             projectId: args.projectId,
             chatId: args.chatId,
@@ -6203,7 +6180,6 @@ export class AgentCoordinator {
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
         chatId: args.chatId,
-        policy: this.policy,
         subprocessEnv,
         memoryPlan: turnPlan,
         restrictMemoryIds: args.restrictMemoryIds,
@@ -6830,7 +6806,7 @@ export class AgentCoordinator {
     // Per-memory interrupt/resume works on every MemoSync engine in normal
     // deployments (Claude, Codex and Pi all implement resume/enforce handling);
     // in the study mode it stays restricted to Claude.
-    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && ((chat.provider !== "codex" && chat.provider !== "pi")))) {
+    if ((chat.provider !== "claude" && ((chat.provider !== "codex" && chat.provider !== "pi")))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }

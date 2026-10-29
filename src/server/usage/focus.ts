@@ -1,10 +1,10 @@
 import { createHash,randomUUID } from "node:crypto"
+import type { MemoryItem } from "../memory/types"
+import type { ExpectedMemoryUse } from "../memory/use-plan"
 import type {
 DeliveredFocusEvent,
 DeliveredFocusMemoryRef,
-} from "../experiment/logger"
-import type { MemoryItem } from "../memory/types"
-import type { ExpectedMemoryUse } from "../memory/use-plan"
+} from "../usage/logger"
 
 function sha256(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex")
@@ -91,7 +91,7 @@ export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs
 }
 
 export function recordDeliveredStoreFocus(args: BuildDeliveredStoreFocusArgs & {
-  logger: Pick<import("../experiment/logger").ExperimentLogger, "event">
+  logger: Pick<import("../usage/logger").UsageLogger, "event">
 }): DeliveredFocusEvent {
   const event = buildDeliveredStoreFocusEvent(args)
   args.logger.event(event)

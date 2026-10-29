@@ -2,13 +2,13 @@ import { expect,test } from "bun:test"
 import { existsSync,mkdtempSync,readFileSync,rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { ExperimentLogger,NoopExperimentLogger } from "./logger"
+import { UsageLogger,NoopUsageLogger } from "./logger"
 
 test("local usage events append in order with install identity and no research allocation", () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-log-"))
   try {
     const filePath = join(dir, "experiments", "events.jsonl")
-    const logger = new ExperimentLogger({ filePath, installId: "install-1", stdout: false })
+    const logger = new UsageLogger({ filePath, installId: "install-1", stdout: false })
     logger.event({ type: "memory.cite", sessionId: "chat-1", citedIds: ["M-01"], countedIds: ["M-01"] })
     logger.event({ type: "memory.decision", action: "accept", id: "M-01", via: "board" })
     const records = readFileSync(filePath, "utf8").trim().split("\n").map(line => JSON.parse(line))
@@ -29,7 +29,7 @@ test("both product opt-out and legacy opt-out disable local output", () => {
       delete process.env.EXPERIMENT_LOG
       process.env[key] = "0"
       const filePath = join(dir, key)
-      new ExperimentLogger({ filePath, stdout: false }).event({ type: "memory.cite", citedIds: [], countedIds: [] })
+      new UsageLogger({ filePath, stdout: false }).event({ type: "memory.cite", citedIds: [], countedIds: [] })
       expect(existsSync(filePath)).toBe(false)
     }
   } finally {
@@ -42,7 +42,7 @@ test("both product opt-out and legacy opt-out disable local output", () => {
 })
 
 test("unwritable output and noop logging cannot break memory actions", () => {
-  const logger = new ExperimentLogger({ filePath: "/dev/null/events.jsonl", stdout: false })
+  const logger = new UsageLogger({ filePath: "/dev/null/events.jsonl", stdout: false })
   expect(() => logger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
-  expect(() => NoopExperimentLogger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
+  expect(() => NoopUsageLogger.event({ type: "memory.cite", citedIds: [], countedIds: [] })).not.toThrow()
 })

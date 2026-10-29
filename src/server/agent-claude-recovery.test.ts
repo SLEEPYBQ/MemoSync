@@ -4,7 +4,6 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
-import { resolveConditionPolicy } from "./experiment/condition"
 import type { HarnessEvent } from "./harness-types"
 import { MemoryService } from "./memory"
 
@@ -48,7 +47,6 @@ test("Claude recovery removes deselected expected-use instructions and detail-to
   let starts = 0
   const coordinator = new AgentCoordinator({
     store, memory, memoryBranches: true, memoryPreview: true,
-    policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
     onStateChange() {},
     claudeSessionFileExists: () => true,
     generateTitle: async () => ({ title: "Recovery", usedFallback: true, failureMessage: null }),

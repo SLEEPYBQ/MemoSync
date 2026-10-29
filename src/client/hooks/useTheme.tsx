@@ -1,8 +1,7 @@
-import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { useAppSettingsStore } from "../stores/appSettingsStore"
-import { useConditionPolicyResolved } from "../lib/conditionApi"
-import { RESOLVED_THEME_STORAGE_KEY, resolveTheme, type ResolvedTheme, type ThemePreference } from "../lib/theme"
+import { createContext,useContext,useEffect,useLayoutEffect,useMemo,useRef,useState,type ReactNode } from "react"
 import type { AppSettingsPatch } from "../../shared/types"
+import { RESOLVED_THEME_STORAGE_KEY,resolveTheme,type ResolvedTheme,type ThemePreference } from "../lib/theme"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 
 export type { ThemePreference } from "../lib/theme"
 
@@ -41,7 +40,6 @@ function getCachedTheme(): ResolvedTheme {
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const settingsTheme = useAppSettingsStore((store) => store.settings?.theme)
-  const policy = useConditionPolicyResolved()
   const [systemTheme, setSystemTheme] = useState(getSystemTheme)
   const [cachedTheme] = useState(getCachedTheme)
   const writerRef = useRef<SettingsWriter | null>(null)
@@ -52,10 +50,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [],
   )
   const theme = settingsTheme ?? "system"
-  // Settings hydrate independently of the condition. Retain the bootstrap until
-  // both are available, except that a study policy always forces light at once.
-  const resolvedTheme = resolveTheme(theme, systemTheme, policy?.studyMode ?? null, cachedTheme)
-  const hydratedTheme = policy && !policy.studyMode && !settingsTheme ? cachedTheme : resolvedTheme
+  // Retain the cached theme until settings hydrate.
+  const resolvedTheme = resolveTheme(theme, systemTheme)
+  const hydratedTheme = !settingsTheme ? cachedTheme : resolvedTheme
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-color-scheme: dark)")
@@ -75,15 +72,15 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     document
       .querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
       ?.setAttribute("content", hydratedTheme === "dark" ? "black-translucent" : "default")
-    // Unknown policies retain the previous cache; a study session only caches light.
-    if (policy) {
+    // Cache the resolved setting for the next page load.
+    if (settingsTheme) {
       try {
         localStorage.setItem(RESOLVED_THEME_STORAGE_KEY, hydratedTheme)
       } catch {
         /* Storage may be disabled. */
       }
     }
-  }, [hydratedTheme, policy])
+  }, [hydratedTheme, settingsTheme])
 
   const value = useMemo<ThemeContextValue>(
     () => ({

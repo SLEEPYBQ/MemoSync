@@ -1,9 +1,9 @@
-import { describe, expect, test } from "bun:test"
-import { getAppAuthStateFromStatus, shouldPlayChatNotificationSound, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
-import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
-import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth, resolveSidebarMemoryOpen, resolveSidebarProjectControls } from "./AppSidebar"
-import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
-import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
+import { describe,expect,test } from "bun:test"
+import type { AppSettingsSnapshot,SidebarChatRow } from "../../shared/types"
+import { isBrowserUnfocused,shouldPlayChatSound } from "../lib/chatSounds"
+import { getAppAuthStateFromStatus,shouldPlayChatNotificationSound,shouldRedirectToChangelog,shouldRetryAuthStatusRequest } from "./App"
+import { DEFAULT_SIDEBAR_WIDTH,MAX_SIDEBAR_WIDTH,MIN_SIDEBAR_WIDTH,clampSidebarWidth } from "./AppSidebar"
+import { getChatNotificationSnapshot,getChatSoundBurstCount,getNotificationTitleCount } from "./chatNotifications"
 
 function createProjectGroup(chats: SidebarChatRow[]) {
   return {
@@ -34,28 +34,6 @@ describe("clampSidebarWidth", () => {
     expect(clampSidebarWidth(MAX_SIDEBAR_WIDTH + 1)).toBe(MAX_SIDEBAR_WIDTH)
     expect(clampSidebarWidth(333.6)).toBe(334)
     expect(clampSidebarWidth(Number.NaN)).toBe(DEFAULT_SIDEBAR_WIDTH)
-  })
-})
-
-describe("study sidebar project controls", () => {
-  test("leaves project creation and mutation controls only in the normal product", () => {
-    expect(resolveSidebarProjectControls(true)).toEqual({
-      addProject: false,
-      createChat: true,
-      mutateProject: false,
-      reorderProjects: false,
-    })
-    expect(resolveSidebarProjectControls(false)).toEqual({
-      addProject: true,
-      createChat: true,
-      mutateProject: true,
-      reorderProjects: true,
-    })
-  })
-
-  test("opens the study Board as an overlay but preserves the normal product route", () => {
-    expect(resolveSidebarMemoryOpen(true)).toBe("overlay")
-    expect(resolveSidebarMemoryOpen(false)).toBe("route")
   })
 })
 

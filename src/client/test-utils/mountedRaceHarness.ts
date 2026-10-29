@@ -1,7 +1,7 @@
-import { join } from "node:path"
 import react from "@vitejs/plugin-react"
-import { chromium, type Browser, type Page } from "playwright"
-import { createServer, type ViteDevServer } from "vite"
+import { join } from "node:path"
+import { chromium,type Browser,type Page } from "playwright"
+import { createServer,type ViteDevServer } from "vite"
 import { PROVIDERS } from "../../shared/types"
 
 export type MountedRaceView = "app-state" | "chat-input"
@@ -48,24 +48,10 @@ export async function startMountedRaceHarness() {
       })
       await page.route("**/api/**", async (route) => {
         const url = new URL(route.request().url())
-        if (url.pathname === "/api/condition") {
+        if (url.pathname === "/api/providers") {
           await route.fulfill({
             contentType: "application/json",
-            body: JSON.stringify({
-              data: {
-                condition: "memosync",
-                capture: "review",
-                preview: true,
-                trace: true,
-                boardVisible: true,
-                boardWritable: true,
-                bringIn: true,
-                injection: "skills",
-                memoryTools: true,
-                studyMode: false,
-              },
-              providers: PROVIDERS,
-            }),
+            body: JSON.stringify({ data: PROVIDERS }),
           })
           return
         }

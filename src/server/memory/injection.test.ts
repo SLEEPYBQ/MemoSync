@@ -1,11 +1,10 @@
-import { describe, expect, test, beforeEach, afterEach } from 'bun:test';
+import { afterEach,beforeEach,describe,expect,test } from 'bun:test';
 
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { MemoryService } from './index';
-import { computeMemoryTurnDelta, normalizeMemorySelection, planMemoryInjection } from './injection';
-import { resolveConditionPolicy } from '../experiment/condition';
+import { computeMemoryTurnDelta,normalizeMemorySelection,planMemoryInjection } from './injection';
 
 
 let dir: string;
@@ -69,7 +68,6 @@ describe('planMemoryInjection', () => {
 
   test('memosync arm: skills block with versioned ids + tools registered', () => {
     const plan = planMemoryInjection({
-      policy: resolveConditionPolicy('memosync'),
       memory,
       projectId: 'proj-1',
     });
@@ -86,7 +84,6 @@ describe('planMemoryInjection', () => {
 
   test('skills: content edits move the hash but NOT the session rebuild key (delta model)', () => {
     const opts = {
-      policy: resolveConditionPolicy('memosync'),
       provider: 'claude' as const,
       memory,
       projectId: 'proj-1',
@@ -100,7 +97,6 @@ describe('planMemoryInjection', () => {
 
   test('skills: only confirmed working memories are baked into the main context', () => {
     const plan = planMemoryInjection({
-      policy: resolveConditionPolicy('memosync'),
       memory,
       projectId: 'proj-1',
       restrictToIds: ['M-02'],
@@ -115,7 +111,6 @@ describe('planMemoryInjection', () => {
 describe('computeMemoryTurnDelta', () => {
   function baselineFromBoot(): Map<string, number> {
     const plan = planMemoryInjection({
-      policy: resolveConditionPolicy('memosync'),
       memory,
       projectId: 'proj-1',
     });
@@ -189,7 +184,6 @@ describe('computeMemoryTurnDelta', () => {
 describe('cross-project condition policies (T4)', () => {
   test('MemoSync preserves personal memory without leaking another project', () => {
     const memosync = planMemoryInjection({
-      policy: resolveConditionPolicy('memosync'),
       memory,
       projectId: 'proj-2-fresh',
     });

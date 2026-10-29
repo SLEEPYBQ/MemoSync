@@ -14,7 +14,6 @@ import { join } from "node:path";
 import { AgentCoordinator,resolveTurnMemoryState } from "./agent";
 
 import { type TranscriptEntry } from "../shared/types";
-import { resolveConditionPolicy,type ConditionPolicy } from "./experiment/condition";
 import { MemoryService } from "./memory";
 import { createCaptureService,type CaptureService } from "./memory/capture";
 import type { CheckupService } from "./memory/checkup";
@@ -182,7 +181,7 @@ interface Harness {
   store: ReturnType<typeof createFakeStore>
   memory: MemoryService
   workspaceDir: string
-  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null; capture?: CaptureService | null }>
+  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null; capture?: CaptureService | null }>
   claudeSessionCloses: number[]
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
@@ -237,7 +236,6 @@ function createHarness(
     afterAppendAuthorized?: (entry: TranscriptEntry) => Promise<void>
     onTurnFailed?: (message: string) => void
     onStateChange?: (chatId?: string) => void
-    policy?: ConditionPolicy
     previewSettings?: { enabled: boolean; autoProceedWhenEmpty: boolean }
     claudeSessionFileExists?: (localPath: string, token: string) => boolean
   } = {},
@@ -293,7 +291,6 @@ function createHarness(
     forkTrace: (opts.forkTrace ?? (async () => null)) as never,
     forkCapture: (opts.forkCapture ?? (async () => null)) as never,
     forkQuery: (opts.forkQuery ?? (async () => null)) as never,
-    policy: opts.policy,
     getMemoryPreviewSettings: opts.previewSettings ? () => opts.previewSettings! : undefined,
     // Default: any token is "stale" (no real ~/.claude in tests). Tests that
     // need a valid token can override.
@@ -305,7 +302,6 @@ function createHarness(
         memoryPlan: args.memoryPlan,
         memory: (args.memory as MemoryService | null) ?? null,
         sessionToken: args.sessionToken,
-        policy: args.policy,
         capture: args.capture,
       })
       await opts.beforeClaudeSessionStart?.()
@@ -492,7 +488,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       preview: true,
       experimentEvents,
-      policy: resolveConditionPolicy("memosync"),
       usePlan: {
         plan: async ({ memories }) => {
           planCalls += 1
@@ -814,7 +809,6 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      policy: resolveConditionPolicy("memosync"),
       beforeClaudeSessionStart: async () => {
         providerBootStarted()
         await providerBootGate
@@ -875,7 +869,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       preview: true,
       experimentEvents,
-      policy: resolveConditionPolicy("memosync"),
       usePlan: {
         plan: async ({ memories }) => memories.map((memory) => ({
           id: memory.id,
@@ -944,7 +937,6 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       preview: true,
       experimentEvents,
-      policy: resolveConditionPolicy("memosync"),
       usePlan: { plan: async () => { throw new Error("planner unavailable") } },
     })
     try {
@@ -1029,7 +1021,6 @@ describe("memory preview gate (coordinator)", () => {
   test("dismiss releases its terminal preview claim before draining the next queued message", async () => {
     const h = createHarness({
       preview: true,
-      policy: resolveConditionPolicy("memosync"),
     })
     try {
       h.memory.store.create({ content: "x", scope: "personal", type: "fact" }, { actor: "system" })
@@ -1679,7 +1670,6 @@ describe("memory preview gate (coordinator)", () => {
   test("an interrupted turn resumes with the recovery card selection, then ordinary turns return to the full pool", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       experimentEvents,
     })
@@ -1767,7 +1757,6 @@ describe("memory preview gate (coordinator)", () => {
   test("interrupt recovery persists only the selection Claude actually accepted from the current Visible Memory Pool", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       experimentEvents,
     })
@@ -1829,7 +1818,6 @@ describe("memory preview gate (coordinator)", () => {
   test("a per-memory interrupt rejects a memory outside the current delivered working set before cancelling", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       experimentEvents,
     })
@@ -1876,7 +1864,6 @@ describe("memory preview gate (coordinator)", () => {
   test("a free-text correction can enforce the flagged memory for exactly the resumed run", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       experimentEvents,
     })
@@ -1958,7 +1945,6 @@ describe("memory preview gate (coordinator)", () => {
   test("interrupt recovery cannot enforce a flagged memory outside the current chat's effective pool", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       experimentEvents,
     })
@@ -2008,7 +1994,6 @@ describe("memory preview gate (coordinator)", () => {
 
   test("a failed provider boot leaves interrupt recovery unresolved and retryable", async () => {
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       failClaudeSessionStartAttempts: [1],
     })
@@ -2066,7 +2051,6 @@ describe("memory preview gate (coordinator)", () => {
 
   test("a blank recovery correction cannot resume or settle the interrupt", async () => {
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
     })
     try {
@@ -2141,7 +2125,6 @@ describe("memory preview gate (coordinator)", () => {
     }
     const experimentEvents: Array<Record<string, unknown>> = []
     const interrupted = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: false,
       capture,
       trace,
@@ -2178,7 +2161,6 @@ describe("memory preview gate (coordinator)", () => {
     }
 
     const nonStudy = createHarness({
-      policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
       preview: false,
       capture,
     })
@@ -2201,7 +2183,7 @@ describe("memory preview gate (coordinator)", () => {
   })
 
   test("MemoSync non-study accepts the per-memory control gate for Pi", async () => {
-    const h = createHarness({ policy: { ...resolveConditionPolicy("memosync"), studyMode: false }, preview: false })
+    const h = createHarness({ preview: false })
     try {
       const memory = h.memory.store.create(
         { content: "Pi memory", scope: "project", projectId: "project-1", type: "fact" },
@@ -2228,7 +2210,6 @@ describe("memory preview gate (coordinator)", () => {
 
   test("non-study MemoSync (the deployment) passes the gate — interrupt fails only for lack of a running turn", async () => {
     const h = createHarness({
-      policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
       preview: false,
     })
     try {
@@ -2247,7 +2228,6 @@ describe("memory preview gate (coordinator)", () => {
 
   test("Cancel enforce removes the lock and hard instruction from the confirmed run", async () => {
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: true,
     })
     try {
@@ -2290,7 +2270,6 @@ describe("memory preview gate (coordinator)", () => {
 
   test("an enforce lock and hard instruction are consumed by exactly one run", async () => {
     const h = createHarness({
-      policy: resolveConditionPolicy("memosync"),
       preview: true,
     })
     try {
@@ -2492,22 +2471,6 @@ describe("preview settings (coordinator, STUDY_PLAN §2.4)", () => {
       await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "hello" })
       expect(h.sessionStarts).toHaveLength(0)
       expect(timestampedKinds(h.store.messages)).not.toContain("memory_preview_decision")
-    } finally {
-      h.cleanup()
-    }
-  })
-})
-
-describe("MemoSync policy (coordinator)", () => {
-
-  test("a retired condition falls back to MemoSync at Claude session boot", async () => {
-    const h = createHarness({ policy: resolveConditionPolicy("auto") })
-    try {
-      h.memory.store.create({ content: "x", scope: "personal", type: "fact" }, { actor: "system" })
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "hello" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.sessionStarts[0].policy?.condition).toBe("memosync")
-      expect(h.sessionStarts[0].policy?.injection).toBe("skills")
     } finally {
       h.cleanup()
     }
@@ -3143,7 +3106,6 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
       preview: true,
       checkup,
       experimentEvents,
-      policy: resolveConditionPolicy("memosync"),
     })
     try {
       h.memory.store.create({ content: "seed", scope: "personal", type: "fact" }, { actor: "system" })

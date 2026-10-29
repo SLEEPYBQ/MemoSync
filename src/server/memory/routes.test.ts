@@ -3,7 +3,6 @@ import { afterEach,beforeEach,describe,expect,it } from 'bun:test';
 import { mkdtempSync,readFileSync,rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveConditionPolicy } from '../experiment/condition';
 import { MemoryService } from './index';
 import { handleMemoryRequest } from './routes';
 
@@ -15,14 +14,14 @@ function call(
   method: string,
   path: string,
   body?: unknown,
-  services?: Parameters<typeof handleMemoryRequest>[4],
+  services?: Parameters<typeof handleMemoryRequest>[3],
 ): Promise<Response | null> {
   const req = new Request(`http://localhost${path}`, {
     method,
     headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return handleMemoryRequest(req, new URL(req.url), memory, undefined, services);
+  return handleMemoryRequest(req, new URL(req.url), memory, services);
 }
 
 async function json(res: Response | null): Promise<any> {
@@ -34,15 +33,14 @@ function callWithServices(
   method: string,
   path: string,
   body?: unknown,
-  services: Parameters<typeof handleMemoryRequest>[4] = {},
-  condition: 'memosync' | 'auto' | 'static' = 'memosync',
+  services: Parameters<typeof handleMemoryRequest>[3] = {},
 ): Promise<Response | null> {
   const req = new Request(`http://localhost${path}`, {
     method,
     headers: body !== undefined ? { 'content-type': 'application/json' } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return handleMemoryRequest(req, new URL(req.url), memory, resolveConditionPolicy(condition), {
+  return handleMemoryRequest(req, new URL(req.url), memory, {
     ...services,
   });
 }
@@ -878,7 +876,7 @@ describe('memory routes', () => {
       suggestedScope: 'project',
       landing: { route: 'new' },
     } as const;
-    const services: Parameters<typeof handleMemoryRequest>[4] = {};
+    const services: Parameters<typeof handleMemoryRequest>[3] = {};
 
     const failed = await callWithServices('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: source.version,
@@ -947,7 +945,7 @@ describe('memory routes', () => {
       suggestedScope: 'personal',
       landing: { route: 'reinforces', targetId: target.id, targetVersion: target.version },
     } as const;
-    const services: Parameters<typeof handleMemoryRequest>[4] = {};
+    const services: Parameters<typeof handleMemoryRequest>[3] = {};
 
     const failed = await callWithServices('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: source.version,
@@ -1467,7 +1465,7 @@ describe('memory routes', () => {
           sessionId: 'chat-1',
         }),
       });
-      const res = await handleMemoryRequest(req, new URL(req.url), logged, undefined, {
+      const res = await handleMemoryRequest(req, new URL(req.url), logged, {
         reviseInjection: { revise: async () => ({ selectedIds: [kept.id], reply: 'Dropped the UI one.' }) },
       });
       expect(res!.status).toBe(200);
@@ -1534,18 +1532,16 @@ describe('memory routes', () => {
     });
   });
 
-  it('ui-monitor telemetry logs in every arm (exempt from the mutation lock)', async () => {
+  it('ui-monitor accepts local monitoring events', async () => {
     const ok = await call('POST', '/api/memories/ui-monitor', { surface: 'board_visit' });
     expect(ok!.status).toBe(200);
 
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    const locked = resolveConditionPolicy('auto');
     const req = new Request('http://localhost/api/memories/ui-monitor', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ surface: 'trace_expand', ids: ['M-01'], sessionId: 'chat-1' }),
     });
-    const res = await handleMemoryRequest(req, new URL(req.url), memory, locked);
+    const res = await handleMemoryRequest(req, new URL(req.url), memory);
     expect(res!.status).toBe(200);
   });
 
@@ -2021,10 +2017,8 @@ describe('retired summary routes', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('returns 404 for all retired summary endpoints under any condition', async () => {
-    const { resolveConditionPolicy } = await import('../experiment/condition');
-    for (const condition of ['memosync', 'static', 'auto', 'unknown']) {
-      const policy = resolveConditionPolicy(condition);
+  it('returns 404 for all retired summary endpoints ', async () => {
+    {
       for (const [path, method] of [
         ['/api/memories/summary', 'GET'],
         ['/api/memories/summary/refresh', 'POST'],
@@ -2036,7 +2030,7 @@ describe('retired summary routes', () => {
             ? { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ message: 'inspect' }) }
             : {}),
         });
-        const res = await handleMemoryRequest(req, new URL(req.url), memory, policy, {});
+        const res = await handleMemoryRequest(req, new URL(req.url), memory, {});
         expect(res!.status).toBe(404);
       }
     }

@@ -4,42 +4,41 @@
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { AlertTriangle,Archive,ArchiveRestore,ArrowLeft,BrainCircuit,ChevronRight,Loader2,Plus,Search,Trash2,X } from "lucide-react"
 import type { DragEvent } from "react"
-import { useLocation, useNavigate } from "react-router-dom"
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BrainCircuit, ChevronRight, Loader2, Plus, Search, Trash2, X } from "lucide-react"
-import { Button } from "../components/ui/button"
-import { Textarea } from "../components/ui/textarea"
-import { SegmentedControl } from "../components/ui/segmented-control"
-import { cn } from "../lib/utils"
-import { useMemoryStore } from "../stores/memoryStore"
-import {
-  memoriesApi,
-  type CreateMemoryBody,
-  type MemoryItem,
-  type MemoryScope,
-  type MutedProposal,
-} from "../lib/memoriesApi"
-import { MemorySettingsBanner } from "../components/memory/MemorySettingsBanner"
+import { useCallback,useEffect,useMemo,useRef,useState } from "react"
+import { useLocation,useNavigate } from "react-router-dom"
+import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
-import { SCOPES, SCOPE_ICONS, scopeRingClasses } from "../components/memory/ScopeBadge"
-import { memoryScopeLabel } from "../lib/memoryCitations"
-import { useConditionPolicy } from "../lib/conditionApi"
-import { workspaceApi } from "../lib/workspaceApi"
-import { recordUiMonitor } from "../lib/memoriesApi"
-import { freshnessSince, getLastBoardVisit, markBoardVisit } from "../lib/boardVisit"
-import { parseBoardFocus } from "../lib/boardFocus"
-import { TransferMemoryDialog, type TransferInitialTarget } from "../components/memory/TransferMemoryDialog"
-import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
+import { MemorySettingsBanner } from "../components/memory/MemorySettingsBanner"
+import { SCOPE_ICONS,scopeRingClasses,SCOPES } from "../components/memory/ScopeBadge"
+import { TransferMemoryDialog,type TransferInitialTarget } from "../components/memory/TransferMemoryDialog"
 import {
-  candidateReviewCohortItems,
-  extendCandidateReviewCohort,
-  FocusedMemoryCandidateStep,
-  FocusedMemoryReviewStation,
+candidateReviewCohortItems,
+extendCandidateReviewCohort,
+FocusedMemoryCandidateStep,
+FocusedMemoryReviewStation,
 } from "../components/messages/MemoryChangesReviewFlow"
 import { MemoryCandidateReviewStation } from "../components/messages/MemoryProposalsGate"
+import { Button } from "../components/ui/button"
+import { SegmentedControl } from "../components/ui/segmented-control"
+import { Textarea } from "../components/ui/textarea"
+import { parseBoardFocus } from "../lib/boardFocus"
+import { freshnessSince,getLastBoardVisit,markBoardVisit } from "../lib/boardVisit"
+import {
+memoriesApi,
+recordUiMonitor,
+type CreateMemoryBody,
+type MemoryItem,
+type MemoryScope,
+type MutedProposal,
+} from "../lib/memoriesApi"
+import { memoryScopeLabel } from "../lib/memoryCitations"
+import { cn } from "../lib/utils"
+import { workspaceApi } from "../lib/workspaceApi"
+import { useMemoryStore } from "../stores/memoryStore"
 import type { FocusedMemoryReviewController } from "./memory/MemoryBoardLauncher"
 
 // Manual creation: session memories are agent-created within a session (they
@@ -118,7 +117,6 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const loadAll = useMemoryStore((s) => s.loadAll)
   const upsertLocal = useMemoryStore((s) => s.upsertLocal)
   const removeLocal = useMemoryStore((s) => s.removeLocal)
-  const conditionPolicy = useConditionPolicy()
   const hasFocusedReview = Boolean(overlay?.focusedReview)
   const sections = memoryBoardSectionVisibility()
   const [creating, setCreating] = useState(false)
@@ -557,13 +555,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     setTransferRequest({ item, target })
   }
 
-  if (!conditionPolicy.boardVisible) {
-    return (
-      <div className="flex min-h-0 flex-1 items-center justify-center p-8 text-sm text-muted-foreground">
-        The Memory Board is not available in the “{conditionPolicy.condition}” study condition.
-      </div>
-    )
-  }
+
 
   return (
     <div className="flex min-h-0 flex-1">

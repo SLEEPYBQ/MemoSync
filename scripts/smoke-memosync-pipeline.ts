@@ -5,7 +5,6 @@ import { join } from "node:path"
 import { AgentCoordinator,buildClaudeSdkRuntimeOptions,buildClaudeSubprocessEnv } from "../src/server/agent"
 import { CodexAppServerManager } from "../src/server/codex-app-server"
 import { EventStore } from "../src/server/event-store"
-import { resolveConditionPolicy } from "../src/server/experiment/condition"
 import { MemoryService } from "../src/server/memory"
 import { createBranchJsonCaller } from "../src/server/memory/branch-caller"
 import { createMemoryBranch } from "../src/server/memory/branch-runtime"
@@ -78,7 +77,6 @@ const coordinator = new AgentCoordinator({
       },
     }
   },
-  policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
   onStateChange: () => {},
   generateTitle: async () => ({ title: "GLM pipeline smoke", usedFallback: true, failureMessage: null }),
   capture,

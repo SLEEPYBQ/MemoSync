@@ -1,11 +1,10 @@
-import { describe, expect, test } from "bun:test"
+import { describe,expect,test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
-import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
-import { resolveConditionPolicy } from "../../server/experiment/condition"
+import { PROVIDERS,type LocalProjectsSnapshot } from "../../shared/types"
+import { LandingProjectMenu,LocalDevContent } from "./LocalDev"
 import { TooltipProvider } from "./ui/tooltip"
-import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 
 const emptySnapshot: LocalProjectsSnapshot = {
   machine: {
@@ -16,7 +15,7 @@ const emptySnapshot: LocalProjectsSnapshot = {
   projects: [],
 }
 
-function renderEmptyLanding(condition: string) {
+function renderEmptyLanding() {
   return renderToStaticMarkup(createElement(
     MemoryRouter,
     null,
@@ -31,7 +30,6 @@ function renderEmptyLanding(condition: string) {
       onSend: async () => undefined,
       availableProviders: PROVIDERS,
       projectIdByPath: {},
-      conditionPolicy: resolveConditionPolicy(condition),
     })),
   ))
 }
@@ -46,8 +44,8 @@ function projectPickerOpeningTag(html: string) {
 describe("LocalDev project picker", () => {
 
   test("keeps the normal MemoSync project picker actionable", () => {
-    for (const condition of [""]) {
-      const html = renderEmptyLanding(condition)
+    {
+      const html = renderEmptyLanding()
 
       expect(projectPickerOpeningTag(html)).not.toContain("disabled")
       expect(html).toContain("Add a project")

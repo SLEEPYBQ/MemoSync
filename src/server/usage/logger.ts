@@ -1,7 +1,4 @@
 import { LocalUsageLog } from "../usage/local-log";
-/** Historical labels are read only; they never choose product behavior. */
-export type ExperimentCondition = "memosync" | "static" | "auto"
-export type ExperimentAllocationMode = "study" | "internal_qa"
 
 type MemoryRef = { id: string; scope: string }
 
@@ -44,7 +41,7 @@ export interface DeliveredFocusEvent {
 }
 
 /** Discriminated union of logged events (extend as new signals are wired). */
-export type ExperimentEvent =
+export type UsageEvent =
   { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
   | { type: "memory.inject"; schemaVersion?: 1; sessionId?: string; engine?: string; memories: MemoryRef[]; tokenEstimate?: number; mode?: "skills" | "plain" | "file"; staticFiles?: string[] }
   | DeliveredFocusEvent
@@ -78,15 +75,15 @@ export type ExperimentEvent =
   | { type: "turn.usage"; sessionId?: string; engine?: string; model?: string; tokens?: number; ms?: number }
   | { type: "turn.compacted"; sessionId?: string; engine?: string; turn?: number }
 
-export class ExperimentLogger {
+export class UsageLogger {
   private readonly output: LocalUsageLog
   private readonly installId?: string
   constructor(options: { filePath?: string | null; stdout?: boolean; installId?: string } = {}) {
     this.output = new LocalUsageLog(options)
     this.installId = options.installId
   }
-  event(event: ExperimentEvent): void {
+  event(event: UsageEvent): void {
     this.output.write({ ts: new Date().toISOString(), ...(this.installId ? { installId: this.installId } : {}), ...event })
   }
 }
-export const NoopExperimentLogger: Pick<ExperimentLogger, "event"> = { event: () => undefined }
+export const NoopUsageLogger: Pick<UsageLogger, "event"> = { event: () => undefined }

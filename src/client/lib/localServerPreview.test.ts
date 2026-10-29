@@ -1,6 +1,6 @@
-import { describe, expect, it } from "bun:test"
+import { describe,expect,it } from "bun:test"
 import type { LocalHttpServerInfo } from "../../shared/protocol"
-import { canKillLocalHttpServer, isProxiedPreviewAddress, localServerPreviewUrl, manualBrowserAddressUrl } from "./localServerPreview"
+import { isProxiedPreviewAddress,localServerPreviewUrl,manualBrowserAddressUrl } from "./localServerPreview"
 
 const proxiedServer: LocalHttpServerInfo = {
   title: "Vite",
@@ -11,10 +11,6 @@ const proxiedServer: LocalHttpServerInfo = {
 }
 
 describe("localServerPreviewUrl", () => {
-  it("hides process termination when the server marks a study preview as managed", () => {
-    expect(canKillLocalHttpServer({ ...proxiedServer, canKill: false })).toBe(false)
-    expect(canKillLocalHttpServer(proxiedServer)).toBe(true)
-  })
 
   it.each([
     "http://localhost:4300/chat",

@@ -5,7 +5,6 @@ import { join } from "node:path"
 import type { AgentProvider,TranscriptEntry } from "../shared/types"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
-import { resolveConditionPolicy } from "./experiment/condition"
 import type { HarnessEvent } from "./harness-types"
 import { MemoryService } from "./memory"
 import type { MemoryBranchInput } from "./memory/branch-runtime"
@@ -72,7 +71,6 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
   }
   const coordinator = new AgentCoordinator({
     store, memory, memoryBranches: true, memoryPreview: true,
-    policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
     onStateChange: () => {},
     claudeSessionFileExists: () => true,
     generateTitle: async () => ({ title: "Test", usedFallback: true, failureMessage: null }),

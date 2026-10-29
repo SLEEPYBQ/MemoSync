@@ -21,8 +21,6 @@ import { acquireDataDirectoryLock,acquireDataRootBootstrapLock } from "./data-di
 import { DiffStore } from "./diff-store"
 import { discoverProjects,type DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
-import { resolveConditionPolicy,type ConditionPolicy } from "./experiment/condition"
-import { ExperimentLogger } from "./experiment/logger"
 import { resolveInstallId } from "./install-id"
 import { KeybindingsManager } from "./keybindings"
 import { readLlmProviderSnapshot,validateLlmProviderCredentials,writeLlmProviderSnapshot } from "./llm-provider"
@@ -51,6 +49,7 @@ import { loadRegistryModels } from "./registry-models"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import { deleteProjectUpload,inferAttachmentContentType,inferProjectFileContentType,persistProjectUpload,resolveExistingProjectUpload } from "./uploads"
+import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter,type ClientState } from "./ws-router"
@@ -119,14 +118,10 @@ export function validateUploadFiles(files: Array<{ name: string; size: number }>
 }
 
 export function createAuditAdmission(args: {
-  policy: ConditionPolicy
   store: { getChat(chatId: string): { provider: AgentProvider | null } | null }
   isMemoryVisible: (chatId: string, memoryId: string) => boolean
 }): ((input: { chatId: string; memoryId: string }) => string | null) | undefined {
-  // Audit follow-ups (Enforce / Draft fix) exist in the memosync condition —
-  // in the normal deployment (studyMode false) as well as the memosync study
-  // arm. The study prompt gate (freeze/lifecycle) only applies when present.
-  if (args.policy.condition !== "memosync") return undefined
+  // Validate the target against the current chat and visible pool.
   return ({ chatId, memoryId }) => {
     const chat = args.store.getChat(chatId)
     if (!chat) return "This is not an active chat."
@@ -271,15 +266,9 @@ async function startLockedMemoSyncServer(
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean)
-  // Study-condition policy: decides which memory behaviors exist in this
-  // instance (capture surfacing, preview gate, trace, board/working-set access)
-  // and whether remote git/GitHub access exists at all. Resolved BEFORE any
-  // service construction so arm isolation covers construction side effects,
-  // not just HTTP routes.
-  const conditionPolicy = resolveConditionPolicy()
   const store = new EventStore(options.dataDir)
   // Study deployments keep participants on local-only git.
-  const diffStore = new DiffStore(store.dataDir, { remoteGitEnabled: !false })
+  const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
   await diffStore.initialize()
@@ -292,7 +281,7 @@ async function startLockedMemoSyncServer(
   const memory = new MemoryService({
     dbPath: path.join(store.dataDir, "memory.sqlite"),
     dataDir: path.join(store.dataDir, "memories"),
-    logger: new ExperimentLogger({
+    logger: new UsageLogger({
       filePath: usageEventsPath,
       // Study allocations stamp the orchestrator-owned PARTICIPANT_ID; every
       // other deployment stamps a persisted per-install id so longitudinal
@@ -361,18 +350,16 @@ async function startLockedMemoSyncServer(
   const memoryLlm = branchMemory.callJson
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
   // route degrades to a verbatim proposal without it.
-  const memoryTransfer = conditionPolicy.boardWritable ? createTransferService({ callJson: memoryLlm }) : null
+  const memoryTransfer = createTransferService({ callJson: memoryLlm })
   // Sensitive-candidate redaction (DG1 "confirm" branch) — the route REFUSES
   // without it (a failed redaction must never look like a clean one).
-  const memorySanitize = conditionPolicy.capture === "review" ? createSanitizeService({ callJson: memoryLlm }) : null
+  const memorySanitize = createSanitizeService({ callJson: memoryLlm })
   // Revision drafting (DG4 "propose fixes"): after a repeat-violation streak
   // the system drafts a replacement that lands on the review lane. Exists only
   // where there IS a review lane and a trace pass to trigger it.
   const memoryRevision =
-    conditionPolicy.capture === "review" && conditionPolicy.trace
-      ? createRevisionService({ memory, callJson: memoryLlm })
-      : null
-  if (memoryRevision && conditionPolicy.condition === "memosync") {
+    createRevisionService({ memory, callJson: memoryLlm })
+  if (memoryRevision) {
     const scan = memoryRevision.scanAndPropose.bind(memoryRevision)
     memoryRevision.scanAndPropose = input => branchMemory.run({ sessionId: input.sessionId }, () => scan(input))
   }
@@ -391,25 +378,21 @@ async function startLockedMemoSyncServer(
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((c) => ({ id: c.id, startedAt: new Date(c.createdAt).toISOString() }))
   }
-  const memoryMaintenance = conditionPolicy.preview
-    ? createMaintenanceService({
+  const memoryMaintenance = createMaintenanceService({
         memory,
         // Enables the redundant-pair merge action (LLM-drafted merge proposals).
         callJson: memoryLlm,
       })
-    : null
   // Step-one library checkup (redesign 2026-08-07 §3): three parallel LLM
   // queries + merge, cache keyed on library content — exists only where the
   // step-one gates exist (the review arm's chat flow).
   const memoryCheckup =
-    conditionPolicy.preview && conditionPolicy.capture === "review"
-      ? createCheckupService({ memory, callJson: memoryLlm, listRecentSessions })
-      : null
+    createCheckupService({ memory, callJson: memoryLlm, listRecentSessions })
   // Transfer detection: turn end prepares source-side rules from other
   // contexts; each next prompt reruns relevance and task-bound Decode/landing.
   // Rides the same arm gating as the checkup, plus the transfer service.
   const memoryTransferDetect =
-    memoryTransfer && conditionPolicy.preview && conditionPolicy.capture === "review"
+    memoryTransfer
       ? createTransferDetectService({
           memory,
           callJson: memoryLlm,
@@ -421,12 +404,11 @@ async function startLockedMemoSyncServer(
   // "Ask agent to revise" on the Step 2 gate — natural-language adjustment of
   // the injected set. Same availability as the gate itself.
   const memoryReviseInjection =
-    conditionPolicy.preview ? createReviseInjectionService({ callJson: memoryLlm }) : null
+    createReviseInjectionService({ callJson: memoryLlm })
   const memoryUsePlan =
-    conditionPolicy.preview ? createUsePlanService({ callJson: memoryLlm }) : null
+    createUsePlanService({ callJson: memoryLlm })
   let agent: AgentCoordinator | null = null
   const auditAdmission = createAuditAdmission({
-    policy: conditionPolicy,
     store,
     isMemoryVisible: (chatId, memoryId) => {
       const chat = store.getChat(chatId)
@@ -436,30 +418,29 @@ async function startLockedMemoSyncServer(
   const memoryCapture = createCaptureService({
     memory, callJson: memoryLlm,
   })
-  if (memoryCapture && conditionPolicy.condition === "memosync") {
+  if (memoryCapture) {
     const route = memoryCapture.routeProposal.bind(memoryCapture)
     memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
   }
   const activeAgent = new AgentCoordinator({
     store,
     memory,
-    policy: conditionPolicy,
-    memoryBranches: conditionPolicy.condition === "memosync",
+    memoryBranches: true,
     getMemorySettings: () => appSettings.getSnapshot().memory,
     getMemoryPreviewSettings: () => appSettings.getSnapshot().memoryPreview,
     capture: memoryCapture,
     // No logger: the coordinator CAS-validates trace verdicts against live
     // memory state and emits memory.trace itself.
-    memoryTrace: conditionPolicy.trace ? createTraceService({ callJson: memoryLlm }) : null,
+    memoryTrace: createTraceService({ callJson: memoryLlm }),
     memoryRevision,
     memoryCheckup,
     memoryTransferDetect,
     // Sidecar relevance prediction on the receipt (REDESIGN D6): the receipt
     // itself stays a pure plan readout; the prediction arrives as its own
     // entry, visually marked as a guess.
-    memoryRelevance: conditionPolicy.preview ? createRelevanceService({ callJson: memoryLlm }) : null,
+    memoryRelevance: createRelevanceService({ callJson: memoryLlm }),
     memoryUsePlan,
-    memoryPreview: conditionPolicy.preview,
+    memoryPreview: true,
     onStateChange: (chatId?: string, options?: { immediate?: boolean }) => {
       if (chatId) {
         if (options?.immediate) {
@@ -492,8 +473,6 @@ async function startLockedMemoSyncServer(
     updateManager,
     // Thunk: actualPort is assigned when Bun.serve binds, later in this fn.
     getSelfPort: () => actualPort,
-    // Study deployments cut non-essential outbound access (skills.sh).
-    remoteSkillsEnabled: !false,
     // Study arms only: the serial gate can refuse prompts (chat from a
     // completed session, pending questionnaire, or a finished study).
   })
@@ -670,7 +649,7 @@ async function startLockedMemoSyncServer(
 
           const memoryResponse = await branchMemory.run(
             url.pathname.startsWith("/api/memories") ? await memoryRequestContext(req, url) : {},
-            () => handleMemoryRequest(req, url, memory, conditionPolicy, {
+            () => handleMemoryRequest(req, url, memory, {
             transfer: memoryTransfer,
             sanitize: memorySanitize,
             maintenance: memoryMaintenance,
@@ -679,7 +658,7 @@ async function startLockedMemoSyncServer(
             revision: memoryRevision,
             auditAdmission: auditAdmission,
             workingMemoryUsePlan: (input) => activeAgent.planMemoryPreviewUses(input),
-            workingMemoryRevise: conditionPolicy.condition === "memosync" ? input => activeAgent.reviseMemoryPreview(input) : undefined,
+            workingMemoryRevise: input => activeAgent.reviseMemoryPreview(input),
             workingMemoryPool: ({ chatId, previewId }) => {
               const pending = activeAgent.pendingPreviews.get(chatId)
               if (!pending?.published || pending.previewId !== previewId) return null
@@ -705,8 +684,8 @@ async function startLockedMemoSyncServer(
             return Response.json({ models: connection ? await loadRegistryModels(connection, url.searchParams.get("model") ?? undefined) : [] })
           }
 
-          if (url.pathname === "/api/condition") {
-            return Response.json({ data: conditionPolicy, providers: deployedProviders() })
+          if (url.pathname === "/api/providers") {
+            return Response.json({ data: deployedProviders() })
           }
 
           // Add Project's path picker browses the WORKSPACE machine's

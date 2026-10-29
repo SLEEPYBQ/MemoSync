@@ -1,29 +1,27 @@
 import type {
-  AgentProvider,
-  ClaudeModelOptions,
-  CodexModelOptions,
-  PiModelOptions,
-  ClaudeContextWindow,
-  ModelOptions,
-  ProviderCatalogEntry,
-  ProviderModelOption,
-  ServiceTier,
+AgentProvider,
+ClaudeContextWindow,
+ClaudeModelOptions,
+CodexModelOptions,
+ModelOptions,
+PiModelOptions,
+ProviderCatalogEntry,
+ProviderModelOption,
+ServiceTier,
 } from "../shared/types"
-import { isCliIsolationEnabled, resolveCodexRuntimeModel } from "./provider-runtime"
 import {
-  CLAUDE_CONTEXT_WINDOW_OPTIONS,
-  CLAUDE_REASONING_OPTIONS,
-  DEFAULT_CLAUDE_MODEL_OPTIONS,
-  DEFAULT_CODEX_MODEL_OPTIONS,
-  DEFAULT_PI_MODEL_OPTIONS,
-  PROVIDERS,
-  normalizeClaudeContextWindow,
-  normalizeProviderModelId,
-  isClaudeReasoningEffort,
-  isCodexReasoningEffort,
-  isPiReasoningEffort,
-  normalizePiModelId,
+DEFAULT_CLAUDE_MODEL_OPTIONS,
+DEFAULT_CODEX_MODEL_OPTIONS,
+DEFAULT_PI_MODEL_OPTIONS,
+PROVIDERS,
+isClaudeReasoningEffort,
+isCodexReasoningEffort,
+isPiReasoningEffort,
+normalizeClaudeContextWindow,
+normalizePiModelId,
+normalizeProviderModelId
 } from "../shared/types"
+import { isCliIsolationEnabled,resolveCodexRuntimeModel } from "./provider-runtime"
 
 const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
   { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
@@ -75,36 +73,6 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
 
 export function resetServerProvidersForTests() {
   SERVER_PROVIDERS.splice(0, SERVER_PROVIDERS.length, ...createServerProviders())
-}
-
-/**
- * Study-mode catalog pin (2026-08-09): a controlled experiment cannot offer
- * participants an engine or model choice. The picker mechanics stay — the
- * dropdown simply contains exactly one entry: the Claude Code engine on the
- * arm's configured DeepSeek model, at reasoning effort "high" (DeepSeek's
- * official default thinking strength for the production serving of these
- * models). The Codex provider disappears entirely; study arms run Claude
- * Code only.
- */
-export function applyStudyModelPin(modelId: string) {
-  const claude = SERVER_PROVIDERS.find((provider) => provider.id === "claude")
-  if (!claude) return
-  const pinnedModel = claude.models.find((option) => option.id === modelId) ?? {
-    // An operator-configured model id outside the catalog still pins cleanly.
-    id: modelId,
-    label: modelId,
-    supportsEffort: true,
-    contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
-    supportsMaxReasoningEffort: true,
-  }
-  const pinnedEffort = CLAUDE_REASONING_OPTIONS.find((option) => option.id === "high") ?? CLAUDE_REASONING_OPTIONS[0]
-  SERVER_PROVIDERS.splice(0, SERVER_PROVIDERS.length, {
-    ...claude,
-    defaultModel: pinnedModel.id,
-    defaultEffort: pinnedEffort.id,
-    models: [pinnedModel],
-    efforts: [pinnedEffort],
-  })
 }
 
 function modelFamily(value: string) {

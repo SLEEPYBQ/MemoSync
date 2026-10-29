@@ -1,8 +1,8 @@
-import { describe, expect, it } from 'bun:test';
+import { describe,expect,it } from 'bun:test';
+import type { UsageEvent } from '../usage/logger';
+import type { DeepSeekJsonRequest,LlmJsonCaller } from './deepseek';
 import { createTraceService } from './trace';
-import type { DeepSeekJsonRequest, LlmJsonCaller } from './deepseek';
 import type { MemoryItem } from './types';
-import type { ExperimentEvent } from '../experiment/logger';
 
 function mem(id: string, content: string, over: Partial<MemoryItem> = {}): MemoryItem {
   return {
@@ -34,8 +34,8 @@ function fakeCallJson(result: Record<string, unknown>): { call: LlmJsonCaller; c
 }
 
 /** Fake logger that records emitted events. */
-function fakeLogger(): { logger: { event: (e: ExperimentEvent) => void }; events: ExperimentEvent[] } {
-  const events: ExperimentEvent[] = [];
+function fakeLogger(): { logger: { event: (e: UsageEvent) => void }; events: UsageEvent[] } {
+  const events: UsageEvent[] = [];
   return { logger: { event: (e) => events.push(e) }, events };
 }
 

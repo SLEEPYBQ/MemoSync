@@ -1,23 +1,23 @@
 import type {
-  AppSettingsSnapshot,
-  AppSettingsPatch,
-  AgentProvider,
-  ChatAttachment,
-  ChatDiffSnapshot,
-  ChatHistoryPage,
-  ChatSnapshot,
-  DiffCommitMode,
-  KeybindingsSnapshot,
-  LlmProviderSnapshot,
-  LocalProjectsSnapshot,
-  MemoryPreviewDecision,
-  ModelOptions,
-  SidebarData,
-  StandaloneTranscriptAttachmentMode,
-  StandaloneTranscriptExportResult,
-  UpdateSnapshot,
-  EditorPreset,
-  ExpectedMemoryUse,
+AgentProvider,
+AppSettingsPatch,
+AppSettingsSnapshot,
+ChatAttachment,
+ChatDiffSnapshot,
+ChatHistoryPage,
+ChatSnapshot,
+DiffCommitMode,
+EditorPreset,
+ExpectedMemoryUse,
+KeybindingsSnapshot,
+LlmProviderSnapshot,
+LocalProjectsSnapshot,
+MemoryPreviewDecision,
+ModelOptions,
+SidebarData,
+StandaloneTranscriptAttachmentMode,
+StandaloneTranscriptExportResult,
+UpdateSnapshot,
 } from "./types"
 
 export type { EditorPreset }
@@ -36,7 +36,6 @@ export interface LocalHttpServerInfo {
   processName?: string
   sameProject?: boolean
   /** Server authority for process termination; false for managed study previews. */
-  canKill?: boolean
   /** True when the app runs in a container (PREVIEW_VIA_PROXY): the browser
    * iframe lives on the HOST, so `address` (in-container localhost) is
    * unreachable — open the app's localhost-subdomain proxy when local, or
@@ -146,7 +145,6 @@ export type ClientCommand =
       effort?: string
       planMode?: boolean
       /** Server-issued id for the one first prompt staged behind the opening Memory Board. */
-      openingReviewId?: string
     }
   | { type: "chat.refreshDiffs"; chatId: string }
   | { type: "chat.initGit"; chatId: string }

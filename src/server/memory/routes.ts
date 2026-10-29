@@ -6,7 +6,6 @@
 // Envelope matches MemoSync: `{ data }` on success, `{ error: { code, message } }`
 // on failure, so the ported frontend data layer works unchanged.
 import type { ExpectedMemoryUse } from '../../shared/types';
-import { resolveConditionPolicy,type ConditionPolicy } from '../experiment/condition';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind,MaintenanceService } from './maintenance';
@@ -106,27 +105,12 @@ export async function handleMemoryRequest(
   req: Request,
   url: URL,
   memory: MemoryService,
-  policy: ConditionPolicy = resolveConditionPolicy(),
   services: MemoryRouteServices = {},
 ): Promise<Response | null> {
   const { pathname } = url;
   if (pathname !== '/api/memories' && !pathname.startsWith('/api/memories/')) return null;
   if (pathname === '/api/memories/summary' || pathname.startsWith('/api/memories/summary/')) {
     return fail(404, 'NOT_FOUND', 'route not found');
-  }
-
-  const isMutation = req.method !== 'GET';
-  // Working-set curation (session exclusions, REDESIGN D7) shares the old
-  // bring-in policy flag — same class of control act, same arms allow it.
-  const isWorkingSetCuration = pathname.startsWith('/api/memories/session-exclusions/');
-  // Monitoring-act telemetry is pure logging — never condition-locked.
-  const isTelemetry = pathname === '/api/memories/ui-monitor'
-    || pathname === '/api/memories/surface-exposure';
-  if (isWorkingSetCuration && !policy.bringIn && req.method !== 'GET') {
-    return fail(403, 'CONDITION_LOCKED', `working-set curation is not available in the '${policy.condition}' condition`);
-  }
-  if (!isWorkingSetCuration && !isTelemetry && isMutation && !policy.boardWritable) {
-    return fail(403, 'CONDITION_LOCKED', `memory is not user-operable in the '${policy.condition}' condition`);
   }
 
   try {
@@ -1006,9 +990,7 @@ export async function handleMemoryRequest(
         return ok({ mode: memory.store.getKv<{ mode?: string }>(KV_KEY)?.mode === 'auto' ? 'auto' : 'ask' });
       }
       if (req.method === 'PUT') {
-        if (policy.capture !== 'review') {
-          throw new RouteError(403, 'CONDITION_LOCKED', 'evolution policy only exists where proposals have a review lane');
-        }
+
         const b = await readBody(req);
         if (b.mode !== 'ask' && b.mode !== 'auto') throw new RouteError(400, 'BAD_REQUEST', "mode must be 'ask' or 'auto'");
         memory.store.setKv(KV_KEY, { mode: b.mode });

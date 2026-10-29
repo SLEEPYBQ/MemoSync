@@ -6,9 +6,9 @@
 // happened. Follows deepseek.ts's LlmJsonCaller contract: this module never
 // touches the network directly, so tests stub `callJson`. (The rigorous
 // offline utilization audit for the paper is a separate pipeline — SPEC §4.10.)
+import type { UsageLogger } from '../usage/logger';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryItem } from './types';
-import type { ExperimentLogger } from '../experiment/logger';
 
 export type TraceLabel = 'operational' | 'injected_without_effect' | 'violated' | 'not_applicable';
 
@@ -144,7 +144,7 @@ function readLabelEntry(entry: unknown): TraceOutcome['labels'][number] | null {
 // judgments about the text it was SHOWN, and the caller must CAS them against
 // live memory state before anything (event log, trace labels, usage) is
 // written. Logging here would record verdicts that may then be discarded.
-export function createTraceService(opts: { callJson: LlmJsonCaller; logger?: Pick<ExperimentLogger, 'event'> }): TraceService {
+export function createTraceService(opts: { callJson: LlmJsonCaller; logger?: Pick<UsageLogger, 'event'> }): TraceService {
   return {
     async trace(input: TraceInput): Promise<TraceOutcome> {
       if (input.usedMemories.length === 0) return { labels: [] };

@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import { afterEach,describe,expect,test } from "bun:test"
+import { mkdir,mkdtemp,readFile,rm,symlink,writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, getGhAuthInfo } from "./diff-store"
+import { appendGitIgnoreEntry,DiffStore,extractGitHubRepoSlug,fetchGitHubPullRequests,getGhAuthInfo } from "./diff-store"
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, {
@@ -947,75 +947,5 @@ describe("DiffStore", () => {
     })
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("main")
     expect((await run(["git", "log", "--format=%s", "-1"], repoRoot)).trim()).toBe("feature")
-  })
-})
-
-describe("DiffStore with remote git disabled (study deployments)", () => {
-  test("listBranches never reaches out for GitHub PRs", async () => {
-    const repoRoot = await createRepo()
-    tempDirs.push(repoRoot)
-    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
-    await run(["git", "add", "."], repoRoot)
-    await run(["git", "commit", "-m", "init"], repoRoot)
-    await run(["git", "remote", "add", "origin", "git@github.com:acme/repo.git"], repoRoot)
-    await run(["git", "update-ref", "refs/remotes/origin/feature/branch", "HEAD"], repoRoot)
-
-    const originalFetch = globalThis.fetch
-    let fetchCalled = false
-    globalThis.fetch = Object.assign(
-      async () => {
-        fetchCalled = true
-        throw new Error("network must not be touched")
-      },
-      { preconnect: originalFetch.preconnect.bind(originalFetch) }
-    ) as typeof fetch
-
-    try {
-      const store = new DiffStore(repoRoot, { remoteGitEnabled: false })
-      await store.initialize()
-      const result = await store.listBranches({ projectPath: repoRoot })
-      expect(fetchCalled).toBe(false)
-      expect(result.pullRequests).toEqual([])
-      expect(result.remote.some((entry) => entry.remoteRef === "origin/feature/branch")).toBe(true)
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  })
-
-  test("syncBranch and publishToGitHub refuse without touching git remotes", async () => {
-    const repoRoot = await createRepo()
-    tempDirs.push(repoRoot)
-    await writeFile(path.join(repoRoot, "app.txt"), "base\n", "utf8")
-    await run(["git", "add", "."], repoRoot)
-    await run(["git", "commit", "-m", "init"], repoRoot)
-
-    const store = new DiffStore(repoRoot, { remoteGitEnabled: false })
-    await store.initialize()
-
-    const sync = await store.syncBranch({ projectId: "p1", projectPath: repoRoot, action: "publish" })
-    expect(sync).toMatchObject({ ok: false, action: "publish", title: "Remote sync disabled" })
-
-    const publish = await store.publishToGitHub({
-      projectId: "p1",
-      projectPath: repoRoot,
-      owner: "acme",
-      name: "repo",
-      visibility: "private",
-    })
-    expect(publish).toMatchObject({ ok: false, title: "Publishing disabled" })
-  })
-
-  test("GitHub publish info and availability report unavailable", async () => {
-    const repoRoot = await createRepo()
-    tempDirs.push(repoRoot)
-
-    const store = new DiffStore(repoRoot, { remoteGitEnabled: false })
-    await store.initialize()
-
-    const info = await store.getGitHubPublishInfo({ projectPath: repoRoot })
-    expect(info).toMatchObject({ ghInstalled: false, authenticated: false, owners: [] })
-
-    const availability = await store.checkGitHubRepoAvailability({ owner: "acme", name: "repo" })
-    expect(availability.available).toBe(false)
   })
 })
