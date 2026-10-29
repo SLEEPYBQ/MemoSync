@@ -547,6 +547,7 @@ export interface AppSettingsSnapshot {
   chatSoundPreference: ChatSoundPreference
   chatSoundId: ChatSoundId
   chatBrowserNotificationPreference: ChatBrowserNotificationPreference
+  language: AppLanguagePreference
   submitWhileRunning: SubmitWhileRunning
   terminal: {
     scrollbackLines: number
@@ -570,6 +571,7 @@ export interface AppSettingsPatch {
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
   chatBrowserNotificationPreference?: ChatBrowserNotificationPreference
+  language?: AppLanguagePreference
   submitWhileRunning?: SubmitWhileRunning
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
@@ -1647,3 +1649,5 @@ export interface PendingToolSnapshot {
   toolUseId: string
   toolKind: "ask_user_question" | "exit_plan_mode"
 }
+
+export type AppLanguagePreference = "system" | "en" | "zh-CN"

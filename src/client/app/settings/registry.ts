@@ -75,6 +75,12 @@ export const SETTINGS_ROWS = defineRows({
     title: "Application Update",
     description: "Current version and update status.",
   },
+  language: {
+    sectionId: "general",
+    title: "Language",
+    description: "Choose the interface language. Changes apply immediately.",
+    keywords: ["language", "中文", "English"],
+  },
   theme: {
     sectionId: "general",
     title: "Theme",

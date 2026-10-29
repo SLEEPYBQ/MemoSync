@@ -504,6 +504,7 @@ export function createWsRouter({
     chatSoundPreference: "always",
     chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
+    language: "system",
     submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,

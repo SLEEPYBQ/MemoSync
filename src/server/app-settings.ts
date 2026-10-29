@@ -41,6 +41,7 @@ interface AppSettingsFile {
   chatSoundPreference?: unknown
   chatSoundId?: unknown
   chatBrowserNotificationPreference?: unknown
+  language?: unknown
   submitWhileRunning?: unknown
   terminal?: {
     scrollbackLines?: unknown
@@ -284,6 +285,7 @@ function toFilePayload(state: AppSettingsState) {
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
     chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
+    language: state.language,
     submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
@@ -301,6 +303,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
     chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
+    language: state.language,
     submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
@@ -333,6 +336,7 @@ function normalizeAppSettings(
     chatSoundPreference: normalizeChatSoundPreference(source?.chatSoundPreference),
     chatSoundId: normalizeChatSoundId(source?.chatSoundId),
     chatBrowserNotificationPreference: normalizeChatBrowserNotificationPreference(source?.chatBrowserNotificationPreference),
+    language: source?.language === "en" || source?.language === "zh-CN" ? source.language : "system",
     submitWhileRunning: normalizeSubmitWhileRunning(source?.submitWhileRunning),
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
@@ -369,6 +373,7 @@ function toComparablePayload(source: AppSettingsFile) {
     chatSoundPreference: source.chatSoundPreference,
     chatSoundId: source.chatSoundId,
     chatBrowserNotificationPreference: source.chatBrowserNotificationPreference,
+    language: source.language,
     submitWhileRunning: source.submitWhileRunning,
     terminal: source.terminal,
     editor: source.editor,

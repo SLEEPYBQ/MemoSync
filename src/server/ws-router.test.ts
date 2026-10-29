@@ -110,6 +110,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   chatSoundPreference: "always",
   chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
+    language: "system",
     submitWhileRunning: "queue",
   terminal: {
     scrollbackLines: 1_000,

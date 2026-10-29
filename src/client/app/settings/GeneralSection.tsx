@@ -3,6 +3,7 @@ import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import type {
   AppSettingsPatch,
   AppThemePreference,
+  AppLanguagePreference,
   ChatSoundId,
   ChatSoundPreference,
   EditorPreset,
@@ -175,6 +176,17 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
         ) : null}
         {(
           <SettingsGroup title="Appearance">
+            <SettingsRow def={SETTINGS_ROWS.language}>
+              <SettingsSelect
+                aria-label="Language"
+                value={state.appSettings?.language ?? "system"}
+                onValueChange={(value) => { void save({ language: value as AppLanguagePreference }) }}
+              >
+                <SelectItem value="system">System</SelectItem>
+                <SelectItem value="en">English</SelectItem>
+                <SelectItem value="zh-CN">简体中文</SelectItem>
+              </SettingsSelect>
+            </SettingsRow>
             <SettingsRow def={SETTINGS_ROWS.theme}>
               <SettingsSelect
                 aria-label="Theme"

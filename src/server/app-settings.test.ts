@@ -25,6 +25,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     chatSoundPreference: "always",
     chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
+    language: "system",
     submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,
@@ -166,5 +167,29 @@ describe("AppSettingsManager", () => {
     expect(nextPayload.chatSoundId).toBe("glass")
 
     manager.dispose()
+  })
+})
+
+describe("language preference", () => {
+  test("defaults and invalid file values normalize to system", async () => {
+    const filePath = await createTempFilePath()
+    expect((await readAppSettingsSnapshot(filePath)).language).toBe("system")
+    for (const language of ["fr", "zh", null, 7]) {
+      await writeFile(filePath, JSON.stringify({ language }))
+      expect((await readAppSettingsSnapshot(filePath)).language).toBe("system")
+    }
+  })
+  test("persists explicit languages and merges unrelated patches", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    await manager.initialize()
+    try {
+      for (const language of ["zh-CN", "en", "system"] as const) {
+        expect((await manager.writePatch({ language })).language).toBe(language)
+        expect((await manager.writePatch({ theme: "dark" })).language).toBe(language)
+        expect((await readAppSettingsSnapshot(filePath)).language).toBe(language)
+        expect(JSON.parse(await readFile(filePath, "utf8")).language).toBe(language)
+      }
+    } finally { manager.dispose() }
   })
 })
