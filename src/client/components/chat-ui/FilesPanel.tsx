@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../../lib/clipboard"
 // Files workbench panel: Codex-style code viewing and editing. Open-file tabs
 // on top, breadcrumb row beneath, CodeMirror editor with syntax highlighting
 // in the main area, and a filterable lazy-loaded file tree on the right.
@@ -672,7 +673,8 @@ export function FilesPanel({ projectId, chatId, onClose }: FilesPanelProps) {
 
   const copyActivePath = useCallback(() => {
     if (!active) return
-    void navigator.clipboard?.writeText(active).then(() => {
+    void copyTextToClipboard(active).then((copied) => {
+      if (!copied) return
       setCopied(true)
       window.setTimeout(() => setCopied(false), 1200)
     })

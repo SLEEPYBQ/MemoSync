@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { useEffect, useMemo, useState } from "react"
 import { ExternalLink, Link2 } from "lucide-react"
 import Markdown from "react-markdown"
@@ -125,10 +126,10 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
   ])
 
   async function handleCopyLink() {
-    if (!absoluteContentUrl || typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+    if (!absoluteContentUrl) {
       return
     }
-    await navigator.clipboard.writeText(absoluteContentUrl)
+    if (!await copyTextToClipboard(absoluteContentUrl)) return
   }
 
   function handleOpenInNewTab() {

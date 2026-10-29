@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../lib/clipboard"
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import {
@@ -83,7 +84,7 @@ function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
-    await navigator.clipboard.writeText(text)
+    if (!await copyTextToClipboard(text)) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

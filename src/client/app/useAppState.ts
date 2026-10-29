@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../lib/clipboard"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
@@ -1975,10 +1976,7 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleCopyPath = useCallback(async (localPath: string) => {
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(localPath)
+      if (!await copyTextToClipboard(localPath)) throw new Error("Clipboard is not available")
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -2071,10 +2069,7 @@ export function useAppState(activeChatId: string | null): AppState {
     }
 
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(standaloneShareUrl)
+      if (!await copyTextToClipboard(standaloneShareUrl)) throw new Error("Clipboard is not available")
       return true
     } catch (error) {
       await dialog.alert({
