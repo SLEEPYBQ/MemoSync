@@ -1,3 +1,4 @@
+import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { PREVIEW_COOKIE_NAME, PREVIEW_PROXY_PATH_PREFIX, previewProxyPath } from "../shared/preview-proxy"
 import { SESSION_COOKIE_NAME } from "./auth"
 
@@ -410,7 +411,7 @@ export async function proxyPreviewRequest(
     return new Response(body, { status: res.status, statusText: res.statusText, headers: out })
   } catch {
     return new Response(
-      `<!doctype html><meta charset="utf-8"><title>Preview unavailable</title><body style="font-family:system-ui;color:#667085;background:#fafafa;display:grid;place-items:center;height:100vh;margin:0"><div style="text-align:center;max-width:32rem;padding:0 1.5rem"><p style="font-size:15px;margin:0 0 .5rem">Nothing is answering on port ${targetPort} right now.</p><p style="font-size:13px;margin:0">The server may have stopped — start it again (for example from the app terminal) and reload this pane.</p></div>`,
+      renderStandalonePreviewError("port", targetPort),
       { status: 502, headers: { "content-type": "text/html; charset=utf-8" } },
     )
   }

@@ -1,3 +1,4 @@
+import { STANDALONE_UI_COPY } from "../../shared/standalone-ui-copy"
 import board from "./en/board.json"
 import boardZh from "./zh-CN/board.json"
 import browser from "./en/browser.json"
@@ -22,5 +23,5 @@ import sidebar from "./en/sidebar.json"
 import sidebarZh from "./zh-CN/sidebar.json"
 import terminal from "./en/terminal.json"
 import terminalZh from "./zh-CN/terminal.json"
-export const en = { board, browser, chat, common, errors, export: exportViewer, files, git, memory, settings, sidebar, terminal }
-export const zhCN: typeof en = { board: boardZh, browser: browserZh, chat: chatZh, common: commonZh, errors: errorsZh, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }
+export const en = { board, browser, chat, common, errors: { ...errors, ...STANDALONE_UI_COPY.en }, export: exportViewer, files, git, memory, settings, sidebar, terminal }
+export const zhCN: typeof en = { board: boardZh, browser: browserZh, chat: chatZh, common: commonZh, errors: { ...errorsZh, ...STANDALONE_UI_COPY.zhCN }, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }

@@ -1,3 +1,4 @@
+import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { uiJson } from "../shared/ui-copy"
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
@@ -521,12 +522,7 @@ async function startLockedMemoSyncServer(
                 return Response.redirect(`${isolated.origin}${isolated.path}${url.search}`, 302)
               }
               return new Response(
-                `<!doctype html><meta charset="utf-8"><title>Preview unavailable</title>` +
-                `<body style="font-family:system-ui;color:#667085;display:grid;place-items:center;height:100vh;margin:0">` +
-                `<p style="max-width:32rem;padding:0 1.5rem;font-size:14px">` +
-                `Previews run on an isolated origin. Open MemoSync locally, or ask whoever hosts` +
-                ` this server to set MEMOSYNC_PREVIEW_ORIGIN to an HTTPS origin.` +
-                `</p>`,
+                renderStandalonePreviewError("origin"),
                 { status: 403, headers: { "content-type": "text/html; charset=utf-8" } },
               )
             }
