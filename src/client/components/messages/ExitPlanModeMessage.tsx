@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { useState, useRef, useEffect } from "react"
 import { Check, CheckCheck, Pencil, CornerDownLeft, ChevronDown, Copy, Send } from "lucide-react"
 import Markdown from "react-markdown"
@@ -33,7 +34,7 @@ export function ExitPlanModeMessage({ message, onConfirm, isLatest }: Props) {
 
   const handleCopy = async () => {
     if (!input?.plan) return
-    await navigator.clipboard.writeText(input.plan)
+    if (!await copyTextToClipboard(input.plan)) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }

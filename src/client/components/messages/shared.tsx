@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../../lib/clipboard"
 import {
   Children,
   cloneElement,
@@ -180,7 +181,7 @@ export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode;
   const textContent = copyText ?? extractText(children)
 
   const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(textContent)
+    if (!await copyTextToClipboard(textContent)) return
     setCopied(true)
     setTimeout(() => setCopied(false), 2000)
   }, [textContent])
@@ -491,7 +492,7 @@ export const markdownComponents = {
     const textContent = extractText(children)
 
     const handleCopy = async () => {
-      await navigator.clipboard.writeText(textContent)
+      if (!await copyTextToClipboard(textContent)) return
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     }

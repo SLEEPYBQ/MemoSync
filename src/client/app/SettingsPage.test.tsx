@@ -132,6 +132,7 @@ describe("changelog cache", () => {
 describe("resolveSettingsSectionId", () => {
   test("accepts known settings sections", () => {
     expect(resolveSettingsSectionId("general")).toBe("general")
+    expect(resolveSettingsSectionId("memory")).toBe("memory")
     expect(resolveSettingsSectionId("providers")).toBe("providers")
     expect(resolveSettingsSectionId("changelog")).toBeNull()
     expect(resolveSettingsSectionId("keybindings")).toBe("keybindings")

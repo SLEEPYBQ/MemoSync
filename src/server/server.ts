@@ -1,3 +1,4 @@
+import { inheritShellPath } from "./process-utils"
 import path from "node:path"
 import { stat } from "node:fs/promises"
 import { APP_NAME, getRuntimeProfile, LOG_PREFIX, SELF_UPDATE_ENABLED } from "../shared/branding"
@@ -247,6 +248,8 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
+  // Resolve the login environment alongside store setup, before any agent can resume.
+  const shellPathReady = inheritShellPath()
   const auth = options.password ? createAuthManager(options.password, { trustProxy: options.trustProxy ?? false }) : null
   const allowedOrigins = options.allowedOrigins ?? (process.env.MEMOSYNC_ALLOWED_ORIGINS ?? "")
     .split(",")
@@ -753,6 +756,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
   // Static atomization is measurement-only and may have been interrupted by
   // a process restart after Claude accepted the exact text. Replay those
   // durable payloads before the HTTP listener can accept a freeze request.
+  await shellPathReady
   activeAgent.resumePendingStaticFocusMaterializations()
   // The first MemoSync prompt is already owned by a durable opening-Board
   // claim before it reaches AgentCoordinator. Re-prime that exact logical

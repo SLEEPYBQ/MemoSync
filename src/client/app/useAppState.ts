@@ -1,3 +1,4 @@
+import { copyTextToClipboard } from "../lib/clipboard"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
@@ -762,7 +763,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string; steer?: boolean }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -1644,13 +1645,14 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleSend = useCallback(async (
     content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string; steer?: boolean }
   ) => {
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
       try {
         await socket.command<{ queuedMessageId: string }>({
           type: "message.enqueue",
+          steer: options?.steer,
           chatId: activeChatId,
           content,
           attachments,
@@ -1976,10 +1978,7 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleCopyPath = useCallback(async (localPath: string) => {
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(localPath)
+      if (!await copyTextToClipboard(localPath)) throw new Error("Clipboard is not available")
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
@@ -2072,10 +2071,7 @@ export function useAppState(activeChatId: string | null): AppState {
     }
 
     try {
-      if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
-        throw new Error("Clipboard is not available")
-      }
-      await navigator.clipboard.writeText(standaloneShareUrl)
+      if (!await copyTextToClipboard(standaloneShareUrl)) throw new Error("Clipboard is not available")
       return true
     } catch (error) {
       await dialog.alert({
