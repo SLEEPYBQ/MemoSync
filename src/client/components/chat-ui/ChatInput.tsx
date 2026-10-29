@@ -900,7 +900,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               }}
               disabled={disabled || (!canCancel && !canSubmit) || hasPendingUploads}
               size="icon"
-              className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
+              className="flex-shrink-0 bg-slate-600 text-white dark:bg-primary dark:text-primary-foreground rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700 dark:disabled:bg-primary/60 dark:disabled:text-primary-foreground"
             >
               {hasTextToSend ? (
                 <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />

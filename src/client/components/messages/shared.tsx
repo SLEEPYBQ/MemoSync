@@ -518,7 +518,7 @@ export const markdownComponents = {
   code: ({ children, className, ...props }: ComponentPropsWithoutRef<"code">) => {
     const isInline = !className
     if (isInline) {
-      return <code className="break-all px-1 bg-border/60 dark:[.no-pre-highlight_&]:bg-background dark:[.text-pretty_&]:bg-neutral [.no-code-highlight_&]:!bg-transparent py-0.5 rounded text-sm whitespace-wrap" {...props}>{children}</code>
+      return <code className="break-all px-1 bg-border/60 dark:[.no-pre-highlight_&]:bg-background dark:[.text-pretty_&]:bg-muted [.no-code-highlight_&]:!bg-transparent py-0.5 rounded text-sm whitespace-wrap" {...props}>{children}</code>
     }
     return (
       <code className="block text-xs whitespace-pre" {...props}>

@@ -107,7 +107,7 @@ function PasswordScreen({
           <div className="flex items-center gap-3">
             <BrandIcon className="h-5 w-5" />
             <div>
-              <CardTitle className="font-logo text-xl uppercase text-slate-600 dark:text-slate-100">{brandName}</CardTitle>
+              <CardTitle className="font-logo text-xl uppercase text-section-title">{brandName}</CardTitle>
             </div>
           </div>
           <CardDescription className="leading-6">

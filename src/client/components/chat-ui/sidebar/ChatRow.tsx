@@ -54,7 +54,7 @@ function ChatRowImpl({
       data-chat-id={normalizedChatId}
       className={cn(
         "group flex items-center gap-2 pl-[9px] pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
-        activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-slate-400/10 "
+        activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-border "
       )}
       onClick={() => onSelectChat(chat.chatId)}
     >
@@ -84,7 +84,7 @@ function ChatRowImpl({
             {chat.title}
           </AnimatedShinyText>
         ) : 
-          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-slate-400">{chat.title}</span>
+          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-muted-foreground">{chat.title}</span>
         }
       </span>
       <div className={cn("relative h-7 mr-[2px] shrink-0", showFork && chat.canFork ? "w-12" : "w-6")}>

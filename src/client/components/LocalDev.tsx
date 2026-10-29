@@ -226,7 +226,7 @@ function CardBadge({ count, countTitle }: { count: number; countTitle: string })
     )
   }
   return (
-    <span className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500">
+    <span className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-success">
       <Check className="h-3 w-3 text-white" />
     </span>
   )

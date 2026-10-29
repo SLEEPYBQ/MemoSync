@@ -15,16 +15,16 @@ interface IconSpec {
 const DEFAULT_SPEC: IconSpec = { Icon: File, className: "text-muted-foreground" }
 
 const BY_BASENAME: Record<string, IconSpec> = {
-  "dockerfile": { Icon: Container, className: "text-sky-500" },
-  ".dockerignore": { Icon: Container, className: "text-sky-500" },
-  "docker-compose.yml": { Icon: Container, className: "text-sky-500" },
-  "docker-compose.yaml": { Icon: Container, className: "text-sky-500" },
+  "dockerfile": { Icon: Container, className: "text-info" },
+  ".dockerignore": { Icon: Container, className: "text-info" },
+  "docker-compose.yml": { Icon: Container, className: "text-info" },
+  "docker-compose.yaml": { Icon: Container, className: "text-info" },
   ".gitignore": { Icon: GitBranch, className: "text-orange-500" },
   ".gitattributes": { Icon: GitBranch, className: "text-orange-500" },
   ".gitmodules": { Icon: GitBranch, className: "text-orange-500" },
   "license": { Icon: ScrollText, className: "text-muted-foreground" },
   "license.md": { Icon: ScrollText, className: "text-muted-foreground" },
-  "makefile": { Icon: Terminal, className: "text-emerald-600 dark:text-emerald-500" },
+  "makefile": { Icon: Terminal, className: "text-emerald-600 dark:text-success" },
 }
 
 const BY_EXT: Record<string, IconSpec> = {
@@ -40,7 +40,7 @@ const BY_EXT: Record<string, IconSpec> = {
   jsonc: { Icon: Braces, className: "text-amber-500" },
   html: { Icon: Hash, className: "text-orange-500" },
   htm: { Icon: Hash, className: "text-orange-500" },
-  css: { Icon: Palette, className: "text-sky-500" },
+  css: { Icon: Palette, className: "text-info" },
   scss: { Icon: Palette, className: "text-pink-500" },
   less: { Icon: Palette, className: "text-indigo-500" },
   md: { Icon: FileText, className: "text-sky-600 dark:text-sky-400" },
@@ -57,9 +57,9 @@ const BY_EXT: Record<string, IconSpec> = {
   cpp: { Icon: FileCode, className: "text-blue-400" },
   h: { Icon: FileCode, className: "text-violet-400" },
   hpp: { Icon: FileCode, className: "text-violet-400" },
-  sh: { Icon: Terminal, className: "text-emerald-600 dark:text-emerald-500" },
-  bash: { Icon: Terminal, className: "text-emerald-600 dark:text-emerald-500" },
-  zsh: { Icon: Terminal, className: "text-emerald-600 dark:text-emerald-500" },
+  sh: { Icon: Terminal, className: "text-emerald-600 dark:text-success" },
+  bash: { Icon: Terminal, className: "text-emerald-600 dark:text-success" },
+  zsh: { Icon: Terminal, className: "text-emerald-600 dark:text-success" },
   sql: { Icon: Database, className: "text-amber-600" },
   yml: { Icon: Cog, className: "text-teal-600 dark:text-teal-500" },
   yaml: { Icon: Cog, className: "text-teal-600 dark:text-teal-500" },
