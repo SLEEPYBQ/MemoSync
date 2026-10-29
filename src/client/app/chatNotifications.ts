@@ -45,3 +45,54 @@ export function getChatSoundBurstCount(previous: SidebarData | null, next: Sideb
 
   return unreadIncrease + newWaitingChats
 }
+
+export interface ChatNotificationEvent {
+  chatId: string
+  projectTitle: string
+  chatTitle: string
+  /**
+   * The question or plan the chat is waiting on, when that is what changed.
+   * `null` for a chat that only turned unread: the sidebar carries no message
+   * previews, so the caller fetches one (`chat.getPreview`) before showing.
+   */
+  message: string | null
+}
+
+
+/**
+ * Per-chat, unlike the chime's net count: a chat read while another turned
+ * unread still deserves its notification, and each one names its chat.
+ */
+export function getChatNotificationEvents(previous: SidebarData | null, next: SidebarData): ChatNotificationEvent[] {
+  if (!previous) return []
+
+  const previousChats = new Map<string, { unread: boolean; waiting: boolean }>()
+  for (const group of previous.projectGroups) {
+    for (const chat of group.chats) {
+      previousChats.set(chat.chatId, {
+        unread: chat.unread,
+        waiting: chat.status === "waiting_for_user",
+      })
+    }
+  }
+
+  const events: ChatNotificationEvent[] = []
+  for (const group of next.projectGroups) {
+    for (const chat of group.chats) {
+      const previousChat = previousChats.get(chat.chatId) ?? { unread: false, waiting: false }
+
+      const becameUnread = chat.unread && !previousChat.unread
+      const becameWaiting = chat.status === "waiting_for_user" && !previousChat.waiting
+      if (!becameUnread && !becameWaiting) continue
+
+      events.push({
+        chatId: chat.chatId,
+        projectTitle: group.title?.trim() || group.localPath,
+        chatTitle: chat.title.trim() || "Untitled chat",
+        message: becameWaiting ? "Waiting for your response." : null,
+      })
+    }
+  }
+
+  return events
+}

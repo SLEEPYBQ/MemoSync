@@ -10,8 +10,9 @@ import { TooltipProvider } from "../components/ui/tooltip"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { AppSidebar } from "./AppSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -412,14 +413,24 @@ function AppLayout() {
   }, [brandName, state.sidebarData])
 
   useEffect(() => {
+    const events = getChatNotificationEvents(previousSidebarDataRef.current, state.sidebarData)
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
+    if (state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference)) {
+      for (const event of events) {
+        showChatBrowserNotification({
+          ...event,
+          message: event.message ?? "New chat activity.",
+          onClick: () => { window.focus(); navigate(`/chat/${event.chatId}`) },
+        })
+      }
+    }
     if (burstCount <= 0) return
     if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, state.appSettings, state.sidebarData])
+  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData])
 
   // Memory surfaces fail closed until the server's feature policy resolves.
   if (conditionPolicyForGuide === null) {
