@@ -13,7 +13,7 @@ import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData }
 import type { AskUserQuestionItem } from "../components/messages/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import { useAppDialog } from "../components/ui/app-dialog"
-import { useTheme } from "../hooks/useTheme"
+import { useTheme, useThemeSettingsWriter } from "../hooks/useTheme"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { generateUUID } from "../lib/utils"
 import { canCancelStatus, getLatestToolIds, hasPendingMemoryPreview, isProcessingStatus } from "./derived"
@@ -1039,6 +1039,8 @@ export function useAppState(activeChatId: string | null): AppState {
       throw error
     }
   }, [handleReadAppSettings, socket])
+
+  useThemeSettingsWriter(handleWriteAppSettings)
 
   const handleReadLlmProvider = useCallback(async () => {
     try {
