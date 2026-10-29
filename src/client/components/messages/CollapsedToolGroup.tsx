@@ -76,10 +76,13 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, o
   const showLoadingState = anyInProgress && isLoading
 
   return (
+    <div className="w-full" data-tool-group-ids={JSON.stringify(messages.filter((message) => message.kind === "tool").map((message) => message.toolId))}>
     <MetaRow className="w-full">
       <div className="flex flex-col w-full">
         <button
           onClick={() => onExpandedChange(!expanded)}
+          data-tool-group-toggle=""
+          aria-expanded={expanded}
           className={`group cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded && !showLoadingState ? "hover:opacity-60 transition-opacity" : ""}`}
         >
           <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
@@ -120,5 +123,6 @@ export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, o
         )}
       </div>
     </MetaRow>
+    </div>
   )
 }

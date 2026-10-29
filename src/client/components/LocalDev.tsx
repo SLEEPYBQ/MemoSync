@@ -1,6 +1,6 @@
-import { copyTextToClipboard } from "../lib/clipboard"
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
+import { copyTextToClipboard } from "../lib/clipboard"
 import {
   ArrowLeftRight,
   BrainCircuit,

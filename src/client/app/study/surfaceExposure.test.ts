@@ -1,9 +1,5 @@
-import { expect, test } from "bun:test"
-import {
-  createSurfaceExposure,
-  getSurfaceIntersectionInitiator,
-  observeSurfaceIntersection,
-} from "./surfaceExposure"
+import { expect, test } from "bun:test";
+import { createSurfaceExposure, getSurfaceIntersectionInitiator, observeSurfaceIntersection } from "./surfaceExposure";
 
 test("persists opened-hidden-visible-closed with one exposure id and monotonic client time", () => {
   const visibility = new EventTarget() as EventTarget & { visibilityState: "visible" | "hidden" }
@@ -82,7 +78,7 @@ test("an initially hidden mount records opened and hidden at the same sampled ti
   visibility.visibilityState = "hidden"
   const queued: Array<Record<string, unknown>> = []
   const exposure = createSurfaceExposure({
-    surface: "static_memory_sidebar",
+    surface: "memory_record",
     chatId: "chat-hidden",
     initiator: "participant",
     randomId: () => "initially-hidden",

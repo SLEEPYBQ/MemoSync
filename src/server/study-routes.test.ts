@@ -1,18 +1,18 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import type { StudyQuestionnaireAnswerV2 } from "../shared/studyTasks"
-import type { ExperimentEvent } from "./experiment/logger"
-import { StudyMemoryStore } from "./experiment/study-memory-store"
-import type { MemoryItem } from "./memory/types"
-import { StudyQuestionnaireService, type PublicStudyQuestionnaire } from "./study-questionnaire-service"
-import { StudySurveyService } from "./study-survey-service"
-import { StudyOnboardingService } from "./study-onboarding"
-import { handleStudyRequest, type StudyRouteDeps } from "./study-routes"
-import { StudyRegistry } from "./study-registry"
-import { guideReceiptKey } from "./study-ui-receipts"
-import { StudyTelemetryError, StudyTelemetryService } from "./study-telemetry"
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { StudyQuestionnaireAnswerV2 } from "../shared/studyTasks";
+import type { ExperimentEvent } from "./experiment/logger";
+import { StudyMemoryStore } from "./experiment/study-memory-store";
+import type { MemoryItem } from "./memory/types";
+import { StudyQuestionnaireService, type PublicStudyQuestionnaire } from "./study-questionnaire-service";
+import { StudySurveyService } from "./study-survey-service";
+import { StudyOnboardingService } from "./study-onboarding";
+import { handleStudyRequest, type StudyRouteDeps } from "./study-routes";
+import { StudyRegistry } from "./study-registry";
+import { guideReceiptKey } from "./study-ui-receipts";
+import { StudyTelemetryError, StudyTelemetryService } from "./study-telemetry";
 
 const TASK_ID = "038-S1"
 const NEXT_TASK_ID = "038-S2"
@@ -189,7 +189,6 @@ describe("study routes with StudyQuestionnaireService", () => {
       logger: { event: (event) => events.push(event) },
       now: () => "2026-08-15T10:25:00.000Z",
       randomId: () => `survey-${++surveyId}`,
-      nextSessionPreparer: null,
     })
     onboarding = new StudyOnboardingService({
       store,
@@ -375,7 +374,7 @@ describe("study routes with StudyQuestionnaireService", () => {
     const telemetry = new StudyTelemetryService({
       store,
       participantId: "P-017",
-      condition: "static",
+      condition: "memosync",
       activeTask: () => ({ taskId: registry.activeTaskId()!, state: "open" }),
       now: () => "2026-08-20T10:00:00.000Z",
     })
@@ -384,13 +383,13 @@ describe("study routes with StudyQuestionnaireService", () => {
       telemetry,
     } as StudyRouteDeps & { telemetry: StudyTelemetryService }
     const accepted = await call("POST", "/api/study/telemetry", {
-      eventId: "static-scroll-1",
+      eventId: "board-scroll-1",
       kind: "monitoring",
-      surface: "static_memory_panel",
+      surface: "board",
       action: "scroll",
       chatId: "chat-1",
       participantId: "forged-participant",
-      condition: "memosync",
+      condition: "static",
       taskId: "098-S2",
     }, {}, deps)
 
@@ -400,16 +399,16 @@ describe("study routes with StudyQuestionnaireService", () => {
     telemetry.recordServerStageEntered("session_exposure", "038-S1")
 
     const stored = await call("POST", "/api/study/telemetry", {
-      eventId: "static-scroll-1",
+      eventId: "board-scroll-1",
       kind: "monitoring",
-      surface: "static_memory_panel",
+      surface: "board",
       action: "scroll",
       chatId: "chat-1",
     }, {}, deps)
     expect(stored!.status).toBe(200)
-    expect(store.listStudyTelemetryEvents().find((event) => event.eventId === "static-scroll-1")).toMatchObject({
+    expect(store.listStudyTelemetryEvents().find((event) => event.eventId === "board-scroll-1")).toMatchObject({
       participantId: "P-017",
-      condition: "static",
+      condition: "memosync",
       taskId: "038-S1",
       sessionId: "038-S1",
     })
@@ -420,13 +419,8 @@ describe("study routes with StudyQuestionnaireService", () => {
       chatId: "chat-1",
       clientTimestamp: "2026-08-20T10:00:00.000Z",
     }, {}, deps)
-    expect(entered!.status).toBe(200)
-    expect(store.listStudyTelemetryEvents().find((event) => event.eventId === "control:static-edit:route-1:entered")).toMatchObject({
-      kind: "stage_enter",
-      surface: "static_memory",
-      action: "edit_entered",
-      payload: { operationId: "control:static-edit:route-1", path: "MEMORY.md" },
-    })
+    expect(entered).toBeNull()
+    expect(store.listStudyTelemetryEvents().some((event) => event.eventId === "control:static-edit:route-1:entered")).toBe(false)
   })
 
   test("rejects Monitoring payloads that masquerade as phased Control operations", async () => {

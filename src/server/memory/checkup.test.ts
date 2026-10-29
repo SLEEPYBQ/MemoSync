@@ -71,6 +71,33 @@ describe('createCheckupService (step-one container 2, redesign 2026-08-07)', () 
     expect(calls).toHaveLength(2);
   });
 
+  it('only offers same-context redundancy while preserving cross-scope conflicts', async () => {
+    const personal = memory.store.create({ content: 'Use bun', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const project = memory.store.create({ content: 'Use bun in this project', scope: 'project', projectId: 'A', type: 'constraint' }, { actor: 'user' });
+    const projectCopy = memory.store.create({ content: 'Run project scripts with bun', scope: 'project', projectId: 'A', type: 'constraint' }, { actor: 'user' });
+    const session = memory.store.create({ content: 'Use bun this session', scope: 'session', sessionId: 's1', type: 'constraint' }, { actor: 'user' });
+    const sessionCopy = memory.store.create({ content: 'Run session scripts with bun', scope: 'session', sessionId: 's1', type: 'constraint' }, { actor: 'user' });
+    const conflict = memory.store.create({ content: 'Use npm', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const { call } = routedCaller([
+      { match: 'CONTRADICTIONS', response: { findings: [
+        { memoryId: conflict.id, otherMemoryId: project.id, reason: 'different package managers' },
+      ] } },
+      { match: 'NEAR-DUPLICATES', response: { findings: [
+        { memoryId: personal.id, otherMemoryId: project.id, reason: 'cross-scope duplicate' },
+        { memoryId: project.id, otherMemoryId: session.id, reason: 'cross-context duplicate' },
+        { memoryId: project.id, otherMemoryId: projectCopy.id, reason: 'same project rule' },
+        { memoryId: session.id, otherMemoryId: sessionCopy.id, reason: 'same session rule' },
+      ] } },
+    ]);
+    const result = await createCheckupService({ memory, callJson: call, listRecentSessions: noSessions })
+      .run({ projectId: 'A', sessionId: 's1' });
+    expect(result.suggestions).toEqual([
+      { kind: 'conflict', memoryId: conflict.id, otherMemoryId: project.id, reason: 'different package managers' },
+      { kind: 'redundancy', memoryId: project.id, otherMemoryId: projectCopy.id, reason: 'same project rule' },
+      { kind: 'redundancy', memoryId: session.id, otherMemoryId: sessionCopy.id, reason: 'same session rule' },
+    ]);
+  });
+
   it('keeps successful sidecar lanes, reports failed lanes, and never reuses an incomplete result', async () => {
     const a = memory.store.create({ content: 'Use pnpm for scripts', scope: 'personal', type: 'constraint' }, { actor: 'system' });
     const b = memory.store.create({ content: 'Run scripts with pnpm', scope: 'personal', type: 'constraint' }, { actor: 'system' });

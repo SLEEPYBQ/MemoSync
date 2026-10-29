@@ -21,6 +21,10 @@ import {
 import type { HarnessTurn } from "./harness-types"
 import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import { resolveConditionPolicy } from "./experiment/condition"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { MemoryService } from "./memory"
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {
@@ -86,6 +90,36 @@ test("memory candidate transcript references never duplicate draft content", () 
   expect(JSON.stringify(references)).not.toContain("sk-secret")
   expect(JSON.stringify(references)).not.toContain("person@example.com")
 })
+
+for (const latestFirst of [false, true]) {
+  test(`auto acceptance applies only one competing capture update (latest first: ${latestFirst})`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "memosync-competing-updates-"))
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: dir })
+    try {
+      memory.store.setKv("evolution_policy", { mode: "auto" })
+      const target = memory.store.create({ content: "Use port 3000", scope: "personal", type: "fact" }, { actor: "user" })
+      const first = memory.store.createRevisionProposal(
+        { content: "Use port 4000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!
+      const second = memory.store.createCaptureUpdateProposal(
+        { content: "Use port 5000", scope: "personal", type: "fact" }, target.id, { actor: "agent" },
+      )!.item
+      const proposals = latestFirst ? [second, first] : [first, second]
+      const coordinator = new AgentCoordinator({ store: createFakeStore() as never, onStateChange: () => {}, memory })
+      const applied: Set<string> = (coordinator as any).autoApplyProposals(proposals, { chatId: "chat-1", turnNumber: 1 })
+      expect([...applied]).toEqual([proposals[0]!.id])
+      expect(memory.store.list({ status: "active" }).map(({ id }) => id)).toEqual([proposals[0]!.id])
+      expect(memory.store.getById(target.id)!.status).toBe("archived")
+      expect(memory.store.getById(proposals[1]!.id)!.status).toBe("candidate")
+      const retry: Set<string> = (coordinator as any).autoApplyProposals([proposals[1]!], { chatId: "chat-1", turnNumber: 2 })
+      expect(retry.size).toBe(0)
+      expect(memory.store.getById(proposals[1]!.id)!.content).toBe(proposals[1]!.content)
+    } finally {
+      memory.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+}
 
 test("DeepSeek chat selection takes precedence over the configured fallback model", () => {
   expect(resolveClaudeSessionModel("deepseek-v4-pro", "deepseek-v4-flash")).toBe("deepseek-v4-pro")
@@ -166,8 +200,8 @@ test("a GLM chat overrides the ANTHROPIC_* bundle for its own subprocess", () =>
     env: bootEnv,
   })
 
-  // GLM is 1M-native: bare id, no [1m] suffix.
-  expect(options.model).toBe("glm-5.3-flash")
+  // The CLI strips this documented selector before sending the API model id.
+  expect(options.model).toBe("glm-5.3-flash[1m]")
   expect(options.env).toMatchObject({
     ANTHROPIC_BASE_URL: "https://open.bigmodel.cn/api/anthropic",
     ANTHROPIC_AUTH_TOKEN: "glm-key",
@@ -182,6 +216,16 @@ test("a GLM chat overrides the ANTHROPIC_* bundle for its own subprocess", () =>
 test("a GLM pick wins over the DeepSeek env default model", () => {
   // resolveClaudeSessionModel must not let the boot ANTHROPIC_MODEL hijack it.
   expect(resolveClaudeSessionModel("glm-5.3-flash", "deepseek-v4-flash")).toBe("glm-5.3-flash")
+})
+
+test("an inherited official model cannot hijack an explicit GLM vendor selection", () => {
+  const options = buildClaudeSdkRuntimeOptions({
+    requestedModel: "glm-5.3-flash",
+    env: { ANTHROPIC_MODEL: "claude-opus-4-6", ANTHROPIC_AUTH_TOKEN: "old-key", GLM_API_KEY: "test-glm-key" },
+  })
+  expect(options.model).toBe("glm-5.3-flash[1m]")
+  expect(options.env.ANTHROPIC_BASE_URL).toBe("https://open.bigmodel.cn/api/anthropic")
+  expect(options.env.ANTHROPIC_AUTH_TOKEN).toBe("test-glm-key")
 })
 
 test("Claude Bash inherits the exact assigned project's runtime instead of the MemoSync server env", () => {
@@ -917,6 +961,147 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  test("closes an idle Codex session when its chat is closed", async () => {
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: { stopSession: (chatId: string) => stopped.push(chatId) } as never,
+    })
+    await coordinator.closeChat("chat-1")
+    expect(stopped).toEqual(["chat-1"])
+  })
+
+  test("stops idle Codex sessions during server shutdown outside study mode", async () => {
+    let stopped = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      policy: resolveConditionPolicy(""),
+      codexManager: { stopAll: () => { stopped = true } } as never,
+    })
+    await coordinator.shutdownStudyRuntime()
+    expect(stopped).toBe(true)
+  })
+
+  test("aborts a queued Codex session start when its chat closes", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+    await coordinator.closeChat("chat-1")
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a pending Codex turn-start response instead of waiting for it", async () => {
+    let turnRequested!: () => void
+    const turnStart = new Promise<void>((resolve) => { turnRequested = resolve })
+    let turnSignal: AbortSignal | undefined
+    const stopped: string[] = []
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession() {
+          return "codex-session-1"
+        },
+        async startTurn(args: { signal?: AbortSignal }) {
+          turnSignal = args.signal
+          turnRequested()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("turn-start aborted")), { once: true })
+          })
+        },
+        stopSession: (chatId: string) => stopped.push(chatId),
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await turnStart
+
+    await coordinator.cancel("chat-1", { hideInterrupted: true })
+
+    expect(turnSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.not.toBeInstanceOf(Error)
+    expect(stopped).toContain("chat-1")
+  })
+
+  test("aborts a queued Codex session start during server shutdown", async () => {
+    let sessionStarted!: () => void
+    const startGate = new Promise<void>((resolve) => { sessionStarted = resolve })
+    let sessionSignal: AbortSignal | undefined
+    let turnStarted = false
+    let stopAll = false
+    const coordinator = new AgentCoordinator({
+      store: createFakeStore() as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession(args: { signal?: AbortSignal }) {
+          sessionSignal = args.signal
+          sessionStarted()
+          return await new Promise((_resolve, reject) => {
+            args.signal?.addEventListener("abort", () => reject(new Error("startup aborted")), { once: true })
+          })
+        },
+        async startTurn() {
+          turnStarted = true
+          throw new Error("turn must not start")
+        },
+        stopAll: () => { stopAll = true },
+      } as never,
+    })
+    const sendResult = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "first message",
+    }).catch((error) => error)
+    await startGate
+
+    await coordinator.shutdownStudyRuntime()
+
+    expect(sessionSignal?.aborted).toBe(true)
+    await expect(sendResult).resolves.toBeInstanceOf(Error)
+    expect(turnStarted).toBe(false)
+    expect(stopAll).toBe(true)
+  })
+
   test("generates a chat title in the background on the first user message", async () => {
     let releaseTitle!: () => void
     const titleGate = new Promise<void>((resolve) => {
@@ -1971,6 +2156,231 @@ describe("AgentCoordinator codex integration", () => {
 })
 
 describe("AgentCoordinator claude integration", () => {
+  test("cancels a deferred Claude startup once and allows a later turn", async () => {
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    const startupEntered = new Promise<void>((resolve) => {
+      markStartupEntered = resolve
+    })
+    const deferredStartup = new Promise<void>((resolve) => {
+      releaseStartup = resolve
+    })
+    let startupCount = 0
+    let firstSessionCloseCount = 0
+    const prompts: string[] = []
+    const firstEvents = new AsyncEventQueue<any>()
+    const secondEvents = new AsyncEventQueue<any>()
+    const createSession = (events: AsyncEventQueue<any>, close: () => void) => ({
+      provider: "claude" as const,
+      stream: events,
+      getAccountInfo: async () => null,
+      interrupt: async () => {},
+      close,
+      setModel: async () => {},
+      setPermissionMode: async () => {},
+      sendPrompt: async (content: string) => {
+        prompts.push(content)
+        events.push({
+          type: "transcript" as const,
+          entry: timestamped({
+            kind: "result",
+            subtype: "success",
+            isError: false,
+            durationMs: 0,
+            result: "done",
+          }),
+        })
+      },
+    })
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let cancelledCount = 0
+    let failedCount = 0
+    store.recordTurnCancelled = async () => {
+      cancelledCount += 1
+    }
+    store.recordTurnFailed = async () => {
+      failedCount += 1
+      return undefined as never
+    }
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        startupCount += 1
+        if (startupCount === 1) {
+          markStartupEntered()
+          await deferredStartup
+          return createSession(firstEvents, () => {
+            firstSessionCloseCount += 1
+          })
+        }
+        return createSession(secondEvents, () => {})
+      },
+    })
+
+    const firstSend = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "cancel before startup completes",
+      model: "claude-opus-4-1",
+    })
+    await startupEntered
+    await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+    releaseStartup()
+    await firstSend
+
+    expect(prompts).toEqual([])
+    expect(firstSessionCloseCount).toBe(1)
+    expect(cancelledCount).toBe(1)
+    expect(failedCount).toBe(0)
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+
+    await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "later successful turn",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => store.turnFinishedCount === 1)
+
+    expect(prompts).toEqual(["later successful turn"])
+    expect(failedCount).toBe(0)
+    firstEvents.close()
+    secondEvents.close()
+  })
+
+  test("cancels while Codex session startup is pending without dispatching a turn", async () => {
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    const startupEntered = new Promise<void>((resolve) => {
+      markStartupEntered = resolve
+    })
+    const deferredStartup = new Promise<void>((resolve) => {
+      releaseStartup = resolve
+    })
+    let startTurnCount = 0
+    let stopSessionCount = 0
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let cancelledCount = 0
+    store.recordTurnCancelled = async () => {
+      cancelledCount += 1
+    }
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: {
+        startSession: async () => {
+          markStartupEntered()
+          await deferredStartup
+          return "thread-1"
+        },
+        startTurn: async () => {
+          startTurnCount += 1
+          throw new Error("unexpected Codex dispatch")
+        },
+        stopSession: () => {
+          stopSessionCount += 1
+        },
+      } as never,
+    })
+
+    const send = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "codex",
+      content: "cancel before dispatch",
+      model: "gpt-5.4",
+    })
+    await startupEntered
+    await Promise.all([coordinator.cancel("chat-1"), coordinator.cancel("chat-1")])
+    releaseStartup()
+    await send
+
+    expect(startTurnCount).toBe(0)
+    expect(stopSessionCount).toBe(1)
+    expect(cancelledCount).toBe(1)
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+  })
+
+  test("closes cancelled Codex turn startup without waiting for an interrupt acknowledgement and drains the queue", async () => {
+    const store = createFakeStore()
+    store.chat.title = "Existing Chat"
+    let releaseStartup!: () => void
+    let markStartupEntered!: () => void
+    let releaseInterrupt!: () => void
+    const startupEntered = new Promise<void>((resolve) => { markStartupEntered = resolve })
+    const startupGate = new Promise<void>((resolve) => { releaseStartup = resolve })
+    const interruptGate = new Promise<void>((resolve) => { releaseInterrupt = resolve })
+    const firstEvents = new AsyncEventQueue<any>()
+    const nextEvents = new AsyncEventQueue<any>()
+    const prompts: string[] = []
+    let stopSessionCount = 0
+    let interruptCount = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: {
+        startSession: async () => "thread-1",
+        startTurn: async (args: { content: string }) => {
+          prompts.push(args.content)
+          if (prompts.length === 1) {
+            markStartupEntered()
+            await startupGate
+            return {
+              provider: "codex",
+              stream: firstEvents,
+              interrupt: async () => { interruptCount += 1; await interruptGate },
+              close: () => firstEvents.close(),
+            }
+          }
+          nextEvents.push({
+            type: "transcript",
+            entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }),
+          })
+          nextEvents.close()
+          return {
+            provider: "codex",
+            stream: nextEvents,
+            interrupt: async () => {},
+            close: () => nextEvents.close(),
+          }
+        },
+        stopSession: () => { stopSessionCount += 1; firstEvents.close() },
+      } as never,
+    })
+    const send = coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "codex", content: "cancel during turn start", model: "gpt-5.4",
+    })
+    try {
+      await startupEntered
+      const queued = await coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "codex", content: "next queued turn", model: "gpt-5.4",
+      })
+      expect(queued).toMatchObject({ queued: true })
+      await coordinator.cancel("chat-1")
+      releaseStartup()
+      await waitFor(() => stopSessionCount === 1, 7_000)
+      await send
+      await waitFor(() => store.turnFinishedCount === 1)
+      expect(interruptCount).toBe(0)
+      expect(prompts).toEqual(["cancel during turn start", "next queued turn"])
+      expect(store.queuedMessages).toHaveLength(0)
+      expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    } finally {
+      releaseStartup()
+      releaseInterrupt()
+      firstEvents.close()
+      nextEvents.close()
+      await send
+    }
+  }, 10_000)
+
   test("reuses a persistent Claude session across turns", async () => {
     const events = new AsyncEventQueue<any>()
     const startSessionCalls: Array<{ model: string; planMode: boolean; sessionToken: string | null }> = []
@@ -2052,6 +2462,224 @@ describe("AgentCoordinator claude integration", () => {
     expect(prompts).toEqual(["start background task", "check task output"])
     expect(store.chat.sessionToken).toBe("claude-session-1")
 
+    events.close()
+  })
+
+  test("keeps reused Claude configuration caches in sync when cancellation races a setter", async () => {
+    for (const setting of ["model", "permission"] as const) {
+      const events = new AsyncEventQueue<any>()
+      const store = createFakeStore()
+      const prompts: string[] = []
+      let runtimeModel = "opus"
+      let runtimePlanMode = false
+      let releaseSetter!: () => void
+      let setterEntered!: () => void
+      const setterStarted = new Promise<void>((resolve) => { setterEntered = resolve })
+      const setterGate = new Promise<void>((resolve) => { releaseSetter = resolve })
+      let setterCalls = 0
+
+      const coordinator = new AgentCoordinator({
+        claudeSessionFileExists: () => true,
+        store: store as never,
+        onStateChange: () => {},
+        startClaudeSession: async () => ({
+          provider: "claude",
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => {},
+          setModel: async (model: string) => {
+            setterCalls += 1
+            runtimeModel = model
+            if (setting === "model" && setterCalls === 1) {
+              setterEntered()
+              await setterGate
+            }
+          },
+          setPermissionMode: async (planMode: boolean) => {
+            setterCalls += 1
+            runtimePlanMode = planMode
+            if (setting === "permission" && setterCalls === 1) {
+              setterEntered()
+              await setterGate
+            }
+          },
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }),
+      })
+
+      await coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "initial",
+        model: "opus",
+        planMode: false,
+      })
+      await waitFor(() => store.turnFinishedCount === 1)
+      await Bun.sleep(10)
+
+      const cancelled = coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "cancelled",
+        model: setting === "model" ? "sonnet" : "opus",
+        planMode: setting === "permission",
+      })
+      await setterStarted
+      const cancelling = coordinator.cancel("chat-1")
+      releaseSetter()
+      await Promise.all([cancelled, cancelling])
+
+      expect(prompts).toEqual(["initial"])
+      expect(setting === "model" ? runtimeModel : runtimePlanMode).toBe(
+        setting === "model" ? "sonnet" : true,
+      )
+
+      await coordinator.send({
+        type: "chat.send",
+        chatId: "chat-1",
+        provider: "claude",
+        content: "restored",
+        model: "opus",
+        planMode: false,
+      })
+      await waitFor(() => store.turnFinishedCount === 2)
+      expect(prompts).toEqual(["initial", "restored"])
+      expect(setting === "model" ? runtimeModel : runtimePlanMode).toBe(setting === "model" ? "opus" : false)
+      events.close()
+    }
+  })
+
+  test("does not duplicate cancellation while active sendPrompt is pending", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    let cancellationCount = 0
+    store.recordTurnCancelled = async () => {
+      cancellationCount += 1
+    }
+    let releasePrompt!: () => void
+    let promptStarted!: () => void
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const promptEntered = new Promise<void>((resolve) => { promptStarted = resolve })
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => ({
+        provider: "claude",
+        stream: events,
+        getAccountInfo: async () => null,
+        interrupt: async () => {},
+        close: () => {},
+        setModel: async () => {},
+        setPermissionMode: async () => {},
+        sendPrompt: async () => {
+          promptStarted()
+          await promptGate
+        },
+      }),
+    })
+
+    const send = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "pending",
+      model: "claude-opus-4-1",
+    })
+    await promptEntered
+    await coordinator.cancel("chat-1")
+    await coordinator.cancel("chat-1")
+    expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    expect(cancellationCount).toBe(1)
+    releasePrompt()
+    await send
+    events.close()
+  })
+
+  test("drains a queued message after canceled SDK startup fully unwinds", async () => {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    let releaseStartup!: () => void
+    let startupEntered!: () => void
+    const startupGate = new Promise<void>((resolve) => { releaseStartup = resolve })
+    const startupReady = new Promise<void>((resolve) => { startupEntered = resolve })
+    let startCalls = 0
+    let closeCount = 0
+    const prompts: string[] = []
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async () => {
+        startCalls += 1
+        if (startCalls === 1) {
+          startupEntered()
+          await startupGate
+        }
+        return {
+          provider: "claude" as const,
+          stream: events,
+          getAccountInfo: async () => null,
+          interrupt: async () => {},
+          close: () => { closeCount += 1 },
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            events.push({
+              type: "transcript" as const,
+              entry: timestamped({
+                kind: "result",
+                subtype: "success",
+                isError: false,
+                durationMs: 0,
+                result: "done",
+              }),
+            })
+          },
+        }
+      },
+    })
+
+    const first = coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first",
+      model: "claude-opus-4-1",
+    })
+    await startupReady
+    const second = await coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "second",
+      model: "claude-opus-4-1",
+    })
+    expect("queuedMessageId" in second).toBe(true)
+    await coordinator.cancel("chat-1")
+    releaseStartup()
+    await first
+    await waitFor(() => store.turnFinishedCount === 1)
+    expect(prompts).toEqual(["second"])
+    expect(startCalls).toBe(2)
+    expect(closeCount).toBe(1)
+    expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
     events.close()
   })
 
@@ -2659,6 +3287,88 @@ describe("AgentCoordinator claude integration", () => {
     }])
     expect(store.chat.pendingForkSessionToken).toBeNull()
     events.close()
+  })
+})
+
+describe("AgentCoordinator Pi startup cancellation", () => {
+  test.each(["stop", "close", "shutdown"] as const)("%s during connection resolution cannot start Pi afterwards", async (action) => {
+    const store = createFakeStore()
+    let entered!: () => void
+    let release!: () => void
+    const resolving = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    let starts = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      resolvePiConnection: async () => { entered(); await gate; return null },
+      generateTitle: async () => ({ title: "t", usedFallback: true, failureMessage: null }),
+      piManager: {
+        startTurn: async () => { starts += 1; throw new Error("cancelled startup dispatched") },
+        closeChat() {}, dispose() {},
+      } as never,
+    })
+    const sending = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "cancel before Pi starts" })
+    await resolving
+    if (action === "stop") await coordinator.cancel("chat-1")
+    else if (action === "close") await coordinator.closeChat("chat-1")
+    else await coordinator.shutdownStudyRuntime()
+    release()
+    await sending
+    expect(starts).toBe(0)
+    expect(store.messages.some((entry) => entry.kind === "result")).toBe(false)
+    expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
+    await coordinator.shutdownStudyRuntime()
+  })
+
+  test("a late aborted Pi turn closes only itself while a newer turn stays active", async () => {
+    const store = createFakeStore()
+    let entered!: () => void
+    let release!: () => void
+    const starting = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const staleEvents = new AsyncEventQueue<any>()
+    const freshEvents = new AsyncEventQueue<any>()
+    let staleCloses = 0
+    let freshCloses = 0
+    let attempts = 0
+    let startupSignal: AbortSignal | undefined
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {},
+      generateTitle: async () => ({ title: "t", usedFallback: true, failureMessage: null }),
+      resolvePiConnection: async () => ({ provider: "custom", baseUrl: "https://example.test/v1", apiKey: "test" }),
+      piManager: {
+        startTurn: async (args: { signal?: AbortSignal }) => {
+          if (++attempts === 1) {
+            startupSignal = args.signal
+            entered()
+            await gate
+            return { provider: "pi", stream: staleEvents, interrupt: async () => {}, close: () => { staleCloses += 1; staleEvents.close() } }
+          }
+          return { provider: "pi", stream: freshEvents, interrupt: async () => {}, close: () => { freshCloses += 1; freshEvents.close() } }
+        },
+        closeChat() {}, dispose() {},
+      } as never,
+    })
+    const staleSend = coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "stale prompt" })
+    try {
+      await starting
+      await coordinator.cancel("chat-1")
+      expect(startupSignal?.aborted).toBe(true)
+      await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "pi", content: "fresh prompt" })
+      const freshOwner = coordinator.activeTurns.get("chat-1")
+      expect(freshOwner).toBeDefined()
+      release()
+      await staleSend
+      expect(staleCloses).toBe(1)
+      expect(freshCloses).toBe(0)
+      expect(coordinator.activeTurns.get("chat-1")).toBe(freshOwner)
+      expect(store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    } finally {
+      release()
+      await staleSend
+      await coordinator.cancel("chat-1")
+      await coordinator.shutdownStudyRuntime()
+    }
   })
 })
 

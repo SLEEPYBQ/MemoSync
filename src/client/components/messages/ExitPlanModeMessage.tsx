@@ -1,4 +1,3 @@
-import { copyTextToClipboard } from "../../lib/clipboard"
 import { useState, useRef, useEffect } from "react"
 import { Check, CheckCheck, Pencil, CornerDownLeft, ChevronDown, Copy, Send } from "lucide-react"
 import Markdown from "react-markdown"
@@ -7,6 +6,7 @@ import type { ProcessedToolCall } from "./types"
 import { Button } from "../ui/button"
 import { markdownComponentsWithLinks } from "./shared"
 import { cn } from "../../lib/utils"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { useTranscriptRenderOptions } from "./render-context"
 

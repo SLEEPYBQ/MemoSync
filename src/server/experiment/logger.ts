@@ -1,12 +1,10 @@
-// Structured experiment event log — the SHARED logging schema across all three
-// study conditions (Static-config / Auto-extract / MemoSync). Every event is
-// tagged with `condition` so a single log stream is comparable across arms.
+// Structured MemoSync experiment event log. Historical records retain their
+// original condition labels for offline analysis; new events are MemoSync-only.
 //
 // Sinks: append one JSON object per line to `<dataDir>/experiments/events.jsonl`
 // (a mounted volume in Docker → readable from the host for offline analysis) AND
 // stdout (so it shows up in `docker logs`). Both gated by env:
 //   EXPERIMENT_LOG=0     → disable entirely (default: enabled)
-//   EXPERIMENT_CONDITION → 'memosync' (default) | 'static' | 'auto'
 //
 // These are the metamemory-relevant signals the study measures (Write / Structure
 // / Utilization / Maintenance, plus monitoring & control acts). Fine-grained UI
@@ -25,6 +23,7 @@ import type {
 import type { StudyAttentionCheckResult } from "../../shared/studyAttentionChecks"
 import type { RawTlxActivity, RawTlxRatings, SusRatings } from "../../shared/studyScales"
 
+/** Includes retired labels solely to read historical logs without rewriting them. */
 export type ExperimentCondition = "memosync" | "static" | "auto"
 export type ExperimentAllocationMode = "study" | "internal_qa"
 
@@ -87,6 +86,7 @@ export interface DeliveredFocusEvent {
 
 /** Discriminated union of logged events (extend as new signals are wired). */
 export type ExperimentEvent =
+  | { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
   | {
       type: "study.control_operation"
       operationId: string
@@ -260,7 +260,7 @@ export class ExperimentLogger {
     durableSink?: (input: ExperimentDurableSinkInput) => ExperimentDurableSinkResult | void
   } = {}) {
     this.enabled = process.env.EXPERIMENT_LOG !== "0"
-    this.condition = (opts.condition ?? process.env.EXPERIMENT_CONDITION ?? "memosync") as ExperimentCondition
+    this.condition = "memosync"
     // Stamped by the orchestrator on per-participant instances (PARTICIPANT_ID
     // env); absent on solo/dev instances so their logs stay shape-compatible.
     this.participant = opts.participant ?? process.env.PARTICIPANT_ID ?? null

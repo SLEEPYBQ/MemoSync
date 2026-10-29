@@ -8,6 +8,7 @@
 import { existsSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { resolveClaudeConfigDir } from "./provider-runtime"
 
 /** The Claude CLI's project-folder encoding: every non-alphanumeric char → '-'. */
 export function claudeProjectFolderName(localPath: string): string {
@@ -15,8 +16,13 @@ export function claudeProjectFolderName(localPath: string): string {
 }
 
 /** Whether a resume token still has its backing session file on this machine. */
-export function claudeSessionFileExists(localPath: string, sessionToken: string, homeDir = homedir()): boolean {
+export function claudeSessionFileExists(
+  localPath: string,
+  sessionToken: string,
+  homeDir = homedir(),
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): boolean {
   // Session ids are UUID-shaped; refuse anything that could traverse paths.
   if (!/^[A-Za-z0-9-]+$/.test(sessionToken)) return false
-  return existsSync(join(homeDir, ".claude", "projects", claudeProjectFolderName(localPath), `${sessionToken}.jsonl`))
+  return existsSync(join(resolveClaudeConfigDir(env, homeDir), "projects", claudeProjectFolderName(localPath), `${sessionToken}.jsonl`))
 }

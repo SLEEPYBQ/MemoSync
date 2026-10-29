@@ -1,15 +1,20 @@
-import { expect, test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { generateUUID } from "./utils"
 
-test("upload temporary ids work when insecure HTTP hides crypto.randomUUID", () => {
-  const original = Object.getOwnPropertyDescriptor(globalThis, "crypto")
-  try {
-    Object.defineProperty(globalThis, "crypto", { configurable: true, value: {} })
-    const ids = Array.from({ length: 100 }, generateUUID)
-    expect(ids.every(id => /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id))).toBe(true)
-    expect(new Set(ids).size).toBe(ids.length)
-  } finally {
-    if (original) Object.defineProperty(globalThis, "crypto", original)
-    else Reflect.deleteProperty(globalThis, "crypto")
-  }
+describe("generateUUID", () => {
+  test("uses crypto randomness when randomUUID is unavailable on HTTP", () => {
+    const originalCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, "crypto", {
+      value: {
+        getRandomValues: (bytes: Uint8Array) => bytes.forEach((_, index) => { bytes[index] = index }),
+      },
+      configurable: true,
+      writable: true,
+    })
+    try {
+      expect(generateUUID()).toBe("00010203-0405-4607-8809-0a0b0c0d0e0f")
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { value: originalCrypto, configurable: true, writable: true })
+    }
+  })
 })

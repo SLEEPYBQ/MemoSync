@@ -1,14 +1,7 @@
-import { expect, test } from "bun:test"
-import {
-  createStudyTelemetryOutbox,
-  enqueueStudyTelemetry,
-  initializeStudyTelemetryOutbox,
-  prepareStudyTelemetryOutbox,
-  startStudyTelemetryBootstrap,
-  stopStudyTelemetryOutbox,
-} from "./studyTelemetry"
-import { StudyMemoryStore } from "../../../server/experiment/study-memory-store"
-import { StudyTelemetryService } from "../../../server/study-telemetry"
+import { expect, test } from "bun:test";
+import { createStudyTelemetryOutbox, enqueueStudyTelemetry, initializeStudyTelemetryOutbox, prepareStudyTelemetryOutbox, startStudyTelemetryBootstrap, stopStudyTelemetryOutbox } from "./studyTelemetry";
+import { StudyMemoryStore } from "../../../server/experiment/study-memory-store";
+import { StudyTelemetryService } from "../../../server/study-telemetry";
 
 class MemoryStorage implements Pick<Storage, "getItem" | "setItem" | "removeItem"> {
   private readonly values = new Map<string, string>()
@@ -261,7 +254,7 @@ test("the outbox bounds retained events and removes expired entries before retry
   expect(storage.getItem("scope-bounded")).toBeNull()
 })
 
-test("a new participant resets old origin queues while conditions keep separate local scopes", async () => {
+test("a new participant resets old origin queues including retired-condition scopes", async () => {
   const storage = new MemoryStorage()
   storage.setItem("memosync:study-telemetry-scope:v1:auto", "old-auto")
   storage.setItem("memosync:study-telemetry-outbox:v1:auto:old-auto", JSON.stringify([{
@@ -295,16 +288,6 @@ test("a new participant resets old origin queues while conditions keep separate 
   expect(storage.getItem("memosync:study-telemetry-scope:v1:memosync")).toBe("participant-scope")
   expect(delivered).toEqual([])
 
-  await initializeStudyTelemetryOutbox({
-    condition: "auto",
-    resetForNewParticipant: false,
-    storage,
-    onlineTarget: null,
-    randomId: () => "auto-scope",
-    fetcher: async () => new Response(null, { status: 204 }),
-  })
-  expect(storage.getItem("memosync:study-telemetry-scope:v1:memosync")).toBe("participant-scope")
-  expect(storage.getItem("memosync:study-telemetry-scope:v1:auto")).toBe("auto-scope")
   stopStudyTelemetryOutbox()
 })
 
@@ -316,7 +299,7 @@ test("a bootstrap failure durably buffers UI evidence and online retry records i
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-bootstrap-retry",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
   })
   telemetry.recordServerStageEntered("session_exposure", "038-S1")
@@ -331,7 +314,7 @@ test("a bootstrap failure durably buffers UI evidence and online retry records i
   let signalFirstFailure!: () => void
   const firstFailure = new Promise<void>((resolve) => { signalFirstFailure = resolve })
   const bootstrap = startStudyTelemetryBootstrap({
-    condition: "auto",
+    condition: "memosync",
     storage,
     onlineTarget,
     retryDelayMs: () => 60_000,
@@ -358,7 +341,7 @@ test("a bootstrap failure durably buffers UI evidence and online retry records i
       eventId: "surface-exposure:bootstrap-buffered:0",
       clientTimestamp: "2026-08-20T10:00:00.000Z",
       kind: "surface_exposure",
-      surface: "auto_summary_sidebar",
+      surface: "memory_record",
       action: "opened",
       chatId: "chat-bootstrap",
       payload: { exposureId: "bootstrap-buffered", sequence: 0, initiator: "system" },
@@ -384,14 +367,14 @@ test("a pre-scope event survives module stop and migrates after reload without c
   enqueueStudyTelemetry({
     eventId: "monitor:pre-scope-reload",
     endpoint: "/api/memories/ui-monitor",
-    body: { eventId: "monitor:pre-scope-reload", surface: "summary_panel", interaction: "click" },
+    body: { eventId: "monitor:pre-scope-reload", surface: "timeline", interaction: "click" },
   })
   stopStudyTelemetryOutbox()
   expect(storage.getItem("memosync:study-telemetry-pending:v1")).toContain("monitor:pre-scope-reload")
 
   const delivered: string[] = []
   await initializeStudyTelemetryOutbox({
-    condition: "auto",
+    condition: "memosync",
     resetForNewParticipant: false,
     storage,
     onlineTarget: null,

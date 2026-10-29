@@ -24,6 +24,7 @@ import {
   type MemoryControlSurface,
   type MemoryItem,
   type TransferProposal,
+  type TransferTargetBody,
 } from "../../lib/memoriesApi"
 import { workspaceApi } from "../../lib/workspaceApi"
 import { useMemoryStore } from "../../stores/memoryStore"
@@ -59,6 +60,33 @@ interface TransferMemoryDialogProps {
   surface?: MemoryControlSurface
 }
 
+export function buildManualTransferCommitBody(input: {
+  proposal: TransferProposal
+  target: Pick<TransferTargetBody, "targetScope" | "targetProjectId" | "targetSessionId">
+  content: string
+  archiveOriginal: boolean
+  surface?: MemoryControlSurface
+}): Parameters<typeof memoriesApi.transfer>[1] {
+  const { proposal, target, archiveOriginal, surface } = input
+  const content = input.content.trim()
+  return {
+    ...target,
+    sourceVersion: proposal.sourceVersion,
+    content,
+    detail: proposal.detail,
+    abstractionLevel: proposal.abstractionLevel,
+    verdict: proposal.verdict,
+    edited: content !== proposal.content,
+    archiveOriginal,
+    landingRoute: proposal.landing.route,
+    landingTargetId: proposal.landing.targetId,
+    landingTargetVersion: proposal.landing.targetVersion,
+    rule: proposal.portable,
+    applicability: proposal.applicability,
+    surface,
+  }
+}
+
 export function TransferMemoryDialog({
   item,
   open,
@@ -83,6 +111,7 @@ export function TransferMemoryDialog({
   )
   const sessionLabel = initialTarget?.scope === "session" ? initialTarget.sessionLabel : undefined
   const [proposal, setProposal] = useState<TransferProposal | null>(null)
+  const [proposalTargetKey, setProposalTargetKey] = useState<string | null>(null)
   const [loadingProposal, setLoadingProposal] = useState(false)
   const [content, setContent] = useState("")
   const [archiveOriginal, setArchiveOriginal] = useState(defaultArchiveOriginal)
@@ -90,6 +119,7 @@ export function TransferMemoryDialog({
   const [error, setError] = useState<string | null>(null)
 
   const scope = isMemoryScope(item.scope) ? item.scope : "session"
+  const targetKey = JSON.stringify([targetScope, targetProjectId ?? null, targetSessionId ?? null])
   const projectOptions = useMemo(() => {
     const opts = Object.entries(projects).filter(([id]) => !(item.scope === "project" && item.projectId === id))
     // A project preselected by a drop must be selectable even if the titles
@@ -106,6 +136,8 @@ export function TransferMemoryDialog({
     setTargetScope(initialTarget?.scope ?? defaultTransferScope(item.scope))
     setTargetProjectId(initialTarget?.scope === "project" ? initialTarget.projectId : undefined)
     setTargetSessionId(initialTarget?.scope === "session" ? initialTarget.sessionId : undefined)
+    setProposal(null)
+    setProposalTargetKey(null)
     setArchiveOriginal(defaultArchiveOriginal)
     setError(null)
     workspaceApi
@@ -120,15 +152,19 @@ export function TransferMemoryDialog({
     if (!open) return
     if (targetScope === "project" && !targetProjectId) {
       setProposal(null)
+      setProposalTargetKey(null)
       return
     }
     if (targetScope === "session" && !targetSessionId) {
       setProposal(null)
+      setProposalTargetKey(null)
       return
     }
     let cancelled = false
+    const requestedTargetKey = targetKey
     setLoadingProposal(true)
     setProposal(null)
+    setProposalTargetKey(null)
     memoriesApi
       .transferPreview(item.id, {
         targetScope,
@@ -140,6 +176,7 @@ export function TransferMemoryDialog({
       .then((p) => {
         if (cancelled) return
         setProposal(p)
+        setProposalTargetKey(requestedTargetKey)
         setContent(p.content)
       })
       .catch((err) => {
@@ -152,32 +189,30 @@ export function TransferMemoryDialog({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, item.id, targetScope, targetProjectId, targetSessionId])
+  }, [open, item.id, targetKey])
 
   const landing = proposal?.landing
   const reinforcing = landing?.route === "reinforces"
 
   async function handleConfirm() {
-    if (!proposal || (!reinforcing && !content.trim())) return
+    if (!proposal || proposalTargetKey !== targetKey || (!reinforcing && !content.trim())) return
     setSubmitting(true)
     setError(null)
     try {
-      const created = await memoriesApi.transfer(item.id, {
-        targetScope,
-        targetProjectId: targetScope === "project" ? targetProjectId : undefined,
-        targetSessionId: targetScope === "session" ? targetSessionId : undefined,
-        content: content.trim(),
-        detail: proposal.detail,
-        abstractionLevel: proposal.abstractionLevel,
-        verdict: proposal.verdict,
-        edited: content.trim() !== proposal.content,
-        archiveOriginal,
-        landingRoute: proposal.landing.route,
-        landingTargetId: proposal.landing.targetId,
-        rule: proposal.portable,
-        applicability: proposal.applicability,
-        surface,
-      })
+      const created = await memoriesApi.transfer(
+        item.id,
+        buildManualTransferCommitBody({
+          proposal,
+          target: {
+            targetScope,
+            targetProjectId: targetScope === "project" ? targetProjectId : undefined,
+            targetSessionId: targetScope === "session" ? targetSessionId : undefined,
+          },
+          content,
+          archiveOriginal,
+          surface,
+        }),
+      )
       await loadAll()
       onDone?.(created)
       onOpenChange(false)
@@ -276,7 +311,7 @@ export function TransferMemoryDialog({
             <p className="flex items-center gap-2 py-1 text-sm text-muted-foreground">
               <Loader2 className="h-3.5 w-3.5 animate-spin" /> Abstracting and re-instantiating…
             </p>
-          ) : proposal ? (
+          ) : proposal && proposalTargetKey === targetKey ? (
             <div className="flex flex-col gap-2">
               <span
                 className={cn(
@@ -374,6 +409,7 @@ export function TransferMemoryDialog({
               submitting ||
               loadingProposal ||
               !proposal ||
+              proposalTargetKey !== targetKey ||
               (!reinforcing && !content.trim()) ||
               (targetScope === "project" && !targetProjectId) ||
               (targetScope === "session" && !targetSessionId)

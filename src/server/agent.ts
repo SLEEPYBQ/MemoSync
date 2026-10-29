@@ -24,8 +24,10 @@ import {
   getServerProviderCatalog,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
+  normalizePiModelOptions,
   normalizeServerModel,
 } from "./provider-catalog"
+import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import { resolveClaudeApiModelId } from "../shared/types"
 import { fallbackTitleFromMessage } from "./generate-title"
 import type { MemoryService } from "./memory"
@@ -43,9 +45,7 @@ import {
   persistDeliveredStoreFocusEvent,
   recordDeliveredStoreFocus,
 } from "./experiment/focus"
-import type { PendingStaticFocusDelivery, StudyMemoryStore } from "./experiment/study-memory-store"
-import type { StaticMemoryExtractor } from "./experiment/static-memory-extractor"
-import { materializePendingStaticFocus, reserveDeliveredStaticFocus } from "./experiment/static-focus"
+import type { StudyMemoryStore } from "./experiment/study-memory-store"
 import type { StudyPromptGate, StudyPromptGateInput } from "./study-prompt-gate"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { ensureProjectDirectory } from "./paths"
@@ -58,6 +58,14 @@ import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memo
 import { runForkTrace } from "./memory/trace-fork"
 import { runForkCapture } from "./memory/capture-fork"
 import { runForkQuery } from "./memory/fork-query"
+import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
+import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
+import { memoryStageSchema } from "./memory/branch-schemas"
+import {
+  buildWorkingMemoryBranchPrompt, parseWorkingMemoryBranchResult,
+  buildAuditBranchPrompt, parseAuditBranchResult, MemoryBranchResultError,
+} from "./memory/branch-stages"
+import { buildIsolatedClaudeEnv, assertIsolatedClaudeCredentials, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
 import type { RevisionService } from "./memory/evolution"
 import type { CheckupResult, CheckupService } from "./memory/checkup"
 import type {
@@ -98,17 +106,20 @@ export function buildClaudeSdkRuntimeOptions(args: {
   requestedModel: string
   configuredModel?: string
   env: Readonly<Record<string, string | undefined>>
-}) {
-  const rawModel = resolveClaudeSessionModel(args.requestedModel, args.configuredModel)
+}): { model: string; settings: { autoMemoryEnabled: boolean; autoDreamEnabled: boolean }; env: Record<string, string | undefined> } {
+  const official = args.requestedModel === "sonnet" || args.requestedModel === "opus" || args.requestedModel.startsWith("claude-")
+  const configuredModel = args.configuredModel ?? (args.env.MEMOSYNC_USE_OWN_ANTHROPIC === "1" ? args.env.ANTHROPIC_MODEL : "")
+  const rawModel = official ? args.requestedModel : resolveClaudeSessionModel(args.requestedModel, configuredModel ?? "")
+  if (official) args = { ...args, env: resolveOfficialClaudeEnv(args.env) }
   // Normalize away an operator-supplied suffix first so we never double-append.
   const resolvedModel = rawModel.endsWith("[1m]") ? rawModel.slice(0, -"[1m]".length) : rawModel
 
   // A non-default vendor (currently GLM) overrides the whole ANTHROPIC_* bundle
   // for THIS session's subprocess so it talks to that vendor's endpoint with
-  // its own key. Memory passes are untouched — they stay on the DeepSeek
-  // sidecar regardless of which vendor this chat picked.
+  // its own key. MemoSync memory branches receive this same resolved bundle.
   const route = resolveChatProviderRoute(resolvedModel, args.env)
   if (route) {
+    assertIsolatedClaudeCredentials({ ...args.env, ANTHROPIC_API_KEY: route.apiKey, ANTHROPIC_AUTH_TOKEN: route.apiKey })
     return {
       model: route.appendOneMillionSuffix ? `${resolvedModel}[1m]` : resolvedModel,
       settings: { autoMemoryEnabled: false, autoDreamEnabled: false },
@@ -136,6 +147,7 @@ export function buildClaudeSdkRuntimeOptions(args: {
   // CLI books the unknown model id as 200k and its PREFLIGHT rejects long
   // prompts with "Prompt is too long" at ~152k (observed live 2026-08-24).
   const isDeepSeek = resolvedModel.startsWith("deepseek-")
+  assertIsolatedClaudeCredentials(args.env)
   return {
     model: isDeepSeek ? `${resolvedModel}[1m]` : resolvedModel,
     settings: {
@@ -164,6 +176,8 @@ export function buildClaudeSdkRuntimeOptions(args: {
 // boot when it inherits them (observed 2026-08-24 launching MemoSync from a
 // Claude Code terminal).
 const CLAUDE_ENGINE_ENV_ALLOWLIST = new Set([
+  "CLAUDE_CONFIG_DIR",
+  "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC",
   "CLAUDE_CODE_AUTO_COMPACT_WINDOW",
   "CLAUDE_CODE_SUBAGENT_MODEL",
   "CLAUDE_CODE_EFFORT_LEVEL",
@@ -174,7 +188,8 @@ export function buildClaudeSubprocessEnv(args: {
   rawStudyProjects: string | undefined
   baseEnv?: Readonly<Record<string, string | undefined>>
 }): Record<string, string | undefined> {
-  const baseEnv: Record<string, string | undefined> = { ...(args.baseEnv ?? process.env) }
+  const rawEnv = args.baseEnv ?? process.env
+  const baseEnv: Record<string, string | undefined> = buildIsolatedClaudeEnv(rawEnv)
   for (const key of Object.keys(baseEnv)) {
     if ((key === "CLAUDECODE" || key.startsWith("CLAUDE_")) && !CLAUDE_ENGINE_ENV_ALLOWLIST.has(key)) {
       delete baseEnv[key]
@@ -215,13 +230,6 @@ interface MemoryPreparationCancellation {
   settle: () => void
 }
 
-interface DeferredAutoStartGuard {
-  signal: AbortSignal
-  authorizeDelivery: () => boolean
-  isCommittedCancellationRequested: () => boolean
-  markTurnStarted: () => void
-}
-
 function createMemoryPreparationCancellation(): MemoryPreparationCancellation {
   const controller = new AbortController()
   let resolveRequested!: () => void
@@ -244,45 +252,6 @@ function createMemoryPreparationCancellation(): MemoryPreparationCancellation {
       didSettle = true
       resolveSettled()
     },
-  }
-}
-
-class PendingAutoCaptureStart {
-  phase: "barrier" | "dispatching" = "barrier"
-  readonly cancellation = createMemoryPreparationCancellation()
-  cancellationReceipt?: Promise<void>
-  cancellationOperation?: Promise<void>
-  deliveryCommitted = false
-  cancelCommittedDelivery = false
-  readonly turnStartSettlement: Promise<boolean>
-  readonly guard: DeferredAutoStartGuard
-  private settleTurnStartOnce: (started: boolean) => void
-
-  constructor(public queuedMessageId: string) {
-    let settled = false
-    let resolveTurnStart!: (started: boolean) => void
-    this.turnStartSettlement = new Promise<boolean>((resolve) => {
-      resolveTurnStart = resolve
-    })
-    this.settleTurnStartOnce = (started) => {
-      if (settled) return
-      settled = true
-      resolveTurnStart(started)
-    }
-    this.guard = {
-      signal: this.cancellation.signal,
-      authorizeDelivery: () => {
-        if (this.cancellation.signal.aborted) return false
-        this.deliveryCommitted = true
-        return true
-      },
-      isCommittedCancellationRequested: () => this.cancelCommittedDelivery,
-      markTurnStarted: () => this.settleTurnStartOnce(true),
-    }
-  }
-
-  settleWithoutTurnStart(): void {
-    this.settleTurnStartOnce(false)
   }
 }
 
@@ -375,8 +344,6 @@ interface StartTurnArgs {
   profile?: SendToStartingProfile | null
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
-  /** Internal queue-to-turn linearization guard for deferred Auto delivery. */
-  deferredAutoStart?: DeferredAutoStartGuard
   /**
    * Called only after Claude accepts the prompt, with the exact focused ids
    * used by the delivery receipt. Interrupt recovery uses this server-owned
@@ -394,6 +361,18 @@ interface StartTurnArgs {
     previewId: string
     decision: "go_on" | "without_memory"
   }
+  startupReservation?: StartupReservation
+}
+
+interface StartupReservation {
+  cancelled: boolean
+  cancellation?: Promise<void>
+  controller?: AbortController
+  promptWrite?: Promise<unknown>
+  cancellationPending?: boolean
+  cancellationComplete?: boolean
+  startupSettled?: boolean
+  superseded?: boolean
 }
 
 interface ActiveTurn {
@@ -412,6 +391,7 @@ interface ActiveTurn {
   hasFinalResult: boolean
   cancelRequested: boolean
   cancelRecorded: boolean
+  startupReservation?: StartupReservation
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
    * that point keeps the persistent Query (the provider acknowledges the
@@ -438,6 +418,7 @@ interface ActiveTurn {
   citedIds: Set<string>
   /** User chose "proceed without memory" at the preview gate for this turn. */
   memoryDisabled?: boolean
+  memoryDeliveryAccepted?: boolean
   /**
    * Snapshot of the memory ids injected for THIS turn, taken at engine boot.
    * Trace labels against this — a memory accepted mid-turn must not be
@@ -454,7 +435,7 @@ interface ClaudeSessionHandle {
   close: () => void
   sendPrompt: (
     content: string,
-    context?: Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number },
+    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
   ) => Promise<void>
   /** Release only the cancelled prompt reservations whose FIFO entries were
    * proven orphaned when a later provider turn started. */
@@ -488,10 +469,11 @@ interface ClaudeSessionState {
    * Rebuild key of the memory shape baked into this session ("memory-off" when
    * disabled). Under the delta model (REDESIGN D1) skills-mode CONTENT changes
    * no longer rebuild — they ride the next user turn as a delta block; only a
-   * mode/tools flip (or plain/file content, which has no delta channel) forces
+   * tools flip forces
    * a rebuild. The resume token carries the conversation across rebuilds.
    */
   memorySetHash: string
+  providerRuntimeKey: string
   /**
    * id → version of what the context currently claims (boot snapshot, then
    * updated after every delta append). null = memory off or non-skills mode.
@@ -503,6 +485,9 @@ interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
+  piManager?: PiAgentManager
+  /** Injectable for tests; defaults to the Model Registry/env resolution. */
+  resolvePiConnection?: () => Promise<PiConnection | null>
   generateTitle?: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   /** MemoSync memory layer; when present, memory tools + context are injected per engine. */
   memory?: MemoryService | null
@@ -514,6 +499,9 @@ interface AgentCoordinatorArgs {
   forkTrace?: typeof runForkTrace
   forkCapture?: typeof runForkCapture
   forkQuery?: typeof runForkQuery
+  /** Persistent C/T/M/W/A conversations; injected in tests, enabled in the application. */
+  memoryBranches?: boolean
+  createMemoryBranch?: typeof createMemoryBranch
   /** Sidecar relevance prediction for the preview receipt (REDESIGN D6); null disables. */
   memoryRelevance?: RelevanceService | null
   /** Turn-scoped instructions for how Claude should use each selected memory. */
@@ -549,11 +537,9 @@ interface AgentCoordinatorArgs {
   openingBoardBacklog?: MemoryBoardBacklogService | null
   /** Durable source of truth for study focus/freeze/questionnaire data. */
   studyMemoryStore?: StudyMemoryStore | null
-  /** Hidden measurement-only atomizer used by the Static condition. */
-  staticMemoryExtractor?: StaticMemoryExtractor | null
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
   claudeSessionFileExists?: (localPath: string, sessionToken: string) => boolean
-  /** Formal-study preview owner shared by Auto, Static, and MemoSync. */
+  /** Formal-study preview owner shared with the session coordinator. */
   studyPreviewRuntime?: StudyAgentPreviewRuntime | null
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
   claudeRetireTimeoutMs?: number
@@ -592,9 +578,6 @@ export interface StudyMemoryQualityFlag {
     | "post_turn_failed"
     | "post_turn_incomplete"
     | "focus_persistence_failed"
-    | "static_extraction_failed"
-    | "static_focus_persistence_failed"
-    | "static_focus_pending"
   blocking: boolean
   taskId: string
   chatId: string
@@ -620,6 +603,14 @@ interface PostTurnMemoryPassArgs {
   /** Claude only: resume token + workspace of the finished session — enables fork trace. */
   claudeSessionToken?: string | null
   localPath?: string
+  sessionToken?: string | null
+  injectedMemories?: MemoryItem[]
+  executionText?: string
+  expectedUses?: ExpectedMemoryUse[]
+  executionTools?: Array<{ toolId: string; text: string }>
+  model?: string
+  effort?: string
+  serviceTier?: "fast"
 }
 
 function isClaudeSteerLoggingEnabled() {
@@ -663,6 +654,18 @@ function stringFromUnknown(value: unknown) {
     return JSON.stringify(value, null, 2)
   } catch {
     return String(value)
+  }
+}
+
+async function interruptTurnWithTimeout(turn: HarnessTurn) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      turn.interrupt(),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, 5_000) }),
+    ])
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -1433,16 +1436,15 @@ export async function startClaudeSession(args: {
     : args.memory
       ? planMemoryInjection({
         policy,
-        provider: "claude",
         memory: args.memory,
         projectId: args.projectId,
         chatId: args.chatId,
-        workspaceDir: args.localPath,
         restrictToIds: args.restrictMemoryIds,
       })
       : null
   let activeMemoryToolTurn: number | undefined
   let activeMemoryToolEngine: string | undefined
+  let activeMemoryToolIds: readonly string[] | undefined = plan?.injectedMemories.map(item => item.id)
   // Claude sessions persist across user turns, as does their in-process MCP
   // server. Use getters so every tool call reads the context installed just
   // before the corresponding prompt is queued, rather than the boot turn.
@@ -1455,6 +1457,7 @@ export async function startClaudeSession(args: {
     get engine() {
       return activeMemoryToolEngine
     },
+    get allowedMemoryIds() { return activeMemoryToolIds },
   }
   const memorySpecs =
     args.memory && plan?.registerTools
@@ -1565,7 +1568,6 @@ export async function startClaudeSession(args: {
   })
   const sdkRuntime = buildClaudeSdkRuntimeOptions({
     requestedModel: args.model,
-    configuredModel: baseSubprocessEnv.ANTHROPIC_MODEL,
     env: baseSubprocessEnv,
   })
 
@@ -1600,7 +1602,7 @@ export async function startClaudeSession(args: {
         : undefined,
       // Study mode narrows to user settings only: a workspace CLAUDE.md would
       // otherwise be a second, uncontrolled memory channel in every arm.
-      settingSources: policy.studyMode ? ["user"] : ["user", "project", "local"],
+      settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : policy.studyMode ? ["user"] : ["user", "project", "local"],
       // MemoSync IS the memory system. The harness's own auto-memory
       // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
       // read+write channel — observed live: the model wrote MEMORY.md there
@@ -1628,10 +1630,11 @@ export async function startClaudeSession(args: {
     },
     sendPrompt: async (
       content: string,
-      context?: Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number },
+      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
     ) => {
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
+      activeMemoryToolIds = context?.allowedMemoryIds
       outboundOrigins.beginHumanTurn(context?.promptSeq)
       try {
         promptQueue.push({
@@ -1654,7 +1657,6 @@ export async function startClaudeSession(args: {
     setModel: async (model: string) => {
       await q.setModel(buildClaudeSdkRuntimeOptions({
         requestedModel: model,
-        configuredModel: baseSubprocessEnv.ANTHROPIC_MODEL,
         env: baseSubprocessEnv,
       }).model)
     },
@@ -1684,6 +1686,7 @@ interface PreviewControlOperation {
 }
 
 interface PendingMemoryPreview {
+  chatId?: string
   previewId: string
   revision: number
   published: boolean
@@ -1714,6 +1717,8 @@ export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
+  private readonly piManager: PiAgentManager
+  private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
   private readonly memory: MemoryService | null
@@ -1722,6 +1727,14 @@ export class AgentCoordinator {
   private readonly forkTraceFn: typeof runForkTrace
   private readonly forkCaptureFn: typeof runForkCapture
   private readonly forkQueryFn: typeof runForkQuery
+  private readonly memoryBranches: boolean
+  private readonly createMemoryBranchFn: typeof createMemoryBranch
+  private readonly branchPreparations = new Map<string, {
+    pipeline: MemoryBranchPipeline
+    args: StartTurnArgs
+    snapshots: { transfer: Map<string, string>; changes: Map<string, string> }
+  }>()
+  private readonly workingBranches = new Map<string, MemoryBranch>()
   private readonly memoryRelevance: RelevanceService | null
   private readonly memoryUsePlan: UsePlanService | null
   /** Exact per-memory instructions shown in the preview and injected into Claude. */
@@ -1740,7 +1753,6 @@ export class AgentCoordinator {
   private readonly onParticipantPromptRecorded: AgentCoordinatorArgs["onParticipantPromptRecorded"]
   private readonly openingBoardBacklog: MemoryBoardBacklogService | null
   private readonly studyMemoryStore: StudyMemoryStore | null
-  private readonly staticMemoryExtractor: StaticMemoryExtractor | null
   private readonly claudeSessionFileExists: (localPath: string, sessionToken: string) => boolean
   private readonly studyPreviewRuntime: StudyAgentPreviewRuntime | null
   private readonly claudeRetireTimeoutMs: number
@@ -1824,6 +1836,12 @@ export class AgentCoordinator {
   // reservation is in — getActiveStatuses folds this in so the pre-park
   // window doesn't read as "idle" to a freshly (re)subscribed client.
   private readonly startingChats = new Map<string, ChatActivityStatus>()
+  // Hold only live startup owners; a settled startup releases its map entry,
+  // while a newer reservation marks any still-pending predecessor superseded.
+  private readonly startupReservations = new Map<string, StartupReservation>()
+  private readonly engineStartAbortControllers = new Map<string, AbortController>()
+  private readonly closedChats = new Set<string>()
+  private runtimeStopping = false
   // Chats where the user hit Stop while the preview gate was still being set
   // up (before pendingPreviews exists). The detached runPreviewGateThenBoot
   // observes this and unwinds instead of parking a gate / booting (BUG AGENT-2).
@@ -1847,21 +1865,6 @@ export class AgentCoordinator {
     turnId: string
     code: string
   }>()
-  /** Static atomization is asynchronous, but identity/version application must
-   * follow the durable Claude dispatch order within each workspace. */
-  private readonly staticFocusJobsByInjection = new Map<string, Promise<StudyMemoryQualityFlag[]>>()
-  private readonly staticFocusTailByNamespace = new Map<string, Promise<void>>()
-  /**
-   * Auto rows are project-local, but a completed turn's broad capture is a
-   * causal dependency of every later turn in the active study project, across
-   * its chats and sessions. The study serial gate activates only one project
-   * at a time, so one process tail preserves that order without joining the
-   * projects' memory identities or content.
-   */
-  private autoProjectCaptureTail: Promise<void> = Promise.resolve()
-  private pendingAutoProjectCaptureJobs = 0
-  /** Durable queued sends waiting for the ordered Auto capture tail. */
-  private readonly pendingAutoCaptureStarts = new Map<string, PendingAutoCaptureStart>()
   /** One startup/retry owner per durable opening-Board claim. */
   private readonly openingBoardRecoveryTasks = new Set<string>()
   private readonly openingBoardRecoveryRetryAttempts = new Map<string, number>()
@@ -1878,6 +1881,8 @@ export class AgentCoordinator {
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.piManager = args.piManager ?? new PiAgentManager()
+    this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
     this.memory = args.memory ?? null
@@ -1894,6 +1899,8 @@ export class AgentCoordinator {
     this.memoryTransferDetect = args.memoryTransferDetect ?? null
     this.policy = args.policy ?? resolveConditionPolicy()
     this.getMemorySettings = args.getMemorySettings ?? (() => ({ enabled: true, learn: true }))
+    this.memoryBranches = this.policy.condition === "memosync" && (args.memoryBranches ?? Boolean(args.createMemoryBranch))
+    this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
     this.getMemoryPreviewSettings =
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
     this.getActiveStudyTaskId = args.getActiveStudyTaskId ?? (() => null)
@@ -1901,10 +1908,138 @@ export class AgentCoordinator {
     this.onParticipantPromptRecorded = args.onParticipantPromptRecorded
     this.openingBoardBacklog = args.openingBoardBacklog ?? null
     this.studyMemoryStore = args.studyMemoryStore ?? null
-    this.staticMemoryExtractor = args.staticMemoryExtractor ?? null
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.studyPreviewRuntime = args.studyPreviewRuntime ?? null
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
+  }
+
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier">, purpose: string, parent?: string | null) {
+    const chat = this.store.requireChat(args.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Memory branch project is unavailable")
+    const runtime = args.provider === "claude" ? buildClaudeSdkRuntimeOptions({
+      requestedModel: args.model,
+      env: buildClaudeSubprocessEnv({ localPath: project.localPath, rawStudyProjects: process.env.STUDY_PROJECTS }),
+    }) : null
+    const branch = this.createMemoryBranchFn({
+      provider: args.provider,
+      parentSessionToken: parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent,
+      localPath: project.localPath,
+      model: runtime?.model ?? args.model,
+      effort: args.effort,
+      serviceTier: args.serviceTier,
+      subprocessEnv: runtime?.env,
+      purpose,
+    })
+    this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
+    return branch
+  }
+
+  private memoryBranchSnapshot(): Map<string, string> {
+    return new Map((this.memory?.store.list() ?? []).map(item => [item.id, JSON.stringify({
+      id: item.id, version: item.version, status: item.status, content: item.content, detail: item.detail,
+      scope: item.scope, projectId: item.projectId, sessionId: item.sessionId,
+      relations: this.memory!.store.getRelations(item.id),
+      pendingRevision: this.memory!.store.hasOpenRevision(item.id),
+    })]))
+  }
+
+  memoryRuntimeChoice(chatId: string) {
+    const current = this.activeTurns.get(chatId) ?? this.branchPreparations.get(chatId)?.args
+    if (current) return { provider: current.provider, model: current.model, effort: current.effort, serviceTier: current.serviceTier }
+    return undefined
+  }
+
+  private startMemoryBranches(args: StartTurnArgs, ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number }) {
+    if (!this.memoryBranches) return
+    this.disposeMemoryBranches(args.chatId)
+    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content }
+    const candidate = this.capture?.buildBranchPrompt?.(captureInput)
+    const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
+    const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
+    const empty = (schema: string): BranchRequest => ({ prompt: `The current memory store is empty. Analyze the current task only if it yields a valid proposal. Otherwise return ${schema}. Current task: ${JSON.stringify(captureInput.userText)}`, dependencyKey: "" })
+    const snapshot = this.memoryBranchSnapshot()
+    this.branchPreparations.set(args.chatId, {
+      args,
+      snapshots: { transfer: new Map(snapshot), changes: new Map(snapshot) },
+      pipeline: new MemoryBranchPipeline({
+        createBranch: purpose => this.newMemoryBranch(args, purpose),
+        requests: {
+          candidate: candidate ?? empty('{"candidates":[]}'),
+          transfer: transfer ?? empty('{"suggestions":[]}'),
+          changes: changes ?? empty('{"conflicts":[],"redundancy":[],"staleness":[]}'),
+        },
+      }),
+    })
+  }
+
+  private async continueMemoryBranch(chatId: string, stage: "transfer" | "changes", review: string, dependencyKey: string) {
+    const preparation = this.branchPreparations.get(chatId)
+    if (!preparation) throw new Error("Memory preparation branch is unavailable")
+    const previous = preparation.snapshots[stage]
+    const next = this.memoryBranchSnapshot()
+    const upsert = [...next].filter(([id, value]) => previous.get(id) !== value).map(([, value]) => JSON.parse(value))
+    const remove = [...previous.keys()].filter(id => !next.has(id))
+    preparation.snapshots[stage] = next
+    const chat = this.store.requireChat(chatId)
+    const decisions = this.store.getMessages(chatId).filter(message =>
+      (message.kind === "memory_proposals_decision" || message.kind === "memory_transfer_decision" || message.kind === "memory_checkup_decision")
+      && message.createdAt >= (this.store.getMessages(chatId).find(entry => entry._id === preparation.args.turnId)?.createdAt ?? Infinity),
+    ).map(({ _id, createdAt, ...decision }) => decision)
+    const declinedSources = (this.memory?.store.list() ?? []).filter(item => this.memory!.store.getKv(`transfer_declined:${item.id}:${chat.projectId ?? chatId}`)).map(item => item.id)
+    return await preparation.pipeline.continue(stage, { review, changes: { upsert, remove, decisions, declinedSources }, dependencyKey })
+  }
+
+  private disposeMemoryBranches(chatId: string) {
+    this.branchPreparations.get(chatId)?.pipeline.dispose()
+    this.branchPreparations.delete(chatId)
+    this.workingBranches.get(chatId)?.dispose()
+    this.workingBranches.delete(chatId)
+  }
+
+  private restoreUndeliveredEnforcement(chatId: string) {
+    if (this.activeTurns.get(chatId)?.memoryDeliveryAccepted) return
+    const entries = this.turnPayAttention.get(chatId)
+    if (!entries?.length || !this.memory) return
+    const queued = this.memory.store.getKv<Array<string | { id: string; quote?: string }>>(`pay_attention:${chatId}`) ?? []
+    const merged = new Map(queued.map(item => typeof item === "string" ? [item, { id: item }] : [item.id, item]))
+    for (const item of entries) if (!merged.has(item.id)) merged.set(item.id, item)
+    this.memory.store.setKv(`pay_attention:${chatId}`, [...merged.values()])
+    this.turnPayAttention.delete(chatId)
+  }
+
+  private async refreshTransferAfterCandidateReview(args: StartTurnArgs, turnNumber: number) {
+    if (!this.memoryBranches || !this.memoryTransferDetect) return false
+    const chat = this.store.requireChat(args.chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error("Transfer project is unavailable")
+    const transferId = this.store.getMessages(args.chatId).filter(message => message.kind === "memory_transfer").at(-1)?.transferId
+    const stage = await this.runTransferGate(args, { chat, project, turnNumber }, Promise.resolve(), { transferId, recompute: true })
+    return stage.decision === "cancelled"
+  }
+
+  private async assessWorkingMemory(args: StartTurnArgs, memories: MemoryItem[], mandatoryIds: string[]): Promise<RelevantMemory[]> {
+    if (!this.memoryBranches) return this.memoryRelevance?.assess(args.memoryUserText ?? args.content, memories, {
+      mustInclude: mandatoryIds, recentContext: this.recentConversationDigest(args.chatId),
+    }) ?? []
+    this.workingBranches.get(args.chatId)?.dispose()
+    const branch = this.newMemoryBranch(args, "working-memory")
+    this.workingBranches.set(args.chatId, branch)
+    const input = { task: args.memoryUserText ?? args.content, memories, mandatoryIds }
+    const raw = await branch.ask(buildWorkingMemoryBranchPrompt(input), { schema: memoryStageSchema("working-memory") })
+    const result = parseWorkingMemoryBranchResult(raw, input)
+    const expected = new Map(result.expectedUses.map(use => [use.id, use.expectedUse]))
+    return result.relevant.map(item => ({ ...item, expectedUse: expected.get(item.id) }))
+  }
+
+  private async reportWorkingMemoryFailure(chatId: string, previewId: string, revision: number) {
+    const pending = this.pendingPreviews.get(chatId)
+    if (pending?.previewId !== previewId || pending.revision !== revision) return
+    await this.store.appendMessage(chatId, timestamped({
+      kind: "memory_preview_relevance", previewId, revision, relevant: [], expectedUses: [],
+      error: "Working-memory selection failed. Select the memories to use and confirm to retry their expected-use planning, or reopen preparation.",
+    }))
+    this.emitStateChange(chatId)
   }
 
   private hasPendingPreviewActivity(chatId: string) {
@@ -1969,7 +2104,7 @@ export class AgentCoordinator {
     const taskId = this.getActiveStudyTaskId()
     const isFormalMemoSync = this.policy.studyMode && this.policy.condition === "memosync" && Boolean(taskId)
     let effectiveIds = [...requestedIds]
-    if (isFormalMemoSync && command.decision === "go_on") {
+    if ((isFormalMemoSync || this.memoryBranches) && command.decision === "go_on") {
       if (!this.memory) throw new Error("Memory service is unavailable")
       const chat = this.store.requireChat(command.chatId)
       const previewPool = new Set(pending.memoryIds)
@@ -2026,7 +2161,7 @@ export class AgentCoordinator {
       }
 
       let authoritativeExpectedUses = command.expectedUses
-      if (isFormalMemoSync) {
+      if (isFormalMemoSync || this.memoryBranches) {
         authoritativeExpectedUses = command.decision === "go_on"
           ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
           : []
@@ -2036,7 +2171,7 @@ export class AgentCoordinator {
       pending.respond(
         command.decision,
         command.decision === "go_on"
-          ? isFormalMemoSync ? effectiveIds : command.memoryIds
+          ? isFormalMemoSync || this.memoryBranches ? effectiveIds : command.memoryIds
           : undefined,
         authoritativeExpectedUses,
         controlOperation,
@@ -2084,6 +2219,24 @@ export class AgentCoordinator {
       selectedIds: input.selectedIds.filter((id) => previewPool.has(id)),
     })
     return await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
+  }
+
+  async reviseMemoryPreview(input: { chatId: string; previewId: string; instruction: string; selectedIds: string[] }) {
+    const pending = this.pendingPreviews.get(input.chatId)
+    const branch = this.workingBranches.get(input.chatId)
+    if (!pending?.published || pending.previewId !== input.previewId || !branch) throw new Error("No matching working-memory branch")
+    const selected = new Set(input.selectedIds)
+    const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
+    const branchInput = { task: pending.task, memories: pending.memories, mandatoryIds }
+    const raw = await branch.ask([
+      'The developer is adjusting working memory. Continue in this same branch. Answer questions while preserving the selection; follow instructions about selection with minimal changes. Include a short reply field.',
+      `Current selection: ${JSON.stringify(input.selectedIds)}. Developer message: ${JSON.stringify(input.instruction)}`,
+      buildWorkingMemoryBranchPrompt(branchInput),
+    ].join('\n\n'), { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
+    if (this.pendingPreviews.get(input.chatId) !== pending) throw new Error("Working-memory preview changed during revision")
+    const result = parseWorkingMemoryBranchResult(raw, branchInput)
+    for (const use of result.expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
+    return { selectedIds: result.relevant.map(item => item.id), reply: typeof raw.reply === "string" ? raw.reply : "Updated working memory for this task." }
   }
 
   /** Return to Step 1 or Step 2 while the engine is still parked at preview. */
@@ -2599,53 +2752,7 @@ export class AgentCoordinator {
     })
   }
 
-  private enqueueAutoProjectCapture<T>(job: () => Promise<T>): Promise<T> {
-    this.pendingAutoProjectCaptureJobs += 1
-    const execution = this.autoProjectCaptureTail
-      .catch(() => undefined)
-      .then(job)
-    const tracked = execution.finally(() => {
-      this.pendingAutoProjectCaptureJobs = Math.max(0, this.pendingAutoProjectCaptureJobs - 1)
-    })
-    this.autoProjectCaptureTail = tracked.then(
-      () => undefined,
-      () => undefined,
-    )
-    return tracked
-  }
-
-  private async awaitAutoProjectCaptureBarrier(): Promise<void> {
-    while (true) {
-      const observed = this.autoProjectCaptureTail
-      await observed
-      if (observed === this.autoProjectCaptureTail) return
-    }
-  }
-
-  private shouldQueueBehindAutoCapture(provider: AgentProvider): boolean {
-    return this.policy.studyMode
-      && this.policy.condition === "auto"
-      && provider === "claude"
-      && this.pendingAutoProjectCaptureJobs > 0
-  }
-
-  private async recordDeferredTurnStartFailure(chatId: string, error: unknown): Promise<void> {
-    const message = error instanceof Error ? error.message : String(error)
-    try {
-      await this.store.appendMessage(
-        chatId,
-        timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-      )
-      await this.store.recordTurnFailed(chatId, message)
-      this.emitStateChange(chatId)
-    } catch (recordError) {
-      this.reportBackgroundError?.(
-        `[auto-deferred-start] chat ${chatId}: could not record failure: ${recordError instanceof Error ? recordError.message : String(recordError)}`,
-      )
-    }
-  }
-
-  private isCancelledDeferredQueueRow(chatId: string, queuedMessageId: string): boolean {
+  private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
       entry.kind === "interrupted"
       && entry.cancelledQueuedMessageId === queuedMessageId
@@ -2662,13 +2769,13 @@ export class AgentCoordinator {
     while (true) {
       const head = this.store.getQueuedMessages(chatId)[0]
       if (!head) return null
-      if (!this.isCancelledDeferredQueueRow(chatId, head.id)) return head
+      if (!this.isCancelledQueueRow(chatId, head.id)) return head
       try {
         await this.store.removeQueuedMessage(chatId, head.id)
       } catch (error) {
         if (this.store.getQueuedMessage(chatId, head.id)) {
           this.reportBackgroundError?.(
-            `[auto-deferred-stop] chat ${chatId}: stopped queue row remains blocked: ${error instanceof Error ? error.message : String(error)}`,
+            `[queue-dispatch] chat ${chatId}: stopped queue row remains blocked: ${error instanceof Error ? error.message : String(error)}`,
           )
           return null
         }
@@ -2676,150 +2783,31 @@ export class AgentCoordinator {
     }
   }
 
-  private resumeNextQueuedMessage(chatId: string): void {
-    void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
-      void this.recordDeferredTurnStartFailure(chatId, error)
-    })
-  }
-
-  /**
-   * A direct Auto send arriving while the previous turn is still being
-   * captured is first persisted in the normal queue, then dispatched only
-   * after the ordered Auto capture tail settles. The WebSocket can ack
-   * the durable queue row immediately without letting Claude see stale memory.
-   */
-  private scheduleAutoCaptureQueueDrain(chatId: string, queuedMessageId: string): void {
-    if (this.pendingAutoCaptureStarts.has(chatId)) return
-    const pending = new PendingAutoCaptureStart(queuedMessageId)
-    this.pendingAutoCaptureStarts.set(chatId, pending)
-    this.emitStateChange(chatId, { immediate: true })
-
-    void (async () => {
-      try {
-        const outcome = await Promise.race([
-          this.awaitAutoProjectCaptureBarrier().then(() => "ready" as const),
-          pending.cancellation.requested.then(() => "cancelled" as const),
-        ])
-        if (outcome === "cancelled" || pending.cancellation.signal.aborted) return
-        pending.phase = "dispatching"
-        while (!pending.cancellation.signal.aborted) {
-          // The head present when chat.send was acknowledged may be removed by
-          // an external queue action while capture is still settling. Dispatch
-          // the current durable head so a later row is never stranded behind a
-          // stale in-memory id.
-          const queued = await this.nextDispatchableQueuedMessage(chatId)
-          if (!queued) return
-          pending.queuedMessageId = queued.id
-          const dispatch = await this.dequeueAndStartQueuedMessage(chatId, queued, {
-            deferredAutoStart: pending.guard,
-          })
-          if (dispatch !== "missing") return
-        }
-      } catch (error) {
-        // Stop is a participant-requested terminal outcome, not a failed send.
-        // A store/start await that unwinds after its signal must not append a
-        // second, misleading error receipt.
-        if (!pending.cancellation.signal.aborted && !pending.cancelCommittedDelivery) {
-          await this.recordDeferredTurnStartFailure(chatId, error)
-        }
-      } finally {
-        pending.settleWithoutTurnStart()
-        let continueQueue = false
-        if (
-          pending.phase === "dispatching"
-          && (pending.cancellation.signal.aborted || pending.cancelCommittedDelivery)
-          && pending.cancellationReceipt
-        ) {
-          // If Stop won before queue removal began, discard that stopped row
-          // here. If removal was already in flight this is a no-op. Waiting for
-          // the receipt keeps the next row ordered after the visible Stop.
-          let receiptDurable = true
-          await pending.cancellationReceipt.catch(() => {
-            receiptDurable = false
-          })
-          if (pending.cancellation.signal.aborted && this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            try {
-              await this.store.removeQueuedMessage(chatId, pending.queuedMessageId)
-            } catch (error) {
-              if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-                this.reportBackgroundError?.(
-                  `[auto-deferred-stop] chat ${chatId}: could not remove stopped queue row: ${error instanceof Error ? error.message : String(error)}`,
-                )
-              }
-            }
-          }
-          // Never redispatch the stopped row itself. A failed cleanup leaves it
-          // visible for explicit retry/recovery, but it must not be mistaken
-          // for q2 merely because it is still the current durable head.
-          continueQueue = receiptDurable
-            && !this.store.getQueuedMessage(chatId, pending.queuedMessageId)
-        }
-        if (this.pendingAutoCaptureStarts.get(chatId) === pending) {
-          this.pendingAutoCaptureStarts.delete(chatId)
-        }
-        pending.cancellation.settle()
-        this.emitStateChange(chatId)
-
-        if (continueQueue) this.resumeNextQueuedMessage(chatId)
-      }
-    })()
-  }
-
-  private cancelAutoCaptureQueueDrain(
-    chatId: string,
-    pending: PendingAutoCaptureStart,
-    hideInterrupted?: boolean,
-  ): Promise<void> {
-    if (pending.cancellationOperation) return pending.cancellationOperation
-
-    const stoppedDuringDispatch = pending.phase === "dispatching"
-    const committedDelivery = pending.deliveryCommitted
-    if (committedDelivery) pending.cancelCommittedDelivery = true
-    const barrierSettlement = committedDelivery ? null : pending.cancellation.cancelAndWait()
-
-    pending.cancellationReceipt = (async () => {
-      if (!stoppedDuringDispatch) await barrierSettlement
-      if (committedDelivery) await pending.turnStartSettlement
-      await this.store.appendMessage(chatId, committedDelivery
-        ? timestamped({ kind: "interrupted", hidden: hideInterrupted })
-        : timestamped({
-            kind: "interrupted",
-            hidden: hideInterrupted,
-            cancelledQueuedMessageId: pending.queuedMessageId,
-          }))
-      await this.store.recordTurnCancelled(chatId)
-
-      // The marker above is the durable authority. Physical cleanup may fail;
-      // every future drain will see the tombstone and remain fail-closed.
-      if (!stoppedDuringDispatch && !committedDelivery) {
-        try {
-          if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            await this.store.removeQueuedMessage(chatId, pending.queuedMessageId)
-          }
-        } catch (error) {
-          if (this.store.getQueuedMessage(chatId, pending.queuedMessageId)) {
-            this.reportBackgroundError?.(
-              `[auto-deferred-stop] chat ${chatId}: could not remove stopped barrier row: ${error instanceof Error ? error.message : String(error)}`,
-            )
-          }
-        }
-      }
-    })()
-
-    pending.cancellationOperation = pending.cancellationReceipt.then(() => {
-      this.emitStateChange(chatId, { immediate: true })
-      if (!stoppedDuringDispatch) this.resumeNextQueuedMessage(chatId)
-    })
-    return pending.cancellationOperation
-  }
-
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
     if (args.memoryState?.memoryActive === false) return
+    const active = this.activeTurns.get(args.chatId)
+    if (this.memoryBranches && active) {
+      args.injectedMemories = active.memoryPlan?.injectedMemories.map(item => ({ ...item }))
+      args.expectedUses = this.turnExpectedUses.get(args.chatId)
+      args.model = active.model
+      args.effort = active.effort
+      args.serviceTier = active.serviceTier
+      const messages = this.store.getMessages(args.chatId)
+      const start = messages.findIndex(message => message._id === args.turnId)
+      const turnMessages = start >= 0 ? messages.slice(start + 1) : []
+      args.executionText = turnMessages.filter(message => message.kind === "tool_call" || message.kind === "tool_result")
+        .map(message => JSON.stringify(message)).join("\n")
+      args.executionTools = turnMessages.flatMap(message => {
+        if (message.kind === "tool_call") return [{ toolId: message.tool.toolId, text: JSON.stringify(message.tool) }]
+        if (message.kind === "tool_result") return [{ toolId: message.toolId, text: typeof message.content === "string" ? message.content : JSON.stringify(message.content) }]
+        return []
+      })
+      const chat = this.store.getChat(args.chatId)
+      args.sessionToken = chat?.sessionToken
+      args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
+    }
     if (args.engine !== "claude" || !args.taskId) {
-      const run = () => this.runPostTurnMemoryPasses(args)
-      void (this.policy.condition === "auto" && args.engine === "claude"
-        ? this.enqueueAutoProjectCapture(run)
-        : run())
+      void this.runPostTurnMemoryPasses(args)
       return
     }
 
@@ -2845,13 +2833,10 @@ export class AgentCoordinator {
     this.noteStudyMemoryQualityFlag(pendingFlag)
     this.trackStudyMemoryJob(taskId, promise, pendingFlag)
 
-    const run = () => this.runPostTurnMemoryPasses({
+    const execution = this.runPostTurnMemoryPasses({
       ...args,
       onStudyMeasurementSettled: settle,
     })
-    const execution = this.policy.condition === "auto"
-      ? this.enqueueAutoProjectCapture(run)
-      : run()
     void execution.catch((error) => {
       this.reportBackgroundError?.(
         `[memory-post-turn] chat ${args.chatId} turn ${args.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`
@@ -2865,124 +2850,6 @@ export class AgentCoordinator {
         ...(args.turnNumber !== undefined ? { turn: args.turnNumber } : {}),
       }])
     })
-  }
-
-  private staticFocusFailure(
-    pending: Pick<PendingStaticFocusDelivery, "taskId" | "chatId" | "turnId" | "turn">,
-    code: "static_extraction_failed" | "static_focus_persistence_failed" | "static_focus_pending",
-  ): StudyMemoryQualityFlag {
-    return {
-      code,
-      blocking: true,
-      taskId: pending.taskId,
-      chatId: pending.chatId,
-      turnId: pending.turnId,
-      turn: pending.turn,
-    }
-  }
-
-  private enqueuePendingStaticFocus(pending: PendingStaticFocusDelivery): void {
-    if (!this.studyMemoryStore || !this.staticMemoryExtractor) return
-    if (this.staticFocusJobsByInjection.has(pending.injectionId)) return
-
-    const previous = this.staticFocusTailByNamespace.get(pending.namespace) ?? Promise.resolve()
-    const job = previous
-      .catch(() => undefined)
-      .then(async () => {
-        await materializePendingStaticFocus({
-          store: this.studyMemoryStore!,
-          extractor: this.staticMemoryExtractor!,
-          logger: this.memory?.logger ?? { event: () => {} },
-          pending,
-        })
-        this.clearStudyMemoryQualityFlag({
-          taskId: pending.taskId,
-          chatId: pending.chatId,
-          turnId: pending.turnId,
-          code: "static_extraction_failed",
-        })
-        return [] as StudyMemoryQualityFlag[]
-      })
-      .catch((error) => {
-        this.reportBackgroundError?.(
-          `[study-static-focus] chat ${pending.chatId} turn ${pending.turn}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-        return [this.staticFocusFailure(pending, "static_extraction_failed")]
-      })
-    const tail = job.then(() => undefined)
-    this.staticFocusJobsByInjection.set(pending.injectionId, job)
-    this.staticFocusTailByNamespace.set(pending.namespace, tail)
-    this.trackStudyMemoryJob(pending.taskId, job)
-    void tail.finally(() => {
-      this.staticFocusJobsByInjection.delete(pending.injectionId)
-      if (this.staticFocusTailByNamespace.get(pending.namespace) === tail) {
-        this.staticFocusTailByNamespace.delete(pending.namespace)
-      }
-    })
-  }
-
-  /** Resume exact queued payloads after a process restart. Safe to call more
-   * than once; the per-injection map prevents duplicate workers. */
-  resumePendingStaticFocusMaterializations(taskId?: string): void {
-    if (!this.studyMemoryStore || !this.staticMemoryExtractor) return
-    for (const pending of this.studyMemoryStore.listPendingStaticFocusDeliveries(
-      taskId ? { taskId } : {},
-    )) {
-      this.enqueuePendingStaticFocus(pending)
-    }
-  }
-
-  private launchStaticFocusMaterialization(args: {
-    taskId: string | null
-    projectId?: string
-    chatId: string
-    turnId: string
-    turn: number
-    promptText: string
-    plan: MemoryInjectionPlan | null
-  }): void {
-    const taskId = args.taskId
-    if (!taskId) return
-    const occurrence = {
-      taskId,
-      chatId: args.chatId,
-      turnId: args.turnId,
-      turn: args.turn,
-    }
-    if (!this.studyMemoryStore || !args.plan?.staticPayload || !args.projectId) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(occurrence, "static_focus_persistence_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: Static measurement is unavailable`,
-      )
-      return
-    }
-    let pending: PendingStaticFocusDelivery
-    try {
-      pending = reserveDeliveredStaticFocus({
-        store: this.studyMemoryStore,
-        taskId,
-        namespace: args.projectId,
-        chatId: args.chatId,
-        turnId: args.turnId,
-        turn: args.turn,
-        promptText: args.promptText,
-        payload: args.plan.staticPayload,
-      })
-    } catch (error) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(occurrence, "static_focus_persistence_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: could not reserve delivery: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      return
-    }
-    if (!this.staticMemoryExtractor) {
-      this.noteStudyMemoryQualityFlag(this.staticFocusFailure(pending, "static_extraction_failed"))
-      this.reportBackgroundError?.(
-        `[study-static-focus] chat ${args.chatId} turn ${args.turn}: Static extractor is unavailable`,
-      )
-      return
-    }
-    this.enqueuePendingStaticFocus(pending)
   }
 
   private async runPostTurnMemoryPasses(
@@ -3000,7 +2867,7 @@ export class AgentCoordinator {
     ): StudyMemoryQualityFlag | null => args.taskId
       ? {
           code,
-          blocking: code === "focus_persistence_failed" || code === "static_extraction_failed",
+          blocking: code === "focus_persistence_failed",
           taskId: args.taskId,
           chatId: args.chatId,
           turnId: args.turnId,
@@ -3014,6 +2881,9 @@ export class AgentCoordinator {
     // during the turn and never wait on either). Each pass keeps its own
     // error containment.
     const capturePass = async (): Promise<StudyMemoryQualityFlag[]> => {
+      // C reviews the completed trajectory with the next prompt. It already
+      // includes extraction and routing in a single forked conversation.
+      if (this.memoryBranches) return []
       if (!this.capture || args.memoryState?.learnActive === false) return []
       try {
         const captureInput = {
@@ -3021,9 +2891,6 @@ export class AgentCoordinator {
           sessionId: args.chatId,
           turn: args.turnNumber,
           engine: args.engine,
-          ...(this.policy.studyMode && this.policy.condition === "auto" && args.engine === "claude"
-            ? { profile: "auto-project-copy" as const }
-            : {}),
           userText: args.userText,
           assistantText: args.assistantText,
         }
@@ -3042,10 +2909,6 @@ export class AgentCoordinator {
           const raw = await this.forkCaptureFn({
             sessionToken: args.claudeSessionToken,
             localPath: args.localPath,
-            profile:
-              this.policy.studyMode && this.policy.condition === "auto"
-                ? "auto-project-copy"
-                : "review",
           })
           if (raw && this.capture.captureFromExtraction) {
             try {
@@ -3091,32 +2954,53 @@ export class AgentCoordinator {
     }
 
     const tracePass = async (): Promise<StudyMemoryQualityFlag[]> => {
-      if (!this.memoryTrace || args.memoryDisabled) return []
+      if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return []
       try {
         // "Used" = everything in play this turn: the BOOT-TIME injected
         // snapshot plus any extra memories the model cited (e.g. pulled in via
         // search_memory). Memories accepted mid-turn are not in play.
         const usedIds = [...new Set([...args.injectedIds, ...args.citedIds])]
+        const injectedById = new Map((args.injectedMemories ?? []).map(item => [item.id, item]))
         const usedMemories = usedIds
-          .map((id) => this.memory!.store.getById(id))
+          .map((id) => injectedById.get(id) ?? this.memory!.store.getById(id))
           .filter((m): m is MemoryItem => Boolean(m && m.status === "active"))
         if (usedMemories.length) {
-          // Audit skeleton (redesign 2026-08-07 §3): the pass can take up to
-          // 90s — the card appears immediately as "auditing…" and the final
-          // entry for the same turn supersedes this one at hydration.
+          // Publish the pending card before the bounded audit request; its
+          // final entry for the same turn supersedes it at hydration.
           await this.store.appendMessage(
             args.chatId,
             timestamped({ kind: "memory_trace", turn: args.turnNumber, status: "pending", labels: [] })
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
-          // Fork path first (user design 2026-08-05): ask the question on a
-          // fork of the finished session — cached prefix, full trajectory,
-          // zero main-context pollution. Any failure falls back to the
-          // sidecar; MEMOSYNC_TRACE_FORK=0 disables the fork entirely.
+          // MemoSync always uses a child of the completed conversation. The
+          // legacy path below retains its configured fork/sidecar policy.
           let outcome: TraceOutcome | null = null
           let tracedVia: "fork" | "sidecar" = "sidecar"
+          if (this.memoryBranches) {
+            const chat = this.store.requireChat(args.chatId)
+            const provider = args.engine as AgentProvider
+            const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
+            const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
+            try {
+              const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
+              try {
+                outcome = parseAuditBranchResult(raw, auditInput)
+              } catch (error) {
+                if (!(error instanceof MemoryBranchResultError)) throw error
+                const repaired = await branch.ask([
+                  `The audit response did not satisfy its required format: ${error.message}`,
+                  "Correct only the structured response using the evidence and analysis already in this conversation. Do not inspect more files or run a new analysis.",
+                  "Return every supplied memory ID exactly once. not_applicable requires a separate missing field; violated requires cause and impact. Use null for optional fields with no evidence. Never invent a verdict or evidence to fill a field.",
+                ].join("\n\n"), { schema: memoryStageSchema("audit"), budget: { maxTurns: 2, maxToolCalls: 0 } })
+                outcome = parseAuditBranchResult(repaired, auditInput)
+              }
+              tracedVia = "fork"
+            } finally { branch.dispose() }
+          }
           if (
+            !this.memoryBranches &&
             args.engine === "claude" &&
             args.claudeSessionToken &&
             args.localPath &&
@@ -3149,7 +3033,7 @@ export class AgentCoordinator {
           const labels = outcome.labels.filter((l) => {
             const now = this.memory!.store.getById(l.id)
             const snap = usedById.get(l.id)
-            return Boolean(now && snap && now.status === "active" && now.content === snap.content)
+            return Boolean(now && snap && now.status === "active" && now.version === snap.version && now.content === snap.content && now.detail === snap.detail)
           })
           const droppedIds = new Set(outcome.labels.map((l) => l.id).filter((id) => !labels.some((l) => l.id === id)))
           const summary =
@@ -3343,6 +3227,7 @@ export class AgentCoordinator {
 
     const qualityFlags = (await Promise.all([capturePass(), tracePass()])).flat()
     args.onStudyMeasurementSettled?.(qualityFlags)
+    if (this.memoryBranches) return
 
     const precomputeCheckup = async () => {
       // Checkup precomputation (user decision 2026-08-08, option B): compute
@@ -3427,7 +3312,6 @@ export class AgentCoordinator {
   studyFreezeBlocker(): string | null {
     if (
       this.startingChats.size > 0
-      || this.pendingAutoCaptureStarts.size > 0
       || this.activeTurns.size > 0
       || this.pendingPreviews.size > 0
       || this.claimedPreviewResponses.size > 0
@@ -3507,10 +3391,6 @@ export class AgentCoordinator {
 
   /** Wait only for questionnaire-changing Claude capture/trace work. */
   async awaitStudyMemorySettled(taskId: string): Promise<StudyMemoryQualityFlag[]> {
-    // One explicit retry per freeze attempt also recovers a job that failed
-    // earlier in this process. Persistent pending rows remain blocking if the
-    // retry still cannot finish.
-    this.resumePendingStaticFocusMaterializations(taskId)
     while (true) {
       const pending = [...this.inFlightStudyMemoryJobs]
         .filter((job) => job.taskId === taskId)
@@ -3533,14 +3413,6 @@ export class AgentCoordinator {
           ))) continue
           flags.push(durable as StudyMemoryQualityFlag)
         }
-        for (const delivery of this.studyMemoryStore?.listPendingStaticFocusDeliveries({ taskId }) ?? []) {
-          if (flags.some((flag) => (
-            flag.blocking
-            && flag.chatId === delivery.chatId
-            && flag.turnId === delivery.turnId
-          ))) continue
-          flags.push(this.staticFocusFailure(delivery, "static_focus_pending"))
-        }
         return flags
       }
       await Promise.all(pending)
@@ -3553,9 +3425,6 @@ export class AgentCoordinator {
     // invariant, but defensive) wins.
     for (const [chatId, status] of this.startingChats.entries()) {
       statuses.set(chatId, status)
-    }
-    for (const chatId of this.pendingAutoCaptureStarts.keys()) {
-      statuses.set(chatId, "starting")
     }
     for (const [chatId, turn] of this.activeTurns.entries()) {
       statuses.set(chatId, turn.status)
@@ -3636,8 +3505,114 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  private abortEngineStart(chatId: string) {
+    this.engineStartAbortControllers.get(chatId)?.abort()
+  }
+
+  private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
+    const reservation = args.startupReservation ?? { cancelled: false }
+    const previous = this.startupReservations.get(args.chatId)
+    if (previous && previous !== reservation) previous.superseded = true
+    reservation.startupSettled = false
+    args.startupReservation = reservation
+    this.startupReservations.set(args.chatId, reservation)
+    this.startingChats.set(args.chatId, status)
+    return reservation
+  }
+
+  private releaseStartupStatus(chatId: string, reservation?: StartupReservation) {
+    if (!reservation || this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
+    this.startingChats.delete(chatId)
+  }
+
+  private settleStartupReservation(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return
+    reservation.startupSettled = true
+    this.releaseStartupStatus(chatId, reservation)
+    if (this.startupReservations.get(chatId) !== reservation) return
+    if (reservation.cancellationPending && !reservation.cancellationComplete) return
+    if (
+      this.hasPendingPreviewActivity(chatId)
+      || this.activePreparations.get(chatId)?.args.startupReservation === reservation
+    ) return
+    this.startupReservations.delete(chatId)
+    if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
+      && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
+      void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+        this.reportBackgroundError?.(
+          `[startup-cancel] chat ${chatId}: could not drain queued messages: ${error instanceof Error ? error.message : String(error)}`,
+        )
+      })
+    }
+  }
+
+  private startupReservationIsCurrent(chatId: string, reservation?: StartupReservation) {
+    if (!reservation) return !this.startupReservations.has(chatId) && !this.isEngineStartBlocked(chatId)
+    return !reservation.cancelled
+      && !reservation.superseded
+      && this.startupReservations.get(chatId) === reservation
+      && !this.isEngineStartBlocked(chatId)
+  }
+
+  private cancelStartupReservation(chatId: string, reservation: StartupReservation) {
+    reservation.cancelled = true
+    reservation.cancellationPending = true
+    reservation.controller?.abort()
+    this.releaseStartupStatus(chatId, reservation)
+  }
+
+  private canStopStartupSession(chatId: string, reservation?: StartupReservation) {
+    const currentReservation = this.startupReservations.get(chatId)
+    const active = this.activeTurns.get(chatId)
+    if (!reservation) return !currentReservation && !active
+    return !reservation.superseded
+      && currentReservation === reservation
+      && (!active || active.startupReservation === reservation)
+  }
+
+  private recordStartupCancellation(
+    chatId: string,
+    reservation: StartupReservation,
+    hidden?: boolean,
+  ) {
+    if (reservation.cancellation) return reservation.cancellation
+    reservation.cancellationPending = true
+    const promptWrite = reservation.promptWrite
+    reservation.cancellation = (async () => {
+      try {
+        await promptWrite?.catch(() => {})
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      } finally {
+        reservation.cancellationComplete = true
+        this.releaseStartupStatus(chatId, reservation)
+        if (reservation.startupSettled) this.settleStartupReservation(chatId, reservation)
+      }
+    })()
+    return reservation.cancellation
+  }
+
+  private isEngineStartBlocked(chatId: string) {
+    return this.runtimeStopping || this.closedChats.has(chatId)
+  }
+
   async closeChat(chatId: string) {
+    this.closedChats.add(chatId)
+    this.abortEngineStart(chatId)
+    const reservation = this.startupReservations.get(chatId)
+    if (reservation) {
+      reservation.cancelled = true
+      reservation.superseded = true
+      reservation.controller?.abort()
+      this.startingChats.delete(chatId)
+      this.startupReservations.delete(chatId)
+    }
+    this.cancelledDuringPreview.delete(chatId)
+    this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
+    this.piManager.closeChat(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
       await this.retireClaudeSession(claudeSession, "chat_closed")
@@ -3684,10 +3659,49 @@ export class AgentCoordinator {
   }
 
   async shutdownStudyRuntime() {
+    this.runtimeStopping = true
+    for (const controller of this.engineStartAbortControllers.values()) controller.abort()
+    this.codexManager.stopAll()
+    for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
+    this.piManager.dispose()
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
     await this.studyPreviewRuntime?.stop()
+  }
+
+  /** Shutdown safety net: a cancel() that fails while persisting the
+   * interruption can leave its provider turn unclosed. Close everything that
+   * is still live so the data-directory lock is not released over an active
+   * writer. */
+  async forceStopAllTurns() {
+    const errors: unknown[] = []
+    const attempt = async (action: () => void | Promise<void>) => {
+      try {
+        await action()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    for (const [chatId, active] of [...this.activeTurns.entries()]) {
+      // interrupt() may never settle; bound it so a hung turn cannot stall
+      // close(), the remaining turns, or the data-lock release.
+      await attempt(() => interruptTurnWithTimeout(active.turn))
+      await attempt(() => active.turn.close())
+      if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
+    }
+    for (const [chatId, draining] of [...this.drainingStreams.entries()]) {
+      await attempt(() => draining.turn.close())
+      if (this.drainingStreams.get(chatId) === draining) this.drainingStreams.delete(chatId)
+    }
+    for (const session of this.claudeSessions.values()) {
+      await attempt(() => session.session.close())
+    }
+    await attempt(() => this.codexManager.stopAll())
+    if (errors.length === 1) throw errors[0]
+    if (errors.length > 1) {
+      throw new AggregateError(errors, "Failed to stop remaining agent turns")
+    }
   }
 
   private async retireClaudeSession(session: ClaudeSessionState, reason: string) {
@@ -3734,6 +3748,16 @@ export class AgentCoordinator {
       }
     }
 
+    if (provider === "pi") {
+      const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
+      return {
+        model: normalizeServerModel(provider, options.model),
+        effort: piModelOptions.reasoningEffort,
+        serviceTier: undefined,
+        planMode: false,
+      }
+    }
+
     const modelOptions = normalizeCodexModelOptions(options.modelOptions, options.effort)
     return {
       model: normalizeServerModel(provider, options.model),
@@ -3773,19 +3797,16 @@ export class AgentCoordinator {
     queuedMessage: QueuedChatMessage,
     options?: {
       steered?: boolean
-      deferredAutoStart?: DeferredAutoStartGuard
     },
   ): Promise<"started" | "cancelled" | "missing"> {
-    const deferred = options?.deferredAutoStart
-    if (deferred?.signal.aborted) return "cancelled"
     if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
-    if (this.isCancelledDeferredQueueRow(chatId, queuedMessage.id)) {
+    if (this.isCancelledQueueRow(chatId, queuedMessage.id)) {
       try {
         await this.store.removeQueuedMessage(chatId, queuedMessage.id)
       } catch (error) {
         if (this.store.getQueuedMessage(chatId, queuedMessage.id)) {
           this.reportBackgroundError?.(
-            `[auto-deferred-stop] chat ${chatId}: refused tombstoned queue row: ${error instanceof Error ? error.message : String(error)}`,
+            `[queue-dispatch] chat ${chatId}: refused tombstoned queue row: ${error instanceof Error ? error.message : String(error)}`,
           )
         }
       }
@@ -3799,7 +3820,6 @@ export class AgentCoordinator {
       channel: "queue.dispatch",
       attachments: queuedMessage.attachments,
     })
-    if (deferred?.signal.aborted) return "cancelled"
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
@@ -3810,11 +3830,9 @@ export class AgentCoordinator {
       if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
       throw error
     }
-    if (deferred?.signal.aborted) return "cancelled"
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
-    if (deferred?.signal.aborted) return "cancelled"
     await this.startTurnForChat({
       chatId,
       provider,
@@ -3828,11 +3846,8 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       appendUserPrompt: true,
       steered: options?.steered,
-      deferredAutoStart: deferred,
     })
-    return deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()
-      ? "cancelled"
-      : "started"
+    return "started"
   }
 
   /**
@@ -3850,7 +3865,6 @@ export class AgentCoordinator {
         this.activeTurns.has(chatId)
         || this.hasPendingPreviewActivity(chatId)
         || this.startingChats.has(chatId)
-        || this.pendingAutoCaptureStarts.has(chatId)
       ) {
         continue
       }
@@ -3903,6 +3917,8 @@ export class AgentCoordinator {
     ) return
     const opening = this.openingBoardBacklog.recoverOpeningPrompt(taskId)
     if (!opening) return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
 
     this.openingBoardRecoveryTasks.add(taskId)
     const recover = async () => {
@@ -3938,6 +3954,9 @@ export class AgentCoordinator {
         const turnEntries = promptIndex < 0
           ? []
           : messages.slice(promptIndex + 1, nextPromptIndex < 0 ? undefined : nextPromptIndex)
+        // A durable Stop owns the opening turn even when it happened before
+        // provider acceptance, so neither in-process nor restart recovery may replay it.
+        if (turnEntries.some((message) => message.kind === "interrupted")) return
         const preview = turnEntries.find(
           (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
         )
@@ -4191,6 +4210,8 @@ export class AgentCoordinator {
     decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>,
   ) {
     if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
+    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
+      || this.isEngineStartBlocked(opening.chatId)) return
     const chat = this.store.requireChat(opening.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("The opening Memory Board project no longer exists")
@@ -4216,7 +4237,7 @@ export class AgentCoordinator {
       openingLongTermAlreadyReady: true,
       openingWorkingMemory: { previewId: preview.previewId, decision: decision.decision },
     }
-    this.startingChats.set(opening.chatId, "starting")
+    const reservation = this.reserveStartup(args)
     try {
       await this.bootEngineTurn(this.refreshOpeningProviderAttachments(args), {
         chat,
@@ -4225,6 +4246,7 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision.decision === "without_memory",
       })
     } catch (error) {
+      if (reservation.cancelled || reservation.superseded || this.isEngineStartBlocked(opening.chatId)) return
       const message = error instanceof Error ? error.message : String(error)
       await this.store.appendMessage(
         opening.chatId,
@@ -4234,7 +4256,7 @@ export class AgentCoordinator {
       this.emitStateChange(opening.chatId, { immediate: true })
       throw error
     } finally {
-      this.startingChats.delete(opening.chatId)
+      this.settleStartupReservation(opening.chatId, reservation)
     }
   }
 
@@ -4242,23 +4264,11 @@ export class AgentCoordinator {
     if (this.activeTurns.has(chatId)) return false
     const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
     if (!nextQueuedMessage) return false
-    const chat = this.store.getChat(chatId)
-    const provider = this.resolveProvider(nextQueuedMessage, chat?.provider ?? null)
-    if (this.shouldQueueBehindAutoCapture(provider)) {
-      // q2 may have been enqueued while q1 was still active. q1 completion
-      // starts broad Auto capture before draining its queue; use the same
-      // durable, cancellable owner as an idle direct send instead of removing
-      // q2 and blocking invisibly inside startTurnForChat's barrier.
-      this.scheduleAutoCaptureQueueDrain(chatId, nextQueuedMessage.id)
-      return true
-    }
     await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
     return true
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
-    const deferred = args.deferredAutoStart
-    if (deferred?.signal.aborted) return
     const logicalTurnId = args.turnId ?? crypto.randomUUID()
     args.turnId = logicalTurnId
     logSendToStartingProfile(args.profile, "start_turn.begin", {
@@ -4282,7 +4292,8 @@ export class AgentCoordinator {
     }
     // Hold the reservation across every await below (preview pass, engine boot)
     // until the turn hands off to pendingPreviews (parked) or activeTurns (booted).
-    this.startingChats.set(args.chatId, "starting")
+    const reservation = this.reserveStartup(args)
+    const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
     this.turnMemoryRestriction.delete(args.chatId)
@@ -4290,12 +4301,14 @@ export class AgentCoordinator {
     try {
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.provider_set", {
         chatId: args.chatId,
         provider: args.provider,
       })
     }
     await this.store.setPlanMode(args.chatId, args.planMode)
+    if (startupCancelled()) return
     logSendToStartingProfile(args.profile, "start_turn.plan_mode_set", {
       chatId: args.chatId,
       planMode: args.planMode,
@@ -4321,6 +4334,7 @@ export class AgentCoordinator {
 
     if (optimisticTitle) {
       await this.store.renameChat(args.chatId, optimisticTitle)
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.optimistic_title_set", {
         chatId: args.chatId,
         title: optimisticTitle,
@@ -4331,15 +4345,6 @@ export class AgentCoordinator {
     if (!project) {
       throw new Error("Project not found")
     }
-
-    if (this.policy.condition === "auto" && args.provider === "claude") {
-      await this.awaitAutoProjectCaptureBarrier()
-    }
-
-    // Stop can arrive while durable dequeue or any pre-delivery store await is
-    // in flight. The queued row has already been claimed, but the participant
-    // prompt and Claude process must remain untouched.
-    if (deferred?.signal.aborted) return
 
     if (shouldAppendUserPrompt) {
       userPromptEntry = {
@@ -4355,16 +4360,14 @@ export class AgentCoordinator {
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
-      const appended = await this.store.appendMessage(
-        args.chatId,
-        userPromptEntry,
-        deferred
-          ? { shouldAppend: deferred.authorizeDelivery }
-          : undefined,
-      )
-      // Stop won while this append was waiting on EventStore's serialized
-      // writer. No user_prompt became durable, so this is not a started turn.
-      if (appended === false) return
+      const promptWrite = this.store.appendMessage(args.chatId, userPromptEntry)
+      reservation.promptWrite = promptWrite
+      try {
+        await promptWrite
+      } finally {
+        if (reservation.promptWrite === promptWrite) reservation.promptWrite = undefined
+      }
+      if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
         chatId: args.chatId,
         entryId: userPromptEntry._id,
@@ -4426,25 +4429,18 @@ export class AgentCoordinator {
       shouldReconcileOpeningPrompt && !openingBookkeeping?.turnStarted
     )) {
       await this.store.recordTurnStarted(args.chatId)
+      if (startupCancelled()) return
       if (openingIdentity) {
         this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, { turnStarted: true })
       }
-      deferred?.markTurnStarted()
       logSendToStartingProfile(args.profile, "start_turn.turn_started_recorded", {
         chatId: args.chatId,
       })
     }
 
-    // Once shouldAppend authorized the durable write, finish the normal
-    // turn-start record before honoring Stop. This keeps a delivered prompt
-    // from becoming an untracked half-turn, while still preventing Claude boot.
-    if (deferred?.isCommittedCancellationRequested()) return
-
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
-
-    if (deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()) return
 
     // Per-turn memory Preview gate (SPEC §4.10b): before the engine acts, show
     // the injection receipt — exactly which memories the turn carries — then
@@ -4462,18 +4458,16 @@ export class AgentCoordinator {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
         policy: this.policy,
-        provider: args.provider,
         memory: this.memory,
         projectId: chat.projectId,
         chatId: args.chatId,
-        workspaceDir: project.localPath,
       })
       // Run the gate whenever there are item-based memories to reason about
-      // (skills/plain modes) — EVEN when the injected set is empty. An empty
+      // — EVEN when the injected set is empty. An empty
       // plan is not "no gate": runPreviewGateThenBoot records the (empty)
       // preview and either auto-proceeds (setting on) or parks for an explicit
-      // decision (setting off) (BUG AGENT-5). File mode has no items to gate.
-      if (plan.mode !== "file") {
+      // decision (setting off) (BUG AGENT-5).
+      {
         // The gate waits on a human — that must not hold the caller's ws ack:
         // the client reads a held ack (10s timeout) as a dead socket,
         // misreports the DELIVERED message as failed, and resurrects the
@@ -4481,7 +4475,7 @@ export class AgentCoordinator {
         // + boot continue detached, taking the startingChats reservation with
         // them. The status broadcast is synchronous — subscribers learn about
         // the wait before the ack returns.
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         this.emitStateChange(args.chatId, { immediate: true })
         reservationHandedOff = true
         void this.runPreviewGateThenBoot(args, { chat, project, turnNumber, injected: plan.injectedMemories })
@@ -4489,14 +4483,13 @@ export class AgentCoordinator {
       }
     }
 
-    if (deferred?.signal.aborted || deferred?.isCommittedCancellationRequested()) return
     await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) this.startingChats.delete(args.chatId)
+      if (!reservationHandedOff) this.settleStartupReservation(args.chatId, reservation)
     }
   }
 
@@ -4577,14 +4570,18 @@ export class AgentCoordinator {
     // terminal handler attached to the detached task so a late rejection never
     // becomes unhandled; the shared phase signal wins the public gate race.
     if (!prep?.cancellation.signal.aborted) {
-      const captureTask = this.capture!.captureFromPrompt({
+      const captureInput = {
         projectId: ctx.project.id,
         sessionId: args.chatId,
         turn: ctx.turnNumber,
         engine: args.provider,
         userText: args.memoryUserText ?? args.content,
         signal: prep?.cancellation.signal,
-      }).then(
+      }
+      const branches = this.branchPreparations.get(args.chatId)
+      const captureTask = (branches
+        ? branches.pipeline.result("candidate").then(result => this.capture!.captureFromBranch!(result.raw, captureInput, result.dependencyKey))
+        : this.capture!.captureFromPrompt(captureInput)).then(
         () => ({ kind: "done" as const }),
         (error: unknown) => ({ kind: "error" as const, error }),
       )
@@ -4596,6 +4593,7 @@ export class AgentCoordinator {
         : await captureTask
       if (captureOutcome.kind === "error") {
         const error = captureOutcome.error
+        if (this.memoryBranches) throw error
         this.reportBackgroundError?.(
           `[memory-proposals] chat ${args.chatId} turn ${ctx.turnNumber}: ${error instanceof Error ? error.message : String(error)}`,
         )
@@ -4775,6 +4773,7 @@ export class AgentCoordinator {
 
     const proposalsDecision = await this.parkExistingProposalsGate(args, ctx, proposalsId)
     if (proposalsDecision === "cancelled") return { cancelled: true, revision }
+    if (await this.refreshTransferAfterCandidateReview(args, ctx.turnNumber)) return { cancelled: true, revision }
 
     await this.store.appendMessage(
       args.chatId,
@@ -4968,10 +4967,10 @@ export class AgentCoordinator {
     stepOneSettled: Promise<unknown> | null,
     options?: { transferId?: string; recompute?: boolean },
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled"; transferId: string }> {
-    const existingMessages = args.openingReview ? this.store.getMessages(args.chatId) : []
+    const existingMessages = args.openingReview || options?.transferId ? this.store.getMessages(args.chatId) : []
     const existingParent = existingMessages.filter(
       (message): message is Extract<TranscriptEntry, { kind: "memory_transfer" }> =>
-        message.kind === "memory_transfer" && message.openingReviewId === args.openingReview?.reviewId,
+        message.kind === "memory_transfer" && (options?.transferId ? message.transferId === options.transferId : message.openingReviewId === args.openingReview?.reviewId),
     ).at(-1)
     const transferId = options?.transferId ?? existingParent?.transferId ?? crypto.randomUUID()
     if (existingParent && !options?.recompute) {
@@ -5013,7 +5012,7 @@ export class AgentCoordinator {
     }
     // A fresh transfer stage starts a fresh landing set — the preview badge
     // reflects THIS turn's accepts only.
-    this.memory?.clearTransferLandings(args.chatId)
+    if (!options?.recompute) this.memory?.clearTransferLandings(args.chatId)
     const taskCtx = {
       projectId: ctx.project.id,
       sessionId: args.chatId,
@@ -5115,6 +5114,11 @@ export class AgentCoordinator {
     searched = this.memoryTransferDetect!.hasSourceCandidates(taskCtx)
     maybePublishShell()
     const computeTask = async (): Promise<TransferTaskResult | null> => {
+      const branches = this.branchPreparations.get(args.chatId)
+      if (branches) {
+        await branches.pipeline.result("transfer")
+        return null // Materialize after Candidate review against its approved store.
+      }
       // Cold start and an overlapping turn-end preparation converge here;
       // the detector shares identical in-flight Encode work.
       await this.memoryTransferDetect!.prepareSources(taskCtx)
@@ -5186,6 +5190,13 @@ export class AgentCoordinator {
     // the same flag; the caller's finally clears it.
     if (this.cancelledDuringPreview.has(args.chatId)) return settleCancelledScan()
 
+    if (this.memoryBranches) {
+      const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
+      const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate review", request.dependencyKey)
+      result = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
+      if (!result) throw new Error("Memory transfer dependencies changed during review; prepare this turn again")
+    }
+
     // Candidate and Transfer relevance ran in parallel. Candidate decisions
     // are now settled, so refresh only landing if their active target pool
     // actually changed; the prompt's relevance selection remains fixed.
@@ -5203,7 +5214,13 @@ export class AgentCoordinator {
             | { kind: "result"; value: TransferTaskResult }
             | { kind: "error"; error: unknown }
             | { kind: "cancelled" } = await Promise.race([
-            this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress }).then(
+            (this.memoryBranches ? (async () => {
+              const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
+              const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey)
+              const fresh = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
+              if (!fresh) throw new Error("Memory transfer dependencies changed")
+              return fresh
+            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress })).then(
               (value) => ({ kind: "result" as const, value }),
               (error: unknown) => ({ kind: "error" as const, error }),
             ),
@@ -5460,7 +5477,16 @@ export class AgentCoordinator {
         }
         this.emitStateChange(args.chatId, { immediate: true })
       }
-      result = await this.memoryCheckup!.run(checkupCtx)
+      if (this.memoryBranches) {
+        const request = this.memoryCheckup!.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
+          ?? this.memoryCheckup!.buildForkPrompt!(checkupCtx)
+        const prepared = await this.continueMemoryBranch(args.chatId, "changes", "Transfer and memory review", request?.dependencyKey ?? "")
+        const checked = await this.memoryCheckup!.primeFromBranchResult!(checkupCtx, prepared.dependencyKey, prepared.raw)
+        if (!checked) throw new Error("Memory change dependencies changed during analysis")
+        result = checked
+      } else {
+        result = await this.memoryCheckup!.run(checkupCtx)
+      }
     } catch (error) {
       this.reportBackgroundError?.(
         `[memory-checkup] chat ${args.chatId} turn ${ctx.turnNumber}: ${error instanceof Error ? error.message : String(error)}`,
@@ -5554,6 +5580,7 @@ export class AgentCoordinator {
         decision: analysisFailed ? "failed" : "clear",
       })
       this.emitStateChange(args.chatId)
+      if (analysisFailed && this.memoryBranches) throw new Error("Memory-change analysis failed. Retry preparation before running the coding agent.")
       return { decision: "none", checkupId }
     }
 
@@ -5687,6 +5714,7 @@ export class AgentCoordinator {
       if (from === "proposals") {
         const decision = await this.parkExistingProposalsGate(args, input.ctx, input.proposalsId!)
         if (decision === "cancelled") return
+        if (await this.refreshTransferAfterCandidateReview(args, input.ctx.turnNumber)) return
 
         // Step 1 settled again. Step 2 now changes from "waiting" to the
         // shared result; Checkup recomputes only when its dependencies changed.
@@ -5742,11 +5770,9 @@ export class AgentCoordinator {
 
       const injected = planMemoryInjection({
         policy: this.policy,
-        provider: args.provider,
         memory: this.memory!,
         projectId: input.ctx.project.id,
         chatId: args.chatId,
-        workspaceDir: input.ctx.project.localPath,
       }).injectedMemories
 
       await this.refreshMemoryPreviewGate({
@@ -5763,8 +5789,10 @@ export class AgentCoordinator {
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
     } finally {
-      this.startingChats.delete(args.chatId)
-      this.cancelledDuringPreview.delete(args.chatId)
+      this.settleStartupReservation(args.chatId, args.startupReservation)
+      if (this.startupReservations.get(args.chatId) === args.startupReservation) {
+        this.cancelledDuringPreview.delete(args.chatId)
+      }
     }
   }
 
@@ -5864,12 +5892,28 @@ export class AgentCoordinator {
   ): Promise<ExpectedMemoryUse[]> {
     const allowed = new Set(pending.memoryIds)
     const selected = [...new Set(selectedIds)].filter((id) => allowed.has(id))
+    if (this.memoryBranches) {
+      for (const id of selected) {
+        const snapshot = pending.memories.find(item => item.id === id)
+        const current = this.memory?.store.getById(id)
+        if (!snapshot || !current || current.status !== "active" || current.version !== snapshot.version || current.content !== snapshot.content || current.detail !== snapshot.detail) {
+          throw new Error("Working memory changed during review. Reopen preparation to review the updated items.")
+        }
+      }
+    }
     const missing = selected.filter((id) => !pending.expectedUseById.has(id))
     if (missing.length) {
       let planned: ExpectedMemoryUse[] = []
       try {
-        planned = await this.planExpectedMemoryUses(pending.task, pending.memories, missing)
-      } catch {
+        const branch = pending.chatId ? this.workingBranches.get(pending.chatId) : undefined
+        if (this.memoryBranches) {
+          if (!branch) throw new Error("Working-memory branch is unavailable; reopen memory preparation")
+          const input = { task: pending.task, memories: pending.memories.filter(item => selected.includes(item.id)), mandatoryIds: selected }
+          const raw = await branch.ask(`The developer confirmed these items. Continue your selection analysis and provide an expected use for each.\n${buildWorkingMemoryBranchPrompt(input)}`, { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
+          planned = parseWorkingMemoryBranchResult(raw, input).expectedUses
+        } else planned = await this.planExpectedMemoryUses(pending.task, pending.memories, missing)
+      } catch (error) {
+        if (this.memoryBranches) throw error
         // A preview decision must not fail because the optional planner is
         // unavailable. The fallback remains server-authored and deterministic.
       }
@@ -5914,10 +5958,11 @@ export class AgentCoordinator {
     const { args, ctx, previewId, revision } = input
     const memoryIds = ctx.injected.map((memory) => memory.id)
     const attentionIds = (this.turnPayAttention.get(args.chatId) ?? []).map((e) => e.id).filter((id) => memoryIds.includes(id))
-    const willAssessRelevance = Boolean(this.memoryRelevance) && ctx.injected.length > 0
+    const willAssessRelevance = (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
 
     this.turnExpectedUses.delete(args.chatId)
     const pending: PendingMemoryPreview = {
+      chatId: args.chatId,
       previewId,
       revision,
       published: false,
@@ -5945,7 +5990,7 @@ export class AgentCoordinator {
       },
       reopen: (from, stageId) => {
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
-        this.startingChats.set(args.chatId, "previewing_memory")
+        this.reserveStartup(args, "previewing_memory")
         void this.runReopenedMemoryPreparation({
           ...input,
           ctx,
@@ -5998,13 +6043,11 @@ export class AgentCoordinator {
         )
         this.emitStateChange(args.chatId)
       }
-      void this.memoryRelevance!
-        .assess(userText, ctx.injected, {
-          mustInclude: attentionIds,
-          recentContext: this.recentConversationDigest(args.chatId),
-        })
+      void this.assessWorkingMemory(args, ctx.injected, attentionIds)
         .then(settle)
-        .catch(() => settle([]).catch(() => {}))
+        .catch(() => this.memoryBranches
+          ? this.reportWorkingMemoryFailure(args.chatId, previewId, revision)
+          : settle([]).catch(() => {}))
     }
   }
 
@@ -6120,12 +6163,23 @@ export class AgentCoordinator {
           reopened: false,
           cancellation: createMemoryPreparationCancellation(),
         })
+        this.startMemoryBranches(args, ctx)
         const proposalsRun =
           this.capture && this.policy.capture === "review"
             ? this.runProposalsGate(args, ctx, recomputeProposals
                 ? { proposalsId, recompute: true }
                 : undefined)
             : null
+        if (this.memoryBranches) {
+          // M incorporates Candidate decisions while T is still being reviewed.
+          void (proposalsRun ?? Promise.resolve()).then(() => {
+            if (this.cancelledDuringPreview.has(args.chatId)) return
+            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId }
+            const request = this.memoryCheckup?.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
+              ?? this.memoryCheckup?.buildForkPrompt?.(checkupCtx)
+            return this.continueMemoryBranch(args.chatId, "changes", "Candidate review", request?.dependencyKey ?? "")
+          }).catch(() => {})
+        }
         const transferRun =
           this.memoryTransferDetect && this.policy.capture === "review"
             ? this.runTransferGate(
@@ -6157,7 +6211,10 @@ export class AgentCoordinator {
             const decision = await prep.reparks.shift()!
             if (decision === "cancelled") return
           }
-          if (prep?.reopened) stepOneTouched = true
+          if (prep?.reopened) {
+            stepOneTouched = true
+            if (await this.refreshTransferAfterCandidateReview(args, ctx.turnNumber)) return
+          }
         }
         const completedPreparation = this.activePreparations.get(args.chatId)
         this.activePreparations.delete(args.chatId)
@@ -6215,16 +6272,14 @@ export class AgentCoordinator {
         // Changes accepted/resolved at the gates are effective NOW — recompute
         // the plan so the injection receipt (and the boot) carry them this
         // same turn (the causal chain the design demands).
-        if (stepOneTouched) {
+        if (stepOneTouched || this.memoryBranches) {
           ctx = {
             ...ctx,
             injected: planMemoryInjection({
               policy: this.policy,
-              provider: args.provider,
               memory: this.memory!,
               projectId: ctx.project.id,
               chatId: args.chatId,
-              workspaceDir: ctx.project.localPath,
             }).injectedMemories,
           }
         }
@@ -6288,6 +6343,7 @@ export class AgentCoordinator {
         // "No matching pending memory preview".
         if (!autoProceed) {
           const pending: PendingMemoryPreview = {
+            chatId: args.chatId,
             previewId,
             revision: 0,
             published: false,
@@ -6317,7 +6373,7 @@ export class AgentCoordinator {
             reopen: (from, stageId) => {
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
-              this.startingChats.set(args.chatId, "previewing_memory")
+              this.reserveStartup(args, "previewing_memory")
               void this.runReopenedMemoryPreparation({
                 args,
                 ctx,
@@ -6334,7 +6390,7 @@ export class AgentCoordinator {
           this.pendingPreviews.set(args.chatId, pending)
           gated = true
         }
-        const willAssessRelevance = !autoProceed && Boolean(this.memoryRelevance) && ctx.injected.length > 0
+        const willAssessRelevance = !autoProceed && (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
         await this.store.appendMessage(
           args.chatId,
           timestamped({
@@ -6393,13 +6449,11 @@ export class AgentCoordinator {
             )
             this.emitStateChange(args.chatId)
           }
-          void this.memoryRelevance!
-            .assess(userText, ctx.injected, {
-              mustInclude: attentionIds,
-              recentContext: this.recentConversationDigest(args.chatId),
-            })
+          void this.assessWorkingMemory(args, ctx.injected, attentionIds)
             .then(settle)
-            .catch(() => settle([]).catch(() => {}))
+            .catch(() => this.memoryBranches
+              ? this.reportWorkingMemoryFailure(args.chatId, previewId, 0)
+              : settle([]).catch(() => {}))
         }
         if (autoProceed) {
           // Stop can land during the preview-entry append here too — an
@@ -6453,7 +6507,7 @@ export class AgentCoordinator {
           this.pendingPreviews.delete(args.chatId)
           return
         }
-        if (args.openingReview) {
+        if (args.openingReview || this.memoryBranches) {
           // The opening Board is an admission barrier, not an optional preview
           // enhancement. A failed durable phase transition must reach the
           // detached outer failure recorder; booting here would bypass the
@@ -6478,6 +6532,7 @@ export class AgentCoordinator {
     } catch (error) {
       // The turn is detached from any chat.send ack here — record the failure
       // in the transcript the way the engine loops do.
+      this.restoreUndeliveredEnforcement(args.chatId)
       const message = error instanceof Error ? error.message : String(error)
       try {
         await this.store.appendMessage(
@@ -6492,13 +6547,19 @@ export class AgentCoordinator {
     } finally {
       // Parked (pendingPreviews guards the chat), booted (activeTurns), or
       // failed — in every case the handed-over reservation is done.
-      this.startingChats.delete(args.chatId)
+      const ownsReservation = this.startupReservations.get(args.chatId) === args.startupReservation
       const activePreparation = this.activePreparations.get(args.chatId)
-      this.activePreparations.delete(args.chatId)
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
+        this.activePreparations.delete(args.chatId)
+      }
       // Never leak a cancel flag or an abort handle into a later turn.
-      this.cancelledDuringPreview.delete(args.chatId)
+      if (ownsReservation) this.cancelledDuringPreview.delete(args.chatId)
       // Resolve Stop only after every public busy/freeze guard is gone.
-      activePreparation?.cancellation.settle()
+      if (activePreparation && activePreparation.args.startupReservation === args.startupReservation) {
+        activePreparation.cancellation.settle()
+      }
+      this.settleStartupReservation(args.chatId, args.startupReservation)
+      if (!this.pendingPreviews.has(args.chatId) && !this.activeTurns.has(args.chatId)) this.disposeMemoryBranches(args.chatId)
     }
   }
 
@@ -6524,6 +6585,11 @@ export class AgentCoordinator {
   }) {
     const { args, decision } = ctx
     try {
+      if (args.startupReservation) {
+        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      } else if (this.startupReservations.has(args.chatId) || this.activeTurns.has(args.chatId)
+        || this.isEngineStartBlocked(args.chatId)) return
+      this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
@@ -6532,6 +6598,7 @@ export class AgentCoordinator {
         args.chatId,
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses })
       )
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       this.memory?.logger.event({
         type: "memory.preview",
         ...(ctx.controlOperation ? { operationId: ctx.controlOperation.operationId } : {}),
@@ -6553,6 +6620,8 @@ export class AgentCoordinator {
       if (decision !== "go_on") this.turnExpectedUses.delete(args.chatId)
 
       if (decision === "dismiss") {
+        this.restoreUndeliveredEnforcement(args.chatId)
+        this.disposeMemoryBranches(args.chatId)
         await this.store.recordTurnCancelled(args.chatId)
         if (ctx.controlOperation) {
           try {
@@ -6569,6 +6638,7 @@ export class AgentCoordinator {
         // Release before queue draining, which deliberately treats the claim
         // as a busy owner and would otherwise leave the next row parked.
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
+        this.releaseStartupStatus(args.chatId, args.startupReservation)
         this.emitStateChange(args.chatId, { immediate: true })
         await this.maybeStartNextQueuedMessage(args.chatId)
         return
@@ -6596,6 +6666,9 @@ export class AgentCoordinator {
         }
       }
     } catch (error) {
+      if (args.startupReservation?.cancelled || args.startupReservation?.superseded
+        || this.isEngineStartBlocked(args.chatId)) return
+      this.restoreUndeliveredEnforcement(args.chatId)
       if (ctx.controlOperation) {
         try {
           this.memory?.logger.event({
@@ -6619,6 +6692,7 @@ export class AgentCoordinator {
       this.emitStateChange(args.chatId)
     } finally {
       this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
+      this.settleStartupReservation(args.chatId, args.startupReservation)
     }
   }
 
@@ -6649,28 +6723,37 @@ export class AgentCoordinator {
       memoryDisabledForTurn: boolean
     }
   ) {
+    if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
+    const reservation = args.startupReservation
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
+    if (reservation?.cancelled) return
+    const startController = new AbortController()
+    if (reservation) reservation.controller = startController
+    this.engineStartAbortControllers.set(args.chatId, startController)
+    let bootedActive: ActiveTurn | undefined
+    let turn: HarnessTurn
+    try {
+    this.disposeMemoryBranches(args.chatId)
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
     // a misleading "native binary failed to launch" / posix_spawn ENOENT
     // (QA BUG-001/002/004). Recreate it before any boot.
     await ensureProjectDirectory(project.localPath)
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
 
     // Snapshot BEFORE any engine boot awaits: what this turn injects (trace's
-    // ground truth). Sourced from the injection plan, NOT injectedFor — in
-    // file mode the model sees workspace files, so no item ids are "in play".
+    // ground truth). Use the confirmed selection in the injection plan,
+    // not the full visible pool returned by injectedFor.
     const turnMemoryPlan =
       this.memory && !memoryDisabledForTurn
         ? planMemoryInjection({
             policy: this.policy,
-            provider: args.provider,
             memory: this.memory,
             projectId: chat.projectId,
             chatId: args.chatId,
-            workspaceDir: project.localPath,
             restrictToIds: turnRestriction,
           })
         : null
@@ -6694,14 +6777,13 @@ export class AgentCoordinator {
       })
     }
 
-    let turn: HarnessTurn
     if (args.provider === "claude") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
         provider: args.provider,
         model: args.model,
       })
-      turn = await this.startClaudeTurn({
+      const claudeTurn = await this.startClaudeTurn({
         chatId: args.chatId,
         localPath: project.localPath,
         model: args.model,
@@ -6716,7 +6798,107 @@ export class AgentCoordinator {
         memoryState: args.memoryState,
         memoryPlan: turnMemoryPlan,
         restrictMemoryIds: turnRestriction,
+        startupReservation: reservation,
       })
+      if (!claudeTurn) return
+      turn = claudeTurn
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        return
+      }
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+    } else if (args.provider === "pi") {
+      logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
+        chatId: args.chatId,
+        provider: args.provider,
+        model: args.model,
+      })
+      // MemoSync memory for Pi: the same injection plan + tool specs as Codex,
+      // but Pi has no developer_instructions channel, so the memory block is
+      // prepended to the user prompt. Custom memory tools are registered on
+      // the pi session (see memory/pi-adapter) and dispatched per turn.
+      // "Proceed without memory" (preview gate) skips both the block and
+      // dispatch for this turn.
+      const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
+      const piMemorySpecs =
+        this.memory && this.policy.memoryTools
+          ? buildMemoryToolSpecs(this.memory, {
+              capture: this.capture,
+              onProposed: (created, info) => {
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoApplied = created.filter(({ id }) => autoIds.has(id))
+                if (!autoApplied.length) return
+                void this.store
+                  .appendMessage(
+                    args.chatId,
+                    timestamped({
+                      kind: "memory_candidates",
+                      candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
+                    })
+                  )
+                  .then(() => this.emitStateChange(args.chatId))
+                  .catch(() => {})
+              },
+            })
+          : []
+      const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
+      const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
+      const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
+      const piMemoryBlock = [
+        piPlan?.block ?? "",
+        piExpectedUses.length ? `How the selected memories are expected to guide this turn:\n${piExpectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
+        ...piEnforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
+        args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
+        args.resume?.enforce ? `ENFORCED THIS RUN: [${args.resume.memoryId}] MUST be followed. ${args.resume.correction}` : "",
+      ].filter(Boolean).join("\n\n")
+      if (args.resume?.enforce && !piSelected.has(args.resume.memoryId)) throw new Error("The enforced memory is no longer in Working Memory")
+      if (this.memory && piPlan && piMemoryBlock) {
+        this.memory.logger.event({
+          type: "memory.inject",
+          sessionId: args.chatId,
+          engine: "pi",
+          memories: piPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
+          tokenEstimate: Math.ceil(piMemoryBlock.length / 4),
+          mode: piPlan.mode,
+        })
+      }
+      const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
+        ? async (name: string, toolArgs: Record<string, unknown>) => {
+            return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
+              projectId: chat.projectId,
+              sessionId: args.chatId,
+              turn: turnNumber,
+              engine: "pi",
+              allowedMemoryIds: piPlan?.injectedMemories.map(item => item.id) ?? [],
+            })
+          }
+        : undefined
+      const connection = await this.resolvePiConnectionFn()
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
+      const piPrompt = buildPromptText(args.content, providerAttachments)
+      turn = await this.piManager.startTurn({
+        signal: startController.signal,
+        chatId: args.chatId,
+        cwd: project.localPath,
+        content: piMemoryBlock ? `${piMemoryBlock}\n\n${piPrompt}` : piPrompt,
+        model: args.model,
+        effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
+        sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken),
+        connection,
+        memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+        memoryDispatch: piMemoryDispatch,
+      })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        return
+      }
+      this.turnPayAttention.delete(args.chatId)
+      args.onMemoryDeliveryAccepted?.(piPlan?.injectedMemories.map(item => item.id) ?? [])
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,
@@ -6739,11 +6921,9 @@ export class AgentCoordinator {
         this.memory && !memoryDisabledForTurn
           ? planMemoryInjection({
               policy: this.policy,
-              provider: "codex",
               memory: this.memory,
               projectId: chat.projectId,
               chatId: args.chatId,
-              workspaceDir: project.localPath,
               restrictToIds: turnRestriction,
             })
           : null
@@ -6752,7 +6932,7 @@ export class AgentCoordinator {
       // DECLARATIONS are thread-level and persist across turns by protocol, but
       // with no dispatch handler a call this turn is a no-op.)
       const codexMemorySpecs =
-        this.memory && this.policy.memoryTools && !memoryDisabledForTurn
+        this.memory && this.policy.memoryTools
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
@@ -6776,7 +6956,17 @@ export class AgentCoordinator {
               },
             })
           : []
-      const codexMemoryBlock = codexPlan?.block ?? ""
+      const codexSelected = new Set(codexPlan?.injectedMemories.map(item => item.id) ?? [])
+      const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => codexSelected.has(use.id))
+      const enforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => codexSelected.has(item.id))
+      const codexMemoryBlock = [
+        codexPlan?.block ?? "",
+        expectedUses.length ? `How the selected memories are expected to guide this turn:\n${expectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
+        ...enforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
+        args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
+        args.resume?.enforce ? `ENFORCED THIS RUN: [${args.resume.memoryId}] MUST be followed. ${args.resume.correction}` : "",
+      ].filter(Boolean).join("\n\n")
+      if (args.resume?.enforce && !codexSelected.has(args.resume.memoryId)) throw new Error("The enforced memory is no longer in Working Memory")
       if (this.memory && codexPlan && codexMemoryBlock) {
         this.memory.logger.event({
           type: "memory.inject",
@@ -6785,19 +6975,22 @@ export class AgentCoordinator {
           memories: codexPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
           tokenEstimate: Math.ceil(codexMemoryBlock.length / 4),
           mode: codexPlan.mode,
-          staticFiles: codexPlan.staticFiles.length ? codexPlan.staticFiles : undefined,
         })
       }
-      const onDynamicToolCall = codexMemorySpecs.length
+      const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
+              turn: turnNumber,
+              engine: "codex",
+              allowedMemoryIds: codexPlan?.injectedMemories.map(item => item.id) ?? [],
             })
             return { text: r.text, isError: r.isError }
           }
         : undefined
       const sessionToken = await this.codexManager.startSession({
+        signal: startController.signal,
         chatId: args.chatId,
         cwd: project.localPath,
         model: args.model,
@@ -6806,30 +6999,56 @@ export class AgentCoordinator {
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
       })
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        return
+      }
       if (chat.pendingForkSessionToken && sessionToken) {
         await this.store.setPendingForkSessionToken(args.chatId, null)
+        if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+          return
+        }
       }
       logSendToStartingProfile(args.profile, "start_turn.session_ready", {
         chatId: args.chatId,
         provider: args.provider,
         model: args.model,
       })
-      turn = await this.codexManager.startTurn({
-        chatId: args.chatId,
-        content: buildPromptText(args.content, providerAttachments),
-        model: args.model,
-        effort: args.effort as any,
-        serviceTier: args.serviceTier,
-        planMode: args.planMode,
-        onToolRequest,
-        developerInstructions: codexMemoryBlock || undefined,
-        onDynamicToolCall,
-      })
+      try {
+        turn = await this.codexManager.startTurn({
+          signal: startController.signal,
+          chatId: args.chatId,
+          content: buildPromptText(args.content, providerAttachments),
+          model: args.model,
+          effort: args.effort as any,
+          serviceTier: args.serviceTier,
+          planMode: args.planMode,
+          onToolRequest,
+          developerInstructions: codexMemoryBlock || undefined,
+          onDynamicToolCall,
+        })
+      } catch (error) {
+        if (startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+          return
+        }
+        throw error
+      }
+      if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+        turn.close()
+        return
+      }
+      this.turnPayAttention.delete(args.chatId)
+      args.onMemoryDeliveryAccepted?.(codexPlan?.injectedMemories.map(item => item.id) ?? [])
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.ready", {
         chatId: args.chatId,
         provider: args.provider,
         model: args.model,
       })
+    }
+
+    if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
+      startController.abort()
+      turn.close()
+      return
     }
 
     const active: ActiveTurn = {
@@ -6847,6 +7066,7 @@ export class AgentCoordinator {
       hasFinalResult: false,
       cancelRequested: false,
       cancelRecorded: false,
+      startupReservation: reservation,
       providerTurnStarted: false,
       clientTraceId: args.profile?.traceId,
       profilingStartedAt: args.profile?.startedAt,
@@ -6859,9 +7079,27 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
+      // Pi accepts its memory block inside the user prompt (there is no
+      // developer_instructions channel) — delivery counts like Codex's.
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
+    bootedActive = active
+    } catch (error) {
+      if (args.provider === "pi" && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
+      throw error
+    } finally {
+      if (this.engineStartAbortControllers.get(args.chatId) === startController) {
+        this.engineStartAbortControllers.delete(args.chatId)
+      }
+      if (reservation?.controller === startController) reservation.controller = undefined
+      if (args.provider === "codex" && !bootedActive && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) {
+        if (this.canStopStartupSession(args.chatId, reservation)) this.codexManager.stopSession(args.chatId)
+      }
+    }
+    const active = bootedActive
+    if (!active) return
     if (active.taskId) {
       const taskChats = this.studyTaskChats.get(active.taskId) ?? new Set<string>()
       taskChats.add(args.chatId)
@@ -6916,12 +7154,6 @@ export class AgentCoordinator {
       let deliveredExpectedUses: ExpectedMemoryUse[] = []
       let deliveredResumeInterruptId: string | undefined
       let nextMemoryBaseline: Map<string, number> | null = null
-      const repeatedFocusText = active.memoryPlan?.mode === "plain" || active.memoryPlan?.mode === "file"
-        ? active.memoryPlan.block
-        : ""
-      if (repeatedFocusText) {
-        promptText += `\n\n<system-reminder>\n${repeatedFocusText}\n</system-reminder>`
-      }
       if (session.memoryBaseline && this.memory) {
         const delta = computeMemoryTurnDelta({
           memory: this.memory,
@@ -6954,7 +7186,6 @@ export class AgentCoordinator {
         const payAttention = (this.turnPayAttention.get(args.chatId) ?? []).filter(
           (e) => turnRestrictionForEnforce === undefined || turnRestrictionForEnforce.includes(e.id),
         )
-        this.turnPayAttention.delete(args.chatId)
         if (payAttention.length) {
           reminderParts.push(
             payAttention
@@ -6978,7 +7209,7 @@ export class AgentCoordinator {
               // leaving the chat registered as running; the durable prompt id
               // remains reusable by a corrected retry.
               if (this.activeTurns.get(args.chatId) === active) this.activeTurns.delete(args.chatId)
-              this.startingChats.delete(args.chatId)
+              this.releaseStartupStatus(args.chatId, args.startupReservation)
               active.turn.close()
               this.emitStateChange(args.chatId, { immediate: true })
               throw new Error("The enforced memory is no longer in the current chat's effective Working Memory")
@@ -6998,8 +7229,9 @@ export class AgentCoordinator {
               `continue from where it stopped.${selectionNote} Participant correction: ${resumeCtx.correction}`,
           )
         }
-        const expectedUses = this.turnExpectedUses.get(args.chatId)
-        this.turnExpectedUses.delete(args.chatId)
+        const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => deliveredFocusIds.includes(use.id))
+        if (this.memoryBranches) this.turnExpectedUses.set(args.chatId, expectedUses)
+        else this.turnExpectedUses.delete(args.chatId)
         if (expectedUses?.length) {
           deliveredExpectedUses = expectedUses
           const detailIds = this.policy.memoryTools
@@ -7081,6 +7313,7 @@ export class AgentCoordinator {
       }
       try {
         await session.session.sendPrompt(promptText, {
+          allowedMemoryIds: deliveredFocusIds,
           turn: active.turnNumber ?? turnNumber,
           engine: "claude",
           promptSeq,
@@ -7109,13 +7342,22 @@ export class AgentCoordinator {
         }
         throw error
       }
+      if (reservation?.cancelled || active.cancelRequested || this.activeTurns.get(args.chatId) !== active) {
+        if (openingProviderDispatch) {
+          this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
+        }
+        return
+      }
       if (openingProviderDispatch) {
         this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
       }
       if (nextMemoryBaseline) session.memoryBaseline = nextMemoryBaseline
+      active.memoryDeliveryAccepted = true
+      this.turnPayAttention.delete(args.chatId)
       active.injectedIds = deliveredFocusIds
+      if (active.memoryPlan) active.memoryPlan = { ...active.memoryPlan, injectedMemories: deliveredFocusedMemories.map(item => ({ ...item })) }
       args.onMemoryDeliveryAccepted?.([...deliveredFocusIds])
-      if ((this.policy.studyMode || active.memoryState.memoryActive) && this.memory && (this.policy.condition === "memosync" || this.policy.condition === "auto")) {
+      if (active.memoryState.memoryActive && this.memory) {
         try {
           if (openingFocusDelivery) {
             persistDeliveredStoreFocusEvent({
@@ -7128,21 +7370,17 @@ export class AgentCoordinator {
             recordDeliveredStoreFocus({
               logger: this.memory.logger,
               studyStore: this.studyMemoryStore ?? undefined,
-              condition: this.policy.condition,
+              condition: "memosync",
               taskId: active.taskId,
               chatId: args.chatId,
               turnId: active.turnId,
               turn: active.turnNumber ?? turnNumber,
-              mode: this.policy.condition === "memosync" ? "skills" : "plain",
+              mode: "skills",
               promptText,
               visiblePool: deliveredVisiblePool,
               focusedMemories: deliveredFocusedMemories,
-              getAutoProjectCloneRef: this.policy.condition === "auto"
-                ? (memoryId) => this.memory!.getAutoProjectCloneRef(memoryId)
-                : undefined,
-              expectedUses: this.policy.condition === "memosync" ? deliveredExpectedUses : undefined,
+              expectedUses: deliveredExpectedUses,
               disabled: active.memoryDisabled,
-              focusPayloadText: repeatedFocusText || undefined,
               resumeOfInterruptId: deliveredResumeInterruptId,
             })
           }
@@ -7161,16 +7399,6 @@ export class AgentCoordinator {
             `[study-focus] chat ${args.chatId} turn ${active.turnNumber ?? turnNumber}: ${error instanceof Error ? error.message : String(error)}`
           )
         }
-      } else if (this.policy.condition === "static") {
-        this.launchStaticFocusMaterialization({
-          taskId: active.taskId,
-          projectId: chat.projectId,
-          chatId: args.chatId,
-          turnId: active.turnId,
-          turn: active.turnNumber ?? turnNumber,
-          promptText,
-          plan: active.memoryPlan,
-        })
       }
       logSendToStartingProfile(args.profile, "start_turn.claude_prompt_sent", {
         chatId: args.chatId,
@@ -7199,17 +7427,30 @@ export class AgentCoordinator {
     memoryPlan?: MemoryInjectionPlan | null
     /** Exact turn-only selection confirmed by the gate or interrupt recovery card. */
     restrictMemoryIds?: string[]
-  }): Promise<HarnessTurn> {
+    startupReservation?: StartupReservation
+  }): Promise<HarnessTurn | null> {
     // Ensure/recover the one managed preview on every participant prompt, not
     // only when the Claude query happens to rebuild. Project switches retire
     // the old query before the supervisor replaces its process group.
     await this.prepareStudyProjectRuntime(args.localPath)
+    if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
+    const subprocessEnv = buildClaudeSubprocessEnv({
+      localPath: args.localPath,
+      rawStudyProjects: this.policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
+    })
+    const runtimeEnv: Record<string, string | undefined> = buildClaudeSdkRuntimeOptions({ requestedModel: args.model, env: subprocessEnv }).env
+    // Endpoint, credentials and profile belong to the subprocess. setModel()
+    // cannot migrate any of them when the user switches vendors.
+    const providerRuntimeKey = String(Bun.hash(JSON.stringify([
+      runtimeEnv.ANTHROPIC_BASE_URL ?? "official",
+      runtimeEnv.ANTHROPIC_API_KEY, runtimeEnv.ANTHROPIC_AUTH_TOKEN,
+      runtimeEnv.CLAUDE_CONFIG_DIR,
+    ])))
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
-    // mode/tools flips (arm switch), and plain/file CONTENT changes — those
-    // modes have no delta channel. Skills-mode content changes deliberately do
+    // and tools flips. Skills-mode content changes deliberately do
     // NOT rebuild: they ride the next user turn as a delta block, so the
     // prompt cache survives every edit/accept/archive. The key comes from the
     // same plan the session boot uses, so check and boot can never disagree.
@@ -7218,11 +7459,9 @@ export class AgentCoordinator {
       : memoryEnabled && this.memory
         ? planMemoryInjection({
             policy: this.policy,
-            provider: "claude",
             memory: this.memory,
             projectId: args.projectId,
             chatId: args.chatId,
-            workspaceDir: args.localPath,
             restrictToIds: args.restrictMemoryIds,
           })
         : null
@@ -7234,6 +7473,7 @@ export class AgentCoordinator {
       session.localPath !== args.localPath ||
       session.effort !== args.effort ||
       session.memorySetHash !== desiredMemoryHash ||
+      session.providerRuntimeKey !== providerRuntimeKey ||
       args.forkSession
     ) {
       let resumeToken = session?.sessionToken ?? args.sessionToken
@@ -7249,9 +7489,11 @@ export class AgentCoordinator {
         resumeToken = null
         await this.store.setSessionToken(args.chatId, null)
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
       if (session) {
         await this.retireClaudeSession(session, "session_rebuild")
       }
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
 
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
@@ -7267,10 +7509,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         policy: this.policy,
         studyPreviewRuntime: this.studyPreviewRuntime,
-        subprocessEnv: buildClaudeSubprocessEnv({
-          localPath: args.localPath,
-          rawStudyProjects: this.policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
-        }),
+        subprocessEnv,
         memoryPlan: turnPlan,
         restrictMemoryIds: args.restrictMemoryIds,
         // Redesign 2026-08-07 §3: agent-channel proposals park in the store
@@ -7294,6 +7533,16 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
+      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
+        try {
+          started.close()
+        } catch (error) {
+          this.reportBackgroundError?.(
+            `[claude-retire] chat ${args.chatId}: stale startup close failed: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+        return null
+      }
       this.refreshClaudeModelCatalog(started)
 
       // Baseline = what the boot block actually baked (full set, ignoring any
@@ -7317,6 +7566,7 @@ export class AgentCoordinator {
         pump: null,
         memoryState: args.memoryState,
         memorySetHash: desiredMemoryHash,
+        providerRuntimeKey,
         memoryBaseline:
           bootPlan?.mode === "skills"
             ? new Map(bootPlan.bakedMemories.map((m) => [m.id, m.version]))
@@ -7436,7 +7686,6 @@ export class AgentCoordinator {
       this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
-      || this.pendingAutoCaptureStarts.has(chatId)
     ) {
       if (openingReview) throw new Error("The opening first message cannot be queued behind another turn")
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
@@ -7450,23 +7699,6 @@ export class AgentCoordinator {
     }
 
     const settings = this.getProviderSettings(provider, command)
-    if (this.shouldQueueBehindAutoCapture(provider)) {
-      const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
-        provider: command.provider,
-        model: command.model,
-        modelOptions: command.modelOptions,
-        effort: command.effort,
-        planMode: command.planMode,
-      })
-      this.scheduleAutoCaptureQueueDrain(chatId, queuedMessage.id)
-      logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
-        chatId,
-        provider,
-        model: settings.model,
-        deferredForAutoCapture: true,
-      })
-      return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
-    }
 
     await this.startTurnForChat({
       chatId,
@@ -7528,7 +7760,6 @@ export class AgentCoordinator {
       this.activeTurns.has(command.chatId)
       || this.hasPendingPreviewActivity(command.chatId)
       || this.startingChats.has(command.chatId)
-      || this.pendingAutoCaptureStarts.has(command.chatId)
 
     if (isBusy()) {
       await this.cancel(command.chatId, { hideInterrupted: true })
@@ -7849,7 +8080,7 @@ export class AgentCoordinator {
             this.launchPostTurnMemoryPasses({
               chatId: active.chatId,
               projectId: chat?.projectId,
-              engine: "codex",
+              engine: active.provider,
               turnNumber: active.turnNumber,
               turnId: active.turnId,
               taskId: active.taskId,
@@ -7957,13 +8188,13 @@ export class AgentCoordinator {
     }
   }
 
-  private assertMemoSyncClaudeControl(chatId: string): void {
+  private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume is a memosync-condition Claude feature. It is
-    // available in the normal deployment (studyMode false) and in the memosync
-    // study arm alike — but never in the auto/static baseline arms or on Codex.
-    if (this.policy.condition !== "memosync" || chat.provider !== "claude") {
-      throw new Error("Per-memory interrupt is only available on the MemoSync Claude engine")
+    // Per-memory interrupt/resume works on every MemoSync engine in normal
+    // deployments (Claude, Codex and Pi all implement resume/enforce handling);
+    // in the study mode it stays restricted to Claude.
+    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || (chat.provider !== "codex" && chat.provider !== "pi")))) {
+      throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
 
@@ -7978,10 +8209,10 @@ export class AgentCoordinator {
    */
   async interruptMemory(args: { chatId: string; memoryId: string; quote?: string }) {
     const { chatId, memoryId } = args
-    this.assertMemoSyncClaudeControl(chatId)
+    this.assertMemoSyncControl(chatId)
     const active = this.activeTurns.get(chatId)
-    if (!active || active.provider !== "claude") {
-      throw new Error("A MemoSync Claude turn must be running before a memory can interrupt it")
+    if (!active) {
+      throw new Error("A MemoSync turn must be running before a memory can interrupt it")
     }
     if (!active.memoryState.memoryActive) throw new Error("Memory is disabled for this turn")
     // Snapshot BEFORE cancel(): it tears down the active turn and drops the
@@ -8056,7 +8287,7 @@ export class AgentCoordinator {
     enforce?: boolean
   }) {
     const { chatId } = args
-    this.assertMemoSyncClaudeControl(chatId)
+    this.assertMemoSyncControl(chatId)
     if (this.activeTurns.has(chatId)) throw new Error("A turn is already running")
     const messages = this.store.getMessages(chatId)
     const entry = messages.find(
@@ -8119,7 +8350,8 @@ export class AgentCoordinator {
     }
 
     const provider = (chat.provider ?? "claude") as AgentProvider
-    const settings = this.getProviderSettings(provider, {} as SendMessageOptions)
+    const lastModel = messages.filter(message => message.kind === "system_init").at(-1)?.model
+    const settings = this.getProviderSettings(provider, { model: lastModel })
     let deliveryAccepted = false
     let deliveredSelectedIds: string[] = []
     await this.startTurnForChat({
@@ -8149,7 +8381,7 @@ export class AgentCoordinator {
       },
     })
     if (!deliveryAccepted) {
-      throw new Error("Claude did not accept the interrupt recovery delivery")
+      throw new Error("The coding agent did not accept the interrupt recovery delivery")
     }
     // The recovery decision becomes durable only after Claude accepted the
     // continuation. A failed provider boot therefore leaves the card open and
@@ -8176,6 +8408,8 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    this.restoreUndeliveredEnforcement(chatId)
+    this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind
     // below may take a moment and the partial must not linger as if live.
     this.clearStreamingAssistantText(chatId)
@@ -8185,22 +8419,6 @@ export class AgentCoordinator {
       draining.turn.close()
       this.drainingStreams.delete(chatId)
     }
-
-    // A direct Auto send can be durably queued while it waits for the prior
-    // turn's Project Copy capture. Stop cancels that pending dispatch itself: the
-    // queue row is removed only after the barrier waiter confirms it cannot
-    // append a late user prompt or boot Claude.
-    const deferredAutoStart = this.pendingAutoCaptureStarts.get(chatId)
-    if (
-      deferredAutoStart
-      && !this.activeTurns.has(chatId)
-      && !this.hasPendingPreviewActivity(chatId)
-      && this.startingChats.get(chatId) !== "previewing_memory"
-    ) {
-      await this.cancelAutoCaptureQueueDrain(chatId, deferredAutoStart, options?.hideInterrupted)
-      return
-    }
-
     // Stop while parked at a step-one gate: resolve EVERY parked gate as
     // "cancelled" (Step 1 and the Transfer card park side by side since
     // 2026-08-08), set the preview-cancel flag so a sibling coroutine still
@@ -8212,6 +8430,10 @@ export class AgentCoordinator {
     const checkupParked = this.pendingCheckupGates.get(chatId)
     if (proposalsParked || transferParked || checkupParked) {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+      }
       this.cancelledDuringPreview.add(chatId)
       proposalsParked?.respond("cancelled")
       transferParked?.respond("cancelled")
@@ -8219,9 +8441,13 @@ export class AgentCoordinator {
       // The shared phase signal releases Prompt Parse and task-local Transfer
       // together. Source preparation is shared across turns and keeps running.
       await preparation?.cancellation.cancelAndWait()
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
@@ -8236,27 +8462,58 @@ export class AgentCoordinator {
         return
       }
       this.pendingPreviews.delete(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) this.cancelStartupReservation(chatId, reservation)
       this.cancelledDuringPreview.add(chatId)
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
     // Stop DURING the preview-gate LLM pass (reservation held, gate not parked
     // yet): the in-flight runPreviewGateThenBoot observes this flag and unwinds
     // (BUG AGENT-2). Record the interruption here so the UI reflects it now.
-    if (this.startingChats.get(chatId) === "previewing_memory") {
+    const active = this.activeTurns.get(chatId)
+    if (!active && this.startingChats.get(chatId) === "previewing_memory") {
       const preparation = this.activePreparations.get(chatId)
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+      }
       this.cancelledDuringPreview.add(chatId)
       await preparation?.cancellation.cancelAndWait()
-      await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-      await this.store.recordTurnCancelled(chatId)
-      this.emitStateChange(chatId, { immediate: true })
+      if (reservation) {
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
       return
     }
 
-    const active = this.activeTurns.get(chatId)
+    // Stop while the provider is queued or initializing: cancel its abort
+    // barrier now and record the interruption immediately. bootEngineTurn's
+    // in-flight codex startup receives this signal even when runtime starts
+    // are serialized behind another profile migration.
+    if (!active && this.startingChats.get(chatId) === "starting") {
+      const reservation = this.startupReservations.get(chatId)
+      if (reservation) {
+        this.cancelStartupReservation(chatId, reservation)
+        await this.recordStartupCancellation(chatId, reservation, options?.hideInterrupted)
+      } else {
+        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
+        await this.store.recordTurnCancelled(chatId)
+        this.emitStateChange(chatId, { immediate: true })
+      }
+      return
+    }
+
     if (!active) return
 
     logClaudeSteer("cancel_requested", {
@@ -8268,6 +8525,9 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+    if (active.startupReservation) {
+      this.cancelStartupReservation(chatId, active.startupReservation)
+    }
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
@@ -8289,6 +8549,13 @@ export class AgentCoordinator {
 
     await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
     await this.store.recordTurnCancelled(chatId)
+    if (active.startupReservation) {
+      active.startupReservation.cancellationComplete = true
+      this.releaseStartupStatus(chatId, active.startupReservation)
+      if (active.startupReservation.startupSettled) {
+        this.settleStartupReservation(chatId, active.startupReservation)
+      }
+    }
     active.cancelRecorded = true
     active.hasFinalResult = true
 
@@ -8354,10 +8621,7 @@ export class AgentCoordinator {
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
     try {
-      await Promise.race([
-        active.turn.interrupt(),
-        new Promise((resolve) => setTimeout(resolve, 5_000)),
-      ])
+      await interruptTurnWithTimeout(active.turn)
     } catch {
       // interrupt() failed — force close
     }

@@ -6,13 +6,21 @@ import { TranscriptChatContextProvider } from "./render-context"
 
 // Minimal memory_trace message; only the fields the component reads matter.
 function msg(
-  labels: Array<{ id: string; label: string; note?: string; quote?: string; cause?: string; impact?: string; missing?: string }>,
+  labels: Array<{ id: string; label: string; note?: string; quote?: string; toolId?: string; cause?: string; impact?: string; missing?: string }>,
   extra: Record<string, unknown> = {},
 ) {
   return { kind: "memory_trace", labels, ...extra } as unknown as Parameters<typeof MemoryTraceMessage>[0]["message"]
 }
 
 describe("MemoryTraceMessage", () => {
+  test("offers Where used for tool-only audit evidence with no inline citation", () => {
+    const html = renderToStaticMarkup(<MemoryTraceMessage message={msg([{
+      id: "M-31", label: "violated", note: "The tool changed the restricted file.", toolId: "call-edit-31", cause: "not_followed",
+    }])} />)
+    expect(html).toContain("where used")
+    expect(html).toContain("audit-found")
+    expect(html).toContain("reply or tool evidence")
+  })
   test("expands all four verdict groups on initial render", () => {
     // Study-owner decision 2026-08-20: no verdict hides behind a collapsed
     // header on first render — the participant sees every group's rows at once.

@@ -1,9 +1,46 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import {
+import { createJSONStorage } from "zustand/middleware"
+
+class MemoryStorage {
+  private readonly values = new Map<string, string>()
+
+  getItem(key: string): string | null {
+    return this.values.get(key) ?? null
+  }
+
+  setItem(key: string, value: string): void {
+    this.values.set(key, value)
+  }
+
+  removeItem(key: string): void {
+    this.values.delete(key)
+  }
+}
+
+const chatPreferencesStore = await (async () => {
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window")
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: { localStorage: new MemoryStorage() },
+  })
+
+  try {
+    const modulePath = "./chatPreferencesStore.ts?storage-rehydration-regression"
+    return await import(modulePath) as typeof import("./chatPreferencesStore")
+  } finally {
+    if (originalWindow) {
+      Object.defineProperty(globalThis, "window", originalWindow)
+    } else {
+      Reflect.deleteProperty(globalThis, "window")
+    }
+  }
+})()
+
+const {
   migrateChatPreferencesState,
   NEW_CHAT_COMPOSER_ID,
   useChatPreferencesStore,
-} from "./chatPreferencesStore"
+} = chatPreferencesStore
 
 const INITIAL_STATE = useChatPreferencesStore.getInitialState()
 
@@ -12,7 +49,18 @@ afterEach(() => {
 })
 
 describe("migrateChatPreferencesState", () => {
-  test("migrates versioned Opus preferences to DeepSeek Pro", () => {
+  test("preserves isolated Codex provider models across a reload", () => {
+    const migrated = migrateChatPreferencesState({
+      providerDefaults: { codex: { model: "glm-5.3-flash" } },
+      composerState: { provider: "codex", model: "glm-5.3-flash" },
+      chatStates: { existing: { provider: "codex", model: "glm-5.3-flash" } },
+    })
+    expect(migrated.providerDefaults.codex.model).toBe("glm-5.3-flash")
+    expect(migrated.legacyComposerState?.model).toBe("glm-5.3-flash")
+    expect(migrated.chatStates.existing?.model).toBe("glm-5.3-flash")
+  })
+
+  test("migrates versioned Opus preferences to the official Opus alias", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -25,7 +73,7 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.claude).toEqual({
-      model: "deepseek-v4-pro",
+      model: "opus",
       modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
       planMode: false,
     })
@@ -58,23 +106,27 @@ describe("migrateChatPreferencesState", () => {
       defaultProvider: "last_used",
       providerDefaults: {
         claude: {
-          model: "deepseek-v4-pro",
+          model: "opus",
           // Legacy "low" tier no longer exists — falls back to the default.
           modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
           planMode: true,
         },
         codex: {
-          model: "gpt-5.5",
+          model: "gpt-5.3-codex",
           modelOptions: { reasoningEffort: "minimal", fastMode: true },
+          planMode: false,
+        },
+        pi: {
+          model: "anthropic/claude-sonnet-4-6",
+          modelOptions: { reasoningEffort: "medium" },
           planMode: false,
         },
       },
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
-        model: "deepseek-v4-flash",
-        // V4 Flash now supports max, so the stored "max" survives migration.
-        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
+        model: "sonnet",
+        modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
         planMode: false,
       },
     })
@@ -109,7 +161,7 @@ describe("migrateChatPreferencesState", () => {
     })
   })
 
-  test("rewrites persisted Codex defaults to gpt-5.5 during migration", () => {
+  test("normalizes legacy Codex aliases without forcing the default model", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -122,13 +174,13 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.codex).toEqual({
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex",
       modelOptions: { reasoningEffort: "low", fastMode: true },
       planMode: false,
     })
   })
 
-  test("rewrites persisted Codex composer state to gpt-5.5 during migration", () => {
+  test("preserves persisted Codex model choices during migration", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "codex",
       providerDefaults: {
@@ -155,26 +207,71 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.codex).toEqual({
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex-spark",
       modelOptions: { reasoningEffort: "low", fastMode: true },
       planMode: true,
     })
     expect(migrated.chatStates.chatA).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.4",
       modelOptions: { reasoningEffort: "medium", fastMode: false },
       planMode: false,
     })
     expect(migrated.legacyComposerState).toEqual({
       provider: "codex",
-      model: "gpt-5.5",
+      model: "gpt-5.3-codex",
       modelOptions: { reasoningEffort: "xhigh", fastMode: true },
+      planMode: true,
+    })
+  })
+
+  test("preserves the older live Codex preference format", () => {
+    const migrated = migrateChatPreferencesState({
+      liveProvider: "codex",
+      livePreferences: {
+        codex: { model: "gpt-5.4", effort: "low", planMode: true },
+      },
+    })
+    expect(migrated.legacyComposerState).toEqual({
+      provider: "codex",
+      model: "gpt-5.4",
+      modelOptions: { reasoningEffort: "low", fastMode: false },
       planMode: true,
     })
   })
 })
 
 describe("chat preference store", () => {
+  test("preserves Codex model choices through storage rehydration", async () => {
+    const storage = new MemoryStorage()
+    const originalStorage = useChatPreferencesStore.persist.getOptions().storage
+    useChatPreferencesStore.persist.setOptions({ storage: createJSONStorage(() => storage) })
+    try {
+      const store = useChatPreferencesStore.getState()
+      store.setProviderDefaultModel("codex", "gpt-5.4")
+      store.setComposerState("chat-a", {
+        provider: "codex", model: "gpt-5.3-codex-spark",
+        modelOptions: { reasoningEffort: "xhigh", fastMode: true }, planMode: true,
+      })
+      store.setComposerState(NEW_CHAT_COMPOSER_ID, {
+        provider: "codex", model: "gpt-5.3-codex",
+        modelOptions: { reasoningEffort: "minimal", fastMode: false }, planMode: false,
+      })
+      const beforeReload = useChatPreferencesStore.getState()
+      const saved = storage.getItem("chat-preferences")
+      expect(saved).not.toBeNull()
+      useChatPreferencesStore.setState(INITIAL_STATE)
+      storage.setItem("chat-preferences", saved!)
+      await useChatPreferencesStore.persist.rehydrate()
+
+      const rehydrated = useChatPreferencesStore.getState()
+      expect(rehydrated.providerDefaults).toEqual(beforeReload.providerDefaults)
+      expect(rehydrated.chatStates).toEqual(beforeReload.chatStates)
+    } finally {
+      useChatPreferencesStore.persist.setOptions({ storage: originalStorage })
+    }
+  })
+
   test("starts with gpt-5.5 as the default Codex model", () => {
     expect(INITIAL_STATE.providerDefaults.codex).toEqual({
       model: "gpt-5.5",
@@ -225,7 +322,7 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "deepseek-v4-flash",
+      model: "sonnet",
       // "low" is not a DeepSeek tier — normalized to the "high" default.
       modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
       planMode: true,

@@ -186,6 +186,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
   }, [message])
 
   return (
+    <div className="w-full" data-tool-id={message.toolId}>
     <MetaRow className="w-full">
       <ExpandableRow
         expandedContent={
@@ -278,5 +279,6 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
 
       </ExpandableRow>
     </MetaRow>
+    </div>
   )
 }

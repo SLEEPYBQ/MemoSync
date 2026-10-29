@@ -13,6 +13,7 @@ import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { cn } from "../../lib/utils"
 import { memoriesApi, recordUiMonitor } from "../../lib/memoriesApi"
 import { findCitationBlock, findQuoteBlock, flashQuoteBlock } from "../../lib/quoteJump"
+import { revealToolEvidence } from "../../lib/toolEvidence"
 import { useTranscriptChatContext, useTranscriptRenderOptions } from "./render-context"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryCitationChip, useEnsureMemoriesLoaded } from "./shared"
@@ -186,7 +187,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
               <button
                 type="button"
                 onClick={() => onJump(label)}
-                title="Jump to where this memory was used in the reply"
+                title="Jump to the reply or tool evidence for this verdict"
                 className="inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground"
               >
                 <CornerDownRight className="h-3 w-3" /> where used
@@ -301,15 +302,16 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
     closeReason: "toggle",
   })
 
-  function jumpTo(label: MemoryTraceLabel) {
+  async function jumpTo(label: MemoryTraceLabel) {
     // Monitoring-act beacon: the trace-card jump itself (the Record rail's
     // twin is timeline_quote_jump) — fired on intent, found or not.
     recordUiMonitor("trace_jump", { ids: [label.id], sessionId: chatId, interaction: "click" })
     // Post-hoc: locate the memory by its audit quote; when no quote survived,
     // fall back to the reply's own inline [M-NN] citation chip.
-    const block =
-      (label.quote ? findQuoteBlock(label.quote, rootRef.current) : null) ??
-      (label.cited ? findCitationBlock(label.id, rootRef.current) : null)
+    const block = label.toolId
+      ? await revealToolEvidence({ toolId: label.toolId, chatId, quote: label.quote }, rootRef.current)
+      : (label.quote ? findQuoteBlock(label.quote, rootRef.current) : null)
+        ?? (label.cited ? findCitationBlock(label.id, rootRef.current) : null)
     if (block) {
       setJumpFeedback(null)
       flashQuoteBlock(block)
@@ -318,7 +320,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
       backTimerRef.current = window.setTimeout(() => setBackVisible(false), 12000)
       return
     }
-    setJumpFeedback("The quoted reply is not currently visible in the transcript.")
+    setJumpFeedback("The evidence is not available in the loaded transcript.")
   }
 
   function jumpBack() {
@@ -413,7 +415,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={violatedRows.map((label) => label.id)}
             >
               {violatedRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.quote || label.cited ? jumpTo : undefined} />
+                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
               ))}
             </TraceSection>
           ) : null}
@@ -426,7 +428,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={shapedRows.map((label) => label.id)}
             >
               {shapedRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.quote || label.cited ? jumpTo : undefined} />
+                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
               ))}
             </TraceSection>
           ) : null}

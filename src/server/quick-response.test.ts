@@ -1,8 +1,49 @@
 import { describe, expect, test } from "bun:test"
 import { fallbackTitleFromMessage, generateTitleForChat, generateTitleForChatDetailed } from "./generate-title"
 import { getClaudeStructuredQueryOptions, getQuickResponseWorkspace, QuickResponseAdapter } from "./quick-response"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 describe("QuickResponseAdapter", () => {
+  test("isolated helpers never read or use saved API credentials", async () => {
+    let reads = 0
+    const adapter = new QuickResponseAdapter({
+      env: { MEMOSYNC_ISOLATE_CLI: "1" },
+      readLlmProvider: async () => { reads++; throw new Error("Saved credentials must not be read") },
+      runOpenAIStructured: async () => { throw new Error("Saved API must not be called") },
+      runClaudeStructured: async () => ({ title: "Isolated title" }),
+    })
+    const result = await adapter.generateStructured({
+      cwd: "/tmp/unused",
+      task: "title",
+      prompt: "title",
+      schema: { type: "object", properties: { title: { type: "string" } } },
+      parse: (value) => (value as { title: string }).title,
+    })
+    expect(result).toBe("Isolated title")
+    expect(reads).toBe(0)
+  })
+
+  test("title generation uses isolated GLM credentials instead of inherited subscription auth", () => {
+    const profile = mkdtempSync(join(tmpdir(), "memosync-title-profile-"))
+    try {
+      const options = getClaudeStructuredQueryOptions({
+        cwd: profile,
+        task: "title generation",
+        prompt: "Generate a title",
+        schema: { type: "object", properties: { title: { type: "string" } } },
+      }, { MEMOSYNC_CLI_PROFILE_DIR: profile, GLM_API_KEY: "test-key", CLAUDE_CODE_OAUTH_TOKEN: "host-token" })
+      expect(options.env.ANTHROPIC_API_KEY).toBe("test-key")
+      expect(options.env.ANTHROPIC_BASE_URL).toBe("https://open.bigmodel.cn/api/anthropic")
+      expect(options.env.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined()
+      expect(options.model).toBe("glm-5.3-flash")
+      expect(options.settingSources).toEqual([])
+    } finally {
+      rmSync(profile, { recursive: true, force: true })
+    }
+  })
+
   test("disables Claude session persistence for ephemeral structured responses", () => {
     const options = getClaudeStructuredQueryOptions({
       cwd: "/tmp/quick-response",

@@ -7,11 +7,13 @@
 // are task-local and must be recomputed for every send. These prepared rules
 // are process-local temporary intermediate results; they are unrelated to a
 // provider/API prompt cache.
+import { memoryTransferSchema } from './branch-schemas';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import type { SessionClockEntry } from './maintenance';
 import type { MemoryItem, MemoryScope } from './types';
 import type { TransferDecoding, TransferEncoding, TransferService } from './transfer';
+import { buildTransferBranchPrompt, parseTransferBranchResult, type TransferBranchInput } from './branch-stages';
 
 export interface TransferSuggestionProgress {
   sourceId: string;
@@ -56,6 +58,10 @@ export interface TransferTaskOptions {
 }
 
 export interface TransferDetectService {
+  /** Full Encode/relevance/Decode prompt, with no preparation sidecars. */
+  buildTaskBranchPrompt?(ctx: TransferTaskContext): { prompt: string; dependencyKey: string; schema?: Record<string, unknown>; deltaSchema?: Record<string, unknown>; constraints?: string };
+  /** Validate full branch proposals against the exact source and target snapshot. */
+  materializeTaskFromBranch?(ctx: TransferTaskContext, raw: Record<string, unknown>, dependencyKey: string): Promise<TransferTaskResult | null>;
   /** Synchronous shelf probe used only to decide whether a slow cold-start
    * preparation should render a scanning shell. It performs no LLM work. */
   hasSourceCandidates(ctx: TransferSourceContext): boolean;
@@ -352,6 +358,21 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
     return { items, key };
   }
 
+  function branchSnapshot(ctx: TransferTaskContext): { input: TransferBranchInput; key: string; targetKey: string } {
+    const target = targetSnapshot(ctx);
+    const sources = sourceCandidates(ctx, true).map((candidate) => {
+      const profile = profileOf(ctx, candidate);
+      return { item: candidate.item, sourceLabel: candidate.sourceLabel,
+        projectTitle: profile.projectTitle, representative: profile.representative, profileKey: profile.key };
+    });
+    return {
+      input: { task: ctx.taskText, memories: target.items, sources, projectId: ctx.projectId, projectTitle: ctx.projectTitle },
+      key: JSON.stringify({ task: ctx.taskText, projectId: ctx.projectId, projectTitle: ctx.projectTitle,
+        target: target.key, sources: sources.map((source) => [source.item.id, source.item.version, source.profileKey]) }),
+      targetKey: target.key,
+    };
+  }
+
   function progressOf(source: PreparedSource): TransferSuggestionProgress {
     return {
       sourceId: source.sourceId,
@@ -415,6 +436,25 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
   }
 
   return {
+    buildTaskBranchPrompt(ctx) {
+      const snapshot = branchSnapshot(ctx);
+      const sources = snapshot.input.sources.map(source => ({ sourceId: source.item.id, sourceVersion: source.item.version }));
+      return {
+        prompt: buildTransferBranchPrompt(snapshot.input), dependencyKey: snapshot.key,
+        schema: memoryTransferSchema(sources), deltaSchema: memoryTransferSchema(sources, true),
+        constraints: sources.length
+          ? `Only these source snapshots may be transferred: ${JSON.stringify(sources)}. The task and target store are not additional sources.`
+          : 'The source snapshot is EMPTY. There are no transferable sources, including after target-store review. Return empty suggestions for initial analysis. For review deltas return {"upsert":{"suggestions":[]},"remove":{"suggestions":[]}}. Do not infer a source from the task, target store, examples, or earlier invalid replies. Call StructuredOutput directly if available; do not read files.',
+      };
+    },
+
+    async materializeTaskFromBranch(ctx, raw, dependencyKey) {
+      const snapshot = branchSnapshot(ctx);
+      if (snapshot.key !== dependencyKey) return null;
+      const cards = parseTransferBranchResult(raw, snapshot.input);
+      return { cards, selectedSourceIds: cards.map((card) => card.sourceId), targetKey: snapshot.targetKey };
+    },
+
     hasSourceCandidates(ctx) {
       return sourceCandidates(ctx, true).length > 0;
     },

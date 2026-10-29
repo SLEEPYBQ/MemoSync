@@ -46,7 +46,7 @@ describe("ChatPreferenceControls", () => {
     expect(html).toContain('data-provider-icon="deepseek"')
     expect(html).toContain("Max")
     expect(html).toContain("Plan Mode")
-    expect(html).not.toContain("Claude")
+    expect(html).toContain("Claude Code")
     expect(html).not.toContain("Opus")
   })
 

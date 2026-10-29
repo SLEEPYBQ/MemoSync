@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { ReplyMarkdown } from "./MemoryPreviewMessage"
+import { ReplyMarkdown, WorkingMemorySelectionError } from "./MemoryPreviewMessage"
 
 describe("ReplyMarkdown", () => {
   test("renders Markdown without losing memory citation chips", () => {
@@ -12,5 +12,16 @@ describe("ReplyMarkdown", () => {
     expect(html).toContain("<ul>")
     expect(html).toContain("[M-76]")
     expect(html).not.toContain("memosync-memory:")
+  })
+})
+
+describe("working-memory failure recovery", () => {
+  test("shows an explicit error and retry control instead of a successful empty-selection message", () => {
+    const html = renderToStaticMarkup(<WorkingMemorySelectionError error="Working-memory selection failed." onRetry={() => {}} />)
+    expect(html).toContain('role="alert"')
+    expect(html).toContain("Working-memory selection failed.")
+    expect(html).toContain("Retry selection")
+    expect(html).toContain("Choose items from the memory pool")
+    expect(html).not.toContain("working memory is empty")
   })
 })

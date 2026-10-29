@@ -16,9 +16,9 @@ import type {
   MemoryBoardBacklogSnapshot,
   MemoryBoardOpeningPromptState,
 } from "../../server/memory/board-backlog"
-import { isStaticMemoryMarkdownPath } from "../../shared/staticMemoryPath"
 import { enqueueStudyTelemetry } from "../app/study/studyTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
+import { generateUUID } from "./utils"
 
 export type { AbstractionLevel, MemoryEvent, MemoryItem, MemoryScope, MemoryStatus, MemoryType }
 
@@ -107,7 +107,7 @@ function qs(params: Record<string, string | undefined>): string {
 }
 
 function controlOperationId(label: string): string {
-  return `control:${label}:${crypto.randomUUID()}`
+  return `control:${label}:${generateUUID()}`
 }
 
 export const memoriesApi = {
@@ -332,50 +332,6 @@ export const memoriesApi = {
       unwrap<{ ok: boolean }>(r),
     ),
 
-  /** Auto-arm summary panel (baseline B1): prose summary + conversation-only control. */
-  getSummary: (projectId?: string) =>
-    fetch(`/api/memories/summary${projectId ? `?project=${encodeURIComponent(projectId)}` : ""}`).then((r) =>
-      unwrap<{ text: string; updatedAt: string; stale: boolean }>(r),
-    ),
-
-  refreshSummary: (projectId?: string) =>
-    fetch(`/api/memories/summary/refresh`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ projectId }),
-    }).then((r) => unwrap<{ text: string; updatedAt: string; stale: boolean }>(r)),
-
-  summaryChat: (message: string, projectId?: string, sessionId?: string) =>
-    fetch(`/api/memories/summary/chat`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        eventId: `prompt:auto-summary:${crypto.randomUUID()}`,
-        message,
-        projectId,
-        sessionId,
-      }),
-    }).then((r) =>
-      unwrap<{ reply: string; applied: number; summary: { text: string; updatedAt: string; stale: boolean } }>(r),
-    ),
-
-  /** Static-arm memory file (baseline B2): the workspace MEMORY.md, user+agent shared. */
-  getMemoryFile: (projectId: string) =>
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/memory-file`).then((r) =>
-      unwrap<{ path: string; content: string; mtimeMs: number; exists: boolean }>(r),
-    ),
-
-  saveMemoryFile: (
-    projectId: string,
-    content: string,
-    options: { baseMtimeMs?: number; sessionId?: string; editDurationMs?: number; eventId?: string } = {},
-  ) =>
-    fetch(`/api/projects/${encodeURIComponent(projectId)}/memory-file`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, ...options }),
-    }).then((r) => unwrap<{ path: string; mtimeMs: number }>(r)),
-
   /** The session's muted ids (REDESIGN D7) — [] means everything active injects. */
   getSessionExclusions: (sessionId: string) =>
     fetch(`/api/memories/session-exclusions/${encodeURIComponent(sessionId)}`).then((r) =>
@@ -416,7 +372,7 @@ export const memoriesApi = {
     id: string,
     body: TransferTargetBody & {
       /** Transcript-card CAS; required for chat-gate and Board suggestions. */
-      sourceVersion?: number
+      sourceVersion: number
       content: string
       detail?: string
       abstractionLevel?: AbstractionLevel
@@ -478,10 +434,14 @@ export interface TransferLanding {
   /** The target-context memory this landing relates to (reinforces/conflicts). */
   targetId?: string
   targetContent?: string
+  /** Version of the target snapshot used for this landing judgment. */
+  targetVersion?: number
 }
 
 export interface TransferProposal {
   verdict: "as_is" | "rewrite" | "context_bound"
+  /** Version of the source snapshot used for this proposal. */
+  sourceVersion: number
   /** The abstract rule — the context-free middle representation. */
   portable: string
   /** When the rule applies; absent = unconditional. */
@@ -508,20 +468,6 @@ export function isUiMonitorSuppressed(): boolean {
   return uiMonitorSuppressed
 }
 
-export function recordStaticMemoryEditEntered(operationId: string, sessionId: string | undefined, path: string): void {
-  if (uiMonitorSuppressed || !isStaticMemoryMarkdownPath(path)) return
-  enqueueStudyTelemetry({
-    eventId: `${operationId}:entered`,
-    endpoint: "/api/study/static-edit-entered",
-    body: {
-      operationId,
-      clientTimestamp: new Date().toISOString(),
-      ...(sessionId ? { chatId: sessionId } : {}),
-      path,
-    },
-  })
-}
-
 export function recordWorkingMemorySelection(input: {
   chatId: string
   previewId: string
@@ -542,7 +488,7 @@ export function recordUiMonitor(
   extra: { ids?: string[]; sessionId?: string; interaction?: "open" | "click" | "scroll" | "hover" } = {},
 ): void {
   if (uiMonitorSuppressed) return
-  const eventId = `monitor:${crypto.randomUUID()}`
+  const eventId = `monitor:${generateUUID()}`
   enqueueStudyTelemetry({
     eventId,
     endpoint: "/api/memories/ui-monitor",

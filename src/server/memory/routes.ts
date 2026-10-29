@@ -12,7 +12,6 @@ import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
 import type { RevisionService } from './evolution';
 import type { SanitizeService } from './sanitize';
 import type { AttentionKind, MaintenanceService } from './maintenance';
-import type { SummaryService } from './summary';
 import type { ReviseInjectionService } from './revise-injection';
 import type { UsePlanService } from './use-plan';
 import type {
@@ -26,8 +25,7 @@ import type { ExpectedMemoryUse } from '../../shared/types';
 import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType } from './types';
 import { resolveConditionPolicy, type ConditionPolicy } from '../experiment/condition';
 import type { StudySessionAttribution, StudySessionAttributionResolver } from '../study-session-attribution';
-import { StudyTelemetryError } from '../study-telemetry';
-import { CandidateDismissalTransitionError } from './MemoryStore';
+import { CandidateDismissalTransitionError, RevisionConflictError } from './MemoryStore';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
@@ -35,10 +33,6 @@ export interface MemoryRouteServices {
   sanitize?: SanitizeService | null;
   /** Maintenance actions used by the in-chat Checkup and Board conflict resolution. */
   maintenance?: MaintenanceService | null;
-  /** Auto-arm memory summary panel (baseline B1) — prose summary + panel chat. */
-  summary?: SummaryService | null;
-  /** Server-authoritative active-project admission for the Auto panel's write-capable chat. */
-  summaryProjectRefusal?: (projectId: string) => string | null;
   /** "Ask agent to revise" on the Step 2 gate (redesign 2026-08-07). */
   reviseInjection?: ReviseInjectionService | null;
   /** Turn-scoped explanation of how the agent should use selected memories. */
@@ -90,6 +84,7 @@ export interface MemoryRouteServices {
     previewId: string;
     selectedIds: string[];
   }) => Promise<ExpectedMemoryUse[]>;
+  workingMemoryRevise?: (input: { chatId: string; previewId: string; instruction: string; selectedIds: string[] }) => Promise<import('./revise-injection').ReviseInjectionResult>;
 }
 
 const MEMORY_SCOPES: MemoryScope[] = ['personal', 'project', 'session'];
@@ -136,7 +131,7 @@ function studyInteractionAttribution(
   policy: ConditionPolicy,
   services: MemoryRouteServices,
 ): Partial<StudySessionAttribution> {
-  if (!policy.studyMode || policy.condition !== 'memosync') {
+  if (!policy.studyMode) {
     return {};
   }
   if (!services.studySessionAttribution) {
@@ -270,7 +265,7 @@ function boardResolutionBase(
   if (body.surface !== 'board') {
     throw new RouteError(400, 'BAD_REQUEST', 'boardResolution requires surface=board');
   }
-  if (!policy.studyMode || policy.condition !== 'memosync') {
+  if (!policy.studyMode) {
     throw new RouteError(404, 'NOT_AVAILABLE', 'Board backlog actions only exist in the MemoSync study condition');
   }
   if (!body.boardResolution || typeof body.boardResolution !== 'object') {
@@ -323,7 +318,10 @@ function assertBoardTransferCommitSnapshot(
   if (body.sourceVersion !== suggestion.sourceVersion) mismatch('sourceVersion');
   if (body.chatId !== trusted.chatId) mismatch('chatId');
   if (typeof suggestion.content !== 'string' || !suggestion.landing) mismatch('snapshot');
-  const landing = suggestion.landing!;
+  const targetScope = body.targetScope;
+  const landing = targetScope === (suggestion.suggestedScope ?? 'project')
+    ? suggestion.landing!
+    : { route: 'new' as const };
   if (body.detail !== suggestion.detail) mismatch('detail');
   if (body.abstractionLevel !== (suggestion.abstractionLevel ?? 'contextual')) mismatch('abstractionLevel');
   if (body.rule !== suggestion.rule) mismatch('rule');
@@ -333,7 +331,6 @@ function assertBoardTransferCommitSnapshot(
   if (body.landingTargetVersion !== landing.targetVersion) mismatch('landingTargetVersion');
   if (body.archiveOriginal === true) mismatch('archiveOriginal');
 
-  const targetScope = body.targetScope;
   if (targetScope === 'project') {
     if (!trusted.projectId || body.targetProjectId !== trusted.projectId || body.targetSessionId !== undefined) {
       mismatch('project destination');
@@ -344,9 +341,6 @@ function assertBoardTransferCommitSnapshot(
     if (body.targetProjectId !== undefined || body.targetSessionId !== undefined) mismatch('personal destination');
   } else {
     mismatch('targetScope');
-  }
-  if (landing.route !== 'new' && targetScope !== (suggestion.suggestedScope ?? 'project')) {
-    mismatch('landing scope');
   }
   const edited = typeof body.content === 'string' && body.content.trim() !== suggestion.content;
   if (body.edited !== edited) mismatch('edited state');
@@ -379,51 +373,33 @@ export async function handleMemoryRequest(
 ): Promise<Response | null> {
   const { pathname } = url;
   if (pathname !== '/api/memories' && !pathname.startsWith('/api/memories/')) return null;
+  if (pathname === '/api/memories/summary' || pathname.startsWith('/api/memories/summary/')) {
+    return fail(404, 'NOT_FOUND', 'route not found');
+  }
 
-  // Study-condition gating: in the auto/static arms the user has no memory
-  // control surface — every mutation (and working-set curation) is locked.
-  // Reads stay open so citation chips etc. still resolve.
   const isMutation = req.method !== 'GET';
   const isBoardReviewSurface = pathname === '/api/memories/board-review'
     || pathname === '/api/memories/board-review/prepare'
     || pathname === '/api/memories/board-review/resume';
-  if (isBoardReviewSurface && (policy.condition !== 'memosync' || !policy.studyMode)) {
+  if (isBoardReviewSurface && !policy.studyMode) {
     return fail(404, 'NOT_AVAILABLE', 'the blocking Memory Board only exists in the MemoSync study condition');
   }
-  const isEnforce = pathname === '/api/memories/pay-attention';
-  if (isEnforce && policy.condition !== 'memosync') {
-    return fail(404, 'NOT_AVAILABLE', 'Enforce only exists in the MemoSync condition');
-  }
   const isWorkingMemorySelection = pathname === '/api/memories/working-memory-selection';
-  if (isWorkingMemorySelection && policy.condition !== 'memosync') {
-    return fail(404, 'NOT_AVAILABLE', 'Working Memory selection telemetry only exists in the MemoSync condition');
-  }
   // Working-set curation (session exclusions, REDESIGN D7) shares the old
   // bring-in policy flag — same class of control act, same arms allow it.
   const isWorkingSetCuration = pathname.startsWith('/api/memories/session-exclusions/');
   // Monitoring-act telemetry is pure logging — never condition-locked.
   const isTelemetry = pathname === '/api/memories/ui-monitor'
     || pathname === '/api/memories/surface-exposure';
-  // Refresh only regenerates the Auto panel's derived prose. It does not
-  // change the store-backed treatment memory or the frozen O_i snapshot, so
-  // an automatic panel refresh must not delay the session freeze barrier.
-  const isDerivedSummaryRefresh = pathname === '/api/memories/summary/refresh' && req.method === 'POST';
-  // The auto arm's summary panel (baseline B1) is that arm's ONLY sanctioned
-  // control channel — its chat mutations bypass the board lock, and the whole
-  // surface is exclusive to the auto condition (404 elsewhere).
-  const isAutoSummary = pathname === '/api/memories/summary' || pathname.startsWith('/api/memories/summary/');
-  if (isAutoSummary && policy.condition !== 'auto') {
-    return fail(404, 'NOT_AVAILABLE', `the memory summary surface only exists in the 'auto' condition`);
-  }
   if (isWorkingSetCuration && !policy.bringIn && req.method !== 'GET') {
     return fail(403, 'CONDITION_LOCKED', `working-set curation is not available in the '${policy.condition}' condition`);
   }
-  if (!isWorkingSetCuration && !isTelemetry && !isAutoSummary && isMutation && !policy.boardWritable) {
+  if (!isWorkingSetCuration && !isTelemetry && isMutation && !policy.boardWritable) {
     return fail(403, 'CONDITION_LOCKED', `memory is not user-operable in the '${policy.condition}' condition`);
   }
 
   let releaseStudyMutation: (() => void) | undefined;
-  if (isMutation && !isTelemetry && !isDerivedSummaryRefresh && !isWorkingMemorySelection && services.beginStudyMemoryMutation) {
+  if (isMutation && !isTelemetry && !isWorkingMemorySelection && services.beginStudyMemoryMutation) {
     const release = services.beginStudyMemoryMutation();
     if (!release) {
       return fail(409, 'STUDY_FROZEN', 'The current session is ending. Memory can no longer be changed.');
@@ -455,63 +431,6 @@ export async function handleMemoryRequest(
           score: Number(score.toFixed(3)),
         }));
       return ok({ query: q, memories });
-    }
-
-    // Auto-arm summary surface (baseline B1). GET returns the stored prose projection +
-    // staleness; refresh regenerates (LLM); chat is the conversation-only
-    // control path (inspect + add/edit/forget through the panel assistant).
-    if (pathname === '/api/memories/summary') {
-      if (req.method !== 'GET') return fail(405, 'METHOD_NOT_ALLOWED', 'use GET');
-      if (!services?.summary) return fail(503, 'NOT_AVAILABLE', 'summary service is not running (no LLM configured)');
-      const project = url.searchParams.get('project') || undefined;
-      if (!project) return fail(400, 'BAD_REQUEST', 'project is required');
-      const projectRefusal = services.summaryProjectRefusal?.(project);
-      if (projectRefusal) return fail(409, 'STUDY_PROJECT_LOCKED', projectRefusal);
-      return ok(services.summary.get(project));
-    }
-    if (pathname === '/api/memories/summary/refresh') {
-      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
-      if (!services?.summary) return fail(503, 'NOT_AVAILABLE', 'summary service is not running (no LLM configured)');
-      const b = await readBody(req);
-      if (typeof b.projectId !== 'string' || !b.projectId.trim()) {
-        throw new RouteError(400, 'BAD_REQUEST', 'projectId is required');
-      }
-      const projectRefusal = services.summaryProjectRefusal?.(b.projectId);
-      if (projectRefusal) return fail(409, 'STUDY_PROJECT_LOCKED', projectRefusal);
-      try {
-        return ok(await services.summary.refresh(b.projectId));
-      } catch (e) {
-        return fail(502, 'LLM_FAILED', e instanceof Error ? e.message : 'summary generation failed');
-      }
-    }
-    if (pathname === '/api/memories/summary/chat') {
-      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
-      if (!services?.summary) return fail(503, 'NOT_AVAILABLE', 'summary service is not running (no LLM configured)');
-      const b = await readBody(req);
-      if (typeof b.message !== 'string' || !b.message.trim()) {
-        throw new RouteError(400, 'BAD_REQUEST', 'message is required');
-      }
-      if (typeof b.projectId !== 'string' || !b.projectId.trim()) {
-        throw new RouteError(400, 'BAD_REQUEST', 'projectId is required');
-      }
-      const projectRefusal = services.summaryProjectRefusal?.(b.projectId);
-      if (projectRefusal) {
-        return fail(409, 'STUDY_PROJECT_LOCKED', projectRefusal);
-      }
-      try {
-        return ok(
-          await services.summary.chat(b.message, {
-            projectId: b.projectId,
-            sessionId: typeof b.sessionId === 'string' ? b.sessionId : undefined,
-            eventId: typeof b.eventId === 'string' && b.eventId.trim() ? b.eventId.trim() : undefined,
-          }),
-        );
-      } catch (e) {
-        if (e instanceof StudyTelemetryError) {
-          return fail(e.status, e.status === 422 ? 'TELEMETRY_CONFLICT' : 'TELEMETRY_WRITE_FAILED', e.message);
-        }
-        return fail(502, 'LLM_FAILED', e instanceof Error ? e.message : 'memory chat failed');
-      }
     }
 
     // GET /api/memories/needs-attention?project= — memories a drift event has
@@ -896,7 +815,7 @@ export async function handleMemoryRequest(
       return ok(services.boardBacklog.reviewState(taskId));
     }
     if (pathname === '/api/memories/board-review/prepare' && req.method === 'POST') {
-      if (!policy.studyMode || policy.condition !== 'memosync') {
+      if (!policy.studyMode) {
         return fail(409, 'BOARD_REVIEW_NOT_ALLOWED', 'Opening Memory Board preparation is only available in the MemoSync study condition');
       }
       const b = await readBody(req);
@@ -1010,7 +929,7 @@ export async function handleMemoryRequest(
       const b = await readBody(req);
       const sessionId = typeof b.sessionId === 'string' ? b.sessionId : undefined;
       const attribution = studyInteractionAttribution(policy, services);
-      if (policy.studyMode && policy.condition === 'memosync') {
+      if (policy.studyMode) {
         if (!sessionId) throw new RouteError(400, 'BAD_REQUEST', 'sessionId is required');
         if (!services.auditAdmission) {
           throw new RouteError(503, 'NOT_AVAILABLE', 'Study Audit admission is unavailable');
@@ -1069,7 +988,7 @@ export async function handleMemoryRequest(
       const sessionId = typeof b.sessionId === 'string' ? b.sessionId : undefined;
       const previewId = typeof b.previewId === 'string' ? b.previewId : undefined;
       let effectivePoolIds = requestedPoolIds;
-      if (policy.studyMode && policy.condition === 'memosync') {
+      if (policy.studyMode) {
         if (!sessionId || !previewId) {
           throw new RouteError(400, 'BAD_REQUEST', 'sessionId and previewId are required');
         }
@@ -1118,7 +1037,9 @@ export async function handleMemoryRequest(
           requestedIds,
           effectiveIds,
         },
-        run: () => services.reviseInjection!.revise({ instruction: b.instruction as string, pool, selectedIds: effectiveIds }),
+        run: () => services.workingMemoryRevise && sessionId && previewId
+          ? services.workingMemoryRevise({ chatId: sessionId, previewId, instruction: b.instruction as string, selectedIds: effectiveIds })
+          : services.reviseInjection!.revise({ instruction: b.instruction as string, pool, selectedIds: effectiveIds }),
       });
       const revisedSelection = new Set(result.selectedIds);
       const effectiveResult = {
@@ -1156,7 +1077,11 @@ export async function handleMemoryRequest(
         seen.add(id);
         return true;
       });
-      if (policy.studyMode && policy.condition === 'memosync') {
+      if (!policy.studyMode && services.workingMemoryUsePlan
+        && typeof b.sessionId === 'string' && typeof b.previewId === 'string') {
+        return ok(await services.workingMemoryUsePlan({ chatId: b.sessionId, previewId: b.previewId, selectedIds: uniqueIds }));
+      }
+      if (policy.studyMode) {
         if (typeof b.sessionId !== 'string' || !b.sessionId) {
           throw new RouteError(400, 'BAD_REQUEST', 'sessionId is required');
         }
@@ -1333,9 +1258,13 @@ export async function handleMemoryRequest(
     const previewMatch = pathname.match(/^\/api\/memories\/([^/]+)\/transfer-preview$/);
     if (previewMatch && req.method === 'POST') {
       const id = decodeURIComponent(previewMatch[1]);
+      if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      const b = await readBody(req);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
-      const b = await readBody(req);
+      if (source.status !== 'active') {
+        throw new RouteError(409, 'CONFLICT', 'source memory is no longer active; review Transfer again');
+      }
       assertEnum(b.targetScope, MEMORY_SCOPES, 'targetScope');
       const targetScope = b.targetScope as MemoryScope;
       const targetProjectId = typeof b.targetProjectId === 'string' ? b.targetProjectId : undefined;
@@ -1359,6 +1288,7 @@ export async function handleMemoryRequest(
       };
       const fallback = {
         verdict: 'as_is',
+        sourceVersion: source.version,
         portable: source.content,
         content: source.content,
         detail: source.detail,
@@ -1381,12 +1311,29 @@ export async function handleMemoryRequest(
         .sort((a, b2) => b2.usageCount + b2.reinforcedCount - (a.usageCount + a.reinforcedCount))
         .slice(0, 5);
       try {
-        return ok(
-          await services.transfer.propose(source, target, {
-            projectTitle: typeof b.sourceProjectTitle === 'string' ? b.sourceProjectTitle : undefined,
-            representative: profile,
-          }),
-        );
+        const proposal = await services.transfer.propose(source, target, {
+          projectTitle: typeof b.sourceProjectTitle === 'string' ? b.sourceProjectTitle : undefined,
+          representative: profile,
+        });
+        if (proposal.landing.route === 'new') {
+          return ok({ ...proposal, sourceVersion: source.version, landing: { route: 'new' } });
+        }
+        if (proposal.landing.route !== 'reinforces' && proposal.landing.route !== 'conflicts') {
+          return ok(fallback);
+        }
+        const landingTarget = targetExisting.find((item) => item.id === proposal.landing.targetId);
+        if (!landingTarget || !Number.isInteger(landingTarget.version) || landingTarget.version < 1) {
+          return ok(fallback);
+        }
+        return ok({
+          ...proposal,
+          sourceVersion: source.version,
+          landing: {
+            ...proposal.landing,
+            targetVersion: landingTarget.version,
+            targetContent: landingTarget.content,
+          },
+        });
       } catch {
         return ok(fallback);
       }
@@ -1398,9 +1345,16 @@ export async function handleMemoryRequest(
     const transferMatch = pathname.match(/^\/api\/memories\/([^/]+)\/transfer$/);
     if (transferMatch && req.method === 'POST') {
       const id = decodeURIComponent(transferMatch[1]);
+      if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      const b = await readBody(req);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
-      const b = await readBody(req);
+      if (typeof b.sourceVersion !== 'number' || !Number.isInteger(b.sourceVersion) || b.sourceVersion < 1) {
+        throw new RouteError(400, 'BAD_REQUEST', 'sourceVersion must be a positive integer');
+      }
+      if (source.status !== 'active' || source.version !== b.sourceVersion) {
+        throw new RouteError(409, 'CONFLICT', 'source memory changed or is no longer active; review Transfer again');
+      }
       const surface = controlSurface(b.surface);
       const attribution = studyInteractionAttribution(policy, services);
       const boardBase = boardResolutionBase(b, policy, services);
@@ -1413,16 +1367,6 @@ export async function handleMemoryRequest(
         return ok(result ? { ...result, relations: memory.store.getRelations(result.id) } : source);
       }
       if (boardAdmission?.pending === true) assertBoardTransferCommitSnapshot(b, boardAdmission.trusted);
-      // Transcript Transfer cards carry the exact source snapshot they were
-      // computed from. Board resurfacing is bound to that same durable row.
-      if (b.sourceVersion !== undefined) {
-        if (typeof b.sourceVersion !== 'number' || !Number.isInteger(b.sourceVersion) || b.sourceVersion < 1) {
-          throw new RouteError(400, 'BAD_REQUEST', 'sourceVersion must be a positive integer');
-        }
-        if (source.status !== 'active' || source.version !== b.sourceVersion) {
-          throw new RouteError(409, 'CONFLICT', 'source memory changed or is no longer active; review Transfer again');
-        }
-      }
       assertEnum(b.targetScope, MEMORY_SCOPES, 'targetScope');
       assertString(b.content, 'content');
       assertEnum(b.abstractionLevel, ABSTRACTION_LEVELS, 'abstractionLevel');
@@ -1444,15 +1388,15 @@ export async function handleMemoryRequest(
       // reused. "reinforces" bumps the existing equivalent instead of
       // duplicating it; "conflicts" keeps both, linked and flagged for
       // arbitration; "new"/absent is the plain path.
-      const landingRoute =
-        b.landingRoute === 'reinforces' || b.landingRoute === 'conflicts' ? b.landingRoute : 'new';
-      const landingTarget =
-        landingRoute !== 'new' && typeof b.landingTargetId === 'string'
-          ? memory.store.getById(b.landingTargetId)
-          : null;
-      // Transcript cards bind a landing judgment to the exact target snapshot
-      // used by Decode. Board resurfacing cannot replace that trusted verdict.
-      if (b.landingTargetVersion !== undefined) {
+      const landingRoute = b.landingRoute === undefined ? 'new' : b.landingRoute;
+      if (landingRoute !== 'new' && landingRoute !== 'reinforces' && landingRoute !== 'conflicts') {
+        throw new RouteError(400, 'BAD_REQUEST', 'landingRoute must be new, reinforces, or conflicts');
+      }
+      let landingTarget = null;
+      if (landingRoute !== 'new') {
+        if (typeof b.landingTargetId !== 'string' || !b.landingTargetId) {
+          throw new RouteError(400, 'BAD_REQUEST', 'landingTargetId is required for a reviewed landing');
+        }
         if (
           typeof b.landingTargetVersion !== 'number'
           || !Number.isInteger(b.landingTargetVersion)
@@ -1460,17 +1404,26 @@ export async function handleMemoryRequest(
         ) {
           throw new RouteError(400, 'BAD_REQUEST', 'landingTargetVersion must be a positive integer');
         }
-        if (
-          !landingTarget
-          || landingTarget.status !== 'active'
-          || landingTarget.version !== b.landingTargetVersion
-        ) {
+        if (b.landingTargetId === source.id) {
+          throw new RouteError(409, 'CONFLICT', 'source memory cannot be its own landing target');
+        }
+        landingTarget = memory.store.getById(b.landingTargetId);
+        if (!landingTarget || landingTarget.status !== 'active' || landingTarget.version !== b.landingTargetVersion) {
           throw new RouteError(409, 'CONFLICT', 'landing target changed or is no longer active; review Transfer again');
         }
+        const selectedProjectId = targetScope === 'project' ? b.targetProjectId : undefined;
+        const selectedSessionId = targetScope === 'session' ? b.targetSessionId : undefined;
+        if (
+          landingTarget.scope !== targetScope
+          || (landingTarget.projectId ?? undefined) !== selectedProjectId
+          || (landingTarget.sessionId ?? undefined) !== selectedSessionId
+        ) {
+          throw new RouteError(409, 'CONFLICT', 'landing target is outside the selected destination; review Transfer again');
+        }
+      } else if (b.landingTargetId !== undefined || b.landingTargetVersion !== undefined) {
+        throw new RouteError(400, 'BAD_REQUEST', 'new landing cannot include a target');
       }
-      // CAS: a landing verdict only binds to a still-active target; a raced
-      // archive degrades to the plain path rather than failing the transfer.
-      const landingBinds = Boolean(landingTarget && landingTarget.status === 'active');
+      const landingBinds = landingRoute !== 'new';
 
       return await runDurableControlOperation({
         memory,
@@ -1957,15 +1910,15 @@ export async function handleMemoryRequest(
                 replaced = outcome.replaced;
               } else {
                 const { status: nextStatus, ...draftPatch } = patch;
-                updated = Object.keys(draftPatch).length > 0
-                  ? memory.store.replaceCandidateDraft(id, draftPatch as Partial<MemoryItem>, UI_ACTOR)
-                  : existing;
-                if (nextStatus !== undefined) {
-                  if (accepted && memory.store.revisionTargetOf(id)) {
-                    const outcome = memory.store.acceptRevision(id, UI_ACTOR);
-                    updated = outcome.updated;
-                    replaced = outcome.replaced;
-                  } else {
+                if (accepted) {
+                  const outcome = memory.store.acceptRevision(id, UI_ACTOR, draftPatch as Partial<MemoryItem>);
+                  updated = outcome.updated;
+                  replaced = outcome.replaced;
+                } else {
+                  updated = Object.keys(draftPatch).length > 0
+                    ? memory.store.replaceCandidateDraft(id, draftPatch as Partial<MemoryItem>, UI_ACTOR)
+                    : existing;
+                  if (nextStatus !== undefined) {
                     updated = memory.store.update(id, { status: nextStatus as MemoryStatus }, UI_ACTOR);
                   }
                 }
@@ -2051,6 +2004,7 @@ export async function handleMemoryRequest(
   } catch (e) {
     if (e instanceof RouteError) return fail(e.status, e.code, e.message);
     if (e instanceof CandidateDismissalTransitionError) return fail(409, e.code, e.message);
+    if (e instanceof RevisionConflictError) return fail(409, e.code, e.message);
     console.error('[memory] route error', e);
     return fail(500, 'INTERNAL_ERROR', 'Internal server error');
   } finally {

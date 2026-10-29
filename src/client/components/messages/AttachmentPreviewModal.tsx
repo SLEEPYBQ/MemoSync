@@ -1,4 +1,3 @@
-import { copyTextToClipboard } from "../../lib/clipboard"
 import { useEffect, useMemo, useState } from "react"
 import { ExternalLink, Link2 } from "lucide-react"
 import Markdown from "react-markdown"
@@ -17,17 +16,20 @@ import {
 } from "../ui/dialog"
 import { markdownComponentsWithLinks } from "./shared"
 import { FileContentView } from "./FileContentView"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import {
   TABLE_PREVIEW_COLUMN_LIMIT,
   TEXT_PREVIEW_LIMIT_BYTES,
   classifyAttachmentPreview,
   fetchTextPreview,
+  normalizeAttachmentMimeType,
   parseDelimitedPreview,
   prettifyJson,
   type AttachmentPreviewKind,
   type TablePreviewData,
 } from "./attachmentPreview"
 import { formatAttachmentSize } from "./AttachmentCard"
+import { useTranscriptRenderOptions } from "./render-context"
 
 type PreviewState =
   | { status: "loading" }
@@ -48,6 +50,10 @@ interface Props {
 }
 
 export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
+  const renderOptions = useTranscriptRenderOptions()
+  const embeddedPreview = attachment && typeof window !== "undefined" && window.location.protocol === "file:"
+    ? renderOptions.textAttachmentPreviews?.[attachment.contentUrl]
+    : undefined
   const [previewCache, setPreviewCache] = useState<Record<string, PreviewState>>({})
   const previewTarget = useMemo(() => {
     return attachment ? classifyAttachmentPreview(attachment) : null
@@ -76,12 +82,15 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
       [attachment.id]: { status: "loading" },
     }))
 
-    void fetchTextPreview(attachment.contentUrl, TEXT_PREVIEW_LIMIT_BYTES)
+    const preview = embeddedPreview
+      ? Promise.resolve(embeddedPreview)
+      : fetchTextPreview(attachment.contentUrl, TEXT_PREVIEW_LIMIT_BYTES)
+    void preview
       .then(({ content: rawContent, truncated }) => {
         if (cancelled) return
 
         if (previewKind === "table") {
-          const delimiter = attachment.mimeType === "text/tab-separated-values" ? "\t" : ","
+          const delimiter = normalizeAttachmentMimeType(attachment.mimeType) === "text/tab-separated-values" ? "\t" : ","
           setPreviewCache((current) => ({
             ...current,
             [attachment.id]: {
@@ -121,6 +130,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
     attachment?.id,
     attachment?.contentUrl,
     attachment?.mimeType,
+    embeddedPreview,
     previewTarget?.kind,
     previewTarget?.openInNewTab,
   ])
@@ -129,7 +139,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
     if (!absoluteContentUrl) {
       return
     }
-    if (!await copyTextToClipboard(absoluteContentUrl)) return
+    await copyTextToClipboard(absoluteContentUrl)
   }
 
   function handleOpenInNewTab() {

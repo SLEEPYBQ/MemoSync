@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { BrainCircuit, Slash } from "lucide-react"
-import { useNavigate, useOutletContext } from "react-router-dom"
+import { useInRouterContext, useNavigate, useOutletContext } from "react-router-dom"
 import { create } from "zustand"
 import type { AppState } from "../../app/useAppState"
 import type { MemorySettings } from "../../../shared/types"
@@ -57,7 +57,16 @@ export function MemoryOffRowIcon() {
   return <span className="inline-flex shrink-0 text-muted-foreground/60" title="Memory off for this chat"><MemoryIcon off /></span>
 }
 
-export function MemoryToggle({ chatId, draftKey }: { chatId?: string | null; draftKey?: string | null }) {
+type MemoryToggleProps = { chatId?: string | null; draftKey?: string | null }
+
+export function MemoryToggle(props: MemoryToggleProps) {
+  // The toggle reads chat state from the app's outlet and links to Settings,
+  // both of which need the router. ChatInput is also mounted bare in isolated
+  // fixtures; there it simply has no memory control.
+  return useInRouterContext() ? <RoutedMemoryToggle {...props} /> : null
+}
+
+function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
   const app = useOutletContext<AppState | null>()
   const navigate = useNavigate()
   const policy = useConditionPolicy()

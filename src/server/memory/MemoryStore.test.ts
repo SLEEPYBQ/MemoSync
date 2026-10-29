@@ -347,6 +347,17 @@ describe('MemoryStore', () => {
   });
 
   describe('version/usage event log (option 乙)', () => {
+    it.each(['project', 'session'] as const)('versions %s binding changes but not no-ops or status changes', (scope) => {
+      const binding = scope === 'project' ? 'projectId' : 'sessionId';
+      const item = store.create({ content: 'Context rule', scope, type: 'fact', [binding]: 'A' }, { actor: 'user' });
+      const moved = store.update(item.id, { [binding]: 'B' }, { actor: 'user' });
+      expect(moved.version).toBe(item.version + 1);
+      const events = store.getEvents(item.id);
+      expect(store.update(item.id, { [binding]: 'B' }, { actor: 'user' })).toEqual(moved);
+      expect(store.getEvents(item.id)).toEqual(events);
+      expect(store.archive(item.id, { actor: 'user' }).version).toBe(moved.version);
+    });
+
     it('logs a create event with actor + session + full snapshot', () => {
       const m = store.create(
         { content: 'x', scope: 'session', type: 'lesson', sessionId: 's-9' },
@@ -918,6 +929,65 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     ).not.toBeNull();
   });
 
+  it('capture update fallback rejects stale or inactive targets even with an open revision', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const input = { content: 'Use port 4000', scope: 'personal' as const, type: 'fact' as const };
+    store.createRevisionProposal(input, target.id, { actor: 'agent' });
+    store.update(target.id, { content: 'Use port 443' }, { actor: 'user' });
+    const before = store.list();
+    expect(store.createCaptureUpdateProposal(input, target.id, { actor: 'agent' }, {
+      expectedTargetContent: target.content,
+    })).toBeNull();
+    expect(store.list()).toEqual(before);
+    store.archive(target.id, { actor: 'user' });
+    const archived = store.list();
+    expect(store.createCaptureUpdateProposal(input, target.id, { actor: 'agent' }, {
+      expectedTargetContent: 'Use port 443',
+    })).toBeNull();
+    expect(store.createCaptureUpdateProposal(input, 'M-missing', { actor: 'agent' })).toBeNull();
+    expect(store.list()).toEqual(archived);
+  });
+
+  it('capture update rolls back its candidate and relation if snapshot persistence fails', () => {
+    const db = new Database(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    applySchema(db);
+    const store = new MemoryStore(db);
+    try {
+      const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      db.exec(`CREATE TRIGGER reject_revision_snapshot BEFORE INSERT ON memory_kv
+        BEGIN SELECT RAISE(ABORT, 'snapshot write failed'); END;`);
+      expect(() => store.createCaptureUpdateProposal(
+        { content: 'Use port 4000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      )).toThrow('snapshot write failed');
+      expect(store.list()).toEqual([target]);
+      expect(db.query('SELECT * FROM memory_relations').all()).toEqual([]);
+      expect(db.query('SELECT * FROM memory_kv').all()).toEqual([]);
+      expect(db.query('SELECT * FROM memory_events').all()).toHaveLength(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  for (const patch of [{ content: 'Use port 443' }, { scope: 'project' as const, projectId: 'Other' }]) {
+    it(`competing capture updates reject a changed target (${Object.keys(patch)[0]})`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      store.createRevisionProposal(
+        { content: 'Use port 4000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      );
+      const proposal = store.createCaptureUpdateProposal(
+        { content: 'Use port 5000', scope: 'personal', type: 'fact' }, target.id, { actor: 'agent' },
+      )!.item;
+      store.update(target.id, patch, { actor: 'user' });
+      const state = () => store.list().map((item) => ({ item, events: store.getEvents(item.id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+      expect(state()).toEqual(before);
+    });
+  }
+
   it('acceptRevision activates the candidate and archives its target in one act', () => {
     const store = freshStore();
     const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
@@ -933,6 +1003,55 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     expect(store.getById(target.id)!.status).toBe('archived');
     // The proposal keeps its provenance link to the memory it replaced.
     expect(store.revisionTargetOf(proposal.id)?.id).toBe(target.id);
+  });
+
+  it('rejects a stale revision snapshot without mutating the candidate, target, or event histories', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint' },
+      target.id,
+      { actor: 'system' },
+    )!;
+    store.update(target.id, { content: 'Use port 5000' }, { actor: 'user' });
+    const ids = [proposal.id, target.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
+  });
+
+  it('erasing an unseen revision removes its snapshot before the candidate id is reused', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' },
+    )!;
+    expect(store.getKv(`revision_targets:${proposal.id}`)).not.toBeNull();
+    store.eraseCandidate(proposal.id);
+    expect(store.getKv(`revision_targets:${proposal.id}`)).toBeNull();
+    const unrelated = store.create(
+      { content: 'Use small commits', scope: 'personal', type: 'preference', status: 'candidate', id: proposal.id },
+      { actor: 'system' },
+    );
+    expect(store.acceptRevision(unrelated.id, { actor: 'user' }).updated.status).toBe('active');
+    expect(store.getById(target.id)!.status).toBe('active');
+  });
+
+  it('rejects a legacy relation-linked revision without a snapshot and leaves state unchanged', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Use port 3000', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const proposal = store.create(
+      { content: 'Use port 4000', scope: 'personal', type: 'constraint', status: 'candidate' },
+      { actor: 'system' },
+    );
+    store.addRelation(proposal.id, target.id, 'revises');
+    const ids = [proposal.id, target.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+    expect(store.getKv(`revision_targets:${proposal.id}`)).toBeNull();
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
   });
 
   it('a MERGE proposal revises BOTH originals; accepting archives the pair (REDESIGN D5)', () => {
@@ -957,6 +1076,24 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     expect(replaced.map((r) => r.id).sort()).toEqual([a.id, b.id].sort());
     expect(store.getById(a.id)!.status).toBe('archived');
     expect(store.getById(b.id)!.status).toBe('archived');
+  });
+
+  it('rejects a stale merge snapshot without mutating the candidate, either target, or event histories', () => {
+    const store = freshStore();
+    const a = store.create({ content: 'Use pnpm, never npm, in this repo', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const b = store.create({ content: 'The user wants pnpm instead of npm', scope: 'personal', type: 'preference' }, { actor: 'agent' });
+    const proposal = store.createMergeProposal(
+      { content: 'Use pnpm for this repository', scope: 'personal', type: 'constraint' },
+      [a.id, b.id],
+      { actor: 'system' },
+      { expectedContents: [a.content, b.content] },
+    )!;
+    store.update(b.id, { content: 'The user now prefers Bun' }, { actor: 'user' });
+    const ids = [proposal.id, a.id, b.id];
+    const before = ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }));
+
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'edited merge draft' })).toThrow();
+    expect(ids.map((id) => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
   });
 
   it('createMergeProposal CAS: a moved original voids the draft', () => {

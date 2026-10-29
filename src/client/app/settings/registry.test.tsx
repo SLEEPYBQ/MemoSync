@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { readAppSettingsSnapshot } from "../../../server/app-settings"
-import type { AppSettingsSnapshot } from "../../../shared/types"
+import { PROVIDERS, type AppSettingsSnapshot } from "../../../shared/types"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
 import { type ConditionPolicy } from "../../lib/conditionApi"
 import { GeneralSection } from "./GeneralSection"
@@ -35,7 +35,7 @@ describe("settings registry and section rendering", () => {
     const htmlBySection = {
       general: renderToStaticMarkup(<GeneralSection state={{ appSettings: settings, handleWriteAppSettings: async () => {}, updateSnapshot: null, handleCheckForUpdates: async () => {}, handleInstallUpdate: async () => {} }} appVersion="1.0.0" />),
       memory: memoryHtml(),
-      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {} }} />),
+      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} />),
       skills: renderToStaticMarkup(<SkillsSection state={{ connectionStatus: "connected", socket: { command: async () => ({ skills: [] }) } as never }} />),
       keybindings: renderToStaticMarkup(<KeybindingsSection state={{ keybindings: null, socket: { command: async () => ({}) } as never }} />),
       changelog: "",

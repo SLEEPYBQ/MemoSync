@@ -27,22 +27,6 @@ export function formatMemoryList(memories: MemoryItem[]): string {
   return memories.map(formatMemoryLine).join('\n');
 }
 
-/**
- * Auto-arm injection (STUDY_PLAN §2.2): a content-only markdown list, written
- * to be indistinguishable from an auto-generated CLAUDE.md-style notes file.
- * Deliberately NO ids, NO scope/type labels, NO detail markers, NO citation or
- * tool guidance — the study's auto arm models today's real-world baseline,
- * where memory is a flat file the agent reads but the user never reviews.
- */
-export function buildPlainMemoryBlock(memories: MemoryItem[]): string {
-  if (memories.length === 0) return '';
-  return [
-    '# Notes from previous sessions',
-    '',
-    ...memories.map((m) => `- ${m.content}`),
-  ].join('\n');
-}
-
 /** An unresolved conflicts_with pair among injected actives (both sides shown). */
 export interface MemoryConflictPair {
   id: string;

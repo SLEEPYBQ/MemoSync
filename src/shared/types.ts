@@ -1,7 +1,7 @@
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex"
+export type AgentProvider = "claude" | "codex" | "pi"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -89,6 +89,7 @@ export interface StandaloneTranscriptBundle {
   theme: StandaloneTranscriptTheme
   attachmentMode: StandaloneTranscriptAttachmentMode
   messages: TranscriptEntry[]
+  textAttachmentPreviews?: Record<string, { content: string; truncated: boolean }>
 }
 
 export interface StandaloneTranscriptExportResult {
@@ -157,8 +158,20 @@ export const CODEX_REASONING_OPTIONS = [
   { id: "xhigh", label: "XHigh" },
 ] as const satisfies readonly ProviderEffortOption[]
 
+export const PI_REASONING_OPTIONS = [
+  { id: "default", label: "Provider default" },
+  { id: "off", label: "Off" },
+  { id: "minimal", label: "Minimal" },
+  { id: "low", label: "Low" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "xhigh", label: "Extra High" },
+  { id: "max", label: "Max" },
+] as const satisfies readonly ProviderEffortOption[]
+
 export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
 export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"]
+export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
 
@@ -172,9 +185,14 @@ export interface CodexModelOptions {
   fastMode: boolean
 }
 
+export interface PiModelOptions {
+  reasoningEffort: PiReasoningEffort
+}
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
+  pi: PiModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -186,6 +204,7 @@ export interface ProviderPreference<TModelOptions> {
 export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
+  pi: ProviderPreference<PiModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -205,12 +224,34 @@ export const DEFAULT_CODEX_MODEL_OPTIONS = {
   fastMode: false,
 } as const satisfies CodexModelOptions
 
+// Pi runs in-process against the Model Registry, so any non-empty registry
+// model id is a valid choice; the catalog entries are only suggestions.
+export const DEFAULT_PI_MODEL = "anthropic/claude-sonnet-4-6"
+
+export const DEFAULT_PI_MODEL_OPTIONS = {
+  reasoningEffort: "medium",
+} as const satisfies PiModelOptions
+
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
   return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
   return CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function isPiReasoningEffort(value: unknown): value is PiReasoningEffort {
+  return PI_REASONING_OPTIONS.some((option) => option.id === value)
+}
+
+export function normalizePiReasoningEffort(effort?: unknown): PiReasoningEffort {
+  return isPiReasoningEffort(effort) ? effort : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort
+}
+
+export function normalizePiModelOptions(options?: Partial<PiModelOptions> | null): PiModelOptions {
+  return {
+    reasoningEffort: normalizePiReasoningEffort(options?.reasoningEffort),
+  }
 }
 
 export const CLAUDE_CONTEXT_WINDOW_OPTIONS = [
@@ -247,9 +288,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         vendor: "DeepSeek",
         aliases: [
           "fable",
-          "sonnet",
           "haiku",
-          "claude-sonnet-4-6",
           "claude-haiku-4-5-20251001",
         ],
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
@@ -268,19 +307,35 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         label: "V4 Pro",
         supportsEffort: true,
         vendor: "DeepSeek",
-        aliases: ["opus", "claude-opus-4-8"],
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
       },
       {
         // GLM-5.3-Flash ("牛来", 智谱 2026-08-26): 1M-native multimodal, routed
         // per-chat to its own endpoint+key (see server/chat-providers.ts).
-        // Runs on the same Claude Code engine; memory passes stay on DeepSeek.
+        // Memory branches inherit the same provider as the main session.
         id: "glm-5.3-flash",
         label: "GLM-5.3 Flash",
         supportsEffort: true,
         vendor: "GLM",
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
+        supportsMaxReasoningEffort: true,
+      },
+      {
+        id: "sonnet",
+        label: "Claude Sonnet",
+        aliases: ["claude-sonnet-4-6"],
+        vendor: "Anthropic",
+        supportsEffort: true,
+        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
+      },
+      {
+        id: "opus",
+        label: "Claude Opus",
+        aliases: ["claude-opus-4-8"],
+        vendor: "Anthropic",
+        supportsEffort: true,
+        contextWindowOptions: [...CLAUDE_CONTEXT_WINDOW_OPTIONS],
         supportsMaxReasoningEffort: true,
       },
     ],
@@ -298,6 +353,23 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
       { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", supportsEffort: false },
     ],
     efforts: [],
+  },
+  {
+    // Pi (pi-coding-agent) runs in-process against the Model Registry.
+    // Any registry model id remains valid (see normalizePiModelId) — these
+    // entries are picker suggestions only.
+    id: "pi",
+    label: "Pi",
+    defaultModel: DEFAULT_PI_MODEL,
+    defaultEffort: "medium",
+    supportsPlanMode: false,
+    models: [
+      { id: "anthropic/claude-sonnet-4-6", label: "Claude Sonnet", supportsEffort: true },
+      { id: "anthropic/claude-opus-4-8", label: "Claude Opus", supportsEffort: true },
+      { id: "openai/gpt-5.5", label: "GPT-5.5", supportsEffort: true },
+      { id: "google/gemini-3-flash", label: "Gemini Flash", supportsEffort: true },
+    ],
+    efforts: [...PI_REASONING_OPTIONS],
   },
 ]
 
@@ -332,7 +404,15 @@ export function normalizeClaudeModelId(modelId?: string, fallbackModelId = DEFAU
 }
 
 export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
-  return normalizeProviderModelId("codex", modelId, fallbackModelId)
+  // Custom Responses providers supply their model catalog at runtime. Preserve
+  // those IDs in preferences; the server validates them against its catalog.
+  return getProviderModelMatch("codex", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
+}
+
+// Pi accepts any non-empty Model Registry model id verbatim — the catalog is
+// only suggestions, never a clamp.
+export function normalizePiModelId(modelId?: string, fallbackModelId = DEFAULT_PI_MODEL): string {
+  return getProviderModelMatch("pi", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
 }
 
 export function getProviderModelOption(provider: AgentProvider, modelId: string): ProviderModelOption | undefined {
@@ -501,6 +581,7 @@ export interface AppSettingsPatch {
   providerDefaults?: {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
+    pi?: Partial<ProviderPreference<PiModelOptions>>
   }
   memory?: Partial<MemorySettings>
   memoryPreview?: Partial<MemoryPreviewSettings>
@@ -1000,6 +1081,8 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
     label: "operational" | "injected_without_effect" | "violated" | "not_applicable"
     note?: string
     quote?: string
+    /** Validated current-turn tool call/result that supplies the audit evidence. */
+    toolId?: string
     /** Not-applicable only: the absent object/opportunity the audit named. */
     missing?: string
     /** Violated only: whether the violation visibly hurt the outcome. */
@@ -1151,6 +1234,8 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
   relevant: Array<{ id: string; why: string }>
   /** Use Planner output for the initially selected relevant/attention items. */
   expectedUses?: ExpectedMemoryUse[]
+  /** A failed selection is distinct from a successful empty selection. */
+  error?: string
 }
 
 /** Replaces a parked preview's contents after an earlier review is reopened. */
@@ -1506,7 +1591,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_trace"; labels: MemoryTraceEntry["labels"]; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_checkup"; checkupId: string; openingReviewId?: string; turn?: number; pending?: boolean; waiting?: boolean; suggestions?: MemoryCheckupSuggestionSnapshot[]; failedKinds?: MemoryCheckupKind[]; decision?: MemoryCheckupDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })

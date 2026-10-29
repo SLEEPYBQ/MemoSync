@@ -20,7 +20,7 @@ test("a GLM model routes to the domestic BigModel endpoint with its own key", ()
     apiKey: "glm-key",
     autoCompactWindow: "1000000",
     subagentModel: "glm-5.3-flash",
-    appendOneMillionSuffix: false,
+    appendOneMillionSuffix: true,
   })
 })
 

@@ -1,7 +1,7 @@
 import type { StudySurfaceExposureInitiator } from "./surfaceExposure"
 
 export interface MemorySidebarOpenMonitoring {
-  surface: "summary_panel_open" | "static_memory_panel_open" | "timeline"
+  surface: "timeline"
   sessionId: string
   interaction: "open"
 }

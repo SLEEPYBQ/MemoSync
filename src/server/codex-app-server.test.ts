@@ -9,6 +9,7 @@ class FakeCodexProcess extends EventEmitter {
   readonly stderr = new PassThrough()
   readonly messages: unknown[] = []
   killed = false
+  killCalls = 0
 
   constructor(
     private readonly onMessage?: (message: any, process: FakeCodexProcess) => void
@@ -29,6 +30,7 @@ class FakeCodexProcess extends EventEmitter {
   }
 
   kill() {
+    this.killCalls += 1
     this.killed = true
     this.emit("close", 0)
   }
@@ -55,6 +57,335 @@ async function collectStream(stream: AsyncIterable<any>) {
 }
 
 describe("CodexAppServerManager", () => {
+  test.each(["notification-first", "request-first"])("dynamic tool records are deduplicated (%s)", async (order) => {
+    let calls = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") child.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+      if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "inProgress" } } })
+        const started = { method: "item/started", params: { threadId: "thread-1", turnId: "turn-1", item: { type: "dynamicToolCall", id: "call-1", tool: "propose_memory", arguments: { content: "Bun" }, status: "inProgress" } } }
+        const request = { id: "dyn-1", method: "item/tool/call", params: { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool: "propose_memory", arguments: { content: "Bun" } } }
+        for (const event of order === "notification-first" ? [started, request] : [request, started]) child.writeServerMessage(event)
+      }
+      if (message.id === "dyn-1") child.writeServerMessage({ method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await manager.startSession({ chatId: "dup", cwd: "/tmp", model: "test", sessionToken: null })
+    const turn = await manager.startTurn({ chatId: "dup", model: "test", content: "test", planMode: false, onToolRequest: async () => ({}), onDynamicToolCall: async () => { calls++; return { text: "ok" } } })
+    const events = await collectStream(turn.stream)
+    expect(calls).toBe(1)
+    expect(events.filter(e => e.type === "transcript" && e.entry.kind === "tool_call")).toHaveLength(1)
+    expect(events.filter(e => e.type === "transcript" && e.entry.kind === "tool_result")).toHaveLength(1)
+    manager.stopAll()
+  })
+
+  test("fatal process errors terminate the failed child without stopping a replacement", async () => {
+    const children: FakeCodexProcess[] = []
+    let turnRequested!: () => void
+    const requested = new Promise<void>((resolve) => { turnRequested = resolve })
+    const manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+          } else if (message.method === "turn/start") {
+            turnRequested()
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const args = { chatId: "fatal-chat", cwd: "/tmp/project", model: "test", sessionToken: null }
+    try {
+      await manager.startSession(args)
+      const pending = manager.startTurn({
+        chatId: args.chatId, model: "test", content: "hello", planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const rejection = pending.then(
+        () => null,
+        (error) => error,
+      )
+      await requested
+      children[0]!.emit("error", new Error("transport failed"))
+      const failure = await rejection
+      expect(failure).toBeInstanceOf(Error)
+      expect(failure).toMatchObject({ message: "transport failed" })
+      expect(children[0]!.killed).toBe(true)
+      expect(children[0]!.killCalls).toBe(1)
+
+      await manager.startSession(args)
+      children[0]!.emit("error", new Error("late old failure"))
+      expect(await manager.startSession(args)).toBe("ready")
+      expect(children).toHaveLength(2)
+      expect(children[1]!.killed).toBe(false)
+      expect(children[0]!.killCalls).toBe(1)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("aborting during initialization kills the partially started child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const controller = new AbortController()
+    const starting = manager.startSession({
+      signal: controller.signal,
+      chatId: "abort-start",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+    })
+    while (!child.messages.some((message: any) => message.method === "thread/start")) {
+      await new Promise<void>((resolve) => setImmediate(resolve))
+    }
+
+    controller.abort()
+
+    await expect(starting).rejects.toThrow("Codex session stopped")
+    expect(child.killed).toBe(true)
+  })
+
+  test("aborting a pending turn-start response kills the ready child", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "abort-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      const startingTurn = manager.startTurn({
+        signal: controller.signal,
+        chatId: "abort-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const result = startingTurn.catch((error) => error)
+      while (!child.messages.some((message: any) => message.method === "turn/start")) {
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+
+      controller.abort()
+
+      const failure = await result
+      expect(failure).toMatchObject({ message: "Codex session stopped" })
+      expect(child.killed).toBe(true)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("a pre-aborted turn-start signal kills the ready child without sending turn/start", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") {
+        process.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({
+        chatId: "pre-aborted-turn-start",
+        cwd: "/tmp/project",
+        model: "test",
+        sessionToken: null,
+      })
+      const controller = new AbortController()
+      controller.abort()
+
+      await expect(manager.startTurn({
+        signal: controller.signal,
+        chatId: "pre-aborted-turn-start",
+        model: "test",
+        content: "hello",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })).rejects.toMatchObject({ name: "AbortError" })
+      expect(child.killed).toBe(true)
+      expect(child.messages.some((message: any) => message.method === "turn/start")).toBe(false)
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("an aborted queued startup does not spawn after the runtime lock frees", async () => {
+    const children: FakeCodexProcess[] = []
+    let firstRequested!: () => void
+    let releaseFirst!: () => void
+    const firstRequest = new Promise<void>((resolve) => { firstRequested = resolve })
+    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+    const subprocessEnv = { CODEX_HOME: "abort-queued-start-test" }
+    const manager = new CodexAppServerManager({
+      serializeStarts: true,
+      spawnProcess: () => {
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") {
+            process.writeServerMessage({ id: message.id, result: {} })
+          } else if (message.method === "thread/start") {
+            firstRequested()
+            void firstGate.then(() => process.writeServerMessage({
+              id: message.id,
+              result: { thread: { id: "first-ready" } },
+            }))
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const first = manager.startSession({
+      chatId: "first-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    await firstRequest
+    const controller = new AbortController()
+    const second = manager.startSession({
+      signal: controller.signal,
+      chatId: "queued-chat",
+      cwd: "/tmp/project",
+      model: "test",
+      sessionToken: null,
+      subprocessEnv,
+    })
+    const secondResult = second.catch((error) => error)
+
+    controller.abort()
+    expect(children).toHaveLength(1)
+    releaseFirst()
+
+    await expect(first).resolves.toBe("first-ready")
+    const failure = await secondResult
+    expect(failure).toMatchObject({ name: "AbortError" })
+    expect(children).toHaveLength(1)
+    manager.stopAll()
+  })
+
+  test("retains only a bounded final stderr diagnostic for long-lived sessions", async () => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      else if (message.method === "thread/start") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "ready" } } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({ chatId: "diagnostics", cwd: "/tmp/project", model: "test", sessionToken: null })
+      for (let index = 0; index < 1000; index++) child.writeStderr(`diagnostic ${index}`)
+      const finalLine = "x".repeat(5000) + " final failure"
+      child.writeStderr(finalLine)
+      child.writeStderr("   ")
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      const context = (manager as unknown as {
+        sessions: Map<string, { lastStderrLine: string | null; stderrLines?: string[] }>
+      }).sessions.get("diagnostics")!
+      expect(context.lastStderrLine).toBe(finalLine.slice(-4096))
+      expect(context.stderrLines).toBeUndefined()
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  for (const failedMethod of ["initialize", "thread/start", "thread/fork"] as const) {
+    test(`cleans up a failed ${failedMethod} handshake so the same chat can retry`, async () => {
+      const children: FakeCodexProcess[] = []
+      const manager = new CodexAppServerManager({
+        spawnProcess: () => {
+          const firstAttempt = children.length === 0
+          const process = new FakeCodexProcess((message, child) => {
+            if (firstAttempt && message.method === failedMethod) {
+              child.writeServerMessage({ id: message.id, error: { message: "temporary startup failure" } })
+            } else if (message.method === "initialize") {
+              child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+            } else if (message.method === "thread/start" || message.method === "thread/fork") {
+              child.writeServerMessage({ id: message.id, result: { thread: { id: "recovered-thread" }, model: "gpt-5.4", reasoningEffort: "high" } })
+            }
+          })
+          children.push(process)
+          return process as never
+        },
+      })
+      const args = {
+        chatId: "retry-chat", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: null,
+        ...(failedMethod === "thread/fork" ? { pendingForkSessionToken: "parent-thread" } : {}),
+      }
+      try {
+        await expect(manager.startSession(args)).rejects.toThrow("temporary startup failure")
+        expect(children).toHaveLength(1)
+        expect(children[0]?.killed).toBe(true)
+        expect(await manager.startSession(args)).toBe("recovered-thread")
+        expect(children).toHaveLength(2)
+        expect(children[1]?.killed).toBe(false)
+      } finally {
+        manager.stopAll()
+      }
+    })
+  }
+
+  for (const mode of ["start", "fork", "resume"] as const) {
+    test(`memory thread/${mode} disables configured MCP, subagents, and web search without forwarding secrets`, async () => {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        else if (message.method === "config/read") child.writeServerMessage({ id: message.id, result: { config: { mcp_servers: {
+          repo_tools: { command: "mcp-server", env: { TOKEN: "fixture-secret-not-forwarded" } },
+          github: { url: "https://example.invalid/mcp", enabled: true },
+        } } } })
+        else if (message.method === `thread/${mode}`) child.writeServerMessage({ id: message.id, result: { thread: { id: "child" }, model: "test", reasoningEffort: null } })
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: mode === "resume" ? "child" : null,
+        pendingForkSessionToken: mode === "fork" ? "parent" : null, disableExternalTools: true, sandbox: "read-only", allowResumeFallback: false,
+      })
+      const read = process.messages.find((message: any) => message.method === "config/read") as any
+      expect(read.params).toEqual({ includeLayers: false, cwd: "/tmp/project" })
+      const thread = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
+      expect(thread.params.config).toEqual({ "features.multi_agent": false, web_search: "disabled", "mcp_servers.repo_tools.enabled": false, "mcp_servers.github.enabled": false })
+      expect(JSON.stringify(process.messages)).not.toContain("fixture-secret-not-forwarded")
+      expect(process.messages.some((message: any) => message.method.startsWith("config/") && message.method !== "config/read")).toBe(false)
+      manager.stopAll()
+    })
+  }
+
+  test("memory branches fail closed when effective MCP configuration cannot be read or represented", async () => {
+    for (const response of [
+      { error: { message: "unsupported config/read" } },
+      { result: { config: null } },
+      { result: { config: { mcp_servers: [] } } },
+      { result: { config: { mcp_servers: { "ambiguous.name": {} } } } },
+    ]) {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === "config/read") child.writeServerMessage({ id: message.id, ...response })
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null, disableExternalTools: true })).rejects.toThrow("Cannot establish read-only memory branch")
+      expect(process.messages.some((message: any) => message.method.startsWith("thread/"))).toBe(false)
+      expect(process.killed).toBe(true)
+    }
+  })
+
   test("initializes app-server and starts a fresh thread", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
@@ -152,6 +483,67 @@ describe("CodexAppServerManager", () => {
     ])
   })
 
+  test("memory forks keep read-only sandbox and schema on follow-ups without forking again", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: {} })
+      } else if (message.method === "thread/fork") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "memory-child" }, model: "test-model", reasoningEffort: null } })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "memory-turn", status: "completed", error: null } } })
+        child.writeServerMessage({ method: "turn/completed", params: { threadId: "memory-child", turn: { id: "memory-turn", status: "completed", error: null } } })
+      }
+    })
+    let spawnEnv: Record<string, string | undefined> | undefined
+    const manager = new CodexAppServerManager({ spawnProcess: (_cwd, env) => { spawnEnv = env; return process as never } })
+    const env = { CODEX_MODEL: "isolated-model" }
+    expect(await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "picker-model", sessionToken: null, pendingForkSessionToken: "main", sandbox: "read-only", subprocessEnv: env })).toBe("memory-child")
+    const schema = { type: "object", properties: { labels: { type: "array" } } }
+    for (const content of ["Audit the turn", "Update only the reviewed items"]) {
+      const turn = await manager.startTurn({ chatId: "memory", model: "picker-model", content, planMode: false, outputSchema: schema, onToolRequest: async () => ({}) })
+      await collectStream(turn.stream)
+    }
+    expect(spawnEnv).toBe(env)
+    expect(process.messages.filter((message: any) => message.method === "thread/fork")).toHaveLength(1)
+    expect((process.messages.find((message: any) => message.method === "thread/fork") as any).params).toMatchObject({ sandbox: "read-only", approvalPolicy: "never", model: "isolated-model" })
+    const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
+    expect(turns.map((message) => message.params.threadId)).toEqual(["memory-child", "memory-child"])
+    expect(turns[0].params.outputSchema).toEqual(schema)
+    expect(turns[1].params.model).toBe("isolated-model")
+    manager.stopAll()
+  })
+
+  test("a missing fork parent fails without silently creating an unrelated thread", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/fork") child.writeServerMessage({ id: message.id, error: { message: "thread not found" } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null, pendingForkSessionToken: "missing" })).rejects.toThrow("thread not found")
+    expect(process.messages.some((message: any) => message.method === "thread/start")).toBe(false)
+    manager.stopAll()
+  })
+
+  test("a missing memory child cannot fall back to a fresh thread during retry", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/resume") child.writeServerMessage({ id: message.id, error: { message: "thread not found" } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: "saved-child", allowResumeFallback: false })).rejects.toThrow("thread not found")
+    expect(process.messages.some((message: any) => message.method === "thread/start")).toBe(false)
+    expect(process.killed).toBe(true)
+  })
+
+  test("stopping a session settles an in-flight initialization request", async () => {
+    const process = new FakeCodexProcess()
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    const starting = manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null })
+    manager.stopSession("memory")
+    await expect(starting).rejects.toThrow("session stopped")
+    expect(process.killed).toBe(true)
+  })
+
   test("maps fast mode and reasoning into app-server params", async () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
@@ -211,6 +603,63 @@ describe("CodexAppServerManager", () => {
     expect(turnStart?.params.effort).toBe("xhigh")
     expect(turnStart?.params.serviceTier).toBe("fast")
     expect(turnStart?.params.collaborationMode?.settings?.reasoning_effort).toBeNull()
+  })
+
+  for (const mode of ["start", "resume", "fork"] as const) {
+    test(`sends explicit Standard service tier for thread/${mode}`, async () => {
+      const process = new FakeCodexProcess((message, child) => {
+        if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+        if (message.method === `thread/${mode}`) {
+          child.writeServerMessage({ id: message.id, result: { thread: { id: "standard-thread" }, model: "gpt-5.4" } })
+        }
+      })
+      const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+      try {
+        await manager.startSession({
+          chatId: "standard-chat", cwd: "/tmp/project", model: "gpt-5.4",
+          sessionToken: mode === "resume" ? "saved-thread" : null,
+          pendingForkSessionToken: mode === "fork" ? "parent-thread" : null,
+        })
+        const request = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
+        expect(request.params).toHaveProperty("serviceTier", null)
+      } finally {
+        manager.stopAll()
+      }
+    })
+  }
+
+  test("sends explicit Standard service tier when Fast is disabled mid-chat", async () => {
+    let turnNumber = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") {
+        child.writeServerMessage({ id: message.id, result: { thread: { id: "speed-thread" }, model: "gpt-5.4" } })
+      }
+      if (message.method === "turn/start") {
+        const turn = { id: `turn-${++turnNumber}`, status: "completed", error: null }
+        child.writeServerMessage({ id: message.id, result: { turn } })
+        child.writeServerMessage({ method: "turn/completed", params: { threadId: "speed-thread", turn } })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "speed-chat", cwd: "/tmp/project", model: "gpt-5.4", serviceTier: "fast", sessionToken: null,
+      })
+      for (const serviceTier of ["fast", undefined] as const) {
+        const turn = await manager.startTurn({
+          chatId: "speed-chat", model: "gpt-5.4", content: "Hello", planMode: false,
+          serviceTier, onToolRequest: async () => ({}),
+        })
+        await collectStream(turn.stream)
+      }
+      const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
+      expect(turns).toHaveLength(2)
+      expect(turns[0].params).toHaveProperty("serviceTier", "fast")
+      expect(turns[1].params).toHaveProperty("serviceTier", null)
+    } finally {
+      manager.stopAll()
+    }
   })
 
   test("maps thread token usage updates into context window transcript entries", async () => {
@@ -1761,6 +2210,201 @@ describe("CodexAppServerManager", () => {
         turnId: "turn-1",
       },
     })
+  })
+
+  test("ignores old-turn notifications buffered before a replacement turn starts", async () => {
+    let turnStartCount = 0
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        turnStartCount += 1
+        if (turnStartCount === 1) {
+          child.writeServerMessage({
+            id: message.id,
+            result: { turn: { id: "turn-1", status: "inProgress", error: null } },
+          })
+        } else {
+          child.writeServerMessage({
+            method: "turn/completed",
+            params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } },
+          })
+          child.writeServerMessage({
+            method: "error",
+            params: { threadId: "thread-1", turnId: "turn-1", willRetry: false, error: { message: "stale failure" } },
+          })
+          child.writeServerMessage({
+            method: "item/completed",
+            params: {
+              threadId: "thread-1",
+              turnId: "turn-1",
+              item: { type: "agentMessage", id: "stale-message", text: "stale output", phase: "final_answer" },
+            },
+          })
+          setTimeout(() => {
+            child.writeServerMessage({
+              id: message.id,
+              result: { turn: { id: "turn-2", status: "inProgress", error: null } },
+            })
+            child.writeServerMessage({
+              method: "item/completed",
+              params: {
+                threadId: "thread-1",
+                turnId: "turn-2",
+                item: { type: "agentMessage", id: "current-message", text: "current output", phase: "final_answer" },
+              },
+            })
+            child.writeServerMessage({
+              method: "turn/completed",
+              params: { threadId: "thread-1", turn: { id: "turn-2", status: "completed", error: null } },
+            })
+          }, 0)
+        }
+      } else if (message.method === "turn/interrupt") {
+        child.writeServerMessage({ id: message.id, result: {} })
+      }
+    })
+
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "chat-1",
+        cwd: "/tmp/project",
+        model: "gpt-5.4",
+        sessionToken: null,
+      })
+      const first = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "first",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      await first.interrupt?.()
+
+      const second = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "second",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const events = await collectStream(second.stream)
+      const assistantText = events.flatMap((event) =>
+        event.type === "transcript" && event.entry.kind === "assistant_text" ? [event.entry.text] : [],
+      )
+      const results = events.flatMap((event) =>
+        event.type === "transcript" && event.entry.kind === "result" ? [event.entry] : [],
+      )
+
+      expect(assistantText).toEqual(["current output"])
+      expect(results).toHaveLength(1)
+      expect(results[0]).toMatchObject({ subtype: "success" })
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("keeps a turn open after a retryable error notification", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "inProgress", error: null } } })
+        child.writeServerMessage({
+          method: "error",
+          params: { threadId: "thread-1", turnId: "turn-1", willRetry: true, error: { message: "temporary" } },
+        })
+        child.writeServerMessage({
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            item: { type: "agentMessage", id: "message-1", text: "recovered", phase: "final_answer" },
+          },
+        })
+        child.writeServerMessage({
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { id: "turn-1", status: "completed", error: null } },
+        })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "chat-1",
+        cwd: "/tmp/project",
+        model: "gpt-5.4",
+        sessionToken: null,
+      })
+      const turn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "retry",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const events = await collectStream(turn.stream)
+      expect(events.some((event) =>
+        event.type === "transcript" && event.entry.kind === "assistant_text" && event.entry.text === "recovered",
+      )).toBe(true)
+      expect(events.flatMap((event) =>
+        event.type === "transcript" && event.entry.kind === "result" ? [event.entry.subtype] : [],
+      )).toEqual(["success"])
+    } finally {
+      manager.stopAll()
+    }
+  })
+
+  test("settles a non-retryable turn error", async () => {
+    const process = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") {
+        child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "thread/start") {
+        child.writeServerMessage({
+          id: message.id,
+          result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
+        })
+      } else if (message.method === "turn/start") {
+        child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "inProgress", error: null } } })
+        child.writeServerMessage({
+          method: "error",
+          params: { threadId: "thread-1", turnId: "turn-1", willRetry: false, error: { message: "permanent failure" } },
+        })
+      }
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    try {
+      await manager.startSession({
+        chatId: "chat-1",
+        cwd: "/tmp/project",
+        model: "gpt-5.4",
+        sessionToken: null,
+      })
+      const turn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "fail",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+      const events = await collectStream(turn.stream)
+      expect(events.flatMap((event) =>
+        event.type === "transcript" && event.entry.kind === "result" ? [event.entry] : [],
+      )).toMatchObject([{ subtype: "error", result: "permanent failure" }])
+    } finally {
+      manager.stopAll()
+    }
   })
 
   test("interrupt clears a pending exit-plan wait so a new turn can start immediately", async () => {

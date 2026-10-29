@@ -7,7 +7,7 @@ import type { KeybindingAction } from "../../../shared/types"
 export const SETTINGS_SECTIONS = [
   { id: "general", label: "General", icon: Settings2, subtitle: "Appearance, notifications, chats, editor, and terminal." },
   { id: "memory", label: "Memory", icon: Brain, subtitle: "Choose whether the agent uses and learns memories, and how it checks with you." },
-  { id: "providers", label: "Providers", icon: MessageSquareQuote, subtitle: "Manage the default chat provider and saved DeepSeek model defaults." },
+  { id: "providers", label: "Providers", icon: MessageSquareQuote, subtitle: "The default provider and saved model defaults for each harness." },
   { id: "skills", label: "Skills", icon: BookText, subtitle: "Manage globally installed agent skills from the active skill lock file." },
   { id: "keybindings", label: "Keybindings", icon: Command, subtitle: "Edit global app shortcuts stored in the active keybindings file." },
   ...(SELF_UPDATE_ENABLED ? [{ id: "changelog", label: "Changelog", icon: ScrollText, subtitle: "Release notes pulled from the public GitHub releases feed." } as const] : []),
@@ -43,7 +43,9 @@ export const SETTINGS_ROWS = defineRows({
   memoryAutoProceed: { sectionId: "memory", title: "Auto-proceed When No Memory Applies", description: "Skip the preview pause when the plan involves no memories (the preview is still recorded in the transcript)." },
   memoryChanges: { sectionId: "memory", title: "Memory Changes", description: "Ask First holds every proposal for your review. Apply Automatically applies non-sensitive proposals immediately; each still shows in the transcript with a one-click Revert. Sensitive proposals still ask." },
   defaultProvider: { sectionId: "providers", title: "Default Provider", description: "The default harness used for new chats before a provider is locked by an existing session." },
-  deepseekDefaults: { sectionId: "providers", title: "DeepSeek Defaults", description: "Saved defaults for DeepSeek through the Claude Code adapter." },
+  claudeDefaults: { sectionId: "providers", title: "Claude Code Defaults", description: "Saved model and reasoning settings for new Claude Code chats.", keywords: ["deepseek", "glm"] },
+  codexDefaults: { sectionId: "providers", title: "Codex Defaults", description: "Saved model and reasoning settings for new Codex chats." },
+  piDefaults: { sectionId: "providers", title: "Pi Defaults", description: "Saved model and reasoning settings for new Pi chats." },
   installedSkills: { sectionId: "skills", title: "Installed", description: "Globally installed agent skills." },
   discoverSkills: { sectionId: "skills", title: "Discover", description: "Search skills to install globally." },
 })

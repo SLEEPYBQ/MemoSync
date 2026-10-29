@@ -1,18 +1,23 @@
-import { useState, type ComponentType, type SVGProps } from "react"
+import { useEffect, useState, type ComponentType, type SVGProps } from "react"
 import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   CODEX_REASONING_OPTIONS,
+  PI_REASONING_OPTIONS,
   type AgentProvider,
   type ClaudeContextWindow,
   type ClaudeModelOptions,
   type ClaudeReasoningEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type PiModelOptions,
+  type PiReasoningEffort,
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
 } from "../../../shared/types"
+import { piEffortOptions, resolvePiEffort } from "../../../shared/model-capabilities"
+import { useRegistryModels } from "../../hooks/useRegistryModels"
 import { cn } from "../../lib/utils"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 
@@ -67,9 +72,32 @@ function GlmIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+// Pi's pixel-P mark (pi-coding-agent), rendered in currentColor to match the
+// other monochrome provider icons.
+function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="-10 -10 84 84"
+      fill="currentColor"
+      aria-hidden="true"
+      data-provider-icon="pi"
+      className={cn("shrink-0", className)}
+      {...props}
+    >
+      <path
+        fillRule="evenodd"
+        clipRule="evenodd"
+        d="M0 0H47.9997V31.9993H31.9993V47.9997H16.0003V64H0V0ZM16.0003 16.0003V31.9993H31.9993V16.0003H16.0003Z"
+      />
+      <path d="M47.9997 31.9993H64V64H47.9997V31.9993Z" />
+    </svg>
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: DeepSeekIcon,
   codex: OpenAIIcon,
+  pi: PiIcon,
 }
 
 // The Claude-engine catalog spans vendors; the composer chip follows the
@@ -117,11 +145,13 @@ export function InputPopover({
   trigger,
   triggerClassName,
   disabled = false,
+  onOpen,
   children,
 }: {
   trigger: React.ReactNode
   triggerClassName?: string
   disabled?: boolean
+  onOpen?: () => void
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
   const [open, setOpen] = useState(false)
@@ -143,7 +173,7 @@ export function InputPopover({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={(next) => { setOpen(next); if (next) onOpen?.() }}>
       <PopoverTrigger asChild>
         <button
           className={cn(
@@ -162,10 +192,43 @@ export function InputPopover({
   )
 }
 
+function PiCustomModelItem({ onSubmit, onSearch }: { onSubmit: (modelId: string) => void; onSearch: (value: string) => void }) {
+  const [value, setValue] = useState("")
+  const trimmed = value.trim()
+  const submit = () => {
+    if (trimmed) onSubmit(trimmed)
+  }
+  return (
+    <div className="flex items-center gap-1 p-1">
+      <input
+        value={value}
+        onChange={(event) => { setValue(event.target.value); onSearch(event.target.value) }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault()
+            submit()
+          }
+        }}
+        placeholder="provider/model-id"
+        aria-label="Custom Pi model id"
+        className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
+      />
+      <button
+        onClick={submit}
+        disabled={!trimmed}
+        className="rounded-md border border-border px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        Use
+      </button>
+    </div>
+  )
+}
+
 export type ModelOptionChange =
   | { type: "claudeReasoningEffort"; effort: ClaudeReasoningEffort }
   | { type: "contextWindow"; contextWindow: ClaudeContextWindow }
   | { type: "codexReasoningEffort"; effort: CodexReasoningEffort }
+  | { type: "piReasoningEffort"; effort: PiReasoningEffort }
   | { type: "fastMode"; fastMode: boolean }
 
 interface ChatPreferenceControlsProps {
@@ -175,7 +238,7 @@ interface ChatPreferenceControlsProps {
   providerLocked?: boolean
   showCodexCliRequirementHints?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
@@ -202,7 +265,17 @@ export function ChatPreferenceControls({
   className,
 }: ChatPreferenceControlsProps) {
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const selectedModelEntry = providerConfig?.models.find((candidate) => candidate.id === model)
+  const registry = useRegistryModels(selectedProvider === "pi", model)
+  const [modelSearch, setModelSearch] = useState("")
+  const modelCard = registry.models.find(candidate => candidate.id === model)
+  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === model)
+  const piRequested = (modelOptions as PiModelOptions).reasoningEffort
+  const piEffort = resolvePiEffort(modelCard, piRequested)
+  useEffect(() => {
+    if (selectedProvider === "pi" && registry.loaded && piRequested !== piEffort) {
+      onModelOptionChange({ type: "piReasoningEffort", effort: piEffort })
+    }
+  }, [selectedProvider, registry.loaded, piRequested, piEffort, onModelOptionChange])
   const selectedVendor = selectedModelEntry?.vendor
   // Two-level model picker when the engine's catalog spans vendors: the left
   // chip chooses the vendor (DeepSeek / GLM), the right chip lists only that
@@ -212,13 +285,13 @@ export function ChatPreferenceControls({
     return acc
   }, [])
   const useVendorPicker = vendors.length > 1
-  const modelList = useVendorPicker && selectedVendor
+  const baseModelList = useVendorPicker && selectedVendor
     ? (providerConfig?.models ?? []).filter((candidate) => candidate.vendor === selectedVendor)
     : (providerConfig?.models ?? [])
   const VendorIcon = (selectedVendor ? VENDOR_ICONS[selectedVendor] : undefined) ?? PROVIDER_ICONS[selectedProvider]
-  // The engine chip only appears when there are multiple ENGINES and no vendor
-  // split to drive the left chip instead.
-  const showEngineProviderPicker = showProviderPicker && !useVendorPicker && availableProviders.length > 1
+  // Engine and model vendor are independent choices: a multi-vendor Claude
+  // catalog must not hide the switch to Codex.
+  const showEngineProviderPicker = showProviderPicker && availableProviders.length > 1
   const ModelIcon = Box
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
@@ -227,6 +300,11 @@ export function ChatPreferenceControls({
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
 
+  const allModels = selectedProvider === "pi" && registry.models.length ? registry.models : baseModelList
+  const query = modelSearch.trim().toLowerCase()
+  const modelList = selectedProvider === "pi"
+    ? allModels.filter(candidate => !query || `${candidate.id} ${candidate.label}`.toLowerCase().includes(query)).slice(0, 60)
+    : allModels
   return (
     <div className={cn("flex md:justify-center items-center gap-0.5", className)}>
       {useVendorPicker ? (
@@ -257,7 +335,8 @@ export function ChatPreferenceControls({
             )
           })}
         </InputPopover>
-      ) : showEngineProviderPicker ? (
+      ) : null}
+      {showEngineProviderPicker ? (
         <InputPopover
           disabled={providerLocked || !onProviderChange}
           trigger={(
@@ -266,7 +345,7 @@ export function ChatPreferenceControls({
                 const ProviderIcon = PROVIDER_ICONS[selectedProvider]
                 return <ProviderIcon className="h-3.5 w-3.5" />
               })()}
-              <span>{providerConfig?.label ?? selectedProvider}</span>
+              <span>{selectedProvider === "claude" ? "Claude Code" : providerConfig?.label ?? selectedProvider}</span>
             </>
           )}
         >
@@ -281,7 +360,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={selectedProvider === provider.id}
                 icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-                label={provider.label}
+                label={provider.id === "claude" ? "Claude Code" : provider.label}
               />
             )
           })}
@@ -289,6 +368,7 @@ export function ChatPreferenceControls({
       ) : null}
 
       <InputPopover
+        onOpen={selectedProvider === "pi" ? () => { setModelSearch(""); registry.refresh() } : undefined}
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
@@ -296,32 +376,58 @@ export function ChatPreferenceControls({
           </>
         )}
       >
-        {(close) => modelList.map((candidate) => {
-          const Icon = Box
-          return (
-            <PopoverMenuItem
-              key={candidate.id}
-              onClick={() => {
-                onModelChange(selectedProvider, candidate.id)
-                close()
-              }}
-              selected={model === candidate.id}
-              icon={<Icon className="h-4 w-4 text-muted-foreground" />}
-              label={
-                showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
-                  ? (
-                    <>
-                      {candidate.label}{" "}
-                      <span className="text-xs font-normal text-muted-foreground">
-                        codex-cli &gt;= 0.124
-                      </span>
-                    </>
-                  )
-                  : candidate.label
-              }
-            />
-          )
-        })}
+        {(close) => (
+          <>
+            {selectedProvider === "pi" ? <PiCustomModelItem onSearch={setModelSearch} onSubmit={(modelId) => {
+              onModelChange(selectedProvider, modelId)
+              close()
+            }} /> : null}
+            <div className="max-h-72 overflow-y-auto">
+            {modelList.map((candidate) => {
+              const Icon = Box
+              return (
+                <PopoverMenuItem
+                  key={candidate.id}
+                  onClick={() => {
+                    onModelChange(selectedProvider, candidate.id)
+                    close()
+                  }}
+                  selected={model === candidate.id}
+                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  label={
+                    showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
+                      ? (
+                        <>
+                          {candidate.label}{" "}
+                          <span className="text-xs font-normal text-muted-foreground">
+                            codex-cli &gt;= 0.124
+                          </span>
+                        </>
+                      )
+                      : candidate.label
+                  }
+                />
+              )
+            })}
+            </div>
+            {selectedProvider === "pi" ? (
+              <>
+                {/* Pi accepts any non-empty registry model id; show the active
+                    custom id when it is not one of the catalog suggestions. */}
+                {!allModels.some((candidate) => candidate.id === model) && model.trim() ? (
+                  <PopoverMenuItem
+                    onClick={close}
+                    selected
+                    icon={<Box className="h-4 w-4 text-muted-foreground" />}
+                    label={model}
+                    description="Custom registry model"
+                  />
+                ) : null}
+
+              </>
+            ) : null}
+          </>
+        )}
       </InputPopover>
 
       <InputPopover
@@ -331,7 +437,9 @@ export function ChatPreferenceControls({
             <span>{
               selectedProvider === "claude"
                 ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
-                : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+                : selectedProvider === "pi"
+                  ? PI_REASONING_OPTIONS.find((effort) => effort.id === piEffort)?.label ?? piEffort
+                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
             }</span>
           </>
         )}
@@ -355,7 +463,22 @@ export function ChatPreferenceControls({
                 disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
               />
             ))
-            : CODEX_REASONING_OPTIONS.map((effort) => (
+            : selectedProvider === "pi"
+              ? piEffortOptions(modelCard).filter((effort) =>
+                  !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
+                ).map((effort) => (
+                <PopoverMenuItem
+                  key={effort.id}
+                  onClick={() => {
+                    onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
+                    close()
+                  }}
+                  selected={piEffort === effort.id}
+                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                  label={effort.label}
+                />
+              ))
+              : CODEX_REASONING_OPTIONS.map((effort) => (
               <PopoverMenuItem
                 key={effort.id}
                 onClick={() => {

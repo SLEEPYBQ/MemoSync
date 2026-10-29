@@ -1,60 +1,40 @@
 // Integration tests for the memory preview gate + injection lifecycle at the
 // AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
 // what memory set actually reaches the (fake) Claude engine, and how the
-// study arms (memosync/auto/static) change injection + session rebuild.
-import { describe, expect, test } from "bun:test"
-import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { AgentCoordinator, resolveTurnMemoryState } from "./agent"
-import { createWsRouter } from "./ws-router"
-import { MemoryService } from "./memory"
-import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition"
-import type { TraceInput, TraceService } from "./memory/trace"
-import { createCaptureService, type CaptureService } from "./memory/capture"
-import type { LlmJsonCaller } from "./memory/deepseek"
-import type { CheckupService } from "./memory/checkup"
-import type { TransferDetectService, TransferSuggestionCard } from "./memory/transfer-detect"
-import type { RelevanceService } from "./memory/relevance"
-import type { UsePlanService } from "./memory/use-plan"
-import type { MemoryToolContext } from "./memory/tools"
-import { PROTOCOL_VERSION, type ChatAttachment, type TranscriptEntry } from "../shared/types"
-import { StudyMemoryStore } from "./experiment/study-memory-store"
-import { buildDeliveredStoreFocusEvent } from "./experiment/focus"
-import { MEMORY_ATOM_SPEC_VERSION } from "./memory/atom-spec"
-import {
-  createStaticMemoryExtractor,
-  STATIC_EXTRACTOR_VERSION,
-  type StaticMemoryExtractor,
-} from "./experiment/static-memory-extractor"
-import { buildStaticFocusPayload } from "./memory/static-files"
-import type { StudyPromptGate } from "./study-prompt-gate"
-import {
-  createMemoryBoardBacklogService,
-  type MemoryBoardBacklogService,
-} from "./memory/board-backlog"
-import {
-  captureContainedAttachment,
-  createStudyOpeningAttachmentSnapshotStore,
-  type StudyOpeningAttachmentSnapshotStore,
-} from "./study-opening-attachments"
+// MemoSync policy controls injection and session rebuild.
+// Integration tests for the memory preview gate + injection lifecycle at the
+// AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
+// what memory set actually reaches the (fake) Claude engine, and how the
+// MemoSync policy controls injection and session rebuild.
+import { describe, expect, test } from "bun:test";
+
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { AgentCoordinator, resolveTurnMemoryState } from "./agent";
+
+import { MemoryService } from "./memory";
+import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition";
+import type { TraceInput, TraceService } from "./memory/trace";
+import { createCaptureService, type CaptureService } from "./memory/capture";
+import type { LlmJsonCaller } from "./memory/deepseek";
+import type { CheckupService } from "./memory/checkup";
+import type { TransferDetectService, TransferSuggestionCard } from "./memory/transfer-detect";
+import type { RelevanceService } from "./memory/relevance";
+import type { UsePlanService } from "./memory/use-plan";
+import type { MemoryToolContext } from "./memory/tools";
+import { type ChatAttachment, type TranscriptEntry } from "../shared/types";
+import { StudyMemoryStore } from "./experiment/study-memory-store";
+import { buildDeliveredStoreFocusEvent } from "./experiment/focus";
+
+
+
+import type { StudyPromptGate } from "./study-prompt-gate";
+import { createMemoryBoardBacklogService, type MemoryBoardBacklogService } from "./memory/board-backlog";
+import { captureContainedAttachment, createStudyOpeningAttachmentSnapshotStore, type StudyOpeningAttachmentSnapshotStore } from "./study-opening-attachments";
 
 function timestampedKinds(messages: TranscriptEntry[]): string[] {
   return messages.map((m) => m.kind)
-}
-
-class FakeWebSocket {
-  readonly sent: unknown[] = []
-  readonly data = {
-    subscriptions: new Map(),
-    snapshotSignatures: new Map(),
-    protectedDraftChatIds: new Set<string>(),
-  }
-
-  send(message: string) {
-    this.sent.push(JSON.parse(message))
-  }
 }
 
 async function waitFor(condition: () => boolean, timeoutMs = 2000) {
@@ -63,28 +43,6 @@ async function waitFor(condition: () => boolean, timeoutMs = 2000) {
     if (Date.now() - start > timeoutMs) throw new Error("Timed out waiting for condition")
     await new Promise((r) => setTimeout(r, 10))
   }
-}
-
-function createBlockedCapture(afterRelease?: () => void | Promise<void>) {
-  let markStarted!: () => void
-  const started = new Promise<void>((resolve) => { markStarted = resolve })
-  let unblock!: () => void
-  const blocked = new Promise<void>((resolve) => { unblock = resolve })
-  const outcome = () => ({
-    created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-    reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-  })
-  const capture: CaptureService = {
-    capture: async () => {
-      markStarted()
-      await blocked
-      await afterRelease?.()
-      return outcome()
-    },
-    routeProposal: async () => outcome(),
-    captureFromPrompt: async () => outcome(),
-  }
-  return { capture, started, release: unblock }
 }
 
 class AsyncEventQueue<T> implements AsyncIterable<T> {
@@ -121,7 +79,7 @@ function createFakeStore(
     id: "chat-1",
     projectId: "project-1",
     title: "New Chat",
-    provider: null as "claude" | "codex" | null,
+    provider: null as "claude" | "codex" | "pi" | null,
     planMode: false,
     memoryDisabled: false,
     sessionToken: null as string | null,
@@ -142,7 +100,7 @@ function createFakeStore(
     getMessages() {
       return this.messages
     },
-    async setChatProvider(_c: string, provider: "claude" | "codex") {
+    async setChatProvider(_c: string, provider: "claude" | "codex" | "pi") {
       chat.provider = provider
     },
     async setMemoryDisabled(_c: string, disabled: boolean) {
@@ -230,9 +188,11 @@ interface Harness {
   memory: MemoryService
   studyMemoryStore: StudyMemoryStore | null
   workspaceDir: string
-  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; capture?: CaptureService | null }>
+  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null; capture?: CaptureService | null }>
+  claudeSessionCloses: number[]
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
+  interrupts: number
   openingBoardBacklog: MemoryBoardBacklogService | null
   finishTurn: () => void
   emitEntry: (entry: Record<string, unknown>) => void
@@ -243,7 +203,7 @@ interface Harness {
   cleanup: () => void
 }
 
-type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine"> & { promptSeq?: number }
+type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number }
 
 function createHarness(
   opts: {
@@ -267,14 +227,13 @@ function createHarness(
     /** Fork-trace stub; defaults to "fork unavailable" so sidecar paths stay deterministic. */
     forkTrace?: (input: { sessionToken: string; localPath: string; usedMemories: Array<{ id: string; content: string }> }) => Promise<Record<string, unknown> | null>
     /** Fork-capture stub; defaults to "fork unavailable" so sidecar capture stays deterministic. */
-    forkCapture?: (input: { sessionToken: string; localPath: string; profile?: 'review' | 'auto-project-copy' }) => Promise<Record<string, unknown> | null>
+    forkCapture?: (input: { sessionToken: string; localPath: string }) => Promise<Record<string, unknown> | null>
     /** Current-session Transfer relevance fork; null/failure falls back to the sidecar. */
     forkQuery?: (input: { sessionToken: string; localPath: string; prompt: string }) => Promise<Record<string, unknown> | null>
     experimentEvents?: Array<Record<string, unknown>>
     experimentLogger?: MemoryService["logger"]
     /** Active study task stamped onto delivered focus records. */
     activeStudyTaskId?: string | null
-    staticMemoryExtractor?: StaticMemoryExtractor | null
     /** Hold or inspect the fake Claude queue acknowledgement. */
     onSendPrompt?: (text: string, context?: ClaudePromptContext) => Promise<void>
     /** Hold provider boot before a HarnessTurn exists or activeTurns can own it. */
@@ -342,8 +301,10 @@ function createHarness(
       })
     : null
   const sessionStarts: Harness["sessionStarts"] = []
+  const claudeSessionCloses: number[] = []
   const prompts: string[] = []
   const promptContexts: Harness["promptContexts"] = []
+  let interrupts = 0
   // One stream per session: recreation tests must not double-consume a queue.
   const queues: AsyncEventQueue<any>[] = []
 
@@ -364,7 +325,6 @@ function createHarness(
     onStateChange: opts.onStateChange ?? (() => {}),
     memory,
     studyMemoryStore,
-    staticMemoryExtractor: opts.staticMemoryExtractor ?? null,
     capture: opts.capture ?? null,
     memoryCheckup: opts.checkup ?? null,
     memoryTransferDetect: opts.transferDetect ?? null,
@@ -388,6 +348,7 @@ function createHarness(
     startClaudeSession: async (args) => {
       const attempt = sessionStarts.length + 1
       sessionStarts.push({
+        memoryPlan: args.memoryPlan,
         memory: (args.memory as MemoryService | null) ?? null,
         sessionToken: args.sessionToken,
         policy: args.policy,
@@ -399,12 +360,18 @@ function createHarness(
       }
       const events = new AsyncEventQueue<any>()
       queues.push(events)
+      claudeSessionCloses.push(0)
       return {
         provider: "claude",
         stream: events,
         getAccountInfo: async () => null,
-        interrupt: async () => {},
-        close: () => queues[queues.length - 1] === events && events.close(),
+        interrupt: async () => {
+          interrupts += 1
+        },
+        close: () => {
+          claudeSessionCloses[attempt - 1] = (claudeSessionCloses[attempt - 1] ?? 0) + 1
+          events.close()
+        },
         setModel: async () => {},
         setPermissionMode: async () => {},
         sendPrompt: async (text: string, context?: ClaudePromptContext) => {
@@ -425,8 +392,10 @@ function createHarness(
     studyMemoryStore,
     workspaceDir,
     sessionStarts,
+    claudeSessionCloses,
     prompts,
     promptContexts,
+    get interrupts() { return interrupts },
     openingBoardBacklog,
     finishTurn: () =>
       queues[queues.length - 1]?.push({
@@ -1127,6 +1096,7 @@ describe("memory preview gate (coordinator)", () => {
     }
     const h = createHarness({
       preview: true,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
       openingBoard: true,
       activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),
@@ -1188,6 +1158,7 @@ describe("memory preview gate (coordinator)", () => {
     const telemetry: Array<{ turnId: string; content: string; acceptedAt: string }> = []
     const h = createHarness({
       preview: true,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
       openingBoard: true,
       activeStudyTaskId: "038-S1",
       policy: resolveConditionPolicy("memosync"),
@@ -1622,6 +1593,68 @@ describe("memory preview gate (coordinator)", () => {
       expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toHaveLength(1)
       expect(h.store.turnStartedCount).toBe(1)
     } finally {
+      h.cleanup()
+    }
+  })
+
+  test.each(["stop", "recover again"] as const)("restored preview provider startup remains owned during %s", async (action) => {
+    let entered!: () => void
+    let release!: () => void
+    const starting = new Promise<void>((resolve) => { entered = resolve })
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const h = createHarness({
+      preview: true, openingBoard: true, activeStudyTaskId: "038-S1",
+      policy: resolveConditionPolicy("memosync"),
+      beforeClaudeSessionStart: async () => { entered(); await gate },
+    })
+    const opening = {
+      taskId: "038-S1", chatId: "chat-1", reviewId: `restored-startup-${action}`,
+      content: "Build the dashboard", attachments: [],
+    }
+    const previewId = "restored-startup-preview"
+    try {
+      const prepared = h.openingBoardBacklog!.prepareOpeningPrompt(opening)
+      h.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
+      h.openingBoardBacklog!.markOpeningPromptLongTermReady(prepared)
+      h.openingBoardBacklog!.completeOpeningPromptReview(prepared)
+      h.store.messages.push({
+        _id: opening.reviewId, createdAt: 1, kind: "user_prompt",
+        content: opening.content, attachments: [],
+      }, {
+        _id: previewId, createdAt: 2, kind: "memory_preview", previewId,
+        turn: 1, task: opening.content, memories: [],
+      })
+      h.store.turnStartedCount = 1
+      h.coordinator.resumeOpeningBoardPreparation()
+      await waitFor(() => h.coordinator.pendingPreviews.has(opening.chatId))
+      await h.coordinator.respondMemoryPreview({ chatId: opening.chatId, previewId, decision: "go_on" })
+      await starting
+      expect(h.coordinator.getActiveStatuses().has(opening.chatId)).toBe(true)
+      if (action === "stop") {
+        await h.coordinator.cancel(opening.chatId)
+        release()
+        await waitFor(() => h.claudeSessionCloses[0] === 1)
+        expect(h.prompts).toEqual([])
+        expect(h.store.turnCancelledCount).toBe(1)
+        expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+        h.coordinator.resumeOpeningBoardPreparation()
+        await Bun.sleep(20)
+        expect(h.prompts).toEqual([])
+        expect(h.sessionStarts).toHaveLength(1)
+      } else {
+        h.coordinator.resumeOpeningBoardPreparation()
+        h.coordinator.resumeOpeningBoardPreparation()
+        await Bun.sleep(20)
+        expect(h.sessionStarts).toHaveLength(1)
+        release()
+        await waitFor(() => h.prompts.length === 1)
+        expect(h.sessionStarts).toHaveLength(1)
+        expect(h.store.messages.filter((entry) => entry.kind === "memory_preview_decision")).toHaveLength(1)
+      }
+    } finally {
+      release()
+      await h.coordinator.cancel(opening.chatId)
+      await h.coordinator.shutdownStudyRuntime()
       h.cleanup()
     }
   })
@@ -2189,7 +2222,7 @@ describe("memory preview gate (coordinator)", () => {
       })
 
       await waitFor(() => h.prompts.length === 1)
-      expect(h.prompts[0]).toContain(`For this turn only, ignore: [${ignored.id}].`)
+      expect(h.sessionStarts[0]?.memoryPlan?.block).not.toContain(ignored.content)
       expect(h.prompts[0]).toContain(`- [${selected.id}] Use pnpm while updating dependencies.`)
       expect(experimentEvents.some((event) => event.type === "memory.inject" && event.schemaVersion === 2)).toBe(false)
       h.memory.store.update(
@@ -2446,7 +2479,230 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("Start keeps the preview claim through provider boot until active-turn ownership is installed", async () => {
+  test("Stop orders a delayed canceled prompt before a later turn", async () => {
+    let promptWriteStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptWriteStarted = resolve })
+    let releasePromptWrite!: () => void
+    const promptWrite = new Promise<void>((resolve) => { releasePromptWrite = resolve })
+    const h = createHarness({
+      beforeAppendMessage: async (entry) => {
+        if (entry.kind === "user_prompt" && entry.content === "cancel this startup") {
+          promptWriteStarted()
+          await promptWrite
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "cancel this startup",
+    })
+    let stopping: Promise<void> | undefined
+    try {
+      await started
+      stopping = h.coordinator.cancel("chat-1")
+
+      const queued = await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh turn",
+      })
+      expect(queued).toMatchObject({ queued: true })
+      expect(h.prompts).toEqual([])
+      expect(h.store.messages.filter((message) => message.kind === "user_prompt")).toEqual([])
+
+      releasePromptWrite()
+      await stopping
+      await first
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh turn")))
+      expect(h.store.messages.filter((message) => message.kind === "user_prompt").map((message) => message.content)).toEqual([
+        "cancel this startup",
+        "fresh turn",
+      ])
+      expect(h.store.messages.slice(0, 2).map((message) => message.kind)).toEqual(["user_prompt", "interrupted"])
+      expect(h.store.turnCancelledCount).toBe(1)
+
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh turn"])
+      expect(h.store.queuedMessages).toHaveLength(0)
+      expect(h.promptContexts.map((context) => context?.turn)).toEqual([2])
+    } finally {
+      releasePromptWrite()
+      await stopping?.catch(() => {})
+      await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("late Claude startup closes its session without replacing the fresh owner", async () => {
+    let firstBootStarted!: () => void
+    const started = new Promise<void>((resolve) => { firstBootStarted = resolve })
+    let releaseFirstBoot!: () => void
+    const firstBoot = new Promise<void>((resolve) => { releaseFirstBoot = resolve })
+    let bootCount = 0
+    const h = createHarness({
+      beforeClaudeSessionStart: async () => {
+        bootCount += 1
+        if (bootCount === 1) {
+          firstBootStarted()
+          await firstBoot
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "stale startup",
+    })
+    try {
+      await started
+      await h.coordinator.cancel("chat-1")
+      await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "fresh owner",
+      })
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("fresh owner")))
+      const freshSessionId = h.coordinator.claudeSessions.get("chat-1")?.id
+      expect(freshSessionId).toBeDefined()
+
+      releaseFirstBoot()
+      await first
+      expect(h.coordinator.claudeSessions.get("chat-1")?.id).toBe(freshSessionId)
+      expect(h.claudeSessionCloses).toEqual([1, 0])
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["fresh owner"])
+    } finally {
+      releaseFirstBoot()
+      await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("settled startup reservations do not accumulate across chats", async () => {
+    let holdNextBoot = false
+    let deletedBootStarted!: () => void
+    const bootStarted = new Promise<void>((resolve) => { deletedBootStarted = resolve })
+    let releaseDeletedBoot!: () => void
+    const deletedBoot = new Promise<void>((resolve) => { releaseDeletedBoot = resolve })
+    const h = createHarness({
+      beforeClaudeSessionStart: async () => {
+        if (!holdNextBoot) return
+        holdNextBoot = false
+        deletedBootStarted()
+        await deletedBoot
+      },
+    })
+    const reservations = (h.coordinator as unknown as { startupReservations: Map<string, unknown> }).startupReservations
+    try {
+      for (const [index, chatId] of ["chat-1", "chat-2", "chat-3"].entries()) {
+        await h.coordinator.send({
+          type: "chat.send", chatId, provider: "claude", content: `turn ${index + 1}`,
+        })
+        await waitFor(() => h.prompts.length === index + 1)
+        expect(reservations.has(chatId)).toBe(false)
+        await h.coordinator.cancel(chatId)
+        await h.coordinator.closeChat(chatId)
+      }
+      expect(reservations.size).toBe(0)
+
+      holdNextBoot = true
+      const pendingDelete = h.coordinator.send({
+        type: "chat.send", chatId: "chat-deleted", provider: "claude", content: "deleted during boot",
+      })
+      await bootStarted
+      expect(reservations.has("chat-deleted")).toBe(true)
+      await h.coordinator.cancel("chat-deleted")
+      await h.coordinator.closeChat("chat-deleted")
+      expect(reservations.has("chat-deleted")).toBe(false)
+      releaseDeletedBoot()
+      await pendingDelete
+      await waitFor(() => h.claudeSessionCloses.length === 4)
+      expect(h.claudeSessionCloses[3]).toBe(1)
+      expect(reservations.size).toBe(0)
+    } finally {
+      releaseDeletedBoot()
+      for (const chatId of ["chat-1", "chat-2", "chat-3"]) {
+        if (h.coordinator.activeTurns.has(chatId)) await h.coordinator.cancel(chatId)
+      }
+      if (h.coordinator.activeTurns.has("chat-deleted")) await h.coordinator.cancel("chat-deleted")
+      h.cleanup()
+    }
+  })
+
+  test("Stop during Claude sendPrompt interrupts the active owner and permits a new turn", async () => {
+    let promptStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptStarted = resolve })
+    let releasePrompt!: () => void
+    const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve })
+    const h = createHarness({
+      onSendPrompt: async (text) => {
+        if (text.startsWith("slow prompt")) {
+          promptStarted()
+          await promptGate
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "slow prompt",
+    })
+    try {
+      await started
+      await h.coordinator.cancel("chat-1")
+      expect(h.interrupts).toBe(1)
+      expect(h.store.turnCancelledCount).toBe(1)
+
+      const later = await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", content: "after stop",
+      })
+      expect(later).not.toMatchObject({ queued: true })
+      await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("after stop")))
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+      releasePrompt()
+      await first
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["slow prompt", "after stop"])
+      expect(h.store.turnCancelledCount).toBe(1)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+    } finally {
+      releasePrompt()
+      await first.catch(() => {})
+      if (h.coordinator.activeTurns.has("chat-1")) await h.coordinator.cancel("chat-1")
+      h.cleanup()
+    }
+  })
+
+  test("repeated concurrent Stop during startup records one terminal cancellation", async () => {
+    let promptWriteStarted!: () => void
+    const started = new Promise<void>((resolve) => { promptWriteStarted = resolve })
+    let releasePromptWrite!: () => void
+    const promptWrite = new Promise<void>((resolve) => { releasePromptWrite = resolve })
+    const h = createHarness({
+      beforeAppendMessage: async (entry) => {
+        if (entry.kind === "user_prompt") {
+          promptWriteStarted()
+          await promptWrite
+        }
+      },
+    })
+    const first = h.coordinator.send({
+      type: "chat.send", chatId: "chat-1", provider: "claude", content: "cancel repeatedly",
+    })
+    try {
+      await started
+      const stopping = Promise.all([
+        h.coordinator.cancel("chat-1"),
+        h.coordinator.cancel("chat-1"),
+        h.coordinator.cancel("chat-1"),
+      ])
+      await Promise.resolve()
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(0)
+      releasePromptWrite()
+      await stopping
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(1)
+      expect(h.store.turnCancelledCount).toBe(1)
+      expect(h.store.messages.slice(0, 2).map((message) => message.kind)).toEqual(["user_prompt", "interrupted"])
+      await first
+      expect(h.sessionStarts).toHaveLength(0)
+    } finally {
+      releasePromptWrite()
+      await first.catch(() => {})
+      h.cleanup()
+    }
+  })
+
+  const runStartKeepsPreviewClaim = async (activeStudyTaskId: string | null) => {
     let providerBootStarted!: () => void
     const bootStarted = new Promise<void>((resolve) => {
       providerBootStarted = resolve
@@ -2457,7 +2713,7 @@ describe("memory preview gate (coordinator)", () => {
     })
     const h = createHarness({
       preview: true,
-      activeStudyTaskId: "038-S1",
+      activeStudyTaskId,
       policy: resolveConditionPolicy("memosync"),
       beforeClaudeSessionStart: async () => {
         providerBootStarted()
@@ -2488,8 +2744,7 @@ describe("memory preview gate (coordinator)", () => {
         operationId: "control:working-memory:start:provider-gap",
       })
       await bootStarted
-      await waitFor(() => !(h.coordinator as unknown as { startingChats: Map<string, string> })
-        .startingChats.has("chat-1"))
+      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
       expect((h.coordinator as unknown as { activeTurns: Map<string, unknown> })
         .activeTurns.has("chat-1")).toBe(false)
 
@@ -2513,7 +2768,15 @@ describe("memory preview gate (coordinator)", () => {
       releaseProviderBoot()
       h.cleanup()
     }
-  })
+  }
+
+  test.each([
+    ["without an active study task", null],
+    ["with active study task 038-S1", "038-S1"],
+  ] as const)(
+    "Start keeps the preview claim through provider boot until active-turn ownership is installed (%s)",
+    (_scenario, activeStudyTaskId) => runStartKeepsPreviewClaim(activeStudyTaskId),
+  )
 
   test("does not append a Start decision or dispatch Claude when the durable attempted claim fails", async () => {
     let attemptedCalls = 0
@@ -3134,12 +3397,30 @@ describe("memory preview gate (coordinator)", () => {
 
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.promptContexts).toEqual([
-        { turn: 1, engine: "claude", promptSeq: 1 },
-        { turn: 2, engine: "claude", promptSeq: 2 },
+        { turn: 1, engine: "claude", promptSeq: 1, allowedMemoryIds: ["M-01"] },
+        { turn: 2, engine: "claude", promptSeq: 2, allowedMemoryIds: ["M-01"] },
       ])
     } finally {
       h.cleanup()
     }
+  })
+
+  test("switching Claude vendors rebuilds the subprocess instead of retaining its old endpoint", async () => {
+    const h = createHarness({ preview: false })
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "deepseek-v4-flash", content: "first vendor" })
+      await waitFor(() => h.prompts.length === 1)
+      h.finishTurn()
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "glm-5.3-flash", content: "second vendor" })
+      await waitFor(() => h.prompts.length === 2)
+      expect(h.sessionStarts).toHaveLength(2)
+      h.finishTurn()
+      await waitFor(() => h.store.turnFinishedCount === 2)
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "opus", content: "official vendor" })
+      await waitFor(() => h.prompts.length === 3)
+      expect(h.sessionStarts).toHaveLength(3)
+    } finally { h.cleanup() }
   })
 
   test("a stale trace verdict is discarded while its terminal state remains auditable (CAS)", async () => {
@@ -3956,55 +4237,85 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("interrupt and resume reject Auto, Static, and Codex without side effects", async () => {
-    // Non-study MemoSync (the longitudinal deployment) is NOT here: per-memory
-    // interrupt is a kept product feature there. Only the baseline arms and
-    // Codex reject it.
-    const unsupported = [
-      { name: "Auto", policy: resolveConditionPolicy("auto"), provider: "claude" as const },
-      { name: "Static", policy: resolveConditionPolicy("static"), provider: "claude" as const },
-      { name: "Codex", policy: resolveConditionPolicy("memosync"), provider: "codex" as const },
-    ]
+  test("MemoSync non-study accepts the per-memory control gate for Pi", async () => {
+    const h = createHarness({ policy: { ...resolveConditionPolicy("memosync"), studyMode: false }, preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Pi memory", scope: "project", projectId: "project-1", type: "fact" },
+        { actor: "system" },
+      )
+      await h.store.setChatProvider("chat-1", "pi")
+      // The provider gate must let Pi through: without a running turn the
+      // interrupt fails on the active-turn check, not on the engine check.
+      await expect(h.coordinator.interruptMemory({
+        chatId: "chat-1",
+        memoryId: memory.id,
+        quote: "pi interrupt",
+      })).rejects.toThrow("A MemoSync turn must be running before a memory can interrupt it")
+      await expect(h.coordinator.resumeInterrupted({
+        chatId: "chat-1",
+        interruptId: "no-such-interrupt",
+        correction: "Continue.",
+        selectedIds: [],
+      })).rejects.not.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+    } finally {
+      h.cleanup()
+    }
+  })
 
-    for (const scenario of unsupported) {
-      const h = createHarness({ policy: scenario.policy, preview: false })
-      try {
-        const memory = h.memory.store.create(
-          { content: `${scenario.name} memory`, scope: "project", projectId: "project-1", type: "fact" },
-          { actor: "system" },
-        )
-        await h.store.setChatProvider("chat-1", scenario.provider)
-        await h.store.appendMessage(
-          "chat-1",
-          {
-            _id: crypto.randomUUID(),
-            createdAt: Date.now(),
-            kind: "memory_interrupt",
-            interruptId: `unsupported-${scenario.name}`,
-            memoryId: memory.id,
-            prompt: "unsupported prompt",
-            workingSet: [{ id: memory.id, cited: true }],
-            turn: 1,
-          },
-        )
+  test("MemoSync study mode still rejects per-memory interrupt for Pi", async () => {
+    const h = createHarness({ policy: resolveConditionPolicy("memosync"), preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Pi study memory", scope: "project", projectId: "project-1", type: "fact" },
+        { actor: "system" },
+      )
+      await h.store.setChatProvider("chat-1", "pi")
+      await expect(h.coordinator.interruptMemory({
+        chatId: "chat-1",
+        memoryId: memory.id,
+        quote: "unsupported control",
+      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+    } finally {
+      h.cleanup()
+    }
+  })
 
-        await expect(h.coordinator.interruptMemory({
-          chatId: "chat-1",
-          memoryId: memory.id,
-          quote: "unsupported control",
-        })).rejects.toThrow("Per-memory interrupt is only available on the MemoSync Claude engine")
-        await expect(h.coordinator.resumeInterrupted({
-          chatId: "chat-1",
-          interruptId: `unsupported-${scenario.name}`,
-          correction: "Continue with the confirmed working memory.",
-          selectedIds: [],
-        })).rejects.toThrow("Per-memory interrupt is only available on the MemoSync Claude engine")
-        expect(h.store.messages.filter((message) => message.kind === "memory_interrupt")).toHaveLength(1)
-        expect(h.store.messages.some((message) => message.kind === "memory_interrupt_resolution")).toBe(false)
-        expect(h.prompts).toHaveLength(0)
-      } finally {
-        h.cleanup()
-      }
+  test("MemoSync study mode rejects per-memory interrupt and resume for Codex", async () => {
+    const h = createHarness({ policy: resolveConditionPolicy("memosync"), preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Codex study memory", scope: "project", projectId: "project-1", type: "fact" },
+        { actor: "system" },
+      )
+      await h.store.setChatProvider("chat-1", "codex")
+      await h.store.appendMessage("chat-1", {
+        _id: crypto.randomUUID(),
+        createdAt: Date.now(),
+        kind: "memory_interrupt",
+        interruptId: "unsupported-codex",
+        memoryId: memory.id,
+        prompt: "unsupported prompt",
+        workingSet: [{ id: memory.id, cited: true }],
+        turn: 1,
+      })
+
+      await expect(h.coordinator.interruptMemory({
+        chatId: "chat-1",
+        memoryId: memory.id,
+        quote: "unsupported control",
+      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+      await expect(h.coordinator.resumeInterrupted({
+        chatId: "chat-1",
+        interruptId: "unsupported-codex",
+        correction: "Continue with the confirmed working memory.",
+        selectedIds: [],
+      })).rejects.toThrow("Per-memory interrupt is only available on a supported MemoSync engine")
+      expect(h.store.messages.filter((message) => message.kind === "memory_interrupt")).toHaveLength(1)
+      expect(h.store.messages.some((message) => message.kind === "memory_interrupt_resolution")).toBe(false)
+      expect(h.prompts).toHaveLength(0)
+    } finally {
+      h.cleanup()
     }
   })
 
@@ -4021,7 +4332,7 @@ describe("memory preview gate (coordinator)", () => {
         chatId: "chat-1",
         memoryId: "M-01",
         quote: "deployment control",
-      })).rejects.toThrow("A MemoSync Claude turn must be running")
+      })).rejects.toThrow("A MemoSync turn must be running")
     } finally {
       h.cleanup()
     }
@@ -4062,7 +4373,7 @@ describe("memory preview gate (coordinator)", () => {
         memoryIds: [ordinary.id],
       })
       await waitFor(() => h.prompts.length === 1)
-      expect(h.prompts[0]).toContain(`For this turn only, ignore: [${enforced.id}].`)
+      expect(h.sessionStarts[0]?.memoryPlan?.block).not.toContain(enforced.content)
       expect(h.prompts[0]).not.toContain("ENFORCED THIS RUN")
       expect(h.memory.store.getKv<Array<{ id: string; quote?: string }>>(`pay_attention:chat-1`)).toEqual([])
     } finally {
@@ -4280,972 +4591,16 @@ describe("preview settings (coordinator, STUDY_PLAN §2.4)", () => {
   })
 })
 
-describe("study arms (coordinator, STUDY_PLAN §2.2/§2.3)", () => {
-  test("auto sends the complete current-project text on every Claude turn while reusing the session", async () => {
-    const experimentEvents: Array<Record<string, unknown>> = []
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      experimentEvents,
-    })
-    try {
-      h.memory.store.create(
-        { content: "Use pnpm for package management", scope: "project", projectId: "project-1", type: "preference" },
-        { actor: "system" },
-      )
-      h.memory.store.create(
-        { content: "Car checkout uses a stepper", scope: "project", projectId: "car-project", type: "fact" },
-        { actor: "system" },
-      )
-      h.memory.store.create(
-        { content: "Cancellation requires confirmation", scope: "session", sessionId: "older-chat", type: "constraint" },
-        { actor: "system" },
-      )
+describe("MemoSync policy (coordinator)", () => {
 
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn 1" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.prompts[0]).toContain("# Notes from previous sessions")
-      expect(h.prompts[0]).toContain("- Use pnpm for package management")
-      expect(h.prompts[0]).not.toContain("- Car checkout uses a stepper")
-      expect(h.prompts[0]).not.toContain("- Cancellation requires confirmation")
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 1)
-
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn 2" })
-      await waitFor(() => h.prompts.length === 2)
-      expect(h.prompts[1]).toContain("# Notes from previous sessions")
-      expect(h.prompts[1]).toContain("- Use pnpm for package management")
-      expect(h.prompts[1]).not.toContain("- Car checkout uses a stepper")
-      expect(h.prompts[1]).not.toContain("- Cancellation requires confirmation")
-      expect(h.sessionStarts).toHaveLength(1)
-      const deliveries = experimentEvents.filter(
-        (event) => event.type === "memory.inject" && event.schemaVersion === 2,
-      )
-      expect(deliveries).toHaveLength(2)
-      expect(deliveries.map((event) => event.turn)).toEqual([1, 2])
-      expect(deliveries.every((event) => event.mode === "plain" && event.outcome === "delivered")).toBe(true)
-      expect((deliveries[0]!.memories as Array<{ id: string }>).map(({ id }) => id)).toEqual(["M-01"])
-      expect(deliveries[0]!.focusPayloadHash).toMatch(/^[a-f0-9]{64}$/)
-      expect(deliveries[1]!.focusPayloadHash).toBe(deliveries[0]!.focusPayloadHash)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("Auto acks the next WebSocket send before slow capture, then dispatches it once with the complete block", async () => {
-    let captureStarted!: () => void
-    const started = new Promise<void>((resolve) => { captureStarted = resolve })
-    let releaseCapture!: () => void
-    const released = new Promise<void>((resolve) => { releaseCapture = resolve })
-    let h: Harness | null = null
-    const emptyOutcome = () => ({
-      created: [],
-      proposed: 0,
-      surfaced: 0,
-      dropped: 0,
-      conflicts: 0,
-      reinforced: 0,
-      reinforcedIds: [],
-      revisions: 0,
-      pending: [],
-    })
-    const capture: CaptureService = {
-      capture: async () => {
-        captureStarted()
-        await released
-        h!.memory.store.create(
-          {
-            content: "Apartment filters use URL query parameters",
-            scope: "project",
-            projectId: "project-1",
-            type: "fact",
-          },
-          { actor: "agent", sessionId: "chat-1", turn: 1 },
-        )
-        return emptyOutcome()
-      },
-      routeProposal: async () => emptyOutcome(),
-      captureFromPrompt: async () => emptyOutcome(),
-    }
-    h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    const router = createWsRouter({
-      store: h.store as never,
-      agent: h.coordinator,
-      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
-      keybindings: { getSnapshot: () => null, onChange: () => () => {} } as never,
-      refreshDiscovery: async () => [],
-      getDiscoveredProjects: () => [],
-      machineDisplayName: "Test Machine",
-      updateManager: null,
-    })
-    const ws = new FakeWebSocket()
-    let routedSend: Promise<void> | null = null
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "build filters" })
-      await waitFor(() => h!.prompts.length === 1)
-
-      h.finishTurn()
-      await started
-      routedSend = router.handleMessage(ws as never, JSON.stringify({
-        v: PROTOCOL_VERSION,
-        type: "command",
-        id: "auto-turn-2",
-        command: {
-          type: "chat.send",
-          chatId: "chat-1",
-          provider: "claude",
-          content: "now add sorting",
-        },
-      }))
-      const ackedWithinBudget = await Promise.race([
-        routedSend.then(() => true),
-        new Promise<false>((resolve) => setTimeout(() => resolve(false), 100)),
-      ])
-
-      expect(ackedWithinBudget).toBe(true)
-      expect(ws.sent).toEqual([{
-        v: PROTOCOL_VERSION,
-        type: "ack",
-        id: "auto-turn-2",
-        result: expect.objectContaining({ chatId: "chat-1" }),
-      }])
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "now add sorting",
-      )).toHaveLength(0)
-
-      releaseCapture()
-      await routedSend
-      await waitFor(() => h!.prompts.length === 2)
-      expect(h.prompts[1]).toContain("- Apartment filters use URL query parameters")
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "now add sorting",
-      )).toHaveLength(1)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      await routedSend?.catch(() => {})
-      router.dispose()
-      h.cleanup()
-    }
-  })
-
-  test("Stop cancels an Auto message queued while the preceding turn enters post-turn capture", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-
-      const queued = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "queued before capture starts",
-      })
-      expect(queued).toMatchObject({ queued: true, queuedMessageId: "queued-1" })
-      h.finishTurn()
-      await started
-      await waitFor(() => h.coordinator.getActiveStatuses().get("chat-1") === "starting")
-
-      await h.coordinator.cancel("chat-1")
-      releaseCapture()
-      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
-
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "queued before capture starts",
-      )).toHaveLength(0)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError,
-      )).toHaveLength(0)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("Stop cancels an Auto send waiting at the capture barrier without a late append or boot", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      const accepted = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "cancel this deferred turn",
-      })
-      expect(accepted).toMatchObject({ queued: true })
-      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
-
-      await Promise.race([
-        h.coordinator.cancel("chat-1"),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop waited for capture")), 100)),
-      ])
-      expect(h.store.queuedMessages).toHaveLength(0)
-      expect(h.coordinator.getActiveStatuses().has("chat-1")).toBe(false)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "cancel this deferred turn",
-      )).toHaveLength(0)
-
-      releaseCapture()
-      await new Promise((resolve) => setTimeout(resolve, 20))
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "cancel this deferred turn",
-      )).toHaveLength(0)
-      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(1)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("barrier Stop persists a queue tombstone even when physical removal fails", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    const removeQueuedMessage = h.store.removeQueuedMessage.bind(h.store)
-    let removalAttempts = 0
-    h.store.removeQueuedMessage = async (chatId: string, queuedMessageId: string) => {
-      if (queuedMessageId === "queued-1" && removalAttempts < 2) {
-        removalAttempts += 1
-        throw new Error("queue storage unavailable")
-      }
-      await removeQueuedMessage(chatId, queuedMessageId)
-    }
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "barrier row must stay cancelled",
-      })
-      await h.coordinator.cancel("chat-1")
-      await waitFor(() => removalAttempts >= 2)
-
-      expect(h.store.messages).toContainEqual(expect.objectContaining({
-        kind: "interrupted",
-        cancelledQueuedMessageId: "queued-1",
-      }))
-      expect(h.store.queuedMessages.map((message) => message.id)).toEqual(["queued-1"])
-      expect(h.prompts).toHaveLength(1)
-
-      h.store.removeQueuedMessage = removeQueuedMessage
-      await h.coordinator.drainOrphanedQueues()
-      await waitFor(() => h.store.queuedMessages.length === 0 || h.prompts.length > 1)
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("Stop during deferred Auto queue removal prevents a late append, boot, or error receipt", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    let removalStarted!: () => void
-    const removing = new Promise<void>((resolve) => { removalStarted = resolve })
-    let releaseRemoval!: () => void
-    const removalReleased = new Promise<void>((resolve) => { releaseRemoval = resolve })
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    const removeQueuedMessage = h.store.removeQueuedMessage.bind(h.store)
-    h.store.removeQueuedMessage = async (chatId: string, queuedMessageId: string) => {
-      if (queuedMessageId === "queued-1") {
-        removalStarted()
-        await removalReleased
-      }
-      await removeQueuedMessage(chatId, queuedMessageId)
-    }
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      const accepted = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "cancel during dispatch",
-      })
-      expect(accepted).toMatchObject({ queued: true, queuedMessageId: "queued-1" })
-
-      releaseCapture()
-      await removing
-      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
-      await Promise.race([
-        h.coordinator.cancel("chat-1"),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop waited for queue removal")), 100)),
-      ])
-
-      releaseRemoval()
-      await waitFor(() => (
-        h.prompts.length > 1
-        || !h.coordinator.getActiveStatuses().has("chat-1")
-      ))
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "cancel during dispatch",
-      )).toHaveLength(0)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError,
-      )).toHaveLength(0)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      releaseRemoval?.()
-      h.cleanup()
-    }
-  })
-
-  test("a stopped Auto queue row that cannot be removed is never redispatched", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    let removalStarted!: () => void
-    const removing = new Promise<void>((resolve) => { removalStarted = resolve })
-    let releaseRemoval!: () => void
-    const removalReleased = new Promise<void>((resolve) => { releaseRemoval = resolve })
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    const removeQueuedMessage = h.store.removeQueuedMessage.bind(h.store)
-    let removalAttempts = 0
-    h.store.removeQueuedMessage = async (chatId: string, queuedMessageId: string) => {
-      if (queuedMessageId === "queued-1") {
-        removalAttempts += 1
-        if (removalAttempts === 1) {
-          removalStarted()
-          await removalReleased
-          throw new Error("queue storage unavailable")
-        }
-        if (removalAttempts === 2) throw new Error("queue storage still unavailable")
-      }
-      await removeQueuedMessage(chatId, queuedMessageId)
-    }
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "keep stopped row visible",
-      })
-      releaseCapture()
-      await removing
-      await h.coordinator.cancel("chat-1")
-      releaseRemoval()
-
-      await waitFor(() => (
-        removalAttempts >= 3
-        || (removalAttempts >= 2 && !h.coordinator.getActiveStatuses().has("chat-1"))
-      ))
-      await new Promise((resolve) => setTimeout(resolve, 10))
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.queuedMessages.map((message) => message.id)).toEqual(["queued-1"])
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "keep stopped row visible",
-      )).toHaveLength(0)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError,
-      )).toHaveLength(0)
-
-      // Simulate a restart/recovery drain after queue storage becomes writable
-      // again. The durable Stop marker must make this a cleanup, never a send.
-      h.store.removeQueuedMessage = removeQueuedMessage
-      await h.coordinator.drainOrphanedQueues()
-      await waitFor(() => h.store.queuedMessages.length === 0 || h.prompts.length > 1)
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      releaseRemoval?.()
-      h.cleanup()
-    }
-  })
-
-  test("Stop while a deferred Auto user prompt waits at the transcript boundary prevents delivery and turn start", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    let promptAppendStarted!: () => void
-    const appendingPrompt = new Promise<void>((resolve) => { promptAppendStarted = resolve })
-    let releasePromptAppend!: () => void
-    const promptAppendReleased = new Promise<void>((resolve) => { releasePromptAppend = resolve })
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-      beforeAppendMessage: async (entry) => {
-        if (entry.kind !== "user_prompt" || entry.content !== "cancel before transcript delivery") return
-        promptAppendStarted()
-        await promptAppendReleased
-      },
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      const accepted = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "cancel before transcript delivery",
-      })
-      expect(accepted).toMatchObject({ queued: true, queuedMessageId: "queued-1" })
-
-      releaseCapture()
-      await appendingPrompt
-      await Promise.race([
-        h.coordinator.cancel("chat-1"),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Stop waited for transcript delivery")), 100)),
-      ])
-      expect(h.store.turnStartedCount).toBe(1)
-
-      releasePromptAppend()
-      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "cancel before transcript delivery",
-      )).toHaveLength(0)
-      expect(h.store.turnStartedCount).toBe(1)
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError,
-      )).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      releasePromptAppend?.()
-      h.cleanup()
-    }
-  })
-
-  test("Stop after deferred prompt delivery linearizes records the turn before cancelling without booting Claude", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    let deliveryAuthorized!: () => void
-    const authorized = new Promise<void>((resolve) => { deliveryAuthorized = resolve })
-    let releaseDelivery!: () => void
-    const deliveryReleased = new Promise<void>((resolve) => { releaseDelivery = resolve })
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-      afterAppendAuthorized: async (entry) => {
-        if (entry.kind !== "user_prompt" || entry.content !== "cancel committed delivery") return
-        deliveryAuthorized()
-        await deliveryReleased
-      },
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "cancel committed delivery",
-      })
-      releaseCapture()
-      await authorized
-
-      const stopping = h.coordinator.cancel("chat-1")
-      await new Promise((resolve) => setTimeout(resolve, 0))
-      expect(h.store.turnCancelledCount).toBe(0)
-      expect(h.store.turnStartedCount).toBe(1)
-
-      releaseDelivery()
-      await stopping
-      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "cancel committed delivery",
-      )).toHaveLength(1)
-      expect(h.store.turnStartedCount).toBe(2)
-      expect(h.store.turnCancelledCount).toBe(1)
-      expect(h.prompts).toHaveLength(1)
-      expect(h.store.messages.find((message) => message.kind === "interrupted"))
-        .not.toHaveProperty("cancelledQueuedMessageId")
-      expect(h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError,
-      )).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      releaseDelivery?.()
-      h.cleanup()
-    }
-  })
-
-  test("concurrent Stops at the Auto capture barrier share one cancellation operation", async () => {
-    const { capture, started, release: releaseCapture } = createBlockedCapture()
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "cancel once",
-      })
-      await Promise.all([
-        h.coordinator.cancel("chat-1"),
-        h.coordinator.cancel("chat-1"),
-      ])
-
-      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toHaveLength(1)
-      expect(h.store.turnCancelledCount).toBe(1)
-      expect(h.store.queuedMessages).toHaveLength(0)
-      expect(h.prompts).toHaveLength(1)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("deferred Auto dispatch continues with q2 when its original head row was removed", async () => {
-    let captureStarted!: () => void
-    const started = new Promise<void>((resolve) => { captureStarted = resolve })
-    let releaseCapture!: () => void
-    const released = new Promise<void>((resolve) => { releaseCapture = resolve })
-    let h: Harness | null = null
-    const emptyOutcome = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => {
-        captureStarted()
-        await released
-        h!.memory.store.create(
-          {
-            content: "Sorting defaults to newest first",
-            scope: "project",
-            projectId: "project-1",
-            type: "fact",
-          },
-          { actor: "agent", sessionId: "chat-1", turn: 1 },
-        )
-        return emptyOutcome
-      },
-      routeProposal: async () => emptyOutcome,
-      captureFromPrompt: async () => emptyOutcome,
-    }
-    h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-    })
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h!.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      const q1 = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "obsolete queued head",
-      })
-      const q2 = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "dispatch this second row",
-      })
-      expect(q1).toMatchObject({ queued: true, queuedMessageId: "queued-1" })
-      expect(q2).toMatchObject({ queued: true, queuedMessageId: "queued-2" })
-      await h.store.removeQueuedMessage("chat-1", "queued-1")
-      expect(h.store.queuedMessages.map((message) => message.id)).toEqual(["queued-2"])
-
-      releaseCapture()
-      await waitFor(() => (
-        h!.prompts.length === 2
-        || (!h!.coordinator.getActiveStatuses().has("chat-1") && h!.store.queuedMessages.length === 1)
-      ))
-      expect(h.prompts).toHaveLength(2)
-      expect(h.prompts[1]).toContain("- Sorting defaults to newest first")
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "obsolete queued head",
-      )).toHaveLength(0)
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "dispatch this second row",
-      )).toHaveLength(1)
-      expect(h.store.queuedMessages).toHaveLength(0)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("a deferred Auto start failure becomes one visible terminal error after ack", async () => {
-    let captureStarted!: () => void
-    const started = new Promise<void>((resolve) => { captureStarted = resolve })
-    let releaseCapture!: () => void
-    const released = new Promise<void>((resolve) => { releaseCapture = resolve })
-    const emptyOutcome = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => {
-        captureStarted()
-        await released
-        return emptyOutcome
-      },
-      routeProposal: async () => emptyOutcome,
-      captureFromPrompt: async () => emptyOutcome,
-    }
-    const failureMessage = "deferred transcript write failed"
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      activeStudyTaskId: "038-S1",
-      capture,
-      beforeAppendMessage: async (entry) => {
-        if (entry.kind === "user_prompt" && entry.content === "trigger deferred failure") {
-          throw new Error(failureMessage)
-        }
-      },
-    })
-    const recordedFailures: string[] = []
-    h.store.recordTurnFailed = async (_chatId: string, message: string) => {
-      recordedFailures.push(message)
-    }
-    try {
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn one" })
-      await waitFor(() => h.prompts.length === 1)
-      h.finishTurn()
-      await started
-
-      const accepted = await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "trigger deferred failure",
-      })
-      expect(accepted).toMatchObject({ queued: true })
-      releaseCapture()
-
-      await waitFor(() => recordedFailures.length === 1)
-      const visibleErrors = h.store.messages.filter(
-        (message) => message.kind === "result" && message.isError && message.result === failureMessage,
-      )
-      expect(visibleErrors).toHaveLength(1)
-      expect(recordedFailures).toEqual([failureMessage])
-      expect(h.store.messages.filter(
-        (message) => message.kind === "user_prompt" && message.content === "trigger deferred failure",
-      )).toHaveLength(0)
-      expect(h.coordinator.getActiveStatuses().has("chat-1")).toBe(false)
-    } finally {
-      releaseCapture?.()
-      h.cleanup()
-    }
-  })
-
-  test("policy reaches the Claude session boot", async () => {
+  test("a retired condition falls back to MemoSync at Claude session boot", async () => {
     const h = createHarness({ policy: resolveConditionPolicy("auto") })
     try {
       h.memory.store.create({ content: "x", scope: "personal", type: "fact" }, { actor: "system" })
       await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "hello" })
       await waitFor(() => h.prompts.length === 1)
-      expect(h.sessionStarts[0].policy?.condition).toBe("auto")
-      expect(h.sessionStarts[0].policy?.injection).toBe("plain")
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: first study boot scaffolds MEMORY.md without SQLite propositions", async () => {
-    const h = createHarness({ policy: resolveConditionPolicy("static") })
-    try {
-      h.memory.store.create({ content: "Seeded constraint", scope: "personal", type: "constraint" }, { actor: "system" })
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "hello" })
-      await waitFor(() => h.prompts.length === 1)
-      const memoryMd = join(h.workspaceDir, "MEMORY.md")
-      expect(existsSync(memoryMd)).toBe(true)
-      expect(readFileSync(memoryMd, "utf-8")).not.toContain("Seeded constraint")
-      expect(h.prompts[0]).not.toContain("Seeded constraint")
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("file mode: gate and trace see the PLAN's injected set (empty), not raw store items", async () => {
-    // Even if preview/trace services are wired in the file arm (they're off in
-    // the shipped policy table, but the coordinator must not depend on that),
-    // the item store is NOT what the model sees — the gate must not park on
-    // it and the trace must not label it.
-    const traceInputs: TraceInput[] = []
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      preview: true,
-      traceInputs,
-    })
-    try {
-      h.memory.store.create({ content: "store item", scope: "personal", type: "constraint" }, { actor: "system" })
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "hello" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(timestampedKinds(h.store.messages)).not.toContain("memory_preview")
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 1)
-      expect(traceInputs).toHaveLength(0)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: editing MEMORY.md between turns rebuilds the session; item edits do NOT", async () => {
-    const h = createHarness({ policy: resolveConditionPolicy("static") })
-    try {
-      const item = h.memory.store.create({ content: "x", scope: "personal", type: "fact" }, { actor: "system" })
-      mkdirSync(h.workspaceDir, { recursive: true })
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), "# Memory\n- participant initial note\n")
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn 1" })
-      await waitFor(() => h.prompts.length === 1)
-      expect(h.sessionStarts).toHaveLength(1)
-      expect(h.prompts[0]).toContain("# Memory (workspace notes)")
-      expect(h.prompts[0]).toContain("- participant initial note")
-      expect(h.prompts[0]).not.toContain("- x")
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 1)
-
-      // Item-store changes are irrelevant in this arm — files are the memory.
-      h.memory.store.update(item.id, { content: "x (edited)" }, { actor: "user" })
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn 2" })
-      await waitFor(() => h.prompts.length === 2)
-      expect(h.sessionStarts).toHaveLength(1)
-      expect(h.prompts[1]).toContain("# Memory (workspace notes)")
-      expect(h.prompts[1]).toContain("- participant initial note")
-      expect(h.prompts[1]).not.toContain("x (edited)")
-      h.finishTurn()
-      await waitFor(() => h.store.turnFinishedCount === 2)
-
-      // A participant edit to the file must reach the NEXT turn.
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), "# Memory\n- switched to pnpm\n")
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "turn 3" })
-      await waitFor(() => h.prompts.length === 3)
-      expect(h.sessionStarts).toHaveLength(2)
-      expect(h.prompts[2]).toContain("# Memory (workspace notes)")
-      expect(h.prompts[2]).toContain("- switched to pnpm")
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: materializes the exact queued Markdown into durable atomic focus items", async () => {
-    const extractor = createStaticMemoryExtractor({
-      callJson: async () => ({ atoms: [{ content: "Use pnpm." }, { content: "Run tests before release." }] }),
-      modelId: "deepseek-test",
-    })
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      activeStudyTaskId: "038-S1",
-      staticMemoryExtractor: extractor,
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), "## Tooling\n- Use pnpm and run tests before release.\n")
-
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "ship it" })
-      await waitFor(() => h.prompts.length === 1)
-      await waitFor(() => (h.studyMemoryStore?.listTaskDeliveries("038-S1").length ?? 0) === 1)
-
-      expect(h.prompts[0]).toContain("- Use pnpm and run tests before release.")
-      expect(h.studyMemoryStore?.listTaskDeliveries("038-S1")[0]).toMatchObject({
-        condition: "static",
-        mode: "file",
-        items: [
-          { identity: { scheme: "static", id: expect.any(String) }, content: "Use pnpm.", version: 1 },
-          { identity: { scheme: "static", id: expect.any(String) }, content: "Run tests before release.", version: 1 },
-        ],
-      })
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: reserves the exact queued payload before slow extraction completes", async () => {
-    let releaseExtraction!: () => void
-    const extractionReleased = new Promise<void>((resolve) => { releaseExtraction = resolve })
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      activeStudyTaskId: "038-S1",
-      staticMemoryExtractor: {
-        extract: async (payload) => {
-          await extractionReleased
-          return {
-            atomSpecVersion: MEMORY_ATOM_SPEC_VERSION,
-            extractorVersion: STATIC_EXTRACTOR_VERSION,
-            payloadHash: createHash("sha256").update(payload.text, "utf8").digest("hex"),
-            atoms: [],
-            qualityFlags: [],
-          }
-        },
-      },
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      const exactSource = ` \r\n- Use pnpm. ${"x".repeat(30_000)}  \r\n\r\n`
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), exactSource)
-      mkdirSync(join(h.workspaceDir, "memory"))
-      for (let index = 0; index < 21; index += 1) {
-        writeFileSync(
-          join(h.workspaceDir, "memory", `topic-${String(index).padStart(2, "0")}.md`),
-          `  topic ${index}\r\n`,
-        )
-      }
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "ship it" })
-      await waitFor(() => (h.studyMemoryStore?.listPendingStaticFocusDeliveries({ taskId: "038-S1" }).length ?? 0) === 1)
-
-      const pending = h.studyMemoryStore!.listPendingStaticFocusDeliveries({ taskId: "038-S1" })[0]!
-      expect(pending.payload.text).toContain("- Use pnpm.")
-      expect(pending.payload.sources).toHaveLength(22)
-      expect(pending.payload.sources[0]!.injectedContent).toBe(exactSource)
-      expect(pending.payload.text.slice(
-        pending.payload.sources[0]!.start,
-        pending.payload.sources[0]!.end,
-      )).toBe(exactSource)
-      expect(pending.payload.sources.at(-1)).toMatchObject({
-        relPath: "memory/topic-20.md",
-        injectedContent: "  topic 20\r\n",
-      })
-      expect(h.prompts[0]).toContain("  topic 20\r\n")
-      expect(h.studyMemoryStore!.listTaskDeliveries("038-S1")).toEqual([])
-
-      releaseExtraction()
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([])
-      expect(h.studyMemoryStore!.listPendingStaticFocusDeliveries({ taskId: "038-S1" })).toEqual([])
-      expect(h.studyMemoryStore!.listTaskDeliveries("038-S1")).toHaveLength(1)
-    } finally {
-      releaseExtraction()
-      h.cleanup()
-    }
-  })
-
-  test("static arm: resumes a durable queued payload after restart before freeze", async () => {
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      activeStudyTaskId: "038-S1",
-      staticMemoryExtractor: createStaticMemoryExtractor({
-        callJson: async () => ({ atoms: [{ content: "Use pnpm." }] }),
-        modelId: "restart-test",
-      }),
-    })
-    try {
-      const payload = buildStaticFocusPayload([{ relPath: "MEMORY.md", content: "- Use pnpm.\n" }])
-      h.studyMemoryStore!.reserveStaticFocusDelivery({
-        injectionId: "static-before-restart",
-        taskId: "038-S1",
-        namespace: "project-1",
-        chatId: "chat-1",
-        turnId: "turn-before-restart",
-        turn: 1,
-        focusedAt: "2026-08-15T10:00:00.000Z",
-        deliveryHash: "queued-prompt-hash",
-        payload,
-      })
-
-      h.coordinator.resumePendingStaticFocusMaterializations()
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([])
-      expect(h.studyMemoryStore!.listTaskDeliveries("038-S1")[0]).toMatchObject({
-        injectionId: "static-before-restart",
-        items: [{ content: "Use pnpm.", version: 1 }],
-      })
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: a later freeze retry can recover a transient extraction failure", async () => {
-    let attempts = 0
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      activeStudyTaskId: "038-S1",
-      staticMemoryExtractor: {
-        extract: async (payload) => {
-          attempts += 1
-          if (attempts === 1) throw new Error("temporary extractor outage")
-          return createStaticMemoryExtractor({
-            callJson: async () => ({ atoms: [{ content: "Use pnpm." }] }),
-            modelId: "retry-test",
-          }).extract(payload)
-        },
-      },
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), "- Use pnpm.\n")
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "ship it" })
-
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([
-        expect.objectContaining({ code: "static_extraction_failed", blocking: true }),
-      ])
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([])
-      expect(attempts).toBe(2)
-      expect(h.studyMemoryStore!.listTaskDeliveries("038-S1")).toHaveLength(1)
-    } finally {
-      h.cleanup()
-    }
-  })
-
-  test("static arm: extraction failure is blocking measurement state, not a false zero-item turn", async () => {
-    const h = createHarness({
-      policy: resolveConditionPolicy("static"),
-      activeStudyTaskId: "038-S1",
-      staticMemoryExtractor: { extract: async () => { throw new Error("malformed atom output") } },
-    })
-    try {
-      mkdirSync(h.workspaceDir, { recursive: true })
-      writeFileSync(join(h.workspaceDir, "MEMORY.md"), "- Use pnpm.\n")
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "ship it" })
-
-      expect(await h.coordinator.awaitStudyMemorySettled("038-S1")).toEqual([
-        expect.objectContaining({ code: "static_extraction_failed", blocking: true, turnId: expect.any(String) }),
-      ])
-      expect(h.studyMemoryStore?.listTaskDeliveries("038-S1")).toEqual([])
+      expect(h.sessionStarts[0].policy?.condition).toBe("memosync")
+      expect(h.sessionStarts[0].policy?.injection).toBe("skills")
     } finally {
       h.cleanup()
     }
@@ -6276,50 +5631,6 @@ describe("study freeze settlement (Claude only)", () => {
 })
 
 describe("fork-first capture (2026-08-08 option A)", () => {
-  test("Auto selects the broad Project Copy extraction profile for the finished-session fork", async () => {
-    const forkProfiles: Array<string | undefined> = []
-    const routedProfiles: Array<string | undefined> = []
-    const zero = {
-      created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0,
-      reinforced: 0, reinforcedIds: [], revisions: 0, pending: [],
-    }
-    const capture: CaptureService = {
-      capture: async () => zero,
-      routeProposal: async () => zero,
-      captureFromPrompt: async () => zero,
-      captureFromExtraction: async (_raw, input) => {
-        routedProfiles.push(input.profile)
-        return zero
-      },
-    }
-    const h = createHarness({
-      policy: resolveConditionPolicy("auto"),
-      capture,
-      forkCapture: async (input) => {
-        forkProfiles.push(input.profile)
-        return { candidates: [] }
-      },
-      claudeSessionFileExists: () => true,
-    })
-    try {
-      await h.coordinator.send({
-        type: "chat.send",
-        chatId: "chat-1",
-        provider: "claude",
-        content: "Implement the booking and cancellation flows from the task specification.",
-      })
-      await waitFor(() => h.prompts.length === 1)
-      await h.store.setSessionToken("chat-1", "tok-auto")
-      h.emitEntry({ kind: "assistant_text", text: "Implemented both flows and added confirmation before cancellation.", messageId: "m1" })
-      h.finishTurn()
-      await waitFor(() => forkProfiles.length === 1)
-
-      expect(forkProfiles).toEqual(["auto-project-copy"])
-      expect(routedProfiles).toEqual(["auto-project-copy"])
-    } finally {
-      h.cleanup()
-    }
-  })
 
   test("the fork's extraction routes through captureFromExtraction; the sidecar pass never runs", async () => {
     const sidecarCalls: string[] = []
@@ -8072,14 +7383,12 @@ describe("memory on/off turn controls", () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
   }
 
-  test("effective state truth table; every study arm ignores both settings and chat switches", () => {
+  test("effective state truth table; a pinned study condition ignores both settings and chat switches", () => {
     for (const enabled of [false, true]) for (const learn of [false, true]) for (const disabled of [false, true]) {
       expect(resolveTurnMemoryState({ studyMode: false }, { enabled, learn }, disabled)).toEqual({
         memoryActive: enabled && !disabled, learnActive: enabled && !disabled && learn,
       })
-      for (const arm of ["memosync", "auto", "static"]) {
-        expect(resolveTurnMemoryState(resolveConditionPolicy(arm), { enabled, learn }, disabled)).toEqual({ memoryActive: true, learnActive: true })
-      }
+      expect(resolveTurnMemoryState(resolveConditionPolicy("memosync"), { enabled, learn }, disabled)).toEqual({ memoryActive: true, learnActive: true })
     }
   })
 
@@ -8246,8 +7555,10 @@ describe("memory on/off turn controls", () => {
       const names = sessionArgs.dynamicTools?.map((tool: any) => tool.name) ?? []
       if (mode === "off") {
         expect(turnArgs.developerInstructions).toBeUndefined()
+        // Codex fixes tool declarations per thread, so they stay declared (memory
+        // can be turned back on mid-chat); this turn just has nothing to dispatch to.
         expect(turnArgs.onDynamicToolCall).toBeUndefined()
-        expect(names).toEqual([])
+        expect(names.includes("propose_memory")).toBe(false)
       } else {
         expect(turnArgs.developerInstructions).toContain(item.content)
         expect(names).toContain("load_memory_detail")

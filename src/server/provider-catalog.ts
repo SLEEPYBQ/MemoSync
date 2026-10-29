@@ -2,22 +2,27 @@ import type {
   AgentProvider,
   ClaudeModelOptions,
   CodexModelOptions,
+  PiModelOptions,
   ClaudeContextWindow,
   ModelOptions,
   ProviderCatalogEntry,
   ProviderModelOption,
   ServiceTier,
 } from "../shared/types"
+import { isCliIsolationEnabled, resolveCodexRuntimeModel } from "./provider-runtime"
 import {
   CLAUDE_CONTEXT_WINDOW_OPTIONS,
   CLAUDE_REASONING_OPTIONS,
   DEFAULT_CLAUDE_MODEL_OPTIONS,
   DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_PI_MODEL_OPTIONS,
   PROVIDERS,
   normalizeClaudeContextWindow,
   normalizeProviderModelId,
   isClaudeReasoningEffort,
   isCodexReasoningEffort,
+  isPiReasoningEffort,
+  normalizePiModelId,
 } from "../shared/types"
 
 const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
@@ -51,13 +56,21 @@ function createServerProviders(): ProviderCatalogEntry[] {
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
 
 /**
- * What this deployment offers in the engine picker: Claude Code only (the
- * longitudinal build ships without the Codex CLI or its DeepSeek bridge).
- * The full SERVER_PROVIDERS catalog stays intact internally so legacy codex
- * chats keep resolving their stored model preferences.
+ * Study-mode pinning already narrows SERVER_PROVIDERS to one Claude model.
+ * Regular deployments expose both engines, including an explicitly configured
+ * isolated Codex provider model without advertising OpenAI IDs to that endpoint.
  */
-export function deployedProviders(): ProviderCatalogEntry[] {
-  return SERVER_PROVIDERS.filter((provider) => provider.id === "claude")
+export function deployedProviders(env: Readonly<Record<string, string | undefined>> = process.env): ProviderCatalogEntry[] {
+  return SERVER_PROVIDERS.map((provider) => {
+    if (provider.id !== "codex" || !isCliIsolationEnabled(env)) return provider
+    try {
+      const model = resolveCodexRuntimeModel(provider.defaultModel, env)
+      return { ...provider, defaultModel: model, models: [{ id: model, label: model, supportsEffort: true }] }
+    } catch {
+      // A missing key is reported when that engine is started, not while reading UI state.
+      return provider
+    }
+  })
 }
 
 export function resetServerProvidersForTests() {
@@ -156,7 +169,11 @@ export function getServerProviderCatalog(provider: AgentProvider): ProviderCatal
 }
 
 export function normalizeServerModel(provider: AgentProvider, model?: string): string {
-  const catalog = getServerProviderCatalog(provider)
+  const catalog = deployedProviders().find((entry) => entry.id === provider) ?? getServerProviderCatalog(provider)
+  // Any non-empty registry id is a valid pi model — only missing values fall
+  // back to the catalog default.
+  if (provider === "pi") return normalizePiModelId(model, catalog.defaultModel)
+  if (model && catalog.models.some((candidate) => candidate.id === model)) return model
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
     return normalizedModel
@@ -196,4 +213,15 @@ export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEf
 
 export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions): ServiceTier | undefined {
   return modelOptions.fastMode ? "fast" : undefined
+}
+
+export function normalizePiModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): PiModelOptions {
+  const reasoningEffort = modelOptions?.pi?.reasoningEffort
+  return {
+    reasoningEffort: isPiReasoningEffort(reasoningEffort)
+      ? reasoningEffort
+      : isPiReasoningEffort(legacyEffort)
+        ? legacyEffort
+        : DEFAULT_PI_MODEL_OPTIONS.reasoningEffort,
+  }
 }

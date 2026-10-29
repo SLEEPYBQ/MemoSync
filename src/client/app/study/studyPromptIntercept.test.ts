@@ -171,6 +171,29 @@ describe("study prompt interception seam (2026-08-19 evening revision)", () => {
     expect(cleared).toBe(1)
   })
 
+  test("clears an exact restored draft on HTTP without WebCrypto digests", async () => {
+    const originalCrypto = globalThis.crypto
+    Object.defineProperty(globalThis, "crypto", { value: {}, configurable: true, writable: true })
+    try {
+      const current = {
+        content: "Build the booking flow",
+        attachments: [{ id: "upload-1", relativePath: "brief.md" }],
+      }
+      const promptHash = await hashStudyPromptDraft(current)
+      expect(promptHash).toBe(hashMemoryBoardOpeningPrompt(current))
+
+      let cleared = 0
+      await expect(settleServerOwnedStudyPromptDraft({
+        promptHash,
+        getCurrent: () => current,
+        clear: () => { cleared += 1 },
+      })).resolves.toBe(true)
+      expect(cleared).toBe(1)
+    } finally {
+      Object.defineProperty(globalThis, "crypto", { value: originalCrypto, configurable: true, writable: true })
+    }
+  })
+
   test("never erases a draft changed while delayed ownership status is arriving", async () => {
     const owned = {
       content: "Build the booking flow",

@@ -1,9 +1,9 @@
-import { expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
-import { tmpdir } from "node:os"
-import { join } from "node:path"
-import { StudyMemoryStore } from "./experiment/study-memory-store"
-import { isExplicitMemoryUpdateRequest, StudyTelemetryError, StudyTelemetryService } from "./study-telemetry"
+import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { StudyMemoryStore } from "./experiment/study-memory-store";
+import { StudyTelemetryError, StudyTelemetryService } from "./study-telemetry";
 
 test("durably records one idempotent participant monitoring interaction with server-owned study identity", () => {
   const store = new StudyMemoryStore(":memory:")
@@ -50,7 +50,7 @@ test("rejects client-authored Control, cross-condition Monitoring, and server ev
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-client-boundary",
-    condition: "static",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
   })
   expect(() => telemetry.recordClient({
@@ -63,12 +63,12 @@ test("rejects client-authored Control, cross-condition Monitoring, and server ev
     eventId: "wrong-condition-monitor",
     kind: "monitoring",
     surface: "summary_panel",
-    action: "scroll",
+    action: "open",
   })).toThrow("not available in this condition")
   expect(() => telemetry.recordClient({
     eventId: "control-operation:forged:attempted",
     kind: "monitoring",
-    surface: "static_memory_panel",
+    surface: "timeline",
     action: "scroll",
   })).toThrow("server-owned namespace")
   expect(() => telemetry.recordClient({
@@ -82,28 +82,24 @@ test("rejects client-authored Control, cross-condition Monitoring, and server ev
   store.close()
 })
 
-test("reserves client Monitoring and Auto summary prompt namespaces and rejects stage-event preemption", () => {
+test("reserves client Monitoring namespaces and rejects stage-event preemption", () => {
   const store = new StudyMemoryStore(":memory:")
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-reserved",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
   })
   const envelope = {
     recordedAt: "2026-08-20T10:00:00.000Z",
-    condition: "auto" as const,
+    condition: "memosync" as const,
     participant: "P-reserved",
     allocationMode: "study" as const,
   }
   expect(() => telemetry.recordServerEvent({
     ...envelope,
-    event: { type: "ui.monitor", eventId: "stage:first:P-reserved:038-S1:session_exposure", sessionId: "chat-1", surface: "summary_panel", interaction: "scroll" },
+    event: { type: "ui.monitor", eventId: "stage:first:P-reserved:038-S1:session_exposure", sessionId: "chat-1", surface: "timeline", interaction: "scroll" },
   })).toThrow("requires a monitor:")
-  expect(() => telemetry.recordServerEvent({
-    ...envelope,
-    event: { type: "study.participant_prompt", eventId: "monitor:wrong", sessionId: "chat-1", surface: "auto_summary_chat", action: "submit", projectId: "project-038", content: "Inspect memory." },
-  })).toThrow("require a prompt:auto-summary:")
   store.recordStudyTelemetryEvent({
     eventId: "stage:first:P-reserved:038-S1:session_exposure",
     recordedAt: "2026-08-20T09:59:00.000Z",
@@ -112,144 +108,13 @@ test("reserves client Monitoring and Auto summary prompt namespaces and rejects 
     taskId: "038-S1",
     sessionId: "038-S1",
     chatId: "chat-1",
-    condition: "auto",
+    condition: "memosync",
     kind: "monitoring",
-    surface: "summary_panel",
+    surface: "timeline",
     action: "scroll",
     payload: {},
   })
   expect(() => telemetry.recordServerStageEntered("session_exposure", "038-S1")).toThrow("already bound to different durable evidence")
-  store.close()
-})
-
-test("records Static edit entry only through its server-owned semantic ingress", () => {
-  const store = new StudyMemoryStore(":memory:")
-  const telemetry = new StudyTelemetryService({
-    store,
-    participantId: "P-static-entered",
-    condition: "static",
-    activeTask: () => ({ taskId: "038-S1", state: "open" }),
-    now: () => "2026-08-20T10:00:00.000Z",
-  })
-  telemetry.recordServerStageEntered("session_exposure", "038-S1")
-  expect(telemetry.recordStaticEditEntered({
-    operationId: "control:static-edit:1",
-    path: "MEMORY.md",
-    chatId: "chat-1",
-    clientTimestamp: "2026-08-20T10:00:00.000Z",
-  })).toMatchObject({ created: true, event: { kind: "stage_enter", action: "edit_entered" } })
-  expect(telemetry.recordStaticEditEntered({
-    operationId: "control:static-edit:1",
-    path: "MEMORY.md",
-    chatId: "chat-1",
-    clientTimestamp: "2026-08-20T10:00:00.000Z",
-  })).toMatchObject({ created: false })
-  expect(store.listStudyTelemetryEvents().filter((event) => event.action === "edit_entered")).toHaveLength(1)
-  store.close()
-})
-
-test("rejects a Static edit-entry claim for an ordinary project file", () => {
-  const store = new StudyMemoryStore(":memory:")
-  const telemetry = new StudyTelemetryService({
-    store,
-    participantId: "P-static-non-memory",
-    condition: "static",
-    activeTask: () => ({ taskId: "038-S1", state: "open" }),
-  })
-
-  expect(() => telemetry.recordStaticEditEntered({
-    operationId: "control:static-edit:ordinary-file-1",
-    path: "src/app.ts",
-    chatId: "chat-1",
-    clientTimestamp: "2026-08-20T10:00:00.000Z",
-  })).toThrow("not a Static memory Markdown path")
-  expect(store.listStudyTelemetryEvents()).toEqual([])
-  store.close()
-})
-
-test("a delayed Static edit entry binds to its completed historical operation after freeze", () => {
-  const store = new StudyMemoryStore(":memory:")
-  let active = { taskId: "038-S1", state: "open" as const }
-  let now = "2026-08-20T10:00:00.000Z"
-  const telemetry = new StudyTelemetryService({
-    store,
-    participantId: "P-static-late",
-    condition: "static",
-    activeTask: () => active,
-    now: () => now,
-  })
-  telemetry.recordServerStageEntered("session_exposure", "038-S1")
-  telemetry.recordParticipantPrompt({
-    taskId: "038-S1",
-    turnId: "turn-1",
-    chatId: "chat-static-038",
-    content: "Update the saved memory.",
-    attachments: [],
-  })
-  const envelope = {
-    condition: "static" as const,
-    participant: "P-static-late",
-    allocationMode: "study" as const,
-  }
-  const operation = {
-    type: "study.control_operation" as const,
-    operationId: "control:static-edit:late",
-    taskId: "038-S1",
-    sessionId: "038-S1",
-    chatId: "chat-static-038",
-    surface: "static_memory" as const,
-    action: "edit",
-    controlType: "static_edit" as const,
-    payload: { projectId: "project-038", path: "MEMORY.md", durationMs: 30_000 },
-  }
-  telemetry.recordServerEvent({
-    ...envelope,
-    recordedAt: "2026-08-20T10:02:00.000Z",
-    event: { ...operation, phase: "attempted" },
-  })
-  telemetry.recordServerEvent({
-    ...envelope,
-    recordedAt: "2026-08-20T10:03:00.000Z",
-    event: { ...operation, phase: "completed" },
-  })
-  store.createFreezeSnapshot({
-    snapshotId: "freeze-static-038",
-    taskId: "038-S1",
-    frozenAt: "2026-08-20T10:10:00.000Z",
-  })
-  active = { taskId: "098-S1", state: "open" }
-  now = "2026-08-20T10:20:00.000Z"
-  telemetry.recordServerStageEntered("session_exposure", "098-S1")
-
-  const input = {
-    operationId: operation.operationId,
-    path: "MEMORY.md",
-    chatId: "chat-static-038",
-    clientTimestamp: "2026-08-20T10:01:00.000Z",
-  }
-  expect(telemetry.recordStaticEditEntered(input)).toMatchObject({
-    created: true,
-    event: {
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      chatId: input.chatId,
-      clientTimestamp: input.clientTimestamp,
-    },
-  })
-  expect(telemetry.recordStaticEditEntered(input)).toMatchObject({ created: false })
-  expect(() => telemetry.recordStaticEditEntered({
-    ...input,
-    operationId: "control:static-edit:post-window",
-    clientTimestamp: "2026-08-20T10:15:00.000Z",
-  })).toThrow("no durable attempted operation")
-  expect(telemetry.recordStaticEditEntered({
-    ...input,
-    operationId: "control:static-edit:other-chat",
-    chatId: "chat-unbound",
-  })).toMatchObject({ event: { taskId: "098-S1", sessionId: "098-S1", chatId: "chat-unbound" } })
-  expect(store.listStudyTelemetryEvents().filter((event) => (
-    event.payload.operationId === operation.operationId && event.payload.outcome === "completed"
-  ))).toHaveLength(1)
   store.close()
 })
 
@@ -259,7 +124,7 @@ test("records the first stage entry once and never invents a replacement timesta
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-stage",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => timestamps.shift()!,
   })
@@ -394,14 +259,14 @@ test("records condition-sidebar click and scroll monitoring from the shared logg
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-static-monitor",
-    condition: "static",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
   })
 
   for (const interaction of ["click", "scroll"] as const) {
     telemetry.recordServerEvent({
       recordedAt: "2026-08-20T10:00:00.000Z",
-      condition: "static",
+      condition: "memosync",
       participant: "P-static-monitor",
       allocationMode: "study",
       event: {
@@ -410,7 +275,7 @@ test("records condition-sidebar click and scroll monitoring from the shared logg
         taskId: "038-S1",
         sessionId: "038-S1",
         chatId: "chat-1",
-        surface: "static_memory_panel",
+        surface: "timeline",
         interaction,
       },
     })
@@ -421,64 +286,10 @@ test("records condition-sidebar click and scroll monitoring from the shared logg
     surface: event.surface,
     action: event.action,
   }))).toEqual([
-    { kind: "monitoring", surface: "static_memory_panel", action: "click" },
-    { kind: "monitoring", surface: "static_memory_panel", action: "scroll" },
+    { kind: "monitoring", surface: "timeline", action: "click" },
+    { kind: "monitoring", surface: "timeline", action: "scroll" },
   ])
   store.close()
-})
-
-test("records only participant-originated baseline memory controls with Static edit duration", () => {
-  const cases = [
-    {
-      participantId: "P-auto",
-      condition: "auto" as const,
-      event: {
-        type: "memory.control_request" as const,
-        sessionId: "chat-auto",
-        via: "auto_summary_chat" as const,
-        requestedAction: "update_memory" as const,
-        applied: 1,
-      },
-      expected: { surface: "auto_summary_chat", action: "update_memory" },
-    },
-    {
-      participantId: "P-static",
-      condition: "static" as const,
-      event: {
-        type: "memory.static_edit" as const,
-        sessionId: "chat-static",
-        projectId: "project-static",
-        path: "MEMORY.md",
-        durationMs: 12_340,
-      },
-      expected: { surface: "static_memory", action: "edit_submitted", durationMs: 12_340 },
-    },
-  ]
-
-  for (const entry of cases) {
-    const store = new StudyMemoryStore(":memory:")
-    const telemetry = new StudyTelemetryService({
-      store,
-      participantId: entry.participantId,
-      condition: entry.condition,
-      activeTask: () => ({ taskId: "038-S1", state: "open" }),
-    })
-    telemetry.recordServerEvent({
-      recordedAt: "2026-08-20T10:00:00.000Z",
-      condition: entry.condition,
-      participant: entry.participantId,
-      allocationMode: "study",
-      event: entry.event,
-    })
-    const [event] = store.listStudyTelemetryEvents()
-    expect(event).toMatchObject({
-      kind: "control",
-      surface: entry.expected.surface,
-      action: entry.expected.action,
-      ...(entry.expected.durationMs ? { payload: expect.objectContaining({ durationMs: entry.expected.durationMs }) } : {}),
-    })
-    store.close()
-  }
 })
 
 test("keeps MemoSync interrupt, resume and enforce as separate durable Control events", () => {
@@ -561,13 +372,13 @@ test("keeps phased MemoSync operations canonical while retaining compatibility e
   store.close()
 })
 
-test("binds every accepted baseline prompt to its transcript turn and keeps memory-update matching non-authoritative", () => {
+test("binds every accepted MemoSync prompt to its transcript turn without baseline prompt matching", () => {
   const store = new StudyMemoryStore(":memory:")
   const times = ["2026-08-20T10:00:00.000Z", "2026-08-20T10:01:00.000Z", "2026-08-20T10:02:00.000Z"]
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-auto-prompt",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => times.shift()!,
   })
@@ -585,7 +396,7 @@ test("binds every accepted baseline prompt to its transcript turn and keeps memo
       eventId: "prompt:P-auto-prompt:038-S1:chat-1:turn-1",
       kind: "participant_prompt",
       action: "submit",
-      payload: { memoryUpdateCandidate: { matched: true, authority: "candidate_only" } },
+      payload: { memoryUpdateCandidate: { matched: false, authority: "candidate_only" } },
     },
   })
   expect(telemetry.recordParticipantPrompt({
@@ -610,7 +421,7 @@ test("records an attachment-only participant prompt instead of leaving an unreco
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-attachment-prompt",
-    condition: "static",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => "2026-08-20T10:00:00.000Z",
   })
@@ -633,80 +444,6 @@ test("records an attachment-only participant prompt instead of leaving an unreco
     },
   })
   store.close()
-})
-
-test("durably keeps an Auto summary-panel prompt raw until a separately identified update control is observed", () => {
-  const store = new StudyMemoryStore(":memory:")
-  const telemetry = new StudyTelemetryService({
-    store,
-    participantId: "P-auto-summary",
-    condition: "auto",
-    activeTask: () => ({ taskId: "038-S1", state: "open" }),
-    now: () => "2026-08-20T10:00:00.000Z",
-  })
-  const prompt = {
-    type: "study.participant_prompt" as const,
-    eventId: "prompt:auto-summary:request-1",
-    sessionId: "chat-1",
-    surface: "auto_summary_chat" as const,
-    action: "submit" as const,
-    projectId: "project-038",
-    content: "Please update the memory to use pnpm.",
-  }
-  const envelope = {
-    recordedAt: "2026-08-20T10:00:00.000Z",
-    condition: "auto" as const,
-    participant: "P-auto-summary",
-    allocationMode: "study" as const,
-    event: prompt,
-  }
-
-  expect(telemetry.recordServerEvent(envelope)).toMatchObject({
-    created: true,
-    event: {
-      eventId: prompt.eventId,
-      kind: "participant_prompt",
-      surface: "auto_summary_chat",
-      action: "submit",
-      payload: expect.objectContaining({ content: prompt.content, clientEventId: prompt.eventId }),
-    },
-  })
-  expect(telemetry.recordServerEvent(envelope)).toMatchObject({ created: false })
-  expect(() => telemetry.recordServerEvent({
-    ...envelope,
-    event: { ...prompt, content: "Different content." },
-  })).toThrow("reused with different evidence")
-
-  const update = {
-    type: "memory.control_request" as const,
-    eventId: `control:auto-summary:${prompt.eventId}`,
-    sessionId: "chat-1",
-    via: "auto_summary_chat" as const,
-    requestedAction: "update_memory" as const,
-    causalRequestId: prompt.eventId,
-    applied: 2,
-  }
-  expect(telemetry.recordServerEvent({ ...envelope, event: update })).toMatchObject({
-    created: true,
-    event: {
-      eventId: update.eventId,
-      kind: "control",
-      payload: expect.objectContaining({ causalRequestId: prompt.eventId, applied: 2 }),
-    },
-  })
-  expect(store.listStudyTelemetryEvents().map((event) => [event.eventId, event.kind])).toEqual([
-    [prompt.eventId, "participant_prompt"],
-    [update.eventId, "control"],
-  ])
-  store.close()
-})
-
-test("memory-update candidate matching handles direct wording and explicit negation", () => {
-  expect(isExplicitMemoryUpdateRequest("Please remember that this project uses pnpm.")).toBe(true)
-  expect(isExplicitMemoryUpdateRequest("请记住这个项目使用 pnpm。 ")).toBe(true)
-  expect(isExplicitMemoryUpdateRequest("Do not remember this temporary workaround.")).toBe(false)
-  expect(isExplicitMemoryUpdateRequest("不要记住这个临时 workaround。 ")).toBe(false)
-  expect(isExplicitMemoryUpdateRequest("What do you remember about this project?")).toBe(false)
 })
 
 test("maps MemoSync transfer, checkup and Working Memory decisions while excluding agent-only shown rows", () => {
@@ -761,7 +498,7 @@ test("a client event retry after a real SQLite reopen returns the original serve
     eventId: "monitor-restart-1",
     clientTimestamp: "2026-08-20T09:59:59.000Z",
     kind: "monitoring" as const,
-    surface: "summary_panel",
+    surface: "timeline",
     action: "click",
     chatId: "chat-1",
     payload: { memoryIds: ["M-01"] },
@@ -770,7 +507,7 @@ test("a client event retry after a real SQLite reopen returns the original serve
   new StudyTelemetryService({
     store: firstStore,
     participantId: "P-restart",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => "2026-08-20T10:00:00.000Z",
   }).recordClient(input)
@@ -780,7 +517,7 @@ test("a client event retry after a real SQLite reopen returns the original serve
   const retried = new StudyTelemetryService({
     store: reopened,
     participantId: "P-restart",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => "2026-08-20T10:10:00.000Z",
   }).recordClient(input)
@@ -797,7 +534,7 @@ test("a delayed Monitoring event remains bound to its original chat task after f
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-late-monitoring",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => active,
     now: () => now,
   })
@@ -822,7 +559,7 @@ test("a delayed Monitoring event remains bound to its original chat task after f
     eventId: "monitor:late-038",
     clientTimestamp: "2026-08-20T10:05:00.000Z",
     kind: "monitoring",
-    surface: "summary_panel",
+    surface: "timeline",
     action: "scroll",
     chatId: "chat-038",
   })
@@ -847,7 +584,7 @@ test("records one ordered surface exposure and keeps later transitions bound to 
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-surface-exposure",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => active,
     now: () => now,
   })
@@ -865,7 +602,7 @@ test("records one ordered surface exposure and keeps later transitions bound to 
       eventId: `surface-exposure:exposure-auto-1:${sequence}`,
       clientTimestamp,
       kind: "surface_exposure",
-      surface: "auto_summary_sidebar",
+      surface: "memory_record",
       action,
       chatId: "chat-038",
       payload: {
@@ -933,7 +670,7 @@ test("accepts the equal-time initial-hidden pair across a real SQLite reopen", (
     eventId: `surface-exposure:hidden-restart:${sequence}`,
     clientTimestamp: timestamp,
     kind: "surface_exposure" as const,
-    surface: "auto_summary_sidebar",
+    surface: "memory_record",
     action,
     chatId: "chat-hidden",
     payload: {
@@ -947,7 +684,7 @@ test("accepts the equal-time initial-hidden pair across a real SQLite reopen", (
   const first = new StudyTelemetryService({
     store: firstStore,
     participantId: "P-hidden-restart",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "open" }),
     now: () => "2026-08-20T10:10:00.000Z",
   })
@@ -959,7 +696,7 @@ test("accepts the equal-time initial-hidden pair across a real SQLite reopen", (
   const afterRestart = new StudyTelemetryService({
     store: reopened,
     participantId: "P-hidden-restart",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "098-S1", state: "open" }),
     now: () => "2026-08-20T10:20:00.000Z",
   })
@@ -985,7 +722,7 @@ test("an unbound stale Monitoring event is rejected instead of being assigned to
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-unbound-monitoring",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => ({ taskId: "098-S1", state: "open" }),
     now: () => "2026-08-20T10:20:00.000Z",
   })
@@ -995,7 +732,7 @@ test("an unbound stale Monitoring event is rejected instead of being assigned to
     eventId: "monitor:unbound-old",
     clientTimestamp: "2026-08-20T10:05:00.000Z",
     kind: "monitoring",
-    surface: "summary_panel",
+    surface: "board",
     action: "scroll",
     chatId: "chat-with-no-durable-task",
   })).toThrow("outside the active server-observed task window")
@@ -1012,7 +749,7 @@ test("a delayed ui.monitor logger event uses the durable chat binding rather tha
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-late-logger",
-    condition: "auto",
+    condition: "memosync",
     activeTask: () => active,
     now: () => now,
   })
@@ -1035,7 +772,7 @@ test("a delayed ui.monitor logger event uses the durable chat binding rather tha
 
   const result = telemetry.recordServerEvent({
     recordedAt: "2026-08-20T10:20:00.000Z",
-    condition: "auto",
+    condition: "memosync",
     participant: "P-late-logger",
     allocationMode: "study",
     event: {
@@ -1044,7 +781,7 @@ test("a delayed ui.monitor logger event uses the durable chat binding rather tha
       clientTimestamp: "2026-08-20T10:05:00.000Z",
       sessionId: "chat-038",
       chatId: "chat-038",
-      surface: "summary_panel",
+      surface: "timeline",
       interaction: "scroll",
     },
   })
@@ -1180,7 +917,7 @@ test("admits each post-session stage only after the preceding durable submission
   const telemetry = new StudyTelemetryService({
     store,
     participantId: "P-post-stages",
-    condition: "static",
+    condition: "memosync",
     activeTask: () => ({ taskId: "038-S1", state: "frozen" }),
     now: () => "2026-08-20T10:01:00.000Z",
   })

@@ -130,7 +130,7 @@ const VERSIONED_FIELDS = [
 const SCOPE_REACH: Record<MemoryScope, number> = { session: 0, project: 1, personal: 2 };
 
 /** Patch keys whose change means "the text/meaning the model acts on moved" — these bump `version`. */
-const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'type', 'topic', 'abstractionLevel'] as const;
+const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel'] as const;
 
 type CandidateDecisionTransition = 'ordinary' | 'dismiss' | 'restore';
 
@@ -144,6 +144,15 @@ export class CandidateDismissalTransitionError extends Error {
   constructor(message = 'A dismissed Candidate is immutable. Restore a non-sensitive Candidate through its review flow.') {
     super(message);
     this.name = 'CandidateDismissalTransitionError';
+  }
+}
+
+export class RevisionConflictError extends Error {
+  readonly code = 'CONFLICT';
+
+  constructor() {
+    super('Revision targets changed or their reviewed snapshot is unavailable; review the revision again');
+    this.name = 'RevisionConflictError';
   }
 }
 
@@ -435,6 +444,7 @@ export class MemoryStore {
       if (!existing) throw new Error(`Memory not found: ${id}`);
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
       this.recordCandidateDismissal(existing);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
@@ -452,6 +462,7 @@ export class MemoryStore {
       const existing = this.getById(id);
       if (!existing) return;
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
@@ -835,15 +846,36 @@ export class MemoryStore {
       expectedTargetContent?: string;
     },
   ): MemoryItem | null {
+    return this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
+  }
+
+  /** Preserve competing capture updates as target-bound alternatives, not independent facts. */
+  createCaptureUpdateProposal(
+    input: CreateMemoryInput,
+    targetId: string,
+    meta: ActorMeta,
+    opts?: { expectedTargetContent?: string },
+  ): { item: MemoryItem; isRevision: boolean } | null {
+    return this.createRevisionCandidate(input, targetId, meta, true, opts);
+  }
+
+  private createRevisionCandidate(
+    input: CreateMemoryInput,
+    targetId: string,
+    meta: ActorMeta,
+    allowCompeting: boolean,
+    opts?: { expectedTargetContent?: string },
+  ): { item: MemoryItem; isRevision: boolean } | null {
     return this.db.transaction(() => {
       const target = this.getById(targetId);
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
-      if (this.hasOpenRevision(targetId)) return null;
+      if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
       const proposal = this.create({ ...input, status: 'candidate' }, meta);
       this.addRelation(proposal.id, targetId, 'revises');
-      return proposal;
-    })() as MemoryItem | null;
+      this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
+      return { item: proposal, isRevision: true };
+    })();
   }
 
   /**
@@ -852,15 +884,27 @@ export class MemoryStore {
    * one; a MERGE proposal archives both originals). Two separate mutations
    * here left a half-applied state on mid-way failure (both memories active,
    * candidate spent). Returns the activated item plus the archived targets
-   * ([] when the candidate turned out not to be a revision / targets already
-   * resolved).
+   * ([] when the candidate is not a revision). Legacy proposals without a
+   * reviewed snapshot require re-review rather than guessing what was seen.
    */
-  acceptRevision(candidateId: string, meta: ActorMeta): { updated: MemoryItem; replaced: MemoryItem[] } {
+  acceptRevision(candidateId: string, meta: ActorMeta, draftPatch?: Partial<MemoryItem>): { updated: MemoryItem; replaced: MemoryItem[] } {
     return this.db.transaction(() => {
+      const targets = this.revisionTargetsOf(candidateId);
+      const reviewed = this.getKv<ReturnType<MemoryStore['revisionSnapshot']>[]>(`revision_targets:${candidateId}`);
+      if (targets.length > 0 || reviewed !== null) {
+        if (!Array.isArray(reviewed) || reviewed.length !== targets.length || targets.some((target, index) => {
+          const snapshot = this.revisionSnapshot(target);
+          return target.status !== 'active'
+            || reviewed[index]?.id !== snapshot.id
+            || reviewed[index]?.version !== snapshot.version
+            || reviewed[index]?.digest !== snapshot.digest;
+        })) throw new RevisionConflictError();
+      }
+      if (draftPatch && Object.keys(draftPatch).length > 0) {
+        this.replaceCandidateDraft(candidateId, draftPatch, meta);
+      }
       const updated = this.update(candidateId, { status: 'active' }, meta);
-      const replaced = this.revisionTargetsOf(candidateId)
-        .filter((t) => t.status === 'active')
-        .map((t) => this.archive(t.id, meta));
+      const replaced = targets.map((t) => this.archive(t.id, meta));
       return { updated, replaced };
     })() as { updated: MemoryItem; replaced: MemoryItem[] };
   }
@@ -1026,16 +1070,31 @@ export class MemoryStore {
     opts?: { expectedContents?: [string, string] },
   ): MemoryItem | null {
     return this.db.transaction(() => {
+      if (targetIds[0] === targetIds[1]) return null;
+      const targets: MemoryItem[] = [];
       for (let i = 0; i < targetIds.length; i++) {
         const target = this.getById(targetIds[i]!);
         if (!target || target.status !== 'active') return null;
         if (opts?.expectedContents && target.content !== opts.expectedContents[i]) return null;
         if (this.hasOpenRevision(target.id)) return null;
+        if (target.scope !== input.scope
+          || (input.scope === 'project' && (!input.projectId || target.projectId !== input.projectId))
+          || (input.scope === 'session' && (!input.sessionId || target.sessionId !== input.sessionId))) return null;
+        targets.push(target);
       }
       const proposal = this.create({ ...input, status: 'candidate' }, meta);
       for (const targetId of targetIds) this.addRelation(proposal.id, targetId, 'revises');
+      this.setKv(`revision_targets:${proposal.id}`, targets.map((target) => this.revisionSnapshot(target)));
       return proposal;
     })() as MemoryItem | null;
+  }
+
+  private revisionSnapshot(item: MemoryItem) {
+    return {
+      id: item.id,
+      version: item.version,
+      digest: createHash('sha256').update(JSON.stringify(this.snapshotOf(item))).digest('hex'),
+    };
   }
 
   /** Read a JSON value from the memory_kv side table (null when absent/corrupt). */

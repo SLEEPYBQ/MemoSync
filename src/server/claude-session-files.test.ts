@@ -32,4 +32,17 @@ describe("claudeSessionFileExists", () => {
     expect(claudeSessionFileExists("/root/Kanna/test", "../../etc/passwd", home)).toBe(false)
     expect(claudeSessionFileExists("/root/Kanna/test", "a/b", home)).toBe(false)
   })
+
+  test("resumes only from the isolated profile, not a matching host session", () => {
+    const hostDir = join(home, ".claude", "projects", "-workspace")
+    mkdirSync(hostDir, { recursive: true })
+    writeFileSync(join(hostDir, "same-id.jsonl"), "{}")
+    const profile = join(home, "memosync-profile")
+    const env = { MEMOSYNC_CLI_PROFILE_DIR: profile }
+    expect(claudeSessionFileExists("/workspace", "same-id", home, env)).toBe(false)
+    const isolatedDir = join(profile, "claude", "projects", "-workspace")
+    mkdirSync(isolatedDir, { recursive: true })
+    writeFileSync(join(isolatedDir, "same-id.jsonl"), "{}")
+    expect(claudeSessionFileExists("/workspace", "same-id", home, env)).toBe(true)
+  })
 })

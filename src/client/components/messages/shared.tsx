@@ -1,4 +1,3 @@
-import { copyTextToClipboard } from "../../lib/clipboard"
 import {
   Children,
   cloneElement,
@@ -42,6 +41,7 @@ import {
   Check,
 } from "lucide-react"
 import { cn } from "../../lib/utils"
+import { copyTextToClipboard } from "../../lib/clipboard"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useMessageViolatedCitations, useTranscriptRenderOptions } from "./render-context"
 import { useTranscriptChatContext } from "./render-context"
@@ -161,6 +161,8 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
 
       <button
         onClick={() => setExpanded(!expanded)}
+        data-expandable-toggle=""
+        aria-expanded={expanded}
         className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
       >
         <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
@@ -239,17 +241,18 @@ export function VerticalLineContainer({ children, className }: { children: React
 // concurrent calls itself, so this hook gates on `status` (effects in the same
 // commit run synchronously, so only the first mount actually fetches).
 export function useEnsureMemoriesLoaded() {
+  const { readonly } = useTranscriptRenderOptions()
   const status = useMemoryStore((s) => s.status)
   const loadAll = useMemoryStore((s) => s.loadAll)
   useEffect(() => {
-    if (status === "idle") void loadAll()
-  }, [status, loadAll])
+    if (!readonly && status === "idle") void loadAll()
+  }, [readonly, status, loadAll])
 }
 
 /**
  * Per-memory interrupt plumbing (2026-08-19 C1/C2): ChatPage provides this
- * while its chat can be stopped; every citation chip (reply text, sidebar
- * live row) then carries a stop entry in its hover card, and the recovery
+ * while its chat can be stopped; current-turn citation chips (reply text,
+ * sidebar live row) show Stop/Confirm beside the chip, and the recovery
  * card reaches resume() through the same context.
  */
 export interface TurnInterruptApi {
@@ -294,8 +297,6 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
   const memory = useMemoryStore((s) => s.items.find((m) => m.id === id))
   const interruptApi = useTurnInterrupt()
   const belongsToCurrentTurn = useContext(CurrentTurnMemoryCitationContext)
-  // Two-step confirm inside the hover card (C1: 轻确认防误触).
-  const [stopArmed, setStopArmed] = useState(false)
   // The VISIBLE stop button next to the chip (2026-08-19 evening revision):
   // hover-only was undiscoverable. Same two-step confirm, auto-disarm.
   const [inlineArmed, setInlineArmed] = useState(false)
@@ -350,7 +351,6 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           hoverReportedRef.current = true
           recordUiMonitor("citation_hover", { ids: [id], sessionId: chatId, interaction: "hover" })
         }
-        if (!open) setStopArmed(false)
       }}
     >
       <HoverCardTrigger asChild>
@@ -367,38 +367,14 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           {label}
         </span>
       </HoverCardTrigger>
-      <HoverCardContent className="w-80 space-y-2 text-xs">
+      <HoverCardContent className="w-80 text-xs">
         {violatedHere ? (
-          <p className="flex items-center gap-1 font-medium text-red-600 dark:text-red-400">
+          <p className="mb-2 flex items-center gap-1 font-medium text-red-600 dark:text-red-400">
             <AlertTriangle className="h-3 w-3 shrink-0" /> this reply violated the memory — details in the trace below
           </p>
         ) : null}
-        {/* Hover shows the canonical read-only card — the ONE exception is the
-            per-memory stop entry while a turn is running (2026-08-19 C1):
-            spotting a misuse and stopping happen at the same place. */}
+        {/* Inspect the canonical memory here; Stop/Confirm stays beside the citation. */}
         <MemoryCardCore item={memory} />
-        {interruptApi?.active && belongsToCurrentTurn ? (
-          <button
-            type="button"
-            disabled={interruptApi.readOnly}
-            onClick={() => {
-              if (!stopArmed) {
-                setStopArmed(true)
-                return
-              }
-              fireInterrupt()
-            }}
-            className={cn(
-              "w-full rounded-md px-2 py-1.5 text-left text-[11px] font-medium shadow-sm transition-colors",
-              interruptApi.readOnly && "cursor-default opacity-70",
-              stopArmed
-                ? "bg-destructive text-destructive-foreground hover:bg-destructive/85"
-                : "border border-destructive/40 text-destructive hover:bg-destructive/10",
-            )}
-          >
-            {stopArmed ? "Confirm — stop the turn over this memory" : "This memory is being misused — stop"}
-          </button>
-        ) : null}
       </HoverCardContent>
     </HoverCard>
     {interruptApi?.active && belongsToCurrentTurn ? (

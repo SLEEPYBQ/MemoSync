@@ -1,33 +1,48 @@
-/** Async Clipboard is absent on LAN HTTP and can reject in PWAs. Keep the
- * selection fallback in the click gesture, and report success only on a real copy.
- */
 export async function copyTextToClipboard(text: string): Promise<boolean> {
-  if (typeof navigator !== "undefined") {
-    try {
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text)
-        return true
-      }
-    } catch {
-      // Try the legacy selection API when browser policy rejects async copy.
-    }
-  }
-  if (typeof document === "undefined") return false
-  const previousFocus = document.activeElement
-  const helper = document.createElement("textarea")
-  helper.value = text
-  helper.setAttribute("readonly", "")
-  Object.assign(helper.style, { position: "fixed", top: "0", left: "0", opacity: "0" })
-  document.body.appendChild(helper)
   try {
-    helper.focus()
-    helper.select()
-    helper.setSelectionRange(0, text.length)
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch {
+    // Permission denial can still allow the user-initiated legacy copy.
+  }
+
+  if (typeof document === "undefined" || !document.body) return false
+
+  const activeElement = document.activeElement
+  const selection = document.getSelection()
+  const ranges = selection
+    ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange())
+    : []
+  const input = activeElement instanceof HTMLInputElement || activeElement instanceof HTMLTextAreaElement
+    ? activeElement
+    : null
+  const inputSelection = input
+    ? { start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection }
+    : null
+  const textarea = document.createElement("textarea")
+  textarea.value = text
+  textarea.readOnly = true
+  textarea.tabIndex = -1
+  Object.assign(textarea.style, { position: "fixed", left: "-9999px", top: "0", fontSize: "16px" })
+
+  try {
+    const container = activeElement?.parentElement ?? document.body
+    container.appendChild(textarea)
+    textarea.select()
     return document.execCommand("copy")
   } catch {
     return false
   } finally {
-    helper.remove()
-    if (previousFocus instanceof HTMLElement) previousFocus.focus({ preventScroll: true })
+    textarea.remove()
+    if (activeElement instanceof HTMLElement) activeElement.focus({ preventScroll: true })
+    if (selection) {
+      selection.removeAllRanges()
+      for (const range of ranges) selection.addRange(range)
+    }
+    if (input && inputSelection?.start != null && inputSelection.end != null) {
+      input.setSelectionRange(inputSelection.start, inputSelection.end, inputSelection.direction ?? undefined)
+    }
   }
 }

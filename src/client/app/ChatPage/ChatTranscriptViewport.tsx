@@ -29,6 +29,7 @@ import {
   EMPTY_STATE_TEXT,
 } from "./utils"
 import type { EditorPreset } from "../../../shared/protocol"
+import { findToolEvidenceRowIndex, TOOL_EVIDENCE_EVENT, type ToolEvidenceTarget } from "../../lib/toolEvidence"
 
 interface ChatTranscriptViewportProps {
   activeChatId: string | null
@@ -186,6 +187,20 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           }
     ))
   }, [])
+
+  useEffect(() => {
+    const reveal = (event: Event) => {
+      const target = (event as CustomEvent<ToolEvidenceTarget>).detail
+      if (!target || (target.chatId && target.chatId !== activeChatId)) return
+      const index = findToolEvidenceRowIndex(resolvedRows, target.toolId)
+      if (index < 0) return
+      const row = resolvedRows[index]
+      if (row.kind === "tool-group") handleToolGroupExpandedChange(row.id, true)
+      void listRef.current?.scrollToIndex({ index, animated: false, viewPosition: 0.5 })
+    }
+    window.addEventListener(TOOL_EVIDENCE_EVENT, reveal)
+    return () => window.removeEventListener(TOOL_EVIDENCE_EVENT, reveal)
+  }, [activeChatId, handleToolGroupExpandedChange, listRef, resolvedRows])
 
   const handleScroll = useCallback((event?: unknown) => {
     const currentTarget = (
@@ -364,6 +379,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           onStartReached={handleStartReached}
           onStartReachedThreshold={0.1}
           data-transcript-list=""
+          data-transcript-chat-id={activeChatId ?? undefined}
           className="h-full flex-1 overflow-x-hidden overscroll-y-contain px-3 scroll-pt-[72px] [scrollbar-gutter:auto]"
           contentContainerStyle={{ paddingBottom: transcriptPaddingBottom + 10 }}
           ListHeaderComponent={listHeader}

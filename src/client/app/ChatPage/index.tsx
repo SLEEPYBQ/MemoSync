@@ -11,9 +11,6 @@ import { GitPanel } from "../../components/chat-ui/GitPanel"
 import { SessionMemoriesPanel } from "../../components/memory-chat/SessionMemoriesPanel"
 import { TurnInterruptContext, type TurnInterruptApi } from "../../components/messages/shared"
 import { submitStudyPrompt } from "../study/studyPromptIntercept"
-import { MemorySummaryPanel } from "../../components/memory-chat/MemorySummaryPanel"
-import { StaticMemoryPanel } from "../../components/memory-chat/StaticMemoryPanel"
-import { useConditionPolicy } from "../../lib/conditionApi"
 import { useAppDialog } from "../../components/ui/app-dialog"
 import { Card, CardContent } from "../../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui/resizable"
@@ -478,7 +475,6 @@ function ChatWorkspace({
 export function ChatPage() {
   const state = useOutletContext<AppState>()
   const dialog = useAppDialog()
-  const conditionPolicy = useConditionPolicy()
   const layoutRootRef = useRef<HTMLDivElement>(null)
   const transcriptListRef = useRef<LegendListRef | null>(null)
   const isAtEndRef = useRef(true)
@@ -1183,25 +1179,17 @@ export function ChatPage() {
     state.chatDiffSnapshot,
     wrapDiffLines,
   ])
-  // The "memory" slot is condition-aware (the study arms differ exactly in
-  // their memory surface): memosync = per-item session panel; auto = the
-  // living summary (B1); static = the shared MEMORY.md document (B2).
-  const memoryPanelContent =
-    projectId && state.activeChatId
-      ? conditionPolicy.condition === "auto"
-        ? <MemorySummaryPanel chatId={state.activeChatId} projectId={projectId} exposureInitiator={rightSidebarVisibility.openInitiator} onClose={handleCloseRightSidebar} />
-        : conditionPolicy.condition === "static"
-          ? <StaticMemoryPanel chatId={state.activeChatId} projectId={projectId} exposureInitiator={rightSidebarVisibility.openInitiator} onClose={handleCloseRightSidebar} />
-          : <SessionMemoriesPanel
-              chatId={state.activeChatId}
-              projectId={projectId}
-              messages={state.memoryRecordMessages}
-              streamingText={state.runtime?.streamingText ?? null}
-              isTurnActive={state.canCancel}
-              exposureInitiator={rightSidebarVisibility.openInitiator}
-              onClose={handleCloseRightSidebar}
-            />
-      : null
+  const memoryPanelContent = projectId && state.activeChatId
+    ? <SessionMemoriesPanel
+        chatId={state.activeChatId}
+        projectId={projectId}
+        messages={state.memoryRecordMessages}
+        streamingText={state.runtime?.streamingText ?? null}
+        isTurnActive={state.canCancel}
+        exposureInitiator={rightSidebarVisibility.openInitiator}
+        onClose={handleCloseRightSidebar}
+      />
+    : null
   const rightPanelContent = activeRightPanel === "browser" && projectId
     ? <BrowserPanel key={projectId} projectId={projectId} socket={state.socket} onClose={handleCloseRightSidebar} onRunQuickAction={handleRunQuickAction} />
     : activeRightPanel === "memory" && projectId && state.activeChatId
