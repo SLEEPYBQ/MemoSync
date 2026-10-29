@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { useState } from "react"
 import type {
   AgentProvider,
@@ -45,6 +46,7 @@ export function ProvidersSection({
 }: {
   state: Pick<AppState, "handleWriteAppSettings" | "availableProviders">
 }) {
+  useI18n()
   const preferences = useChatPreferencesStore()
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
@@ -54,7 +56,7 @@ export function ProvidersSection({
       setError(null)
       await state.handleWriteAppSettings(patch)
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to save provider settings.")
+      setError(error instanceof Error ? error.message : t("settings:unableToSaveProviderSettings"))
     }
   }
 
@@ -104,17 +106,17 @@ export function ProvidersSection({
     <>
       {error ? <SettingsErrorBanner message={error} /> : null}
       <SettingsGroups>
-        <SettingsGroup title="Default Provider">
+        <SettingsGroup title={t("settings:defaultProvider")}>
           <SettingsRow def={SETTINGS_ROWS.defaultProvider}>
             <SettingsSelect
-              aria-label="Default Provider"
+              aria-label={t("settings:defaultProvider")}
               value={preferences.defaultProvider}
               onValueChange={(value) => {
                 preferences.setDefaultProvider(value as "last_used" | AgentProvider)
                 void save({ defaultProvider: value as "last_used" | AgentProvider })
               }}
             >
-              <SelectItem value="last_used">Last Used</SelectItem>
+              <SelectItem value="last_used">{t("settings:lastUsed")}</SelectItem>
               {providers.map((provider) => (
                 <SelectItem key={provider.id} value={provider.id}>
                   {provider.id === "claude" ? "Claude Code" : provider.label}
@@ -123,7 +125,7 @@ export function ProvidersSection({
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <SettingsGroup title="Model Defaults">
+        <SettingsGroup title={t("settings:modelDefaults")}>
           {renderDefaults("claude")}
           {providers.some((provider) => provider.id === "codex") ? renderDefaults("codex") : null}
           {providers.some((provider) => provider.id === "pi") ? renderDefaults("pi") : null}

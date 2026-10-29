@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import { create } from "zustand"
 import type { ChatSoundId, ChatSoundPreference } from "../../shared/types"
 
@@ -7,15 +8,15 @@ export const DEFAULT_CHAT_SOUND_PREFERENCE: ChatSoundPreference = "always"
 export const DEFAULT_CHAT_SOUND_ID: ChatSoundId = "funk"
 
 export const CHAT_SOUND_OPTIONS: Array<{ value: ChatSoundId; label: string }> = [
-  { value: "blow", label: "Blow" },
-  { value: "bottle", label: "Bottle" },
-  { value: "frog", label: "Frog" },
-  { value: "funk", label: "Funk" },
-  { value: "glass", label: "Glass" },
-  { value: "ping", label: "Ping" },
-  { value: "pop", label: "Pop" },
-  { value: "purr", label: "Purr" },
-  { value: "tink", label: "Tink" },
+  { value: "blow", get label() { return t("settings:blow") } },
+  { value: "bottle", get label() { return t("settings:bottle") } },
+  { value: "frog", get label() { return t("settings:frog") } },
+  { value: "funk", get label() { return t("settings:funk") } },
+  { value: "glass", get label() { return t("settings:glass") } },
+  { value: "ping", get label() { return t("settings:ping") } },
+  { value: "pop", get label() { return t("settings:pop") } },
+  { value: "purr", get label() { return t("settings:purr") } },
+  { value: "tink", get label() { return t("settings:tink") } },
 ]
 
 export function normalizeChatSoundPreference(value?: string): ChatSoundPreference {

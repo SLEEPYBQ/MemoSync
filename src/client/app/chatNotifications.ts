@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import type { SidebarData } from "../../shared/types"
 
 export function getNotificationTitleCount(sidebarData: SidebarData) {
@@ -88,8 +89,8 @@ export function getChatNotificationEvents(previous: SidebarData | null, next: Si
       events.push({
         chatId: chat.chatId,
         projectTitle: group.title?.trim() || group.localPath,
-        chatTitle: chat.title.trim() || "Untitled chat",
-        message: becameWaiting ? "Waiting for your response." : null,
+        chatTitle: chat.title.trim() || t("chat:untitledChat"),
+        message: becameWaiting ? t("chat:waitingForYourResponse") : null,
       })
     }
   }

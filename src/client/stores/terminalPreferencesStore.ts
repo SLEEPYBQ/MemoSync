@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import { create } from "zustand"
 import type { EditorPreset } from "../../shared/protocol"
 
@@ -34,7 +35,7 @@ export function getEditorPresetLabel(preset: EditorPreset) {
     case "windsurf":
       return "Windsurf"
     case "custom":
-      return "Custom"
+      return t("settings:custom")
     case "cursor":
     default:
       return "Cursor"

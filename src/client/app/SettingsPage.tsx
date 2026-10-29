@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { Info, Loader2, LogOut, Menu } from "lucide-react"
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
@@ -35,6 +36,7 @@ export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
 export function SettingsPage() {
+  useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const { sectionId } = useParams<{ sectionId: string }>()
@@ -46,7 +48,7 @@ export function SettingsPage() {
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
   const isConnecting = state.connectionStatus === "connecting" || !state.localProjectsReady
-  const machineName = state.localProjects?.machine.displayName ?? "Unavailable"
+  const machineName = state.localProjects?.machine.displayName ?? t("common:unavailable")
   const projectCount = state.localProjects?.projects.length ?? 0
   const appVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
@@ -101,7 +103,7 @@ export function SettingsPage() {
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        setChangelogError(error instanceof Error ? error.message : "Unable to load changelog.")
+        setChangelogError(error instanceof Error ? error.message : t("settings:unableToLoadChangelog"))
         setChangelogStatus("error")
       })
 
@@ -122,7 +124,7 @@ export function SettingsPage() {
         setChangelogStatus("success")
       })
       .catch((error: unknown) => {
-        setChangelogError(error instanceof Error ? error.message : "Unable to load changelog.")
+        setChangelogError(error instanceof Error ? error.message : t("settings:unableToLoadChangelog"))
         setChangelogStatus("error")
       })
   }
@@ -147,7 +149,7 @@ export function SettingsPage() {
       <div className="flex min-w-0 flex-1">
         <aside className={`hidden w-[200px] shrink-0 md:block ${showFooter ? "pb-[89px]" : ""}`}>
           <div className="flex flex-col gap-1 px-4 py-6">
-            <div className="px-3 pb-5 text-[22px] font-extrabold tracking-[-0.5px] text-foreground">Settings</div>
+            <div className="px-3 pb-5 text-[22px] font-extrabold tracking-[-0.5px] text-foreground">{t("common:settings")}</div>
             {sidebarItems.map((item) => (
               <button
                 key={item.label}
@@ -176,7 +178,7 @@ export function SettingsPage() {
               >
                 <div className="flex items-center gap-2.5">
                   <LogOut className="h-4 w-4 shrink-0" />
-                  <span>{signingOut ? "Signing out..." : "Sign out"}</span>
+                  <span>{signingOut ? t("settings:signingOut") : t("settings:signOut")}</span>
                 </div>
               </button>
             ) : null}
@@ -192,8 +194,8 @@ export function SettingsPage() {
                     type="button"
                     onClick={state.openSidebar}
                     className="flex shrink-0 items-center p-2 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                    aria-label="Open sidebar"
-                    title="Open sidebar"
+                    aria-label={t("settings:openSidebar")}
+                    title={t("settings:openSidebar")}
                   >
                     <Menu className="h-4 w-4 shrink-0" />
                   </button>
@@ -228,7 +230,7 @@ export function SettingsPage() {
                     )}
                   >
                     <LogOut className="h-4 w-4 shrink-0" />
-                    <span className="whitespace-nowrap">{signingOut ? "Signing out..." : "Sign out"}</span>
+                    <span className="whitespace-nowrap">{signingOut ? t("settings:signingOut") : t("settings:signOut")}</span>
                   </button>
                 ) : null}
               </div>
@@ -242,7 +244,7 @@ export function SettingsPage() {
               >
                 <div className="flex items-center gap-3">
                   <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Loading machine settings…</span>
+                  <span>{t("settings:loadingMachineSettings")}</span>
                 </div>
               </div>
             ) : (
@@ -254,8 +256,7 @@ export function SettingsPage() {
                     </div>
                     {selectedPage === "general" && SELF_UPDATE_ENABLED ? (
                       <SettingsActionButton onClick={() => navigate("/settings/changelog")}>
-                        Check for updates
-                      </SettingsActionButton>
+                        {t("settings:checkForUpdates")}</SettingsActionButton>
                     ) : null}
                   </div>
                   <div className="mt-1 text-sm text-muted-foreground">{selectedSectionSubtitle}</div>
@@ -309,21 +310,20 @@ export function SettingsPage() {
           <div className="px-6 py-[14.25px]">
             <div className="grid gap-3 text-xs text-muted-foreground grid-cols-2 lg:grid-cols-4">
               <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">Machine</div>
+                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:machine")}</div>
                 <div className="text-foreground/80">{machineName}</div>
               </div>
               <div className="hidden md:block">
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">Connection</div>
+                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:connection")}</div>
                 <div className="text-foreground/80">{state.connectionStatus}</div>
               </div>
               <div className="hidden md:block">
                 <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">
-                  Projects Indexed
-                </div>
+                  {t("settings:projectsIndexed")}</div>
                 <div className="text-foreground/80">{projectCount}</div>
               </div>
               <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">App Version</div>
+                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:appVersion")}</div>
                 <div className="text-foreground/80">{appVersion}</div>
               </div>
             </div>

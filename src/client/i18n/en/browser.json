@@ -1,0 +1,20 @@
+{
+  "quickActions": "Quick Actions",
+  "addQuickAction": "Add quick action",
+  "noQuickActions": "No quick actions.",
+  "runQuickAction": "Run quick action",
+  "refresh": "Refresh",
+  "enterAURL": "Enter a URL",
+  "openExternal": "Open external",
+  "zoomOut": "Zoom out",
+  "zoomIn": "Zoom in",
+  "localServers": "Local Servers",
+  "noLocalHTTPServersFound": "No local HTTP servers found.",
+  "serverActions": "Server actions",
+  "openInNewTab": "Open in New Tab",
+  "killProcess": "Kill Process",
+  "hideOtherProjects": "Hide other projects",
+  "browserPanel": "Browser panel",
+  "otherProjectsValue0": "Other projects ({{v0}})",
+  "home": "Home"
+}

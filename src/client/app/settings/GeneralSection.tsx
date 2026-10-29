@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { useEffect, useState } from "react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import type {
@@ -47,9 +48,9 @@ import {
 } from "./shared"
 
 const notificationOptions = [
-  { value: "never", label: "Never" },
-  { value: "unfocused", label: "When Unfocused" },
-  { value: "always", label: "Always" },
+  { value: "never", get label() { return t("settings:never") } },
+  { value: "unfocused", get label() { return t("settings:whenUnfocused") } },
+  { value: "always", get label() { return t("settings:always") } },
 ]
 const editorPresets: EditorPreset[] = ["cursor", "vscode", "xcode", "windsurf", "custom"]
 type GeneralState = Pick<
@@ -58,6 +59,7 @@ type GeneralState = Pick<
 >
 
 export function GeneralSection({ state, appVersion }: { state: GeneralState; appVersion: string }) {
+  useI18n()
   const terminal = useTerminalPreferencesStore()
   const sounds = useChatSoundPreferencesStore()
   const [error, setError] = useState<string | null>(null)
@@ -80,7 +82,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
       setError(null)
       await state.handleWriteAppSettings(patch)
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to save settings.")
+      setError(error instanceof Error ? error.message : t("settings:unableToSaveSettings"))
     }
   }
 
@@ -110,7 +112,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
         ),
       })
     } catch {
-      setError("Unable to request notifications. Check this site's notification permission in browser site settings.")
+      setError(t("settings:unableToRequestNotificationsCheckThisSiteSNotificationPermission"))
     }
   }
 
@@ -144,8 +146,8 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
     : update?.status === "checking"
       ? "Checking…"
       : update?.updateAvailable
-        ? "Update"
-        : "Check for updates"
+        ? t("common:update")
+        : t("settings:checkForUpdates")
 
   return (
     <>
@@ -158,7 +160,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
           <SettingsGroup>
             <SettingsRow
               def={SETTINGS_ROWS.applicationUpdate}
-              description={`Current: ${update?.currentVersion ?? appVersion}. Latest: ${update?.latestVersion ?? "Unknown"}. ${update?.status ?? "Not checked yet"}${update?.error ? `. ${update.error}` : ""}`}
+              description={`Current: ${update?.currentVersion ?? appVersion}. Latest: ${update?.latestVersion ?? t("common:unknown")}. ${update?.status ?? t("settings:notCheckedYet")}${update?.error ? `. ${update.error}` : ""}`}
             >
               <SettingsActionButton
                 disabled={isUpdating || update?.status === "checking"}
@@ -175,10 +177,10 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
           </SettingsGroup>
         ) : null}
         {(
-          <SettingsGroup title="Appearance">
+          <SettingsGroup title={t("settings:appearance")}>
             <SettingsRow def={SETTINGS_ROWS.language}>
               <SettingsSelect
-                aria-label="Language"
+                aria-label={t("settings:language")}
                 value={state.appSettings?.language ?? "system"}
                 onValueChange={(value) => { void save({ language: value as AppLanguagePreference }) }}
               >
@@ -189,23 +191,23 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsRow>
             <SettingsRow def={SETTINGS_ROWS.theme}>
               <SettingsSelect
-                aria-label="Theme"
+                aria-label={t("settings:theme")}
                 value={state.appSettings?.theme ?? "system"}
                 onValueChange={(value) => {
                   void save({ theme: value as AppThemePreference })
                 }}
               >
-                <SelectItem value="system">System</SelectItem>
-                <SelectItem value="light">Light</SelectItem>
-                <SelectItem value="dark">Dark</SelectItem>
+                <SelectItem value="system">{t("settings:system")}</SelectItem>
+                <SelectItem value="light">{t("settings:light")}</SelectItem>
+                <SelectItem value="dark">{t("settings:dark")}</SelectItem>
               </SettingsSelect>
             </SettingsRow>
           </SettingsGroup>
         )}
-        <SettingsGroup title="Notifications">
+        <SettingsGroup title={t("settings:notifications")}>
           <SettingsRow def={SETTINGS_ROWS.chatSounds}>
             <SettingsSelect
-              aria-label="Chat Sounds"
+              aria-label={t("settings:chatSounds")}
               value={sounds.chatSoundPreference}
               onValueChange={(value) => changeSound(value as ChatSoundPreference)}
             >
@@ -218,7 +220,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
           </SettingsRow>
           <SettingsRow def={SETTINGS_ROWS.chatSound}>
             <SettingsSelect
-              aria-label="Sound Effect"
+              aria-label={t("settings:soundEffect")}
               value={sounds.chatSoundId}
               onValueChange={(value) => changeSoundId(value as ChatSoundId)}
             >
@@ -234,7 +236,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             description={getChatBrowserNotificationDescription(permission)}
           >
             <SettingsSelect
-              aria-label="System Notifications"
+              aria-label={t("settings:systemNotifications")}
               value={state.appSettings?.chatBrowserNotificationPreference ?? "never"}
               onValueChange={(value) => {
                 void changeNotifications(value as ChatSoundPreference)
@@ -248,24 +250,24 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <SettingsGroup title="Chats">
+        <SettingsGroup title={t("settings:chats")}>
           <SettingsRow def={SETTINGS_ROWS.submitWhileRunning}>
             <SettingsSelect
-              aria-label="Enter While Running"
+              aria-label={t("settings:enterWhileRunning")}
               value={state.appSettings?.submitWhileRunning ?? "queue"}
               onValueChange={(value) => {
                 void save({ submitWhileRunning: value as SubmitWhileRunning })
               }}
             >
-              <SelectItem value="queue">Queue</SelectItem>
-              <SelectItem value="steer">Steer</SelectItem>
+              <SelectItem value="queue">{t("settings:queue")}</SelectItem>
+              <SelectItem value="steer">{t("settings:steer")}</SelectItem>
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <SettingsGroup title="Editor">
+        <SettingsGroup title={t("settings:editor")}>
           <SettingsRow def={SETTINGS_ROWS.defaultEditor}>
             <SettingsSelect
-              aria-label="Default Editor"
+              aria-label={t("settings:defaultEditor")}
               value={terminal.editorPreset}
               onValueChange={(value) => {
                 terminal.setEditorPreset(value as EditorPreset)
@@ -307,7 +309,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
                 }
               >
                 <Input
-                  aria-label="Command Template"
+                  aria-label={t("settings:commandTemplate")}
                   value={editorDraft}
                   onChange={(event) => setEditorDraft(event.target.value)}
                   onBlur={commitEditor}
@@ -320,13 +322,13 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsRow>
           ) : null}
         </SettingsGroup>
-        <SettingsGroup title="Terminal">
+        <SettingsGroup title={t("settings:terminal")}>
           <SettingsRow def={SETTINGS_ROWS.terminalScrollback} wideControl>
             <SettingsField
-              hint={`${MIN_TERMINAL_SCROLLBACK}–${MAX_TERMINAL_SCROLLBACK} lines${terminal.scrollbackLines === DEFAULT_TERMINAL_SCROLLBACK ? " (default)" : ""}`}
+              hint={t("settings:value0Value1LinesValue2", { v0: MIN_TERMINAL_SCROLLBACK, v1: MAX_TERMINAL_SCROLLBACK, v2: terminal.scrollbackLines === DEFAULT_TERMINAL_SCROLLBACK ? " (default)" : "" })}
             >
               <Input
-                aria-label="Terminal Scrollback"
+                aria-label={t("settings:terminalScrollback")}
                 type="number"
                 min={MIN_TERMINAL_SCROLLBACK}
                 max={MAX_TERMINAL_SCROLLBACK}
@@ -341,10 +343,10 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
           </SettingsRow>
           <SettingsRow def={SETTINGS_ROWS.terminalMinColumnWidth} wideControl>
             <SettingsField
-              hint={`${MIN_TERMINAL_MIN_COLUMN_WIDTH}–${MAX_TERMINAL_MIN_COLUMN_WIDTH} px${terminal.minColumnWidth === DEFAULT_TERMINAL_MIN_COLUMN_WIDTH ? " (default)" : ""}`}
+              hint={t("settings:value0Value1PxValue2", { v0: MIN_TERMINAL_MIN_COLUMN_WIDTH, v1: MAX_TERMINAL_MIN_COLUMN_WIDTH, v2: terminal.minColumnWidth === DEFAULT_TERMINAL_MIN_COLUMN_WIDTH ? " (default)" : "" })}
             >
               <Input
-                aria-label="Terminal Min Column Width"
+                aria-label={t("settings:terminalMinColumnWidth")}
                 type="number"
                 min={MIN_TERMINAL_MIN_COLUMN_WIDTH}
                 max={MAX_TERMINAL_MIN_COLUMN_WIDTH}

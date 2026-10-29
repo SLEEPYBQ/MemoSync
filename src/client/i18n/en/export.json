@@ -1,0 +1,6 @@
+{
+  "unableToLoadTranscript": "Unable to load transcript.",
+  "loadingTranscript": "Loading transcript...",
+  "content": "content",
+  "transcriptRequestFailedWithStatusValue0": "Transcript request failed with status {{v0}}"
+}

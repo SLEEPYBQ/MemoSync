@@ -1,3 +1,4 @@
+import { t } from "../../i18n"
 import { BookText, Brain, Command, MessageSquareQuote, ScrollText, Settings2 } from "lucide-react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { KEYBINDING_ACTION_LABELS } from "../../lib/keybindings"
@@ -7,41 +8,41 @@ import type { KeybindingAction } from "../../../shared/types"
 export const SETTINGS_SECTIONS = [
   {
     id: "general",
-    label: "General",
+    get label() { return t("settings:general") },
     icon: Settings2,
-    subtitle: "Appearance, notifications, chats, editor, and terminal.",
+    get subtitle() { return t("settings:appearanceNotificationsChatsEditorAndTerminal") },
   },
   {
     id: "memory",
-    label: "Memory",
+    get label() { return t("common:memory") },
     icon: Brain,
-    subtitle: "Choose whether the agent uses and learns memories, and how it checks with you.",
+    get subtitle() { return t("settings:chooseWhetherTheAgentUsesAndLearnsMemoriesAndHow") },
   },
   {
     id: "providers",
-    label: "Providers",
+    get label() { return t("settings:providers") },
     icon: MessageSquareQuote,
-    subtitle: "The default provider and saved model defaults for each harness.",
+    get subtitle() { return t("settings:theDefaultProviderAndSavedModelDefaultsForEachHarness") },
   },
   {
     id: "skills",
-    label: "Skills",
+    get label() { return t("settings:skills") },
     icon: BookText,
-    subtitle: "Manage globally installed agent skills from the active skill lock file.",
+    get subtitle() { return t("settings:manageGloballyInstalledAgentSkillsFromTheActiveSkillLock") },
   },
   {
     id: "keybindings",
-    label: "Keybindings",
+    get label() { return t("settings:keybindings") },
     icon: Command,
-    subtitle: "Edit global app shortcuts stored in the active keybindings file.",
+    get subtitle() { return t("settings:editGlobalAppShortcutsStoredInTheActiveKeybindingsFile") },
   },
   ...(SELF_UPDATE_ENABLED
     ? [
         {
           id: "changelog",
-          label: "Changelog",
+          get label() { return t("settings:changelog") },
           icon: ScrollText,
-          subtitle: "Release notes pulled from the public GitHub releases feed.",
+          get subtitle() { return t("settings:releaseNotesPulledFromThePublicGitHubReleasesFeed") },
         } as const,
       ]
     : []),
@@ -61,7 +62,7 @@ export function defineRows<TIds extends string>(rows: { [TId in TIds]: Omit<Sett
   [TId in TIds]: SettingsRowDef
 } {
   return Object.fromEntries(
-    Object.entries<Omit<SettingsRowDef, "id">>(rows).map(([id, row]) => [id, { ...row, id }]),
+    Object.entries<Omit<SettingsRowDef, "id">>(rows).map(([id, row]) => [id, Object.defineProperty(row, "id", { value: id, enumerable: true })]),
   ) as { [TId in TIds]: SettingsRowDef }
 }
 
@@ -72,121 +73,115 @@ export function resolveSettingsSectionId(sectionId: string | undefined): Setting
 export const SETTINGS_ROWS = defineRows({
   applicationUpdate: {
     sectionId: "general",
-    title: "Application Update",
-    description: "Current version and update status.",
+    get title() { return t("settings:applicationUpdate") },
+    get description() { return t("settings:currentVersionAndUpdateStatus") },
   },
   language: {
     sectionId: "general",
-    title: "Language",
-    description: "Choose the interface language. Changes apply immediately.",
-    keywords: ["language", "中文", "English"],
+    get title() { return t("settings:language") },
+    get description() { return t("settings:chooseTheInterfaceLanguageChangesApplyImmediately") },
+    get keywords() { return t("settings:searchKeywords0").split(",") },
   },
   theme: {
     sectionId: "general",
-    title: "Theme",
-    description: "Light, dark, or match the system appearance.",
-    keywords: ["appearance"],
+    get title() { return t("settings:theme") },
+    get description() { return t("settings:lightDarkOrMatchTheSystemAppearance") },
+    get keywords() { return t("settings:searchKeywords1").split(",") },
   },
   chatSounds: {
     sectionId: "general",
-    title: "Chat Sounds",
-    description: "Play a sound when a chat starts waiting on you or the unread count goes up.",
+    get title() { return t("settings:chatSounds") },
+    get description() { return t("settings:playASoundWhenAChatStartsWaitingOnYou") },
   },
   chatSound: {
     sectionId: "general",
-    title: "Sound Effect",
-    description: "The sound chat notifications play. Picking one plays a preview.",
+    get title() { return t("settings:soundEffect") },
+    get description() { return t("settings:theSoundChatNotificationsPlayPickingOnePlaysAPreview") },
   },
   chatBrowserNotifications: {
     sectionId: "general",
-    title: "System Notifications",
-    description: "Show a system notification when a chat starts waiting on you or turns unread.",
-    keywords: ["browser", "desktop", "permission"],
+    get title() { return t("settings:systemNotifications") },
+    get description() { return t("settings:showASystemNotificationWhenAChatStartsWaitingOn") },
+    get keywords() { return t("settings:searchKeywords2").split(",") },
   },
   submitWhileRunning: {
     sectionId: "general",
-    title: "Enter While Running",
-    description:
-      "What Enter does while an agent is working. Cmd/Ctrl+Enter does the other one. With nothing typed, Cmd/Ctrl+Enter sends the oldest queued message now.",
-    keywords: ["queue", "steer", "composer"],
+    get title() { return t("settings:enterWhileRunning") },
+    get description() { return t("settings:whatEnterDoesWhileAnAgentIsWorkingCmdCtrl") },
+    get keywords() { return t("settings:searchKeywords3").split(",") },
   },
-  defaultEditor: { sectionId: "general", title: "Default Editor", description: "The editor used by Open in Editor." },
+  defaultEditor: { sectionId: "general", get title() { return t("settings:defaultEditor") }, get description() { return t("settings:theEditorUsedByOpenInEditor") } },
   editorCommandTemplate: {
     sectionId: "general",
-    title: "Command Template",
-    description: "Include {path} and optionally {line} and {column} in your command.",
+    get title() { return t("settings:commandTemplate") },
+    get description() { return t("settings:includePathAndOptionallyLineAndColumnInYourCommand") },
   },
   terminalScrollback: {
     sectionId: "general",
-    title: "Terminal Scrollback",
-    description: "Lines retained for embedded terminal history.",
+    get title() { return t("settings:terminalScrollback") },
+    get description() { return t("settings:linesRetainedForEmbeddedTerminalHistory") },
   },
   terminalMinColumnWidth: {
     sectionId: "general",
-    title: "Terminal Min Column Width",
-    description: "Minimum width for each terminal pane.",
+    get title() { return t("settings:terminalMinColumnWidth") },
+    get description() { return t("settings:minimumWidthForEachTerminalPane") },
   },
   memoryEnabled: {
     sectionId: "memory",
-    title: "Use Memory",
-    description:
-      "Let the agent use your memories and learn new ones. When off, chats run without memory; your saved memories stay on the Memory Board.",
+    get title() { return t("settings:useMemory") },
+    get description() { return t("settings:letTheAgentUseYourMemoriesAndLearnNewOnes") },
   },
   memoryLearn: {
     sectionId: "memory",
-    title: "Learn From Chats",
-    description:
-      "Suggest new memories and updates from conversations. Turn off to keep using your memories without adding to them.",
+    get title() { return t("settings:learnFromChats") },
+    get description() { return t("settings:suggestNewMemoriesAndUpdatesFromConversationsTurnOffTo") },
   },
   memoryPreview: {
     sectionId: "memory",
-    title: "Memory Preview",
-    description:
-      "Before each turn, show which memories the agent brings and how they shape its plan — you decide to go on, proceed without memory, or dismiss.",
+    get title() { return t("settings:memoryPreview") },
+    get description() { return t("settings:beforeEachTurnShowWhichMemoriesTheAgentBringsAnd") },
   },
   memoryAutoProceed: {
     sectionId: "memory",
-    title: "Auto-proceed When No Memory Applies",
-    description:
-      "Skip the preview pause when the plan involves no memories (the preview is still recorded in the transcript).",
+    get title() { return t("settings:autoProceedWhenNoMemoryApplies") },
+    get description() { return t("settings:skipThePreviewPauseWhenThePlanInvolvesNoMemories") },
   },
   memoryChanges: {
     sectionId: "memory",
-    title: "Memory Changes",
-    description:
-      "Ask First holds every proposal for your review. Apply Automatically applies non-sensitive proposals immediately; each still shows in the transcript with a one-click Revert. Sensitive proposals still ask.",
+    get title() { return t("settings:memoryChanges") },
+    get description() { return t("settings:askFirstHoldsEveryProposalForYourReviewApplyAutomatically") },
   },
   defaultProvider: {
     sectionId: "providers",
-    title: "Default Provider",
-    description: "The default harness used for new chats before a provider is locked by an existing session.",
+    get title() { return t("settings:defaultProvider") },
+    get description() { return t("settings:theDefaultHarnessUsedForNewChatsBeforeAProvider") },
   },
   claudeDefaults: {
     sectionId: "providers",
-    title: "Claude Code Defaults",
-    description: "Saved model and reasoning settings for new Claude Code chats.",
-    keywords: ["deepseek", "glm"],
+    get title() { return t("settings:claudeCodeDefaults") },
+    get description() { return t("settings:savedModelAndReasoningSettingsForNewClaudeCodeChats") },
+    get keywords() { return t("settings:searchKeywords4").split(",") },
   },
   codexDefaults: {
     sectionId: "providers",
-    title: "Codex Defaults",
-    description: "Saved model and reasoning settings for new Codex chats.",
+    get title() { return t("settings:codexDefaults") },
+    get description() { return t("settings:savedModelAndReasoningSettingsForNewCodexChats") },
   },
   piDefaults: {
     sectionId: "providers",
-    title: "Pi Defaults",
-    description: "Saved model and reasoning settings for new Pi chats.",
+    get title() { return t("settings:piDefaults") },
+    get description() { return t("settings:savedModelAndReasoningSettingsForNewPiChats") },
   },
-  installedSkills: { sectionId: "skills", title: "Installed", description: "Globally installed agent skills." },
-  discoverSkills: { sectionId: "skills", title: "Discover", description: "Search skills to install globally." },
+  installedSkills: { sectionId: "skills", get title() { return t("settings:installed") }, get description() { return t("settings:globallyInstalledAgentSkills") } },
+  discoverSkills: { sectionId: "skills", get title() { return t("settings:discover") }, get description() { return t("settings:searchSkillsToInstallGlobally") } },
 })
 
 export const KEYBINDING_ROWS: Record<Exclude<KeybindingAction, "openInEditor">, SettingsRowDef> = Object.fromEntries(
   (Object.entries(KEYBINDING_ACTION_LABELS) as [KeybindingAction, string][])
     .filter(([action]) => action !== "openInEditor")
-    .map(([action, title]) => [
+    .map(([action]) => [
       action,
-      { id: `keybinding-${action}`, sectionId: "keybindings", title, description: "Comma-separated shortcuts." },
+      { id: `keybinding-${action}`, sectionId: "keybindings", get title() { return KEYBINDING_ACTION_LABELS[action] }, get description() { return t("settings:commaSeparatedShortcuts") } },
     ]),
 ) as Record<Exclude<KeybindingAction, "openInEditor">, SettingsRowDef>
 
