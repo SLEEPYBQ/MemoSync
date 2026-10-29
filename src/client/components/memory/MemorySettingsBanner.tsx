@@ -8,9 +8,9 @@ import { Button } from "../ui/button"
 export function MemoryOffBadge() {
   const policy = useConditionPolicy()
   const enabled = useAppSettingsStore((s) => s.settings?.memory.enabled ?? true)
-  return !policy.studyMode && !enabled
-    ? <span className="rounded px-1 text-[10px] text-muted-foreground">Off</span>
-    : null
+  return !policy.studyMode && !enabled ? (
+    <span className="rounded px-1 text-[10px] text-muted-foreground">Off</span>
+  ) : null
 }
 
 export function MemorySettingsBanner() {
@@ -25,15 +25,39 @@ export function MemorySettingsBanner() {
     if (!app) return
     setPending(true)
     setError(null)
-    try { await app.handleWriteAppSettings({ memory: off ? { enabled: true } : { learn: true } }) }
-    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
-    finally { setPending(false) }
+    try {
+      await app.handleWriteAppSettings({ memory: off ? { enabled: true } : { learn: true } })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setPending(false)
+    }
   }
-  return <div role="status" className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground">
-    <span className="flex-1">{off
-      ? "Memory is off. The agent isn't using or learning memories — you can still browse and edit them here."
-      : "Learning is paused. The agent uses these memories but won't suggest new ones."}</span>
-    <Button size="sm" variant="outline" disabled={pending || !app} onClick={() => { void resume() }}>{off ? "Turn on" : "Resume"}</Button>
-    {error ? <span role="alert" className="w-full text-destructive">{error}</span> : null}
-  </div>
+  return (
+    <div
+      role="status"
+      className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
+    >
+      <span className="flex-1">
+        {off
+          ? "Memory is off. The agent isn't using or learning memories — you can still browse and edit them here."
+          : "Learning is paused. The agent uses these memories but won't suggest new ones."}
+      </span>
+      <Button
+        size="sm"
+        variant="outline"
+        disabled={pending || !app}
+        onClick={() => {
+          void resume()
+        }}
+      >
+        {off ? "Turn on" : "Resume"}
+      </Button>
+      {error ? (
+        <span role="alert" className="w-full text-destructive">
+          {error}
+        </span>
+      ) : null}
+    </div>
+  )
 }

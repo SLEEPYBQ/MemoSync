@@ -1,5 +1,11 @@
 import { useState } from "react"
-import type { AgentProvider, AppSettingsPatch, ClaudeModelOptions, CodexModelOptions, PiModelOptions } from "../../../shared/types"
+import type {
+  AgentProvider,
+  AppSettingsPatch,
+  ClaudeModelOptions,
+  CodexModelOptions,
+  PiModelOptions,
+} from "../../../shared/types"
 import { ChatPreferenceControls, type ModelOptionChange } from "../../components/chat-ui/ChatPreferenceControls"
 import { SelectItem } from "../../components/ui/select"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
@@ -14,7 +20,10 @@ const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
 }
 
 /** The option a picker change sets on that provider's saved defaults, if it is one this provider has. */
-function modelOptionsPatch(provider: AgentProvider, change: ModelOptionChange): Partial<ClaudeModelOptions | CodexModelOptions | PiModelOptions> | null {
+function modelOptionsPatch(
+  provider: AgentProvider,
+  change: ModelOptionChange,
+): Partial<ClaudeModelOptions | CodexModelOptions | PiModelOptions> | null {
   switch (change.type) {
     case "claudeReasoningEffort":
       return provider === "claude" ? { reasoningEffort: change.effort } : null
@@ -31,7 +40,11 @@ function modelOptionsPatch(provider: AgentProvider, change: ModelOptionChange): 
   }
 }
 
-export function ProvidersSection({ state }: { state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> }) {
+export function ProvidersSection({
+  state,
+}: {
+  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders">
+}) {
   const preferences = useChatPreferencesStore()
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
@@ -48,7 +61,12 @@ export function ProvidersSection({ state }: { state: Pick<AppState, "handleWrite
   function renderDefaults(provider: AgentProvider) {
     const defaults = preferences.providerDefaults[provider]
     return (
-      <SettingsRow key={provider} def={DEFAULTS_ROWS[provider]} wideControl alignStart>
+      <SettingsRow
+        key={provider}
+        def={DEFAULTS_ROWS[provider]}
+        wideControl
+        alignStart
+      >
         <div className="min-w-0 max-w-full @2xl:max-w-[420px]">
           <ChatPreferenceControls
             availableProviders={providers}
@@ -65,7 +83,9 @@ export function ProvidersSection({ state }: { state: Pick<AppState, "handleWrite
               const modelOptions = modelOptionsPatch(provider, change)
               if (!modelOptions) return
               preferences.setProviderDefaultModelOptions(provider, modelOptions)
-              void save({ providerDefaults: { [provider]: { modelOptions: { ...defaults.modelOptions, ...modelOptions } } } })
+              void save({
+                providerDefaults: { [provider]: { modelOptions: { ...defaults.modelOptions, ...modelOptions } } },
+              })
             }}
             planMode={defaults.planMode}
             onPlanModeChange={(planMode) => {

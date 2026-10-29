@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction } from "../../../shared/types"
 import { Input } from "../../components/ui/input"
-import { KEYBINDING_ACTION_LABELS, formatKeybindingInput, getResolvedKeybindings, parseKeybindingInput } from "../../lib/keybindings"
+import {
+  KEYBINDING_ACTION_LABELS,
+  formatKeybindingInput,
+  getResolvedKeybindings,
+  parseKeybindingInput,
+} from "../../lib/keybindings"
 import type { AppState } from "../useAppState"
 import { KEYBINDING_ROWS } from "./registry"
 import { cn } from "../../lib/utils"
@@ -15,7 +20,9 @@ import {
   SettingsRow,
 } from "./shared"
 
-const KEYBINDING_ACTIONS = (Object.keys(KEYBINDING_ACTION_LABELS) as KeybindingAction[]).filter((action) => action !== "openInEditor")
+const KEYBINDING_ACTIONS = (Object.keys(KEYBINDING_ACTION_LABELS) as KeybindingAction[]).filter(
+  (action) => action !== "openInEditor",
+)
 
 function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
   return {
@@ -30,22 +37,21 @@ function buildKeybindingPayload(source: Record<string, string>): Record<Keybindi
   }
 }
 
-export function KeybindingsSection({
-  state,
-}: {
-  state: Pick<AppState, "keybindings" | "socket">
-}) {
+export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindings" | "socket"> }) {
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
-  const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>(() => Object.fromEntries(KEYBINDING_ACTIONS.map((action) => [action, formatKeybindingInput(resolvedKeybindings.bindings[action])])))
+  const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>(() =>
+    Object.fromEntries(
+      KEYBINDING_ACTIONS.map((action) => [action, formatKeybindingInput(resolvedKeybindings.bindings[action])]),
+    ),
+  )
   const [keybindingsError, setKeybindingsError] = useState<string | null>(null)
 
   useEffect(() => {
-    setKeybindingDrafts(Object.fromEntries(
-      KEYBINDING_ACTIONS.map((action) => [
-        action,
-        formatKeybindingInput(resolvedKeybindings.bindings[action]),
-      ])
-    ))
+    setKeybindingDrafts(
+      Object.fromEntries(
+        KEYBINDING_ACTIONS.map((action) => [action, formatKeybindingInput(resolvedKeybindings.bindings[action])]),
+      ),
+    )
   }, [resolvedKeybindings])
 
   async function commitKeybindings() {
@@ -82,7 +88,9 @@ export function KeybindingsSection({
     <>
       {keybindingsError ? <SettingsErrorBanner message={keybindingsError} /> : null}
       {resolvedKeybindings.warning ? (
-        <SettingsNotice tone="warning" className="mb-6">{resolvedKeybindings.warning}</SettingsNotice>
+        <SettingsNotice tone="warning" className="mb-6">
+          {resolvedKeybindings.warning}
+        </SettingsNotice>
       ) : null}
       <SettingsGroup>
         {KEYBINDING_ACTIONS.map((action) => {
@@ -95,7 +103,7 @@ export function KeybindingsSection({
               key={action}
               wideControl
               def={KEYBINDING_ROWS[action]}
-              description={(
+              description={
                 <>
                   <span>Comma-separated shortcuts.</span>
                   {showRestore ? (
@@ -113,7 +121,7 @@ export function KeybindingsSection({
                     </>
                   ) : null}
                 </>
-              )}
+              }
             >
               <Input
                 type="text"
@@ -125,9 +133,11 @@ export function KeybindingsSection({
                 onBlur={() => {
                   void commitKeybindings()
                 }}
-                onKeyDown={(event) => handleSettingsInputKeyDown(event, () => {
-                  void commitKeybindings()
-                })}
+                onKeyDown={(event) =>
+                  handleSettingsInputKeyDown(event, () => {
+                    void commitKeybindings()
+                  })
+                }
                 spellCheck={false}
                 autoComplete="off"
                 className={cn(SETTINGS_CONTROL_CLASS, "font-mono")}

@@ -33,7 +33,9 @@ function getCachedTheme(): ResolvedTheme {
   try {
     const cached = localStorage.getItem(RESOLVED_THEME_STORAGE_KEY)
     if (cached === "dark" || cached === "light") return cached
-  } catch { /* Storage may be disabled. */ }
+  } catch {
+    /* Storage may be disabled. */
+  }
   return getSystemTheme()
 }
 
@@ -43,7 +45,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [systemTheme, setSystemTheme] = useState(getSystemTheme)
   const [cachedTheme] = useState(getCachedTheme)
   const writerRef = useRef<SettingsWriter | null>(null)
-  const registerWriter = useMemo(() => (writer: SettingsWriter | null) => { writerRef.current = writer }, [])
+  const registerWriter = useMemo(
+    () => (writer: SettingsWriter | null) => {
+      writerRef.current = writer
+    },
+    [],
+  )
   const theme = settingsTheme ?? "system"
   // Settings hydrate independently of the condition. Retain the bootstrap until
   // both are available, except that a study policy always forces light at once.
@@ -62,23 +69,38 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     const root = document.documentElement
     root.classList.toggle("dark", hydratedTheme === "dark")
     root.style.colorScheme = hydratedTheme
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", getComputedStyle(document.body).backgroundColor)
-    document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.setAttribute("content", hydratedTheme === "dark" ? "black-translucent" : "default")
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", getComputedStyle(document.body).backgroundColor)
+    document
+      .querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
+      ?.setAttribute("content", hydratedTheme === "dark" ? "black-translucent" : "default")
     // Unknown policies retain the previous cache; a study session only caches light.
     if (policy) {
-      try { localStorage.setItem(RESOLVED_THEME_STORAGE_KEY, hydratedTheme) } catch { /* Storage may be disabled. */ }
+      try {
+        localStorage.setItem(RESOLVED_THEME_STORAGE_KEY, hydratedTheme)
+      } catch {
+        /* Storage may be disabled. */
+      }
     }
   }, [hydratedTheme, policy])
 
-  const value = useMemo<ThemeContextValue>(() => ({
-    theme,
-    resolvedTheme: hydratedTheme,
-    setTheme: (nextTheme) => {
-      if (writerRef.current) void writerRef.current({ theme: nextTheme })
-    },
-  }), [theme, hydratedTheme])
+  const value = useMemo<ThemeContextValue>(
+    () => ({
+      theme,
+      resolvedTheme: hydratedTheme,
+      setTheme: (nextTheme) => {
+        if (writerRef.current) void writerRef.current({ theme: nextTheme })
+      },
+    }),
+    [theme, hydratedTheme],
+  )
 
-  return <ThemeWriterContext.Provider value={registerWriter}><ThemeContext.Provider value={value}>{children}</ThemeContext.Provider></ThemeWriterContext.Provider>
+  return (
+    <ThemeWriterContext.Provider value={registerWriter}>
+      <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>
+    </ThemeWriterContext.Provider>
+  )
 }
 
 export function useTheme() {

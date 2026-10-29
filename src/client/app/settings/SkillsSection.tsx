@@ -1,6 +1,13 @@
 import { useEffect, useState } from "react"
 import { ExternalLink, Loader2, Search, Trash2, X } from "lucide-react"
-import type { InstalledSkillSummary, InstalledSkillsSnapshot, SkillInstallResult, SkillSearchResult, SkillSearchSnapshot, SkillUninstallResult } from "../../../shared/types"
+import type {
+  InstalledSkillSummary,
+  InstalledSkillsSnapshot,
+  SkillInstallResult,
+  SkillSearchResult,
+  SkillSearchSnapshot,
+  SkillUninstallResult,
+} from "../../../shared/types"
 import { useConditionPolicy } from "../../lib/conditionApi"
 import type { AppState } from "../useAppState"
 import { SETTINGS_LIST_CARD_CLASS, SettingsActionButton } from "./shared"
@@ -15,7 +22,9 @@ function formatInstallCount(count: number) {
 
 function SkillErrorBlock({ message }: { message: string }) {
   return (
-    <pre className="max-w-full overflow-x-auto whitespace-pre-wrap rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive">
+    <pre
+      className="max-w-full overflow-x-auto whitespace-pre-wrap rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-xs text-destructive"
+    >
       {message}
     </pre>
   )
@@ -81,7 +90,9 @@ function SkillResultCard({
     <div className="flex min-w-0 items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0">
         <div className="truncate text-sm font-medium text-foreground">{skill.name}</div>
-        <div className="truncate text-xs text-muted-foreground">{skill.source} · {formatInstallCount(skill.installs)}</div>
+        <div className="truncate text-xs text-muted-foreground">
+          {skill.source} · {formatInstallCount(skill.installs)}
+        </div>
         {installed && message ? <div className="mt-1 truncate text-xs text-primary">{message}</div> : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
@@ -94,10 +105,7 @@ function SkillResultCard({
         >
           <ExternalLink className="h-4 w-4" />
         </a>
-        <SettingsActionButton
-          disabled={installing || installed}
-          onClick={onInstall}
-        >
+        <SettingsActionButton disabled={installing || installed} onClick={onInstall}>
           {installing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
           {installed ? "Installed" : installing ? "Installing" : "Get"}
         </SettingsActionButton>
@@ -106,11 +114,7 @@ function SkillResultCard({
   )
 }
 
-export function SkillsSection({
-  state,
-}: {
-  state: Pick<AppState, "connectionStatus" | "socket">
-}) {
+export function SkillsSection({ state }: { state: Pick<AppState, "connectionStatus" | "socket"> }) {
   const socket = state.socket
   const connectionStatus = state.connectionStatus
   // Study deployments cut outbound registry access; the installed list stays
@@ -178,11 +182,12 @@ export function SkillsSection({
     setSearchError(null)
 
     const timeout = window.setTimeout(() => {
-      void socket.command<SkillSearchSnapshot>({
-        type: "skills.search",
-        query: normalizedQuery,
-        limit: 100,
-      })
+      void socket
+        .command<SkillSearchSnapshot>({
+          type: "skills.search",
+          query: normalizedQuery,
+          limit: 100,
+        })
         .then((snapshot) => {
           if (cancelled) return
           setResults(snapshot.skills)
@@ -275,7 +280,11 @@ export function SkillsSection({
   return (
     <div className="space-y-8">
       {operationError ? <SkillErrorBlock message={operationError} /> : null}
-      <section id={SETTINGS_ROWS.installedSkills.id} data-settings-row className="space-y-2">
+      <section
+        id={SETTINGS_ROWS.installedSkills.id}
+        data-settings-row
+        className="space-y-2"
+      >
         <div className="flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-foreground">Installed</div>
           {installedLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" /> : null}
@@ -288,60 +297,66 @@ export function SkillsSection({
                 key={`${skill.source}/${skill.name}`}
                 skill={skill}
                 uninstalling={uninstallingSkillId === skill.name}
-                onUninstall={() => { void uninstallSkill(skill) }}
+                onUninstall={() => {
+                  void uninstallSkill(skill)
+                }}
               />
             ))}
           </div>
         ) : !installedLoading ? (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            No global skills installed.
-          </div>
+          <div className="px-4 py-3 text-sm text-muted-foreground">No global skills installed.</div>
         ) : null}
       </section>
 
-      {remoteSkillsEnabled ? <section id={SETTINGS_ROWS.discoverSkills.id} data-settings-row className="space-y-2">
-        <div className="text-sm font-medium text-foreground">Discover</div>
-        <div className="flex h-10 items-center gap-2 rounded-lg border border-border bg-card/30 px-3">
-          <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
-          <input
-            type="text"
-            role="searchbox"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search skills"
-            className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
-          />
-          {query ? (
-            <button
-              type="button"
-              aria-label="Clear skills search"
-              onClick={() => setQuery("")}
-              className="touch-manipulation inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-          {searchLoading ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
-        </div>
-        {searchError ? <div className="text-xs text-destructive">{searchError}</div> : null}
-        <div className={SETTINGS_LIST_CARD_CLASS}>
-          {results.map((skill) => (
-            <SkillResultCard
-              key={skill.id}
-              skill={skill}
-              installing={installingSkillId === skill.id}
-              installed={installedSkillIds.has(skill.skillId)}
-              message={installMessages[skill.id]}
-              onInstall={() => { void installSkill(skill) }}
+      {remoteSkillsEnabled ? (
+        <section
+          id={SETTINGS_ROWS.discoverSkills.id}
+          data-settings-row
+          className="space-y-2"
+        >
+          <div className="text-sm font-medium text-foreground">Discover</div>
+          <div className="flex h-10 items-center gap-2 rounded-lg border border-border bg-card/30 px-3">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <input
+              type="text"
+              role="searchbox"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search skills"
+              className="min-w-0 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
             />
-          ))}
-        </div>
-        {!searchLoading && !searchError && query.trim().length >= 2 && results.length === 0 ? (
-          <div className="px-4 py-3 text-sm text-muted-foreground">
-            No skills found.
+            {query ? (
+              <button
+                type="button"
+                aria-label="Clear skills search"
+                onClick={() => setQuery("")}
+                className="touch-manipulation inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            ) : null}
+            {searchLoading ? <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" /> : null}
           </div>
-        ) : null}
-      </section> : null}
+          {searchError ? <div className="text-xs text-destructive">{searchError}</div> : null}
+          <div className={SETTINGS_LIST_CARD_CLASS}>
+            {results.map((skill) => (
+              <SkillResultCard
+                key={skill.id}
+                skill={skill}
+                installing={installingSkillId === skill.id}
+                installed={installedSkillIds.has(skill.skillId)}
+                message={installMessages[skill.id]}
+                onInstall={() => {
+                  void installSkill(skill)
+                }}
+              />
+            ))}
+          </div>
+          {!searchLoading && !searchError && query.trim().length >= 2 && results.length === 0 ? (
+            <div className="px-4 py-3 text-sm text-muted-foreground">No skills found.</div>
+          ) : null}
+        </section>
+      ) : null}
     </div>
   )
 }

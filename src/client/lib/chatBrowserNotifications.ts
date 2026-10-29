@@ -7,7 +7,7 @@ const CHAT_BROWSER_NOTIFICATION_MESSAGE_MAX_LENGTH = 180
 /** Same three-way gate as the chime, so the two settings read the same. */
 export function shouldShowChatBrowserNotification(
   preference: ChatBrowserNotificationPreference,
-  doc: Pick<Document, "visibilityState" | "hasFocus"> = document
+  doc: Pick<Document, "visibilityState" | "hasFocus"> = document,
 ) {
   if (preference === "never") return false
   if (preference === "always") return true
@@ -64,8 +64,13 @@ export function getChatBrowserNotificationPermission(): NotificationPermission |
 
 export function getChatBrowserNotificationDescription(permission: NotificationPermission | "unsupported") {
   const base = "Show a system notification when a chat starts waiting on you or turns unread."
-  if (permission === "denied") return base + " Notifications are blocked. Allow notifications for this site in browser site settings."
-  if (permission === "unsupported") return base + " Notifications are unavailable in this browser or on this insecure connection. Use HTTPS and check browser site settings."
+  if (permission === "denied")
+    return base + " Notifications are blocked. Allow notifications for this site in browser site settings."
+  if (permission === "unsupported")
+    return (
+      base +
+      " Notifications are unavailable in this browser or on this insecure connection. Use HTTPS and check browser site settings."
+    )
   if (permission === "default") return base + " Choosing When Unfocused or Always asks for browser permission."
   return base
 }

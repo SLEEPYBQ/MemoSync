@@ -76,7 +76,13 @@ export function SettingsSelect({
   "aria-label"?: string
 }) {
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled} open={open} onOpenChange={onOpenChange}>
+    <Select
+      value={value}
+      onValueChange={onValueChange}
+      disabled={disabled}
+      open={open}
+      onOpenChange={onOpenChange}
+    >
       <SelectTrigger aria-label={ariaLabel} className={SETTINGS_SELECT_TRIGGER_CLASS}>
         <SelectValue />
       </SelectTrigger>
@@ -133,7 +139,8 @@ export const SETTINGS_INSET_X_CLASS = "px-[17px]"
  * The card rows sit in, with a hairline between rows. overflow-hidden keeps
  * the palette's jump highlight inside the corners.
  */
-export const SETTINGS_LIST_CARD_CLASS = "divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card/40"
+export const SETTINGS_LIST_CARD_CLASS =
+  "divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card/40"
 
 /** Inline text actions inside a row description ("View tracked events", "Reset to …"). */
 export const SETTINGS_INLINE_ACTION_CLASS =
@@ -143,10 +150,7 @@ export function getKeybindingsSubtitle(filePathDisplay: string) {
   return `Edit global app shortcuts stored in ${filePathDisplay}.`
 }
 
-export function shouldPreviewChatSoundChange(
-  previousValue: string,
-  nextValue: string
-) {
+export function shouldPreviewChatSoundChange(previousValue: string, nextValue: string) {
   return previousValue !== nextValue
 }
 
@@ -157,7 +161,7 @@ export function shouldPreviewChatSoundChange(
  */
 export function resolveChatBrowserNotificationPreferenceAfterPermission(
   requestedPreference: ChatBrowserNotificationPreference,
-  permission: NotificationPermission | "unsupported"
+  permission: NotificationPermission | "unsupported",
 ): ChatBrowserNotificationPreference {
   if (requestedPreference === "never") return "never"
   return permission === "granted" ? requestedPreference : "never"
@@ -225,7 +229,12 @@ export function SettingsPlaceholder({
 /** Small pill for states and tags ("Current", "Prerelease", plan names). */
 export function SettingsBadge({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span className={cn("inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground", className)}>
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground",
+        className,
+      )}
+    >
       {children}
     </span>
   )
@@ -312,14 +321,14 @@ type SettingsRowProps = {
   description?: ReactNode
 } & (
   | {
-    /** Registry def: provides the anchor id (palette jump target) + title/description. */
-    def: SettingsRowDef
-    title?: string
-  }
+      /** Registry def: provides the anchor id (palette jump target) + title/description. */
+      def: SettingsRowDef
+      title?: string
+    }
   | {
-    def?: undefined
-    title: string
-  }
+      def?: undefined
+      title: string
+    }
 )
 
 export function SettingsRow({
@@ -361,13 +370,10 @@ export function SettingsRow({
       aria-disabled={disabled || undefined}
       className={cn("scroll-mt-4 px-4", disabled && "opacity-50")}
     >
-      <div
-        className={cn(
-          "grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 py-2.5 @2xl:gap-x-8",
-          nested && "pl-6",
-        )}
-      >
-        <div className="col-[1] row-[1] flex min-w-0 items-center gap-3 self-center text-sm font-medium text-foreground @2xl:max-w-xl">
+      <div className={cn("grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 py-2.5 @2xl:gap-x-8", nested && "pl-6")}>
+        <div
+          className="col-[1] row-[1] flex min-w-0 items-center gap-3 self-center text-sm font-medium text-foreground @2xl:max-w-xl"
+        >
           {icon}
           <span className="min-w-0">{title ?? def?.title}</span>
         </div>

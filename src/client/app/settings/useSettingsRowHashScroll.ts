@@ -5,7 +5,11 @@ export function useSettingsRowHashScroll(hash: string, ready: boolean, sectionId
   useEffect(() => {
     if (!ready || !hash) return
     let rowId: string
-    try { rowId = decodeURIComponent(hash.replace(/^#/, "")) } catch { return }
+    try {
+      rowId = decodeURIComponent(hash.replace(/^#/, ""))
+    } catch {
+      return
+    }
     let frame = 0
     let timeout: number | undefined
     let highlighted: HTMLElement | null = null

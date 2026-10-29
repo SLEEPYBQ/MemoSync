@@ -25,7 +25,7 @@ export function deriveMemoryToggleState(
     hidden,
     off,
     label: off ? "Memory off" : null,
-    action: memory.enabled ? "toggle" as const : "settings" as const,
+    action: memory.enabled ? ("toggle" as const) : ("settings" as const),
     tooltip: tooltip + (memory.enabled && !memory.learn ? " Learning is paused in Settings" : ""),
   }
 }
@@ -47,14 +47,20 @@ export function useDraftMemoryDisabled(draftKey?: string | null): [boolean, (dis
 }
 
 export function MemoryIcon({ off = false }: { off?: boolean }) {
-  return <span className="relative inline-flex h-3.5 w-3.5 shrink-0" aria-hidden="true">
-    <BrainCircuit className="h-3.5 w-3.5" />
-    {off ? <Slash className="absolute inset-0 h-3.5 w-3.5" strokeWidth={2.5} /> : null}
-  </span>
+  return (
+    <span className="relative inline-flex h-3.5 w-3.5 shrink-0" aria-hidden="true">
+      <BrainCircuit className="h-3.5 w-3.5" />
+      {off ? <Slash className="absolute inset-0 h-3.5 w-3.5" strokeWidth={2.5} /> : null}
+    </span>
+  )
 }
 
 export function MemoryOffRowIcon() {
-  return <span className="inline-flex shrink-0 text-muted-foreground/60" title="Memory off for this chat"><MemoryIcon off /></span>
+  return (
+    <span className="inline-flex shrink-0 text-muted-foreground/60" title="Memory off for this chat">
+      <MemoryIcon off />
+    </span>
+  )
 }
 
 type MemoryToggleProps = { chatId?: string | null; draftKey?: string | null }
@@ -75,13 +81,19 @@ function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const runtime = app?.runtime && app.runtime.chatId === chatId ? app.runtime : null
-  const disabled = chatId ? runtime?.memoryDisabled ?? false : draftDisabled
+  const disabled = chatId ? (runtime?.memoryDisabled ?? false) : draftDisabled
   const state = deriveMemoryToggleState(policy, memory, disabled)
   if (state.hidden) return null
 
   async function toggle() {
-    if (state.action === "settings") { navigate("/settings/memory#memoryEnabled"); return }
-    if (!chatId) { setDraftDisabled(!disabled); return }
+    if (state.action === "settings") {
+      navigate("/settings/memory#memoryEnabled")
+      return
+    }
+    if (!chatId) {
+      setDraftDisabled(!disabled)
+      return
+    }
     if (!app) return
     setPending(true)
     setError(null)
@@ -89,26 +101,40 @@ function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
       await app.socket.command({ type: "chat.setMemoryDisabled", chatId, disabled: !disabled })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
-    } finally { setPending(false) }
+    } finally {
+      setPending(false)
+    }
   }
 
-  return <>
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <button type="button" aria-label={state.label ?? "Memory on"} aria-pressed={!state.off}
-          disabled={pending || (Boolean(chatId) && !runtime && state.action !== "settings")}
-          className={cn(
-            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors cursor-pointer hover:bg-muted/50 disabled:opacity-50 [&>span]:whitespace-nowrap",
-            // Off changes what the agent does, so it reads as a state to notice, not a preference.
-            state.off ? "text-cand-fg" : "text-muted-foreground",
-          )}
-          onClick={() => { void toggle() }}>
-          <MemoryIcon off={state.off} />
-          {state.label ? <span>{state.label}</span> : null}
-        </button>
-      </TooltipTrigger>
-      <TooltipContent>{state.tooltip}</TooltipContent>
-    </Tooltip>
-    {error ? <span role="alert" className="text-xs text-destructive">{error}</span> : null}
-  </>
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            aria-label={state.label ?? "Memory on"}
+            aria-pressed={!state.off}
+            disabled={pending || (Boolean(chatId) && !runtime && state.action !== "settings")}
+            className={cn(
+              "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors cursor-pointer hover:bg-muted/50 disabled:opacity-50 [&>span]:whitespace-nowrap",
+              // Off changes what the agent does, so it reads as a state to notice, not a preference.
+              state.off ? "text-cand-fg" : "text-muted-foreground",
+            )}
+            onClick={() => {
+              void toggle()
+            }}
+          >
+            <MemoryIcon off={state.off} />
+            {state.label ? <span>{state.label}</span> : null}
+          </button>
+        </TooltipTrigger>
+        <TooltipContent>{state.tooltip}</TooltipContent>
+      </Tooltip>
+      {error ? (
+        <span role="alert" className="text-xs text-destructive">
+          {error}
+        </span>
+      ) : null}
+    </>
+  )
 }
