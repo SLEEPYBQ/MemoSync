@@ -35,6 +35,7 @@ import { useStickyChatFocus } from "../useStickyChatFocus"
 import { useTerminalToggleAnimation } from "../useTerminalToggleAnimation"
 import type { AppState } from "../useAppState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useAppState"
+import { hasPendingMemoryPreview } from "../derived"
 import { ChatInputDock } from "./ChatInputDock"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
@@ -1089,6 +1090,8 @@ export function ChatPage() {
         contextWindowSnapshot={contextWindowSnapshot}
         slashCommands={availableSlashCommands}
         onSubmit={handleChatSubmit}
+        isRunning={state.isProcessing || hasPendingMemoryPreview(state.messages)}
+        onSendOldestQueued={state.queuedMessages[0] ? () => { void state.handleSteerQueuedMessage(state.queuedMessages[0]!.id) } : undefined}
         onCancel={handleCancel}
         showStopBanner={showStopBanner}
         onDismissStopBanner={handleDismissStopBanner}

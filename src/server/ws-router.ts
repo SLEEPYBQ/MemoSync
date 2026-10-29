@@ -1,3 +1,4 @@
+import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -1794,7 +1795,12 @@ export function createWsRouter({
           return
         }
         case "message.enqueue": {
-          const result = await agent.enqueue(command)
+          const result = await enqueueAndMaybeSteer(command, {
+            enqueue: (value) => agent.enqueue(value),
+            steer: (value) => agent.steer(value),
+            isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
+            isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
+          })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)
           return

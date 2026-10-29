@@ -21,6 +21,8 @@ interface ChatInputDockProps {
   slashCommands: string[]
   onSubmit: AppState["handleSend"]
   onCancel: () => void
+  onSendOldestQueued?: () => void
+  isRunning?: boolean
   /** Redesign 2026-08-07 §3: an early stop distinguishes itself from a normal
    * finish — a red strip above the composer invites the correction. */
   showStopBanner?: boolean
@@ -44,6 +46,8 @@ export const ChatInputDock = memo(function ChatInputDock({
   slashCommands,
   onSubmit,
   onCancel,
+  onSendOldestQueued,
+  isRunning,
   showStopBanner,
   onDismissStopBanner,
 }: ChatInputDockProps) {
@@ -74,6 +78,8 @@ export const ChatInputDock = memo(function ChatInputDock({
           key={activeChatId ?? "new-chat"}
           onSubmit={onSubmit}
           onCancel={onCancel}
+          onSendOldestQueued={onSendOldestQueued}
+          isRunning={isRunning}
           disabled={!hasSelectedProject}
           canCancel={canCancel}
           chatId={activeChatId}

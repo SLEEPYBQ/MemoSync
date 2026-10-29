@@ -233,6 +233,8 @@ export type ClientCommand =
   | { type: "chat.reopenMemoryPreparation"; chatId: string; from: "proposals" | "checkup" | "transfer"; stageId: string }
   | {
       type: "message.enqueue"
+      /** Interrupt via the existing message.steer path after enqueue. */
+      steer?: boolean
       chatId: string
       content: string
       attachments?: ChatAttachment[]

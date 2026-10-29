@@ -14,6 +14,8 @@ import {
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
+import { resolveComposerEnter } from "../../../shared/submit-mode"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { cn } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
@@ -120,10 +122,12 @@ interface ComposerAttachment extends ChatAttachment {
 interface Props {
   onSubmit: (
     value: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[]; steer?: boolean }
   ) => Promise<void>
   onLayoutChange?: () => void
   onCancel?: () => void
+  onSendOldestQueued?: () => void
+  isRunning?: boolean
   disabled: boolean
   canCancel?: boolean
   chatId?: string | null
@@ -198,6 +202,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
   onLayoutChange,
   onCancel,
+  onSendOldestQueued,
+  isRunning = false,
   disabled,
   canCancel,
   chatId,
@@ -578,7 +584,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     },
   }), [enqueueFiles, setDraft, textDraftKey])
 
-  async function handleSubmit() {
+  async function handleSubmit(steer?: boolean) {
     if (!canSubmit || hasPendingUploads) return
 
     const nextValue = value
@@ -593,6 +599,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
     const submitOptions = {
+      steer,
       provider: selectedProvider,
       model: providerPrefs.model,
       modelOptions,
@@ -711,9 +718,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
-    if (event.key === "Enter" && !event.shiftKey && !isTouchDevice && !disabled && hasTextToSend && !hasPendingUploads) {
+    const action = resolveComposerEnter({
+      key: event.key, shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey,
+      nativeEvent: event.nativeEvent, disabled, touch: isTouchDevice, pendingUploads: hasPendingUploads,
+      running: isRunning, mode: useAppSettingsStore.getState().settings?.submitWhileRunning ?? "queue",
+      text: value, attachmentCount: attachmentsRef.current.length, hasQueuedMessage: Boolean(onSendOldestQueued),
+    })
+    if (action === "send-oldest-queued") {
       event.preventDefault()
-      void handleSubmit()
+      onSendOldestQueued?.()
+    } else if (action !== "none") {
+      event.preventDefault()
+      void handleSubmit(action === "steer")
     }
   }
 
