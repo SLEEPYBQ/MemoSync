@@ -19,7 +19,7 @@
   "searchFileContents": "搜索文件内容",
   "backToFileFilter": "返回文件筛选",
   "refresh": "刷新",
-  "typeAtLeast2CharactersToSearchFileContents": "至少输入2个字符以搜索文件内容。",
+  "typeAtLeast2CharactersToSearchFileContents": "至少输入 2 个字符以搜索文件内容。",
   "searching": "正在搜索…",
   "noMatches": "无匹配结果。",
   "moreMatchesExistNarrowTheSearch": "还有更多匹配结果，请缩小搜索范围。",
