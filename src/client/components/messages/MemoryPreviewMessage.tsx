@@ -1,3 +1,5 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
+import { MemoryBadge } from "../memory/MemoryBadge"
 // Independent pre-turn component: Working Memory for This Turn (redesign
 // 2026-08-07 §3). It follows the proposed-changes component, but is not a
 // third step inside it: the paper treats these as two different shared objects.
@@ -425,16 +427,16 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   return (
     <RiseIn freshAt={message.timestamp}>
       <div
-        className="rounded-xl border border-border bg-card p-4 shadow-sm"
+        className={MEMORY_CARD}
         // While the gate awaits a keyboard decision, claim Esc so sticky-focus
         // doesn't swallow it (BUG CORE-1).
         {...(interactive ? { [PREVIEW_GATE_PENDING_ATTRIBUTE]: "" } : {})}
       >
         <div className="flex flex-wrap items-baseline gap-2">
           <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-            <LibraryBig className="h-3 w-3" /> Confirmation
+            <LibraryBig className="h-4 w-4" /> Confirmation
           </span>
-          <span className="text-sm font-medium text-foreground">Working Memory for This Turn</span>
+          <span className="text-sm font-semibold text-foreground">Working Memory for This Turn</span>
           {!pending ? <span className="ml-auto text-xs text-muted-foreground">{decidedText}</span> : null}
         </div>
         {pending ? (
@@ -475,33 +477,34 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 const planningFailed = failedPlanningIds.has(id) || Boolean(message.selectionError && !expectedUsesById.has(id))
                 return (
                   <RiseIn key={id} freshAt={pending ? Date.now() : undefined} delay={index * 0.06}>
-                    <div className="relative -mx-1 overflow-hidden rounded-lg bg-muted/40 px-3 py-2 text-sm border border-border/70">
-                      <div className="flex items-start gap-2">
+                    <div className="relative min-w-0 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2 text-sm">
+                      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-2 @2xl:grid-cols-[auto_minmax(0,1fr)_auto]">
                         <MemoryCitationChip id={id} />
-                        <span className="min-w-0 flex-1 text-foreground">{memory.content}</span>
+                        <span className="min-w-0 text-foreground">{memory.content}</span>
+                        <div className="col-span-2 flex min-w-0 flex-wrap items-center justify-end gap-1.5 @2xl:col-span-1">
                         {transferredIds.has(id) ? (
                           // Landed by THIS turn's transfer stage — also covers
                           // reinforce-merges, where the accept strengthened an
                           // existing memory instead of adding a row (otherwise
                           // an accepted transfer looks like it vanished).
-                          <span
+                          <MemoryBadge
                             title="Landed by this turn's transfer review (a merge strengthens an existing memory)"
-                            className="shrink-0 rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-[10px] leading-none text-violet-700 dark:text-violet-300"
+                            className="shrink-0 rounded-md border border-info/40 bg-info/10 px-1.5 py-0.5 text-[11px] leading-4 text-info-foreground dark:text-info-foreground"
                           >
                             via transfer
-                          </span>
+                          </MemoryBadge>
                         ) : null}
                         {label ? (
-                          <span
+                          <MemoryBadge
                             className={cn(
-                              "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none",
+                              "shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] leading-4",
                               source === "suggested" && "border-border text-muted-foreground",
-                              source === "attention" && "border-destructive/40 bg-destructive/10 text-destructive",
-                              source === "manual" && "border-emerald-500/40 bg-success/10 text-emerald-700 dark:text-emerald-300",
+                              source === "attention" && "border-info/25 bg-info/8 text-info-foreground",
+                              source === "manual" && "border-success/40 bg-success/10 text-success-foreground dark:text-success-foreground",
                             )}
                           >
                             {label}
-                          </span>
+                          </MemoryBadge>
                         ) : null}
                         {interactive ? (
                           source === "attention" ? (
@@ -512,7 +515,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                               title="This memory is enforced for this run — cancel the enforce to remove it"
                               disabled={revising}
                               onClick={() => removeFromInjected(id)}
-                              className="shrink-0 rounded border border-destructive/40 px-1.5 py-0.5 text-[10px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-40"
+                              className="shrink-0 rounded border border-destructive/40 px-1.5 py-0.5 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-40"
                             >
                               Cancel enforce
                             </button>
@@ -528,6 +531,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             </button>
                           )
                         ) : null}
+                        </div>
                       </div>
                       <div className="mt-2 border-t border-border/60 pt-2">
                         <p className="text-xs font-medium text-muted-foreground/75 dark:text-muted-foreground">
@@ -550,20 +554,20 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               })
             )}
             {message.relevant !== undefined && !selectionError && injectedIds.length > 0 ? (
-              <p className="text-[10px] italic text-muted-foreground/70 dark:text-muted-foreground">
+              <p className="text-[11px] italic text-muted-foreground/70 dark:text-muted-foreground">
                 suggestions are a model prediction — adjust the list before starting
               </p>
             ) : null}
 
             {!seeding && poolRest.length > 0 ? (
               // data-preview-pool: spotlight anchor for the guide tour.
-              <div data-preview-pool className="mt-1.5 rounded-lg border border-border/70 bg-background/60 p-2.5">
+              <div data-preview-pool className="mt-1.5 border-t border-border/70 pt-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <LibraryBig className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="text-xs font-medium text-foreground">Add from memory pool</span>
-                  <span className="rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">
+                  <MemoryBadge className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
                     {poolRest.length} available
-                  </span>
+                  </MemoryBadge>
                   <Button
                     type="button"
                     variant="outline"
@@ -584,10 +588,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                     {poolRest.map((memory) => (
                       <div
                         key={memory.id}
-                        className="flex items-start gap-2 rounded-lg px-1.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                        className="flex flex-wrap items-start gap-2 rounded-lg px-1.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
                       >
                         <MemoryCitationChip id={memory.id} />
-                        <span className="min-w-0 flex-1">{memory.content}</span>
+                        <span className="min-w-0 flex-1 basis-40">{memory.content}</span>
                         <Button
                           type="button"
                           variant="ghost"
@@ -650,7 +654,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 aria-label="Send"
                 disabled={revising || seeding || !reviseText.trim()}
                 onClick={() => void askAgentToRevise()}
-                className="h-7 w-7 shrink-0 rounded-full bg-slate-600 text-white hover:bg-slate-700 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
+                className="h-7 w-7 shrink-0 rounded-full bg-primary text-primary-foreground hover:bg-primary/90"
               >
                 {revising ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
               </Button>
@@ -664,18 +668,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         ) : null}
 
         {interactive ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button variant="juicy" size="xs" disabled={submitting !== null || seeding || revising || planningSelected || failedSelected.length > 0} onClick={start}>
-              {submitting === "go_on" || submitting === "without_memory" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : null}
-              {planningSelected
-                ? "Preparing expected use…"
-                : injectedIds.length === 0
-                  ? "Start without memory"
-                  : `Start (${injectedIds.length} injected)`}
-              <kbd className="ml-1.5 rounded bg-black/15 px-1 font-sans text-[10px]">⏎</kbd>
-            </Button>
+          <div className="mt-3 flex flex-wrap justify-end items-center gap-2">
+
             <Button
               variant="ghost"
               size="xs"
@@ -685,7 +679,19 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               onClick={() => respond("dismiss")}
             >
               Dismiss turn
-              <kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[10px] text-muted-foreground">esc</kbd>
+              <kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px] text-muted-foreground">esc</kbd>
+            </Button>
+
+            <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || planningSelected || failedSelected.length > 0} onClick={start}>
+              {submitting === "go_on" || submitting === "without_memory" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : null}
+              {planningSelected
+                ? "Preparing expected use…"
+                : injectedIds.length === 0
+                  ? "Start without memory"
+                  : `Start (${injectedIds.length} injected)`}
+              <kbd className="ml-1.5 rounded bg-black/15 px-1 font-sans text-[11px]">⏎</kbd>
             </Button>
           </div>
         ) : null}

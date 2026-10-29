@@ -1,9 +1,11 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
+import { MemoryBadge } from "../memory/MemoryBadge"
 // Review cards for capture-surfaced memory candidates (SPEC §4.1, §4.10).
 // Rendered in-transcript, one card per candidate the forced capture hook
 // proposed after a turn. Accept / Edit / Dismiss talk to the memory HTTP API
 // directly and reconcile against the shared memory store.
 import { useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Check, Loader2, Pencil, RefreshCw, ShieldCheck, Undo2, X, Zap } from "lucide-react"
+import { AlertTriangle, Check, Inbox, Loader2, Pencil, RefreshCw, ShieldCheck, Undo2, X, Zap } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import {
   memoriesApi,
@@ -72,7 +74,7 @@ export function MemoryCandidatesMessage({ message }: Props) {
   if (message.candidates.length === 0) return null
   if (renderOptions.readonly) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         {message.candidates.length === 1 ? "1 memory candidate" : `${message.candidates.length} memory candidates`} omitted from this export for privacy.
       </div>
     )
@@ -139,7 +141,7 @@ type ResolvedState = "pending" | "accepted" | "dismissed"
 
 function LoadingCandidate() {
   return (
-    <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+    <div className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
       <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading memory candidate…
     </div>
   )
@@ -147,7 +149,7 @@ function LoadingCandidate() {
 
 function UnavailableCandidate() {
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+    <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
       Memory candidate unavailable. Refresh to try again.
     </div>
   )
@@ -155,7 +157,7 @@ function UnavailableCandidate() {
 
 function ResolvedCandidate({ resolved, id }: { resolved: Exclude<ResolvedState, "pending">; id: string }) {
   return (
-    <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+    <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
       {resolved === "accepted" ? `saved as ${id} · this turn's focus is decided in Working Memory` : "dismissed"}
     </div>
   )
@@ -200,13 +202,13 @@ function AcceptedCandidateCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
+    <div className={MEMORY_CARD}>
       <ExpandableRow
         expandedContent={
           <div className="mt-2 flex flex-col gap-2">
             <p className="whitespace-pre-wrap text-sm text-foreground">{candidate.content}</p>
             {candidate.detail ? (
-              <p className="whitespace-pre-wrap text-xs text-muted-foreground">{candidate.detail}</p>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{candidate.detail}</p>
             ) : null}
             <div className="flex items-center justify-between gap-2">
               <span className="text-[11px] text-muted-foreground">
@@ -224,7 +226,8 @@ function AcceptedCandidateCard({
           </div>
         }
       >
-        <span className="text-xs text-muted-foreground">
+        <span className="inline-flex items-start gap-2 text-sm text-muted-foreground">
+          <Check aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-foreground" />
           saved as {candidate.id} · this turn&apos;s focus is decided in Working Memory
         </span>
       </ExpandableRow>
@@ -268,20 +271,20 @@ function AutoAppliedCard({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+    <div className={MEMORY_CARD}>
       <div className="flex flex-wrap items-center gap-2">
         {/* Delegation move: the stamp pops into place — quick and confident. */}
         <StampIn freshAt={freshAt}>
-          <span className="inline-flex items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-300">
+          <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
             <Zap className="h-3 w-3" />
             auto-applied
-          </span>
+          </MemoryBadge>
         </StampIn>
         {revisionOf ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+          <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
             <RefreshCw className="h-3 w-3" />
             revision — replaced {revisionOf.id}
-          </span>
+          </MemoryBadge>
         ) : null}
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{candidate.id}</span>
       </div>
@@ -496,7 +499,7 @@ export function MemoryCandidateCard({
       return <AcceptedCandidateCard candidate={candidate} surface={surface} onChanged={onChanged} />
     }
     return (
-      <div className="flex items-center justify-between gap-3 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex items-center justify-between gap-3 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span>dismissed</span>
         {allowRestore && !candidate.sensitive ? (
           <Button variant="ghost" size="xs" disabled={busy !== null} onClick={() => void handleRestore()}>
@@ -512,30 +515,31 @@ export function MemoryCandidateCard({
   const busyState = busy !== null
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+    <div className={MEMORY_CARD}>
       <div className="flex flex-wrap items-center gap-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full border border-cand-border bg-cand-surface px-2 py-0.5 text-[11px] font-medium text-cand-fg">
-          <span className="h-1.5 w-1.5 rounded-full bg-cand-dot" />
+        <span className="inline-flex items-center gap-2 text-sm font-semibold">
+          <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" />
           memory candidate
+          <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-cand-dot" />
         </span>
         {revisionOf ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:text-blue-300">
+          <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-info/30 bg-info/10 px-1.5 py-0.5 text-[11px] font-medium text-info-foreground dark:text-info-foreground">
             <RefreshCw className="h-3 w-3" />
             revision — replaces {revisionOf.id}
-          </span>
+          </MemoryBadge>
         ) : null}
         {candidate.sensitive ? (
-          <span className="inline-flex items-center gap-1 rounded-full border border-cand-border bg-cand-surface px-2 py-0.5 text-[11px] font-medium text-cand-fg">
+          <MemoryBadge className="inline-flex items-center gap-1 rounded-md border border-cand-border bg-cand-surface px-1.5 py-0.5 text-[11px] font-medium text-cand-fg">
             <AlertTriangle className="h-3 w-3" />
             sensitive — needs your confirmation
-          </span>
+          </MemoryBadge>
         ) : null}
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{candidate.id}</span>
       </div>
 
       {resurfaced ? (
-        <p className="mt-1.5 flex items-start gap-1.5 rounded-md border border-blue-500/25 bg-blue-500/5 px-2 py-1 text-xs text-muted-foreground">
-          <RefreshCw className="mt-0.5 h-3 w-3 shrink-0 text-blue-600 dark:text-blue-400" />
+        <p className="mt-1.5 flex items-start gap-1.5 rounded-md border border-info/25 bg-info/5 px-2 py-1 text-xs text-muted-foreground">
+          <RefreshCw className="mt-0.5 h-3 w-3 shrink-0 text-info-foreground dark:text-info-foreground" />
           <span className="min-w-0 flex-1">
             Proposed before{candidate.provenanceSessionId && candidate.provenanceSessionId !== chatId ? " in another chat" : " in this chat"} and
             still waiting for your review — this is the same pending proposal, brought back because it came up again.
@@ -548,15 +552,15 @@ export function MemoryCandidateCard({
         // diff (user decision 2026-07-16). While editing, only the current
         // version stays as reference; the textarea is the proposed text.
         <div className="mt-2 flex flex-col gap-1.5">
-          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2">
-            <p className="text-[10px] font-medium text-muted-foreground">
+          <div className="memory-reference rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
+            <p className="text-[11px] font-medium text-muted-foreground">
               current · <span className="font-mono normal-case">{revisionOf.id}</span>
             </p>
-            <p className="mt-0.5 whitespace-pre-wrap text-xs text-muted-foreground">{revisionOf.content}</p>
+            <p className="mt-0.5 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{revisionOf.content}</p>
           </div>
           {!editing ? (
-            <div className="rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-2">
-              <p className="text-[10px] font-medium text-blue-700 dark:text-blue-300">proposed</p>
+            <div className="memory-reference rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
+              <p className="text-[11px] font-medium text-info-foreground dark:text-info-foreground">proposed</p>
               <p className="mt-0.5 whitespace-pre-wrap text-sm text-foreground">{displayContent}</p>
             </div>
           ) : null}
@@ -568,12 +572,12 @@ export function MemoryCandidateCard({
           <div className="space-y-2">
             {sanitized ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                <ShieldCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
                 redaction proposal — review, edit, then Accept to activate it
                 {sanitized.redactions.map((r) => (
-                  <span key={r.placeholder} className="rounded-full border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+                  <MemoryBadge key={r.placeholder} className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                     {r.placeholder} {r.kind}
-                  </span>
+                  </MemoryBadge>
                 ))}
               </p>
             ) : null}
@@ -606,7 +610,7 @@ export function MemoryCandidateCard({
               >
                 Cancel
               </Button>
-              <Button variant="juicy" size="xs" disabled={busyState || !draftContent.trim()} onClick={() => void handleSaveEdit()}>
+              <Button variant="outline" size="xs" disabled={busyState || !draftContent.trim()} onClick={() => void handleSaveEdit()}>
                 Save
               </Button>
             </div>
@@ -619,16 +623,16 @@ export function MemoryCandidateCard({
       {displayDetail && !editing ? (
         <div className="mt-2">
           <ExpandableRow
-            expandedContent={<p className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground">{displayDetail}</p>}
+            expandedContent={<p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{displayDetail}</p>}
           >
             <span className="text-xs text-muted-foreground">detail</span>
           </ExpandableRow>
         </div>
       ) : null}
 
-      <div className="mt-3 flex flex-wrap items-center gap-2">
+      <div className="mt-3 flex flex-col items-stretch gap-3 @lg:flex-row @lg:flex-wrap @lg:items-end">
         <ScopeControl value={scope} onValueChange={setScope} disabled={busyState} showConsequence />
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {!editing && candidate.sensitive ? (
             <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleSanitize()}>
               {busy === "sanitize" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
@@ -644,11 +648,11 @@ export function MemoryCandidateCard({
               <Pencil className="h-3.5 w-3.5" />Edit
             </Button>
           ) : null}
-          <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleDismiss()}>
+          <Button variant="ghost" size="xs" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleDismiss()}>
             <X className="h-3.5 w-3.5" />Dismiss
           </Button>
           <Button
-            variant="juicy"
+            variant="default"
             size="xs"
             disabled={busyState}
             title={revisionOf ? `Accepting archives ${revisionOf.id} and replaces it with this text.` : undefined}

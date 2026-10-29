@@ -1,3 +1,4 @@
+import { ScopeBadge } from "./ScopeBadge"
 // The canonical READ-ONLY face of a memory item (redesign 2026-08-07 §4:
 // shared operable representation). Body = short content + usage count + scope
 // + expandable Detail, identical everywhere. Hosts (candidate container,
@@ -8,7 +9,7 @@ import { useState } from "react"
 import { ChevronRight } from "lucide-react"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { cn } from "../../lib/utils"
-import { MEMORY_SCOPE_TEXT_CLASSES, isMemoryScope, memoryScopeLabel } from "../../lib/memoryCitations"
+import { isMemoryScope } from "../../lib/memoryCitations"
 
 export type MemoryCardCoreItem = Pick<MemoryItem, "id" | "content" | "scope" | "usageCount"> &
   Partial<Pick<MemoryItem, "detail" | "version" | "provenanceSessionId" | "provenanceTurn">>
@@ -21,17 +22,17 @@ export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; 
   if (item.provenanceTurn !== undefined) provenanceParts.push(`t${item.provenanceTurn}`)
 
   return (
-    <div className={cn("space-y-1.5 text-xs", className)}>
+    <div className={cn("memory-ui min-w-0 space-y-1.5 text-xs", className)}>
       <div className="flex flex-wrap items-center gap-1.5 font-mono text-muted-foreground">
         <span>
           {item.id}
           {item.version !== undefined ? ` v${item.version}` : ""}
         </span>
         <span>·</span>
-        <span className={cn("font-sans font-medium", MEMORY_SCOPE_TEXT_CLASSES[scope])}>{memoryScopeLabel(scope)}</span>
+        <ScopeBadge scope={scope} />
         <span className="ml-auto font-sans">used {item.usageCount ?? 0}×</span>
       </div>
-      <p className="whitespace-pre-wrap text-sm text-foreground">{item.content}</p>
+      <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{item.content}</p>
       {item.detail ? (
         <>
           <button
@@ -43,7 +44,7 @@ export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; 
             Detail
           </button>
           {detailOpen ? (
-            <p className="whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
+            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
               {item.detail}
             </p>
           ) : null}

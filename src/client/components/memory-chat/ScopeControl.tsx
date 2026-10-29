@@ -32,7 +32,7 @@ interface ScopeControlProps {
 
 export function ScopeControl({ value, onValueChange, className, disabled, showConsequence }: ScopeControlProps) {
   const segments = (
-    <div className={cn("inline-flex max-w-full items-center gap-0.5 rounded-lg bg-muted/50 p-[3px]", !showConsequence && className)}>
+    <div className={cn("memory-ui inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-lg bg-muted/50 p-[3px]", !showConsequence && className)}>
       {SCOPE_OPTIONS.map(({ value: scope, label, icon: Icon }) => {
         const selected = scope === value
         return (
@@ -44,7 +44,7 @@ export function ScopeControl({ value, onValueChange, className, disabled, showCo
             aria-pressed={selected}
             title={SCOPE_CONSEQUENCES[scope]}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+              "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
               selected
                 ? MEMORY_SCOPE_SELECTED_CLASSES[scope]
                 : "text-muted-foreground hover:bg-accent hover:text-accent-foreground dark:hover:bg-card"
@@ -60,7 +60,7 @@ export function ScopeControl({ value, onValueChange, className, disabled, showCo
   )
   if (!showConsequence) return segments
   return (
-    <div className={cn("flex flex-col items-start gap-1", className)}>
+    <div className={cn("min-w-0 max-w-full flex flex-col items-start gap-1", className)}>
       {segments}
       <p className="px-1 text-[11px] text-muted-foreground">{SCOPE_CONSEQUENCES[value]}</p>
     </div>

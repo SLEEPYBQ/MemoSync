@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 2 (redesign 2026-08-07 §3): suggested changes to saved memories. Three
 // parallel library checks (conflicts / redundancy / staleness) surface here,
 // grouped by type with empty groups hidden. Promotion rows are legacy-only;
@@ -99,7 +100,7 @@ export function MemoryCheckupGate({
   if (renderOptions.readonly) {
     if (!suggestions.length && !failedKinds.length) return null
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         Step {stepNumber} · Review Suggested Changes to Existing Memories — {suggestions.length} omitted from this export.
         {failedKinds.length ? ` Incomplete checks: ${failedKindsLabel(failedKinds)}.` : ""}
       </div>
@@ -113,7 +114,7 @@ export function MemoryCheckupGate({
 
   if (message.waiting) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span className="font-medium text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
         <span className="ml-1">Waiting for the earlier steps. This review will regenerate when you continue.</span>
       </div>
@@ -122,7 +123,7 @@ export function MemoryCheckupGate({
 
   if (message.suggestions !== undefined && suggestions.length === 0 && failedKinds.length > 0) {
     return (
-      <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300">
+      <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-3 py-2 text-xs text-cand-fg dark:border-cand-border dark:bg-cand-surface dark:text-cand-fg">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
           <span className="font-medium">Step {stepNumber} · Checkup incomplete</span>
@@ -134,8 +135,8 @@ export function MemoryCheckupGate({
 
   if (message.suggestions !== undefined && suggestions.length === 0 && (!message.decision || message.decision === "empty")) {
     return (
-      <div className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-        <CheckCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+      <div className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
+        <CheckCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
         <span className="font-medium text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
         <span>✓ Nothing needs attention.</span>
       </div>
@@ -181,10 +182,10 @@ export function MemoryCheckupGate({
 
   let riseIndex = -1
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm" data-memory-control-surface={surface}>
+    <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-3 w-3" /> Step {stepNumber}</span>
-        <span className="text-sm font-medium text-foreground">Review Suggested Changes to Existing Memories</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-4 w-4" /> Step {stepNumber}</span>
+        <span className="text-sm font-semibold text-foreground">Review Suggested Changes to Existing Memories</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
@@ -207,7 +208,7 @@ export function MemoryCheckupGate({
 
       <div className="mt-3 flex flex-col gap-3">
         {failedKinds.length ? (
-          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300">
+          <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-3 py-2 text-xs text-cand-fg dark:border-cand-border dark:bg-cand-surface dark:text-cand-fg">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>Some checks did not finish: {failedKindsLabel(failedKinds)}. The completed suggestions below remain reviewable; failed checks will retry next turn.</span>
           </div>
@@ -217,7 +218,7 @@ export function MemoryCheckupGate({
           if (group.length === 0) return null
           return (
             <div key={kind}>
-              <p className="flex items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+              <p className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
                 <Icon className="h-3 w-3" /> {title} · {group.length}
               </p>
               <div className="mt-1.5 flex flex-col gap-1.5">
@@ -246,12 +247,12 @@ export function MemoryCheckupGate({
         })}
       </div>
 
-      <div className="mt-3 flex items-center justify-end">
+      <div className="mt-3 flex flex-wrap items-center justify-end">
         {stale ? (
           <p className="text-xs text-muted-foreground">This gate belongs to an earlier turn and is no longer active.</p>
         ) : (
           <Button
-            variant="juicy"
+            variant="default"
             size="xs"
             disabled={submitting || (requireAllRows && pendingCount > 0)}
             onClick={() => void settle(pendingCount === 0 ? "handled" : "skipped")}
@@ -276,9 +277,9 @@ function CheckupSkeleton({ stepNumber = 2 }: { stepNumber?: number }) {
     return () => clearInterval(timer)
   }, [])
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+    <div className={MEMORY_CARD}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-3 w-3" /> Step {stepNumber} · Reviewing saved memories</span>
+        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-4 w-4" /> Step {stepNumber} · Reviewing saved memories</span>
       </div>
       <div className="mt-3">
         <MemoryReviewSkeleton
@@ -387,7 +388,7 @@ function CheckupSuggestionRow({
   }
 
   return (
-    <div className="rounded-lg border border-border/70 bg-muted/20 px-3 py-2">
+    <div className="rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
       <div className="flex flex-wrap items-center gap-1.5 text-sm">
         <MemoryCitationChip id={id} />
         {other ? (
@@ -397,7 +398,7 @@ function CheckupSuggestionRow({
           </>
         ) : null}
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">{suggestion.reason}</p>
+      <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{suggestion.reason}</p>
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">{actions}</div>
       {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
     </div>

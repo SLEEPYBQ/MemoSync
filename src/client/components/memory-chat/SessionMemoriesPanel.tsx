@@ -40,7 +40,7 @@ export function SessionMemoriesPanel({ chatId, projectId, messages, streamingTex
   }, [chatId, exposureInitiator])
   const boardLauncher = useMemoryBoardLauncher()
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden">
+    <div className="memory-ui flex h-full min-h-0 flex-col overflow-hidden">
       <div className="border-b border-border px-3 py-2">
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">

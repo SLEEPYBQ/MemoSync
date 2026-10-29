@@ -1,3 +1,4 @@
+import { MEMORY_BADGE_BASE } from "../memory/MemoryBadge"
 import {
   Children,
   cloneElement,
@@ -325,8 +326,8 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
         title={`Stored memory ${id}`}
         data-memory-interrupt-source={belongsToCurrentTurn ? "current-turn" : undefined}
         className={cn(
-          "inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-border bg-muted px-1.5 py-0.5 align-baseline font-mono text-[10px] leading-none text-muted-foreground",
-          violatedHere && "shadow-[0_0_0_1.5px_rgb(239_68_68_/_0.7)]",
+          MEMORY_BADGE_BASE, "shrink-0 whitespace-nowrap border-border bg-muted align-baseline font-mono text-muted-foreground",
+          violatedHere && "ring-1 ring-destructive/70",
         )}
       >
         {label}
@@ -358,18 +359,18 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           ref={chipRef}
           data-memory-interrupt-source={belongsToCurrentTurn ? "current-turn" : undefined}
           className={cn(
-            "inline-flex shrink-0 cursor-default items-center whitespace-nowrap rounded-full border px-1.5 py-0.5 align-baseline font-mono text-[10px] leading-none",
+            MEMORY_BADGE_BASE, "shrink-0 cursor-default whitespace-nowrap align-baseline font-mono",
             MEMORY_SCOPE_CHIP_CLASSES[scope],
-            violatedHere && "shadow-[0_0_0_1.5px_rgb(239_68_68_/_0.7)]",
+            violatedHere && "ring-1 ring-destructive/70",
           )}
         >
-          {violatedHere ? <AlertTriangle className="mr-0.5 h-2.5 w-2.5 text-red-600 dark:text-red-400" /> : null}
+          {violatedHere ? <AlertTriangle className="mr-0.5 h-2.5 w-2.5 text-destructive" /> : null}
           {label}
         </span>
       </HoverCardTrigger>
       <HoverCardContent className="w-80 text-xs">
         {violatedHere ? (
-          <p className="mb-2 flex items-center gap-1 font-medium text-red-600 dark:text-red-400">
+          <p className="mb-2 flex items-center gap-1 font-medium text-destructive">
             <AlertTriangle className="h-3 w-3 shrink-0" /> this reply violated the memory — details in the trace below
           </p>
         ) : null}
@@ -397,7 +398,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           fireInterrupt()
         }}
         className={cn(
-          "ml-1 inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-1 align-baseline font-medium text-[10px] leading-none transition-colors",
+          "memory-ui ml-1 inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-1 align-baseline font-medium text-[11px] leading-4 transition-colors",
           interruptApi.readOnly && "cursor-default opacity-70",
           inlineArmed
             ? "border-destructive bg-destructive text-destructive-foreground"

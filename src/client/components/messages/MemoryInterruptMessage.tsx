@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 // Recovery card: parked inline at the interruption point after a per-memory
 // interrupt. The participant writes one turn-local correction; sending it is
 // Resume. Working Memory remains visible as lightweight context and can still
@@ -61,7 +62,7 @@ export function MemoryInterruptMessage({ message }: Props) {
   // Settled: one quiet receipt line, same idiom as the settled gates.
   if (message.resolution) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span className="inline-flex items-center gap-1.5">
           <CircleSlash className="h-3 w-3" />
           <span className="font-medium text-foreground">Interrupted over</span>
@@ -76,7 +77,7 @@ export function MemoryInterruptMessage({ message }: Props) {
   }
 
   return (
-    <section className="rounded-xl border border-border/70 bg-card p-4 text-xs">
+    <section className={MEMORY_CARD}>
       <div className="flex flex-wrap items-baseline gap-2">
         <CircleSlash className="h-3.5 w-3.5 self-center text-destructive" />
         <span className="text-sm font-medium text-foreground">You stopped this turn over</span>
@@ -131,7 +132,7 @@ export function MemoryInterruptMessage({ message }: Props) {
             aria-label="Send and resume"
             title="Send and resume"
             disabled={busy || !correction.trim()}
-            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-600 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
+            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
@@ -150,12 +151,12 @@ export function MemoryInterruptMessage({ message }: Props) {
               <div key={item.id} className={cn("inline-flex items-center gap-1 rounded-md px-1 py-0.5", removed && "opacity-40")}>
                 <MemoryCitationChip id={item.id} />
                 {item.cited ? (
-                  <span className="text-[10px] text-muted-foreground/70">
+                  <span className="text-[11px] text-muted-foreground/70">
                     cited #{index + 1}
                   </span>
                 ) : null}
                 {isFlagged ? (
-                  <span className="text-[10px] text-destructive">
+                  <span className="text-[11px] text-destructive">
                     flagged
                   </span>
                 ) : null}

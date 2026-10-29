@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 1 (redesign 2026-08-07 §3): Review New Memory Candidates. ONE
 // container wrapping this conversation's pending change cards
 // (new candidates + revision proposals — last turn's captures plus the fresh
@@ -133,8 +134,8 @@ export function MemoryProposalsGate({
 
   if (message.pending && message.candidates.length === 0 && !message.decision) {
     return (
-      <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Inbox className="h-3 w-3" /> Step 1 · Reviewing New Memory Candidates</span>
+      <div className={MEMORY_CARD}>
+        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground"><Inbox className="h-4 w-4" /> Step 1 · Reviewing New Memory Candidates</span>
         <div className="mt-3">
           <MemoryReviewSkeleton
             label="Reviewing memory candidates"
@@ -147,7 +148,7 @@ export function MemoryProposalsGate({
 
   if (renderOptions.readonly) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         Step 1 · Review New Memory Candidates — {total} {total === 1 ? "candidate" : "candidates"} omitted from this
         export for privacy.
       </div>
@@ -158,7 +159,7 @@ export function MemoryProposalsGate({
   // Step 1 even run?" (user feedback 2026-08-07).
   if (message.decision === "empty" || total === 0) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span className="font-medium text-foreground">Step 1 · Review New Memory Candidates</span>
         <span className="ml-1">✓ No new memory candidates were proposed.</span>
       </div>
@@ -196,10 +197,10 @@ export function MemoryProposalsGate({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm" data-memory-control-surface={surface}>
+    <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-3 w-3" /> Step 1</span>
-        <span className="text-sm font-medium text-foreground">Review New Memory Candidates</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-4 w-4" /> Step 1</span>
+        <span className="text-sm font-semibold text-foreground">Review New Memory Candidates</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
@@ -238,38 +239,38 @@ export function MemoryProposalsGate({
           }
           if (reviewState === "optimistic-dismissed") {
             return (
-              <div key={candidate.id} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
                 {PERMANENT_CANDIDATE_DISMISSAL_COPY}
               </div>
             )
           }
           if (status === "error") {
             return (
-              <div key={candidate.id} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
                 Proposed change unavailable. Refresh to try again.
               </div>
             )
           }
           if (status !== "ready" || !refreshAttempted) {
             return (
-              <div key={candidate.id} className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+              <div key={candidate.id} className="flex items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading proposed change…
               </div>
             )
           }
           return (
-            <div key={candidate.id} className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+            <div key={candidate.id} className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
               {PERMANENT_CANDIDATE_DISMISSAL_COPY}
             </div>
           )
         })}
       </div>
 
-      <div className="mt-3 flex items-center justify-end gap-2">
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
         {stale ? (
           <p className="text-xs text-muted-foreground">This gate belongs to an earlier turn and is no longer active.</p>
         ) : (
-          <Button variant="juicy" size="xs" disabled={submitting} onClick={() => void settle(pendingCount === 0 ? "reviewed" : "skipped")}>
+          <Button variant="default" size="xs" disabled={submitting} onClick={() => void settle(pendingCount === 0 ? "reviewed" : "skipped")}>
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
             {pendingCount === 0 ? "Continue" : `Skip ${pendingCount} remaining & continue`}
           </Button>

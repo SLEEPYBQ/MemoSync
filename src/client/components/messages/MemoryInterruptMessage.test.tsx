@@ -41,7 +41,7 @@ test("pending recovery uses one composer-shaped form with optional one-run enfor
   expect(html).not.toContain("It was used wrongly")
   expect(html).not.toContain("Save correction")
   expect(html).not.toContain("Resume with this set")
-  expect(html).toContain("border-border/70 bg-card")
+  expect(html).toContain("border-border bg-card")
   expect(html).not.toContain("border-destructive/40")
   expect(html).not.toContain("border-l-2")
 })

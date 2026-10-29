@@ -67,7 +67,7 @@ function truncate(s: string, n: number): string {
 function SummaryLine({ text }: { text: string }) {
   const parts = text.split(CITATION_RE)
   return (
-    <p className="text-xs leading-relaxed text-foreground">
+    <p className="memory-ui text-xs leading-relaxed text-foreground">
       {parts.map((part, i) =>
         // Odd indexes are the captured M-NN groups from the split regex.
         i % 2 === 0 ? <Fragment key={i}>{part}</Fragment> : <MemoryCitationChip key={i} id={part} />,
@@ -174,7 +174,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
   }
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[10px] text-muted-foreground/70">
+      <p className="text-[11px] text-muted-foreground/70">
         Memory Use Audit — this turn's output checked against each working-memory item
       </p>
       {audit.labels.map((label) => (
@@ -184,7 +184,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
             {label.label === "violated" ? (
               <>
                 <span className="font-medium text-destructive">violated</span>
-                <span className="mt-0.5 block text-[10px] leading-relaxed text-muted-foreground">
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
                   {label.quote ? <span className="text-foreground/80">“{truncate(label.quote, 110)}”</span> : null}
                   {label.note ? <span className="block">{label.note}</span> : null}
                   {label.quote || label.toolId ? (
@@ -254,7 +254,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
       <div className={cn("min-w-0 flex-1", !isLast && "pb-5")}>
         {/* Head: turn number + the settled recap (or the turn's fate). */}
         <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[10px] font-semibold leading-relaxed text-muted-icon">t{turn.turn}</span>
+          <span className="font-mono text-[11px] font-semibold leading-relaxed text-muted-icon">t{turn.turn}</span>
           <div className="min-w-0 flex-1">
             {expired ? (
               <p className="text-[11px] italic text-muted-foreground">cancelled before running (server restart)</p>
