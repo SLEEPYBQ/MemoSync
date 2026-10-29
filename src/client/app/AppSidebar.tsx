@@ -405,7 +405,7 @@ function AppSidebarImpl({
   const isUtilityPageActive = isLocalProjectsActive || isSettingsActive || isMemoryActive
   const isConnecting = connectionStatus === "connecting" || !ready
   const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
-  const statusDotClass = connectionStatus === "connected" ? "bg-emerald-500" : "bg-amber-500"
+  const statusDotClass = connectionStatus === "connected" ? "bg-success" : "bg-amber-500"
   const showUpdateButton = updateSnapshot?.updateAvailable === true
   const showDevBadge = updateSnapshot
     ? updateSnapshot.latestVersion === `${updateSnapshot.currentVersion}-dev`
@@ -471,10 +471,10 @@ function AppSidebarImpl({
               className="hidden md:flex group/sidebar-collapse relative items-center justify-center h-5 w-5 sm:h-6 sm:w-6"
             >
               <BrandIcon animated="none" className="absolute inset-0.5 h-4 w-4 sm:h-5 sm:w-5 transition-all duration-200 ease-out opacity-100 scale-100 group-hover/sidebar-collapse:opacity-0 group-hover/sidebar-collapse:scale-0" />
-              <PanelLeft className="absolute inset-0 h-4 w-4 sm:h-6 sm:w-6 text-slate-500 dark:text-slate-400 transition-all duration-200 ease-out opacity-0 scale-0 group-hover/sidebar-collapse:opacity-100 group-hover/sidebar-collapse:scale-80 hover:opacity-50" />
+              <PanelLeft className="absolute inset-0 h-4 w-4 sm:h-6 sm:w-6 text-slate-500 dark:text-muted-foreground transition-all duration-200 ease-out opacity-0 scale-0 group-hover/sidebar-collapse:opacity-100 group-hover/sidebar-collapse:scale-80 hover:opacity-50" />
             </button>
             <BrandIcon className="h-5 w-5 sm:h-6 sm:w-6 md:hidden" />
-            <span className="font-logo text-base uppercase sm:text-md text-slate-600 dark:text-slate-100">{brandName}</span>
+            <span className="font-logo text-base uppercase sm:text-md text-section-title">{brandName}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
             {projectControls.addProject ? <Button
@@ -557,7 +557,7 @@ function AppSidebarImpl({
             ) : null}
 
             {!hasVisibleChats && !isConnecting && data.projectGroups.length === 0 ? (
-              <p className="text-sm text-slate-400 p-2 mt-6 text-center">No conversations yet</p>
+              <p className="text-sm text-slate-400 dark:text-muted-foreground p-2 mt-6 text-center">No conversations yet</p>
             ) : null}
 
             <LocalProjectsSection

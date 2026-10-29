@@ -141,7 +141,7 @@ export function MemoryCheckupGate({
 
   if (message.suggestions !== undefined && suggestions.length === 0 && failedKinds.length > 0) {
     return (
-      <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/20 dark:text-amber-200">
+      <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
           <span className="font-medium">Step {stepNumber} · Checkup incomplete</span>
@@ -226,7 +226,7 @@ export function MemoryCheckupGate({
 
       <div className="mt-3 flex flex-col gap-3">
         {failedKinds.length ? (
-          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-700/60 dark:bg-amber-950/20 dark:text-amber-200">
+          <div className="flex items-start gap-2 rounded-lg border border-amber-300/60 bg-amber-50/60 px-3 py-2 text-xs text-amber-900 dark:border-amber-400/30 dark:bg-amber-500/10 dark:text-amber-300">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
             <span>Some checks did not finish: {failedKindsLabel(failedKinds)}. The completed suggestions below remain reviewable; failed checks will retry next turn.</span>
           </div>

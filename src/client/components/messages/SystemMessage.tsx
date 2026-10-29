@@ -63,7 +63,7 @@ interface McpServerWithTools {
 
 function StatusDot({ status }: { status: string }) {
   const color = status === "connected"
-    ? "bg-emerald-500"
+    ? "bg-success"
     : status === "pending"
       ? "bg-yellow-500"
       : "bg-red-500"

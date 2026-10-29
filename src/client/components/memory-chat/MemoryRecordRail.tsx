@@ -203,7 +203,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
             ) : label.label === "not_applicable" ? (
               // Slate + the named missing object: "never entered play" must not
               // blur into "played, changed nothing" (mentor 2026-08-15).
-              <span className="text-slate-600 dark:text-slate-400">
+              <span className="text-slate-600 dark:text-muted-foreground">
                 not applicable
                 {label.missing ? <span className="text-muted-foreground"> — {label.missing}</span> : null}
               </span>

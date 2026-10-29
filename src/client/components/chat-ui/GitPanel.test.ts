@@ -1,8 +1,13 @@
 import { describe, expect, mock, test } from "bun:test"
-import { createElement } from "react"
-import { renderToStaticMarkup } from "react-dom/server"
+import { createElement, type ReactNode } from "react"
+import { renderToStaticMarkup as renderStatic } from "react-dom/server"
 import { GitPanel, canIgnoreDiffFile, canIgnoreDiffFolder, getPrimaryCommitActionPrefix, shouldLoadDiffPatchNow } from "./GitPanel"
 import { TooltipProvider } from "../ui/tooltip"
+import { ThemeProvider } from "../../hooks/useTheme"
+
+function renderToStaticMarkup(element: ReactNode) {
+  return renderStatic(createElement(ThemeProvider, null, element))
+}
 
 describe("GitPanel", () => {
   test("loads missing patches for expanded rows", () => {
