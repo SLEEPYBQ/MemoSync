@@ -8,6 +8,7 @@ import { FolderGit2, MessagesSquare, User } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import type { MemoryScope, MemoryType } from "../../lib/memoriesApi"
 import { MEMORY_SCOPE_CHIP_CLASSES, memoryScopeLabel } from "../../lib/memoryCitations"
+import { MemoryBadge } from "./MemoryBadge"
 import { cn } from "../../lib/utils"
 
 export const SCOPES: MemoryScope[] = ["personal", "project", "session"]
@@ -20,26 +21,23 @@ export const SCOPE_ICONS: Record<MemoryScope, LucideIcon> = {
 
 // Full literal strings (not template-built) so Tailwind's scanner can see them.
 const SCOPE_CARD_CLASSES: Record<MemoryScope, string> = {
-  personal: "border-personal-border bg-personal-surface",
-  project: "border-project-border bg-project-surface",
-  session: "border-session-border bg-session-surface",
+  personal: "border-border bg-card",
+  project: "border-border bg-card",
+  session: "border-border bg-card",
 }
 
 const SCOPE_RING_CLASSES: Record<MemoryScope, string> = {
-  personal: "ring-personal",
-  project: "ring-project",
-  session: "ring-session",
+  personal: "ring-ring",
+  project: "ring-ring",
+  session: "ring-ring",
 }
 
-// Type taxonomy accents — scope owns the card SURFACE, type owns the type
-// CHIP, so the two color channels never compete. constraint = a rule that can
-// be violated (rose); preference = how the user likes things (violet);
-// lesson = earned the hard way (amber); fact = plain ground truth (sky).
+// Type is descriptive metadata; only scope chips own the three scope hues.
 const TYPE_CHIP_CLASSES: Record<MemoryType, string> = {
-  constraint: "border-rose-500/30 bg-rose-500/10 text-rose-700 dark:text-rose-300",
-  preference: "border-violet-500/30 bg-violet-500/10 text-violet-700 dark:text-violet-300",
-  lesson: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  fact: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
+  constraint: "border-border bg-muted/50 text-muted-foreground",
+  preference: "border-border bg-muted/50 text-muted-foreground",
+  lesson: "border-border bg-muted/50 text-muted-foreground",
+  fact: "border-border bg-muted/50 text-muted-foreground",
 }
 
 /** Chip tint for a memory type. */
@@ -73,29 +71,23 @@ export function scopeRingClasses(scope: MemoryScope): string {
 export function ScopeBadge({ scope, className }: { scope: MemoryScope; className?: string }) {
   const Icon = SCOPE_ICONS[scope]
   return (
-    <span
+    <MemoryBadge
       className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
         MEMORY_SCOPE_CHIP_CLASSES[scope],
         className,
       )}
     >
-      <Icon className="h-3 w-3" />
+      <Icon aria-hidden className="h-3 w-3 shrink-0" />
       {memoryScopeLabel(scope)}
-    </span>
+    </MemoryBadge>
   )
 }
 
 /** Generic small pill for id/type/topic tags on a card or in the detail panel. */
 export function Chip({ children, className }: { children: ReactNode; className?: string }) {
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground",
-        className,
-      )}
-    >
+    <MemoryBadge className={className}>
       {children}
-    </span>
+    </MemoryBadge>
   )
 }
