@@ -519,7 +519,7 @@ export function MemoryCandidateCard({
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-2 text-sm font-semibold">
           <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" />
-          memory candidate
+          Memory candidate
           <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-cand-dot" />
         </span>
         {revisionOf ? (
