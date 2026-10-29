@@ -110,7 +110,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
   }
 
   return (
-    <section className="mb-6 rounded-lg border border-border bg-card p-3">
+    <section className="memory-ui @container mb-6 rounded-xl border border-border bg-card p-3">
       <div className="flex flex-wrap items-center gap-2">
         <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
         <span className="text-sm font-medium text-foreground">Memory files</span>
@@ -142,7 +142,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
       </div>
 
       {file ? (
-        <div className="mt-2 max-h-80 overflow-y-auto rounded-md border border-border/60 bg-background/60 px-3 py-2">
+        <div className="mt-2 max-h-80 overflow-y-auto rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2">
           {file.content.trim() ? (
             <div className="text-sm">
               <Markdown components={markdownComponents}>{stripProjectionComments(file.content)}</Markdown>
@@ -189,7 +189,7 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
                   ))}
                 </select>
                 <Button
-                  variant="juicy"
+                  variant="default"
                   size="sm"
                   className="ml-auto h-7 px-2 text-xs"
                   disabled={busy !== null || !importText.trim() || (importScope === "project" && !importProjectId)}

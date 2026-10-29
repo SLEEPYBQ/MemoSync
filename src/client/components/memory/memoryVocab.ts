@@ -19,17 +19,17 @@ export type Freshness = "new" | "changed"
 // family) = the last injection was contradicted; faint gray = along for the
 // ride. Amber stays reserved for capture (cand-*), rose for violation.
 export const TRACE_DOT_CLASSES: Record<TraceVerdict, string> = {
-  operational: "bg-foreground/60",
+  operational: "bg-success",
   violated: "bg-destructive",
   injected_without_effect: "bg-muted-foreground/40",
   // Slate: had no object to apply to this turn (distinct from "changed nothing").
-  not_applicable: "bg-slate-400/50 dark:bg-muted-foreground/50",
+  not_applicable: "bg-muted-foreground/50",
 }
 
 // Touched since the user's last board visit — the meta-model diff marker.
 export const FRESHNESS_CLASSES: Record<Freshness, string> = {
-  new: "border-cand-border bg-cand-surface text-cand-fg",
-  changed: "border-project-border bg-project-surface text-project-fg",
+  new: "border-success/25 bg-success/8 text-success-foreground",
+  changed: "border-info/25 bg-info/8 text-info-foreground",
 }
 
 export const SCOPE_LEGEND: { scope: MemoryScope; meaning: string }[] = [

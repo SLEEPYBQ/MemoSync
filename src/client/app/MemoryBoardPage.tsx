@@ -1,10 +1,12 @@
+import { MemoryBadge } from "../components/memory/MemoryBadge"
+import { MemoryEmpty } from "../components/memory/MemorySurface"
 // Memory Board — the user's memories as operable objects (SPEC §4.9): a
 // candidate-review lane, three scope columns (Personal/Project/Session) with
 // drag-to-rescope, free-text search across every lane, and a right-side
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BrainCircuit, ChevronRight, Loader2, Plus, Search, Trash2, X } from "lucide-react"
+import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, BrainCircuit, ChevronRight, Inbox, Loader2, Plus, Search, Trash2, X } from "lucide-react"
 import type { DragEvent } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -488,7 +490,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               variant="ghost"
               size="icon-sm"
               aria-label="Archive memory"
-              className="ml-auto"
+              className="ml-auto text-destructive hover:text-destructive"
               onClick={() => void discard(item).catch(() => {})}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -504,12 +506,12 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       <div
         key={item.id}
         data-memory-candidate-placeholder={item.id}
-        className="rounded-2xl border border-dashed border-cand-border bg-cand-surface/35 px-3 py-3"
+        className="rounded-xl border border-dashed border-cand-border bg-cand-surface/35 px-3 py-3"
         onMouseEnter={() => recordBoardHover(item.id)}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[10px] font-semibold uppercase tracking-wide text-cand-fg">Proposed destination</span>
-          <span className="font-mono text-[10px] text-muted-foreground">{item.id}</span>
+          <span className="text-[11px] font-semibold text-cand-fg">Proposed destination</span>
+          <span className="font-mono text-[11px] text-muted-foreground">{item.id}</span>
         </div>
         <p className="mt-1.5 whitespace-pre-wrap text-sm text-foreground">{item.content}</p>
         <p className="mt-2 text-[11px] text-muted-foreground">Review this proposal in Step 1 above.</p>
@@ -556,11 +558,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6" onScroll={recordBoardScroll}>
+    <div className="memory-ui @container/board relative flex min-h-0 min-w-0 flex-1">
+      <div className="min-w-0 flex-1 overflow-y-auto px-3 py-4 @xl/board:px-6 @xl/board:py-6" onScroll={recordBoardScroll}>
         <div className="mx-auto max-w-5xl">
           <MemorySettingsBanner />
-          <header className="mb-4 flex items-center gap-3">
+          <header className="mb-4 flex flex-wrap items-center gap-3">
             {/* The board is a full-page detour with no other exit affordance
                 (pilot feedback 2026-08-11): give it an explicit way back.
                 Overlay mode has no route to go back to. */}
@@ -576,7 +578,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               </Button>
             )}
             <BrainCircuit className="h-6 w-6 text-logo" />
-            <div className="flex-1">
+            <div className="min-w-0 flex-1 basis-40">
               <h1 className="text-lg font-semibold text-foreground">
                 Memory Board
               </h1>
@@ -610,7 +612,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           ) : null}
           {status === "error" ? <p className="text-sm text-destructive">Failed to load memories: {error}</p> : null}
           {actionError ? (
-            <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
               <span>{actionError}</span>
               <button type="button" className="shrink-0 underline underline-offset-2" onClick={() => setActionError(null)}>Dismiss</button>
             </div>
@@ -633,10 +635,10 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 onChanged={overlay.onChanged}
               />
             ) : candidateReviewItems.length > 0 ? (
-              <div className="rounded-xl border border-border bg-card p-4 shadow-sm">
+              <div className="rounded-xl border border-border bg-card p-4 ">
                 <div className="mb-3 flex flex-wrap items-baseline gap-2">
-                  <span className="text-[11px] font-semibold text-muted-foreground">Step 1</span>
-                  <h2 className="text-sm font-medium text-foreground">Review New Memory Candidates</h2>
+                  <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">Step 1</span>
+                  <h2 className="text-sm font-semibold text-foreground">Review New Memory Candidates</h2>
                   <span className="ml-auto text-xs text-muted-foreground">{candidateReviewItems.length} in this review</span>
                 </div>
                 <MemoryCandidateReviewStation
@@ -680,7 +682,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             </div> : null}
 
             {sections.searchAndCreate && creating ? (
-              <div className="mb-4 rounded-2xl border border-border bg-card p-4 shadow-sm">
+              <div className="mb-4 rounded-xl border border-border bg-card p-4 ">
                 <Textarea
                   value={draft.content}
                   onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
@@ -715,7 +717,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   <div className="ml-auto flex items-center gap-2">
                     <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>Cancel</Button>
                     <Button
-                      variant="juicy"
+                      variant="default"
                       size="sm"
                       disabled={busy || !draft.content.trim() || (draft.scope === "project" && !draft.projectId)}
                       onClick={() => void handleCreate()}
@@ -727,7 +729,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               </div>
             ) : null}
 
-            <div className="grid gap-4 md:grid-cols-3">
+            <div className="grid gap-4 @3xl/board:grid-cols-3">
               {SCOPES.map((scope) => {
                 const entries = boardItemsByScope[scope]
                 const list = entries.map((entry) => entry.item)
@@ -738,23 +740,23 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   <section
                     key={scope}
                     className={cn(
-                      "flex flex-col gap-3 rounded-2xl p-1 transition-shadow",
+                      "flex flex-col gap-3 rounded-xl p-1 transition-shadow",
                       isDropTarget && activeDrop === `col:${scope}` && cn("ring-2", scopeRingClasses(scope)),
                     )}
                     onDragOver={isDropTarget ? (event) => handleZoneDragOver(event, `col:${scope}`) : undefined}
                     onDrop={isDropTarget ? (event) => handleDropTarget(event, scope === "personal" ? { scope: "personal" } : { scope: "project" }) : undefined}
                   >
-                    <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <Icon className="h-4 w-4 text-muted-foreground" />
                       {memoryScopeLabel(scope)}
-                      <span className="text-muted-foreground">{list.length}</span>
+                      <MemoryBadge>{list.length}</MemoryBadge>
                     </div>
                     {groups.length === 0 ? (
-                      <p className="rounded-2xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+                      <MemoryEmpty icon={Icon}>
                         {scope === "session"
                           ? "Session memories are captured by the agent inside a chat and stay scoped to that conversation. None yet."
                           : `No ${memoryScopeLabel(scope).toLowerCase()} memories yet.`}
-                      </p>
+                      </MemoryEmpty>
                     ) : groups.map((group) => {
                       const groupTarget: TransferInitialTarget | null =
                         group.key === "unassigned"
@@ -777,12 +779,12 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                           onDrop={groupTarget ? (event) => handleDropTarget(event, groupTarget) : undefined}
                         >
                           {group.label ? (
-                            <p className="px-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{group.label}</p>
+                            <p className="px-1 pt-1 text-[11px] font-medium text-muted-foreground">{group.label}</p>
                           ) : null}
                           {group.items.length === 0 && scope === "session" ? (
-                            <p className="rounded-2xl border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
+                            <MemoryEmpty icon={Icon}>
                               Drop a memory here to keep it only for this session.
-                            </p>
+                            </MemoryEmpty>
                           ) : group.items.map((item) => (
                             item.status === "candidate"
                               ? renderCandidatePlaceholder(item)
@@ -818,19 +820,19 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           </section>
 
           {sections.activeLibrary && needsAttention.length > 0 ? (
-            <section className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-3">
+            <section className="mb-6 rounded-xl border border-cand-border bg-cand-surface dark:bg-cand-surface p-3">
               <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
-                <AlertTriangle className="h-4 w-4 text-amber-500 dark:text-amber-400" />
+                <AlertTriangle className="h-4 w-4 text-cand-fg dark:text-cand-fg" />
                 Needs attention · <span className="text-muted-foreground">{needsAttention.length} {needsAttention.length === 1 ? "conflict" : "conflicts"} to resolve</span>
               </h2>
               <div className="flex flex-col gap-3">
                 {needsAttention.map(({ memory: contested, supersededBy }) => (
-                  <div key={contested.id} className="rounded-md border border-border bg-card p-3">
-                    <div className="flex items-start justify-between gap-3">
-                      <button type="button" className="min-w-0 text-left text-sm text-foreground line-through decoration-muted-foreground/60" onClick={() => setSelectedId(contested.id)}>
+                  <div key={contested.id} className="rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <button type="button" className="min-w-0 flex-1 basis-48 text-left text-sm text-foreground line-through decoration-muted-foreground/60" onClick={() => setSelectedId(contested.id)}>
                         {contested.content}
                       </button>
-                      <Button variant="ghost" size="sm" onClick={() => void archiveContested(contested).catch(() => {})}>
+                      <Button variant="ghost" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={() => void archiveContested(contested).catch(() => {})}>
                         <Trash2 className="h-4 w-4" /> Archive older memory
                       </Button>
                     </div>
@@ -848,11 +850,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               <button
                 type="button"
                 onClick={() => setShowArchived((v) => !v)}
-                className="flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+                className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Archive className="h-4 w-4" />
                 Archived
-                <span className="text-muted-foreground/70">{archivedItems.length}</span>
+                <MemoryBadge>{archivedItems.length}</MemoryBadge>
                 <ChevronRight className={cn("h-4 w-4 transition-transform", showArchived && "rotate-90")} />
               </button>
               {showArchived ? (
@@ -860,7 +862,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   {archivedItems.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-1.5 text-sm"
+                      className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
                     >
                       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.id}</span>
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">{item.content}</span>
@@ -892,7 +894,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             <button
               type="button"
               onClick={() => setShowMuted((v) => !v)}
-              className="flex items-center gap-2 text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+              className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
             >
               <X className="h-4 w-4" />
               Muted proposals
@@ -913,7 +915,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   {muted.map((m) => (
                     <div
                       key={m.memoryId}
-                      className="flex items-center gap-2 rounded-xl border border-border/60 bg-muted/20 px-3 py-1.5 text-sm"
+                      className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
                     >
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">
                         {m.content ?? `(content no longer available — ${m.memoryId})`}
@@ -984,7 +986,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       ) : null}
 
       {selectedItem ? (
-        <aside className="w-[400px] shrink-0 overflow-hidden border-l border-border bg-background">
+        <aside className="absolute inset-0 z-10 min-w-0 overflow-hidden bg-background @3xl/board:static @3xl/board:w-[400px] @3xl/board:shrink-0 @3xl/board:border-l @3xl/board:border-border">
           <MemoryDetailPanel
             item={selectedItem}
             allItems={items}
