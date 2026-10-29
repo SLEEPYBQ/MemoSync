@@ -1,3 +1,4 @@
+import { MemoryBadge } from "./MemoryBadge"
 // Cross-context transfer instrument (DG3 / the title's "Across Context"):
 // moving a memory across a scope or project boundary goes through a judged,
 // mixed-initiative step — the LLM says as-is / rewrite / context-bound and
@@ -33,9 +34,9 @@ import { defaultTransferScope, transferScopeDisabled } from "../../lib/transferT
 import { cn } from "../../lib/utils"
 
 const VERDICT_META: Record<TransferProposal["verdict"], { label: string; className: string }> = {
-  as_is: { label: "transfers as-is", className: "bg-success/10 text-emerald-700 dark:text-emerald-300" },
-  rewrite: { label: "adapted for the target", className: "bg-amber-500/10 text-amber-700 dark:text-amber-300" },
-  context_bound: { label: "context-bound — not recommended", className: "bg-red-500/10 text-red-700 dark:text-red-300" },
+  as_is: { label: "transfers as-is", className: "bg-success/10 text-success-foreground dark:text-success-foreground" },
+  rewrite: { label: "adapted for the target", className: "bg-cand-surface text-cand-fg dark:text-cand-fg" },
+  context_bound: { label: "context-bound — not recommended", className: "border-cand-border bg-cand-surface text-cand-fg" },
 }
 
 /**
@@ -234,9 +235,9 @@ export function TransferMemoryDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="memory-ui @container max-w-lg rounded-xl">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2 text-sm">
+          <DialogTitle className="flex flex-wrap items-center gap-2 text-sm font-semibold">
             Transfer {item.id}
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             {targetLabel}
@@ -247,14 +248,14 @@ export function TransferMemoryDialog({
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
           <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 px-2.5 py-2 text-sm">
-            <span
+            <MemoryBadge
               className={cn(
-                "mt-0.5 inline-flex shrink-0 items-center rounded-full border px-1.5 py-0.5 font-mono text-[0.7em] leading-none",
+                "mt-0.5 inline-flex shrink-0 items-center rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-4",
                 MEMORY_SCOPE_CHIP_CLASSES[scope],
               )}
             >
               {item.id}
-            </span>
+            </MemoryBadge>
             <span className="min-w-0 flex-1 text-muted-foreground">{item.content}</span>
           </div>
 
@@ -262,14 +263,14 @@ export function TransferMemoryDialog({
             <span className="text-xs text-muted-foreground">to</span>
             {targetScope === "session" ? (
               // The session is fixed by the drop — no picker, just name it.
-              <span
+              <MemoryBadge
                 className={cn(
-                  "inline-flex items-center rounded-full border px-2 py-0.5 text-sm",
+                  "inline-flex items-center rounded-md border px-1.5 py-0.5 text-sm",
                   MEMORY_SCOPE_CHIP_CLASSES.session,
                 )}
               >
                 {memoryScopeLabel("session")} · {sessionLabel ?? targetSessionId}
-              </span>
+              </MemoryBadge>
             ) : (
               <>
                 <SegmentedControl
@@ -313,14 +314,14 @@ export function TransferMemoryDialog({
             </p>
           ) : proposal && proposalTargetKey === targetKey ? (
             <div className="flex flex-col gap-2">
-              <span
+              <MemoryBadge
                 className={cn(
-                  "inline-flex w-fit items-center rounded-full px-2 py-0.5 text-[11px] font-medium",
+                  "inline-flex w-fit items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium",
                   VERDICT_META[proposal.verdict].className,
                 )}
               >
                 {VERDICT_META[proposal.verdict].label}
-              </span>
+              </MemoryBadge>
 
               {/* The encode → decode pipeline (Transfer design 2026-08-08):
                   show the abstract rule the source was encoded to (dashed =
@@ -330,7 +331,7 @@ export function TransferMemoryDialog({
               {proposal.verdict !== "as_is" && proposal.portable !== proposal.content ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="rounded-lg border border-dashed border-border bg-muted/20 px-2.5 py-1.5">
-                    <p className="text-[10px] font-medium text-muted-foreground">Abstract rule</p>
+                    <p className="text-[11px] font-medium text-muted-foreground">Abstract rule</p>
                     <p className="text-sm text-muted-foreground">{proposal.portable}</p>
                     {proposal.applicability ? (
                       <p className="mt-0.5 text-[11px] text-muted-foreground/80">
@@ -343,7 +344,7 @@ export function TransferMemoryDialog({
               ) : null}
 
               <div className="flex flex-col gap-1">
-                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                <p className="text-[11px] font-medium text-muted-foreground">
                   In {targetLabel}
                 </p>
                 <Textarea
@@ -354,13 +355,13 @@ export function TransferMemoryDialog({
                   className={cn("text-sm", reinforcing && "opacity-50")}
                 />
               </div>
-              {proposal.note ? <p className="text-xs text-muted-foreground">{proposal.note}</p> : null}
+              {proposal.note ? <p className="text-sm leading-relaxed text-muted-foreground">{proposal.note}</p> : null}
 
               {/* Landing: how the instantiated form meets what already lives
                   in the target context (same vocabulary as capture). */}
               {landing?.route === "reinforces" ? (
-                <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-success/5 px-2.5 py-2 text-xs">
-                  <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <div className="flex items-start gap-2 py-1 text-sm">
+                  <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success-foreground dark:text-success-foreground" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
                     {targetLabel} already knows this
                     {landing.targetContent ? (
@@ -370,8 +371,8 @@ export function TransferMemoryDialog({
                   </p>
                 </div>
               ) : landing?.route === "conflicts" ? (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 px-2.5 py-2 text-xs">
-                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+                <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-2.5 py-2 text-sm">
+                  <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cand-fg dark:text-cand-fg" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
                     This may conflict with an existing memory in {targetLabel}
                     {landing.targetContent ? (
@@ -403,7 +404,7 @@ export function TransferMemoryDialog({
         <DialogFooter>
           <DialogGhostButton onClick={() => onOpenChange(false)}>Cancel</DialogGhostButton>
           <Button
-            variant={proposal?.verdict === "context_bound" ? "destructive" : "juicy"}
+            variant="default"
             size="sm"
             disabled={
               submitting ||

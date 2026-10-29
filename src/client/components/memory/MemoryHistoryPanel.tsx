@@ -1,3 +1,4 @@
+import { MemoryBadge } from "./MemoryBadge"
 // Per-item version + usage timeline with rollback (SPEC §4.11, option 乙).
 // Fetches memoriesApi.history(id) and renders one row per event, oldest
 // first (newest last): version events (create/edit/rescope/promote/status/
@@ -14,8 +15,8 @@ type EventActor = MemoryEvent["actor"]
 type EventKind = MemoryEvent["kind"]
 
 const ACTOR_META: Record<EventActor, { label: string; className: string }> = {
-  user: { label: "user", className: "bg-blue-500/10 text-blue-700 dark:text-blue-300" },
-  agent: { label: "agent", className: "bg-violet-500/10 text-violet-700 dark:text-violet-300" },
+  user: { label: "user", className: "bg-muted/50 text-muted-foreground" },
+  agent: { label: "agent", className: "bg-muted/50 text-muted-foreground" },
   system: { label: "system", className: "bg-muted text-muted-foreground" },
 }
 
@@ -33,10 +34,10 @@ const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
 }
 
 const TRACE_LABEL_CLASSES: Record<string, string> = {
-  operational: "text-emerald-600 dark:text-emerald-400",
-  violated: "text-red-600 dark:text-red-400",
+  operational: "text-success-foreground dark:text-success-foreground",
+  violated: "text-destructive dark:text-destructive",
   injected_without_effect: "text-muted-foreground",
-  not_applicable: "text-slate-500 dark:text-muted-foreground",
+  not_applicable: "text-muted-foreground",
 }
 
 const FIELD_LABELS: Record<string, string> = {
@@ -78,9 +79,9 @@ function formatSessionTurn(sessionId?: string, turn?: number): string | null {
 function ActorChip({ actor }: { actor: EventActor }) {
   const meta = ACTOR_META[actor]
   return (
-    <span className={cn("inline-flex items-center rounded-full px-1.5 py-0.5 text-[10px] font-medium", meta.className)}>
+    <MemoryBadge className={cn("inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium", meta.className)}>
       {meta.label}
-    </span>
+    </MemoryBadge>
   )
 }
 
@@ -208,9 +209,9 @@ function VersionEventRow({
         armed ? (
           <div className="mt-1.5 flex items-center gap-1.5">
             <Button
-              variant="destructive"
+              variant="ghost"
               size="sm"
-              className="h-6 rounded-md px-2 text-[11px]"
+              className="h-6 rounded-md px-2 text-[11px] text-destructive hover:text-destructive"
               disabled={busy}
               onClick={() => onRollback(event.seq)}
             >
