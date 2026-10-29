@@ -185,7 +185,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
                 value={state.appSettings?.language ?? "system"}
                 onValueChange={(value) => { void save({ language: value as AppLanguagePreference }) }}
               >
-                <SelectItem value="system">System</SelectItem>
+                <SelectItem value="system">{t("settings:system")}</SelectItem>
                 <SelectItem value="en">English</SelectItem>
                 <SelectItem value="zh-CN">简体中文</SelectItem>
               </SettingsSelect>

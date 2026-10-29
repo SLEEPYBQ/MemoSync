@@ -51,7 +51,7 @@
   "openInFinder": "在 Finder 中打开",
   "fork": "分叉",
   "updateToValue0": "更新至{{v0}}",
-  "value0ProposedMemorValue1WaitingForYourReview": "{{v0}}条候选记忆{{v1}}等待审阅",
+  "value0ProposedMemorValue1WaitingForYourReview": "{{v0}} 条候选记忆{{v1}}等待审阅",
   "discardChangesForValue0ThisCannotBeUndone": "放弃“{{v0}}”的更改？此操作无法撤销。",
   "addValue0ToGitignore": "将“{{v0}}”添加到.gitignore？",
   "youHaveUncommittedChangesBringThemToValue0": "你有未提交的更改，要将它们带到{{v0}}吗？",
