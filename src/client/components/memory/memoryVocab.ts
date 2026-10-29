@@ -23,7 +23,7 @@ export const TRACE_DOT_CLASSES: Record<TraceVerdict, string> = {
   violated: "bg-destructive",
   injected_without_effect: "bg-muted-foreground/40",
   // Slate: had no object to apply to this turn (distinct from "changed nothing").
-  not_applicable: "bg-slate-400/50",
+  not_applicable: "bg-slate-400/50 dark:bg-muted-foreground/50",
 }
 
 // Touched since the user's last board visit — the meta-model diff marker.

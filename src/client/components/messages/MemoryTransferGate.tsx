@@ -548,7 +548,7 @@ function TransferSuggestionRow({
             (amber = metadata, never a memory item). */}
         <RiseIn freshAt={freshAt} delay={0.24} className="flex min-w-0 flex-col">
           <StageLabel icon={Lightbulb}>Abstract rule</StageLabel>
-          <div className="flex flex-1 flex-col rounded-lg border border-amber-500/35 bg-amber-500/[0.07] p-2.5">
+          <div className="flex flex-1 flex-col rounded-lg border border-amber-500/35 bg-amber-500/[0.07] dark:bg-amber-500/10 p-2.5">
             {suggestion.rule ? (
               <p className="text-sm italic leading-snug text-foreground">
                 <ColorizedText text={suggestion.rule} />

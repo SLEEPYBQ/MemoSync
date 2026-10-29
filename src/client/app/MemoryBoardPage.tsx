@@ -965,9 +965,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           </section>
 
           {sections.activeLibrary && needsAttention.length > 0 ? (
-            <section className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+            <section className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-3">
               <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                <AlertTriangle className="h-4 w-4 text-amber-500 dark:text-amber-400" />
                 Needs attention · <span className="text-muted-foreground">{needsAttention.length} {needsAttention.length === 1 ? "conflict" : "conflicts"} to resolve</span>
               </h2>
               <div className="flex flex-col gap-3">

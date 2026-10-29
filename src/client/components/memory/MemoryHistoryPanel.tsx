@@ -36,7 +36,7 @@ const TRACE_LABEL_CLASSES: Record<string, string> = {
   operational: "text-emerald-600 dark:text-emerald-400",
   violated: "text-red-600 dark:text-red-400",
   injected_without_effect: "text-muted-foreground",
-  not_applicable: "text-slate-500 dark:text-slate-400",
+  not_applicable: "text-slate-500 dark:text-muted-foreground",
 }
 
 const FIELD_LABELS: Record<string, string> = {

@@ -222,7 +222,7 @@ export function MemorySummaryPanel({ chatId, projectId, exposureInitiator, onClo
             type="submit"
             size="icon"
             disabled={chatBusy || !input.trim()}
-            className="h-7 w-7 shrink-0 rounded-full bg-slate-600 text-white hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-white/90"
+            className="h-7 w-7 shrink-0 rounded-full bg-slate-600 text-white hover:bg-slate-700 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
             aria-label="Send"
           >
             <ArrowUp className="size-4" />
