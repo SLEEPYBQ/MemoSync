@@ -947,6 +947,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {/* One mx-auto group so leading chips and preference chips center TOGETHER — no gap between them. */}
           <div className="mx-auto flex shrink-0 items-center gap-0.5">
           {leadingControls}
+          {/* Before the preference chips: the row scrolls with a hidden
+              scrollbar, and the memory state must stay in view. */}
+          <MemoryToggle chatId={chatId} draftKey={draftKey} />
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
@@ -989,7 +992,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onPlanModeChange={setEffectivePlanMode}
             includePlanMode={showPlanMode}
           />
-          <MemoryToggle chatId={chatId} draftKey={draftKey} />
           </div>
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">

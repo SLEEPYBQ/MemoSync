@@ -23,7 +23,7 @@ export function MemorySettingsGroups({ settings, policy, mode, save, setMode }: 
   const changesReason = !enabled ? memoryReason : !learn ? " Turn on Learn From Chats to change this." : mode === undefined ? " Loading memory changes preference…" : ""
   return <>
     <SettingsGroups>
-      {!policy.studyMode ? <SettingsGroup title="Memory">
+      {!policy.studyMode ? <SettingsGroup>
         <SettingsRow def={SETTINGS_ROWS.memoryEnabled}>
           <Switch aria-label="Use Memory" checked={enabled} onCheckedChange={(checked) => save({ memory: { enabled: checked } })} />
         </SettingsRow>

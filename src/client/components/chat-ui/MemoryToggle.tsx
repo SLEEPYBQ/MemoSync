@@ -6,6 +6,7 @@ import type { AppState } from "../../app/useAppState"
 import type { MemorySettings } from "../../../shared/types"
 import { useConditionPolicy, type ConditionPolicy } from "../../lib/conditionApi"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
+import { cn } from "../../lib/utils"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 export function deriveMemoryToggleState(
@@ -87,7 +88,11 @@ export function MemoryToggle({ chatId, draftKey }: { chatId?: string | null; dra
       <TooltipTrigger asChild>
         <button type="button" aria-label={state.label ?? "Memory on"} aria-pressed={!state.off}
           disabled={pending || (Boolean(chatId) && !runtime && state.action !== "settings")}
-          className="flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground transition-colors cursor-pointer hover:bg-muted/50 disabled:opacity-50 [&>span]:whitespace-nowrap"
+          className={cn(
+            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors cursor-pointer hover:bg-muted/50 disabled:opacity-50 [&>span]:whitespace-nowrap",
+            // Off changes what the agent does, so it reads as a state to notice, not a preference.
+            state.off ? "text-cand-fg" : "text-muted-foreground",
+          )}
           onClick={() => { void toggle() }}>
           <MemoryIcon off={state.off} />
           {state.label ? <span>{state.label}</span> : null}

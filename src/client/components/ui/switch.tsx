@@ -32,8 +32,9 @@ export function Switch({ checked, onCheckedChange, disabled, className, ...props
         className,
       )}
     >
-      {/* On is the brand colour in both themes, so the thumb is white in
-          both, on or off.
+      {/* The thumb is the track's contrast colour: white in light mode. In
+          dark mode "on" is the light primary track, so the thumb goes dark
+          there and light when off, keeping it visible on the dark track.
 
           Pressing stretches the thumb toward the side it will travel to, as
           an iOS switch does: the press is answered on pointer-down, before
@@ -52,7 +53,7 @@ export function Switch({ checked, onCheckedChange, disabled, className, ...props
           "motion-safe:group-enabled:group-active:w-6 motion-reduce:transition-none",
           checked
             ? "translate-x-4 motion-safe:group-enabled:group-active:translate-x-3"
-            : "translate-x-0",
+            : "translate-x-0 dark:bg-foreground/85",
         )}
       />
     </button>
