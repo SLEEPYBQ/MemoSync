@@ -29,7 +29,7 @@ import { StudyIndexPage } from "../study/StudyTaskPage"
 import { StudySessionStartSurface } from "../study/StudySessionStartSurface"
 import { StudyDock } from "../study/StudyDock"
 import { ProtectedStudyInstructions } from "../study/ProtectedStudyInstructions"
-import { MemoryBoardLauncherProvider, type MemoryBoardLaunchRequest } from "../study/MemoryBoardLauncher"
+import { MemoryBoardLauncherProvider, type MemoryBoardLaunchRequest } from "../memory/MemoryBoardLauncher"
 import { createHeldStudyPrompt, type HeldStudyPrompt } from "../study/studyPromptIntercept"
 import { DEMO_MEMORY_ITEMS, GUIDE_DEMO_PROMPT, type GuideScene } from "./guideScenes"
 import {

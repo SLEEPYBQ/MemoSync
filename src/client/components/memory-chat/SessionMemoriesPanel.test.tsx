@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
-import { MemoryBoardLauncherProvider } from "../../app/study/MemoryBoardLauncher"
+import { MemoryBoardLauncherProvider } from "../../app/memory/MemoryBoardLauncher"
 import { SessionMemoriesPanel } from "./SessionMemoriesPanel"
 
 describe("SessionMemoriesPanel", () => {

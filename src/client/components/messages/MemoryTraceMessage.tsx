@@ -21,7 +21,7 @@ import {
   useSurfaceExposure,
   useSurfaceViewportVisibility,
   type StudySurfaceExposureInitiator,
-} from "../../app/study/surfaceExposure"
+} from "../../app/memory/surfaceExposure"
 
 type MemoryTraceHydratedMessage = Extract<HydratedTranscriptMessage, { kind: "memory_trace" }>
 type MemoryTraceLabel = MemoryTraceHydratedMessage["labels"][number]

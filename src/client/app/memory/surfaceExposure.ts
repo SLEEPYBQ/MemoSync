@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { isUiMonitorSuppressed } from "../../lib/memoriesApi"
 import { generateUUID } from "../../lib/utils"
-import { enqueueStudyTelemetry, type StudyTelemetryOutboxRequest } from "./studyTelemetry"
+import { enqueueStudyTelemetry, type StudyTelemetryOutboxRequest } from "../study/studyTelemetry"
 
 export type StudySurfaceExposure =
   | "memory_board"

@@ -154,7 +154,7 @@ describe("MemoryBoardLauncher", () => {
 
   test("AppLayout mounts the sole production manual Board overlay owner", async () => {
     const appSource = await Bun.file(new URL("../App.tsx", import.meta.url)).text()
-    const overlaySource = await Bun.file(new URL("./StudyBoardGate.tsx", import.meta.url)).text()
+    const overlaySource = await Bun.file(new URL("../study/StudyBoardGate.tsx", import.meta.url)).text()
     const recordSource = await Bun.file(
       new URL("../../components/memory-chat/SessionMemoriesPanel.tsx", import.meta.url),
     ).text()

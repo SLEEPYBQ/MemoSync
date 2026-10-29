@@ -44,7 +44,7 @@ import {
 } from "../components/messages/MemoryChangesReviewFlow"
 import { MemoryCandidateReviewStation } from "../components/messages/MemoryProposalsGate"
 import { TranscriptChatContextProvider } from "../components/messages/render-context"
-import type { FocusedMemoryReviewController } from "./study/MemoryBoardLauncher"
+import type { FocusedMemoryReviewController } from "./memory/MemoryBoardLauncher"
 
 // Manual creation: session memories are agent-created within a session (they
 // need a sessionId), so the form only offers Personal / Project.

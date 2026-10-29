@@ -8,7 +8,7 @@ import {
   useMemoryBoardLauncher,
   type FocusedMemoryReviewController,
   type FocusedMemoryReviewSnapshot,
-} from "../../app/study/MemoryBoardLauncher"
+} from "../../app/memory/MemoryBoardLauncher"
 import { Button } from "../ui/button"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { TranscriptChatContextProvider, useTranscriptChatContext } from "./render-context"

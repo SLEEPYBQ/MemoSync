@@ -27,7 +27,7 @@ import {
   resolveMemoryBoardLaunchRequest,
   type MemoryBoardLaunchRequest,
   type ResolvedMemoryBoardLaunchRequest,
-} from "./study/MemoryBoardLauncher"
+} from "./memory/MemoryBoardLauncher"
 import { useConditionPolicyLoadFailed, useConditionPolicyResolved } from "../lib/conditionApi"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
 import type { AppSettingsSnapshot } from "../../shared/types"

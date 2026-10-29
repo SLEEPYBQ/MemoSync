@@ -9,8 +9,7 @@
 // These are the metamemory-relevant signals the study measures (Write / Structure
 // / Utilization / Maintenance, plus monitoring & control acts). Fine-grained UI
 // telemetry (board views, citation hover dwell) is intentionally deferred.
-import { appendFileSync, mkdirSync } from "node:fs"
-import { dirname } from "node:path"
+import { LocalUsageLog } from "../usage/local-log"
 import type {
   StudyAssessedMemoryAnswer,
   StudyAssessedMemoryAnswerV2,
@@ -238,12 +237,10 @@ export type ExperimentEvent =
     }
 
 export class ExperimentLogger {
-  private readonly filePath: string | null
+  private readonly output: LocalUsageLog
   private readonly condition: ExperimentCondition
   private readonly participant: string | null
   private readonly allocationMode: ExperimentAllocationMode | null
-  private readonly toStdout: boolean
-  private readonly enabled: boolean
   private readonly durableSink: ((input: ExperimentDurableSinkInput) => ExperimentDurableSinkResult | void) | null
 
   constructor(opts: {
@@ -259,7 +256,7 @@ export class ExperimentLogger {
      */
     durableSink?: (input: ExperimentDurableSinkInput) => ExperimentDurableSinkResult | void
   } = {}) {
-    this.enabled = process.env.EXPERIMENT_LOG !== "0"
+    this.output = new LocalUsageLog(opts)
     this.condition = "memosync"
     // Stamped by the orchestrator on per-participant instances (PARTICIPANT_ID
     // env); absent on solo/dev instances so their logs stay shape-compatible.
@@ -269,16 +266,8 @@ export class ExperimentLogger {
       throw new Error(`Invalid STUDY_ALLOCATION_MODE: ${allocationMode}`)
     }
     this.allocationMode = allocationMode
-    this.toStdout = opts.stdout ?? true
     this.durableSink = opts.durableSink ?? null
-    this.filePath = opts.filePath ?? null
-    if (this.enabled && this.filePath) {
-      try {
-        mkdirSync(dirname(this.filePath), { recursive: true })
-      } catch {
-        /* best-effort; fall back to stdout only */
-      }
-    }
+
   }
 
   // `unknown` preserves compatibility with the many lightweight structural
@@ -294,7 +283,6 @@ export class ExperimentLogger {
       event: e,
     })
     const result = { durableCreated: durableResult?.created ?? null }
-    if (!this.enabled) return result
     const record = {
       ts: recordedAt,
       condition: this.condition,
@@ -302,15 +290,7 @@ export class ExperimentLogger {
       ...(this.allocationMode ? { allocationMode: this.allocationMode } : {}),
       ...e,
     }
-    const line = JSON.stringify(record)
-    if (this.toStdout) console.log(`[experiment] ${line}`)
-    if (this.filePath) {
-      try {
-        appendFileSync(this.filePath, line + "\n")
-      } catch {
-        /* never let logging break a turn */
-      }
-    }
+    this.output.write(record)
     return result
   }
 }

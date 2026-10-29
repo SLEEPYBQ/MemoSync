@@ -4,7 +4,7 @@ import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
 import { ViolatedCitationsMapProvider } from "../components/messages/render-context"
 import type { HydratedTranscriptMessage } from "../../shared/types"
-import { MemoryBoardLauncherProvider } from "./study/MemoryBoardLauncher"
+import { MemoryBoardLauncherProvider } from "./memory/MemoryBoardLauncher"
 import {
   areChatTranscriptRowPropsEqual,
   buildResolvedTranscriptRows,
