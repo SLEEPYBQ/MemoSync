@@ -1,11 +1,12 @@
-// Inventory intentionally retained English server source strings. The report
-// retains full text and source locations so reviewers can inspect the boundary.
+// Inventory the English prose left in server source after UI copy moved to
+// i18n codes, so reviewers can check nothing user-facing slipped through.
+// Usage: bun run scripts/audit-i18n-server.ts [output.json]  (stdout by default)
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import ts from "typescript"
 import { describeServerUiText } from "../src/shared/ui-copy"
 
-const output = process.argv[2] ?? ".codex-runs/i18n-server-english.json"
+const output = process.argv[2]
 const records: { file: string; line: number; category: string; text: string }[] = []
 for (const relative of await readdir("src/server", { recursive: true })) {
   if (!relative.endsWith(".ts") || /\.test\.ts$/.test(relative)) continue
@@ -40,10 +41,15 @@ for (const relative of await readdir("src/server", { recursive: true })) {
   }
   visit(ast)
 }
-await mkdir(dirname(output), { recursive: true })
-await writeFile(output, JSON.stringify({
+const report = JSON.stringify({
   scope: "All English prose-like string literals and templates in production src/server TypeScript, excluding translated UI catalog matches; includes non-UI prompts and diagnostics for an explicit retention audit.",
   categories: Object.fromEntries([...new Set(records.map((record) => record.category))].map((category) => [category, records.filter((record) => record.category === category).length])),
   records,
-}, null, 2) + "\n")
-console.log(JSON.stringify({ output, records: records.length }))
+}, null, 2) + "\n"
+if (output) {
+  await mkdir(dirname(output), { recursive: true })
+  await writeFile(output, report)
+  console.error(JSON.stringify({ output, records: records.length }))
+} else {
+  process.stdout.write(report)
+}
