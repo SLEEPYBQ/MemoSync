@@ -252,8 +252,6 @@ test("the outbox bounds retained events and removes expired entries before retry
   expect(storage.getItem("scope-bounded")).toBeNull()
 })
 
-
-
 test("product initialization ignores old study outboxes and preserves their data", async () => {
   const storage = new MemoryStorage()
   const legacyKey = "memosync:study-telemetry-outbox:v1:memosync:legacy"

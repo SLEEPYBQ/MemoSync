@@ -1,9 +1,9 @@
 import {
-isPreviewHostForm,
-PREVIEW_PROXY_PATH_PREFIX,
-PREVIEW_TICKETS_PATH,
-previewProxyPath,
-stripPreviewPathPrefix,
+  isPreviewHostForm,
+  PREVIEW_PROXY_PATH_PREFIX,
+  PREVIEW_TICKETS_PATH,
+  previewProxyPath,
+  stripPreviewPathPrefix,
 } from "../../shared/preview-proxy"
 import type { LocalHttpServerInfo } from "../../shared/protocol"
 
@@ -69,8 +69,6 @@ export function localServerPreviewUrl(
   if (!server.preferProxy) return server.address
   return `${browserLocation.origin}${previewProxyPath(server.port)}`
 }
-
-
 
 /** Normalize address-bar input. Loopback target ports route through the
  * isolated preview proxy host (never direct `localhost:<port>`), remote

@@ -1,27 +1,27 @@
-import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
-import { DISPLAY_NAME,SELF_UPDATE_ENABLED } from "../../shared/branding"
-import type { EditorOpenSettings,OpenExternalAction } from "../../shared/protocol"
-import type { ChatSnapshot,LocalProjectsSnapshot,SidebarChatRow,SidebarData } from "../../shared/types"
-import { isPiReasoningEffort,normalizeClaudeContextWindow,type AgentProvider,type AppSettingsPatch,type AppSettingsSnapshot,type AskUserQuestionAnswerMap,type ChatAttachment,type ChatDiffSnapshot,type ChatHistoryPage,type ExpectedMemoryUse,type KeybindingsSnapshot,type LlmProviderSnapshot,type LlmProviderValidationResult,type MemoryPreviewDecision,type ModelOptions,type ProviderCatalogEntry,type QueuedChatMessage,type StandaloneTranscriptExportCommandResult,type TranscriptEntry,type UpdateInstallResult,type UpdateSnapshot,type UserPromptEntry } from "../../shared/types"
+import { DISPLAY_NAME, SELF_UPDATE_ENABLED } from "../../shared/branding"
+import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
+import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
+import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
-import { useTheme,useThemeSettingsWriter } from "../hooks/useTheme"
+import { useTheme, useThemeSettingsWriter } from "../hooks/useTheme"
 import { copyTextToClipboard } from "../lib/clipboard"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { useServerProviders } from "../lib/providerApi"
 import { generateUUID } from "../lib/utils"
 import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { useChatInputStore } from "../stores/chatInputStore"
-import { NEW_CHAT_COMPOSER_ID,useChatPreferencesStore,type ComposerState } from "../stores/chatPreferencesStore"
+import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore, type ComposerState } from "../stores/chatPreferencesStore"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import { useRightSidebarStore } from "../stores/rightSidebarStore"
 import { useTerminalLayoutStore } from "../stores/terminalLayoutStore"
-import { getEditorPresetLabel,useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
-import { canCancelStatus,getLatestToolIds,hasPendingMemoryPreview,isProcessingStatus } from "./derived"
-import { AppSocket,type SocketStatus } from "./socket"
+import { getEditorPresetLabel, useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
+import { canCancelStatus, getLatestToolIds, hasPendingMemoryPreview, isProcessingStatus } from "./derived"
+import { AppSocket, type SocketStatus } from "./socket"
 
 const CHAT_SNAPSHOT_STALE_MS = 20_000
 
@@ -1413,8 +1413,6 @@ export function useAppState(activeChatId: string | null): AppState {
     ? "starting"
     : null
   const effectiveRuntimeStatus = optimisticRuntimeStatus ?? runtime?.status ?? null
-  // Launcher fallback honors the server catalog (study pin included) — the
-  // static client-side PROVIDERS list only bridges the very first fetch.
   const availableProviders = activeChatSnapshot?.availableProviders ?? serverProviders
   const isProcessing = isProcessingStatus(effectiveRuntimeStatus ?? undefined)
 

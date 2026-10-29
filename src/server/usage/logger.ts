@@ -43,7 +43,7 @@ export interface DeliveredFocusEvent {
 /** Discriminated union of logged events (extend as new signals are wired). */
 export type UsageEvent =
   { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
-  | { type: "memory.inject"; schemaVersion?: 1; sessionId?: string; engine?: string; memories: MemoryRef[]; tokenEstimate?: number; mode?: "skills" | "plain" | "file"; staticFiles?: string[] }
+  | { type: "memory.inject"; schemaVersion?: 1; sessionId?: string; engine?: string; memories: MemoryRef[]; tokenEstimate?: number; mode?: "skills" | "plain" | "file" }
   | DeliveredFocusEvent
   | { type: "memory.propose"; sessionId?: string; engine?: string; id: string; memType: string; scope: string; via?: string; targetId?: string; drift?: string; revisionAction?: string; reason?: string }
   | { type: "memory.cite"; sessionId?: string; citedIds: string[]; countedIds: string[]; carryoverIds?: string[] }
@@ -63,7 +63,7 @@ export type UsageEvent =
   | { type: "memory.transfer_card"; sessionId: string; engine?: string; turn?: number; suggestions: number; decision: "handled" | "skipped" | "cancelled" | "expired" | "empty" }
   | { type: "memory.sanitize"; sessionId?: string; id: string; redactions: number }
   | { type: "ui.monitor"; eventId?: string; clientTimestamp?: string; sessionId?: string; chatId?: string; surface: string; interaction?: "open" | "click" | "scroll" | "hover"; ids?: string[] }
-  | { type: "ui.surface_exposure"; eventId?: string; clientTimestamp?: string; sessionId?: string; chatId?: string; surface: string; action: "opened" | "hidden" | "visible" | "closed"; exposureId?: string; sequence?: number; initiator?: "participant" | "system"; memoryIds?: string[]; closeReason?: string }
+  | { type: "ui.surface_exposure"; eventId?: string; clientTimestamp?: string; sessionId?: string; chatId?: string; surface: string; action: "opened" | "hidden" | "visible" | "closed"; exposureId?: string; sequence?: number; initiator?: "user" | "system"; memoryIds?: string[]; closeReason?: string }
   | { type: "memory.attention"; sessionId?: string; kind: "conflict" | "revision" | "redundant" | "stale" | "promotion"; id: string; action: "shown" | "defer" | "renew" | "archive" | "keep" | "merge" | "promote" | "decline"; surface?: "board" | "chat_gate" }
   | { type: "memory.audit_action"; eventId?: string; operationId?: string; sessionId?: string; chatId?: string; id: string; action: "pay_attention" | "draft_fix" | "enforce" }
   | { type: "memory.interrupt"; eventId?: string; interruptId?: string; sessionId?: string; chatId?: string; id: string; turn?: number; quote?: string }

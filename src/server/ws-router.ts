@@ -2,19 +2,19 @@ import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { ClientEnvelope,ServerEnvelope,SubscriptionTopic } from "../shared/protocol"
+import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
 import type {
-AppSettingsPatch,
-AppSettingsSnapshot,
-InstalledSkillsSnapshot,
-LlmProviderSnapshot,
-LlmProviderValidationResult,
-SkillInstallResult,
-SkillSearchSnapshot,
-SkillUninstallResult,
+  AppSettingsPatch,
+  AppSettingsSnapshot,
+  InstalledSkillsSnapshot,
+  LlmProviderSnapshot,
+  LlmProviderValidationResult,
+  SkillInstallResult,
+  SkillSearchSnapshot,
+  SkillUninstallResult,
 } from "../shared/types"
-import { DEFAULT_DEEPSEEK_MODEL_ID,DEFAULT_PI_MODEL,PROTOCOL_VERSION } from "../shared/types"
+import { DEFAULT_DEEPSEEK_MODEL_ID, DEFAULT_PI_MODEL, PROTOCOL_VERSION } from "../shared/types"
 import type { AgentCoordinator } from "./agent"
 import type { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
@@ -23,10 +23,10 @@ import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
 import { EventStore } from "./event-store"
 import { openExternal } from "./external-open"
 import { KeybindingsManager } from "./keybindings"
-import { killLocalHttpServer,listLocalHttpServers } from "./local-http-servers"
-import { ensureProjectDirectory,resolveLocalPath } from "./paths"
-import { readProjectQuickActions,writeProjectQuickActions } from "./project-quick-actions"
-import { deriveChatSnapshot,deriveLocalProjectsSnapshot,deriveMemoryRecordTranscript,deriveSidebarData } from "./read-models"
+import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
+import { ensureProjectDirectory, resolveLocalPath } from "./paths"
+import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
+import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
@@ -1461,9 +1461,6 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
-          // AgentCoordinator owns study admission. Keeping it at the queue
-          // authority covers send, steer, auto-drain and restart without
-          // duplicate router checks or alternate-channel bypasses.
           const result = await agent.send(command)
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)

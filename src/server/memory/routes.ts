@@ -8,14 +8,14 @@
 import type { ExpectedMemoryUse } from '../../shared/types';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
-import type { AttentionKind,MaintenanceService } from './maintenance';
-import { CandidateDismissalTransitionError,RevisionConflictError } from './MemoryStore';
+import type { AttentionKind, MaintenanceService } from './maintenance';
+import { CandidateDismissalTransitionError, RevisionConflictError } from './MemoryStore';
 import { rankMemories } from './retrieval';
 import type { ReviseInjectionService } from './revise-injection';
 import type { SanitizeService } from './sanitize';
 import type { TransferService } from './transfer';
 import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
-import type { AbstractionLevel,MemoryItem,MemoryScope,MemoryStatus,MemoryType } from './types';
+import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType } from './types';
 import type { UsePlanService } from './use-plan';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
@@ -30,7 +30,7 @@ export interface MemoryRouteServices {
   usePlan?: UsePlanService | null;
   /** Audit-row "draft a fix" (redesign 2026-08-07). */
   revision?: RevisionService | null;
-  /** Server-authoritative admission for Audit Enforce/Draft on a visible memory in the active Claude study chat. */
+
   auditAdmission?: (input: { chatId: string; memoryId: string }) => string | null;
   /** Server-held pool for the exact active Working Memory preview. */
   workingMemoryPool?: (input: { chatId: string; previewId: string }) => string[] | null;
@@ -171,8 +171,6 @@ export async function handleMemoryRequest(
       if (b.action !== 'add' && b.action !== 'remove') {
         throw new RouteError(400, 'BAD_REQUEST', 'action must be add or remove');
       }
-      // Outside study mode there is no durable evidence store — keep the
-      // control act in the longitudinal record as a plain logger event.
 
         memory.logger.event({
           type: 'memory.working_memory_selection',
@@ -525,11 +523,6 @@ export async function handleMemoryRequest(
       return ok(effectiveResult);
     }
 
-    // POST /api/memories/plan-injection-uses
-    // In the formal MemoSync arm, task text and pool membership are owned by
-    // the exact pending preview. Client text is display input only and never
-    // becomes a treatment instruction. Non-study callers retain the legacy
-    // task + selectedIds planning API.
     if (pathname === '/api/memories/plan-injection-uses' && req.method === 'POST') {
       const b = await readBody(req);
       const selectedIds = Array.isArray(b.selectedIds)
@@ -561,7 +554,7 @@ export async function handleMemoryRequest(
     }
 
     if (pathname === '/api/memories/attention-resolve' && req.method === 'POST') {
-      if (!services?.maintenance) throw new RouteError(404, 'NOT_AVAILABLE', 'maintenance is not enabled in this condition');
+      if (!services?.maintenance) throw new RouteError(404, 'NOT_AVAILABLE', 'maintenance is unavailable');
       const b = await readBody(req);
       const kind = b.kind as AttentionKind;
       if (kind !== 'conflict' && kind !== 'stale' && kind !== 'redundant') {
@@ -980,10 +973,6 @@ export async function handleMemoryRequest(
       return ok(result);
     }
 
-    // GET/PUT /api/memories/evolution-policy — delegating mode (F4's two
-    // control styles): Ask parks every proposal for review; Auto applies
-    // non-sensitive proposals immediately with an "auto" badge + revert.
-    // The setting is a control act — switching it is itself study data.
     if (pathname === '/api/memories/evolution-policy') {
       const KV_KEY = 'evolution_policy';
       if (req.method === 'GET') {
@@ -1084,10 +1073,6 @@ export async function handleMemoryRequest(
       return ok({});
     }
 
-    // POST /api/memories/surface-exposure — one client-observed visibility
-    // transition for a memory surface (board, record, audit rows…). Pure
-    // logging like ui-monitor; the client outbox delivers these in every
-    // deployment, study or not.
     if (pathname === '/api/memories/surface-exposure' && req.method === 'POST') {
       const b = await readBody(req);
       if (typeof b.surface !== 'string' || !b.surface) {
@@ -1110,7 +1095,7 @@ export async function handleMemoryRequest(
         action,
         ...(typeof payload.exposureId === 'string' ? { exposureId: payload.exposureId } : {}),
         ...(typeof payload.sequence === 'number' ? { sequence: payload.sequence } : {}),
-        ...(payload.initiator === 'participant' || payload.initiator === 'system' ? { initiator: payload.initiator } : {}),
+        ...(payload.initiator === 'user' || payload.initiator === 'system' ? { initiator: payload.initiator } : {}),
         ...(Array.isArray(payload.memoryIds)
           ? { memoryIds: (payload.memoryIds as unknown[]).filter((x): x is string => typeof x === 'string') }
           : {}),

@@ -34,9 +34,15 @@ Event families:
 - `ui.surface_exposure` — open / close / visible / hidden intervals of memory
   surfaces (Memory Board, Memory Record, review cards).
 
-Raw prompt text is **not** part of this stream. Chat transcripts are stored
-separately (see the table above) and are only bundled by the exporter when you
-explicitly ask for them.
+The log can contain memory content, expected-use text, revision instructions
+(`memory.revise_injection.instruction`), and quoted interruption evidence. It
+is not a transcript copy and must not be treated as text-free or anonymized.
+Chat transcripts are stored separately and included by the data exporter only
+with `--full`. Historical log lines may contain additional research fields.
+
+Set `MEMOSYNC_USAGE_LOG=0` to disable future local usage logging. The old
+`EXPERIMENT_LOG=0` remains a compatibility alias when the new variable is unset.
+Logging failures never block memory actions.
 
 Deleting `experiments/events.jsonl` removes existing records, but does not
 disable future local logging. There is no server-side collection to disable.
@@ -86,3 +92,17 @@ in `attachments/`. Attachment contents may contain private information.
 ```bash
 bun run scripts/analyze-experiment.ts ~/.memosync/data/experiments/events.jsonl --csv out.csv
 ```
+
+Historical data from retired study deployments is left in place. The product
+does not open or migrate `experiments/study.sqlite`, replay opening prompts or
+capture receipts, or read study settings and environment variables. Existing
+projects, chats, memory versions, exclusions, and evolution preferences remain
+available. Unknown transcript entries render as read-only JSON; recognized
+legacy gates use the ordinary transcript and stale-gate handling. Old browser
+study outboxes are ignored; product retries use `memosync:usage-outbox:v1`.
+
+The analyzer ignores retired/unknown event types, reports chats by their
+original session ids, and preserves historical condition, participant, task
+and allocation labels only in `legacyMetadata`. It does not merge chats into
+research task windows or assign product labels to historical events. CSV
+exports include this metadata; `--include-internal-qa` is retired.

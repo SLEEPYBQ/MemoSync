@@ -1,6 +1,6 @@
-import { describe,expect,it } from 'bun:test';
+import { describe, expect, it } from 'bun:test';
 import type { UsageEvent } from '../usage/logger';
-import type { DeepSeekJsonRequest,LlmJsonCaller } from './deepseek';
+import type { DeepSeekJsonRequest, LlmJsonCaller } from './deepseek';
 import { createTraceService } from './trace';
 import type { MemoryItem } from './types';
 

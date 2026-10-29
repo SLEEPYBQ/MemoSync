@@ -1,8 +1,8 @@
-import { expect,test } from "bun:test"
-import { existsSync,mkdtempSync,readFileSync,rmSync } from "node:fs"
+import { expect, test } from "bun:test"
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { UsageLogger,NoopUsageLogger } from "./logger"
+import { UsageLogger, NoopUsageLogger } from "./logger"
 
 test("local usage events append in order with install identity and no research allocation", () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-log-"))

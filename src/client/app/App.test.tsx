@@ -1,9 +1,9 @@
-import { describe,expect,test } from "bun:test"
-import type { AppSettingsSnapshot,SidebarChatRow } from "../../shared/types"
-import { isBrowserUnfocused,shouldPlayChatSound } from "../lib/chatSounds"
-import { getAppAuthStateFromStatus,shouldPlayChatNotificationSound,shouldRedirectToChangelog,shouldRetryAuthStatusRequest } from "./App"
-import { DEFAULT_SIDEBAR_WIDTH,MAX_SIDEBAR_WIDTH,MIN_SIDEBAR_WIDTH,clampSidebarWidth } from "./AppSidebar"
-import { getChatNotificationSnapshot,getChatSoundBurstCount,getNotificationTitleCount } from "./chatNotifications"
+import { describe, expect, test } from "bun:test"
+import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
+import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
+import { getAppAuthStateFromStatus, shouldPlayChatNotificationSound, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
+import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth } from "./AppSidebar"
+import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 
 function createProjectGroup(chats: SidebarChatRow[]) {
   return {

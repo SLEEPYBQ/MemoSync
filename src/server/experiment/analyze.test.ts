@@ -3,21 +3,21 @@ import { analyzeEvents } from "./analyze"
 
 const FIXTURE = [
   // session s1: inject → preview(go_on) → cite → capture(2/1/1) → trace
-  { ts: "t", condition: "memosync", participant: "P03", type: "memory.inject", sessionId: "s1", engine: "claude", memories: [{ id: "M-01", scope: "personal" }, { id: "M-02", scope: "project" }], tokenEstimate: 300 },
-  { ts: "t", condition: "memosync", type: "memory.preview", sessionId: "s1", engine: "claude", turn: 1, memoryIds: ["M-02"], decision: "go_on" },
-  { ts: "t", condition: "memosync", type: "memory.cite", sessionId: "s1", citedIds: ["M-02"], countedIds: ["M-02"] },
-  { ts: "t", condition: "memosync", type: "memory.detail_load", sessionId: "s1", ids: ["M-02"] },
-  { ts: "t", condition: "memosync", type: "memory.propose", sessionId: "s1", id: "M-03", memType: "fact", scope: "session" },
-  { ts: "t", condition: "memosync", type: "memory.capture", sessionId: "s1", turn: 1, proposed: 2, surfaced: 1, dropped: 1, sensitive: 0 },
-  { ts: "t", condition: "memosync", type: "memory.conflict", sessionId: "s1", turn: 1, newId: "M-09", staleId: "M-02" },
-  { ts: "t", condition: "memosync", type: "memory.trace", sessionId: "s1", turn: 1, labels: [{ id: "M-01", label: "injected_without_effect" }, { id: "M-02", label: "operational" }] },
+  { ts: "t", type: "memory.inject", sessionId: "s1", engine: "claude", memories: [{ id: "M-01", scope: "personal" }, { id: "M-02", scope: "project" }], tokenEstimate: 300 },
+  { ts: "t", type: "memory.preview", sessionId: "s1", engine: "claude", turn: 1, memoryIds: ["M-02"], decision: "go_on" },
+  { ts: "t", type: "memory.cite", sessionId: "s1", citedIds: ["M-02"], countedIds: ["M-02"] },
+  { ts: "t", type: "memory.detail_load", sessionId: "s1", ids: ["M-02"] },
+  { ts: "t", type: "memory.propose", sessionId: "s1", id: "M-03", memType: "fact", scope: "session" },
+  { ts: "t", type: "memory.capture", sessionId: "s1", turn: 1, proposed: 2, surfaced: 1, dropped: 1, sensitive: 0 },
+  { ts: "t", type: "memory.conflict", sessionId: "s1", turn: 1, newId: "M-09", staleId: "M-02" },
+  { ts: "t", type: "memory.trace", sessionId: "s1", turn: 1, labels: [{ id: "M-01", label: "injected_without_effect" }, { id: "M-02", label: "operational" }] },
   // session s2: preview dismissed + one auto-proceed (empty plan, setting on)
-  { ts: "t", condition: "memosync", type: "memory.preview", sessionId: "s2", engine: "claude", turn: 1, memoryIds: [], decision: "dismiss" },
-  { ts: "t", condition: "memosync", type: "memory.preview", sessionId: "s2", engine: "claude", turn: 2, memoryIds: [], decision: "auto_go_on" },
-  { ts: "t", condition: "memosync", type: "memory.bringin", sessionId: "s2", ids: ["M-01"] },
+  { ts: "t", type: "memory.preview", sessionId: "s2", engine: "claude", turn: 1, memoryIds: [], decision: "dismiss" },
+  { ts: "t", type: "memory.preview", sessionId: "s2", engine: "claude", turn: 2, memoryIds: [], decision: "auto_go_on" },
+  { ts: "t", type: "memory.bringin", sessionId: "s2", ids: ["M-01"] },
   // global UI decisions (no sessionId)
-  { ts: "t", condition: "memosync", type: "memory.decision", action: "accept", id: "M-03", via: "ui" },
-  { ts: "t", condition: "memosync", type: "memory.decision", action: "dismiss", id: "M-04", via: "ui" },
+  { ts: "t", type: "memory.decision", action: "accept", id: "M-03", via: "ui" },
+  { ts: "t", type: "memory.decision", action: "dismiss", id: "M-04", via: "ui" },
   // junk line should be skipped
 ]
 
@@ -27,8 +27,6 @@ describe("analyzeEvents", () => {
   test("per-session metrics", () => {
     const report = analyzeEvents(lines)
     const s1 = report.sessions["s1"]
-    expect(s1.condition).toBe("memosync")
-    expect(s1.participant).toBe("P03")
     expect(s1.injections).toBe(1)
     expect(s1.avgInjectedSetSize).toBe(2)
     expect(s1.citations).toBe(1)
@@ -44,7 +42,6 @@ describe("analyzeEvents", () => {
 
     const s2 = report.sessions["s2"]
     expect(s2.previewDecisions.dismiss).toBe(1)
-    expect(s2.participant).toBeUndefined()
     // auto_go_on is its own category (STUDY_PLAN §2.4: distinguish from manual go_on)
     expect(s2.previewDecisions.auto_go_on).toBe(1)
     expect(s2.bringIns).toBe(1)
@@ -68,38 +65,16 @@ describe("analyzeEvents", () => {
     expect(rows).toHaveLength(3) // header + 2 sessions
     expect(rows.some((r) => r.startsWith("s1,"))).toBe(true)
   })
-
-  test("excludes internal QA by default and includes it only by explicit opt-in", () => {
-    const mixed = [
-      { ts: "t", allocationMode: "study", condition: "auto", participant: "P01", type: "memory.inject", sessionId: "formal", memories: [] },
-      { ts: "t", allocationMode: "internal_qa", condition: "auto", participant: "QA-01", type: "memory.inject", sessionId: "qa", memories: [] },
-      { ts: "t", allocationMode: "internal_qa", condition: "auto", participant: "QA-01", type: "memory.decision", action: "accept", id: "M-QA" },
-    ].map((event) => JSON.stringify(event))
-
-    const formal = analyzeEvents(mixed)
-    expect(formal.sessions.formal?.participant).toBe("P01")
-    expect(formal.sessions.qa).toBeUndefined()
-    expect(formal.totals.events).toBe(1)
-    expect(formal.totals.excludedInternalQaEvents).toBe(2)
-    expect(formal.totals.decisions.accept).toBe(0)
-
-    const withQa = analyzeEvents(mixed, { includeInternalQa: true })
-    expect(withQa.sessions.qa?.participant).toBe("QA-01")
-    expect(withQa.sessions.qa?.allocationMode).toBe("internal_qa")
-    expect(withQa.totals.events).toBe(3)
-    expect(withQa.totals.excludedInternalQaEvents).toBe(0)
-    expect(withQa.totals.decisions.accept).toBe(1)
-  })
 })
 
 test("step-one gates, checkups, and reopens land in the report (2026-08-08)", () => {
   const lines = [
-    { ts: "t", condition: "memosync", type: "memory.proposals", sessionId: "s9", turn: 1, count: 2, decision: "reviewed" },
-    { ts: "t", condition: "memosync", type: "memory.proposals", sessionId: "s9", turn: 2, count: 0, decision: "empty" },
-    { ts: "t", condition: "memosync", type: "memory.checkup", sessionId: "s9", turn: 1, suggestions: 3, cached: false, decision: "handled", failedKinds: ["redundancy"] },
-    { ts: "t", condition: "memosync", type: "memory.checkup", sessionId: "s9", turn: 2, suggestions: 0, cached: true, decision: "clear" },
-    { ts: "t", condition: "memosync", type: "memory.checkup", sessionId: "s9", turn: 3, suggestions: 0, cached: false, decision: "failed", failedKinds: ["conflict"] },
-    { ts: "t", condition: "memosync", type: "memory.preparation_reopen", sessionId: "s9", turn: 2, from: "proposals", revision: 1 },
+    { ts: "t", type: "memory.proposals", sessionId: "s9", turn: 1, count: 2, decision: "reviewed" },
+    { ts: "t", type: "memory.proposals", sessionId: "s9", turn: 2, count: 0, decision: "empty" },
+    { ts: "t", type: "memory.checkup", sessionId: "s9", turn: 1, suggestions: 3, cached: false, decision: "handled", failedKinds: ["redundancy"] },
+    { ts: "t", type: "memory.checkup", sessionId: "s9", turn: 2, suggestions: 0, cached: true, decision: "clear" },
+    { ts: "t", type: "memory.checkup", sessionId: "s9", turn: 3, suggestions: 0, cached: false, decision: "failed", failedKinds: ["conflict"] },
+    { ts: "t", type: "memory.preparation_reopen", sessionId: "s9", turn: 2, from: "proposals", revision: 1 },
   ].map((e) => JSON.stringify(e))
 
   const report = analyzeEvents(lines)
@@ -124,18 +99,18 @@ test("step-one gates, checkups, and reopens land in the report (2026-08-08)", ()
 
 test("Board and chat-gate Control stay separate from Monitoring in analysis", () => {
   const lines = [
-    { ts: "t", condition: "memosync", type: "memory.decision", action: "accept", id: "M-01", via: "board" },
-    { ts: "t", condition: "memosync", type: "memory.decision", action: "edit", id: "M-02", via: "chat_gate" },
-    { ts: "t", condition: "memosync", type: "memory.decision", action: "edit", id: "M-03", via: "ui" },
-    { ts: "t", condition: "memosync", type: "memory.attention", sessionId: "s-control", kind: "stale", id: "M-04", action: "renew", surface: "board" },
-    { ts: "t", condition: "memosync", type: "memory.attention", sessionId: "s-control", kind: "redundant", id: "M-05", action: "keep", surface: "chat_gate" },
-    { ts: "t", condition: "memosync", type: "memory.transfer", sessionId: "s-control", sourceId: "M-06", targetScope: "project", surface: "board" },
-    { ts: "t", condition: "memosync", type: "memory.transfer_decline", sessionId: "s-control", id: "M-07", contextKey: "P1", surface: "chat_gate" },
-    { ts: "t", condition: "memosync", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "open" },
-    { ts: "t", condition: "memosync", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "scroll" },
-    { ts: "t", condition: "memosync", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "hover", ids: ["M-01"] },
-    { ts: "t", condition: "memosync", type: "ui.monitor", sessionId: "s-control", surface: "chat_gate", interaction: "hover", ids: ["M-02"] },
-    { ts: "t", condition: "memosync", type: "ui.monitor", sessionId: "s-control", surface: "summary_panel", interaction: "click" },
+    { ts: "t", type: "memory.decision", action: "accept", id: "M-01", via: "board" },
+    { ts: "t", type: "memory.decision", action: "edit", id: "M-02", via: "chat_gate" },
+    { ts: "t", type: "memory.decision", action: "edit", id: "M-03", via: "ui" },
+    { ts: "t", type: "memory.attention", sessionId: "s-control", kind: "stale", id: "M-04", action: "renew", surface: "board" },
+    { ts: "t", type: "memory.attention", sessionId: "s-control", kind: "redundant", id: "M-05", action: "keep", surface: "chat_gate" },
+    { ts: "t", type: "memory.transfer", sessionId: "s-control", sourceId: "M-06", targetScope: "project", surface: "board" },
+    { ts: "t", type: "memory.transfer_decline", sessionId: "s-control", id: "M-07", contextKey: "P1", surface: "chat_gate" },
+    { ts: "t", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "open" },
+    { ts: "t", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "scroll" },
+    { ts: "t", type: "ui.monitor", sessionId: "s-control", surface: "board", interaction: "hover", ids: ["M-01"] },
+    { ts: "t", type: "ui.monitor", sessionId: "s-control", surface: "chat_gate", interaction: "hover", ids: ["M-02"] },
+    { ts: "t", type: "ui.monitor", sessionId: "s-control", surface: "summary_panel", interaction: "click" },
   ].map((event) => JSON.stringify(event))
 
   const report = analyzeEvents(lines)
@@ -147,143 +122,31 @@ test("Board and chat-gate Control stay separate from Monitoring in analysis", ()
   expect(report.toCsv()).toContain("monitorBoard")
 })
 
-test("Static phased edit duration counts only the completed outcome", () => {
-  const base = {
-    condition: "static",
-    type: "study.control_operation",
-    operationId: "static-edit-1",
-    taskId: "038-S1",
-    sessionId: "038-S1",
-    surface: "static_memory",
-    action: "edit",
-    controlType: "static_edit",
-    payload: { durationMs: 12_340 },
-  }
-  const report = analyzeEvents([
-    JSON.stringify({ ...base, ts: "2026-08-22T10:00:00.000Z", phase: "attempted" }),
-    JSON.stringify({ ...base, ts: "2026-08-22T10:00:01.000Z", phase: "completed" }),
-  ])
-
-  expect(report.sessions["038-S1"]?.staticEditDurationMs).toBe(12_340)
-  expect(report.totals.staticEditDurationMs).toBe(12_340)
-  expect(report.toCsv()).toContain("staticEditDurationMs")
+test("keeps historical metadata without merging chats by task or inventing product labels", () => {
+  const events = [
+    { type: "memory.inject", sessionId: "old-a", taskId: "shared-task", condition: "static", participant: "P,1", allocationMode: "study", memories: [] },
+    { type: "memory.inject", sessionId: "old-b", taskId: "shared-task", condition: "auto", allocationMode: "internal_qa", memories: [] },
+    { type: "memory.inject", sessionId: "new", memories: [] },
+    { type: "study.control_operation", sessionId: "retired-only", phase: "completed" },
+    { type: "quiz.answer", sessionId: "retired-only" },
+  ]
+  const report = analyzeEvents(events.map((e) => JSON.stringify(e)))
+  expect(Object.keys(report.sessions)).toEqual(["old-a", "old-b", "new"])
+  expect(report.sessions["old-a"].legacyMetadata).toEqual([{ condition: "static", participant: "P,1", allocationMode: "study", taskId: "shared-task" }])
+  expect(report.sessions["old-b"].legacyMetadata?.[0].allocationMode).toBe("internal_qa")
+  expect(report.sessions.new.legacyMetadata).toBeUndefined()
+  expect(report.totals.ignoredEvents).toBe(2)
+  expect(report.toCsv()).toContain('""participant"":""P,1""')
 })
 
-test("production MemoSync interrupt, resume, and Enforce stay in one task-window Control row", () => {
-  const lines = [
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "memory.inject",
-      schemaVersion: 2,
-      semantics: "turn_focus",
-      taskId: "038-S1",
-      sessionId: "chat-a",
-      chatId: "chat-a",
-      turnId: "turn-1",
-      turn: 1,
-      engine: "claude",
-      deliveryStage: "queued_to_claude",
-      outcome: "delivered",
-      memories: [{ id: "M-01" }],
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "memory.decision",
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      action: "accept",
-      id: "M-02",
-      via: "board",
-    },
-    {
-      // Legacy chat-scoped events emitted beside a v2 focus delivery still
-      // belong to the delivery's authoritative task window.
-      ts: "t",
-      condition: "memosync",
-      type: "memory.cite",
-      sessionId: "chat-a",
-      citedIds: ["M-01"],
-      countedIds: ["M-01"],
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "ui.monitor",
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      surface: "board",
-      interaction: "scroll",
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "memory.interrupt",
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      chatId: "chat-a",
-      id: "M-01",
-      turn: 1,
-      quote: "The rule was misapplied.",
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "memory.inject",
-      schemaVersion: 2,
-      semantics: "turn_focus",
-      taskId: "038-S1",
-      sessionId: "chat-b",
-      chatId: "chat-b",
-      turnId: "turn-2",
-      turn: 2,
-      engine: "claude",
-      deliveryStage: "queued_to_claude",
-      outcome: "delivered",
-      resumeOfInterruptId: "interrupt-1",
-      memories: [{ id: "M-01" }],
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "memory.audit_action",
-      taskId: "038-S1",
-      sessionId: "038-S1",
-      chatId: "chat-b",
-      id: "M-01",
-      action: "enforce",
-    },
-    {
-      ts: "t",
-      condition: "memosync",
-      type: "study.raw_tlx.submit",
-      taskId: "038-S1",
-      activity: "control",
-      score: 42,
-    },
-  ].map((event) => JSON.stringify(event))
-
-  const report = analyzeEvents(lines)
-  expect(Object.keys(report.sessions)).toEqual(["038-S1"])
-  expect(report.sessions["chat-a"]).toBeUndefined()
-  expect(report.sessions["chat-b"]).toBeUndefined()
-  expect(report.sessions["038-S1"]).toMatchObject({
-    memoryInterrupts: 1,
-    resumeLinkedDeliveries: 1,
-    memoryEnforces: 1,
-    citations: 1,
-    controlInteractions: { board: 1, chat_gate: 0, other: 3 },
-    monitoringInteractions: { board: 1, chat_gate: 0, other: 0 },
-  })
-  expect(report.totals).toMatchObject({
-    memoryInterrupts: 1,
-    resumeLinkedDeliveries: 1,
-    memoryEnforces: 1,
-    controlInteractions: { board: 1, chat_gate: 0, other: 3 },
-    monitoringInteractions: { board: 1, chat_gate: 0, other: 0 },
-  })
-  const csv = report.toCsv()
-  expect(csv).toContain("memoryInterrupts,resumeLinkedDeliveries,memoryEnforces")
-  expect(csv.trim().split("\n")).toHaveLength(2)
+test("counts interrupt, accepted resume and Enforce within their actual chat", () => {
+  const report = analyzeEvents([
+    { type: "memory.interrupt", sessionId: "chat-a", interruptId: "interrupt-a" },
+    { type: "memory.inject", sessionId: "chat-a", schemaVersion: 2, deliveryStage: "queued_to_claude", resumeOfInterruptId: "interrupt-a", memories: [{ id: "M-01" }] },
+    { type: "memory.audit_action", sessionId: "chat-a", action: "enforce" },
+    { type: "memory.inject", sessionId: "chat-b", memories: [] },
+  ].map((e) => JSON.stringify(e)))
+  expect(report.sessions["chat-a"]).toMatchObject({ memoryInterrupts: 1, resumeLinkedDeliveries: 1, memoryEnforces: 1, controlInteractions: { board: 0, chat_gate: 0, other: 3 } })
+  expect(report.sessions["chat-b"].controlInteractions.other).toBe(0)
+  expect(report.totals).toMatchObject({ memoryInterrupts: 1, resumeLinkedDeliveries: 1, memoryEnforces: 1 })
 })

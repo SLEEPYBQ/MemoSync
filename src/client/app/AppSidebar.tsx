@@ -1,13 +1,13 @@
-import { BrainCircuit,Loader2,Menu,PanelLeft,Plus,Settings,X } from "lucide-react"
-import { memo,useCallback,useEffect,useMemo,useRef,useState,type CSSProperties } from "react"
-import { useLocation,useNavigate } from "react-router-dom"
-import type { KeybindingsSnapshot,SidebarChatRow,SidebarData,UpdateSnapshot } from "../../shared/types"
-import { BrandIcon,useBrandName } from "../components/BrandMark"
+import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useLocation, useNavigate } from "react-router-dom"
+import type { KeybindingsSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
+import { BrandIcon, useBrandName } from "../components/BrandMark"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
 import { Button } from "../components/ui/button"
-import { Dialog,DialogBody,DialogContent,DialogDescription,DialogHeader,DialogTitle } from "../components/ui/dialog"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
 import { getLastBoardVisit } from "../lib/boardVisit"
 import { formatSidebarAgeLabel } from "../lib/formatters"
 import { getResolvedKeybindings } from "../lib/keybindings"
@@ -15,11 +15,11 @@ import { memoriesApi } from "../lib/memoriesApi"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
 import {
-getSidebarJumpTargetIndex,
-getSidebarNumberJumpHint,
-getVisibleSidebarChats,
-isSidebarModifierShortcut,
-shouldShowSidebarNumberJumpHints,
+  getSidebarJumpTargetIndex,
+  getSidebarNumberJumpHint,
+  getVisibleSidebarChats,
+  isSidebarModifierShortcut,
+  shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
 import type { SocketStatus } from "./socket"
 

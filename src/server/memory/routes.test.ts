@@ -1,11 +1,10 @@
 import { Database } from 'bun:sqlite';
-import { afterEach,beforeEach,describe,expect,it } from 'bun:test';
-import { mkdtempSync,readFileSync,rmSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
 import { handleMemoryRequest } from './routes';
-
 
 let dir: string;
 let memory: MemoryService;
@@ -53,6 +52,28 @@ describe('memory routes', () => {
   afterEach(() => {
     memory.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records Add/Remove usage with chat provenance without changing the selected pool', async () => {
+    const events: unknown[] = [];
+    memory.close();
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir, logger: { event: (event) => void events.push(event) } });
+    const item = memory.store.create({ content: 'Use pnpm', scope: 'personal', type: 'preference' }, { actor: 'user' });
+    const before = memory.injectedFor(undefined, 'chat-1').map((value) => value.id);
+    for (const action of ['add', 'remove']) {
+      const response = await call('POST', '/api/memories/working-memory-selection', {
+        operationId: `toggle-${action}`, clientTimestamp: '2026-10-30T00:00:00.000Z',
+        chatId: 'chat-1', previewId: 'preview-1', memoryId: item.id, action,
+      });
+      expect(response!.status).toBe(200);
+      expect(events.at(-1)).toEqual({
+        type: 'memory.working_memory_selection', eventId: `toggle-${action}`, clientTimestamp: '2026-10-30T00:00:00.000Z',
+        sessionId: 'chat-1', chatId: 'chat-1', previewId: 'preview-1', memoryId: item.id, action,
+      });
+    }
+    expect(memory.injectedFor(undefined, 'chat-1').map((value) => value.id)).toEqual(before);
+    const invalid = await call('POST', '/api/memories/working-memory-selection', { operationId: 'invalid' });
+    expect(invalid!.status).toBe(400);
   });
 
   it('returns null for non-memory paths', async () => {

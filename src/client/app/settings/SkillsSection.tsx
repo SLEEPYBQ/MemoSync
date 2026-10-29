@@ -1,16 +1,16 @@
-import { ExternalLink,Loader2,Search,Trash2,X } from "lucide-react"
-import { useEffect,useState } from "react"
+import { ExternalLink, Loader2, Search, Trash2, X } from "lucide-react"
+import { useEffect, useState } from "react"
 import type {
-InstalledSkillSummary,
-InstalledSkillsSnapshot,
-SkillInstallResult,
-SkillSearchResult,
-SkillSearchSnapshot,
-SkillUninstallResult,
+  InstalledSkillSummary,
+  InstalledSkillsSnapshot,
+  SkillInstallResult,
+  SkillSearchResult,
+  SkillSearchSnapshot,
+  SkillUninstallResult,
 } from "../../../shared/types"
 import type { AppState } from "../useAppState"
 import { SETTINGS_ROWS } from "./registry"
-import { SETTINGS_LIST_CARD_CLASS,SettingsActionButton } from "./shared"
+import { SETTINGS_LIST_CARD_CLASS, SettingsActionButton } from "./shared"
 
 function formatInstallCount(count: number) {
   if (!count || count <= 0) return "0 installs"

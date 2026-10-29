@@ -1,4 +1,4 @@
-import { expect,test } from "bun:test"
+import { expect, test } from "bun:test"
 import { createHash } from "node:crypto"
 import type { MemoryItem } from "../memory/types"
 import { recordDeliveredStoreFocus } from "./focus"

@@ -1,10 +1,10 @@
 import { SerializeAddon } from "@xterm/addon-serialize"
 import { Terminal } from "@xterm/headless"
-import defaultShell,{ detectDefaultShell } from "default-shell"
+import defaultShell, { detectDefaultShell } from "default-shell"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import type { TerminalEvent,TerminalSnapshot } from "../shared/protocol"
+import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24

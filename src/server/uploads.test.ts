@@ -1,15 +1,15 @@
-import { afterEach,describe,expect,test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync } from "node:fs"
-import { mkdir,mkdtemp,rm,symlink,writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { getProjectUploadDir } from "./paths"
 import {
-persistUploadedFiles,
-startMemoSyncServer,
-validateUploadFiles
+  persistUploadedFiles,
+  startMemoSyncServer,
+  validateUploadFiles
 } from "./server"
-import { deleteProjectUpload,inferAttachmentContentType,persistProjectUpload } from "./uploads"
+import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="

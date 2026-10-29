@@ -1,23 +1,23 @@
 import type {
-AgentProvider,
-AppSettingsPatch,
-AppSettingsSnapshot,
-ChatAttachment,
-ChatDiffSnapshot,
-ChatHistoryPage,
-ChatSnapshot,
-DiffCommitMode,
-EditorPreset,
-ExpectedMemoryUse,
-KeybindingsSnapshot,
-LlmProviderSnapshot,
-LocalProjectsSnapshot,
-MemoryPreviewDecision,
-ModelOptions,
-SidebarData,
-StandaloneTranscriptAttachmentMode,
-StandaloneTranscriptExportResult,
-UpdateSnapshot,
+  AgentProvider,
+  AppSettingsPatch,
+  AppSettingsSnapshot,
+  ChatAttachment,
+  ChatDiffSnapshot,
+  ChatHistoryPage,
+  ChatSnapshot,
+  DiffCommitMode,
+  EditorPreset,
+  ExpectedMemoryUse,
+  KeybindingsSnapshot,
+  LlmProviderSnapshot,
+  LocalProjectsSnapshot,
+  MemoryPreviewDecision,
+  ModelOptions,
+  SidebarData,
+  StandaloneTranscriptAttachmentMode,
+  StandaloneTranscriptExportResult,
+  UpdateSnapshot,
 } from "./types"
 
 export type { EditorPreset }
@@ -35,7 +35,7 @@ export interface LocalHttpServerInfo {
   ownerPath?: string
   processName?: string
   sameProject?: boolean
-  /** Server authority for process termination; false for managed study previews. */
+
   /** True when the app runs in a container (PREVIEW_VIA_PROXY): the browser
    * iframe lives on the HOST, so `address` (in-container localhost) is
    * unreachable — open the app's localhost-subdomain proxy when local, or

@@ -1,26 +1,24 @@
-// CLI for the experiment-log analyzer (SPEC §6): per-session metamemory
+// CLI for the local usage analyzer: per-session metamemory
 // metrics + aggregates from an events.jsonl.
-//   bun run scripts/analyze-experiment.ts <events.jsonl> [--csv out.csv] [--include-internal-qa]
+//   bun run scripts/analyze-experiment.ts <events.jsonl> [--csv out.csv]
 // The log lives at ~/.memosync/data/experiments/events.jsonl.
 import { readFileSync, writeFileSync } from "node:fs"
 import { analyzeEvents } from "../src/server/experiment/analyze"
 
 const file = process.argv[2]
 if (!file) {
-  console.error("usage: bun run scripts/analyze-experiment.ts <events.jsonl> [--csv out.csv] [--include-internal-qa]")
+  console.error("usage: bun run scripts/analyze-experiment.ts <events.jsonl> [--csv out.csv]")
   process.exit(1)
 }
 const csvFlag = process.argv.indexOf("--csv")
 const csvPath = csvFlag > -1 ? process.argv[csvFlag + 1] : null
-const includeInternalQa = process.argv.includes("--include-internal-qa")
 
-const report = analyzeEvents(readFileSync(file, "utf8").split("\n"), { includeInternalQa })
+const report = analyzeEvents(readFileSync(file, "utf8").split("\n"))
 
 console.log(
   `sessions: ${report.totals.sessions} · events: ${report.totals.events} · `
-    + `excluded internal QA events: ${report.totals.excludedInternalQaEvents} · skipped lines: ${report.totals.skippedLines}`,
+    + `ignored legacy/unknown events: ${report.totals.ignoredEvents} · skipped lines: ${report.totals.skippedLines}`,
 )
-console.log(`conditions: ${JSON.stringify(report.totals.conditions)}`)
 console.log(
   `capture: proposed ${report.totals.captureProposed} → surfaced ${report.totals.captureSurfaced} · ` +
     `UI decisions ${JSON.stringify(report.totals.decisions)} · accept rate ${(report.totals.acceptRate * 100).toFixed(0)}%`,
@@ -33,12 +31,12 @@ console.log("")
 const rows = Object.values(report.sessions)
 const pad = (v: string | number, w: number) => String(v).padEnd(w)
 console.log(
-  pad("session", 14) + pad("allocation", 13) + pad("cond", 10) + pad("eng", 7) + pad("turns", 6) + pad("inj", 5) + pad("cite", 5) +
+  pad("session", 14) + pad("eng", 7) + pad("turns", 6) + pad("inj", 5) + pad("cite", 5) +
     pad("load", 5) + pad("cap s/p", 8) + pad("prev g/w/d", 11) + pad("trace o/n/v", 12) + "bringin",
 )
 for (const s of rows) {
   console.log(
-    pad(s.sessionId.slice(0, 12), 14) + pad(s.allocationMode, 13) + pad(s.condition, 10) + pad(s.engine ?? "-", 7) + pad(s.maxTurn, 6) +
+    pad(s.sessionId.slice(0, 12), 14) + pad(s.engine ?? "-", 7) + pad(s.maxTurn, 6) +
       pad(s.injections, 5) + pad(s.citations, 5) + pad(s.detailLoads, 5) +
       pad(`${s.captureSurfaced}/${s.captureProposed}`, 8) +
       pad(`${s.previewDecisions.go_on}/${s.previewDecisions.without_memory}/${s.previewDecisions.dismiss}`, 11) +

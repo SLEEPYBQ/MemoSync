@@ -109,7 +109,7 @@ CREATE TABLE IF NOT EXISTS session_exclusions (
 -- guard). SENSITIVE candidates are additionally hard-deleted on dismissal (text
 -- and events erased); non-sensitive ones keep their text under status
 -- 'discarded' so the necessity gate can learn from them as negative examples
--- (self-evolution M1) and the study has "extracted but not stored" material.
+-- (self-evolution M1) while preserving why the candidate was dismissed.
 CREATE TABLE IF NOT EXISTS dismissed_candidate_fingerprints (
   memory_id TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL,

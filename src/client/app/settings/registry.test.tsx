@@ -1,16 +1,16 @@
-import { describe,expect,test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { readAppSettingsSnapshot } from "../../../server/app-settings"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
-import { PROVIDERS,type AppSettingsSnapshot } from "../../../shared/types"
+import { PROVIDERS, type AppSettingsSnapshot } from "../../../shared/types"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
 import { GeneralSection } from "./GeneralSection"
 import { KeybindingsSection } from "./KeybindingsSection"
 import { MemorySettingsGroups } from "./MemorySection"
 import { ProvidersSection } from "./ProvidersSection"
 import { SkillsSection } from "./SkillsSection"
-import { ALL_SETTINGS_ROWS,SETTINGS_SECTIONS,getSettingsRowHref,resolveSettingsSectionId } from "./registry"
+import { ALL_SETTINGS_ROWS, SETTINGS_SECTIONS, getSettingsRowHref, resolveSettingsSectionId } from "./registry"
 
 const settings: AppSettingsSnapshot = await readAppSettingsSnapshot("/tmp/memosync-settings-registry-nonexistent/settings.json")
 const memoryHtml = (overrides: { enabled?: boolean; learn?: boolean } = {}) => renderToStaticMarkup(<MemoryRouter><MemorySettingsGroups settings={{ ...settings, memory: { enabled: overrides.enabled ?? true, learn: overrides.learn ?? true } }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>)

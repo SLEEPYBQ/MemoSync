@@ -15,6 +15,6 @@ export function memorySidebarOpenMonitoring(
   surface: MemorySidebarOpenMonitoring["surface"],
   sessionId: string,
 ): MemorySidebarOpenMonitoring | null {
-  if (initiator !== "participant") return null
+  if (initiator !== "user") return null
   return { surface, sessionId, interaction: "open" }
 }

@@ -1,19 +1,19 @@
-import { describe,expect,test } from "bun:test"
-import { mkdtemp,rm,writeFile } from "node:fs/promises"
+import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { AppSettingsSnapshot,KeybindingsSnapshot,LlmProviderSnapshot,TranscriptEntry,UpdateSnapshot } from "../shared/types"
+import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, TranscriptEntry, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import {
-assertSafeSkillId,
-assertSafeSkillSource,
-buildInstallSkillCommand,
-buildUninstallSkillCommand,
-createSerialExecutor,
-createWsRouter,
-listInstalledSkills,
-parseInstalledSkillsLock,
+  assertSafeSkillId,
+  assertSafeSkillSource,
+  buildInstallSkillCommand,
+  buildUninstallSkillCommand,
+  createSerialExecutor,
+  createWsRouter,
+  listInstalledSkills,
+  parseInstalledSkillsLock,
 } from "./ws-router"
 
 describe("snapshot broadcast ordering", () => {

@@ -5,7 +5,7 @@
 // memory routes.
 import type { Dirent } from "node:fs"
 import { existsSync } from "node:fs"
-import { mkdir,readdir,rename,rm,stat,writeFile } from "node:fs/promises"
+import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { resolveExistingPathWithinRoot } from "./paths"
 
@@ -251,11 +251,10 @@ export async function handleWorkspaceRequest(
     if (req.method !== "POST") return fail(405, "METHOD_NOT_ALLOWED", "use POST")
     const projectId = decodeURIComponent(opMatch[1])
     const project = store.getProject(projectId)
-    try {
+
       if (!project) return fail(404, "NOT_FOUND", "unknown project")
       return await handleFileOp(req, project.localPath)
-    } finally {
-    }
+
   }
 
   if (req.method !== "GET") return fail(405, "METHOD_NOT_ALLOWED", "use GET")

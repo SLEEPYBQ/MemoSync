@@ -14,7 +14,7 @@ const loadingStatuses = new Set(["starting", "previewing_memory", "running"])
 
 interface Props {
   chat: SidebarChatRow
-  /** Study sessions hide forking because it inherits transcript/session state. */
+
   showFork?: boolean
   activeChatId: string | null
   nowMs: number
@@ -84,7 +84,7 @@ function ChatRowImpl({
           >
             {chat.title}
           </AnimatedShinyText>
-        ) : 
+        ) :
           chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-muted-foreground">{chat.title}</span>
         }
       </span>

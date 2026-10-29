@@ -1,9 +1,9 @@
-import { createHash,randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import type { MemoryItem } from "../memory/types"
 import type { ExpectedMemoryUse } from "../memory/use-plan"
 import type {
-DeliveredFocusEvent,
-DeliveredFocusMemoryRef,
+  DeliveredFocusEvent,
+  DeliveredFocusMemoryRef,
 } from "../usage/logger"
 
 function sha256(value: string): string {

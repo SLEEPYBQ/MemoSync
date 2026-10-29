@@ -1,14 +1,14 @@
-import { afterEach,describe,expect,test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { resolveClaudeApiModelId } from "../shared/types"
 import {
-SERVER_PROVIDERS,
-applyClaudeSdkModels,
-codexServiceTierFromModelOptions,
-deployedProviders,
-normalizeClaudeModelOptions,
-normalizeCodexModelOptions,
-normalizeServerModel,
-resetServerProvidersForTests
+  SERVER_PROVIDERS,
+  applyClaudeSdkModels,
+  codexServiceTierFromModelOptions,
+  deployedProviders,
+  normalizeClaudeModelOptions,
+  normalizeCodexModelOptions,
+  normalizeServerModel,
+  resetServerProvidersForTests
 } from "./provider-catalog"
 
 describe("provider catalog normalization", () => {

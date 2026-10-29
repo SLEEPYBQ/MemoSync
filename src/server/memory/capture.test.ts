@@ -1,12 +1,12 @@
-import { afterEach,beforeEach,describe,expect,it } from 'bun:test';
-import { mkdtempSync,rmSync } from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createCaptureService,validateCandidate } from './capture';
+import { createCaptureService, validateCandidate } from './capture';
 import { MemoryService } from './index';
 
 import { MEMORY_ATOM_SPEC } from './atom-spec';
-import { LlmJsonError,type DeepSeekJsonRequest,type LlmJsonCaller } from './deepseek';
+import { LlmJsonError, type DeepSeekJsonRequest, type LlmJsonCaller } from './deepseek';
 import { handleMemoryRequest } from './routes';
 
 /** A scripted LlmJsonCaller: returns the next queued response per call, records every call. */

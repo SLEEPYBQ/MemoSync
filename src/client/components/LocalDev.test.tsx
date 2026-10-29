@@ -1,9 +1,9 @@
-import { describe,expect,test } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
-import { PROVIDERS,type LocalProjectsSnapshot } from "../../shared/types"
-import { LandingProjectMenu,LocalDevContent } from "./LocalDev"
+import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
+import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 import { TooltipProvider } from "./ui/tooltip"
 
 const emptySnapshot: LocalProjectsSnapshot = {

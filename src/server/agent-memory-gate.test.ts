@@ -6,26 +6,23 @@
 // AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
 // what memory set actually reaches the (fake) Claude engine, and how the
 // MemoSync policy controls injection and session rebuild.
-import { describe,expect,test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 
-import { existsSync,mkdtempSync,rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentCoordinator,resolveTurnMemoryState } from "./agent";
+import { AgentCoordinator, resolveTurnMemoryState } from "./agent";
 
 import { type TranscriptEntry } from "../shared/types";
 import { MemoryService } from "./memory";
-import { createCaptureService,type CaptureService } from "./memory/capture";
+import { createCaptureService, type CaptureService } from "./memory/capture";
 import type { CheckupService } from "./memory/checkup";
 import type { LlmJsonCaller } from "./memory/deepseek";
 import type { RelevanceService } from "./memory/relevance";
 import type { MemoryToolContext } from "./memory/tools";
-import type { TraceInput,TraceService } from "./memory/trace";
-import type { TransferDetectService,TransferSuggestionCard } from "./memory/transfer-detect";
+import type { TraceInput, TraceService } from "./memory/trace";
+import type { TransferDetectService, TransferSuggestionCard } from "./memory/transfer-detect";
 import type { UsePlanService } from "./memory/use-plan";
-
-
-
 
 function timestampedKinds(messages: TranscriptEntry[]): string[] {
   return messages.map((m) => m.kind)
@@ -718,6 +715,28 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
+  test("provider rejection releases ownership and permits a later ordinary send", async () => {
+    const failures: string[] = []
+    const events: Array<Record<string, unknown>> = []
+    const h = createHarness({
+      experimentEvents: events,
+      onTurnFailed: (message) => { failures.push(message) },
+      onSendPrompt: async (text) => { if (text.startsWith("reject me")) throw new Error("provider rejected prompt") },
+    })
+    try {
+      await expect(h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "reject me" })).rejects.toThrow("provider rejected prompt")
+      expect(h.coordinator.getActiveStatuses().has("chat-1")).toBe(false)
+      expect(h.claudeSessionCloses[0]).toBeGreaterThan(0)
+      expect(events.some((event) => event.type === "memory.inject")).toBe(false)
+      const later = await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "try again" })
+      expect(later).not.toMatchObject({ queued: true })
+      expect(h.prompts.map((prompt) => prompt.split("\n")[0])).toEqual(["reject me", "try again"])
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+      h.finishTurn()
+      await waitFor(() => h.store.turnFinishedCount === 1)
+    } finally { h.cleanup() }
+  })
+
   test("Stop during Claude sendPrompt interrupts the active owner and permits a new turn", async () => {
     let promptStarted!: () => void
     const started = new Promise<void>((resolve) => { promptStarted = resolve })
@@ -983,7 +1002,6 @@ describe("memory preview gate (coordinator)", () => {
       h.cleanup()
     }
   })
-
 
   test("without_memory boots the Claude session with memory disabled", async () => {
     const h = createHarness({ preview: true })
@@ -2476,7 +2494,6 @@ describe("preview settings (coordinator, STUDY_PLAN §2.4)", () => {
     }
   })
 })
-
 
 describe("fork-based trace (user design 2026-08-05)", () => {
   test("with a session token, the fork answers and the sidecar is never called", async () => {

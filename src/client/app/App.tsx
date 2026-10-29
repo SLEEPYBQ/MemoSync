@@ -1,29 +1,29 @@
-import { useCallback,useEffect,useLayoutEffect,useMemo,useRef,useState } from "react"
-import { Navigate,Outlet,Route,Routes,useLocation,useNavigate,useParams } from "react-router-dom"
-import { SDK_CLIENT_APP,SELF_UPDATE_ENABLED } from "../../shared/branding"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
+import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import type { AppSettingsSnapshot } from "../../shared/types"
-import { BrandIcon,useBrandFavicon,useBrandName } from "../components/BrandMark"
+import { BrandIcon, useBrandFavicon, useBrandName } from "../components/BrandMark"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
 import { AppDialogProvider } from "../components/ui/app-dialog"
 import { Button } from "../components/ui/button"
-import { Card,CardContent,CardDescription,CardHeader,CardTitle } from "../components/ui/card"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input"
 import { TooltipProvider } from "../components/ui/tooltip"
-import { shouldShowChatBrowserNotification,showChatBrowserNotification } from "../lib/chatBrowserNotifications"
-import { playChatNotificationSound,shouldPlayChatSound } from "../lib/chatSounds"
-import { initializeUsageTelemetryOutbox,stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
+import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
+import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
+import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import { AppSidebar } from "./AppSidebar"
-import { getChatNotificationEvents,getChatSoundBurstCount,getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import {
-MemoryBoardLauncherProvider,
-reconcileMemoryBoardRequestWithActiveChat,
-resolveMemoryBoardLaunchRequest,
-type MemoryBoardLaunchRequest,
-type ResolvedMemoryBoardLaunchRequest,
+  MemoryBoardLauncherProvider,
+  reconcileMemoryBoardRequestWithActiveChat,
+  resolveMemoryBoardLaunchRequest,
+  type MemoryBoardLaunchRequest,
+  type ResolvedMemoryBoardLaunchRequest,
 } from "./memory/MemoryBoardLauncher"
 import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
 import { MemoryBoardPage } from "./MemoryBoardPage"

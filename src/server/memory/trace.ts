@@ -140,7 +140,7 @@ function readLabelEntry(entry: unknown): TraceOutcome['labels'][number] | null {
   return { id, label, note, quote, toolId, cause, missing, impact };
 }
 
-// NOTE: the service emits NO experiment event — the verdicts it returns are
+// NOTE: the service emits NO usage event — the verdicts it returns are
 // judgments about the text it was SHOWN, and the caller must CAS them against
 // live memory state before anything (event log, trace labels, usage) is
 // written. Logging here would record verdicts that may then be discarded.

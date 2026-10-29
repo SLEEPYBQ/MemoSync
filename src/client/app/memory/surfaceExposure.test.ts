@@ -10,7 +10,7 @@ test("persists opened-hidden-visible-closed with one exposure id and monotonic c
   const exposure = createSurfaceExposure({
     surface: "memory_record",
     chatId: "chat-1",
-    initiator: "participant",
+    initiator: "user",
     randomId: () => "exposure-1",
     now: () => now,
     visibilityTarget: visibility,
@@ -80,7 +80,7 @@ test("an initially hidden mount records opened and hidden at the same sampled ti
   const exposure = createSurfaceExposure({
     surface: "memory_record",
     chatId: "chat-hidden",
-    initiator: "participant",
+    initiator: "user",
     randomId: () => "initially-hidden",
     now: () => Date.parse("2026-08-20T10:00:00.000Z"),
     visibilityTarget: visibility,
@@ -132,7 +132,7 @@ test("a buffered audit starts only after intersection and ordinary callbacks do 
     { visible: true, initial: false },
     { visible: false, initial: false },
   ])
-  expect(getSurfaceIntersectionInitiator(visible[1]!)).toBe("participant")
+  expect(getSurfaceIntersectionInitiator(visible[1]!)).toBe("user")
   stop()
   expect(disconnected).toBe(true)
 })

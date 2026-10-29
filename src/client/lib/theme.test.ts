@@ -1,5 +1,5 @@
-import { describe,expect,test } from "bun:test"
-import { resolveTheme,type ResolvedTheme,type ThemePreference } from "./theme"
+import { describe, expect, test } from "bun:test"
+import { resolveTheme, type ResolvedTheme, type ThemePreference } from "./theme"
 
 describe("theme resolution", () => {
   for (const preference of ["light", "dark", "system"] as ThemePreference[]) {

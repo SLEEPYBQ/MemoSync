@@ -186,7 +186,6 @@ export function createUsageTelemetryOutbox({
   }
 }
 
-
 const PRODUCT_OUTBOX_KEY = "memosync:usage-outbox:v1"
 let activeOutbox: ReturnType<typeof createUsageTelemetryOutbox> | null = null
 

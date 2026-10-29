@@ -1,34 +1,34 @@
 import {
-ArrowLeftRight,
-BrainCircuit,
-Check,
-ChevronDown,
-ChevronRight,
-CodeXml,
-Copy,
-Folder,
-Inbox,
-Loader2,
-Monitor,
-Plus,
-Terminal,
+  ArrowLeftRight,
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  CodeXml,
+  Copy,
+  Folder,
+  Inbox,
+  Loader2,
+  Monitor,
+  Plus,
+  Terminal,
 } from "lucide-react"
-import { useEffect,useMemo,useRef,useState,type ComponentType,type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
-import { DISPLAY_NAME,getCliInvocation,SDK_CLIENT_APP } from "../../shared/branding"
+import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
 import { PageHeader } from "../app/PageHeader"
 import type { SocketStatus } from "../app/socket"
 import type { AppState } from "../app/useAppState"
 import { copyTextToClipboard } from "../lib/clipboard"
 import { getPathBasename } from "../lib/formatters"
-import { landingHeadline,resolveLandingProjectPath,summarizeMemoriesForLanding } from "../lib/landing"
+import { landingHeadline, resolveLandingProjectPath, summarizeMemoriesForLanding } from "../lib/landing"
 import { memoriesApi } from "../lib/memoriesApi"
 import { MEMORY_SCOPE_TEXT_CLASSES } from "../lib/memoryCitations"
 import { useMemoryStore } from "../stores/memoryStore"
 import { BrandIcon } from "./BrandMark"
 import { ChatInput } from "./chat-ui/ChatInput"
-import { InputPopover,PopoverMenuItem } from "./chat-ui/ChatPreferenceControls"
+import { InputPopover, PopoverMenuItem } from "./chat-ui/ChatPreferenceControls"
 import { NewProjectModal } from "./NewProjectModal"
 import { Button } from "./ui/button"
 
@@ -293,7 +293,6 @@ export function LocalDevContent({
   useEffect(() => {
     if (isConnected && selectedPath) composerElementRef.current?.focus()
   }, [isConnected, selectedPath])
-
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-background overflow-y-auto">

@@ -1,8 +1,5 @@
-// Experiment-log analysis (SPEC §6): turn events.jsonl into per-session and
-// aggregate metamemory metrics — the study's manipulation checks and core
-// measures (Write / Structure / Utilization / Maintenance signals). Pure
-// function over log lines; the CLI wrapper lives in scripts/analyze-experiment.ts.
-
+// Local usage statistics. Historical labels are preserved as metadata, never
+// interpreted as product settings or used to merge chats into task windows.
 export interface InteractionSurfaceCounts {
   board: number
   chat_gate: number
@@ -11,9 +8,7 @@ export interface InteractionSurfaceCounts {
 
 export interface SessionMetrics {
   sessionId: string
-  allocationMode: "study" | "internal_qa"
-  condition: string
-  participant?: string
+  legacyMetadata?: Array<Record<string, string>>
   engine?: string
   maxTurn: number
   injections: number
@@ -50,18 +45,16 @@ export interface SessionMetrics {
   transferDeclines: number
   /** Review-again reopens of the pre-turn preparation. */
   preparationReopens: number
-  /** Participant stopped a running turn over one delivered memory. */
+  /** User stopped a running turn over one delivered memory. */
   memoryInterrupts: number
   /** Claude accepted a continuation whose delivery links to an interrupt. */
   resumeLinkedDeliveries: number
-  /** Participant armed one-turn Enforce from audit or interrupt recovery. */
+  /** User armed one-turn Enforce from audit or interrupt recovery. */
   memoryEnforces: number
-  /** Participant memory mutations, separated from passive inspection. */
+  /** User memory mutations, separated from passive inspection. */
   controlInteractions: InteractionSurfaceCounts
   /** Raw ui.monitor acts, never folded into Control. */
   monitoringInteractions: InteractionSurfaceCounts
-  /** Participant-reported time between entering and submitting Static Markdown edits. */
-  staticEditDurationMs: number
 }
 
 export interface AnalysisReport {
@@ -69,10 +62,8 @@ export interface AnalysisReport {
   totals: {
     sessions: number
     events: number
-    /** Valid QA events intentionally omitted from this report. */
-    excludedInternalQaEvents: number
+    ignoredEvents: number
     skippedLines: number
-    conditions: Record<string, number>
     decisions: { create: number; accept: number; edit: number; dismiss: number; rescope: number; archive: number; revert: number }
     /** accepts / (accepts + dismisses) over UI decisions. NaN-safe: 0 when no reviews. */
     acceptRate: number
@@ -92,7 +83,6 @@ export interface AnalysisReport {
     memoryEnforces: number
     controlInteractions: InteractionSurfaceCounts
     monitoringInteractions: InteractionSurfaceCounts
-    staticEditDurationMs: number
   }
   toCsv(): string
 }
@@ -100,8 +90,6 @@ export interface AnalysisReport {
 function emptySession(sessionId: string): SessionMetrics {
   return {
     sessionId,
-    allocationMode: "study",
-    condition: "unknown",
     maxTurn: 0,
     injections: 0,
     avgInjectedSetSize: 0,
@@ -137,7 +125,6 @@ function emptySession(sessionId: string): SessionMetrics {
     memoryEnforces: 0,
     controlInteractions: { board: 0, chat_gate: 0, other: 0 },
     monitoringInteractions: { board: 0, chat_gate: 0, other: 0 },
-    staticEditDurationMs: 0,
   }
 }
 
@@ -178,45 +165,23 @@ function incrementSurface(counts: InteractionSurfaceCounts, surface: Interaction
   if (surface) counts[surface]++
 }
 
-function collectTaskWindowByChat(lines: string[], includeInternalQa: boolean): Map<string, string> {
-  const taskByChat = new Map<string, string>()
-  const ambiguous = new Set<string>()
-  for (const raw of lines) {
-    let event: any
-    try {
-      event = JSON.parse(raw.trim())
-    } catch {
-      continue
-    }
-    if (!event || typeof event !== "object" || typeof event.taskId !== "string" || !event.taskId) continue
-    if (event.allocationMode === "internal_qa" && !includeInternalQa) continue
-    const chatIds = [event.chatId, event.sessionId]
-      .filter((value): value is string => typeof value === "string" && value.length > 0 && value !== event.taskId)
-    for (const chatId of chatIds) {
-      const existing = taskByChat.get(chatId)
-      if (existing && existing !== event.taskId) {
-        ambiguous.add(chatId)
-        taskByChat.delete(chatId)
-      } else if (!ambiguous.has(chatId)) {
-        taskByChat.set(chatId, event.taskId)
-      }
-    }
-  }
-  return taskByChat
-}
+const PRODUCT_EVENT_TYPES = new Set([
+  "memory.branch", "memory.inject", "memory.propose", "memory.cite", "memory.decision",
+  "memory.capture", "memory.conflict", "memory.proposals", "memory.checkup", "memory.preparation_reopen",
+  "memory.trace", "memory.detail_load", "memory.bringin", "memory.exclude", "memory.working_memory_selection",
+  "memory.transfer", "memory.transfer_decline", "memory.transfer_card", "memory.sanitize",
+  "ui.monitor", "ui.surface_exposure", "memory.attention", "memory.audit_action", "memory.interrupt",
+  "memory.resume", "memory.preview", "memory.revise_injection", "memory.relevance", "memory.setting",
+  "turn.usage", "turn.compacted",
+])
 
-export function analyzeEvents(
-  lines: string[],
-  options: { includeInternalQa?: boolean } = {},
-): AnalysisReport {
-  const taskWindowByChat = collectTaskWindowByChat(lines, options.includeInternalQa === true)
+export function analyzeEvents(lines: string[]): AnalysisReport {
   const sessions = new Map<string, SessionMetrics & { injectSizes: number[]; injectTokens: number[]; cited: Set<string> }>()
   const totals: AnalysisReport["totals"] = {
     sessions: 0,
     events: 0,
-    excludedInternalQaEvents: 0,
+    ignoredEvents: 0,
     skippedLines: 0,
-    conditions: {},
     decisions: { create: 0, accept: 0, edit: 0, dismiss: 0, rescope: 0, archive: 0, revert: 0 },
     acceptRate: 0,
     citations: 0,
@@ -235,7 +200,6 @@ export function analyzeEvents(
     memoryEnforces: 0,
     controlInteractions: { board: 0, chat_gate: 0, other: 0 },
     monitoringInteractions: { board: 0, chat_gate: 0, other: 0 },
-    staticEditDurationMs: 0,
   }
 
   const forSession = (id: string | undefined) => {
@@ -262,12 +226,11 @@ export function analyzeEvents(
       totals.skippedLines++
       continue
     }
-    if (e.allocationMode === "internal_qa" && options.includeInternalQa !== true) {
-      totals.excludedInternalQaEvents++
+    if (!PRODUCT_EVENT_TYPES.has(e.type)) {
+      totals.ignoredEvents++
       continue
     }
     totals.events++
-    if (typeof e.condition === "string") totals.conditions[e.condition] = (totals.conditions[e.condition] ?? 0) + 1
     const controlSurface = controlSurfaceOf(e)
     const monitoringSurface = monitoringSurfaceOf(e)
     incrementSurface(totals.controlInteractions, controlSurface)
@@ -276,15 +239,8 @@ export function analyzeEvents(
     if (isResumeLinkedDelivery(e)) totals.resumeLinkedDeliveries++
     if (e.type === "memory.audit_action" && e.action === "enforce") totals.memoryEnforces++
 
-    // Formal study sessions are task windows and may include several chats.
-    // New production events carry taskId; sessionId remains the legacy chat
-    // key only when no authoritative task identity exists.
-    const legacySessionId = typeof e.sessionId === "string" && e.sessionId ? e.sessionId : undefined
-    const analysisSessionId = typeof e.taskId === "string" && e.taskId
-      ? e.taskId
-      : legacySessionId
-        ? taskWindowByChat.get(legacySessionId) ?? legacySessionId
-        : undefined
+    const analysisSessionId = typeof e.sessionId === "string" && e.sessionId
+      ? e.sessionId : typeof e.chatId === "string" && e.chatId ? e.chatId : undefined
 
     // Global (session-less) events: UI decisions come from HTTP routes.
     if (e.type === "memory.decision") {
@@ -295,9 +251,14 @@ export function analyzeEvents(
 
     if (!analysisSessionId) continue
     const s = forSession(analysisSessionId)
-    if (e.allocationMode === "internal_qa") s.allocationMode = "internal_qa"
-    if (typeof e.condition === "string") s.condition = e.condition
-    if (typeof e.participant === "string") s.participant = e.participant
+    const metadata = Object.fromEntries(["condition", "participant", "allocationMode", "taskId"]
+      .filter((key) => typeof e[key] === "string").map((key) => [key, e[key]]))
+    if (Object.keys(metadata).length) {
+      s.legacyMetadata ??= []
+      if (!s.legacyMetadata.some((value) => JSON.stringify(value) === JSON.stringify(metadata))) {
+        s.legacyMetadata.push(metadata)
+      }
+    }
     if (typeof e.engine === "string") s.engine = e.engine
     if (typeof e.turn === "number") s.maxTurn = Math.max(s.maxTurn, e.turn)
     incrementSurface(s.controlInteractions, controlSurface)
@@ -403,20 +364,7 @@ export function analyzeEvents(
       case "memory.audit_action":
         if (e.action === "enforce") s.memoryEnforces++
         break
-      case "study.control_operation":
-        if (
-          e.phase === "completed"
-          && e.surface === "static_memory"
-          && e.action === "edit"
-          && e.controlType === "static_edit"
-          && typeof e.payload?.durationMs === "number"
-          && Number.isFinite(e.payload.durationMs)
-          && e.payload.durationMs >= 0
-        ) {
-          s.staticEditDurationMs += e.payload.durationMs
-          totals.staticEditDurationMs += e.payload.durationMs
-        }
-        break
+
     }
   }
 
@@ -436,9 +384,7 @@ export function analyzeEvents(
 
   const CSV_COLUMNS: Array<[string, (s: SessionMetrics) => string | number]> = [
     ["sessionId", (s) => s.sessionId],
-    ["allocationMode", (s) => s.allocationMode],
-    ["condition", (s) => s.condition],
-    ["participant", (s) => s.participant ?? ""],
+    ["legacyMetadata", (s) => s.legacyMetadata ? JSON.stringify(s.legacyMetadata) : ""],
     ["engine", (s) => s.engine ?? ""],
     ["maxTurn", (s) => s.maxTurn],
     ["injections", (s) => s.injections],
@@ -490,7 +436,6 @@ export function analyzeEvents(
     ["monitorBoard", (s) => s.monitoringInteractions.board],
     ["monitorChatGate", (s) => s.monitoringInteractions.chat_gate],
     ["monitorOther", (s) => s.monitoringInteractions.other],
-    ["staticEditDurationMs", (s) => s.staticEditDurationMs],
   ]
 
   return {
@@ -498,8 +443,12 @@ export function analyzeEvents(
     totals,
     toCsv() {
       const header = CSV_COLUMNS.map(([name]) => name).join(",")
-      const rows = Object.values(finalized).map((s) => CSV_COLUMNS.map(([, get]) => String(get(s))).join(","))
+      const rows = Object.values(finalized).map((s) => CSV_COLUMNS.map(([, get]) => csvCell(String(get(s)))).join(","))
       return [header, ...rows].join("\n") + "\n"
     },
   }
+}
+
+function csvCell(value: string): string {
+  return /[",\r\n]/.test(value) ? '"' + value.replaceAll('"', '""') + '"' : value
 }

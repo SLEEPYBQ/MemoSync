@@ -1,4 +1,4 @@
-import { useEffect,useState } from "react"
+import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import type { AppSettingsPatch } from "../../../shared/types"
 import { SelectItem } from "../../components/ui/select"
@@ -6,7 +6,7 @@ import { Switch } from "../../components/ui/switch"
 import { memoriesApi } from "../../lib/memoriesApi"
 import type { AppState } from "../useAppState"
 import { SETTINGS_ROWS } from "./registry"
-import { SettingsErrorBanner,SettingsGroup,SettingsGroups,SettingsRow,SettingsSelect } from "./shared"
+import { SettingsErrorBanner, SettingsGroup, SettingsGroups, SettingsRow, SettingsSelect } from "./shared"
 
 type MemoryState = Pick<AppState, "appSettings" | "handleWriteAppSettings">
 
@@ -22,7 +22,6 @@ export function MemorySettingsGroups({
   save: (patch: AppSettingsPatch) => void
   setMode: (mode: "ask" | "auto") => void
 }) {
-  // In study mode the server's condition policy, rather than personal switches, is authoritative.
   const enabled = settings?.memory.enabled !== false
   const learn = settings?.memory.learn !== false
   const memoryReason = " Turn on Use Memory to change this."

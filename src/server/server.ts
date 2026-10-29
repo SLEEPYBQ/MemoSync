@@ -1,32 +1,32 @@
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { APP_NAME,getDataDir,getRuntimeProfile,SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
 import {
-isolatedPreviewTarget,
-isPreviewHostForm,
-isPreviewNavigationRequest,
-PREVIEW_CALLBACK_PATH,
-PREVIEW_GRANT_PATH,
-PREVIEW_TICKETS_PATH,
-stripPreviewPathPrefix,
+  isolatedPreviewTarget,
+  isPreviewHostForm,
+  isPreviewNavigationRequest,
+  PREVIEW_CALLBACK_PATH,
+  PREVIEW_GRANT_PATH,
+  PREVIEW_TICKETS_PATH,
+  stripPreviewPathPrefix,
 } from "../shared/preview-proxy"
 import type { ShareMode } from "../shared/share"
-import type { AgentProvider,ChatAttachment } from "../shared/types"
-import { AgentCoordinator,buildClaudeSdkRuntimeOptions,buildClaudeSubprocessEnv } from "./agent"
+import type { AgentProvider, ChatAttachment } from "../shared/types"
+import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
 import { AppSettingsManager } from "./app-settings"
-import { createAuthManager,validateRequestOrigin } from "./auth"
+import { createAuthManager, validateRequestOrigin } from "./auth"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
-import { acquireDataDirectoryLock,acquireDataRootBootstrapLock } from "./data-directory-lock"
+import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
 import { DiffStore } from "./diff-store"
-import { discoverProjects,type DiscoveredProject } from "./discovery"
+import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
 import { resolveInstallId } from "./install-id"
 import { KeybindingsManager } from "./keybindings"
-import { readLlmProviderSnapshot,validateLlmProviderCredentials,writeLlmProviderSnapshot } from "./llm-provider"
+import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { MemoryService } from "./memory"
-import { createBranchJsonCaller,memoryRequestContext } from "./memory/branch-caller"
+import { createBranchJsonCaller, memoryRequestContext } from "./memory/branch-caller"
 import { createCaptureService } from "./memory/capture"
 import { createCheckupService } from "./memory/checkup"
 import { createRevisionService } from "./memory/evolution"
@@ -39,20 +39,20 @@ import { createTraceService } from "./memory/trace"
 import { createTransferService } from "./memory/transfer"
 import { createTransferDetectService } from "./memory/transfer-detect"
 import { createUsePlanService } from "./memory/use-plan"
-import { isDefaultDataDirectory,prepareDefaultDataRoot } from "./migrate-data-root"
+import { isDefaultDataDirectory, prepareDefaultDataRoot } from "./migrate-data-root"
 import { resolveExistingPathWithinRoot } from "./paths"
 import { resolvePiConnection } from "./pi-agent"
-import { previewProxyTarget,proxyPreviewRequest } from "./preview-proxy"
+import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 import { inheritShellPath } from "./process-utils"
-import { deployedProviders,getServerProviderCatalog } from "./provider-catalog"
+import { deployedProviders, getServerProviderCatalog } from "./provider-catalog"
 import { loadRegistryModels } from "./registry-models"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
-import { deleteProjectUpload,inferAttachmentContentType,inferProjectFileContentType,persistProjectUpload,resolveExistingProjectUpload } from "./uploads"
+import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload, resolveExistingProjectUpload } from "./uploads"
 import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
-import { createWsRouter,type ClientState } from "./ws-router"
+import { createWsRouter, type ClientState } from "./ws-router"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -267,7 +267,6 @@ async function startLockedMemoSyncServer(
     .map((origin) => origin.trim())
     .filter(Boolean)
   const store = new EventStore(options.dataDir)
-  // Study deployments keep participants on local-only git.
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
@@ -283,9 +282,6 @@ async function startLockedMemoSyncServer(
     dataDir: path.join(store.dataDir, "memories"),
     logger: new UsageLogger({
       filePath: usageEventsPath,
-      // Study allocations stamp the orchestrator-owned PARTICIPANT_ID; every
-      // other deployment stamps a persisted per-install id so longitudinal
-      // event streams from different machines stay separable.
       installId: resolveInstallId(store.dataDir),
     }),
   })
@@ -308,8 +304,6 @@ async function startLockedMemoSyncServer(
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
   onStartupCleanup(() => appSettings.dispose())
   await appSettings.initialize()
-  // A participant toggling the preview gate is research data (STUDY_PLAN §2.4)
-  // — log every memoryPreview settings change, whether via UI or file edit.
   let prevMemoryPreviewSettings = JSON.stringify(appSettings.getSnapshot().memoryPreview)
   appSettings.onChange((snapshot) => {
     const next = JSON.stringify(snapshot.memoryPreview)
@@ -473,8 +467,6 @@ async function startLockedMemoSyncServer(
     updateManager,
     // Thunk: actualPort is assigned when Bun.serve binds, later in this fn.
     getSelfPort: () => actualPort,
-    // Study arms only: the serial gate can refuse prompts (chat from a
-    // completed session, pending questionnaire, or a finished study).
   })
   onStartupCleanup(() => router.dispose())
 
@@ -674,10 +666,6 @@ async function startLockedMemoSyncServer(
             return memoryResponse
           }
 
-          // The client reads the study-condition policy to gate its surfaces
-          // (Memory Board nav, session-memories panel, review cards). The
-          // provider catalog rides along so the launcher's picker honors the
-          // study pin even before any chat snapshot exists.
           if (url.pathname === "/api/model-registry/models" && req.method === "GET") {
 
             const connection = await resolvePiConnection()

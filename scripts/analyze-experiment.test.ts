@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -22,30 +22,20 @@ function runAnalyzer(args: string[]) {
   }
 }
 
-describe("analyze-experiment CLI", () => {
-  test("requires an explicit flag before internal QA events enter a report", () => {
-    const dir = mkdtempSync(join(tmpdir(), "analyze-qa-"))
+describe("local usage analyzer CLI", () => {
+  test("reports product usage and writes CSV", () => {
+    const dir = mkdtempSync(join(tmpdir(), "analyze-usage-"))
     tempDirs.push(dir)
     const eventsPath = join(dir, "events.jsonl")
-    writeFileSync(eventsPath, `${JSON.stringify({
-      ts: "2026-08-18T00:00:00.000Z",
-      allocationMode: "internal_qa",
-      condition: "auto",
-      participant: "QA-01",
-      type: "memory.inject",
-      sessionId: "qa-session",
-      memories: [],
-    })}\n`)
-
-    const formal = runAnalyzer([eventsPath])
-    expect(formal.exitCode).toBe(0)
-    expect(formal.stdout).toContain("sessions: 0")
-    expect(formal.stdout).toContain("excluded internal QA events: 1")
-
-    const optedIn = runAnalyzer([eventsPath, "--include-internal-qa"])
-    expect(optedIn.exitCode).toBe(0)
-    expect(optedIn.stdout).toContain("sessions: 1")
-    expect(optedIn.stdout).toContain("excluded internal QA events: 0")
-    expect(optedIn.stdout).toContain("internal_qa")
+    const csvPath = join(dir, "usage.csv")
+    writeFileSync(eventsPath, JSON.stringify({ type: "memory.inject", sessionId: "chat-1", memories: [{ id: "M-01" }] }) + "\nnot json\n")
+    const result = runAnalyzer([eventsPath, "--csv", csvPath])
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("sessions: 1")
+    expect(result.stdout).toContain("skipped lines: 1")
+    const csv = readFileSync(csvPath, "utf8")
+    expect(csv).toContain("sessionId,legacyMetadata,engine")
+    expect(csv).toContain("chat-1,")
+    expect(csv.trim().split("\n")).toHaveLength(2)
   })
 })

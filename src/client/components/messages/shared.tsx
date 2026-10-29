@@ -305,7 +305,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
     active: hoverOpen && Boolean(memory),
     surface: "citation_hover",
     chatId,
-    initiator: "participant",
+    initiator: "user",
     memoryIds: [id],
     closeReason: "popover",
   })

@@ -1,8 +1,8 @@
-import { afterEach,describe,expect,test } from "bun:test"
-import { mkdir,mkdtemp,readFile,rm,symlink,writeFile } from "node:fs/promises"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { appendGitIgnoreEntry,DiffStore,extractGitHubRepoSlug,fetchGitHubPullRequests,getGhAuthInfo } from "./diff-store"
+import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, getGhAuthInfo } from "./diff-store"
 
 async function run(command: string[], cwd: string) {
   const process = Bun.spawn(command, {

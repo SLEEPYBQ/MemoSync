@@ -1,23 +1,23 @@
-import { describe,expect,test } from "bun:test"
-import { mkdtempSync,rmSync } from "node:fs"
+import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ChatAttachment,TranscriptEntry } from "../shared/types"
+import type { ChatAttachment, TranscriptEntry } from "../shared/types"
 import {
-AgentCoordinator,
-ClaudeOutboundOriginTracker,
-ClaudeToolOriginResolver,
-buildAttachmentHintText,
-buildClaudeSdkRuntimeOptions,
-buildClaudeSubprocessEnv,
-buildPromptText,
-createClaudeHarnessStream,
-maxClaudeContextWindowFromModelUsage,
-normalizeClaudeAssistantUsageSnapshot,
-normalizeClaudeStreamMessage,
-normalizeClaudeUsageSnapshot,
-resolveClaudeSessionModel,
-toMemoryCandidateReferences,
+  AgentCoordinator,
+  ClaudeOutboundOriginTracker,
+  ClaudeToolOriginResolver,
+  buildAttachmentHintText,
+  buildClaudeSdkRuntimeOptions,
+  buildClaudeSubprocessEnv,
+  buildPromptText,
+  createClaudeHarnessStream,
+  maxClaudeContextWindowFromModelUsage,
+  normalizeClaudeAssistantUsageSnapshot,
+  normalizeClaudeStreamMessage,
+  normalizeClaudeUsageSnapshot,
+  resolveClaudeSessionModel,
+  toMemoryCandidateReferences,
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"

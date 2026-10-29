@@ -526,11 +526,7 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
-/** Memory-preview gate behavior (STUDY_PLAN §2.4 — a system setting, not a study manipulation). */
-/**
- * User-level memory switches (ignored in study mode, where the condition
- * policy alone decides). A chat can additionally turn memory off for itself.
- */
+/** User-level memory switches; each chat can also turn memory off. */
 export interface MemorySettings {
   /** Master switch: off = the agent neither reads nor learns memories, and no memory gates run. */
   enabled: boolean
@@ -1142,7 +1138,7 @@ export interface PreviewAttention {
 export interface MemoryPreviewEntry extends TranscriptEntryBase {
   kind: "memory_preview"
   previewId: string
-  /** Formal-study task that owned this preview; durable late-evidence lineage. */
+  /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   turn?: number
   /** User task used by the turn-scoped Use Planner. */
@@ -1242,7 +1238,7 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
 export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
   kind: "memory_preview_update"
   previewId: string
-  /** Formal-study task that owned this regenerated preview revision. */
+  /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   revision: number
   memories: Array<{ id: string; content: string; scope: string }>
@@ -1260,7 +1256,7 @@ export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
 export interface MemoryProposalsEntry extends TranscriptEntryBase {
   kind: "memory_proposals"
   proposalsId: string
-  /** Durable opening-Board claim that owns this otherwise ordinary gate. */
+  /** Legacy opening-Board metadata, read only. */
   openingReviewId?: string
   turn?: number
   /** True while the prompt-side capture pass is still running. */
@@ -1427,7 +1423,7 @@ export interface MemoryTransferDecisionEntry extends TranscriptEntryBase {
  */
 export interface MemoryPreparationResetEntry extends TranscriptEntryBase {
   kind: "memory_preparation_reset"
-  /** Durable opening preparation lineage; absent for ordinary in-chat Review again. */
+  /** Legacy opening preparation lineage, read only. */
   openingReviewId?: string
   /** Present after the injected-set preview exists; absent when Step 1 is reopened from Step 2. */
   previewId?: string

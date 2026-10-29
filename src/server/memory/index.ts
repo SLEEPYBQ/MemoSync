@@ -2,12 +2,12 @@
 // Bundles the SQLite store, the Markdown projection, and retrieval so the
 // per-engine adapters (Claude / Codex) and HTTP routes have a single entry point.
 import type { Database } from 'bun:sqlite';
-import { NoopUsageLogger,type UsageLogger } from '../usage/logger';
+import { NoopUsageLogger, type UsageLogger } from '../usage/logger';
 import { openMemoryDb } from './db';
 import { MemoryFile } from './MemoryFile';
 import { MemoryStore } from './MemoryStore';
 import { looksLikeSecret } from './secrets';
-import type { ActorMeta,MemoryItem } from './types';
+import type { ActorMeta, MemoryItem } from './types';
 
 function normalizeContent(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -18,7 +18,7 @@ export interface MemoryServiceOptions {
   dbPath: string;
   /** Directory root for the human-readable Markdown projection. */
   dataDir: string;
-  /** Structured experiment logger (defaults to a no-op). */
+  /** Structured usage logger (defaults to a no-op). */
   logger?: Pick<UsageLogger, 'event'>;
 }
 

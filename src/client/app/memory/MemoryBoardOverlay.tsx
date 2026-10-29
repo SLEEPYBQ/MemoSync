@@ -10,7 +10,7 @@ export function MemoryBoardOverlay({ chatId, focusedReview, onClose }: {
   focusedReview?: FocusedMemoryReviewController
   onClose: () => void
 }) {
-  useSurfaceExposure({ active: true, surface: "memory_board", chatId, initiator: "participant", closeReason: "dialog" })
+  useSurfaceExposure({ active: true, surface: "memory_board", chatId, initiator: "user", closeReason: "dialog" })
   useEffect(() => {
     recordUiMonitor("board", { sessionId: chatId, interaction: "open" })
   }, [chatId])

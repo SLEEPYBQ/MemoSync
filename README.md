@@ -252,7 +252,7 @@ End-to-end scripts under `scripts/` (`e2e-claude-memory.ts`, `e2e-full-app.ts`, 
 
 ## Data, privacy, and usage logging
 
-Everything MemoSync produces stays on your machine under `~/.memosync/data/`: the memory store (`memory.sqlite`), its Markdown projection (`memories/`), the chat and project logs, and a local usage log (`experiments/events.jsonl`) that records how the memory features are used — reviews, injections, citations, interrupts, audits, panel visibility — stamped with a random per-install id. **Nothing is uploaded automatically.**
+Everything MemoSync produces stays on your machine under `~/.memosync/data/`: the memory store (`memory.sqlite`), its Markdown projection (`memories/`), the chat and project logs, and a local usage log (`experiments/events.jsonl`) that records how the memory features are used — reviews, injections, citations, interrupts, audits, panel visibility — stamped with a random per-install id. **Nothing is uploaded automatically.** Set `MEMOSYNC_USAGE_LOG=0` to disable local usage logging (`EXPERIMENT_LOG=0` remains a compatibility alias). The log can include memory content and revision instructions; see [data and telemetry](docs/DATA_AND_TELEMETRY.md).
 
 ```bash
 bun run export-data          # usage log + memory library

@@ -1,78 +1,78 @@
-import { query,type CanUseTool,type PermissionResult,type Query,type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
+import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { homedir } from "node:os"
 import type { ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
 import type {
-AgentProvider,
-ChatActivityStatus,
-ChatAttachment,
-ContextWindowUsageSnapshot,
-MemoryPreviewDecision,
-ModelOptions,
-NormalizedToolCall,
-PendingToolSnapshot,
-QueuedChatMessage,
-TranscriptEntry,
+  AgentProvider,
+  ChatActivityStatus,
+  ChatAttachment,
+  ContextWindowUsageSnapshot,
+  MemoryPreviewDecision,
+  ModelOptions,
+  NormalizedToolCall,
+  PendingToolSnapshot,
+  QueuedChatMessage,
+  TranscriptEntry,
 } from "../shared/types"
 import { resolveClaudeApiModelId } from "../shared/types"
-import { isKnownCatalogModel,resolveChatProviderRoute } from "./chat-providers"
+import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
 import { EventStore } from "./event-store"
-import { fallbackTitleFromMessage,generateTitleForChatDetailed,type GenerateChatTitleResult } from "./generate-title"
-import type { HarnessEvent,HarnessToolRequest,HarnessTurn } from "./harness-types"
+import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
+import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
-import { MemoryBranchPipeline,type BranchRequest } from "./memory/branch-pipeline"
-import { createMemoryBranch,type MemoryBranch } from "./memory/branch-runtime"
+import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
+import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
 import { memoryStageSchema } from "./memory/branch-schemas"
 import {
-buildAuditBranchPrompt,
-buildWorkingMemoryBranchPrompt,
-MemoryBranchResultError,
-parseAuditBranchResult,
-parseWorkingMemoryBranchResult,
+  buildAuditBranchPrompt,
+  buildWorkingMemoryBranchPrompt,
+  MemoryBranchResultError,
+  parseAuditBranchResult,
+  parseWorkingMemoryBranchResult,
 } from "./memory/branch-stages"
-import type { CaptureOutcome,CaptureService } from "./memory/capture"
+import type { CaptureOutcome, CaptureService } from "./memory/capture"
 import { runForkCapture } from "./memory/capture-fork"
-import type { CheckupResult,CheckupService } from "./memory/checkup"
+import type { CheckupResult, CheckupService } from "./memory/checkup"
 import { extractCitations } from "./memory/citations"
 import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
 import { toCodexDynamicTools } from "./memory/codex-adapter"
 import type { RevisionService } from "./memory/evolution"
 import { runForkQuery } from "./memory/fork-query"
 import {
-computeMemoryTurnDelta,
-normalizeMemorySelection,
-planMemoryInjection,
-type MemoryInjectionPlan,
+  computeMemoryTurnDelta,
+  normalizeMemorySelection,
+  planMemoryInjection,
+  type MemoryInjectionPlan,
 } from "./memory/injection"
-import type { RelevanceService,RelevantMemory } from "./memory/relevance"
-import { buildMemoryToolSpecs,dispatchMemoryTool,type MemoryToolContext } from "./memory/tools"
-import { coerceTraceOutcome,type TraceOutcome,type TraceService } from "./memory/trace"
+import type { RelevanceService, RelevantMemory } from "./memory/relevance"
+import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext } from "./memory/tools"
+import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memory/trace"
 import { runForkTrace } from "./memory/trace-fork"
 import type {
-TransferDetectService,
-TransferSuggestionCard,
-TransferSuggestionProgress,
-TransferTaskResult,
+  TransferDetectService,
+  TransferSuggestionCard,
+  TransferSuggestionProgress,
+  TransferTaskResult,
 } from "./memory/transfer-detect"
 import type { MemoryItem } from "./memory/types"
-import type { ExpectedMemoryUse,UsePlanService } from "./memory/use-plan"
+import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
 import { ensureProjectDirectory } from "./paths"
-import { PiAgentManager,resolvePiConnection,type PiConnection } from "./pi-agent"
+import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import {
-applyClaudeSdkModels,
-codexServiceTierFromModelOptions,
-getServerProviderCatalog,
-normalizeClaudeModelOptions,
-normalizeCodexModelOptions,
-normalizePiModelOptions,
-normalizeServerModel,
-type ClaudeSdkModelInfo,
+  applyClaudeSdkModels,
+  codexServiceTierFromModelOptions,
+  getServerProviderCatalog,
+  normalizeClaudeModelOptions,
+  normalizeCodexModelOptions,
+  normalizePiModelOptions,
+  normalizeServerModel,
+  type ClaudeSdkModelInfo,
 } from "./provider-catalog"
-import { assertIsolatedClaudeCredentials,buildIsolatedClaudeEnv,isCliIsolationEnabled,resolveOfficialClaudeEnv } from "./provider-runtime"
+import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
 import {
-recordDeliveredStoreFocus,
+  recordDeliveredStoreFocus,
 } from "./usage/focus"
 
 export function toMemoryCandidateReferences(items: Array<Pick<MemoryItem, "id">>) {
@@ -282,7 +282,7 @@ export interface TurnMemoryState {
   readonly learnActive: boolean
 }
 
-/** Snapshot once at admission; study conditions retain sole control of memory. */
+/** Snapshot the user settings and chat switch once when a turn starts. */
 export function resolveTurnMemoryState(
   settings: { enabled: boolean; learn: boolean },
   memoryDisabled = false,
@@ -369,7 +369,7 @@ interface ActiveTurn {
   profilingStartedAt?: number
   /** 1-based user-visible turn number (count of user_prompt entries) — memory provenance. */
   turnNumber?: number
-  /** Stable logical turn id for experiment records. */
+  /** Stable logical turn id for local usage records. */
   turnId: string
   /** Immutable memory plan used for this turn's boot, prompt text, and measurement. */
   memoryPlan: MemoryInjectionPlan | null
@@ -479,7 +479,7 @@ interface AgentCoordinatorArgs {
   memoryTransferDetect?: TransferDetectService | null
   /** User switches, sampled only when a new turn begins. */
   getMemorySettings?: () => { enabled: boolean; learn: boolean }
-  /** Live preview-gate settings (STUDY_PLAN §2.4); default: always on, auto-proceed on empty plans. */
+
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
   claudeSessionFileExists?: (localPath: string, sessionToken: string) => boolean
@@ -721,8 +721,6 @@ export function normalizeClaudeUsageSnapshot(
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(typeof maxTokens === "number" && maxTokens > 0 ? { maxTokens } : {}),
-    // Auto-compact is enabled in this deployment (the study-era kill switch
-    // is gone), so the context meter should say so up front.
     compactsAutomatically: true,
   }
 }
@@ -1362,8 +1360,6 @@ export async function startClaudeSession(args: {
   const systemAppend = buildClaudeSystemAppend(memoryBlock)
   const canUseTool: CanUseTool = async (toolName, input, options) => {
 
-
-
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
       return {
         behavior: "allow",
@@ -1432,9 +1428,6 @@ export async function startClaudeSession(args: {
     prompt: promptQueue,
     options: {
       cwd: args.localPath,
-      // The internal provider remains Claude Code. In formal DeepSeek study
-      // sessions sdkRuntime adds the CLI-only [1m] selector; the CLI removes
-      // it before calling the Anthropic-compatible endpoint.
       model: sdkRuntime.model,
       effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
       resume: args.sessionToken ?? undefined,
@@ -1451,12 +1444,9 @@ export async function startClaudeSession(args: {
         : undefined,
       mcpServers: memorySpecs.length
         ? {
-            ...(memorySpecs.length ? { memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext) } : {}),
-            ...({}),
+            memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
           }
         : undefined,
-      // Study mode narrows to user settings only: a workspace CLAUDE.md would
-      // otherwise be a second, uncontrolled memory channel in every arm.
       settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : ["user", "project", "local"],
       // MemoSync IS the memory system. The harness's own auto-memory
       // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
@@ -3473,14 +3463,6 @@ export class AgentCoordinator {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
 
-    // Per-turn memory Preview gate (SPEC §4.10b): before the engine acts, show
-    // the injection receipt — exactly which memories the turn carries — then
-    // PARK the turn until the user decides go on / dismiss / proceed without
-    // memory. Parking (not blocking) matters: the chat.send ack must return so
-    // the client can subscribe and actually see the preview card.
-    // Preview failures never block the turn (degrade to no-preview).
-    // The gate is a user setting (STUDY_PLAN §2.4): it can be disabled outright,
-    // and an empty injected set can auto-proceed (recorded, not parked).
     const previewSettings = this.getMemoryPreviewSettings()
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
@@ -3553,7 +3535,6 @@ export class AgentCoordinator {
         }),
       )
       this.emitStateChange(args.chatId, { immediate: true })
-
 
     // The parse has its own hard timeout, but Stop must not wait for it. Keep a
     // terminal handler attached to the detached task so a late rejection never
@@ -5969,7 +5950,7 @@ export class AgentCoordinator {
           reminderParts.push(
             "RESUMING AN INTERRUPTED TURN: your previous reply above was stopped by the user midway " +
               `after they identified a problem involving [${resumeCtx.memoryId}]. Do not redo work that already completed; ` +
-              `continue from where it stopped.${selectionNote} Participant correction: ${resumeCtx.correction}`,
+              `continue from where it stopped.${selectionNote} User correction: ${resumeCtx.correction}`,
           )
         }
         const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => deliveredFocusIds.includes(use.id))
@@ -6027,24 +6008,17 @@ export class AgentCoordinator {
           promptSeq,
         })
       } catch (error) {
-        try {
-        } finally {
-          // bootEngineTurn registered the turn before asking the persistent
-          // Claude session to accept this prompt. A definitive rejection never
-          // reaches runClaudeSession's event loop, so release only this exact
-          // owner here and close its unusable session. Otherwise the chat and
-          // study freeze barrier remain busy forever.
-          if (this.activeTurns.get(args.chatId) === active) {
-            this.activeTurns.delete(args.chatId)
-          }
-          if (this.claudeSessions.get(args.chatId) === session) {
-            this.claudeSessions.delete(args.chatId)
-          }
-          this.clearStreamingAssistantText(args.chatId)
-          session.session.close()
-          active.turn.close()
-          this.emitStateChange(args.chatId, { immediate: true })
+        // A rejected prompt cannot leave this turn or provider session active.
+        if (this.activeTurns.get(args.chatId) === active) {
+          this.activeTurns.delete(args.chatId)
         }
+        if (this.claudeSessions.get(args.chatId) === session) {
+          this.claudeSessions.delete(args.chatId)
+        }
+        this.clearStreamingAssistantText(args.chatId)
+        session.session.close()
+        active.turn.close()
+        this.emitStateChange(args.chatId, { immediate: true })
         throw error
       }
       if (reservation?.cancelled || active.cancelRequested || this.activeTurns.get(args.chatId) !== active) {
@@ -6803,9 +6777,6 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume works on every MemoSync engine in normal
-    // deployments (Claude, Codex and Pi all implement resume/enforce handling);
-    // in the study mode it stays restricted to Claude.
     if ((chat.provider !== "claude" && ((chat.provider !== "codex" && chat.provider !== "pi")))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }

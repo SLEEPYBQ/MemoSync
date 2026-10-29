@@ -394,8 +394,6 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     else respond("go_on", injectedIds, selectedExpectedUses)
   }
 
-  // Keyboard path for the gate (STUDY_PLAN §2.4): Enter = start with the
-  // current injected list, Esc = dismiss. Never while typing.
   useEffect(() => {
     if (!pending) return
     const onKeyDown = (event: KeyboardEvent) => {

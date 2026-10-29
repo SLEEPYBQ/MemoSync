@@ -1,14 +1,14 @@
-import { describe,expect,it } from 'bun:test';
-import { mkdtempSync,rmSync } from 'node:fs';
+import { describe, expect, it } from 'bun:test';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TranscriptEntry } from '../shared/types';
 import { AgentCoordinator } from './agent';
 import type { CodexAppServerManager } from './codex-app-server';
 import { EventStore } from './event-store';
-import type { HarnessEvent,HarnessTurn } from './harness-types';
+import type { HarnessEvent, HarnessTurn } from './harness-types';
 import { MemoryService } from './memory';
-import type { MemoryBranchAskOptions,MemoryBranchInput } from './memory/branch-runtime';
+import type { MemoryBranchAskOptions, MemoryBranchInput } from './memory/branch-runtime';
 import { createCaptureService } from './memory/capture';
 import { createCheckupService } from './memory/checkup';
 import { createTransferService } from './memory/transfer';

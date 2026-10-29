@@ -10,7 +10,7 @@ export type SurfaceExposure =
   | "audit_group"
   | "citation_hover"
 
-export type SurfaceExposureInitiator = "participant" | "system"
+export type SurfaceExposureInitiator = "user" | "system"
 export type SurfaceExposureCloseReason =
   | "unmount"
   | "pagehide"
@@ -37,7 +37,7 @@ export interface SurfaceIntersectionMetadata {
 export function getSurfaceIntersectionInitiator(
   metadata: SurfaceIntersectionMetadata,
 ): SurfaceExposureInitiator {
-  return metadata.initial ? "system" : "participant"
+  return metadata.initial ? "system" : "user"
 }
 
 export function observeSurfaceIntersection({

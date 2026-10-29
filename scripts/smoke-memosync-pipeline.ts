@@ -1,8 +1,8 @@
 /** Real application orchestration against GLM, in an automatically removed CLI profile. */
-import { mkdirSync,mkdtempSync,readFileSync,realpathSync,rmSync,writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AgentCoordinator,buildClaudeSdkRuntimeOptions,buildClaudeSubprocessEnv } from "../src/server/agent"
+import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "../src/server/agent"
 import { CodexAppServerManager } from "../src/server/codex-app-server"
 import { EventStore } from "../src/server/event-store"
 import { MemoryService } from "../src/server/memory"
@@ -13,7 +13,7 @@ import { createCheckupService } from "../src/server/memory/checkup"
 import { createTraceService } from "../src/server/memory/trace"
 import { createTransferService } from "../src/server/memory/transfer"
 import { createTransferDetectService } from "../src/server/memory/transfer-detect"
-import type { AgentProvider,TranscriptEntry } from "../src/shared/types"
+import type { AgentProvider, TranscriptEntry } from "../src/shared/types"
 
 const key = process.env.GLM_API_KEY?.trim()
 if (!key) throw new Error("Set GLM_API_KEY in the environment")

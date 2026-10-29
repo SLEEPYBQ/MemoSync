@@ -1,27 +1,27 @@
-import { CornerDownLeft,Ellipsis,ExternalLink,Globe,Home,Minus,Play,Plus,RefreshCw,SquareArrowOutUpRight,Trash2,Zap } from "lucide-react"
-import { memo,useCallback,useEffect,useRef,useState,type FocusEvent,type FormEvent,type MouseEvent as ReactMouseEvent,type ReactNode,type SyntheticEvent } from "react"
-import type { LocalHttpServerInfo,ProjectQuickAction } from "../../../shared/protocol"
+import { CornerDownLeft, Ellipsis, ExternalLink, Globe, Home, Minus, Play, Plus, RefreshCw, SquareArrowOutUpRight, Trash2, Zap } from "lucide-react"
+import { memo, useCallback, useEffect, useRef, useState, type FocusEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react"
+import type { LocalHttpServerInfo, ProjectQuickAction } from "../../../shared/protocol"
 import type { AppSocket } from "../../app/socket"
 import {
-getCachedLocalHttpServers,
-getCachedProjectQuickActions,
-refreshCachedLocalHttpServers,
-refreshCachedProjectQuickActions,
-removeCachedLocalHttpServer,
-writeCachedProjectQuickActions,
+  getCachedLocalHttpServers,
+  getCachedProjectQuickActions,
+  refreshCachedLocalHttpServers,
+  refreshCachedProjectQuickActions,
+  removeCachedLocalHttpServer,
+  writeCachedProjectQuickActions,
 } from "../../lib/browserPanelCache"
-import { isProxiedPreviewAddress,localServerPreviewUrl,manualBrowserAddressUrl,previewFrameUrl } from "../../lib/localServerPreview"
+import { isProxiedPreviewAddress, localServerPreviewUrl, manualBrowserAddressUrl, previewFrameUrl } from "../../lib/localServerPreview"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { Button } from "../ui/button"
-import { ContextMenu,ContextMenuContent,ContextMenuItem,ContextMenuTrigger } from "../ui/context-menu"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
 import { Input } from "../ui/input"
-import { Tooltip,TooltipContent,TooltipTrigger } from "../ui/tooltip"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 import {
-BrowserPreviewLoading,
-BrowserPreviewRecovery,
-effectivePreviewFeedbackStatus,
-inspectPreviewDocument,
-isInspectablePreviewAddress,
+  BrowserPreviewLoading,
+  BrowserPreviewRecovery,
+  effectivePreviewFeedbackStatus,
+  inspectPreviewDocument,
+  isInspectablePreviewAddress,
 } from "./browserPreviewFeedback"
 
 function formatOwnerPath(ownerPath: string) {

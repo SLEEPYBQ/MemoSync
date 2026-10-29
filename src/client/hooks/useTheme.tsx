@@ -1,6 +1,6 @@
-import { createContext,useContext,useEffect,useLayoutEffect,useMemo,useRef,useState,type ReactNode } from "react"
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { AppSettingsPatch } from "../../shared/types"
-import { RESOLVED_THEME_STORAGE_KEY,resolveTheme,type ResolvedTheme,type ThemePreference } from "../lib/theme"
+import { RESOLVED_THEME_STORAGE_KEY, resolveTheme, type ResolvedTheme, type ThemePreference } from "../lib/theme"
 import { useAppSettingsStore } from "../stores/appSettingsStore"
 
 export type { ThemePreference } from "../lib/theme"

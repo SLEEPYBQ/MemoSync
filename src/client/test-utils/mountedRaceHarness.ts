@@ -1,7 +1,7 @@
 import react from "@vitejs/plugin-react"
 import { join } from "node:path"
-import { chromium,type Browser,type Page } from "playwright"
-import { createServer,type ViteDevServer } from "vite"
+import { chromium, type Browser, type Page } from "playwright"
+import { createServer, type ViteDevServer } from "vite"
 import { PROVIDERS } from "../../shared/types"
 
 export type MountedRaceView = "app-state" | "chat-input"

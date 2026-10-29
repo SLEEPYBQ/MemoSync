@@ -1,27 +1,27 @@
 import { createHash } from "node:crypto"
-import { lstat,mkdtemp,readFile,readlink,rm,stat,writeFile } from "node:fs/promises"
+import { lstat, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type {
-BranchActionFailure,
-BranchActionSuccess,
-BranchMetadata,
-ChatBranchHistoryEntry,
-ChatBranchHistorySnapshot,
-ChatBranchListEntry,
-ChatBranchListResult,
-ChatCheckoutBranchResult,
-ChatCreateBranchResult,
-ChatDiffFile,
-ChatDiffSnapshot,
-ChatMergeBranchResult,
-ChatMergePreviewResult,
-ChatSyncResult,
-DiffCommitMode,
-DiffCommitResult,
-GitHubPublishInfo,
-GitHubRepoAvailabilityResult,
-UpstreamStatus,
+  BranchActionFailure,
+  BranchActionSuccess,
+  BranchMetadata,
+  ChatBranchHistoryEntry,
+  ChatBranchHistorySnapshot,
+  ChatBranchListEntry,
+  ChatBranchListResult,
+  ChatCheckoutBranchResult,
+  ChatCreateBranchResult,
+  ChatDiffFile,
+  ChatDiffSnapshot,
+  ChatMergeBranchResult,
+  ChatMergePreviewResult,
+  ChatSyncResult,
+  DiffCommitMode,
+  DiffCommitResult,
+  GitHubPublishInfo,
+  GitHubRepoAvailabilityResult,
+  UpstreamStatus,
 } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
 import { inferProjectFileContentType } from "./uploads"

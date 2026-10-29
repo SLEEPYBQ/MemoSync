@@ -1,5 +1,5 @@
-import { afterEach,beforeEach,describe,expect,it } from "bun:test";
-import { mkdirSync,mkdtempSync,readFileSync,rmSync,writeFileSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { EventStore } from "./event-store";

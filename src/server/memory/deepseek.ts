@@ -34,7 +34,7 @@ export interface DeepSeekJsonRequest {
 export type LlmJsonCaller = (req: DeepSeekJsonRequest) => Promise<Record<string, unknown>>;
 
 /** Safe, bounded diagnostics for provider failures. Raw response bodies and
- * request content must never enter experiment telemetry. */
+ * request content must never enter usage logs. */
 export type LlmFailureCategory =
   | 'cancelled'
   | 'timeout'

@@ -1,20 +1,20 @@
-import { existsSync,readFileSync as readFileSyncImmediate } from "node:fs"
-import { appendFile,mkdir,readFile,readdir,rename,rm,truncate,writeFile } from "node:fs/promises"
+import { existsSync, readFileSync as readFileSyncImmediate } from "node:fs"
+import { appendFile, mkdir, readFile, readdir, rename, rm, truncate, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { LOG_PREFIX,getDataDir } from "../shared/branding"
-import type { AgentProvider,ChatHistoryPage,ChatHistorySnapshot,QueuedChatMessage,TranscriptEntry } from "../shared/types"
+import { LOG_PREFIX, getDataDir } from "../shared/branding"
+import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 import { STORE_VERSION } from "../shared/types"
 import {
-type ChatEvent,
-type ProjectEvent,
-type QueuedMessageEvent,
-type SnapshotFile,
-type StoreEvent,
-type StoreState,
-type TurnEvent,
-cloneTranscriptEntries,
-createEmptyState,
+  type ChatEvent,
+  type ProjectEvent,
+  type QueuedMessageEvent,
+  type SnapshotFile,
+  type StoreEvent,
+  type StoreState,
+  type TurnEvent,
+  cloneTranscriptEntries,
+  createEmptyState,
 } from "./events"
 import { resolveLocalPath } from "./paths"
 
@@ -1514,9 +1514,6 @@ export class EventStore {
       v: STORE_VERSION,
       generatedAt: Date.now(),
       projects: this.listProjects().map((project) => ({ ...project })),
-      // A deleted chat can still contain a participant prompt whose transcript
-      // append committed immediately before telemetry failed. Preserve the
-      // tombstoned lineage across compaction for deterministic study repair.
       chats: [...this.state.chatsById.values()].map((chat) => ({ ...chat })),
       queuedMessages: [...this.state.queuedMessagesByChatId.entries()]
         .map(([chatId, entries]) => ({

@@ -5,7 +5,7 @@ export interface ProjectRightSidebarVisibilityState {
   rightPanel: "hidden" | "git" | "browser" | "memory" | "files"
   /** How the currently visible panel was opened; persisted layout restoration
    * is system-owned, while togglePanel is an explicit participant action. */
-  openInitiator: "system" | "participant"
+  openInitiator: "system" | "user"
 }
 
 export interface ProjectRightSidebarUiState {
@@ -52,9 +52,6 @@ function clampSize(size: number) {
 
 function createDefaultProjectVisibilityState(): ProjectRightSidebarVisibilityState {
   return {
-    // Default OPEN on the memory panel (redesign 2026-08-07, supervisor
-    // requirement): the memory timeline is a standing monitoring surface,
-    // especially during the study — it starts visible instead of hidden.
     rightPanel: "memory",
     openInitiator: "system",
   }
@@ -179,7 +176,7 @@ export const useRightSidebarStore = create<RightSidebarState>()(
               [projectId]: {
                 ...current,
                 rightPanel,
-                ...(rightPanel === "hidden" ? {} : { openInitiator: "participant" as const }),
+                ...(rightPanel === "hidden" ? {} : { openInitiator: "user" as const }),
               },
             },
           }

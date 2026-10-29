@@ -1,12 +1,12 @@
-import { BrainCircuit,Slash } from "lucide-react"
+import { BrainCircuit, Slash } from "lucide-react"
 import { useState } from "react"
-import { useInRouterContext,useNavigate,useOutletContext } from "react-router-dom"
+import { useInRouterContext, useNavigate, useOutletContext } from "react-router-dom"
 import { create } from "zustand"
 import type { MemorySettings } from "../../../shared/types"
 import type { AppState } from "../../app/useAppState"
 import { cn } from "../../lib/utils"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
-import { Tooltip,TooltipContent,TooltipTrigger } from "../ui/tooltip"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 export function deriveMemoryToggleState(
   memory: MemorySettings,

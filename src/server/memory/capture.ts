@@ -18,11 +18,11 @@
 // (D5).
 import { createHash } from 'node:crypto';
 import { MEMORY_ATOM_SPEC } from './atom-spec';
-import { buildCandidateBranchPrompt,parseCandidateBranchResult,type CandidateBranchInput } from './branch-stages';
-import { describeLlmJsonFailure,type LlmJsonCaller } from './deepseek';
+import { buildCandidateBranchPrompt, parseCandidateBranchResult, type CandidateBranchInput } from './branch-stages';
+import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import type { CreateMemoryInput } from './MemoryStore';
-import type { AbstractionLevel,EvidenceClass,MemoryItem,MemoryScope,MemoryType } from './types';
+import type { AbstractionLevel, EvidenceClass, MemoryItem, MemoryScope, MemoryType } from './types';
 
 function captureFailureFields(error: unknown) {
   const diagnostic = describeLlmJsonFailure(error);
@@ -667,10 +667,6 @@ export function createCaptureService(opts: {
         via,
       });
 
-      // Drift / maintenance (A1): the new item supersedes an existing one.
-      // Link them (new --conflicts_with--> stale) so the stale item shows up
-      // as "needs attention", and log the conflict as a study signal. The
-      // stale item is NOT auto-archived — resolving it is the user's control.
       if (conflictWithId) {
         memory.store.addRelation(item.id, conflictWithId, 'conflicts_with');
         conflicts++;
@@ -742,10 +738,6 @@ export function createCaptureService(opts: {
     },
 
     async capture(input: CaptureInput): Promise<CaptureOutcome> {
-      // Every invocation ends in exactly ONE terminal memory.capture event —
-      // success with counts (zeros included) or failure with the stage that
-      // broke. Without it the study cannot tell "no candidates" from "the
-      // pass failed" from "never ran".
       let stage: 'capture_pass' | 'necessity_pass' | 'persist' = 'capture_pass';
       const terminal = (outcome: CaptureOutcome, sensitive: number): CaptureOutcome => {
         memory.logger.event({

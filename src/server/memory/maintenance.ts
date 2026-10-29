@@ -4,7 +4,7 @@
 import { validateCandidate } from './capture';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
-import type { ActorMeta,MemoryItem } from './types';
+import type { ActorMeta, MemoryItem } from './types';
 
 export type AttentionKind = 'conflict' | 'redundant' | 'stale';
 type MaintenanceActorMeta = ActorMeta & {

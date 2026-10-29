@@ -2,10 +2,10 @@
 // context. Later changes ride user turns as deltas.
 import type { MemoryService } from './index';
 import {
-buildMemoryBlock,
-buildMemoryDeltaBlock,
-type MemoryConflictPair,
-type MemoryDeltaEntry,
+  buildMemoryBlock,
+  buildMemoryDeltaBlock,
+  type MemoryConflictPair,
+  type MemoryDeltaEntry,
 } from './prompt';
 import type { MemoryItem } from './types';
 

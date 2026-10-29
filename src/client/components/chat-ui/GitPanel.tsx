@@ -1,33 +1,33 @@
 import { PatchDiff } from "@pierre/diffs/react"
-import { AlertTriangle,ArrowUp,Ban,Check,ChevronDown,ChevronUp,Columns2,Copy,Download,Ellipsis,FolderOpen,GitBranch,GitBranchPlus,GitMerge,GitPullRequest,LoaderCircle,Minus,PenLine,RefreshCw,Rows3,Search,Sparkles,Trash2,Upload,WrapText } from "lucide-react"
-import { memo,useCallback,useEffect,useMemo,useRef,useState,type MouseEvent as ReactMouseEvent,type ReactNode,type RefObject } from "react"
+import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
 import type {
-ChatAttachment,
-ChatBranchHistoryEntry,
-ChatBranchListEntry,
-ChatBranchListResult,
-ChatDiffSnapshot,
-ChatMergeBranchResult,
-ChatMergePreviewResult,
-DiffCommitMode,
-DiffCommitResult,
+  ChatAttachment,
+  ChatBranchHistoryEntry,
+  ChatBranchListEntry,
+  ChatBranchListResult,
+  ChatDiffSnapshot,
+  ChatMergeBranchResult,
+  ChatMergePreviewResult,
+  DiffCommitMode,
+  DiffCommitResult,
 } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
 import { useTheme } from "../../hooks/useTheme"
 import { cn } from "../../lib/utils"
-import { isDiffPathChecked,useDiffCommitStore } from "../../stores/diffCommitStore"
+import { isDiffPathChecked, useDiffCommitStore } from "../../stores/diffCommitStore"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
-import { AttachmentFileCard,AttachmentImageCard } from "../messages/AttachmentCard"
+import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { Button } from "../ui/button"
-import { ContextMenu,ContextMenuContent,ContextMenuItem,ContextMenuSeparator,ContextMenuTrigger } from "../ui/context-menu"
-import { Dialog,DialogBody,DialogContent,DialogDescription,DialogFooter,DialogTitle } from "../ui/dialog"
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog"
 import { Input } from "../ui/input"
-import { Popover,PopoverContent,PopoverTrigger } from "../ui/popover"
+import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { SegmentedControl } from "../ui/segmented-control"
 import { Textarea } from "../ui/textarea"
-import { Tooltip,TooltipContent,TooltipTrigger } from "../ui/tooltip"
+import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 type DiffRenderMode = "unified" | "split"
 type DiffFile = ChatDiffSnapshot["files"][number]
@@ -1474,8 +1474,6 @@ function GitPanelImpl({
             ) : null}
           </div>
           {diffs.status === "ready" ? (
-            // Local-only git: repos without a remote — or a study deployment
-            // with remote git turned off — get no publish/sync CTA.
             !hasRemoteOrigin || false ? null : syncAction === "publish" ? (
               <Button
                 variant="ghost"
@@ -1794,7 +1792,6 @@ function GitPanelImpl({
               </div>
             )}
           </div>
-
 
         </div>
       </div>

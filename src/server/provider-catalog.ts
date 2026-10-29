@@ -1,27 +1,27 @@
 import type {
-AgentProvider,
-ClaudeContextWindow,
-ClaudeModelOptions,
-CodexModelOptions,
-ModelOptions,
-PiModelOptions,
-ProviderCatalogEntry,
-ProviderModelOption,
-ServiceTier,
+  AgentProvider,
+  ClaudeContextWindow,
+  ClaudeModelOptions,
+  CodexModelOptions,
+  ModelOptions,
+  PiModelOptions,
+  ProviderCatalogEntry,
+  ProviderModelOption,
+  ServiceTier,
 } from "../shared/types"
 import {
-DEFAULT_CLAUDE_MODEL_OPTIONS,
-DEFAULT_CODEX_MODEL_OPTIONS,
-DEFAULT_PI_MODEL_OPTIONS,
-PROVIDERS,
-isClaudeReasoningEffort,
-isCodexReasoningEffort,
-isPiReasoningEffort,
-normalizeClaudeContextWindow,
-normalizePiModelId,
-normalizeProviderModelId
+  DEFAULT_CLAUDE_MODEL_OPTIONS,
+  DEFAULT_CODEX_MODEL_OPTIONS,
+  DEFAULT_PI_MODEL_OPTIONS,
+  PROVIDERS,
+  isClaudeReasoningEffort,
+  isCodexReasoningEffort,
+  isPiReasoningEffort,
+  normalizeClaudeContextWindow,
+  normalizePiModelId,
+  normalizeProviderModelId
 } from "../shared/types"
-import { isCliIsolationEnabled,resolveCodexRuntimeModel } from "./provider-runtime"
+import { isCliIsolationEnabled, resolveCodexRuntimeModel } from "./provider-runtime"
 
 const HARD_CODED_CODEX_MODELS: ProviderModelOption[] = [
   { id: "gpt-5.5", label: "GPT-5.5", supportsEffort: false },
@@ -53,11 +53,6 @@ function createServerProviders(): ProviderCatalogEntry[] {
 
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
 
-/**
- * Study-mode pinning already narrows SERVER_PROVIDERS to one Claude model.
- * Regular deployments expose both engines, including an explicitly configured
- * isolated Codex provider model without advertising OpenAI IDs to that endpoint.
- */
 export function deployedProviders(env: Readonly<Record<string, string | undefined>> = process.env): ProviderCatalogEntry[] {
   return SERVER_PROVIDERS.map((provider) => {
     if (provider.id !== "codex" || !isCliIsolationEnabled(env)) return provider

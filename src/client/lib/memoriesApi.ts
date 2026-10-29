@@ -387,10 +387,6 @@ export interface TransferProposal {
   landing: TransferLanding
 }
 
-// Monitoring-act telemetry (metamemory mediator data): fire-and-forget, never
-// blocks or surfaces errors — losing a beacon is better than jank.
-// The guide tour renders the same components against fake data; it mutes the
-// beacons wholesale so the study's monitoring metrics never count tour clicks.
 let uiMonitorSuppressed = false
 export function setUiMonitorSuppressed(suppressed: boolean): void {
   uiMonitorSuppressed = suppressed
