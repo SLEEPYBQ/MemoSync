@@ -1,4 +1,6 @@
+import { t, useI18n } from "../../i18n"
 function ZigZagLine({ size = 4 }: { size?: number }) {
+  useI18n()
   return (
     <svg className="flex-1" viewBox={`0 0 100 ${size}`} preserveAspectRatio="none" style={{ height: `${size}px` }}>
       <pattern id="zigzag" width={size} height={size} patternUnits="userSpaceOnUse">
@@ -10,23 +12,25 @@ function ZigZagLine({ size = 4 }: { size?: number }) {
 }
 
 export function CompactBoundaryMessage() {
+  useI18n()
   return (
     <div
       className="flex items-center gap-3"
-      title="The conversation grew close to the context limit, so the engine summarized earlier turns to free space. Verbatim detail from before this line may be lost — saved memories are unaffected."
+      title={t("chat:theConversationGrewCloseToTheContextLimitSoThe")}
     >
       <ZigZagLine />
-      <span className="text-[11px] tracking-widest text-muted-foreground uppercase flex-shrink-0">Context compacted</span>
+      <span className="text-[11px] tracking-widest text-muted-foreground uppercase flex-shrink-0">{t("chat:contextCompacted")}</span>
       <ZigZagLine />
     </div>
   )
 }
 
 export function ContextClearedMessage() {
+  useI18n()
   return (
     <div className="flex items-center gap-3">
       <ZigZagLine />
-      <span className="text-[11px] tracking-widest text-muted-foreground uppercase flex-shrink-0">Context Cleared</span>
+      <span className="text-[11px] tracking-widest text-muted-foreground uppercase flex-shrink-0">{t("chat:contextCleared")}</span>
       <ZigZagLine />
     </div>
   )

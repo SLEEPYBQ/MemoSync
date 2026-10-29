@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Loader2, X } from "lucide-react"
 import { MetaRow, MetaContent } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
@@ -5,11 +6,11 @@ import { AnimatedShinyText } from "../ui/animated-shiny-text"
 // Keyed by ChatActivityStatus (shared/types.ts) — the footer shows only the
 // activity status; SDK statuses like "requesting" are never surfaced.
 const STATUS_LABELS: Record<string, string> = {
-  starting: "Starting...",
-  previewing_memory: "Previewing memories...",
-  running: "Running...",
-  waiting_for_user: "Waiting...",
-  failed: "Failed",
+  get starting() { return t("chat:starting") },
+  get previewing_memory() { return t("chat:previewingMemories") },
+  get running() { return t("chat:running") },
+  get waiting_for_user() { return t("chat:waiting") },
+  get failed() { return t("chat:failed") },
 }
 
 interface ProcessingMessageProps {
@@ -17,6 +18,7 @@ interface ProcessingMessageProps {
 }
 
 export function ProcessingMessage({ status }: ProcessingMessageProps) {
+  useI18n()
   const label = (status ? STATUS_LABELS[status] : undefined) || "Processing..."
   const isFailed = status === "failed"
 

@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import type {
   ClientCommand,
   ClientEnvelope,
@@ -187,7 +188,7 @@ export class AppSocket {
       const timer = window.setTimeout(() => {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
-        reject(new Error(`${command.type} timed out waiting for the server — reconnecting`))
+        reject(new Error(t("errors:value0TimedOutWaitingForTheServerReconnecting", { v0: command.type })))
         this.reconnectNow()
       }, COMMAND_ACK_TIMEOUT_MS)
       this.pending.set(id, {
@@ -340,7 +341,7 @@ export class AppSocket {
       this.clearPingState()
       this.emitStatus("disconnected")
       for (const pending of this.pending.values()) {
-        pending.reject(new Error("Disconnected"))
+        pending.reject(new Error(t("errors:disconnected")))
       }
       this.pending.clear()
       // In parallel with the reconnect loop: a handshake 401 (expired or

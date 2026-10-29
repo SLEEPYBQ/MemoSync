@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Minimize } from "lucide-react"
 import type { ProcessedStatusMessage } from "./types"
 import { MetaRow, MetaLabel } from "./shared"
@@ -7,11 +8,12 @@ interface Props {
 }
 
 const STATUS_LABELS: Record<string, string> = {
-  compacting: "Compacting...",
-  requesting: "Requesting...",
+  get compacting() { return t("chat:compacting") },
+  get requesting() { return t("chat:requesting") },
 }
 
 export function StatusMessage({ message }: Props) {
+  useI18n()
   const label = STATUS_LABELS[message.status] || message.status
 
   return (

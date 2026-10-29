@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Fragment, memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Eraser, Plus, X } from "lucide-react"
 import type { SocketStatus, AppSocket } from "../../app/socket"
@@ -70,6 +71,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
   onInitialCommandSent,
   setPaneElement,
 }: TerminalWorkspacePaneProps) {
+  useI18n()
   const handleSetPaneElement = useCallback((element: HTMLDivElement | null) => {
     setPaneElement(terminalId, element)
   }, [setPaneElement, terminalId])
@@ -108,7 +110,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
           <div className="flex items-center gap-2 px-3 pr-2 pt-2 pb-1">
             <div className="min-w-0 flex-1 text-left">
               <div className="flex min-w-0 items-center gap-2">
-                <div className="shrink-0 text-sm font-medium">Terminal</div>
+                <div className="shrink-0 text-sm font-medium">{t("terminal:terminal")}</div>
                 <div className="min-w-0 truncate text-xs text-muted-foreground">
                   {path ?? ""}
                 </div>
@@ -118,7 +120,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Clear terminal"
+                aria-label={t("terminal:clearTerminal")}
                 onClick={handleClearTerminal}
               >
                 <Eraser className="size-3.5" />
@@ -128,7 +130,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    aria-label="Add terminal to the right"
+                    aria-label={t("terminal:addTerminalToTheRight")}
                     onClick={handleAddTerminal}
                   >
                     <Plus className="size-3.5" />
@@ -139,7 +141,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Archive terminal"
+                aria-label={t("terminal:archiveTerminal")}
                 onClick={handleRemoveTerminal}
               >
                 <X className="size-3.5" />
@@ -183,6 +185,7 @@ function TerminalWorkspaceImpl({
   onTerminalCommandSent,
   onInitialTerminalCommandSent,
 }: Props) {
+  useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   const paneRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const previousTerminalIdsRef = useRef<string[]>([])

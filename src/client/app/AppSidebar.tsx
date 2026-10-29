@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -107,6 +108,7 @@ function AppSidebarImpl({
   onOpenChangelog,
   onOpenMemoryBoard,
 }: AppSidebarProps) {
+  useI18n()
   const location = useLocation()
   const navigate = useNavigate()
   const scrollContainerRef = useRef<HTMLDivElement>(null)
@@ -385,7 +387,7 @@ function AppSidebarImpl({
   const isMemoryActive = location.pathname.startsWith("/memory")
   const isUtilityPageActive = isLocalProjectsActive || isSettingsActive || isMemoryActive
   const isConnecting = connectionStatus === "connecting" || !ready
-  const statusLabel = isConnecting ? "Connecting" : connectionStatus === "connected" ? "Connected" : "Disconnected"
+  const statusLabel = isConnecting ? t("sidebar:connecting") : connectionStatus === "connected" ? t("sidebar:connected") : t("sidebar:disconnected")
   const statusDotClass = connectionStatus === "connected" ? "bg-success" : "bg-amber-500"
   const showUpdateButton = updateSnapshot?.updateAvailable === true
   const showDevBadge = updateSnapshot
@@ -414,7 +416,7 @@ function AppSidebarImpl({
               variant="ghost"
               size="icon"
               onClick={onExpand}
-              title="Expand sidebar"
+              title={t("sidebar:expandSidebar")}
             >
               <PanelLeft className="h-5 w-5" />
             </Button>
@@ -439,7 +441,7 @@ function AppSidebarImpl({
               size="icon"
               className="size-10 rounded-lg hover:!border-border/0"
               onClick={onClose}
-              title="Close sidebar"
+              title={t("sidebar:closeSidebar")}
             >
               <X className="h-5 w-5" />
             </Button>
@@ -448,7 +450,7 @@ function AppSidebarImpl({
             <button
               type="button"
               onClick={onCollapse}
-              title="Collapse sidebar"
+              title={t("sidebar:collapseSidebar")}
               className="hidden md:flex group/sidebar-collapse relative items-center justify-center h-5 w-5 sm:h-6 sm:w-6"
             >
               <BrandIcon animated="none" className="absolute inset-0.5 h-4 w-4 sm:h-5 sm:w-5 transition-all duration-200 ease-out opacity-100 scale-100 group-hover/sidebar-collapse:opacity-0 group-hover/sidebar-collapse:scale-0" />
@@ -466,17 +468,16 @@ function AppSidebarImpl({
                 onClose()
               }}
               className="size-10 rounded-lg hover:!border-border/0 md:hidden"
-              title="New project"
+              title={t("sidebar:newProject")}
             >
               <Plus className="h-5 w-5" />
             </Button>}
             {showDevBadge ? (
               <span
                 className="mr-1 hidden md:inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-bold tracking-wider text-muted-foreground"
-                title="Development build"
+                title={t("sidebar:developmentBuild")}
               >
-                DEV
-              </span>
+                {t("sidebar:dev")}</span>
             ) : showUpdateButton ? (
               <Button
                 variant="outline"
@@ -484,11 +485,10 @@ function AppSidebarImpl({
                 className="hidden md:inline-flex rounded-full !h-auto mr-1 py-0.5 px-2 bg-logo/20 hover:bg-logo text-logo border-logo/20 hover:text-foreground hover:border-logo/20 text-[11px] font-bold tracking-wider"
                 onClick={onOpenChangelog}
                 disabled={isUpdating}
-                title={updateSnapshot?.latestVersion ? `Update to ${updateSnapshot.latestVersion}` : "Update MemoSync"}
+                title={updateSnapshot?.latestVersion ? t("sidebar:updateToValue0", { v0: updateSnapshot.latestVersion }) : t("sidebar:updateMemoSync")}
               >
                 {isUpdating ? <Loader2 className="mr-1.5 h-3 w-3 animate-spin" /> : null}
-                UPDATE
-              </Button>
+                {t("sidebar:update")}</Button>
             ) : null}
             {<Button
               variant="ghost"
@@ -498,7 +498,7 @@ function AppSidebarImpl({
                 onClose()
               }}
               className="hidden md:inline-flex size-10 rounded-lg hover:!border-border/0"
-              title="New project"
+              title={t("sidebar:newProject")}
             >
               <Plus className="size-4" />
             </Button>}
@@ -538,7 +538,7 @@ function AppSidebarImpl({
             ) : null}
 
             {!hasVisibleChats && !isConnecting && data.projectGroups.length === 0 ? (
-              <p className="text-sm text-slate-400 dark:text-muted-foreground p-2 mt-6 text-center">No conversations yet</p>
+              <p className="text-sm text-slate-400 dark:text-muted-foreground p-2 mt-6 text-center">{t("sidebar:noConversationsYet")}</p>
             ) : null}
 
             <LocalProjectsSection
@@ -588,16 +588,16 @@ function AppSidebarImpl({
                   <BrainCircuit className="h-4 w-4 text-muted-foreground" />
                   {memoryBadge ? (
                     <span
-                      title="Memory changed since your last board visit (or needs attention)"
+                      title={t("sidebar:memoryChangedSinceYourLastBoardVisitOrNeedsAttention")}
                       className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500"
                     />
                   ) : null}
                 </span>
-                <span className="text-sm">Memory</span>
+                <span className="text-sm">{t("common:memory")}</span>
                 <MemoryOffBadge />
                 {pendingCount > 0 ? (
                   <span
-                    title={`${pendingCount} proposed memor${pendingCount === 1 ? "y" : "ies"} waiting for your review`}
+                    title={t("sidebar:pendingCandidates", { count: pendingCount })}
                     className="ml-auto rounded-full border border-cand-border bg-cand-surface px-1.5 text-[10px] font-medium leading-4 text-cand-fg"
                   >
                     {pendingCount}
@@ -622,7 +622,7 @@ function AppSidebarImpl({
             <div className="flex items- justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Settings className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm">Settings</span>
+                <span className="text-sm">{t("common:settings")}</span>
               </div>
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <span>{statusLabel}</span>
@@ -639,9 +639,9 @@ function AppSidebarImpl({
         <div
           role="separator"
           aria-orientation="vertical"
-          aria-label="Resize sidebar"
+          aria-label={t("sidebar:resizeSidebar")}
           tabIndex={0}
-          title="Resize sidebar"
+          title={t("sidebar:resizeSidebar")}
           className={cn(
             "hidden md:block absolute -right-1 top-3 bottom-3 z-20 w-2 cursor-col-resize rounded-full",
             "focus-visible:outline-none"
@@ -682,7 +682,7 @@ function AppSidebarImpl({
       >
         <DialogContent size="md">
           <DialogHeader>
-            <DialogTitle>Archived Chats</DialogTitle>
+            <DialogTitle>{t("sidebar:archivedChats")}</DialogTitle>
             <DialogDescription>
               {archivedProject?.localPath ?? ""}
             </DialogDescription>
@@ -707,7 +707,7 @@ function AppSidebarImpl({
                 </button>
               ))
             ) : (
-              <p className="px-1 py-3 text-sm text-muted-foreground">No archived chats</p>
+              <p className="px-1 py-3 text-sm text-muted-foreground">{t("sidebar:noArchivedChats")}</p>
             )}
           </DialogBody>
         </DialogContent>

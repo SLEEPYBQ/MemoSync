@@ -1,3 +1,4 @@
+import { t } from "../../i18n"
 import type { ChatAttachment } from "../../../shared/types"
 import { CODE_OR_CONFIG_EXTENSIONS, getFileExtension, normalizeAttachmentMimeType, type TextPreviewResult } from "../../../shared/attachment-preview"
 export { classifyAttachmentPreview, normalizeAttachmentMimeType, TEXT_PREVIEW_LIMIT_BYTES, JSON_PREVIEW_LIMIT_BYTES } from "../../../shared/attachment-preview"
@@ -65,7 +66,7 @@ export async function fetchTextPreview(url: string, limitBytes: number): Promise
       },
     })
     if (!response.ok) {
-      throw new Error(`Preview request failed with status ${response.status}`)
+      throw new Error(t("chat:previewRequestFailedWithStatusValue0", { v0: response.status }))
     }
 
     if (!response.body) {
@@ -115,7 +116,7 @@ export async function fetchTextPreview(url: string, limitBytes: number): Promise
     return { content: new TextDecoder().decode(bytes), truncated }
   } catch (error) {
     if (isPreviewTimeout(error)) {
-      throw new Error("Preview request timed out")
+      throw new Error(t("chat:previewRequestTimedOut"))
     }
     throw error
   } finally {

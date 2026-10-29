@@ -1,3 +1,5 @@
+import { effortLabel } from "../../i18n/labels"
+import { t, useI18n } from "../../i18n"
 import { useEffect, useState, type ComponentType, type SVGProps } from "react"
 import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
 import {
@@ -26,6 +28,7 @@ type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
 // Whale mark from DeepSeek's official DeepSeek-V2 figures/logo.svg, rendered
 // with currentColor to match the existing monochrome provider controls.
 function DeepSeekIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
   return (
     <svg
       viewBox="0 0 56.3 41.36"
@@ -41,6 +44,7 @@ function DeepSeekIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
 }
 
 function OpenAIIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
   return (
     <svg
       viewBox="0 0 158.7128 157.296"
@@ -57,6 +61,7 @@ function OpenAIIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
 // Official Z.ai brand mark (GLM's vendor; lobehub/lobe-icons, single path),
 // rendered in currentColor to match the other monochrome provider icons.
 function GlmIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
   return (
     <svg
       viewBox="0 0 24 24"
@@ -75,6 +80,7 @@ function GlmIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
 // Pi's pixel-P mark (pi-coding-agent), rendered in currentColor to match the
 // other monochrome provider icons.
 function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
   return (
     <svg
       viewBox="-10 -10 84 84"
@@ -122,6 +128,7 @@ export function PopoverMenuItem({
   description?: string
   disabled?: boolean
 }) {
+  useI18n()
   return (
     <button
       onClick={onClick}
@@ -154,6 +161,7 @@ export function InputPopover({
   onOpen?: () => void
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
+  useI18n()
   const [open, setOpen] = useState(false)
 
   if (disabled) {
@@ -193,6 +201,7 @@ export function InputPopover({
 }
 
 function PiCustomModelItem({ onSubmit, onSearch }: { onSubmit: (modelId: string) => void; onSearch: (value: string) => void }) {
+  useI18n()
   const [value, setValue] = useState("")
   const trimmed = value.trim()
   const submit = () => {
@@ -210,7 +219,7 @@ function PiCustomModelItem({ onSubmit, onSearch }: { onSubmit: (modelId: string)
           }
         }}
         placeholder="provider/model-id"
-        aria-label="Custom Pi model id"
+        aria-label={t("chat:customPiModelId")}
         className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-muted-foreground/50"
       />
       <button
@@ -218,8 +227,7 @@ function PiCustomModelItem({ onSubmit, onSearch }: { onSubmit: (modelId: string)
         disabled={!trimmed}
         className="rounded-md border border-border px-2 py-1 text-sm text-muted-foreground transition-colors hover:bg-muted/50 disabled:opacity-40 disabled:cursor-not-allowed"
       >
-        Use
-      </button>
+        {t("chat:use")}</button>
     </div>
   )
 }
@@ -264,6 +272,7 @@ export function ChatPreferenceControls({
   includePlanMode = true,
   className,
 }: ChatPreferenceControlsProps) {
+  useI18n()
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const registry = useRegistryModels(selectedProvider === "pi", model)
   const [modelSearch, setModelSearch] = useState("")
@@ -420,7 +429,7 @@ export function ChatPreferenceControls({
                     selected
                     icon={<Box className="h-4 w-4 text-muted-foreground" />}
                     label={model}
-                    description="Custom registry model"
+                    description={t("chat:customRegistryModel")}
                   />
                 ) : null}
 
@@ -436,10 +445,10 @@ export function ChatPreferenceControls({
             <Brain className="h-3.5 w-3.5" />
             <span>{
               selectedProvider === "claude"
-                ? CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+                ? effortLabel(CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort)
                 : selectedProvider === "pi"
-                  ? PI_REASONING_OPTIONS.find((effort) => effort.id === piEffort)?.label ?? piEffort
-                  : CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort
+                  ? effortLabel(PI_REASONING_OPTIONS.find((effort) => effort.id === piEffort)?.label ?? piEffort)
+                  : effortLabel(CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort)
             }</span>
           </>
         )}
@@ -457,7 +466,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={modelOptions.reasoningEffort === effort.id}
                 icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                label={effort.label}
+                label={effortLabel(effort.label)}
                 disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
               />
             ))
@@ -473,7 +482,7 @@ export function ChatPreferenceControls({
                   }}
                   selected={piEffort === effort.id}
                   icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                  label={effort.label}
+                  label={effortLabel(effort.label)}
                 />
               ))
               : CODEX_REASONING_OPTIONS.map((effort) => (
@@ -485,7 +494,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={modelOptions.reasoningEffort === effort.id}
                 icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                label={effort.label}
+                label={effortLabel(effort.label)}
               />
             ))
         )}
@@ -512,7 +521,7 @@ export function ChatPreferenceControls({
                   ? <SquareMenu className="h-4 w-4 text-muted-foreground" />
                   : <SquareMinus className="h-4 w-4 text-muted-foreground" />}
                 label={option.label}
-                description={option.id === "1m" ? "Expanded context window" : "Standard context window"}
+                description={option.id === "1m" ? t("chat:expandedContextWindow") : t("chat:standardContextWindow")}
               />
           ))}
         </InputPopover>
@@ -525,7 +534,7 @@ export function ChatPreferenceControls({
               {codexModelOptions?.fastMode
                 ? <Gauge className="h-3.5 w-3.5" />
                 : <Gauge className="h-3.5 w-3.5 -scale-x-100" />}
-              <span>{codexModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
+              <span>{codexModelOptions?.fastMode ? t("chat:fastMode") : t("chat:standard")}</span>
             </>
           )}
           triggerClassName={codexModelOptions?.fastMode ? "text-success" : undefined}
@@ -539,7 +548,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={!codexModelOptions?.fastMode}
                 icon={<Gauge className="h-4 w-4 text-muted-foreground -scale-x-100" />}
-                label="Standard"
+                label={t("chat:standard")}
               />
               <PopoverMenuItem
                 onClick={() => {
@@ -548,7 +557,7 @@ export function ChatPreferenceControls({
                 }}
                 selected={Boolean(codexModelOptions?.fastMode)}
                 icon={<Gauge className="h-4 w-4 text-muted-foreground" />}
-                label="Fast Mode"
+                label={t("chat:fastMode")}
               />
             </>
           )}
@@ -560,7 +569,7 @@ export function ChatPreferenceControls({
           trigger={(
             <>
               {planMode ? <ListTodo className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-              <span>{planMode ? "Plan Mode" : "Full Access"}</span>
+              <span>{planMode ? t("chat:planMode") : t("chat:fullAccess")}</span>
             </>
           )}
           triggerClassName={planMode ? "text-blue-400 dark:text-blue-300" : undefined}
@@ -574,8 +583,8 @@ export function ChatPreferenceControls({
                 }}
                 selected={!planMode}
                 icon={<LockOpen className="h-4 w-4 text-muted-foreground" />}
-                label="Full Access"
-                description="Execution without approval"
+                label={t("chat:fullAccess")}
+                description={t("chat:executionWithoutApproval")}
               />
               <PopoverMenuItem
                 onClick={() => {
@@ -584,8 +593,8 @@ export function ChatPreferenceControls({
                 }}
                 selected={planMode}
                 icon={<ListTodo className="h-4 w-4 text-muted-foreground" />}
-                label="Plan Mode"
-                description="Review a plan before execution"
+                label={t("chat:planMode")}
+                description={t("chat:reviewAPlanBeforeExecution")}
               />
             </>
           )}

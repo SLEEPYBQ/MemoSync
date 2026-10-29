@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { AppSettingsPatch } from "../../shared/types"
 import { RESOLVED_THEME_STORAGE_KEY, resolveTheme, type ResolvedTheme, type ThemePreference } from "../lib/theme"
@@ -17,6 +18,7 @@ const ThemeWriterContext = createContext<((writer: SettingsWriter | null) => voi
 
 /** Connect the provider to the same persistence/error flow used by Settings. */
 export function useThemeSettingsWriter(writer: SettingsWriter) {
+  useI18n()
   const register = useContext(ThemeWriterContext)
   useEffect(() => {
     register?.(writer)
@@ -39,6 +41,7 @@ function getCachedTheme(): ResolvedTheme {
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  useI18n()
   const settingsTheme = useAppSettingsStore((store) => store.settings?.theme)
   const [systemTheme, setSystemTheme] = useState(getSystemTheme)
   const [cachedTheme] = useState(getCachedTheme)
@@ -68,10 +71,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     root.style.colorScheme = hydratedTheme
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", getComputedStyle(document.body).backgroundColor)
+      ?.setAttribute(t("chat:content"), getComputedStyle(document.body).backgroundColor)
     document
       .querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')
-      ?.setAttribute("content", hydratedTheme === "dark" ? "black-translucent" : "default")
+      ?.setAttribute(t("chat:content"), hydratedTheme === "dark" ? "black-translucent" : "default")
     // Cache the resolved setting for the next page load.
     if (settingsTheme) {
       try {
@@ -101,6 +104,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 }
 
 export function useTheme() {
+  useI18n()
   const context = useContext(ThemeContext)
   if (!context) throw new Error("useTheme must be used within ThemeProvider")
   return context

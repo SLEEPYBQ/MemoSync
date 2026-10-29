@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { useCallback, useEffect, useState } from "react"
 import type { RegistryModelCard } from "../../shared/model-capabilities"
 
@@ -9,7 +10,7 @@ function fetchModels(url: string) {
   if (!request) {
     request = fetch(url)
       .then(async response => {
-        if (!response.ok) throw new Error("Model catalog unavailable")
+        if (!response.ok) throw new Error(t("chat:modelCatalogUnavailable"))
         const data = await response.json()
         return Array.isArray(data.models) ? data.models as RegistryModelCard[] : []
       }).finally(() => { pending.delete(url) })
@@ -19,6 +20,7 @@ function fetchModels(url: string) {
 }
 
 export function useRegistryModels(enabled: boolean, model?: string) {
+  useI18n()
   const url = `/api/model-registry/models${model ? `?model=${encodeURIComponent(model)}` : ""}`
   const [state, setState] = useState<{ url: string; models: RegistryModelCard[]; loaded: boolean }>({ url: "", models: [], loaded: false })
   const [revision, setRevision] = useState(0)

@@ -1,3 +1,4 @@
+import { t, useI18n } from "../client/i18n"
 import "../client/i18n"
 import { StrictMode, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
@@ -26,7 +27,7 @@ function syncThemeMetadata(theme: "light" | "dark") {
       tag.setAttribute("name", "theme-color")
       document.head.appendChild(tag)
     }
-    tag.setAttribute("content", backgroundColor)
+    tag.setAttribute(t("export:content"), backgroundColor)
   }
   document.documentElement.style.colorScheme = theme
 }
@@ -37,6 +38,7 @@ type ViewerState =
   | { status: "ready"; bundle: StandaloneTranscriptBundle }
 
 function StandaloneTranscriptApp() {
+  useI18n()
   const [state, setState] = useState<ViewerState>({ status: "loading" })
   const [isAtEnd, setIsAtEnd] = useState(true)
   const listRef = useRef<LegendListRef | null>(null)
@@ -51,7 +53,7 @@ function StandaloneTranscriptApp() {
       const response = await fetch(new URL("./transcript.json", document.baseURI).toString(), {
         headers: { Accept: "application/json" },
       })
-      if (!response.ok) throw new Error(`Transcript request failed with status ${response.status}`)
+      if (!response.ok) throw new Error(t("export:transcriptRequestFailedWithStatusValue0", { v0: response.status }))
       return await response.json() as StandaloneTranscriptBundle
     }
 
@@ -64,7 +66,7 @@ function StandaloneTranscriptApp() {
         if (cancelled) return
         setState({
           status: "error",
-          message: error instanceof Error ? error.message : "Unable to load transcript.",
+          message: error instanceof Error ? error.message : t("export:unableToLoadTranscript"),
         })
       })
 
@@ -118,8 +120,7 @@ function StandaloneTranscriptApp() {
   if (state.status === "loading") {
     return (
       <div className="flex h-full items-center justify-center bg-background text-sm text-muted-foreground">
-        Loading transcript...
-      </div>
+        {t("export:loadingTranscript")}</div>
     )
   }
 

@@ -1,3 +1,5 @@
+import { formatNumber } from "../../i18n"
+import { t, useI18n } from "../../i18n"
 import {
   File,
   FileArchive,
@@ -37,6 +39,7 @@ export function AttachmentImageCard({
   className,
   size = "transcript",
 }: AttachmentImageCardProps) {
+  useI18n()
   const source = attachment.contentUrl || previewUrl
   const isComposer = size === "composer"
 
@@ -94,6 +97,7 @@ export function AttachmentFileCard({
   onRemove,
   className,
 }: BaseAttachmentCardProps) {
+  useI18n()
   const Icon = getAttachmentIcon(classifyAttachmentIcon(attachment))
 
   return (
@@ -119,6 +123,7 @@ export function AttachmentFileCard({
 }
 
 function RemoveButton({ displayName, onRemove }: { displayName: string; onRemove: () => void }) {
+  useI18n()
   return (
     <button
       type="button"
@@ -128,7 +133,7 @@ function RemoveButton({ displayName, onRemove }: { displayName: string; onRemove
         event.stopPropagation()
         onRemove()
       }}
-      aria-label={`Remove ${displayName}`}
+      aria-label={t("chat:removeValue0", { v0: displayName })}
     >
       <X className="h-3.5 w-3.5" />
     </button>
@@ -163,7 +168,7 @@ function getAttachmentIcon(kind: AttachmentIconKind): LucideIcon {
 }
 
 export function formatAttachmentSize(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${Math.max(1, Math.round(size / 1024))} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
+  if (size < 1024) return `${formatNumber(size)} B`
+  if (size < 1024 * 1024) return `${formatNumber(Math.max(1, Math.round(size / 1024)))} KB`
+  return `${formatNumber(size / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 })} MB`
 }

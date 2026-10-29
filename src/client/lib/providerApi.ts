@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { useEffect, useState } from "react"
 import { PROVIDERS, type ProviderCatalogEntry } from "../../shared/types"
 
@@ -7,9 +8,9 @@ let inflight: Promise<ProviderCatalogEntry[]> | null = null
 
 export async function requestProviders(fetchProviders = () => fetch("/api/providers", { cache: "no-store" })): Promise<ProviderCatalogEntry[]> {
   const response = await fetchProviders()
-  if (!response.ok) throw new Error(`Provider request failed (${response.status})`)
+  if (!response.ok) throw new Error(t("errors:providerRequestFailedValue0", { v0: response.status }))
   const body = await response.json()
-  if (!Array.isArray(body?.data)) throw new Error("Provider response is missing data")
+  if (!Array.isArray(body?.data)) throw new Error(t("errors:providerResponseIsMissingData"))
   return body.data
 }
 
@@ -24,6 +25,7 @@ function fetchProviders(): Promise<ProviderCatalogEntry[]> {
 }
 
 export function useServerProviders(): ProviderCatalogEntry[] {
+  useI18n()
   const [providers, setProviders] = useState(cached ?? FALLBACK_PROVIDERS)
   useEffect(() => {
     let alive = true

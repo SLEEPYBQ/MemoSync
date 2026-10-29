@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 // Pure logic for the landing page (LocalDev connected view): which project the
 // composer targets, what the hero headline says, and the memory-card counts.
 import type { MemoryItem } from "./memoriesApi"
@@ -9,7 +10,7 @@ export function resolveLandingProjectPath(projectPaths: string[], pickedPath: st
 }
 
 export function landingHeadline(projectName: string | null): string {
-  return projectName ? `What should we build in ${projectName}?` : "Add a project to get started"
+  return projectName ? t("chat:whatShouldWeBuildInValue0", { v0: projectName }) : t("chat:addAProjectToGetStarted")
 }
 
 export interface LandingMemorySummary {

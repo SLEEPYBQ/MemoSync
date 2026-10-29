@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { LegendList, type LegendListRef } from "@legendapp/list/react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ArrowDown, Upload } from "lucide-react"
@@ -115,6 +116,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   platform = "darwin",
   headerOffsetPx = CHAT_NAVBAR_OFFSET_PX,
 }: ChatTranscriptViewportProps) {
+  useI18n()
   const previousRowCountRef = useRef(0)
   const localLinkMenuTriggerRef = useRef<HTMLSpanElement | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
@@ -315,10 +317,9 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           <span className="text-sm translate-y-[-0.5px]">
             <AnimatedShinyText
               animate
-              shimmerWidth={Math.max(20, "Loading more messages...".length * 3)}
+              shimmerWidth={Math.max(20, t("chat:loadMoreMessages").length * 3)}
             >
-              Loading more messages...
-            </AnimatedShinyText>
+              {t("chat:loadingMoreMessages")}</AnimatedShinyText>
           </span>
         </div>
       ) : null}
@@ -467,7 +468,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
             <div className="flex h-full items-center justify-center">
               <div className="flex flex-col items-center justify-center gap-3 text-center">
                 <Upload className="mx-auto size-14 text-foreground" strokeWidth={1.75} />
-                <div className="text-xl font-medium text-foreground">Drop up to {MAX_FILES_PER_DROP} files</div>
+                <div className="text-xl font-medium text-foreground">{t("chat:dropUpTo")}{MAX_FILES_PER_DROP} {t("chat:files")}</div>
               </div>
             </div>
           </div>

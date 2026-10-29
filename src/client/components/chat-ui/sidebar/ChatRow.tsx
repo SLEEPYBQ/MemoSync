@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../../i18n"
 import { MemoryOffRowIcon } from "../MemoryToggle"
 import { memo } from "react"
 import { Archive, Loader2, Split } from "lucide-react"
@@ -44,6 +45,7 @@ function ChatRowImpl({
   onArchiveChat,
   onDeleteChat,
 }: Props) {
+  useI18n()
   const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
   const trailingLabel = showShortcutHint && shortcutHint ? shortcutHint : ageLabel
   const showShortcutKeycap = showShortcutHint && Boolean(shortcutHint)
@@ -120,7 +122,7 @@ function ChatRowImpl({
                 event.stopPropagation()
                 onForkChat(chat.chatId)
               }}
-              title="Fork chat"
+              title={t("sidebar:forkChat")}
             >
               <Split className="size-3.5" />
             </Button>
@@ -133,7 +135,7 @@ function ChatRowImpl({
               event.stopPropagation()
               onArchiveChat(chat.chatId)
             }}
-            title="Archive chat"
+            title={t("sidebar:archiveChat")}
           >
             <Archive className="size-3.5" />
           </Button>

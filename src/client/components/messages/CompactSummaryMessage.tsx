@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import {  Minimize } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -9,6 +10,7 @@ interface Props {
 }
 
 export function CompactSummaryMessage({ message }: Props) {
+  useI18n()
   return (
     <MetaRow>
       <ExpandableRow
@@ -25,7 +27,7 @@ export function CompactSummaryMessage({ message }: Props) {
         <div className="w-5 h-5 relative flex items-center justify-center">
           <Minimize className="h-4.5 w-4.5 text-muted-foreground" />
         </div>
-        <MetaLabel>Summarized</MetaLabel>
+        <MetaLabel>{t("chat:summarized")}</MetaLabel>
       </ExpandableRow>
     </MetaRow>
   )

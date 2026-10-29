@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { CornerDownLeft, Ellipsis, ExternalLink, Globe, Home, Minus, Play, Plus, RefreshCw, SquareArrowOutUpRight, Trash2, Zap } from "lucide-react"
 import { memo, useCallback, useEffect, useRef, useState, type FocusEvent, type FormEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react"
 import type { LocalHttpServerInfo, ProjectQuickAction } from "../../../shared/protocol"
@@ -71,6 +72,7 @@ function BrowserToolbarButton({
   onClick: () => void
   children: ReactNode
 }) {
+  useI18n()
   return (
     <Button
       type="button"
@@ -88,6 +90,7 @@ function BrowserToolbarButton({
 }
 
 function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument }: BrowserPanelProps) {
+  useI18n()
   const browserState = useRightSidebarStore((store) => store.projectBrowser[projectId])
   const navigateBrowser = useRightSidebarStore((store) => store.navigateBrowser)
   const setBrowserZoom = useRightSidebarStore((store) => store.setBrowserZoom)
@@ -256,13 +259,13 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
     <div className="space-y-1.5">
       <div className="flex items-center gap-2 pl-1 text-sm font-medium mb-3">
         <Zap className="h-4 w-4 text-muted-foreground" />
-        <span>Quick Actions</span>
+        <span>{t("browser:quickActions")}</span>
         <Button
           type="button"
           variant="ghost"
           size="none"
-          aria-label="Add quick action"
-          title="Add quick action"
+          aria-label={t("browser:addQuickAction")}
+          title={t("browser:addQuickAction")}
           onClick={() => setIsAddingQuickAction((current) => !current)}
           className="ml-auto h-6 w-6 border-border/0 text-muted-foreground hover:!border-border/0 hover:!bg-transparent hover:text-foreground"
         >
@@ -300,8 +303,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
       ) : null}
       {quickActions.length === 0 ? (
         <div className="rounded-md border border-dashed border-border/70 px-3 py-3 text-xs text-muted-foreground">
-          No quick actions.
-        </div>
+          {t("browser:noQuickActions")}</div>
       ) : (
         quickActions.map((action) => (
           <ContextMenu key={action.id}>
@@ -325,8 +327,8 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                   type="button"
                   variant="ghost"
                   size="none"
-                  aria-label="Run quick action"
-                  title="Run quick action"
+                  aria-label={t("browser:runQuickAction")}
+                  title={t("browser:runQuickAction")}
                   onClick={(event) => {
                     event.stopPropagation()
                     runQuickAction(action.command)
@@ -346,7 +348,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                 className="text-destructive focus:text-destructive"
               >
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>Delete</span>
+                <span>{t("common:delete")}</span>
               </ContextMenuItem>
             </ContextMenuContent>
           </ContextMenu>
@@ -419,10 +421,10 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
     <div data-browser-panel="true" className="h-full min-h-0 border-l border-border bg-background md:min-w-[370px]">
       <div className="flex h-full min-h-0 flex-col">
         <div className="flex shrink-0 items-center gap-1 border-b border-border px-2 py-2">
-          <BrowserToolbarButton label="Home" onClick={() => navigateBrowser(projectId, "")}>
+          <BrowserToolbarButton label={t("browser:home")} onClick={() => navigateBrowser(projectId, "")}>
             <Home className="h-4 w-4" />
           </BrowserToolbarButton>
-          <BrowserToolbarButton label="Refresh" onClick={handleRefresh}>
+          <BrowserToolbarButton label={t("browser:refresh")} onClick={handleRefresh}>
             <RefreshCw className="h-4 w-4" />
           </BrowserToolbarButton>
           <form onSubmit={handleAddressSubmit} className="group relative min-w-0 flex-1">
@@ -430,7 +432,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
               value={addressDraft}
               onChange={(event) => setAddressDraft(event.target.value)}
               readOnly={Boolean(previewDocument)}
-              placeholder="Enter a URL"
+              placeholder={t("browser:enterAURL")}
               className="h-7 rounded-[9px] px-[28px] text-xs text-muted-foreground focus:text-foreground hover:text-foreground  text-center border-border/0 bg-background hover:bg-card focus:bg-card hover:border-border/50 focus:border-border/50 transition-all"
             />
             {address && !previewDocument ? (
@@ -438,8 +440,8 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                 type="button"
                 variant="ghost"
                 size="none"
-                title="Open external"
-                aria-label="Open external"
+                title={t("browser:openExternal")}
+                aria-label={t("browser:openExternal")}
                 onClick={() => window.open(address, "_blank", "noopener,noreferrer")}
                 className="absolute right-1 top-1/2 h-6 w-6 -translate-y-1/2 border-border/0 text-muted-foreground opacity-0 hover:!border-border/0 hover:!bg-transparent hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
               >
@@ -459,10 +461,10 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                   setIsZoomTooltipOpen(false)
                 }}
               >
-                <BrowserToolbarButton label="Zoom out" onClick={() => setBrowserZoom(projectId, zoom - 0.1)}>
+                <BrowserToolbarButton label={t("browser:zoomOut")} onClick={() => setBrowserZoom(projectId, zoom - 0.1)}>
                   <Minus className="h-4 w-4" />
                 </BrowserToolbarButton>
-                <BrowserToolbarButton label="Zoom in" onClick={() => setBrowserZoom(projectId, zoom + 0.1)}>
+                <BrowserToolbarButton label={t("browser:zoomIn")} onClick={() => setBrowserZoom(projectId, zoom + 0.1)}>
                   <Plus className="h-4 w-4" />
                 </BrowserToolbarButton>
               </div>
@@ -478,7 +480,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
               <div className="h-full mx-auto max-w-[450px] flex flex-col" style={{justifyContent: "safe center"}}>
               <div className="pl-1 mb-3 flex items-center gap-2 text-sm font-medium">
                 <Globe className="h-4 w-4 text-muted-foreground" />
-                <span>Local Servers</span>
+                <span>{t("browser:localServers")}</span>
               </div>
               <div className="space-y-4">
                 {serverError ? (
@@ -503,8 +505,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                   </div>
                 ) : localServers.length === 0 ? (
                   <div className="flex h-40 items-center justify-center px-6 text-center text-sm text-muted-foreground">
-                    No local HTTP servers found.
-                  </div>
+                    {t("browser:noLocalHTTPServersFound")}</div>
                 ) : (
                   <div className="space-y-1.5">
                     {visibleServers.map((server) => {
@@ -534,8 +535,8 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                                   type="button"
                                   variant="ghost"
                                   size="none"
-                                  aria-label="Server actions"
-                                  title="Server actions"
+                                  aria-label={t("browser:serverActions")}
+                                  title={t("browser:serverActions")}
                                   onClick={openContextMenuFromButton}
                                   className="!h-auto !w-auto shrink-0 border-border/0 text-muted-foreground hover:!border-border/0 hover:!bg-transparent hover:text-foreground"
                                 >
@@ -559,7 +560,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                             }}
                           >
                             <SquareArrowOutUpRight className="h-3.5 w-3.5" />
-                            <span>Open in New Tab</span>
+                            <span>{t("browser:openInNewTab")}</span>
                           </ContextMenuItem>
                           {(
                             <ContextMenuItem
@@ -570,7 +571,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                               className="text-destructive focus:text-destructive"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
-                              <span>Kill Process</span>
+                              <span>{t("browser:killProcess")}</span>
                             </ContextMenuItem>
                           )}
                         </ContextMenuContent> : null}
@@ -585,7 +586,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                         onClick={() => setShowOtherServers((current) => !current)}
                         className="h-8 w-fit rounded-md px-2 text-xs text-muted-foreground hover:!bg-muted/40"
                       >
-                        {showOtherServers ? "Hide other projects" : `Other projects (${otherServers.length})`}
+                        {showOtherServers ? t("browser:hideOtherProjects") : t("browser:otherProjectsValue0", { v0: otherServers.length })}
                       </Button>
                     ) : null}
                   </div>
@@ -604,7 +605,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                 ref={iframeRef}
                 key={`${address}-${iframeVersion}`}
                 {...browserPreviewFrameAttributes(previewDocument ? address : (frameSrc ?? ""), previewDocument)}
-                title="Browser panel"
+                title={t("browser:browserPanel")}
                 sandbox="allow-downloads allow-forms allow-modals allow-popups allow-same-origin allow-scripts"
                 onLoad={handlePreviewLoad}
                 onError={handlePreviewError}

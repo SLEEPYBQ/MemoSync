@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "../../i18n"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { ArrowUp, Paperclip } from "lucide-react"
 import {
@@ -105,7 +106,7 @@ export function trimTrailingPastedNewlines(text: string) {
 
 export function createUploadFormData(file: File) {
   const formData = new FormData()
-  formData.append("files", file)
+  formData.append(t("chat:files"), file)
   formData.append("clientFileSizes", String(file.size))
   return formData
 }
@@ -222,6 +223,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   slashCommands = [],
   leadingControls = null,
 }, forwardedRef) {
+  useI18n()
   const {
     getDraft,
     setDraft,
@@ -506,13 +508,13 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
           if (!response.ok) {
             const payload = await response.json().catch(() => ({}))
-            throw new Error(typeof payload.error === "string" ? payload.error : "Upload failed")
+            throw new Error(typeof payload.error === "string" ? payload.error : t("chat:uploadFailed"))
           }
 
           const payload = await response.json() as { attachments: ChatAttachment[] }
           const uploaded = payload.attachments[0]
           if (!uploaded) {
-            throw new Error("Upload failed")
+            throw new Error(t("chat:uploadFailed"))
           }
 
           if (generation !== uploadGenerationRef.current) {
@@ -554,11 +556,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       })()
     }
-  }, [projectId, setAttachments])
+  }, [projectId, setAttachments, getLocale()])
 
   const enqueueFiles = useCallback((files: File[]) => {
     if (!projectId) {
-      setUploadError("Open a project before uploading files.")
+      setUploadError(t("chat:openAProjectBeforeUploadingFiles"))
       return
     }
 
@@ -567,14 +569,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       queuedAttachmentCount: uploadQueueRef.current.length,
       incomingAttachmentCount: files.length,
     })) {
-      setUploadError(`You can upload up to ${MAX_FILES_PER_DROP} files at a time.`)
+      setUploadError(t("chat:youCanUploadUpToValue0FilesAtATime", { v0: MAX_FILES_PER_DROP }))
       return
     }
 
     uploadQueueRef.current.push(...files)
     setUploadError(null)
     processUploadQueue()
-  }, [processUploadQueue, projectId])
+  }, [processUploadQueue, projectId, getLocale()])
 
   useImperativeHandle(forwardedRef, () => ({
     enqueueFiles,
@@ -862,8 +864,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </div>
             ) : null}
             <label
-              aria-label="Add attachment"
-              title="Attach files (or drag them in)"
+              aria-label={t("chat:addAttachment")}
+              title={t("chat:attachFilesOrDragThemIn")}
               className={cn(
                 buttonVariants({ variant: "ghost", size: "icon" }),
                 "relative flex-shrink-0 ml-1.5 mb-1 md:mb-2 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
@@ -875,7 +877,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 type="file"
                 multiple
                 disabled={disabled}
-                aria-label="Add attachment"
+                aria-label={t("chat:addAttachment")}
                 className="absolute inset-0 cursor-pointer opacity-0"
                 onChange={(event) => {
                   const files = [...(event.target.files ?? [])]
@@ -888,7 +890,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             </label>
             <Textarea
               ref={setTextareaRefs}
-              placeholder="Build something..."
+              placeholder={t("chat:buildSomething")}
               value={value}
               autoFocus
               {...{ [CHAT_INPUT_ATTRIBUTE]: "" }}

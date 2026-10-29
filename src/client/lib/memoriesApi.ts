@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 // Client data layer for the memory HTTP API. Same-origin relative fetch (Vite
 // proxies /api to the Bun backend in dev; one origin in prod). Envelope:
 // success = { data }, error = { error: { code, message } } — matches
@@ -62,10 +63,10 @@ async function unwrap<T>(res: Response): Promise<T> {
   try {
     payload = await res.json()
   } catch {
-    throw new Error(`Request failed (${res.status})`)
+    throw new Error(t("errors:requestFailedValue0", { v0: res.status }))
   }
   if (!res.ok || payload.error) {
-    throw new Error(payload.error?.message ?? `Request failed (${res.status})`)
+    throw new Error(payload.error?.message ?? t("errors:requestFailedValue0", { v0: res.status }))
   }
   return payload.data as T
 }

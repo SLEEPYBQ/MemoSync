@@ -1,3 +1,5 @@
+import { Trans } from "react-i18next"
+import { t, useI18n } from "../i18n"
 import {
   ArrowLeftRight,
   BrainCircuit,
@@ -57,6 +59,7 @@ export function LandingProjectMenu({
   onPickPath: (path: string) => void
   onAddProject: () => void
 }) {
+  useI18n()
   return (
     <>
       {projectPaths.map((path) => (
@@ -72,7 +75,7 @@ export function LandingProjectMenu({
       <PopoverMenuItem
         selected={false}
         icon={<Plus className="h-4 w-4 text-muted-foreground" />}
-        label="Add project…"
+        label={t("chat:addProject")}
         onClick={onAddProject}
       />
     </>
@@ -80,6 +83,7 @@ export function LandingProjectMenu({
 }
 
 function CopyButton({ text }: { text: string }) {
+  useI18n()
   const [copied, setCopied] = useState(false)
 
   async function handleCopy() {
@@ -101,6 +105,7 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function CodeBlock({ children }: { children: string }) {
+  useI18n()
   return (
     <div className="grid grid-cols-[1fr_auto] items-center group bg-background border border-border text-foreground rounded-xl p-1.5 pl-3 font-mono text-sm">
       <pre className="inline-flex items-center gap-2 overflow-x-auto">
@@ -113,10 +118,12 @@ function CodeBlock({ children }: { children: string }) {
 }
 
 function InfoCard({ children }: { children: ReactNode }) {
+  useI18n()
   return <div className="bg-card border border-border rounded-2xl p-4">{children}</div>
 }
 
 function SectionHeader({ children }: { children: ReactNode }) {
+  useI18n()
   return (
     <h2 className="text-[13px] font-medium text-muted-foreground uppercase tracking-wider mb-3">
       {children}
@@ -135,6 +142,7 @@ function HowItWorksItem({
   subtitle: string
   iconClassName?: string
 }) {
+  useI18n()
   return (
     <div className="flex flex-col items-center gap-0">
       <div className="p-3 mb-2 rounded-xl bg-background border border-border">
@@ -147,6 +155,7 @@ function HowItWorksItem({
 }
 
 function HowItWorksConnector() {
+  useI18n()
   return <ArrowLeftRight className="h-4 w-4 text-muted-foreground" />
 }
 
@@ -159,6 +168,7 @@ function Step({
   title: string
   children: ReactNode
 }) {
+  useI18n()
   return (
     <div className="flex gap-4">
       <div className="flex-1 min-w-0">
@@ -175,6 +185,7 @@ function Step({
 // Landing counts come from the shared memory store plus one needs-attention
 // probe per visit — the same sources the sidebar badge polls.
 function useLandingMemorySummary(enabled: boolean) {
+  useI18n()
   const items = useMemoryStore((s) => s.items)
   const status = useMemoryStore((s) => s.status)
   const loadAll = useMemoryStore((s) => s.loadAll)
@@ -215,6 +226,7 @@ function useLandingMemorySummary(enabled: boolean) {
 }
 
 function CardBadge({ count, countTitle }: { count: number; countTitle: string }) {
+  useI18n()
   if (count > 0) {
     return (
       <span
@@ -245,6 +257,7 @@ function FeatureCard({
   badge?: ReactNode
   onClick: () => void
 }) {
+  useI18n()
   return (
     <button
       type="button"
@@ -260,6 +273,7 @@ function FeatureCard({
 }
 
 export function LocalDev(props: LocalDevProps) {
+  useI18n()
   return <LocalDevContent {...props} />
 }
 
@@ -275,6 +289,7 @@ export function LocalDevContent({
   availableProviders,
   projectIdByPath,
 }: LocalDevProps & { }) {
+  useI18n()
   const navigate = useNavigate()
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
   const projectPaths = useMemo(() => projects.map((project) => project.localPath), [projects])
@@ -284,7 +299,7 @@ export function LocalDevContent({
   const [pickedPath, setPickedPath] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
-  const machineName = snapshot?.machine.displayName ?? "this machine"
+  const machineName = snapshot?.machine.displayName ?? t("chat:thisMachine")
 
   const { summary, attentionCount } = useLandingMemorySummary(isConnected)
   const showCandidatesCard = true
@@ -301,24 +316,23 @@ export function LocalDevContent({
           <PageHeader
             narrow
             icon={CodeXml}
-            title={isConnecting ? `Connecting ${DISPLAY_NAME}` : `Connect ${DISPLAY_NAME}`}
+            title={isConnecting ? t("chat:connectingValue0", { v0: DISPLAY_NAME }) : t("chat:connectValue0", { v0: DISPLAY_NAME })}
             subtitle={isConnecting
-              ? `${DISPLAY_NAME} is starting up and loading your local projects.`
-              : `Run ${DISPLAY_NAME} directly on your machine with full access to your local files and agent project history.`}
+              ? t("chat:value0IsStartingUpAndLoadingYourLocalProjects", { v0: DISPLAY_NAME })
+              : t("chat:runValue0DirectlyOnYourMachineWithFullAccessTo", { v0: DISPLAY_NAME })}
           />
           <div className="max-w-2xl w-full mx-auto pb-12 px-6">
-            <SectionHeader>Status</SectionHeader>
+            <SectionHeader>{t("chat:status")}</SectionHeader>
             <div className="mb-8">
               <InfoCard>
                 <div className="flex items-center gap-3">
                   <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
                   <span className="text-sm text-muted-foreground">
                     {isConnecting ? (
-                      `Connecting to your local ${DISPLAY_NAME} server...`
+                      t("chat:connectingToYourLocalValue0Server", { v0: DISPLAY_NAME })
                     ) : (
                       <>
-                        Not connected. Run <code className="bg-background border border-border rounded-md mx-0.5 p-1 font-mono text-xs text-foreground">{getCliInvocation()}</code> from any terminal on this machine.
-                      </>
+                        <Trans ns="chat" i18nKey="notConnectedCommand" values={{ command: getCliInvocation() }} components={{ code: <code className="bg-background border border-border rounded-md mx-0.5 p-1 font-mono text-xs text-foreground" /> }} /></>
                     )}
                   </span>
                 </div>
@@ -327,14 +341,14 @@ export function LocalDevContent({
 
             {!isConnecting ? (
               <div className="mb-10">
-              <SectionHeader>How it works</SectionHeader>
+              <SectionHeader>{t("chat:howItWorks")}</SectionHeader>
               <InfoCard>
                 <div className="flex items-center justify-around gap-6 py-4 px-2">
-                  <HowItWorksItem icon={Terminal} title={`${DISPLAY_NAME} CLI`} subtitle="On Your Machine" />
+                  <HowItWorksItem icon={Terminal} title={`${DISPLAY_NAME} CLI`} subtitle={t("chat:onYourMachine")} />
                   <HowItWorksConnector />
-                  <HowItWorksItem icon={Monitor} title={`${DISPLAY_NAME} Server`} subtitle="Local WebSocket" />
+                  <HowItWorksItem icon={Monitor} title={`${DISPLAY_NAME} Server`} subtitle={t("chat:localWebSocket")} />
                   <HowItWorksConnector />
-                  <HowItWorksItem icon={CodeXml} title={`${DISPLAY_NAME} UI`} subtitle="Project Chat" />
+                  <HowItWorksItem icon={CodeXml} title={`${DISPLAY_NAME} UI`} subtitle={t("chat:projectChat")} />
                 </div>
               </InfoCard>
               </div>
@@ -342,29 +356,29 @@ export function LocalDevContent({
 
             {!isConnecting ? (
               <div className="mb-10">
-              <SectionHeader>Setup</SectionHeader>
+              <SectionHeader>{t("chat:setup")}</SectionHeader>
               <InfoCard>
                 <div className="space-y-4">
-                  <Step number={1} title={`Start ${DISPLAY_NAME}`}>
-                    <p>Run this command in your terminal:</p>
+                  <Step number={1} title={t("chat:startValue0", { v0: DISPLAY_NAME })}>
+                    <p>{t("chat:runThisCommandInYourTerminal")}</p>
                     <CodeBlock>{getCliInvocation()}</CodeBlock>
                   </Step>
 
-                  <Step number={2} title="Open the local UI">
-                    <p>{DISPLAY_NAME} serves the app locally and opens the Local Projects page in an app-style browser window.</p>
+                  <Step number={2} title={t("chat:openTheLocalUI")}>
+                    <p>{DISPLAY_NAME} {t("chat:servesTheAppLocallyAndOpensTheLocalProjectsPage")}</p>
                     <CodeBlock>http://localhost:3210/local</CodeBlock>
                   </Step>
 
                   <div className="mt-8">
-                    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">Notes</h3>
+                    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-4">{t("chat:notes")}</h3>
                     <div className="space-y-3 text-sm">
                       <div className="flex gap-4">
                         <code className="font-mono text-foreground whitespace-nowrap">{getCliInvocation("").trim()}</code>
-                        <span className="text-muted-foreground">Start in the current directory</span>
+                        <span className="text-muted-foreground">{t("chat:startInTheCurrentDirectory")}</span>
                       </div>
                       <div className="flex gap-4">
                         <code className="font-mono text-foreground whitespace-nowrap">{getCliInvocation("--no-open")}</code>
-                        <span className="text-muted-foreground">Start the server without opening the browser</span>
+                        <span className="text-muted-foreground">{t("chat:startTheServerWithoutOpeningTheBrowser")}</span>
                       </div>
                     </div>
                   </div>
@@ -390,7 +404,7 @@ export function LocalDevContent({
               <ChatInput
                 key="landing"
                 onSubmit={(value, options) => {
-                  if (!selectedPath) return Promise.reject(new Error("Open a project first"))
+                  if (!selectedPath) return Promise.reject(new Error(t("chat:openAProjectFirst")))
                   return onSend(value, { ...options, projectLocalPath: selectedPath })
                 }}
                 disabled={!selectedPath}
@@ -406,7 +420,7 @@ export function LocalDevContent({
                       trigger={
                         <>
                           <Folder className="h-3.5 w-3.5" />
-                          <span>{selectedName ?? "No project yet"}</span>
+                          <span>{selectedName ?? t("chat:noProjectYet")}</span>
                           <ChevronDown className="h-3 w-3 opacity-60" />
                         </>
                       }
@@ -446,38 +460,38 @@ export function LocalDevContent({
               {(
                 <FeatureCard
                   icon={BrainCircuit}
-                  title="Memory Board"
+                  title={t("common:memoryBoard")}
                   description={
                     <>
-                      {summary.active} active —{" "}
-                      <span className={MEMORY_SCOPE_TEXT_CLASSES.personal}>{summary.byScope.personal} personal</span>
+                      {summary.active} {t("chat:active")}{" "}
+                      <span className={MEMORY_SCOPE_TEXT_CLASSES.personal}>{summary.byScope.personal} {t("chat:personal")}</span>
                       {" · "}
-                      <span className={MEMORY_SCOPE_TEXT_CLASSES.project}>{summary.byScope.project} project</span>
+                      <span className={MEMORY_SCOPE_TEXT_CLASSES.project}>{summary.byScope.project} {t("chat:project")}</span>
                       {" · "}
-                      <span className={MEMORY_SCOPE_TEXT_CLASSES.session}>{summary.byScope.session} session</span>
+                      <span className={MEMORY_SCOPE_TEXT_CLASSES.session}>{summary.byScope.session} {t("chat:session")}</span>
                     </>
                   }
-                  badge={<CardBadge count={attentionCount} countTitle={`${attentionCount} ${attentionCount === 1 ? "memory needs" : "memories need"} attention`} />}
+                  badge={<CardBadge count={attentionCount} countTitle={t("chat:value0Value1Attention", { v0: attentionCount, v1: attentionCount === 1 ? t("chat:memoryNeeds") : t("chat:memoriesNeed") })} />}
                   onClick={() => navigate("/memory")}
                 />
               )}
               {showCandidatesCard ? (
                 <FeatureCard
                   icon={Inbox}
-                  title="Review candidates"
+                  title={t("chat:reviewCandidates")}
                   description={
                     summary.candidates > 0
-                      ? `${summary.candidates} proposed ${summary.candidates === 1 ? "memory is" : "memories are"} waiting for your decision`
-                      : "Proposed memories wait here for review before they become active"
+                      ? t("chat:value0ProposedValue1WaitingForYourDecision", { v0: summary.candidates, v1: summary.candidates === 1 ? t("chat:memoryIs") : t("chat:memoriesAre") })
+                      : t("chat:proposedMemoriesWaitHereForReviewBeforeTheyBecomeActive")
                   }
-                  badge={<CardBadge count={summary.candidates} countTitle={`${summary.candidates} to review`} />}
+                  badge={<CardBadge count={summary.candidates} countTitle={t("chat:value0ToReview", { v0: summary.candidates })} />}
                   onClick={() => navigate("/memory?focus=candidates")}
                 />
               ) : null}
               <FeatureCard
                 icon={Plus}
-                title="Add a project"
-                description={`Create or open a folder on ${machineName}`}
+                title={t("chat:addAProject")}
+                description={t("chat:createOrOpenAFolderOnValue0", { v0: machineName })}
                 onClick={() => onNewProjectOpenChange(true)}
               />
             </div>

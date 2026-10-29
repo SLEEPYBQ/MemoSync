@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { useMemo, useState } from "react"
 import type { ChatAttachment } from "../../../shared/types"
 import Markdown from "react-markdown"
@@ -28,6 +29,7 @@ function parseSystemMessage(content: string) {
 }
 
 export function UserMessage({ content, attachments = [], steered = false }: Props) {
+  useI18n()
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const renderOptions = useTranscriptRenderOptions()
   const parsedContent = useMemo(() => parseSystemMessage(content), [content])
@@ -88,9 +90,9 @@ export function UserMessage({ content, attachments = [], steered = false }: Prop
           <div className="flex max-w-[85%] items-center gap-2 sm:max-w-[80%]">
             {steered ? (
               <span
-                aria-label="Sent mid-turn"
+                aria-label={t("chat:sentMidTurn")}
                 role="img"
-                title="Sent mid-turn"
+                title={t("chat:sentMidTurn")}
                 className="shrink-0 text-muted-foreground"
               >
                 <CornerUpLeft className="h-4 w-4" />

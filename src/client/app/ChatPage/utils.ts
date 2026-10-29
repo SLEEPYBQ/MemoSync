@@ -1,8 +1,9 @@
+import { t } from "../../i18n"
 import type { ChatBranchListEntry, ChatDiffSnapshot } from "../../../shared/types"
 import type { ResolvedTranscriptRow } from "../ChatTranscript"
 import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 
-export const EMPTY_STATE_TEXT = "What are we building?"
+export const EMPTY_STATE_TEXT = t("chat:whatAreWeBuilding")
 export const EMPTY_STATE_TYPING_INTERVAL_MS = 19
 export const CHAT_NAVBAR_OFFSET_PX = 72
 export const DIFF_REFRESH_INTERVAL_MS = 5_000
@@ -116,7 +117,7 @@ export function sameContextWindowSnapshot(left: ContextWindowSnapshot | null, ri
 }
 
 export function hasFileDragTypes(types: Iterable<string>) {
-  return Array.from(types).includes("Files")
+  return Array.from(types).includes(t("chat:files2"))
 }
 
 export function isAbsoluteLocalPath(value: string) {

@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "../../i18n"
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
 import { type LegendListRef } from "@legendapp/list/react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
@@ -50,6 +51,7 @@ export {
 } from "./utils"
 
 function useEmptyStateTyping(showEmptyState: boolean, activeChatId: string | null) {
+  useI18n()
   const [typedEmptyStateText, setTypedEmptyStateText] = useState("")
   const [isEmptyStateTypingComplete, setIsEmptyStateTypingComplete] = useState(false)
 
@@ -80,6 +82,7 @@ function usePageFileDrop(args: {
   hasSelectedProject: boolean
   onFilesDropped: (files: File[]) => void
 }) {
+  useI18n()
   const [isPageFileDragActive, setIsPageFileDragActive] = useState(false)
   const pageFileDragDepthRef = useRef(0)
 
@@ -128,6 +131,7 @@ function usePageFileDrop(args: {
 }
 
 function useLayoutWidth(ref: RefObject<HTMLDivElement | null>) {
+  useI18n()
   const [layoutWidth, setLayoutWidth] = useState(0)
 
   useLayoutEffect(() => {
@@ -150,6 +154,7 @@ function useLayoutWidth(ref: RefObject<HTMLDivElement | null>) {
 }
 
 function useTranscriptPaddingBottom() {
+  useI18n()
   const inputRef = useRef<HTMLDivElement>(null)
   const [inputHeight, setInputHeight] = useState(148)
 
@@ -206,6 +211,7 @@ export function getRightSidebarSizePx(sizePercent: number, layoutWidth: number) 
 }
 
 function useMobileRightSidebarOverlayEnabled() {
+  useI18n()
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 0 : window.innerWidth))
 
   useEffect(() => {
@@ -225,6 +231,7 @@ function useFixedTerminalHeight(args: {
   shouldRenderTerminalLayout: boolean
   terminalMainSizes: [number, number]
 }) {
+  useI18n()
   const [fixedTerminalHeight, setFixedTerminalHeight] = useState(0)
 
   useEffect(() => {
@@ -282,6 +289,7 @@ interface ChatWorkspaceProps {
 type ChatSidebarContentProps = ComponentProps<typeof GitPanel>
 
 const ChatSidebarContent = memo(function ChatSidebarContent(props: ChatSidebarContentProps) {
+  useI18n()
   return (
     <GitPanel
       {...props}
@@ -309,6 +317,7 @@ const DesktopSidebarPane = memo(function DesktopSidebarPane({
   sidebarVisualRef,
   content,
 }: DesktopSidebarPaneProps) {
+  useI18n()
   return (
     <ResizablePanel
       id="rightSidebar"
@@ -348,6 +357,7 @@ const MobileSidebarPane = memo(function MobileSidebarPane({
   onClose,
   content,
 }: MobileSidebarPaneProps) {
+  useI18n()
   if (!projectId) {
     return null
   }
@@ -364,7 +374,7 @@ const MobileSidebarPane = memo(function MobileSidebarPane({
       <button
         type="button"
         className="absolute inset-0 bg-black/45 backdrop-blur-[1px]"
-        aria-label="Close changes sidebar"
+        aria-label={t("chat:closeChangesSidebar")}
         onClick={onClose}
       />
       <div
@@ -408,6 +418,7 @@ function ChatWorkspace({
   onTerminalLayout,
   onLayoutChanged,
 }: ChatWorkspaceProps) {
+  useI18n()
   if (!shouldRenderTerminalLayout) {
     return <>{chatCard}</>
   }
@@ -472,6 +483,7 @@ function ChatWorkspace({
 }
 
 export function ChatPage() {
+  useI18n()
   const state = useOutletContext<AppState>()
   const dialog = useAppDialog()
   const layoutRootRef = useRef<HTMLDivElement>(null)
@@ -724,10 +736,10 @@ export function ChatPage() {
     if (state.chatDiffSnapshot?.status === "no_repo") {
       void (async () => {
         const confirmed = await dialog.confirm({
-          title: "Initialize Git?",
-          description: "Initialize a local git repository in this project?",
-          confirmLabel: "Init Git",
-          cancelLabel: "Cancel",
+          title: t("chat:initializeGit"),
+          description: t("chat:initializeALocalGitRepositoryInThisProject"),
+          confirmLabel: t("chat:initGit"),
+          cancelLabel: t("common:cancel"),
         })
         if (!confirmed) return
 
@@ -740,7 +752,7 @@ export function ChatPage() {
     }
 
     toggleRightPanel(projectId, "git")
-  }, [activeRightPanel, dialog, handleInitializeGit, hideRightPanel, projectId, state.chatDiffSnapshot?.status, toggleRightPanel])
+  }, [activeRightPanel, dialog, handleInitializeGit, hideRightPanel, projectId, state.chatDiffSnapshot?.status, toggleRightPanel, getLocale()])
 
   const handleToggleBrowserPanel = useCallback(() => {
     if (!projectId) return
@@ -1197,7 +1209,7 @@ export function ChatPage() {
       },
       resume: async (args) => {
         const correction = args.correction?.trim()
-        if (!correction) throw new Error("A correction is required to resume")
+        if (!correction) throw new Error(t("chat:aCorrectionIsRequiredToResume"))
         await state.socket.command({
           type: "chat.resumeInterrupted",
           chatId,
@@ -1208,7 +1220,7 @@ export function ChatPage() {
         })
       },
     }
-  }, [state.activeChatId, state.canCancel, state.socket])
+  }, [state.activeChatId, state.canCancel, state.socket, getLocale()])
 
   return (
     <TurnInterruptContext.Provider value={turnInterruptApi}>

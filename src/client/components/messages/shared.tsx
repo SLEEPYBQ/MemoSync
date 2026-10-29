@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { MEMORY_BADGE_BASE } from "../memory/MemoryBadge"
 import {
   Children,
@@ -69,6 +70,7 @@ export function OpenLocalLinkProvider({
   children: ReactNode
   onOpenLocalLink?: OpenLocalLinkHandler
 }) {
+  useI18n()
   return (
     <OpenLocalLinkContext.Provider value={onOpenLocalLink ?? defaultOpenLocalLink}>
       {children}
@@ -110,6 +112,7 @@ export function getToolIcon(toolName: string): LucideIcon {
 
 // Container for meta-style messages (system, tool, result)
 export function MetaRow({ children, className }: { children: ReactNode; className?: string }) {
+  useI18n()
   return (
     <div className={cn("flex gap-3 justify-start items-center", className)}>
       {children}
@@ -119,6 +122,7 @@ export function MetaRow({ children, className }: { children: ReactNode; classNam
 
 // Content row with consistent text styling
 export function MetaContent({ children, className }: { children: ReactNode; className?: string }) {
+  useI18n()
   return (
     <div className={cn("flex items-center gap-1.5 text-xs", className)}>
       {children}
@@ -128,16 +132,19 @@ export function MetaContent({ children, className }: { children: ReactNode; clas
 
 // Separator pipe
 export function MetaSeparator() {
+  useI18n()
   return <span className="text-muted-foreground">|</span>
 }
 
 // Bold label text
 export function MetaLabel({ children, className }: { children: ReactNode; className?: string }) {
+  useI18n()
   return <span className={cn("font-medium text-foreground/80", className)}>{children}</span>
 }
 
 // Muted text
 export function MetaText({ children }: { children: ReactNode }) {
+  useI18n()
   return <span className="text-muted-foreground">{children}</span>
 }
 
@@ -151,6 +158,7 @@ interface ExpandableRowProps {
 }
 
 export function ExpandableRow({ children, expandedContent, defaultExpanded = false, onExpandedChange }: ExpandableRowProps) {
+  useI18n()
   const [expanded, setExpandedState] = useState(defaultExpanded)
   const setExpanded = (next: boolean) => {
     setExpandedState(next)
@@ -180,6 +188,7 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
 
 // Code block for expanded content
 export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode; children: ReactNode; copyText?: string }) {
+  useI18n()
   const [copied, setCopied] = useState(false)
   const textContent = copyText ?? extractText(children)
 
@@ -215,6 +224,7 @@ export function MetaCodeBlock({ label, children, copyText }: { label: ReactNode;
 
 // Pill/badge for tags
 export function MetaPill({ children, icon: Icon, className }: { children: ReactNode; icon?: LucideIcon; className?: string }) {
+  useI18n()
   return (
     <span className={cn("inline-flex items-center gap-1 px-2 py-1 bg-muted border border-border  rounded-full", className)}>
       {Icon && <Icon className="h-3 w-3 text-muted-foreground" />}
@@ -225,6 +235,7 @@ export function MetaPill({ children, icon: Icon, className }: { children: ReactN
 
 // Container with vertical line on the left
 export function VerticalLineContainer({ children, className }: { children: ReactNode; className?: string }) {
+  useI18n()
   return (
     <div className={cn("grid grid-cols-[auto_1fr] gap-2 min-w-0", className)}>
       <div className=" min-w-5 flex flex-col relative items-center justify-center">
@@ -242,6 +253,7 @@ export function VerticalLineContainer({ children, className }: { children: React
 // concurrent calls itself, so this hook gates on `status` (effects in the same
 // commit run synchronously, so only the first mount actually fetches).
 export function useEnsureMemoriesLoaded() {
+  useI18n()
   const { readonly } = useTranscriptRenderOptions()
   const status = useMemoryStore((s) => s.status)
   const loadAll = useMemoryStore((s) => s.loadAll)
@@ -274,6 +286,7 @@ export interface TurnInterruptApi {
 }
 export const TurnInterruptContext = createContext<TurnInterruptApi | null>(null)
 export function useTurnInterrupt() {
+  useI18n()
   return useContext(TurnInterruptContext)
 }
 
@@ -282,6 +295,7 @@ export function useTurnInterrupt() {
 // reply and the live Memory Record row opt into this narrower scope.
 const CurrentTurnMemoryCitationContext = createContext(false)
 export function CurrentTurnMemoryCitationProvider({ children }: { children: ReactNode }) {
+  useI18n()
   return (
     <CurrentTurnMemoryCitationContext.Provider value>
       {children}
@@ -293,6 +307,7 @@ export function CurrentTurnMemoryCitationProvider({ children }: { children: Reac
 // the store; unresolved ids render as a neutral, non-interactive chip (either
 // truly unknown, or the store hasn't loaded yet).
 export function MemoryCitationChip({ id, children }: { id: string; children?: ReactNode }) {
+  useI18n()
   useEnsureMemoriesLoaded()
   const { chatId } = useTranscriptChatContext()
   const memory = useMemoryStore((s) => s.items.find((m) => m.id === id))
@@ -323,7 +338,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
   if (!memory) {
     return (
       <span
-        title={`Stored memory ${id}`}
+        title={t("chat:storedMemoryValue0", { v0: id })}
         data-memory-interrupt-source={belongsToCurrentTurn ? "current-turn" : undefined}
         className={cn(
           MEMORY_BADGE_BASE, "shrink-0 whitespace-nowrap border-border bg-muted align-baseline font-mono text-muted-foreground",
@@ -371,8 +386,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
       <HoverCardContent className="w-80 text-xs">
         {violatedHere ? (
           <p className="mb-2 flex items-center gap-1 font-medium text-destructive">
-            <AlertTriangle className="h-3 w-3 shrink-0" /> this reply violated the memory — details in the trace below
-          </p>
+            <AlertTriangle className="h-3 w-3 shrink-0" /> {t("chat:thisReplyViolatedTheMemoryDetailsInTheTraceBelow")}</p>
         ) : null}
         {/* Inspect the canonical memory here; Stop/Confirm stays beside the citation. */}
         <MemoryCardCore item={memory} />
@@ -385,8 +399,8 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
         type="button"
         data-memory-interrupt="visible"
         disabled={interruptApi.readOnly}
-        aria-label={interruptApi.readOnly ? "Stop control example" : inlineArmed ? "Confirm: stop the turn over this memory" : "Stop the turn over this memory"}
-        title={interruptApi.readOnly ? "Stop control example (read-only)" : inlineArmed ? "Press again to stop the turn over this memory" : "Stop the turn over this memory"}
+        aria-label={interruptApi.readOnly ? t("chat:stopControlExample") : inlineArmed ? t("memory:confirmStop") : t("chat:stopTheTurnOverThisMemory")}
+        title={interruptApi.readOnly ? t("chat:stopControlExampleReadOnly") : inlineArmed ? t("chat:pressAgainToStopTheTurnOverThisMemory") : t("chat:stopTheTurnOverThisMemory")}
         onClick={() => {
           if (!inlineArmed) {
             setInlineArmed(true)
@@ -406,7 +420,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
         )}
       >
         <Square className="h-2.5 w-2.5 fill-current" />
-        {inlineArmed ? "Confirm" : "Stop"}
+        {inlineArmed ? t("common:confirm") : t("chat:stop")}
       </button>
     ) : null}
     </>

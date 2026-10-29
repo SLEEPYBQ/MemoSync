@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import {
   Panel,
   Group,
@@ -31,6 +32,7 @@ const ResizableHandle = ({
   withHandle?: boolean
   orientation: Orientation
 }) => {
+  useI18n()
   void withHandle
 
   return (
@@ -50,7 +52,7 @@ const ResizableHandle = ({
       )}
       {...props}
     >
-      <span className="sr-only">{orientation === "vertical" ? "Resize rows" : "Resize columns"}</span>
+      <span className="sr-only">{orientation === "vertical" ? t("chat:resizeRows") : t("chat:resizeColumns")}</span>
     </Separator>
   )
 }
