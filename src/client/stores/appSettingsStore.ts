@@ -44,6 +44,10 @@ export function mergeAppSettingsPatch(
         },
       },
     },
+    memory: {
+      ...settings.memory,
+      ...patch.memory,
+    },
     memoryPreview: {
       ...settings.memoryPreview,
       ...patch.memoryPreview,

@@ -47,3 +47,6 @@ vite.config.ts.timestamp-*
 .playwright-cli/
 /output/
 /garden-gpt-image-2/
+
+# Codex dispatch run records
+.codex-runs/

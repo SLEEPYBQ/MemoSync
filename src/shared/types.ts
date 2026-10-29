@@ -5,6 +5,9 @@ export type AgentProvider = "claude" | "codex"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
+export type ChatBrowserNotificationPreference = ChatSoundPreference
+/** What Enter does while a turn runs; Cmd/Ctrl+Enter does the other one. */
+export type SubmitWhileRunning = "queue" | "steer"
 export type ChatSoundId = "blow" | "bottle" | "frog" | "funk" | "glass" | "ping" | "pop" | "purr" | "tink"
 export type DefaultProviderPreference = "last_used" | AgentProvider
 export type EditorPreset = "cursor" | "vscode" | "xcode" | "windsurf" | "custom"
@@ -443,6 +446,17 @@ export interface LocalProjectsSnapshot {
 }
 
 /** Memory-preview gate behavior (STUDY_PLAN §2.4 — a system setting, not a study manipulation). */
+/**
+ * User-level memory switches (ignored in study mode, where the condition
+ * policy alone decides). A chat can additionally turn memory off for itself.
+ */
+export interface MemorySettings {
+  /** Master switch: off = the agent neither reads nor learns memories, and no memory gates run. */
+  enabled: boolean
+  /** While enabled: whether the agent may propose new memories / library changes from conversations. */
+  learn: boolean
+}
+
 export interface MemoryPreviewSettings {
   /** Master switch for the per-turn preview gate. */
   enabled: boolean
@@ -455,6 +469,8 @@ export interface AppSettingsSnapshot {
   theme: AppThemePreference
   chatSoundPreference: ChatSoundPreference
   chatSoundId: ChatSoundId
+  chatBrowserNotificationPreference: ChatBrowserNotificationPreference
+  submitWhileRunning: SubmitWhileRunning
   terminal: {
     scrollbackLines: number
     minColumnWidth: number
@@ -465,6 +481,7 @@ export interface AppSettingsSnapshot {
   }
   defaultProvider: DefaultProviderPreference
   providerDefaults: ChatProviderPreferences
+  memory: MemorySettings
   memoryPreview: MemoryPreviewSettings
   warning: string | null
   filePathDisplay: string
@@ -475,6 +492,8 @@ export interface AppSettingsPatch {
   theme?: AppThemePreference
   chatSoundPreference?: ChatSoundPreference
   chatSoundId?: ChatSoundId
+  chatBrowserNotificationPreference?: ChatBrowserNotificationPreference
+  submitWhileRunning?: SubmitWhileRunning
   terminal?: Partial<AppSettingsSnapshot["terminal"]>
   editor?: Partial<AppSettingsSnapshot["editor"]>
   defaultProvider?: DefaultProviderPreference
@@ -482,6 +501,7 @@ export interface AppSettingsPatch {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
   }
+  memory?: Partial<MemorySettings>
   memoryPreview?: Partial<MemoryPreviewSettings>
 }
 

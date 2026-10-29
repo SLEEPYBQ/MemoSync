@@ -530,6 +530,8 @@ export function createWsRouter({
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
+    submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -556,6 +558,10 @@ export function createWsRouter({
         },
         planMode: false,
       },
+    },
+    memory: {
+      enabled: true,
+      learn: true,
     },
     memoryPreview: {
       enabled: true,
@@ -592,6 +598,10 @@ export function createWsRouter({
           ...patch.providerDefaults?.codex?.modelOptions,
         },
       },
+    },
+    memory: {
+      ...snapshot.memory,
+      ...patch.memory,
     },
     memoryPreview: {
       ...snapshot.memoryPreview,

@@ -108,6 +108,8 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   theme: "system",
   chatSoundPreference: "always",
   chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
+    submitWhileRunning: "queue",
   terminal: {
     scrollbackLines: 1_000,
     minColumnWidth: 450,
@@ -134,6 +136,10 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
       },
       planMode: false,
     },
+  },
+  memory: {
+    enabled: true,
+    learn: true,
   },
   memoryPreview: {
     enabled: true,
