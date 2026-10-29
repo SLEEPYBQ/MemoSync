@@ -1,3 +1,4 @@
+import { uiJson } from "../shared/ui-copy"
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -546,7 +547,7 @@ async function startLockedMemoSyncServer(
           if (url.pathname === "/auth/status") {
             return auth
               ? auth.handleStatus(req)
-              : Response.json({ enabled: false, authenticated: true })
+              : uiJson({ enabled: false, authenticated: true })
           }
 
           if (url.pathname === "/auth/logout") {
@@ -556,7 +557,7 @@ async function startLockedMemoSyncServer(
 
             return auth
               ? auth.handleLogout(req)
-              : Response.json({ ok: true })
+              : uiJson({ ok: true })
           }
 
           if ((url.pathname === "/ws" || url.pathname.startsWith("/api/")) && !validateRequestOrigin(req, {
@@ -595,7 +596,7 @@ async function startLockedMemoSyncServer(
                 return new Response("Unauthorized", { status: 401 })
               }
             } else if (url.pathname.startsWith("/api/") && !auth.isAuthenticated(req)) {
-              return Response.json({ error: "Unauthorized" }, { status: 401 })
+              return uiJson({ error: "Unauthorized" }, { status: 401 })
             }
           }
 
@@ -610,7 +611,7 @@ async function startLockedMemoSyncServer(
           }
 
           if (url.pathname === "/health") {
-            return Response.json({ ok: true, port: actualPort })
+            return uiJson({ ok: true, port: actualPort })
           }
 
           const uploadResponse = await handleProjectUpload(req, url, store)
@@ -669,18 +670,18 @@ async function startLockedMemoSyncServer(
           if (url.pathname === "/api/model-registry/models" && req.method === "GET") {
 
             const connection = await resolvePiConnection()
-            return Response.json({ models: connection ? await loadRegistryModels(connection, url.searchParams.get("model") ?? undefined) : [] })
+            return uiJson({ models: connection ? await loadRegistryModels(connection, url.searchParams.get("model") ?? undefined) : [] })
           }
 
           if (url.pathname === "/api/providers") {
-            return Response.json({ data: deployedProviders() })
+            return uiJson({ data: deployedProviders() })
           }
 
           // Add Project's path picker browses the WORKSPACE machine's
           // filesystem — participants otherwise read the path field as their
           // own computer (pilot feedback 2026-08-11).
           if (url.pathname === "/api/workspace/dirs") {
-            return Response.json({ data: listWorkspaceDirectories(url.searchParams.get("path") ?? undefined) })
+            return uiJson({ data: listWorkspaceDirectories(url.searchParams.get("path") ?? undefined) })
           }
 
           return serveStatic(distDir, url.pathname)
@@ -778,31 +779,31 @@ export async function handleProjectUpload(
 
   const project = store.getProject(match[1])
   if (!project) {
-    return Response.json({ error: "Project not found" }, { status: 404 })
+    return uiJson({ error: "Project not found" }, { status: 404 })
   }
 
   const declaredSize = Number(req.headers.get("content-length"))
   if (Number.isFinite(declaredSize) && declaredSize > MAX_REQUEST_BODY_SIZE_BYTES) {
-    return Response.json({ error: "Upload request is too large." }, { status: 413 })
+    return uiJson({ error: "Upload request is too large." }, { status: 413 })
   }
 
   let formData: FormData
   try {
     formData = await req.formData()
   } catch {
-    return Response.json({ error: "Could not read the upload request. Please try again." }, { status: 400 })
+    return uiJson({ error: "Could not read the upload request. Please try again." }, { status: 400 })
   }
   const files = formData
     .getAll("files")
     .filter((value): value is File => value instanceof File)
 
   if (files.length === 0) {
-    return Response.json({ error: "No files uploaded" }, { status: 400 })
+    return uiJson({ error: "No files uploaded" }, { status: 400 })
   }
 
   const validationError = validateUploadFiles(files)
   if (validationError) {
-    return Response.json({ error: validationError.error }, { status: validationError.status })
+    return uiJson({ error: validationError.error }, { status: validationError.status })
   }
 
   const clientSizes = formData.getAll("clientFileSizes")
@@ -810,10 +811,10 @@ export async function handleProjectUpload(
     if (clientSizes.length !== files.length || clientSizes.some((value) =>
       typeof value !== "string" || !value.trim() || !Number.isSafeInteger(Number(value)) || Number(value) < 0
     )) {
-      return Response.json({ error: "Invalid upload size metadata." }, { status: 400 })
+      return uiJson({ error: "Invalid upload size metadata." }, { status: 400 })
     }
     if (files.some((file, index) => file.size !== Number(clientSizes[index]))) {
-      return Response.json({ error: "The uploaded file size does not match. Please try again." }, { status: 400 })
+      return uiJson({ error: "The uploaded file size does not match. Please try again." }, { status: 400 })
     }
   }
 
@@ -823,10 +824,10 @@ export async function handleProjectUpload(
       localPath: project.localPath,
       files,
     })
-    return Response.json({ attachments })
+    return uiJson({ attachments })
   } catch (error) {
     console.error("[uploads] Upload failed:", error)
-    return Response.json({ error: "Upload failed" }, { status: 500 })
+    return uiJson({ error: "Upload failed" }, { status: 500 })
   }
 }
 
@@ -847,17 +848,17 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
 
   const project = store.getProject(match[1])
   if (!project) {
-    return Response.json({ error: "Project not found" }, { status: 404 })
+    return uiJson({ error: "Project not found" }, { status: 404 })
   }
 
   const storedName = decodeURIComponent(match[2])
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
-    return Response.json({ error: "Invalid attachment path" }, { status: 400 })
+    return uiJson({ error: "Invalid attachment path" }, { status: 400 })
   }
 
   const resolved = await resolveExistingProjectUpload(project.localPath, storedName)
   if (!resolved.ok) {
-    return Response.json(
+    return uiJson(
       { error: resolved.reason === "outside" ? "Invalid attachment path" : "Attachment not found" },
       { status: resolved.reason === "outside" ? 400 : 404 }
     )
@@ -867,10 +868,10 @@ async function handleAttachmentContent(req: Request, url: URL, store: EventStore
   try {
     const info = await stat(filePath)
     if (!info.isFile()) {
-      return Response.json({ error: "Attachment not found" }, { status: 404 })
+      return uiJson({ error: "Attachment not found" }, { status: 404 })
     }
   } catch {
-    return Response.json({ error: "Attachment not found" }, { status: 404 })
+    return uiJson({ error: "Attachment not found" }, { status: 404 })
   }
 
   return new Response(file, {
@@ -907,17 +908,17 @@ export async function handleProjectFileContent(
   try {
     const project = store.getProject(match[1])
     if (!project) {
-      return Response.json({ error: "Project not found" }, { status: 404 })
+      return uiJson({ error: "Project not found" }, { status: 404 })
     }
 
     const requestedRelativePath = decodeURIComponent(match[2])
     const relativePath = path.posix.normalize(requestedRelativePath.replaceAll("\\", "/"))
     if (!relativePath || relativePath === "." || relativePath.startsWith("../") || relativePath.includes("/../") || path.posix.isAbsolute(relativePath)) {
-      return Response.json({ error: "Invalid project file path" }, { status: 400 })
+      return uiJson({ error: "Invalid project file path" }, { status: 400 })
     }
     const resolved = await resolveExistingPathWithinRoot(project.localPath, relativePath)
     if (!resolved.ok) {
-      return Response.json(
+      return uiJson(
         { error: resolved.reason === "outside" ? "Invalid project file path" : "File not found" },
         { status: resolved.reason === "outside" ? 400 : 404 }
       )
@@ -928,10 +929,10 @@ export async function handleProjectFileContent(
     try {
       const info = await stat(filePath)
       if (!info.isFile()) {
-        return Response.json({ error: "File not found" }, { status: 404 })
+        return uiJson({ error: "File not found" }, { status: 404 })
       }
     } catch {
-      return Response.json({ error: "File not found" }, { status: 404 })
+      return uiJson({ error: "File not found" }, { status: 404 })
     }
 
     if (req.method === "PUT") {
@@ -939,11 +940,11 @@ export async function handleProjectFileContent(
       // 404s otherwise), so the panel can't create paths the tree doesn't show.
       const declaredSize = Number(req.headers.get("content-length"))
       if (Number.isFinite(declaredSize) && declaredSize > MAX_EDITOR_SAVE_BYTES) {
-        return Response.json({ error: "File too large to save" }, { status: 413 })
+        return uiJson({ error: "File too large to save" }, { status: 413 })
       }
       const body = await req.text()
       if (Buffer.byteLength(body, "utf8") > MAX_EDITOR_SAVE_BYTES) {
-        return Response.json({ error: "File too large to save" }, { status: 413 })
+        return uiJson({ error: "File too large to save" }, { status: 413 })
       }
       try {
         await Bun.write(filePath, body)
@@ -951,12 +952,12 @@ export async function handleProjectFileContent(
         if (!written.isFile()) throw new Error("File save target is not a file")
       } catch (error) {
         const status = error !== null && typeof error === "object" && "status" in error && error.status === 409 ? 409 : 500
-        return Response.json(
+        return uiJson(
           { error: "Failed to write file" },
           { status },
         )
       }
-      return Response.json({ data: { saved: true, size: Buffer.byteLength(body, "utf8") } })
+      return uiJson({ data: { saved: true, size: Buffer.byteLength(body, "utf8") } })
     }
 
     return new Response(file, {
@@ -985,12 +986,12 @@ export async function handleProjectUploadDelete(
 
   const project = store.getProject(match[1])
   if (!project) {
-    return Response.json({ error: "Project not found" }, { status: 404 })
+    return uiJson({ error: "Project not found" }, { status: 404 })
   }
 
   const storedName = decodeURIComponent(match[2])
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
-    return Response.json({ error: "Invalid attachment path" }, { status: 400 })
+    return uiJson({ error: "Invalid attachment path" }, { status: 400 })
   }
 
   const deleted = await deleteProjectUpload({
@@ -998,7 +999,7 @@ export async function handleProjectUploadDelete(
     storedName,
   })
 
-  return Response.json({ ok: deleted })
+  return uiJson({ ok: deleted })
 }
 
 async function serveStatic(distDir: string, pathname: string) {

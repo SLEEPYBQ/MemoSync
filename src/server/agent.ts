@@ -1833,6 +1833,7 @@ export class AgentCoordinator {
     if (pending?.previewId !== previewId || pending.revision !== revision) return
     await this.store.appendMessage(chatId, timestamped({
       kind: "memory_preview_relevance", previewId, revision, relevant: [], expectedUses: [],
+      errorUiText: { code: "selectionFailed" },
       error: "Working-memory selection failed. Select the memories to use and confirm to retry their expected-use planning, or reopen preparation.",
     }))
     this.emitStateChange(chatId)

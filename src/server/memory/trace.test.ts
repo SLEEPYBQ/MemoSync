@@ -206,6 +206,7 @@ describe('createTraceService', () => {
       id: 'M-02',
       label: 'injected_without_effect',
       note: 'not labeled by trace model',
+      noteUiText: { code: 'traceUnlabeled' },
     });
   });
 

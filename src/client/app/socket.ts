@@ -1,3 +1,4 @@
+import { localizeUiResult, translateServerUiText } from "../i18n/uiText"
 import { t } from "../i18n"
 import type {
   ClientCommand,
@@ -301,7 +302,7 @@ export class AppSocket {
         const pending = this.pending.get(payload.id)
         if (!pending) return
         this.pending.delete(payload.id)
-        pending.resolve(payload.result)
+        pending.resolve(localizeUiResult(payload.result))
         return
       }
 
@@ -313,7 +314,7 @@ export class AppSocket {
         const pending = this.pending.get(payload.id)
         if (pending) {
           this.pending.delete(payload.id)
-          pending.reject(new Error(payload.message))
+          pending.reject(new Error(translateServerUiText(payload.uiText, payload.message)))
           return
         }
         // A scoped subscription error (the server could not derive this

@@ -678,6 +678,7 @@ export class EventStore {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
+          ...(event.titleUiText ? { titleUiText: event.titleUiText } : {}),
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
           unread: false,
@@ -696,6 +697,7 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.title = event.title
+        delete chat.titleUiText
         chat.updatedAt = event.timestamp
         break
       }
@@ -1001,6 +1003,7 @@ export class EventStore {
       chatId,
       projectId,
       title: "New Chat",
+      titleUiText: { code: "newChat" },
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
@@ -1022,6 +1025,7 @@ export class EventStore {
       chatId,
       projectId: sourceChat.projectId,
       title: getForkedChatTitle(sourceChat.title),
+      titleUiText: { code: "forkedChat", params: { v0: sourceChat.title.replace(/^Fork: /, "") || "New Chat" } },
     }
     await this.append(this.chatsLogPath, createEvent)
     await this.setChatProvider(chatId, sourceChat.provider)

@@ -53,7 +53,7 @@ describe("uploads", () => {
       body: "private-payload-that-must-not-be-in-the-response",
     })
     expect(response.status).toBe(400)
-    expect(await response.json()).toEqual({ error: "Could not read the upload request. Please try again." })
+    expect(await response.json()).toEqual({ error: "Could not read the upload request. Please try again.", uiText: { code: "uploadUnreadable" } })
     expect(existsSync(getProjectUploadDir(projectDir))).toBe(false)
   })
 
@@ -74,6 +74,7 @@ describe("uploads", () => {
         error: sizes[0] === "5"
           ? "The uploaded file size does not match. Please try again."
           : "Invalid upload size metadata.",
+        uiText: { code: sizes[0] === "5" ? "uploadMismatch" : "uploadMetadata" },
       })
       expect(existsSync(getProjectUploadDir(projectDir))).toBe(false)
     }
@@ -378,6 +379,7 @@ describe("uploads", () => {
       expect(response.status).toBe(413)
       expect(await response.json()).toEqual({
         error: "File \"big.bin\" exceeds the 100 MB limit.",
+        uiText: { code: "uploadFileSize", params: { v0: "big.bin", v1: "100" } },
       })
     } finally {
       await server.stop()

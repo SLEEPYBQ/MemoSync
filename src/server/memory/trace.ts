@@ -1,3 +1,4 @@
+import type { UiTextReference } from "../../shared/ui-copy"
 // Trace — post-turn labeler (SPEC §4.10 "Trace"): a dedicated LLM call, given
 // the full exchange plus the memories used this turn, labels each one
 // operational / injected-without-effect / violated. Distinct from the
@@ -45,7 +46,7 @@ export interface TraceOutcome {
   // `missing` (not_applicable only): the absent object/opportunity the audit
   // named — an NA verdict without it is downgraded (decision tree, 2026-08-19).
   // `impact` (violated only): whether the violation visibly hurt the outcome.
-  labels: Array<{ id: string; label: TraceLabel; note?: string; quote?: string; toolId?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact }>;
+  labels: Array<{ id: string; label: TraceLabel; note?: string; noteUiText?: UiTextReference; quote?: string; toolId?: string; cause?: TraceViolationCause; missing?: string; impact?: TraceViolationImpact }>;
   /**
    * One-sentence English recap of the turn with the memories that MATTERED
    * cited inline as [M-NN] (operational/violated only — no-effect memories are
@@ -226,7 +227,7 @@ export function coerceTraceOutcome(
             ...(found.label === 'not_applicable' && found.missing ? { missing: found.missing } : {}),
           };
         }
-        return { id: m.id, label: 'injected_without_effect' as TraceLabel, note: 'not labeled by trace model' };
+        return { id: m.id, label: 'injected_without_effect' as TraceLabel, note: 'not labeled by trace model', noteUiText: { code: 'traceUnlabeled' as const } };
       });
 
       // The turn recap: clamp, single-line, and keep it only when non-empty.

@@ -1,3 +1,4 @@
+import type { UiTextReference } from "./ui-copy"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
@@ -483,6 +484,7 @@ export interface SidebarChatRow {
   _creationTime: number
   chatId: string
   title: string
+  titleUiText?: UiTextReference
   status: ChatActivityStatus
   unread: boolean
   localPath: string
@@ -1078,6 +1080,7 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
     id: string
     label: "operational" | "injected_without_effect" | "violated" | "not_applicable"
     note?: string
+    noteUiText?: UiTextReference
     quote?: string
     /** Validated current-turn tool call/result that supplies the audit evidence. */
     toolId?: string
@@ -1234,6 +1237,7 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
   expectedUses?: ExpectedMemoryUse[]
   /** A failed selection is distinct from a successful empty selection. */
   error?: string
+  errorUiText?: UiTextReference
 }
 
 /** Replaces a parked preview's contents after an earlier review is reopened. */
@@ -1589,7 +1593,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_trace"; labels: MemoryTraceEntry["labels"]; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; selectionErrorUiText?: UiTextReference; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_checkup"; checkupId: string; openingReviewId?: string; turn?: number; pending?: boolean; waiting?: boolean; suggestions?: MemoryCheckupSuggestionSnapshot[]; failedKinds?: MemoryCheckupKind[]; decision?: MemoryCheckupDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
@@ -1603,6 +1607,7 @@ export interface ChatRuntime {
   projectId: string
   localPath: string
   title: string
+  titleUiText?: UiTextReference
   status: ChatActivityStatus
   isDraining: boolean
   provider: AgentProvider | null

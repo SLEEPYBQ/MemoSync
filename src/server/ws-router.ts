@@ -1,3 +1,4 @@
+import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
 import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
@@ -196,7 +197,7 @@ function resolveSubmittedLlmApiKey(
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
-  const payload = JSON.stringify(message)
+  const payload = JSON.stringify(message.type === "error" ? { ...message, uiText: describeServerUiText(message.message) } : message.type === "ack" && message.result ? { ...message, result: withUiTextFields(message.result) } : message)
   return {
     payloadBytes: payload.length,
     status: ws.send(payload),

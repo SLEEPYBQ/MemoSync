@@ -1,3 +1,5 @@
+import { httpUiError } from "../i18n/uiText"
+import type { UiTextReference } from "../../shared/ui-copy"
 import { t } from "../i18n"
 // Client data layer for the memory HTTP API. Same-origin relative fetch (Vite
 // proxies /api to the Bun backend in dev; one origin in prod). Envelope:
@@ -59,14 +61,14 @@ export interface MutedProposal {
 
 async function unwrap<T>(res: Response): Promise<T> {
   notifyIfUnauthorized(res)
-  let payload: { data?: T; error?: { code: string; message: string } }
+  let payload: { data?: T; error?: { code: string; message: string; uiText?: UiTextReference } }
   try {
     payload = await res.json()
   } catch {
     throw new Error(t("errors:requestFailedValue0", { v0: res.status }))
   }
   if (!res.ok || payload.error) {
-    throw new Error(payload.error?.message ?? t("errors:requestFailedValue0", { v0: res.status }))
+    throw new Error(httpUiError(payload, t("errors:requestFailedValue0", { v0: res.status })))
   }
   return payload.data as T
 }
@@ -192,7 +194,7 @@ export const memoriesApi = {
         ...(previewId ? { previewId } : {}),
         operationId: controlOperationId("working-memory-ask"),
       }),
-    }).then((r) => unwrap<{ selectedIds: string[]; reply: string }>(r)),
+    }).then((r) => unwrap<{ selectedIds: string[]; reply: string; replyUiText?: UiTextReference }>(r)),
 
   /** Explain how each newly selected memory should guide this turn. */
   planInjectionUses: (
@@ -383,6 +385,7 @@ export interface TransferProposal {
   content: string
   detail?: string
   abstractionLevel: AbstractionLevel
+  noteUiText?: UiTextReference
   note: string
   /** How the instantiated form meets the target's existing memories. */
   landing: TransferLanding
