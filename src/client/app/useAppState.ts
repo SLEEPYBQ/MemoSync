@@ -49,6 +49,7 @@ function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: Ch
     && left.status === right.status
     && left.isDraining === right.isDraining
     && left.provider === right.provider
+    && left.memoryDisabled === right.memoryDisabled
     && left.planMode === right.planMode
     && left.sessionToken === right.sessionToken
     && left.streamingText === right.streamingText
@@ -761,7 +762,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -1643,7 +1644,7 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleSend = useCallback(async (
     content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; openingReviewId?: string }
   ) => {
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
@@ -1746,6 +1747,7 @@ export function useAppState(activeChatId: string | null): AppState {
         model: options?.model,
         modelOptions: options?.modelOptions,
         planMode: options?.planMode,
+        memoryDisabled: options?.memoryDisabled,
         openingReviewId: options?.openingReviewId,
       })
       sendTrace.ackAt = performance.now()

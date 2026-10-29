@@ -57,6 +57,7 @@ function withSidebarGroupDefaults(group: {
     lastMessageAt?: number
     canFork?: boolean
     hasAutomation: boolean
+    memoryDisabled?: boolean
   }>
 }) {
   return {
@@ -1920,6 +1921,7 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
+              memoryDisabled: false,
               hasAutomation: false,
             }],
           })],
@@ -1946,6 +1948,7 @@ describe("ws-router", () => {
               unread: false,
               localPath: "/tmp/project",
               provider: null,
+              memoryDisabled: false,
               hasAutomation: false,
             }],
           })],
@@ -2165,6 +2168,7 @@ describe("ws-router", () => {
               localPath: "/tmp/project",
               provider: "claude",
               canFork: true,
+              memoryDisabled: false,
               hasAutomation: false,
             }, {
               _id: "chat-1",
@@ -2176,6 +2180,7 @@ describe("ws-router", () => {
               localPath: "/tmp/project",
               provider: "claude",
               canFork: true,
+              memoryDisabled: false,
               hasAutomation: false,
             }],
           })],
@@ -2781,5 +2786,36 @@ describe("ws-router", () => {
       id: "ignore-1",
       result: { snapshotChanged: false },
     })
+  })
+})
+
+describe("chat memory command routing", () => {
+  test("routes the chat switch, acknowledges it, and reports study rejection", async () => {
+    const calls: Array<[string, boolean]> = []
+    let studyMode = false
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+        getStreamingAssistantTexts: () => new Map(),
+        setMemoryDisabled: async (chatId: string, disabled: boolean) => {
+          if (studyMode) throw new Error("Chat memory controls are unavailable in study mode")
+          calls.push([chatId, disabled])
+        },
+      } as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Test", updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    await router.handleMessage(ws as never, JSON.stringify({ v: PROTOCOL_VERSION, type: "command", id: "memory-off", command: { type: "chat.setMemoryDisabled", chatId: "chat-1", disabled: true } }))
+    expect(calls).toEqual([["chat-1", true]])
+    expect(ws.sent.at(-1)).toMatchObject({ type: "ack", id: "memory-off" })
+    studyMode = true
+    await router.handleMessage(ws as never, JSON.stringify({ v: PROTOCOL_VERSION, type: "command", id: "study-memory-off", command: { type: "chat.setMemoryDisabled", chatId: "chat-1", disabled: true } }))
+    expect(calls).toHaveLength(1)
+    expect(ws.sent.at(-1)).toMatchObject({ type: "error", id: "study-memory-off", message: "Chat memory controls are unavailable in study mode" })
   })
 })

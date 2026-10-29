@@ -7,7 +7,7 @@ import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { AgentCoordinator } from "./agent"
+import { AgentCoordinator, resolveTurnMemoryState } from "./agent"
 import { createWsRouter } from "./ws-router"
 import { MemoryService } from "./memory"
 import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition"
@@ -123,6 +123,7 @@ function createFakeStore(
     title: "New Chat",
     provider: null as "claude" | "codex" | null,
     planMode: false,
+    memoryDisabled: false,
     sessionToken: null as string | null,
     pendingForkSessionToken: null as string | null,
   }
@@ -143,6 +144,9 @@ function createFakeStore(
     },
     async setChatProvider(_c: string, provider: "claude" | "codex") {
       chat.provider = provider
+    },
+    async setMemoryDisabled(_c: string, disabled: boolean) {
+      chat.memoryDisabled = disabled
     },
     async setPlanMode(_c: string, planMode: boolean) {
       chat.planMode = planMode
@@ -226,7 +230,7 @@ interface Harness {
   memory: MemoryService
   studyMemoryStore: StudyMemoryStore | null
   workspaceDir: string
-  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy }>
+  sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; policy?: ConditionPolicy; capture?: CaptureService | null }>
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
   openingBoardBacklog: MemoryBoardBacklogService | null
@@ -245,6 +249,8 @@ function createHarness(
   opts: {
     /** Enable the preview gate (the injection receipt). */
     preview?: boolean
+    getMemorySettings?: () => { enabled: boolean; learn: boolean }
+    codexManager?: import("./codex-app-server").CodexAppServerManager
     traceInputs?: TraceInput[]
     /** Full trace-service override (takes precedence over traceInputs). */
     trace?: TraceService | null
@@ -353,6 +359,8 @@ function createHarness(
 
   const coordinator = new AgentCoordinator({
     store: store as never,
+    getMemorySettings: opts.getMemorySettings,
+    codexManager: opts.codexManager,
     onStateChange: opts.onStateChange ?? (() => {}),
     memory,
     studyMemoryStore,
@@ -383,6 +391,7 @@ function createHarness(
         memory: (args.memory as MemoryService | null) ?? null,
         sessionToken: args.sessionToken,
         policy: args.policy,
+        capture: args.capture,
       })
       await opts.beforeClaudeSessionStart?.()
       if (opts.failClaudeSessionStartAttempts?.includes(attempt)) {
@@ -8036,5 +8045,230 @@ describe("transfer landings on the preview receipt", () => {
     } finally {
       h.cleanup()
     }
+  })
+})
+
+describe("memory on/off turn controls", () => {
+  const send = { type: "chat.send" as const, chatId: "chat-1", provider: "claude" as const, content: "Update the app" }
+  const outcome = { created: [], proposed: 0, surfaced: 0, dropped: 0, conflicts: 0, reinforced: 0, reinforcedIds: [], revisions: 0, pending: [] }
+  function services() {
+    const calls = { capture: 0, propose: 0, checkup: 0, transfer: 0 }
+    const capture: CaptureService = {
+      capture: async () => { calls.capture++; return outcome },
+      routeProposal: async () => { calls.propose++; return outcome },
+      captureFromPrompt: async () => { calls.propose++; return outcome },
+    }
+    const checkup = { needsRecompute: () => { calls.checkup++; return true }, run: async () => { calls.checkup++; return { items: [] } } } as unknown as CheckupService
+    const transferDetect = { hasSourceCandidates: () => { calls.transfer++; return false }, prepareSources: async () => { calls.transfer++ } } as unknown as TransferDetectService
+    return { calls, capture, checkup, transferDetect }
+  }
+  function seed(h: Harness) {
+    return h.memory.store.create({ content: "Use pnpm", detail: "Always use pnpm for installs", scope: "project", projectId: "project-1", type: "preference" }, { actor: "system" })
+  }
+  async function complete(h: Harness) {
+    h.finishTurn()
+    await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
+    // Let detached post-turn continuations settle before inspecting their effects.
+    await new Promise((resolve) => setTimeout(resolve, 30))
+  }
+
+  test("effective state truth table; every study arm ignores both settings and chat switches", () => {
+    for (const enabled of [false, true]) for (const learn of [false, true]) for (const disabled of [false, true]) {
+      expect(resolveTurnMemoryState({ studyMode: false }, { enabled, learn }, disabled)).toEqual({
+        memoryActive: enabled && !disabled, learnActive: enabled && !disabled && learn,
+      })
+      for (const arm of ["memosync", "auto", "static"]) {
+        expect(resolveTurnMemoryState(resolveConditionPolicy(arm), { enabled, learn }, disabled)).toEqual({ memoryActive: true, learnActive: true })
+      }
+    }
+  })
+
+  for (const off of ["global", "chat"] as const) test(`${off} off skips all gates, injection, citation bookkeeping and all post-turn work`, async () => {
+    const s = services()
+    const events: Array<Record<string, unknown>> = []
+    const h = createHarness({ ...s, preview: true, experimentEvents: events, traceInputs: [], getMemorySettings: () => ({ enabled: off !== "global", learn: true }) })
+    try {
+      h.store.chat.memoryDisabled = off === "chat"
+      const item = seed(h)
+      const candidate = h.memory.store.create({ content: "Pending proposal", scope: "session", sessionId: "chat-1", type: "fact", status: "candidate" }, { actor: "system" })
+      await h.coordinator.send({ ...send, content: "Remember to use pnpm" })
+      expect(h.prompts).toHaveLength(1)
+      expect(h.sessionStarts[0]?.memory).toBeNull()
+      expect(h.sessionStarts[0]?.capture).toBeNull()
+      expect(h.prompts[0]).not.toContain(item.content)
+      expect(h.prompts[0]).not.toContain("call propose_memory")
+      expect(h.store.messages.map((m) => m.kind)).toEqual(["user_prompt"])
+      await expect(h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: item.id })).rejects.toThrow("Memory is disabled")
+      h.emitEntry({ kind: "assistant_text", text: `Done [${item.id}]` })
+      await complete(h)
+      h.emitEntry({ kind: "assistant_text", text: `Late output [${item.id}]` })
+      h.emitEntry({ kind: "compact_boundary" })
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(s.calls).toEqual({ capture: 0, propose: 0, checkup: 0, transfer: 0 })
+      expect(events.filter((e) => e.type === "memory.cite" || e.type === "memory.inject" || e.type === "turn.compacted")).toEqual([])
+      expect(h.store.messages.some((m) => m.kind.startsWith("memory_"))).toBe(false)
+      expect(h.memory.store.getById(candidate.id)?.status).toBe("candidate")
+    } finally { h.cleanup() }
+  })
+
+  test("learn off keeps preview, injection, read tools and trace; pending proposals stay untouched", async () => {
+    const s = services()
+    const traceInputs: TraceInput[] = []
+    const h = createHarness({ ...s, preview: true, traceInputs, getMemorySettings: () => ({ enabled: true, learn: false }) })
+    try {
+      const item = seed(h)
+      const candidate = h.memory.store.create({ content: "Existing pending", scope: "session", sessionId: "chat-1", status: "candidate", type: "fact" }, { actor: "system" })
+      await h.coordinator.send({ ...send, content: "Remember to use pnpm" })
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      expect(h.store.messages.some((m) => ["memory_proposals", "memory_transfer", "memory_checkup"].includes(m.kind))).toBe(false)
+      const preview = h.coordinator.pendingPreviews.get("chat-1")!
+      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
+      await waitFor(() => h.prompts.length === 1)
+      expect(h.sessionStarts[0]?.memory).toBe(h.memory)
+      expect(h.sessionStarts[0]?.capture).toBeNull()
+      const { buildMemoryToolSpecs } = await import("./memory/tools")
+      const specs = buildMemoryToolSpecs(h.memory, { capture: h.sessionStarts[0]?.capture })
+      expect(specs.map((s) => s.name)).toContain("load_memory_detail")
+      expect(specs.map((s) => s.name)).not.toContain("propose_memory")
+      expect(h.prompts[0]).not.toContain("call propose_memory")
+      expect(h.sessionStarts[0]?.memory?.injectedFor("project-1", "chat-1").map((m) => m.id)).toContain(item.id)
+      h.emitEntry({ kind: "assistant_text", text: `Used [${item.id}]` })
+      await complete(h)
+      expect(traceInputs).toHaveLength(1)
+      expect(s.calls).toEqual({ capture: 0, propose: 0, checkup: 0, transfer: 0 })
+      expect(h.memory.store.getById(candidate.id)?.status).toBe("candidate")
+    } finally { h.cleanup() }
+  })
+
+  test("settings and chat changes while parked affect only the next turn, including post-turn passes", async () => {
+    const s = services()
+    let settings = { enabled: true, learn: true }
+    const h = createHarness({ capture: s.capture, preview: true, getMemorySettings: () => settings })
+    try {
+      seed(h)
+      await h.coordinator.send(send)
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      settings = { enabled: false, learn: false }
+      await h.coordinator.setMemoryDisabled("chat-1", true)
+      const preview = h.coordinator.pendingPreviews.get("chat-1")!
+      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
+      await waitFor(() => h.prompts.length === 1)
+      expect(h.sessionStarts[0]?.memory).toBe(h.memory)
+      expect(h.sessionStarts[0]?.capture).toBe(s.capture)
+      expect(h.prompts[0]).toContain("call propose_memory")
+      await complete(h)
+      expect(s.calls.capture).toBe(1)
+      await h.coordinator.send(send)
+      expect(h.sessionStarts.at(-1)?.memory).toBeNull()
+      await complete(h)
+      expect(s.calls.capture).toBe(1)
+    } finally { h.cleanup() }
+  })
+
+  test("learning and master-switch changes during a running turn use its original snapshot in both directions", async () => {
+    const s = services()
+    let settings = { enabled: false, learn: false }
+    const h = createHarness({ capture: s.capture, getMemorySettings: () => settings })
+    try {
+      seed(h)
+      await h.coordinator.send(send)
+      settings = { enabled: true, learn: true }
+      await complete(h)
+      expect(s.calls.capture).toBe(0)
+      await h.coordinator.send(send)
+      expect(h.sessionStarts.at(-1)?.capture).toBe(s.capture)
+      settings = { enabled: true, learn: false }
+      await complete(h)
+      expect(s.calls.capture).toBe(1)
+      await h.coordinator.send(send)
+      expect(h.sessionStarts.at(-1)?.memory).toBe(h.memory)
+      expect(h.sessionStarts.at(-1)?.capture).toBeNull()
+      settings = { enabled: true, learn: true }
+      await complete(h)
+      expect(s.calls.capture).toBe(1)
+    } finally { h.cleanup() }
+  })
+
+  test("new chat is incognito from its first turn; study rejects the command and ignores the send flag", async () => {
+    const h = createHarness({ preview: true })
+    try {
+      seed(h)
+      await h.coordinator.send({ ...send, chatId: undefined, projectId: "project-1", memoryDisabled: true })
+      expect(h.store.chat.memoryDisabled).toBe(true)
+      expect(h.sessionStarts[0]?.memory).toBeNull()
+      expect(h.prompts).toHaveLength(1)
+      await complete(h)
+    } finally { h.cleanup() }
+    const study = createHarness({ policy: resolveConditionPolicy("memosync") })
+    try {
+      await expect(study.coordinator.setMemoryDisabled("chat-1", true)).rejects.toThrow("study mode")
+      expect(study.store.createChatCount).toBe(0)
+      await study.coordinator.send({ ...send, chatId: undefined, projectId: "project-1", memoryDisabled: true })
+      expect(study.store.createChatCount).toBe(1)
+      expect(study.store.chat.memoryDisabled).toBe(false)
+      expect(study.sessionStarts[0]?.memory).toBe(study.memory)
+      await complete(study)
+    } finally { study.cleanup() }
+  })
+
+  test("study MemoSync still gates, injects and captures despite disabled user switches", async () => {
+    const s = services()
+    const h = createHarness({ capture: s.capture, preview: true, policy: resolveConditionPolicy("memosync"), getMemorySettings: () => ({ enabled: false, learn: false }) })
+    try {
+      h.store.chat.memoryDisabled = true
+      seed(h)
+      await h.coordinator.send(send)
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      const preview = h.coordinator.pendingPreviews.get("chat-1")!
+      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
+      await waitFor(() => h.prompts.length === 1)
+      expect(h.sessionStarts[0]?.memory).toBe(h.memory)
+      expect(h.sessionStarts[0]?.capture).toBe(s.capture)
+      await complete(h)
+      expect(s.calls.capture).toBe(1)
+    } finally { h.cleanup() }
+  })
+
+  for (const mode of ["off", "readonly", "on"] as const) test(`Codex ${mode} gates dynamic memory dispatch and injection`, async () => {
+    const s = services()
+    let turnArgs: any
+    let sessionArgs: any
+    const events = new AsyncEventQueue<any>()
+    const codexManager = {
+      startSession: async (args: any) => { sessionArgs = args; return "codex-token" },
+      startTurn: async (args: any) => { turnArgs = args; return { provider: "codex", stream: events, interrupt: async () => {}, close: () => events.close() } },
+    } as unknown as import("./codex-app-server").CodexAppServerManager
+    const memoryEvents: Array<Record<string, unknown>> = []
+    const h = createHarness({ capture: s.capture, codexManager, experimentEvents: memoryEvents, getMemorySettings: () => ({ enabled: mode !== "off", learn: mode === "on" }) })
+    try {
+      const item = seed(h)
+      await h.coordinator.send({ ...send, provider: "codex" })
+      const names = sessionArgs.dynamicTools?.map((tool: any) => tool.name) ?? []
+      if (mode === "off") {
+        expect(turnArgs.developerInstructions).toBeUndefined()
+        expect(turnArgs.onDynamicToolCall).toBeUndefined()
+        expect(names).toEqual([])
+      } else {
+        expect(turnArgs.developerInstructions).toContain(item.content)
+        expect(names).toContain("load_memory_detail")
+        expect(names.includes("propose_memory")).toBe(mode === "on")
+        const detail = await turnArgs.onDynamicToolCall("load_memory_detail", { ids: [item.id] })
+        expect(detail.isError).not.toBe(true)
+        if (mode === "readonly") {
+          const proposal = await turnArgs.onDynamicToolCall("propose_memory", { content: "Should not be saved" })
+          expect(proposal.isError).toBe(true)
+        }
+      }
+      events.push({ type: "transcript", entry: { _id: crypto.randomUUID(), createdAt: Date.now(), kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" } })
+      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      if (mode === "off") {
+        events.push({ type: "transcript", entry: { _id: crypto.randomUUID(), createdAt: Date.now(), kind: "assistant_text", text: `Late output [${item.id}]` } })
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(memoryEvents.some((event) => event.type === "memory.cite")).toBe(false)
+      }
+      expect(s.calls.capture).toBe(mode === "on" ? 1 : 0)
+      expect(s.calls.propose).toBe(0)
+    } finally { events.close(); h.cleanup() }
   })
 })

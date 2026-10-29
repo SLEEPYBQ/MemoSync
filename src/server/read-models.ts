@@ -139,6 +139,7 @@ export function deriveSidebarData(
         localPath: project.localPath,
         provider: chat.provider,
         lastMessageAt: chat.lastMessageAt,
+        memoryDisabled: chat.memoryDisabled ?? false,
         hasAutomation: false,
         canFork: canForkChat(chat, activeStatuses, drainingChatIds) || undefined,
       }))
@@ -231,6 +232,7 @@ export function deriveChatSnapshot(
     status: deriveStatus(chat, activeStatuses.get(chat.id)),
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
+    memoryDisabled: chat.memoryDisabled ?? false,
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
     streamingText: streamingTexts?.get(chat.id) ?? null,

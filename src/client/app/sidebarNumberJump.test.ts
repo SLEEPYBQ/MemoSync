@@ -42,6 +42,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         localPath: "/tmp/project-a",
         provider: "codex",
         lastMessageAt: nowMs - hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       },
       {
@@ -54,6 +55,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         localPath: "/tmp/project-a",
         provider: "codex",
         lastMessageAt: nowMs - 2 * hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       },
       {
@@ -66,6 +68,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         localPath: "/tmp/project-a",
         provider: "codex",
         lastMessageAt: nowMs - 26 * hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       },
     ],
@@ -89,6 +92,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         localPath: "/tmp/project-b",
         provider: "claude",
         lastMessageAt: nowMs - 27 * hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       },
       {
@@ -101,6 +105,7 @@ const PROJECT_GROUPS: SidebarProjectGroup[] = [
         localPath: "/tmp/project-b",
         provider: "claude",
         lastMessageAt: nowMs - 28 * hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       },
     ],
@@ -157,6 +162,7 @@ describe("getVisibleSidebarChats", () => {
         localPath: "/tmp/project-c",
         provider: "codex" as const,
         lastMessageAt: nowMs - (25 + index) * hourMs,
+        memoryDisabled: false,
         hasAutomation: false,
       })),
       previewChats: [],

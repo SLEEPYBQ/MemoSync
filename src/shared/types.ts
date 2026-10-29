@@ -398,6 +398,7 @@ export interface ProjectSummary {
 }
 
 export interface SidebarChatRow {
+  memoryDisabled: boolean
   _id: string
   _creationTime: number
   chatId: string
@@ -1514,6 +1515,7 @@ export type HydratedTranscriptMessage =
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 
 export interface ChatRuntime {
+  memoryDisabled: boolean
   chatId: string
   projectId: string
   localPath: string

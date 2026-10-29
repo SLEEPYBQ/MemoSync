@@ -1,3 +1,4 @@
+import { MemoryOffRowIcon } from "../MemoryToggle"
 import { memo } from "react"
 import { Archive, Loader2, Split } from "lucide-react"
 import type { SidebarChatRow } from "../../../../shared/types"
@@ -87,6 +88,7 @@ function ChatRowImpl({
           chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-slate-400">{chat.title}</span>
         }
       </span>
+      {chat.memoryDisabled ? <MemoryOffRowIcon /> : null}
       <div className={cn("relative h-7 mr-[2px] shrink-0", showFork && chat.canFork ? "w-12" : "w-6")}>
         {trailingLabel ? (
           showShortcutKeycap ? (

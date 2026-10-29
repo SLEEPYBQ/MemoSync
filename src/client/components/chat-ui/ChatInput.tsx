@@ -23,6 +23,7 @@ import { useChatInputStore } from "../../stores/chatInputStore"
 import { runRetainedDraftSubmission } from "./chatDraftSubmission"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
+import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import {
@@ -120,7 +121,7 @@ interface ComposerAttachment extends ChatAttachment {
 interface Props {
   onSubmit: (
     value: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: ChatAttachment[] }
   ) => Promise<void>
   onLayoutChange?: () => void
   onCancel?: () => void
@@ -240,6 +241,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [slashDismissed, setSlashDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
+  const [draftMemoryDisabled, setDraftMemoryDisabled] = useDraftMemoryDisabled(draftKey)
   const [attachments, setAttachments] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -598,6 +600,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions,
       planMode: showPlanMode ? providerPrefs.planMode : false,
       attachments: attachmentsForSubmit,
+      memoryDisabled: chatId ? undefined : draftMemoryDisabled || undefined,
     }
     // The opening Long-term Memory Board may hold this Promise for minutes.
     // Keep both local and persisted drafts intact until the *real* send is
@@ -605,6 +608,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await runRetainedDraftSubmission({
       submit: () => onSubmit(nextValue, submitOptions),
       onAccepted: () => {
+        setDraftMemoryDisabled(false)
         setValue("")
         if (textDraftKey) clearDraft(textDraftKey)
         if (textareaRef.current) textareaRef.current.style.height = "auto"
@@ -968,6 +972,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             onPlanModeChange={setEffectivePlanMode}
             includePlanMode={showPlanMode}
           />
+          <MemoryToggle chatId={chatId} draftKey={draftKey} />
           </div>
           {activeContextWindow ? (
             <div className="flex items-center md:hidden mx-[13px]">

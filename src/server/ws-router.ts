@@ -1530,6 +1530,12 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "chat.setMemoryDisabled": {
+          await agent.setMemoryDisabled(command.chatId, command.disabled)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
         case "chat.send": {
           // AgentCoordinator owns study admission. Keeping it at the queue
           // authority covers send, steer, auto-drain and restart without

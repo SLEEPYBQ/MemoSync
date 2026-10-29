@@ -15,6 +15,7 @@ export interface ChatRecord {
   archivedAt?: number
   unread: boolean
   provider: AgentProvider | null
+  memoryDisabled?: boolean
   planMode: boolean
   sessionToken: string | null
   pendingForkSessionToken?: string | null
@@ -61,6 +62,7 @@ export type ProjectEvent = {
 }
 
 export type ChatEvent =
+  | { v: 2; type: "chat_memory_disabled_set"; timestamp: number; chatId: string; disabled: boolean }
   | {
       v: 2
       type: "chat_created"

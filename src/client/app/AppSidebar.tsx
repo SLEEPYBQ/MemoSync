@@ -12,6 +12,7 @@ import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProject
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { memoriesApi } from "../lib/memoriesApi"
 import { getLastBoardVisit } from "../lib/boardVisit"
+import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
 import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
 import type { SocketStatus } from "./socket"
 import { useConditionPolicy } from "../lib/conditionApi"
@@ -614,6 +615,7 @@ function AppSidebarImpl({
                   ) : null}
                 </span>
                 <span className="text-sm">Memory</span>
+                <MemoryOffBadge />
                 {pendingCount > 0 ? (
                   <span
                     title={`${pendingCount} proposed memor${pendingCount === 1 ? "y" : "ies"} waiting for your review`}

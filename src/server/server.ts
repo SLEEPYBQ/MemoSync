@@ -576,6 +576,7 @@ export async function startMemoSyncServer(options: StartMemoSyncServerOptions = 
     openingBoardBacklog: conditionPolicy.studyMode && conditionPolicy.condition === "memosync"
       ? memoryBoardBacklog
       : null,
+    getMemorySettings: () => appSettings.getSnapshot().memory,
     getMemoryPreviewSettings: () => appSettings.getSnapshot().memoryPreview,
     capture:
       memoryLlm && conditionPolicy.capture !== "off"
