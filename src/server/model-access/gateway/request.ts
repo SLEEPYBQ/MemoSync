@@ -53,8 +53,8 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
     if (b.system !== undefined) add("system", [plain(b.system, ["text"])])
     for (const raw of list(b.messages)) {
       const m = object(raw)
-      // Current Claude Code also appends system/developer turn instructions.
-      // Chat can represent these directly, preserving their position and role.
+      // Current Claude Code also appends system/developer turn instructions;
+      // encodeChat places them where every Chat vendor accepts them.
       if (!["user", "assistant", "system", "developer"].includes(m.role)) throw new GatewayError("Unsupported Messages role")
       const parts: Part[] = typeof m.content === "string" ? [plain(m.content, ["text"])] : list(m.content).map(raw => {
         const p = object(raw)
@@ -76,7 +76,9 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
     }
     for (const raw of list(b.tools ?? [])) {
       const t = object(raw)
-      if (t.type && t.type !== "custom") throw new GatewayError(`Cannot translate server tool: ${t.type}; use a native endpoint`)
+      // Server tools (web search, code execution) run at the vendor and have no Chat form.
+      // Leave them out, as Magpie does: Claude Code always offers WebSearch.
+      if (t.type && t.type !== "custom") continue
       r.tools.push({ type: "function", function: { name: str(t.name), ...(t.description ? { description: str(t.description) } : {}), parameters: object(t.input_schema) } })
     }
     if (b.tool_choice) {
@@ -115,7 +117,9 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
     const addTool = (raw: unknown, namespace?: string) => {
       const t = object(raw)
       if (t.type === "namespace" && !namespace) { for (const child of list(t.tools)) addTool(child, str(t.name)); return }
-      if (!["function", "custom"].includes(t.type)) throw new GatewayError(`Cannot translate tool: ${t.type}; use a native endpoint`)
+      // Hosted tools (web_search, file_search, …) have no Chat form; Codex always sends
+      // web_search. Leave them out rather than failing every turn, as Magpie does.
+      if (!["function", "custom"].includes(t.type)) return
       const original = str(t.name), name = namespace ? `${namespace}__${original}` : original
       if (r.toolMappings[name]) throw new GatewayError(`Duplicate or colliding tool name: ${name}`)
       const custom = t.type === "custom"
@@ -161,8 +165,21 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
 
 export function encodeChat(r: TranslationRequest): Wire {
   const messages: Wire[] = []
+  // Many Chat vendors reject "developer" and any system message after the first
+  // (GLM: 1214). As Magpie does, instructions before the first reply become one
+  // leading system message; later ones ride in a user turn as a system reminder.
+  const system: string[] = []
+  let replied = false
   for (const m of r.messages) {
+    if (m.role === "system" || m.role === "developer") {
+      const text = m.parts.map(p => p.kind === "text" ? p.text : "").join("")
+      if (!text) continue
+      if (!replied) system.push(text)
+      else messages.push({ role: "user", content: `<system-reminder>\n${text}\n</system-reminder>` })
+      continue
+    }
     if (m.role === "assistant") {
+      replied = true
       // Responses sends reasoning and parallel calls as separate adjacent items.
       let out = messages.at(-1)
       if (out?.role !== "assistant") { out = { role: "assistant", content: "" }; messages.push(out) }
@@ -181,5 +198,6 @@ export function encodeChat(r: TranslationRequest): Wire {
       flush()
     }
   }
+  if (system.length) messages.unshift({ role: "system", content: system.join("\n\n") })
   return { model: r.model, messages, stream: true, stream_options: { include_usage: true }, ...r.options, ...(r.tools.length ? { tools: r.tools } : {}) }
 }

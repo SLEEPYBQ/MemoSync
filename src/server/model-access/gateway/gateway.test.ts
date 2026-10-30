@@ -104,7 +104,9 @@ for (const target of ["anthropic", "responses"] as const) {
     const f = await fixture(() => { count++; return sse(textChunks) })
     const route = gatewayEndpoint(f.service, f.connection.id, target)
     const bad = body(target)
-    bad.tools = [{ type: "web_search", name: "web" }]
+    const image = [{ type: target === "anthropic" ? "image" : "input_image", source: { type: "base64", media_type: "image/png", data: "AA" }, image_url: "https://example.test/i.png" }]
+    if (target === "anthropic") bad.messages = [{ role: "user", content: image }]
+    else bad.input = [{ role: "user", content: image }]
     expect((await post(route, target, bad)).status).toBe(400)
     expect((await post(route, target, { model: "m" })).status).toBe(400)
     expect(count).toBe(0)

@@ -65,12 +65,19 @@ for (const target of ["anthropic", "responses"] as const) {
       else { expect(result.incomplete_details.reason).toBe(reason === "length" ? "max_output_tokens" : "content_filter"); expect(events.at(-1)?.type).toBe("response.incomplete") }
     }
   })
-  test(`${target}: images, nested tool images and server tools are rejected`, () => {
+  test(`${target}: images and nested tool images are rejected`, () => {
     const base = target === "anthropic" ? { model: "m", messages: [{ role: "user", content: "hello" }] } : { model: "m", input: "hello" }
     const content = [{ type: target === "anthropic" ? "image" : "input_image", source: { type: "base64", data: "AA" }, image_url: "https://example.test/image" }]
     const image = target === "anthropic" ? { messages: [{ role: "user", content }] } : { input: [{ role: "user", content }] }
     const toolImage = target === "anthropic" ? { messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "c", content }] }] } : { input: [{ type: "function_call_output", call_id: "c", output: content }] }
-    for (const extra of [image, toolImage, { tools: [{ type: "web_search", name: "web" }] }]) expect(() => parseRequest(target, { ...base, ...extra })).toThrow("Cannot translate")
+    for (const extra of [image, toolImage]) expect(() => parseRequest(target, { ...base, ...extra })).toThrow("Cannot translate")
+  })
+  test(`${target}: hosted tools are left out, function tools kept`, () => {
+    const schema = { type: "object", properties: {} }
+    const body = target === "anthropic"
+      ? { model: "m", messages: [{ role: "user", content: "hi" }], tools: [{ type: "web_search_20250305", name: "web_search" }, { name: "Read", input_schema: schema }] }
+      : { model: "m", input: "hi", tools: [{ type: "web_search" }, { type: "function", name: "Read", parameters: schema }] }
+    expect(encodeChat(parseRequest(target, body)).tools).toEqual([{ type: "function", function: { name: "Read", parameters: schema } }])
   })
 }
 
@@ -115,7 +122,18 @@ test("Responses custom and namespaced tools preserve schema, call identity and n
   expect(next.messages[1]).toEqual({ role: "tool", tool_call_id: "call_1", content: "Applied" })
 })
 
-test("Claude Code turn-level system instructions keep their role and position", () => {
-  const request = parseRequest("anthropic", { model: "m", system: "Global instructions", messages: [{ role: "user", content: [{ type: "text", text: "Question" }] }, { role: "system", content: "Turn instructions" }] })
-  expect(encodeChat(request).messages).toEqual([{ role: "system", content: "Global instructions" }, { role: "user", content: "Question" }, { role: "system", content: "Turn instructions" }])
+test("system and developer instructions become one leading system message, later ones a reminder", () => {
+  // Claude Code appends turn-level system messages; Codex sends developer messages. GLM rejects both forms.
+  const claude = parseRequest("anthropic", { model: "m", system: "Global instructions", messages: [{ role: "user", content: [{ type: "text", text: "Question" }] }, { role: "system", content: "Turn instructions" }] })
+  expect(encodeChat(claude).messages).toEqual([{ role: "system", content: "Global instructions\n\nTurn instructions" }, { role: "user", content: "Question" }])
+  const codex = parseRequest("responses", { model: "m", instructions: "Base", input: [
+    { type: "message", role: "developer", content: [{ type: "input_text", text: "Dev" }] },
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Hi" }] },
+    { type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] },
+    { type: "message", role: "developer", content: [{ type: "input_text", text: "Context changed" }] },
+  ] })
+  expect(encodeChat(codex).messages).toEqual([
+    { role: "system", content: "Base\n\nDev" }, { role: "user", content: "Hi" }, { role: "assistant", content: "Hello" },
+    { role: "user", content: "<system-reminder>\nContext changed\n</system-reminder>" },
+  ])
 })
