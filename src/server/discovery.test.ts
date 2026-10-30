@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs"
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -116,6 +116,26 @@ describe("project discovery", async () => {
         modifiedAt: Date.parse("2026-03-16T23:05:58.940134Z"),
       },
     ])
+  })
+
+  test("Codex adapter retries a session file whose first read failed, even though it is unchanged", async () => {
+    const homeDir = makeTempDir()
+    const sessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "16")
+    const projectDir = path.join(homeDir, "workspace", "retry")
+    mkdirSync(projectDir, { recursive: true })
+    mkdirSync(sessionsDir, { recursive: true })
+    writeFileSync(path.join(homeDir, ".codex", "session_index.jsonl"), JSON.stringify({ id: "session-retry", updated_at: "2026-03-16T23:05:58.940134Z" }))
+    const sessionFile = path.join(sessionsDir, "rollout-2026-03-16T23-05-52-session-retry.jsonl")
+    writeFileSync(sessionFile, JSON.stringify({ timestamp: "2026-03-16T23:05:52.000Z", type: "session_meta", payload: { id: "session-retry", cwd: projectDir } }))
+    const adapter = new CodexProjectDiscoveryAdapter()
+    // A transient failure (here: unreadable) must not be cached against the unchanged mtime/size.
+    chmodSync(sessionFile, 0o000)
+    try {
+      expect(await adapter.scan(homeDir)).toEqual([])
+    } finally {
+      chmodSync(sessionFile, 0o644)
+    }
+    expect((await adapter.scan(homeDir)).map(project => project.localPath)).toEqual([projectDir])
   })
 
   test("Codex adapter falls back to session timestamps and config projects when session index misses CLI entries", async () => {

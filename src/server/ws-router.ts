@@ -742,15 +742,20 @@ export function createWsRouter({
       const expiresAt = (chat.lastMessageAt ?? chat.createdAt) + 24 * 60 * 60 * 1000
       if (!chat.deletedAt && !chat.archivedAt && expiresAt > now) sidebarExpiresAt = Math.min(sidebarExpiresAt, expiresAt)
     }
+    const signature = JSON.stringify({ type: "sidebar" as const, data })
+    // A version bump that leaves the sidebar identical (e.g. a queued message)
+    // keeps the current revision, so subscribers can still receive row patches.
+    if (retainedSidebar && retainedSidebar.signature === signature) {
+      retainedSidebarKey = key
+      if (cache) cache.sidebar = retainedSidebar
+      return retainedSidebar
+    }
     const sidebar = {
       revision: ++sidebarRevision,
       index: indexSidebarData(data),
       previous: retainedSidebar ? { revision: retainedSidebar.revision, index: retainedSidebar.index } : undefined,
       data,
-      signature: JSON.stringify({
-        type: "sidebar" as const,
-        data,
-      }),
+      signature,
     }
 
     retainedSidebar = sidebar
