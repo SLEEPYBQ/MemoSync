@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   applySidebarProjectOrder,
+  composerStateFromSendOptions,
   countMatchingUserPrompts,
   getActiveChatSnapshot,
   getNextMeasuredInputHeight,
@@ -19,6 +20,18 @@ import {
   shouldAutoFollowTranscript,
 } from "./useAppState"
 import type { ChatAttachment, ChatSnapshot, SidebarData, UserPromptEntry } from "../../shared/types"
+
+for (const provider of ["claude", "codex", "pi"] as const) {
+  test(`${provider} composer restores top-level and legacy connection selections`, () => {
+    for (const modelOptions of [
+      { connectionId: "B" },
+      { [provider]: { connectionId: "B" } },
+      { connectionId: "B", [provider]: { connectionId: "A" } },
+    ]) {
+      expect(composerStateFromSendOptions({ provider, model: "custom/model-b", modelOptions })).toMatchObject({ provider, model: "custom/model-b", connectionId: "B" })
+    }
+  })
+}
 
 function createSidebarData(): SidebarData {
   return {

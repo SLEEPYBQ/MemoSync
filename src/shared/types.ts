@@ -214,7 +214,7 @@ export type ChatProviderPreferences = {
 
 export type ModelOptions = Partial<{
   [K in AgentProvider]: Partial<ProviderModelOptionsByProvider[K]>
-}>
+}> & { connectionId?: string }
 
 export const DEFAULT_CLAUDE_MODEL_OPTIONS = {
   reasoningEffort: "high",
