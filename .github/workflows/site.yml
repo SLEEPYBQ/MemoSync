@@ -1,5 +1,5 @@
-# Checks that the project website in site/ builds. The site is served from
-# memosync.baiqiaozhang.cc; that server pulls main and rebuilds on its own.
+# Checks that the project website in site/ builds. The site is served at
+# https://baiqiaozhang.cc/memosync/; that server pulls main and rebuilds on its own.
 name: site
 
 on:
