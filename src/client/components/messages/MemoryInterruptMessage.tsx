@@ -1,5 +1,5 @@
 // Recovery card: parked inline at the interruption point after a per-memory
-// interrupt. The participant writes one turn-local correction; sending it is
+// interrupt. The user writes one turn-local correction; sending it is
 // Resume. Working Memory remains visible as lightweight context and can still
 // be adjusted before the continuation starts.
 import { useMemo, useState } from "react"

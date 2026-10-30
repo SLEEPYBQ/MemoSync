@@ -3,12 +3,11 @@
 // listing, recursive index, content search, and file operations
 // (create/mkdir/rename/delete). Same `{ data } / { error }` envelope as the
 // memory routes.
-import { existsSync } from "node:fs"
 import type { Dirent } from "node:fs"
+import { existsSync } from "node:fs"
 import { mkdir, readdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import path from "node:path"
 import { resolveExistingPathWithinRoot } from "./paths"
-import type { StudyProjectAccess } from "./study-project-access"
 
 interface ProjectLike {
   id: string
@@ -35,10 +34,6 @@ export interface WorkspaceFileEntry {
 }
 
 export interface WorkspaceRouteOptions {
-  /** Atomic study boundary: returns a release callback, or null once freeze starts. */
-  beginStudyMemoryMutation?: () => (() => void) | null
-  /** Present only in study mode: gates project-scoped writes, never reads. */
-  studyProjectAccess?: StudyProjectAccess
 }
 
 const ok = <T>(data: T): Response => Response.json({ data })
@@ -255,19 +250,11 @@ export async function handleWorkspaceRequest(
   if (opMatch) {
     if (req.method !== "POST") return fail(405, "METHOD_NOT_ALLOWED", "use POST")
     const projectId = decodeURIComponent(opMatch[1])
-    const projectRefusal = options.studyProjectAccess?.projectRefusal(projectId)
-    if (projectRefusal) return fail(409, "STUDY_PROJECT_LOCKED", projectRefusal)
-    const release = options.beginStudyMemoryMutation?.()
-    if (options.beginStudyMemoryMutation && !release) {
-      return fail(409, "STUDY_FROZEN", "The current session is ending. Workspace files can no longer be changed.")
-    }
     const project = store.getProject(projectId)
-    try {
+
       if (!project) return fail(404, "NOT_FOUND", "unknown project")
       return await handleFileOp(req, project.localPath)
-    } finally {
-      release?.()
-    }
+
   }
 
   if (req.method !== "GET") return fail(405, "METHOD_NOT_ALLOWED", "use GET")

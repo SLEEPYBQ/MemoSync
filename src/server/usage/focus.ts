@@ -1,0 +1,99 @@
+import { createHash, randomUUID } from "node:crypto"
+import type { MemoryItem } from "../memory/types"
+import type { ExpectedMemoryUse } from "../memory/use-plan"
+import type {
+  DeliveredFocusEvent,
+  DeliveredFocusMemoryRef,
+} from "../usage/logger"
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex")
+}
+
+function canonicalState(item: Pick<MemoryItem, "content" | "scope">): string {
+  return JSON.stringify({ content: item.content, scope: item.scope })
+}
+
+function visiblePoolHash(items: MemoryItem[]): string {
+  return sha256(JSON.stringify(items.map((item) => ({
+    id: item.id,
+    version: item.version,
+    content: item.content,
+    scope: item.scope,
+    status: item.status,
+  }))))
+}
+
+export interface BuildDeliveredStoreFocusArgs {
+  chatId: string
+  turnId: string
+  turn: number
+  mode: "skills"
+  resumeOfInterruptId?: string
+  promptText: string
+  /** Exact repeated focus text when the turn has a dedicated focus block. */
+  focusPayloadText?: string
+  visiblePool: MemoryItem[]
+  focusedMemories: MemoryItem[]
+  expectedUses?: ExpectedMemoryUse[]
+  disabled?: boolean
+  focusedAt?: string
+  injectionId?: string
+}
+
+export function buildDeliveredStoreFocusEvent(args: BuildDeliveredStoreFocusArgs): DeliveredFocusEvent {
+  const uses = new Map((args.expectedUses ?? []).map((use) => [use.id, use.expectedUse]))
+  const seen = new Set<string>()
+  const memories: DeliveredFocusMemoryRef[] = []
+  for (const item of args.focusedMemories) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    const expectedUse = uses.get(item.id)?.trim()
+    memories.push({
+      id: item.id,
+      identity: { scheme: "store", id: item.id },
+      version: item.version,
+      content: item.content,
+      contentHash: sha256(item.content),
+      stateHash: sha256(canonicalState(item)),
+      scope: item.scope,
+      actualFocus: true,
+      ...(expectedUse ? { expectedUse } : {}),
+      sourceRef: {
+        kind: "memosync_store",
+        memoryId: item.id,
+        storeVersion: item.version,
+      },
+    })
+  }
+
+  const event: DeliveredFocusEvent = {
+    type: "memory.inject",
+    schemaVersion: 2,
+    semantics: "turn_focus",
+    injectionId: args.injectionId ?? randomUUID(),
+    sessionId: args.chatId,
+    chatId: args.chatId,
+    turnId: args.turnId,
+    turn: args.turn,
+    engine: "claude",
+    focusedAt: args.focusedAt ?? new Date().toISOString(),
+    outcome: args.disabled ? "disabled" : memories.length > 0 ? "delivered" : "empty",
+    ...(args.resumeOfInterruptId ? { resumeOfInterruptId: args.resumeOfInterruptId } : {}),
+    deliveryStage: "queued_to_claude",
+    mode: args.mode,
+    deliveryHash: sha256(args.promptText),
+    ...(args.focusPayloadText ? { focusPayloadHash: sha256(args.focusPayloadText) } : {}),
+    visiblePoolHash: visiblePoolHash(args.visiblePool),
+    memories,
+  }
+  return event
+}
+
+export function recordDeliveredStoreFocus(args: BuildDeliveredStoreFocusArgs & {
+  logger: Pick<import("../usage/logger").UsageLogger, "event">
+}): DeliveredFocusEvent {
+  const event = buildDeliveredStoreFocusEvent(args)
+  args.logger.event(event)
+  return event
+}

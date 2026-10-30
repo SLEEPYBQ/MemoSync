@@ -3,20 +3,19 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
-import { resolveConditionPolicy } from "../../server/experiment/condition"
-import { TooltipProvider } from "./ui/tooltip"
 import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
+import { TooltipProvider } from "./ui/tooltip"
 
 const emptySnapshot: LocalProjectsSnapshot = {
   machine: {
     id: "local",
-    displayName: "Study workspace",
+    displayName: "Local workspace",
     platform: "linux",
   },
   projects: [],
 }
 
-function renderEmptyLanding(condition: string) {
+function renderEmptyLanding() {
   return renderToStaticMarkup(createElement(
     MemoryRouter,
     null,
@@ -31,7 +30,6 @@ function renderEmptyLanding(condition: string) {
       onSend: async () => undefined,
       availableProviders: PROVIDERS,
       projectIdByPath: {},
-      conditionPolicy: resolveConditionPolicy(condition),
     })),
   ))
 }
@@ -44,19 +42,10 @@ function projectPickerOpeningTag(html: string) {
 }
 
 describe("LocalDev project picker", () => {
-  test("MemoSync study mode removes project creation and switching from the landing page", () => {
-    const html = renderEmptyLanding("memosync")
 
-    expect(html).toContain("Open the active task assignment to begin")
-    expect(html).toContain("Open current assignment")
-    expect(html).not.toContain("Add project")
-    expect(html).not.toContain("No project yet")
-    expect(html).not.toContain("<textarea")
-  })
-
-  test("keeps the normal MemoSync project picker actionable for default and retired conditions", () => {
-    for (const condition of ["", "auto", "static"]) {
-      const html = renderEmptyLanding(condition)
+  test("keeps the normal MemoSync project picker actionable", () => {
+    {
+      const html = renderEmptyLanding()
 
       expect(projectPickerOpeningTag(html)).not.toContain("disabled")
       expect(html).toContain("Add a project")

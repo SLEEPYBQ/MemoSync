@@ -3,13 +3,9 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import {
-  deriveBoardReviewStepNumbers,
   deriveMemoryBoardModel,
   MemoryBoardPage,
   type MemoryBoardOverlayMode,
-  memoryBoardSectionVisibility,
-  openingMemoryBoardGateModel,
-  openingMemoryBoardCopy,
   projectMemoryBoardScopes,
 } from "./MemoryBoardPage"
 import type { MemoryItem } from "../lib/memoriesApi"
@@ -34,7 +30,7 @@ function renderMemoryBoard(chatId?: string) {
       MemoryRouter,
       { initialEntries: ["/memory"] },
       createElement<{ overlay?: MemoryBoardOverlayMode }>(MemoryBoardPage, {
-        overlay: chatId ? { blocking: false, chatId } : undefined,
+        overlay: chatId ? { chatId } : undefined,
       }),
     ))
   } finally {
@@ -45,92 +41,6 @@ function renderMemoryBoard(chatId?: string) {
     })
   }
 }
-
-describe("manual Memory Board backlog copy", () => {
-  test("keeps the opening gate blocking while the mid-session view remains closable", async () => {
-    const source = await Bun.file(new URL("./MemoryBoardPage.tsx", import.meta.url)).text()
-    expect(source).toContain("gateModel.showContinue")
-    expect(source).toContain("overlay && !overlay.blocking && overlay.onClose")
-  })
-
-  test("shows only the approved sentence while pending work remains", async () => {
-    expect(openingMemoryBoardGateModel({ pending: 4, submitting: false })).toEqual({
-      message: "Your first message is waiting. Handle 4 pending long-term memory items below. After this review, the same message continues and Working Memory is selected separately for this turn.",
-      showContinue: false,
-      continueLabel: null,
-    })
-
-    const source = await Bun.file(new URL("./MemoryBoardPage.tsx", import.meta.url)).text()
-    expect(source).toContain('data-opening-memory-board-gate="true"')
-    expect(source).not.toContain("Waiting message:")
-    expect(source).not.toContain("Candidates {overlay.status.pending.candidates}")
-    expect(source).not.toContain("Handle ${overlay.status.pending.total} pending first")
-    expect(source).not.toContain("rounded-lg border border-border bg-muted/20")
-  })
-
-  test("renders no alternate banner copy before the authoritative pending count loads", () => {
-    expect(openingMemoryBoardGateModel({ pending: null, submitting: false })).toEqual({
-      message: null,
-      showContinue: false,
-      continueLabel: null,
-    })
-  })
-
-  test("keeps Continue hidden until the current prompt's full Long-term review is server-ready", () => {
-    expect(openingMemoryBoardGateModel({
-      pending: 0,
-      openingPhase: "preparing",
-      submitting: false,
-    })).toEqual({
-      message: "Your first message is waiting. Review its Long-term Memory steps below. Working Memory will be selected separately after this review.",
-      showContinue: false,
-      continueLabel: null,
-    })
-    expect(openingMemoryBoardGateModel({
-      pending: 0,
-      openingPhase: "long_term_ready",
-      submitting: false,
-    })).toEqual({
-      message: "Your first message is waiting. Long-term Memory review is complete. Continue with the same message, then select Working Memory separately for this turn.",
-      showContinue: true,
-      continueLabel: "Continue with this message",
-    })
-    expect(openingMemoryBoardGateModel({
-      pending: 2,
-      openingPhase: "long_term_ready",
-      submitting: false,
-    }).showContinue).toBe(true)
-  })
-})
-
-describe("opening Long-term Memory review", () => {
-  test("keeps Transfer and Checkup at fixed steps in the one Board", () => {
-    expect(deriveBoardReviewStepNumbers({ hasTransfer: true })).toEqual({ transfer: 2, checkup: 3 })
-    expect(deriveBoardReviewStepNumbers({ hasTransfer: false })).toEqual({ transfer: 2, checkup: 3 })
-  })
-
-  test("opens the same complete Memory Board from the blocking and manual entrances", () => {
-    expect(memoryBoardSectionVisibility(true)).toEqual({
-      pendingBacklog: true,
-      candidates: true,
-      searchAndCreate: true,
-      activeLibrary: true,
-      archived: true,
-      muted: true,
-      markdown: true,
-      workingMemory: false,
-    })
-    expect(memoryBoardSectionVisibility(false)).toEqual(memoryBoardSectionVisibility(true))
-  })
-
-  test("explains that the sent message is waiting and Working Memory comes next", () => {
-    const copy = openingMemoryBoardCopy(0)
-    expect(copy.heading).toBe("Long-term Memory Management")
-    expect(copy.message).toContain("first message is waiting")
-    expect(copy.message).toContain("Working Memory")
-    expect(copy.cta).toBe("Continue with this message")
-  })
-})
 
 describe("one Memory Board", () => {
   test("shows the current empty chat as a Session drop target", () => {
@@ -161,7 +71,7 @@ describe("one Memory Board", () => {
     expect(source).not.toContain("Current turn review")
     expect(source).not.toContain("Full memory library")
     expect(source).not.toContain("border-violet-500/40")
-    expect(source).toContain("onChanged={overlay?.onBacklogChanged}")
+    expect(source).toContain("onChanged={overlay?.onChanged}")
   })
 
   test("projects candidates as placeholders and the same ids as active memories after acceptance", () => {

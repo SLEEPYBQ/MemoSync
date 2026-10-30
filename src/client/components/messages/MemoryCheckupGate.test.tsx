@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
-import { buildBoardCheckupActionContext, MemoryCheckupGate } from "./MemoryCheckupGate"
+import { MemoryCheckupGate } from "./MemoryCheckupGate"
 
 type CheckupMessage = Extract<HydratedTranscriptMessage, { kind: "memory_checkup" }>
 
@@ -46,28 +46,6 @@ describe("MemoryCheckupGate", () => {
     expect(html).toContain("rechecks the current saved state")
     expect(html).toContain("Previous saved actions remain")
     expect(html).not.toContain("Undo")
-  })
-
-  test("orients a Board conflict identity to the exact top-level archive action pair", () => {
-    const suggestion = {
-      kind: "conflict",
-      memoryId: "M-03",
-      otherMemoryId: "M-04",
-      reason: "Cannot both apply",
-    } as const
-    const boardResolution = { taskId: "038-S1", chatId: "chat-prior", gateId: "checkup-1" }
-
-    expect(buildBoardCheckupActionContext({
-      boardResolution,
-      suggestion,
-      memoryId: "M-04",
-      otherMemoryId: "M-03",
-    })).toEqual({
-      ...boardResolution,
-      suggestionKind: "conflict",
-      memoryId: "M-04",
-      otherMemoryId: "M-03",
-    })
   })
 
   test("keeps historical complete empty results on the green clear path", () => {

@@ -2,18 +2,17 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { createBranchJsonCaller } from "../src/server/memory/branch-caller"
-import { buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv, AgentCoordinator } from "../src/server/agent"
-import { EventStore } from "../src/server/event-store"
+import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "../src/server/agent"
 import { CodexAppServerManager } from "../src/server/codex-app-server"
+import { EventStore } from "../src/server/event-store"
 import { MemoryService } from "../src/server/memory"
+import { createBranchJsonCaller } from "../src/server/memory/branch-caller"
+import { createMemoryBranch } from "../src/server/memory/branch-runtime"
 import { createCaptureService } from "../src/server/memory/capture"
 import { createCheckupService } from "../src/server/memory/checkup"
-import { createTransferDetectService } from "../src/server/memory/transfer-detect"
-import { createTransferService } from "../src/server/memory/transfer"
 import { createTraceService } from "../src/server/memory/trace"
-import { createMemoryBranch } from "../src/server/memory/branch-runtime"
-import { resolveConditionPolicy } from "../src/server/experiment/condition"
+import { createTransferService } from "../src/server/memory/transfer"
+import { createTransferDetectService } from "../src/server/memory/transfer-detect"
 import type { AgentProvider, TranscriptEntry } from "../src/shared/types"
 
 const key = process.env.GLM_API_KEY?.trim()
@@ -48,7 +47,7 @@ const codexManager = new CodexAppServerManager()
 // Match server.ts: explicit propose_memory calls use a same-engine auxiliary
 // branch. They are not independent sidecars and must not hit the forbidden stub.
 const branchCaller = createBranchJsonCaller({ resolve: () => {
-  const runtime = provider === "claude" ? buildClaudeSdkRuntimeOptions({ requestedModel: model, env: buildClaudeSubprocessEnv({ localPath: workspace, rawStudyProjects: process.env.STUDY_PROJECTS }) }) : null
+  const runtime = provider === "claude" ? buildClaudeSdkRuntimeOptions({ requestedModel: model, env: buildClaudeSubprocessEnv({ localPath: workspace}) }) : null
   return { provider, localPath: workspace, model: runtime?.model ?? model, parentSessionToken: store.requireChat(chat.id).sessionToken, subprocessEnv: runtime?.env ?? process.env }
 } })
 const capture = createCaptureService({ memory, callJson: branchCaller.callJson })
@@ -78,7 +77,6 @@ const coordinator = new AgentCoordinator({
       },
     }
   },
-  policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
   onStateChange: () => {},
   generateTitle: async () => ({ title: "GLM pipeline smoke", usedFallback: true, failureMessage: null }),
   capture,
@@ -165,7 +163,7 @@ try {
   process.exitCode = 1
 } finally {
   await coordinator.cancel(chat.id).catch(() => {})
-  await coordinator.shutdownStudyRuntime()
+  await coordinator.shutdownRuntime()
   codexManager.stopAll()
   memory.close()
   if (process.env.MEMOSYNC_KEEP_SMOKE_ARTIFACTS === "1") console.log(`Smoke artifacts: ${directory}`)

@@ -1,27 +1,9 @@
-import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
+import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import type { ServerWebSocket } from "bun"
-import { DEFAULT_DEEPSEEK_MODEL_ID, DEFAULT_PI_MODEL, PROTOCOL_VERSION } from "../shared/types"
-import type { ClientCommand, ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
+import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import { isClientEnvelope } from "../shared/protocol"
-import type { AgentCoordinator } from "./agent"
-import type { AppSettingsManager } from "./app-settings"
-import type { DiscoveredProject } from "./discovery"
-import { DiffStore } from "./diff-store"
-import { EventStore } from "./event-store"
-import { openExternal } from "./external-open"
-import { KeybindingsManager } from "./keybindings"
-import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
-import { ensureProjectDirectory, resolveLocalPath } from "./paths"
-import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
-import { writeStandaloneTranscriptExport } from "./standalone-export"
-import { TerminalManager } from "./terminal-manager"
-import type { UpdateManager } from "./update-manager"
-import type { StudyProjectAccess } from "./study-project-access"
-import type { StudyPreviewRuntimeController } from "./study-preview-runtime"
-import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
@@ -32,22 +14,26 @@ import type {
   SkillSearchSnapshot,
   SkillUninstallResult,
 } from "../shared/types"
+import { DEFAULT_DEEPSEEK_MODEL_ID, DEFAULT_PI_MODEL, PROTOCOL_VERSION } from "../shared/types"
+import type { AgentCoordinator } from "./agent"
+import type { AppSettingsManager } from "./app-settings"
+import { DiffStore } from "./diff-store"
+import type { DiscoveredProject } from "./discovery"
+import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
+import { EventStore } from "./event-store"
+import { openExternal } from "./external-open"
+import { KeybindingsManager } from "./keybindings"
+import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
+import { ensureProjectDirectory, resolveLocalPath } from "./paths"
+import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
+import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
+import { writeStandaloneTranscriptExport } from "./standalone-export"
+import { TerminalManager } from "./terminal-manager"
+import type { UpdateManager } from "./update-manager"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 const DROPPED_SNAPSHOT_RETRY_MS = 10
 const SKILL_AGENT_ALIASES = ["universal", "claude-code"] as const
-const STUDY_PROJECT_MUTATING_CHAT_COMMANDS = new Set<ClientCommand["type"]>([
-  "chat.initGit",
-  "chat.publishToGitHub",
-  "chat.mergeBranch",
-  "chat.checkoutBranch",
-  "chat.syncBranch",
-  "chat.createBranch",
-  "chat.commitDiffs",
-  "chat.discardDiffFile",
-  "chat.ignoreDiffFile",
-  "chat.exportStandalone",
-])
 
 function isSendToStartingProfilingEnabled() {
   return process.env.MEMOSYNC_PROFILE_SEND_TO_STARTING === "1"
@@ -148,16 +134,6 @@ interface CreateWsRouterArgs {
   /** The port this app itself serves on — excluded from local-server discovery
    * so the panel doesn't "discover" MemoSync itself. */
   getSelfPort?: () => number
-  /**
-   * Study deployments cut every non-essential outbound connection: the
-   * skills.sh registry (search/install) refuses here. Defaults to enabled.
-   */
-  remoteSkillsEnabled?: boolean
-  /** Present only in study mode: project topology is researcher-managed. */
-  studyProjectAccess?: StudyProjectAccess
-  /** Formal-study preview owner; Browser polling may recover only its current degraded project. */
-  studyPreviewRuntime?: Pick<StudyPreviewRuntimeController, "recover">
-  canAutoHealStudyPreview?: (projectId: string) => boolean
   listLocalHttpServersFn?: typeof listLocalHttpServers
   killLocalHttpServerFn?: typeof killLocalHttpServer
 }
@@ -449,10 +425,6 @@ export function createWsRouter({
   machineDisplayName,
   updateManager,
   getSelfPort,
-  remoteSkillsEnabled = true,
-  studyProjectAccess,
-  studyPreviewRuntime,
-  canAutoHealStudyPreview = () => false,
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
 }: CreateWsRouterArgs) {
@@ -1215,51 +1187,9 @@ export function createWsRouter({
     return { chat, project }
   }
 
-  function resolveStudyMutationProjectId(command: ClientCommand): string | null {
-    if (command.type === "project.writeQuickActions" || command.type === "terminal.create") {
-      return command.projectId
-    }
-    if (command.type === "terminal.input") {
-      const terminal = terminals.getSnapshot(command.terminalId)
-      if (!terminal) throw new Error("Terminal not found")
-      const terminalPath = resolveLocalPath(terminal.cwd)
-      const project = store.listProjects().find((candidate) => resolveLocalPath(candidate.localPath) === terminalPath)
-      if (!project) throw new Error("Terminal does not belong to a registered study project.")
-      return project.id
-    }
-    if (
-      STUDY_PROJECT_MUTATING_CHAT_COMMANDS.has(command.type)
-      && "chatId" in command
-      && typeof command.chatId === "string"
-    ) {
-      return resolveChatProject(command.chatId).project.id
-    }
-    return null
-  }
-
   async function handleCommand(ws: ServerWebSocket<ClientState>, message: Extract<ClientEnvelope, { type: "command" }>) {
     const { command, id } = message
     try {
-      if (
-        studyProjectAccess
-        && ["project.open", "project.create", "project.rename", "project.remove", "sidebar.reorderProjectGroups"].includes(command.type)
-      ) {
-        throw new Error("Project selection and mutation are managed by the study.")
-      }
-      if (studyProjectAccess && command.type === "chat.create") {
-        const refusal = studyProjectAccess.projectRefusal(command.projectId)
-        if (refusal) throw new Error(refusal)
-      }
-      if (studyProjectAccess && command.type === "chat.fork") {
-        throw new Error("Chat forking is disabled during the study. Start the current task from its task brief.")
-      }
-      if (studyProjectAccess) {
-        const mutationProjectId = resolveStudyMutationProjectId(command)
-        if (mutationProjectId) {
-          const refusal = studyProjectAccess.projectRefusal(mutationProjectId)
-          if (refusal) throw new Error(refusal)
-        }
-      }
       switch (command.type) {
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
@@ -1268,21 +1198,6 @@ export function createWsRouter({
         }
         case "browser.listLocalHttpServers": {
           const project = command.projectId ? store.getProject(command.projectId) : null
-          if (project && studyPreviewRuntime && canAutoHealStudyPreview(project.id)) {
-            try {
-              // The supervisor serializes this second admission check with
-              // recovery; a concurrently queued freeze marks the project
-              // blocked synchronously and therefore cannot be resurrected.
-              await studyPreviewRuntime.recover(
-                project.localPath,
-                () => canAutoHealStudyPreview(project.id),
-              )
-            } catch (error) {
-              console.warn(
-                `[study-preview] Browser recovery failed for ${project.id}: ${error instanceof Error ? error.message : String(error)}`,
-              )
-            }
-          }
           const scanned = await listLocalHttpServersFn({
             projectPath: project?.localPath,
             projectTerminalRootPids: project ? terminals.getRootPidsByCwd(project.localPath) : [],
@@ -1297,15 +1212,12 @@ export function createWsRouter({
           const result = scanned.map((server) => ({
             ...server,
             ...(preferProxy ? { preferProxy: true } : {}),
-            canKill: !studyProjectAccess,
+            canKill: true,
           }))
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "browser.killLocalHttpServer": {
-          if (studyProjectAccess) {
-            throw new Error("Preview process lifecycle is managed by the study.")
-          }
           const result = await killLocalHttpServerFn(command.port)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
@@ -1408,17 +1320,13 @@ export function createWsRouter({
           return
         }
         case "skills.search": {
-          if (!remoteSkillsEnabled) {
-            throw new Error("The skills registry is disabled on this deployment.")
-          }
+
           const snapshot = await searchSkills(command.query, command.limit)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return
         }
         case "skills.install": {
-          if (!remoteSkillsEnabled) {
-            throw new Error("The skills registry is disabled on this deployment.")
-          }
+
           const result = await installSkill(command.source, command.skillId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
@@ -1553,9 +1461,6 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
-          // AgentCoordinator owns study admission. Keeping it at the queue
-          // authority covers send, steer, auto-drain and restart without
-          // duplicate router checks or alternate-channel bypasses.
           const result = await agent.send(command)
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)

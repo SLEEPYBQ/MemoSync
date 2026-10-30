@@ -2,12 +2,12 @@
 // Bundles the SQLite store, the Markdown projection, and retrieval so the
 // per-engine adapters (Claude / Codex) and HTTP routes have a single entry point.
 import type { Database } from 'bun:sqlite';
+import { NoopUsageLogger, type UsageLogger } from '../usage/logger';
 import { openMemoryDb } from './db';
-import { MemoryStore } from './MemoryStore';
 import { MemoryFile } from './MemoryFile';
+import { MemoryStore } from './MemoryStore';
 import { looksLikeSecret } from './secrets';
 import type { ActorMeta, MemoryItem } from './types';
-import { NoopExperimentLogger, type ExperimentLogger } from '../experiment/logger';
 
 function normalizeContent(s: string): string {
   return s.replace(/\s+/g, ' ').trim().toLowerCase();
@@ -18,21 +18,21 @@ export interface MemoryServiceOptions {
   dbPath: string;
   /** Directory root for the human-readable Markdown projection. */
   dataDir: string;
-  /** Structured experiment logger (defaults to a no-op). */
-  logger?: Pick<ExperimentLogger, 'event'>;
+  /** Structured usage logger (defaults to a no-op). */
+  logger?: Pick<UsageLogger, 'event'>;
 }
 
 export class MemoryService {
   readonly db: Database;
   readonly store: MemoryStore;
   readonly file: MemoryFile;
-  readonly logger: Pick<ExperimentLogger, 'event'>;
+  readonly logger: Pick<UsageLogger, 'event'>;
 
   constructor(opts: MemoryServiceOptions) {
     this.db = openMemoryDb(opts.dbPath);
     this.store = new MemoryStore(this.db);
     this.file = new MemoryFile(opts.dataDir);
-    this.logger = opts.logger ?? NoopExperimentLogger;
+    this.logger = opts.logger ?? NoopUsageLogger;
     // The Markdown files are a generated EXPORT of SQLite state (read-only for
     // the user); a startup rebuild simply refreshes them.
     this.rebuildProjections();
@@ -199,12 +199,12 @@ export class MemoryService {
   }
 }
 
-export { MemoryStore } from './MemoryStore';
-export type { CreateMemoryInput, MemoryFilter } from './MemoryStore';
+export { applySchema,MEMORY_SCHEMA,openMemoryDb } from './db';
+export { computeMemoryHash } from './hash';
+export { compareMemoryId,memoryIdNum } from './ids';
 export { MemoryFile } from './MemoryFile';
 export type { ParsedMemory } from './MemoryFile';
-export { openMemoryDb, applySchema, MEMORY_SCHEMA } from './db';
-export { rankMemories, tokenize } from './retrieval';
-export { computeMemoryHash } from './hash';
-export { memoryIdNum, compareMemoryId } from './ids';
+export { MemoryStore } from './MemoryStore';
+export type { CreateMemoryInput,MemoryFilter } from './MemoryStore';
+export { rankMemories,tokenize } from './retrieval';
 export type * from './types';

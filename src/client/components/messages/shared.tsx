@@ -45,7 +45,7 @@ import { copyTextToClipboard } from "../../lib/clipboard"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useMessageViolatedCitations, useTranscriptRenderOptions } from "./render-context"
 import { useTranscriptChatContext } from "./render-context"
-import { useSurfaceExposure } from "../../app/study/surfaceExposure"
+import { useSurfaceExposure } from "../../app/memory/surfaceExposure"
 
 export type OpenLocalLinkTarget = {
   path: string
@@ -305,7 +305,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
     active: hoverOpen && Boolean(memory),
     surface: "citation_hover",
     chatId,
-    initiator: "participant",
+    initiator: "user",
     memoryIds: [id],
     closeReason: "popover",
   })

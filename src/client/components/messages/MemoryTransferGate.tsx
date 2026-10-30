@@ -35,7 +35,6 @@ import {
 import type { HydratedTranscriptMessage, MemoryTransferSuggestionSnapshot } from "../../../shared/types"
 import {
   memoriesApi,
-  type MemoryBoardActionContext,
   type MemoryControlSurface,
 } from "../../lib/memoriesApi"
 import { MEMORY_SCOPE_CHIP_CLASSES } from "../../lib/memoryCitations"
@@ -63,7 +62,6 @@ interface Props {
   /** Position in this turn's flow (the checkup renumbers itself after us). */
   stepNumber?: number
   surface?: MemoryControlSurface
-  boardResolution?: MemoryBoardActionContext
   /** Session-start Board: every resurfaced row must be handled before leaving. */
   requireAllRows?: boolean
   /** Shared when the same active gate is expanded in the Memory Board. */
@@ -229,7 +227,6 @@ export function MemoryTransferGate({
   onReopen,
   stepNumber = 2,
   surface = "chat_gate",
-  boardResolution,
   requireAllRows = false,
   settledRows,
   onSuggestionSettled,
@@ -335,7 +332,6 @@ export function MemoryTransferGate({
                   suggestion={suggestion}
                   freshAt={message.timestamp}
                   surface={surface}
-                  boardResolution={boardResolution}
                   settledText={effectiveSettledRows.get(suggestion.sourceId)}
                   onSettled={(text) => {
                     if (onSuggestionSettled) {
@@ -432,14 +428,12 @@ function TransferSuggestionRow({
   settledText,
   onSettled,
   surface,
-  boardResolution,
 }: {
   suggestion: MemoryTransferSuggestionSnapshot
   freshAt?: string
   settledText?: string
   onSettled: (text: string) => void
   surface: MemoryControlSurface
-  boardResolution?: MemoryBoardActionContext
 }) {
   const { chatId, projectId } = useTranscriptChatContext()
   const loadAll = useMemoryStore((s) => s.loadAll)
@@ -469,7 +463,6 @@ function TransferSuggestionRow({
         {
           ...buildAutomaticTransferCommitBody({ suggestion, scope, projectId, chatId, content }),
           surface,
-          boardResolution,
         },
       )
       await loadAll()
@@ -493,7 +486,6 @@ function TransferSuggestionRow({
         suggestion.sourceId,
         projectId ?? chatId ?? "",
         surface,
-        boardResolution,
       )
       onSettled("passed — won't be suggested again")
     } catch (err) {

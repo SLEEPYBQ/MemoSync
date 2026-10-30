@@ -1,4 +1,3 @@
-import type { LocalHttpServerInfo } from "../../shared/protocol"
 import {
   isPreviewHostForm,
   PREVIEW_PROXY_PATH_PREFIX,
@@ -6,6 +5,7 @@ import {
   previewProxyPath,
   stripPreviewPathPrefix,
 } from "../../shared/preview-proxy"
+import type { LocalHttpServerInfo } from "../../shared/protocol"
 
 interface BrowserLocationLike {
   hostname: string
@@ -68,10 +68,6 @@ export function localServerPreviewUrl(
   }
   if (!server.preferProxy) return server.address
   return `${browserLocation.origin}${previewProxyPath(server.port)}`
-}
-
-export function canKillLocalHttpServer(server: LocalHttpServerInfo) {
-  return server.canKill !== false
 }
 
 /** Normalize address-bar input. Loopback target ports route through the

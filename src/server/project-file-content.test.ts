@@ -2,8 +2,8 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { handleProjectFileContent } from "./server";
 import type { EventStore } from "./event-store";
+import { handleProjectFileContent } from "./server";
 
 let dir: string
 
@@ -15,14 +15,6 @@ function call(relPath: string, init?: RequestInit): Promise<Response | null> {
   const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
   const req = new Request(url, init)
   return handleProjectFileContent(req, new URL(req.url), store)
-}
-
-function blockedCall(relPath: string, init?: RequestInit): Promise<Response | null> {
-  const url = `http://localhost/api/projects/p-1/files/${encodeURIComponent(relPath)}/content`
-  const req = new Request(url, init)
-  return handleProjectFileContent(req, new URL(req.url), store, {
-    beginStudyMemoryMutation: () => null,
-  })
 }
 
 describe("project file content route", () => {
@@ -56,55 +48,6 @@ describe("project file content route", () => {
     const res = await call("hello.ts", { method: "PUT", body })
     expect(res!.status).toBe(200)
     expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe(body)
-  })
-
-  it("does not count an ordinary project-file save as Static memory control", async () => {
-    process.env.EXPERIMENT_CONDITION = "static"
-    const events: unknown[] = []
-    const url = "http://localhost/api/projects/p-1/files/hello.ts/content"
-    const req = new Request(url, {
-      method: "PUT",
-      headers: {
-        "x-memosync-session-id": "chat-1",
-        "x-memosync-edit-duration-ms": "800",
-      },
-      body: "export const x = 2\n",
-    })
-
-    const res = await handleProjectFileContent(req, new URL(req.url), store, {
-      experimentLogger: { event: (event) => void events.push(event) },
-    })
-
-    expect(res!.status).toBe(200)
-    expect(events).toEqual([])
-  })
-
-  it("PUT cannot bypass an active study freeze through the Files editor", async () => {
-    const before = readFileSync(join(dir, "hello.ts"), "utf8")
-    const res = await blockedCall("hello.ts", { method: "PUT", body: "changed during freeze" })
-
-    expect(res!.status).toBe(409)
-    expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe(before)
-  })
-
-  it("allows wrong-project inspection but rejects wrong-project file saves in study mode", async () => {
-    const access = { projectRefusal: () => "Use the assigned apartment project." }
-    const url = "http://localhost/api/projects/p-1/files/hello.ts/content"
-    const readRequest = new Request(url)
-    const read = await handleProjectFileContent(readRequest, new URL(readRequest.url), store, {
-      studyProjectAccess: access,
-    })
-    const writeRequest = new Request(url, { method: "PUT", body: "changed" })
-    const write = await handleProjectFileContent(writeRequest, new URL(writeRequest.url), store, {
-      studyProjectAccess: access,
-    })
-
-    expect(read!.status).toBe(200)
-    expect(write!.status).toBe(409)
-    expect(await write!.json()).toEqual({
-      error: { code: "STUDY_PROJECT_LOCKED", message: "Use the assigned apartment project." },
-    })
-    expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe("export const x = 1\n")
   })
 
   it("PUT rejects files that do not exist (no create)", async () => {

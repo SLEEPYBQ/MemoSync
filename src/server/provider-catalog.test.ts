@@ -1,16 +1,15 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { resolveClaudeApiModelId } from "../shared/types"
 import {
   SERVER_PROVIDERS,
   applyClaudeSdkModels,
-  applyStudyModelPin,
-  deployedProviders,
   codexServiceTierFromModelOptions,
+  deployedProviders,
   normalizeClaudeModelOptions,
   normalizeCodexModelOptions,
   normalizeServerModel,
-  resetServerProvidersForTests,
+  resetServerProvidersForTests
 } from "./provider-catalog"
-import { resolveClaudeApiModelId } from "../shared/types"
 
 describe("provider catalog normalization", () => {
   afterEach(() => {
@@ -98,31 +97,5 @@ describe("provider catalog normalization", () => {
     const codex = deployedProviders({ MEMOSYNC_ISOLATE_CLI: "1", GLM_API_KEY: "test", MEMOSYNC_CODEX_MODEL: "glm-5.3" }).find((provider) => provider.id === "codex")
     expect(codex?.defaultModel).toBe("glm-5.3")
     expect(codex?.models.map((model) => model.id)).toEqual(["glm-5.3"])
-  })
-})
-
-describe("applyStudyModelPin", () => {
-  afterEach(() => {
-    resetServerProvidersForTests()
-  })
-
-  test("narrows the catalog to Claude Code on the pinned model at effort high", () => {
-    applyStudyModelPin("deepseek-v4-flash")
-    expect(SERVER_PROVIDERS).toHaveLength(1)
-    const claude = SERVER_PROVIDERS[0]!
-    expect(claude.id).toBe("claude")
-    expect(claude.models.map((m) => m.id)).toEqual(["deepseek-v4-flash"])
-    expect(claude.defaultModel).toBe("deepseek-v4-flash")
-    expect(claude.efforts.map((e) => e.id)).toEqual(["high"])
-    expect(claude.defaultEffort).toBe("high")
-    expect(deployedProviders({}).map((provider) => provider.id)).toEqual(["claude"])
-  })
-
-  test("an operator model id outside the catalog still pins to a single entry", () => {
-    applyStudyModelPin("deepseek-v5-preview")
-    const claude = SERVER_PROVIDERS[0]!
-    expect(claude.models.map((m) => m.id)).toEqual(["deepseek-v5-preview"])
-    expect(claude.models[0]!.supportsEffort).toBe(true)
-    expect(claude.defaultModel).toBe("deepseek-v5-preview")
   })
 })

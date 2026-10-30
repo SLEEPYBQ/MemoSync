@@ -116,26 +116,4 @@ describe("ChatRow", () => {
     expect(html).toContain("Fork chat")
     expect(html).toContain("Archive chat")
   })
-
-  test("omits every fork action when the study hides forking", () => {
-    const html = renderToStaticMarkup(
-      <ChatRow
-        chat={{ ...baseChat, canFork: true }}
-        showFork={false}
-        activeChatId={null}
-        nowMs={60_000}
-        onSelectChat={() => undefined}
-        onRenameChat={() => undefined}
-        onShareChat={() => undefined}
-        onOpenInFinder={() => undefined}
-        onForkChat={() => undefined}
-        onArchiveChat={() => undefined}
-        onDeleteChat={() => undefined}
-      />
-    )
-
-    expect(html).not.toContain("Fork chat")
-    expect(html).not.toContain(">Fork<")
-    expect(html).toContain("Archive chat")
-  })
 })

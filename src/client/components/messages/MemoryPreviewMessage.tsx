@@ -368,7 +368,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
   function respond(decision: MemoryPreviewDecision, memoryIds?: string[], expectedUses?: ExpectedMemoryUse[]) {
     // Demo card: the production controls report into the Guide's local turn
-    // controller. No participant command or transcript endpoint is involved.
+    // controller. No user command or transcript endpoint is involved.
     if (dispatchPreviewDemoDecision(previewDemo, {
       previewId: message.previewId,
       decision,
@@ -394,8 +394,6 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     else respond("go_on", injectedIds, selectedExpectedUses)
   }
 
-  // Keyboard path for the gate (STUDY_PLAN §2.4): Enter = start with the
-  // current injected list, Esc = dismiss. Never while typing.
   useEffect(() => {
     if (!pending) return
     const onKeyDown = (event: KeyboardEvent) => {

@@ -177,7 +177,7 @@ All configuration is read from `.env` in the project directory (see [`.env.examp
 
 With `DEEPSEEK_API_KEY` set, MemoSync derives the whole `ANTHROPIC_*` bundle itself and ignores leftover `ANTHROPIC_*` / `CLAUDE_CODE_*` exports from other Claude Code setups in your shell, so a stray `ANTHROPIC_BASE_URL` cannot hijack the engine.
 
-The composer exposes an engine picker and, for Claude Code, a vendor picker (DeepSeek, GLM, Anthropic). For official Claude subscriptions choose an Anthropic model; the `sonnet` and `opus` aliases resolve in the installed Claude runtime. Leave `MEMOSYNC_ISOLATE_CLI` and `MEMOSYNC_CLI_PROFILE_DIR` unset when using existing official subscriptions. Study deployments retain their single configured Claude model.
+The composer exposes an engine picker and, for Claude Code, a vendor picker (DeepSeek, GLM, Anthropic). For official Claude subscriptions choose an Anthropic model; the `sonnet` and `opus` aliases resolve in the installed Claude runtime. Leave `MEMOSYNC_ISOLATE_CLI` and `MEMOSYNC_CLI_PROFILE_DIR` unset when using existing official subscriptions.
 
 Isolated mode gives child processes separate `CLAUDE_CONFIG_DIR` and `CODEX_HOME` directories without changing the server's `HOME`, shell settings, `~/.claude`, or `~/.codex`. It strips inherited OAuth and provider routing variables. Codex receives a provider definition through process arguments and a key through an environment variable, with an ephemeral credential store; no credential is written to a Codex config or auth file. Missing explicit credentials fail rather than use your normal login. Claude memory branches and title helpers use the same isolation rules.
 
@@ -252,7 +252,7 @@ End-to-end scripts under `scripts/` (`e2e-claude-memory.ts`, `e2e-full-app.ts`, 
 
 ## Data, privacy, and usage logging
 
-Everything MemoSync produces stays on your machine under `~/.memosync/data/`: the memory store (`memory.sqlite`), its Markdown projection (`memories/`), the chat and project logs, and a local usage log (`experiments/events.jsonl`) that records how the memory features are used — reviews, injections, citations, interrupts, audits, panel visibility — stamped with a random per-install id. **Nothing is uploaded automatically.**
+Everything MemoSync produces stays on your machine under `~/.memosync/data/`: the memory store (`memory.sqlite`), its Markdown projection (`memories/`), the chat and project logs, and a local usage log (`experiments/events.jsonl`) that records how the memory features are used — reviews, injections, citations, interrupts, audits, panel visibility — stamped with a random per-install id. **Nothing is uploaded automatically.** Set `MEMOSYNC_USAGE_LOG=0` to disable local usage logging (`EXPERIMENT_LOG=0` remains a compatibility alias). The log can include memory content and revision instructions; see [data and telemetry](docs/DATA_AND_TELEMETRY.md).
 
 ```bash
 bun run export-data          # usage log + memory library

@@ -23,7 +23,6 @@ export type MemoryRelationType =
  */
 export type EvidenceClass = 'user_stated' | 'user_corrected' | 'inferred' | 'agent_proposed';
 
-
 /**
  * How tightly a memory is bound to a specific implementation (SPEC §3):
  * 'concrete' = names specific files/commands/versions; 'contextual' = holds
@@ -32,7 +31,6 @@ export type EvidenceClass = 'user_stated' | 'user_corrected' | 'inferred' | 'age
  */
 export type AbstractionLevel = 'concrete' | 'contextual' | 'general';
 
-/** Who performed a mutation — actor provenance is a core study measurement. */
 export type MemoryActor = 'user' | 'agent' | 'system';
 
 /** Attribution threaded into every store mutation (never inferred). */

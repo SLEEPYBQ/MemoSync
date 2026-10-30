@@ -1,4 +1,3 @@
-import { useTheme } from "../../hooks/useTheme"
 import { PatchDiff } from "@pierre/diffs/react"
 import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
@@ -8,13 +7,13 @@ import type {
   ChatBranchListEntry,
   ChatBranchListResult,
   ChatDiffSnapshot,
-  DiffCommitMode,
-  DiffCommitResult,
   ChatMergeBranchResult,
   ChatMergePreviewResult,
+  DiffCommitMode,
+  DiffCommitResult,
 } from "../../../shared/types"
 import { useStickyState } from "../../hooks/useStickyState"
-import { useConditionPolicy } from "../../lib/conditionApi"
+import { useTheme } from "../../hooks/useTheme"
 import { cn } from "../../lib/utils"
 import { isDiffPathChecked, useDiffCommitStore } from "../../stores/diffCommitStore"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
@@ -23,12 +22,12 @@ import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
 import { classifyAttachmentPreview } from "../messages/attachmentPreview"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger } from "../ui/context-menu"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog"
 import { Input } from "../ui/input"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { SegmentedControl } from "../ui/segmented-control"
 import { Textarea } from "../ui/textarea"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogTitle } from "../ui/dialog"
 
 type DiffRenderMode = "unified" | "split"
 type DiffFile = ChatDiffSnapshot["files"][number]
@@ -688,8 +687,6 @@ function BranchSwitcher({
   const [isLoading, setIsLoading] = useState(false)
   const [isMutating, setIsMutating] = useState(false)
   const [query, setQuery] = useState("")
-  // Study deployments are local-only git: the PR view has nothing to show.
-  const remoteGitEnabled = !useConditionPolicy().studyMode
   const [entryView, setEntryView] = useState<"branches" | "pull_requests">("branches")
   const [branchList, setBranchList] = useState<ChatBranchListResult | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -789,7 +786,7 @@ function BranchSwitcher({
               </Button>
             )}
           />
-          {remoteGitEnabled ? (
+          {(
             <SegmentedControl
               value={entryView}
               onValueChange={(value) => setEntryView(value as "branches" | "pull_requests")}
@@ -801,7 +798,7 @@ function BranchSwitcher({
                 { value: "pull_requests", label: `Open PRs ${totalPullRequestCount}` },
               ]}
             />
-          ) : null}
+          )}
           <div className="max-h-[420px] overflow-y-auto pr-1.5 -mr-[8px]">
             {isLoading ? (
               <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
@@ -1218,8 +1215,6 @@ function GitPanelImpl({
     onCopyFilePath,
     onCopyRelativePath,
   }), [onOpenInFinder, onDiscardFile, onIgnoreFile, onIgnoreFolder, onCopyFilePath, onCopyRelativePath])
-  // Study deployments are local-only git: no publish/sync/PR affordances.
-  const remoteGitEnabled = !useConditionPolicy().studyMode
   const hasChanges = diffs.files.length > 0
   const [isGenerating, setIsGenerating] = useState(false)
   const [commitModeInFlight, setCommitModeInFlight] = useState<DiffCommitMode | null>(null)
@@ -1308,8 +1303,7 @@ function GitPanelImpl({
     ? `https://github.com/${diffs.originRepoSlug}/compare/${encodedBranchName}?expand=1`
     : null
   const canOpenPullRequest = Boolean(
-    remoteGitEnabled
-    && isPublishedBranch
+    isPublishedBranch
     && compareUrl
     && diffs.branchName
     && diffs.branchName !== diffs.defaultBranchName
@@ -1321,7 +1315,7 @@ function GitPanelImpl({
     && selectedCount > 0
     && hasSummary
     && !isBusy
-  const primaryCommitMode: DiffCommitMode = hasRemoteOrigin && remoteGitEnabled ? "commit_and_push" : "commit_only"
+  const primaryCommitMode: DiffCommitMode = hasRemoteOrigin ? "commit_and_push" : "commit_only"
   const resolvedBranchName = diffs.branchName ?? "current branch"
   const primaryCommitActionPrefix = getPrimaryCommitActionPrefix({
     hasSummary,
@@ -1480,9 +1474,7 @@ function GitPanelImpl({
             ) : null}
           </div>
           {diffs.status === "ready" ? (
-            // Local-only git: repos without a remote — or a study deployment
-            // with remote git turned off — get no publish/sync CTA.
-            !hasRemoteOrigin || !remoteGitEnabled ? null : syncAction === "publish" ? (
+            !hasRemoteOrigin || false ? null : syncAction === "publish" ? (
               <Button
                 variant="ghost"
                 size="sm"
@@ -1800,8 +1792,7 @@ function GitPanelImpl({
               </div>
             )}
           </div>
-          
-          
+
         </div>
       </div>
     </div>

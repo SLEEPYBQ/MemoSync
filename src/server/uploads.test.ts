@@ -3,15 +3,13 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 import { getProjectUploadDir } from "./paths"
 import {
-  handleProjectUpload,
-  handleProjectUploadDelete,
   persistUploadedFiles,
   startMemoSyncServer,
-  validateUploadFiles,
+  validateUploadFiles
 } from "./server"
+import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="
@@ -459,49 +457,6 @@ describe("uploads", () => {
     } finally {
       await server.stop()
     }
-  })
-
-  test("rejects wrong-project upload writes and deletes through the study authority", async () => {
-    const projectDir = await mkdtemp(path.join(tmpdir(), "kanna-project-study-upload-"))
-    tempDirs.push(projectDir)
-    const project = { id: "project-car", localPath: projectDir }
-    const store = { getProject: (id: string) => id === project.id ? project : null }
-    const access = { projectRefusal: () => "Use the assigned apartment project." }
-    const formData = new FormData()
-    formData.append("files", new File(["notes"], "notes.txt", { type: "text/plain" }))
-    const uploadRequest = new Request(`http://localhost/api/projects/${project.id}/uploads`, {
-      method: "POST",
-      body: formData,
-    })
-    const upload = await handleProjectUpload(
-      uploadRequest,
-      new URL(uploadRequest.url),
-      store as never,
-      access,
-    )
-
-    const attachment = await persistProjectUpload({
-      projectId: project.id,
-      localPath: projectDir,
-      fileName: "existing.txt",
-      bytes: new TextEncoder().encode("keep"),
-      fallbackMimeType: "text/plain",
-    })
-    const deleteRequest = new Request(
-      `http://localhost/api/projects/${project.id}/uploads/existing.txt`,
-      { method: "DELETE" },
-    )
-    const deletion = await handleProjectUploadDelete(
-      deleteRequest,
-      new URL(deleteRequest.url),
-      store as never,
-      access,
-    )
-
-    expect(upload!.status).toBe(409)
-    expect(deletion!.status).toBe(409)
-    expect(await Bun.file(path.join(projectDir, ".memosync/uploads/notes.txt")).exists()).toBe(false)
-    expect(await Bun.file(attachment.absolutePath).text()).toBe("keep")
   })
 
   test("infers text-friendly content types for previewable source files", () => {

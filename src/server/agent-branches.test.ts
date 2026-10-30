@@ -2,18 +2,17 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { TranscriptEntry } from '../shared/types';
 import { AgentCoordinator } from './agent';
+import type { CodexAppServerManager } from './codex-app-server';
 import { EventStore } from './event-store';
+import type { HarnessEvent, HarnessTurn } from './harness-types';
 import { MemoryService } from './memory';
+import type { MemoryBranchAskOptions, MemoryBranchInput } from './memory/branch-runtime';
 import { createCaptureService } from './memory/capture';
 import { createCheckupService } from './memory/checkup';
 import { createTransferService } from './memory/transfer';
 import { createTransferDetectService } from './memory/transfer-detect';
-import { resolveConditionPolicy } from './experiment/condition';
-import type { HarnessEvent, HarnessTurn } from './harness-types';
-import type { MemoryBranchInput, MemoryBranchAskOptions } from './memory/branch-runtime';
-import type { CodexAppServerManager } from './codex-app-server';
-import type { TranscriptEntry } from '../shared/types';
 
 type MainTurnRequest = { content: string; developerInstructions?: string; onDynamicToolCall?: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> };
 type MainSessionRequest = { sessionToken: string | null; pendingForkSessionToken?: string | null; dynamicTools?: Array<{ name: string }> };
@@ -77,7 +76,7 @@ async function setup(options: { blockPreparation?: boolean; workingFailsOnce?: b
     stopSession: () => {},
   } as unknown as CodexAppServerManager;
   const coordinator = new AgentCoordinator({
-    store, memory, codexManager, onStateChange: () => {}, policy: { ...resolveConditionPolicy('memosync'), studyMode: false },
+    store, memory, codexManager, onStateChange: () => {},
     memoryPreview: true, memoryBranches: true,
     capture: createCaptureService({ memory, callJson }),
     memoryCheckup: createCheckupService({ memory, callJson, listRecentSessions: () => [] }),

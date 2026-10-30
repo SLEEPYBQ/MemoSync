@@ -446,8 +446,6 @@ export function ChatPreferenceControls({
       >
         {(close) => (
           selectedProvider === "claude"
-            // The catalog's efforts list is authoritative — a study-pinned
-            // server narrows it to one entry and the menu must follow.
             ? CLAUDE_REASONING_OPTIONS.filter((effort) =>
                 !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
               ).map((effort) => (

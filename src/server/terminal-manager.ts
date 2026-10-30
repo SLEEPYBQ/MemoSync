@@ -1,11 +1,10 @@
+import { SerializeAddon } from "@xterm/addon-serialize"
+import { Terminal } from "@xterm/headless"
+import defaultShell, { detectDefaultShell } from "default-shell"
+import { existsSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import { existsSync } from "node:fs"
-import defaultShell, { detectDefaultShell } from "default-shell"
-import { Terminal } from "@xterm/headless"
-import { SerializeAddon } from "@xterm/addon-serialize"
 import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
-import { studyProjectSubprocessEnv } from "./study-project-runtime"
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -103,12 +102,12 @@ function resolveShellArgs(shellPath: string) {
   return []
 }
 
-function createTerminalEnv(projectPath: string) {
-  return studyProjectSubprocessEnv({
+function createTerminalEnv() {
+  return {
     ...process.env,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
-  }, projectPath, process.env.STUDY_PROJECTS)
+  }
 }
 
 function updateFocusReportingState(session: Pick<TerminalSession, "focusReportingEnabled" | "modeSequenceTail">, chunk: string) {
@@ -244,7 +243,7 @@ export class TerminalManager {
     try {
       session.process = Bun.spawn([shell, ...resolveShellArgs(shell)], {
         cwd: args.projectPath,
-        env: createTerminalEnv(args.projectPath),
+        env: createTerminalEnv(),
         terminal: session.terminal,
       })
     } catch (error) {

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
+import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
+import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
 import { BrandIcon, useBrandFavicon, useBrandName } from "../components/BrandMark"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
 import { AppDialogProvider } from "../components/ui/app-dialog"
@@ -7,30 +9,27 @@ import { Button } from "../components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input"
 import { TooltipProvider } from "../components/ui/tooltip"
-import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
-import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
-import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount, showChatNotificationEvents } from "./chatNotifications"
+import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "../lib/usageTelemetry"
+import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import { AppSidebar } from "./AppSidebar"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount, showChatNotificationEvents } from "./chatNotifications"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
-import { SettingsPage } from "./SettingsPage"
-import { MemoryBoardPage } from "./MemoryBoardPage"
-import { useAppState } from "./useAppState"
-import { initializeStudyTelemetryOutbox, stopStudyTelemetryOutbox } from "./study/studyTelemetry"
-import { ManualMemoryBoardOverlay } from "./study/StudyBoardGate"
 import {
   MemoryBoardLauncherProvider,
   reconcileMemoryBoardRequestWithActiveChat,
   resolveMemoryBoardLaunchRequest,
   type MemoryBoardLaunchRequest,
   type ResolvedMemoryBoardLaunchRequest,
-} from "./study/MemoryBoardLauncher"
-import { useConditionPolicyLoadFailed, useConditionPolicyResolved } from "../lib/conditionApi"
+} from "./memory/MemoryBoardLauncher"
+import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
+import { MemoryBoardPage } from "./MemoryBoardPage"
+import { SettingsPage } from "./SettingsPage"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
-import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
+import { useAppState } from "./useAppState"
 
 const VERSION_SEEN_STORAGE_KEY = "memosync:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
@@ -46,23 +45,10 @@ type AppAuthState =
   | { status: "locked"; error: string | null }
 
 function TelemetryBootstrap() {
-  const policy = useConditionPolicyResolved()
-
   useLayoutEffect(() => {
-    if (!policy) {
-      stopStudyTelemetryOutbox()
-      return
-    }
-    // The monitoring record stays on in normal deployments: start the durable
-    // outbox directly — no onboarding, no participant scoping reset. Events
-    // flow to the never-condition-locked logging routes.
-    void initializeStudyTelemetryOutbox({
-      condition: policy.condition,
-      resetForNewParticipant: false,
-    })
-    return () => stopStudyTelemetryOutbox()
-  }, [policy])
-
+    void initializeUsageTelemetryOutbox()
+    return stopUsageTelemetryOutbox
+  }, [])
   return null
 }
 
@@ -244,14 +230,8 @@ function AppLayout() {
   const navigate = useNavigate()
   const params = useParams()
   const state = useAppState(params.chatId ?? null)
-  // "" until the condition policy resolves — the title effects below wait for
-  // it rather than stamping the MemoSync name onto a baseline arm's tab.
   const brandName = useBrandName()
   useBrandFavicon()
-  // Study completion is stored in this participant instance's study.sqlite,
-  // not browser-local state that a later participant could accidentally reuse.
-  const conditionPolicyForGuide = useConditionPolicyResolved()
-  const conditionPolicyLoadFailed = useConditionPolicyLoadFailed()
   const [memoryBoardRequest, setMemoryBoardRequest] = useState<ResolvedMemoryBoardLaunchRequest | null>(null)
   useEffect(() => {
     setMemoryBoardRequest((current) => reconcileMemoryBoardRequestWithActiveChat(current, state.activeChatId))
@@ -307,7 +287,7 @@ function AppLayout() {
     setMemoryBoardRequest(resolveMemoryBoardLaunchRequest(request, state.activeChatId))
   }, [state.activeChatId])
   const handleOpenMemoryBoardFromSidebar = useCallback(() => {
-    handleOpenMemoryBoard({ source: "study_sidebar" })
+    handleOpenMemoryBoard({ source: "sidebar" })
   }, [handleOpenMemoryBoard])
   const sidebarElement = useMemo(() => (
     <AppSidebar
@@ -437,29 +417,13 @@ function AppLayout() {
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
   }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady, state.socket])
 
-  // Memory surfaces fail closed until the server's feature policy resolves.
-  if (conditionPolicyForGuide === null) {
-    return (
-      <div className="flex h-[100dvh] min-h-[100dvh] items-center justify-center bg-background px-6 text-sm text-muted-foreground">
-        {conditionPolicyLoadFailed ? (
-          <div className="flex max-w-sm flex-col items-center gap-3 text-center">
-            <p>Could not reach the MemoSync server. Retry once it is running.</p>
-            <Button variant="outline" onClick={() => window.location.reload()}>Reload</Button>
-          </div>
-        ) : (
-          <p>Loading…</p>
-        )}
-      </div>
-    )
-  }
-
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>
       <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
         {sidebarElement}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {memoryBoardRequest ? (
-            <ManualMemoryBoardOverlay
+            <MemoryBoardOverlay
               chatId={memoryBoardRequest.chatId}
               focusedReview={memoryBoardRequest.focusedReview}
               onClose={() => setMemoryBoardRequest(null)}

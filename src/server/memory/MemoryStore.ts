@@ -1,29 +1,21 @@
-// MemoryStore — CRUD + relations over the SQLite `memories` table, plus the
-// append-only per-item version/usage log (`memory_events`, SPEC §3 option 乙).
-// Ported from MemoSync (apps/backend/src/services/memory/MemoryStore.ts),
-// adapted from better-sqlite3 to Bun's `bun:sqlite` (named params use the `$`
-// sigil; positional `?` for single-value reads).
-//
-// Every mutation requires an ActorMeta — actor provenance (user vs agent) is a
-// core study measurement, so it is never inferred or defaulted.
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import { computeMemoryHash } from './hash';
 import type {
-  ActorMeta,
   AbstractionLevel,
+  ActorMeta,
   EvidenceClass,
   MemoryEvent,
   MemoryEventKind,
   MemoryItem,
   MemoryItemSnapshot,
-  MemoryScope,
-  MemoryType,
-  MemoryStatus,
   MemoryRelation,
   MemoryRelationType,
+  MemoryScope,
+  MemoryStatus,
   MemoryTraceLabel,
+  MemoryType,
 } from './types';
-import { computeMemoryHash } from './hash';
 
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
@@ -435,7 +427,7 @@ export class MemoryStore {
    * counts toward candidateResolutionsSince (the policy-memo trigger runs a
    * touch slow) and never joins the few-shot negative examples — sensitive
    * text must not reach LLM prompts, and that boundary outranks counting
-   * accuracy. The experiment log is unaffected: routes emits its
+   * accuracy. The usage log is unaffected: routes emits its
    * memory.decision event regardless.
    */
   discardCandidate(id: string): void {
@@ -469,14 +461,6 @@ export class MemoryStore {
     })();
   }
 
-  /**
-   * SOFT-dismiss a pending non-sensitive candidate: status → 'discarded' with a
-   * recorded event. The text is deliberately retained so the necessity gate can
-   * cite it back to the LLM as a negative example ("the user said no to this")
-   * and the study keeps its extracted-but-not-stored material. The fingerprint
-   * is still written — exact repeats are dropped before the gate ever runs.
-   * Discarded items never inject, never rank, and never list by default.
-   */
   dismissCandidate(id: string, meta: ActorMeta): MemoryItem {
     return this.db.transaction(() => {
       const existing = this.getById(id);
@@ -488,7 +472,7 @@ export class MemoryStore {
   }
 
   /**
-   * Apply the participant's Dismiss decision using store-owned privacy
+   * Apply the user's Dismiss decision using store-owned privacy
    * authority. Mutable Candidate fields are not sufficient for this choice:
    * a legacy row may have been relabelled after an earlier sensitive
    * dismissal, while its durable tombstone still requires secure erasure.
@@ -562,17 +546,6 @@ export class MemoryStore {
     return replaced;
   }
 
-  /**
-   * Commit the only allowed acceptance transition for a sensitive Candidate
-   * shown by the blocking study Board. The reviewed Content/Detail snapshot,
-   * activation, and any revision-target archives share one transaction, so a
-   * caller cannot stage one draft and activate a different draft later.
-   *
-   * Content must actually replace the captured sensitive text. Detail is
-   * required even when the participant deliberately reviews it as empty.
-   * replaceCandidateDraft erases the predecessor from item history before the
-   * accepted status event is appended.
-   */
   acceptReviewedSensitiveCandidate(
     id: string,
     patch: Partial<MemoryItem> & { content: string; detail: string },
@@ -1118,13 +1091,6 @@ export class MemoryStore {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
       .run(key, JSON.stringify(value), new Date().toISOString());
-  }
-
-  /** Commit a related group of JSON receipts as one SQLite transaction. */
-  setKvBatch(entries: ReadonlyArray<readonly [key: string, value: unknown]>): void {
-    this.db.transaction(() => {
-      for (const [key, value] of entries) this.setKv(key, value);
-    })();
   }
 
   /**

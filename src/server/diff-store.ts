@@ -3,6 +3,8 @@ import { lstat, mkdtemp, readFile, readlink, rm, stat, writeFile } from "node:fs
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type {
+  BranchActionFailure,
+  BranchActionSuccess,
   BranchMetadata,
   ChatBranchHistoryEntry,
   ChatBranchHistorySnapshot,
@@ -12,15 +14,13 @@ import type {
   ChatCreateBranchResult,
   ChatDiffFile,
   ChatDiffSnapshot,
-  BranchActionSuccess,
-  BranchActionFailure,
-  GitHubPublishInfo,
-  GitHubRepoAvailabilityResult,
   ChatMergeBranchResult,
   ChatMergePreviewResult,
   ChatSyncResult,
   DiffCommitMode,
   DiffCommitResult,
+  GitHubPublishInfo,
+  GitHubRepoAvailabilityResult,
   UpstreamStatus,
 } from "../shared/types"
 import { generateCommitMessageDetailed } from "./generate-commit-message"
@@ -1116,15 +1116,8 @@ export function appendGitIgnoreEntry(currentContents: string | null, entry: stri
 
 export class DiffStore {
   private readonly states = new Map<string, StoredChatDiffState>()
-  /**
-   * Study deployments run participants on local-only git: no GitHub PR
-   * lookups, no fetch/pull/push/publish, no gh probing. Local commits,
-   * branches, and diffs are unaffected.
-   */
-  private readonly remoteGitEnabled: boolean
 
-  constructor(_: string, options: { remoteGitEnabled?: boolean } = {}) {
-    this.remoteGitEnabled = options.remoteGitEnabled ?? true
+  constructor(_: string) {
   }
 
   async initialize() {}
@@ -1160,15 +1153,7 @@ export class DiffStore {
   async getGitHubPublishInfo(args: {
     projectPath: string
   }): Promise<GitHubPublishInfo> {
-    if (!this.remoteGitEnabled) {
-      return {
-        ghInstalled: false,
-        authenticated: false,
-        activeAccountLogin: undefined,
-        owners: [],
-        suggestedRepoName: sanitizeRepoName(path.basename(args.projectPath)) || "my-repo",
-      }
-    }
+
     const authInfo = await getGhAuthInfo()
     const suggestedRepoName = sanitizeRepoName(path.basename(args.projectPath)) || "my-repo"
 
@@ -1196,12 +1181,7 @@ export class DiffStore {
     owner: string
     name: string
   }): Promise<GitHubRepoAvailabilityResult> {
-    if (!this.remoteGitEnabled) {
-      return {
-        available: false,
-        message: "Remote GitHub access is disabled on this deployment.",
-      }
-    }
+
     const authInfo = await getGhAuthInfo()
     if (!authInfo.ghInstalled) {
       return {
@@ -1255,14 +1235,7 @@ export class DiffStore {
     visibility: "public" | "private"
     description?: string
   }): Promise<BranchActionSuccess | BranchActionFailure> {
-    if (!this.remoteGitEnabled) {
-      return {
-        ok: false,
-        title: "Publishing disabled",
-        message: "This deployment uses local-only git; publishing to GitHub is turned off.",
-        snapshotChanged: false,
-      }
-    }
+
     const repo = await resolveRepo(args.projectPath)
     if (!repo) {
       return {
@@ -1525,7 +1498,7 @@ export class DiffStore {
     let pullRequestsStatus: ChatBranchListResult["pullRequestsStatus"] = "unavailable"
     let pullRequestsError: string | undefined
 
-    if (repoSlug && this.remoteGitEnabled) {
+    if (repoSlug) {
       try {
         const prs = await fetchGitHubPullRequests(repoSlug)
         pullRequests = prs.flatMap<ChatBranchListEntry>((pr) => {
@@ -1872,15 +1845,7 @@ export class DiffStore {
     projectPath: string
     action: "fetch" | "pull" | "push" | "publish"
   }): Promise<ChatSyncResult> {
-    if (!this.remoteGitEnabled) {
-      return {
-        ok: false,
-        action: args.action,
-        title: "Remote sync disabled",
-        message: "This deployment uses local-only git; remote sync is turned off.",
-        snapshotChanged: false,
-      }
-    }
+
     const repo = await resolveRepo(args.projectPath)
     if (!repo) {
       throw new Error("Project is not in a git repository")

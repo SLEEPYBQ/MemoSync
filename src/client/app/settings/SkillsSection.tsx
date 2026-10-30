@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
 import { ExternalLink, Loader2, Search, Trash2, X } from "lucide-react"
+import { useEffect, useState } from "react"
 import type {
   InstalledSkillSummary,
   InstalledSkillsSnapshot,
@@ -8,10 +8,9 @@ import type {
   SkillSearchSnapshot,
   SkillUninstallResult,
 } from "../../../shared/types"
-import { useConditionPolicy } from "../../lib/conditionApi"
 import type { AppState } from "../useAppState"
-import { SETTINGS_LIST_CARD_CLASS, SettingsActionButton } from "./shared"
 import { SETTINGS_ROWS } from "./registry"
+import { SETTINGS_LIST_CARD_CLASS, SettingsActionButton } from "./shared"
 
 function formatInstallCount(count: number) {
   if (!count || count <= 0) return "0 installs"
@@ -117,9 +116,6 @@ function SkillResultCard({
 export function SkillsSection({ state }: { state: Pick<AppState, "connectionStatus" | "socket"> }) {
   const socket = state.socket
   const connectionStatus = state.connectionStatus
-  // Study deployments cut outbound registry access; the installed list stays
-  // (local lock-file reads only). The server refuses search/install too.
-  const remoteSkillsEnabled = !useConditionPolicy().studyMode
   const [query, setQuery] = useState("")
   const [results, setResults] = useState<SkillSearchResult[]>([])
   const [searchLoading, setSearchLoading] = useState(false)
@@ -308,7 +304,7 @@ export function SkillsSection({ state }: { state: Pick<AppState, "connectionStat
         ) : null}
       </section>
 
-      {remoteSkillsEnabled ? (
+      {(
         <section
           id={SETTINGS_ROWS.discoverSkills.id}
           data-settings-row
@@ -356,7 +352,7 @@ export function SkillsSection({ state }: { state: Pick<AppState, "connectionStat
             <div className="px-4 py-3 text-sm text-muted-foreground">No skills found.</div>
           ) : null}
         </section>
-      ) : null}
+      )}
     </div>
   )
 }

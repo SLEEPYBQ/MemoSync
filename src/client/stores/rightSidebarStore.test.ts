@@ -22,7 +22,7 @@ describe("rightSidebarStore", () => {
     expect(useRightSidebarStore.getState().size).toBe(DEFAULT_RIGHT_SIDEBAR_SIZE)
   })
 
-  test("distinguishes the automatic memory-panel mount from participant close and reopen", () => {
+  test("distinguishes the automatic memory-panel mount from user close and reopen", () => {
     expect(getDefaultRightSidebarVisibilityState()).toEqual({
       rightPanel: "memory",
       openInitiator: "system",
@@ -32,14 +32,14 @@ describe("rightSidebarStore", () => {
     useRightSidebarStore.getState().togglePanel(PROJECT_ID, "memory")
     expect(useRightSidebarStore.getState().projects[PROJECT_ID]).toEqual({
       rightPanel: "memory",
-      openInitiator: "participant",
+      openInitiator: "user",
     })
   })
 
-  test("treats a participant-opened panel restored after reload as system-opened", () => {
+  test("treats a user-opened panel restored after reload as system-opened", () => {
     useRightSidebarStore.getState().togglePanel(PROJECT_ID, "git")
     useRightSidebarStore.getState().setSize(537)
-    expect(useRightSidebarStore.getState().projects[PROJECT_ID]?.openInitiator).toBe("participant")
+    expect(useRightSidebarStore.getState().projects[PROJECT_ID]?.openInitiator).toBe("user")
 
     const restored = mergeRightSidebarStore(
       JSON.parse(JSON.stringify(useRightSidebarStore.getState())),
@@ -64,11 +64,11 @@ describe("rightSidebarStore", () => {
 
     expect(useRightSidebarStore.getState().projects[PROJECT_ID]).toEqual({
       rightPanel: "git",
-      openInitiator: "participant",
+      openInitiator: "user",
     })
     expect(useRightSidebarStore.getState().projects["project-2"]).toEqual({
       rightPanel: "browser",
-      openInitiator: "participant",
+      openInitiator: "user",
     })
     expect(useRightSidebarStore.getState().size).toBe(430)
   })

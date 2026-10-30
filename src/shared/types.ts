@@ -463,7 +463,7 @@ export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWin
 export type ChatActivityStatus =
   | "idle"
   | "starting"
-  /** The pre-turn memory-preview LLM pass is in flight (memosync arm). */
+  /** The pre-turn memory-preview LLM pass is in flight. */
   | "previewing_memory"
   | "running"
   | "waiting_for_user"
@@ -526,11 +526,7 @@ export interface LocalProjectsSnapshot {
   projects: LocalProjectSummary[]
 }
 
-/** Memory-preview gate behavior (STUDY_PLAN §2.4 — a system setting, not a study manipulation). */
-/**
- * User-level memory switches (ignored in study mode, where the condition
- * policy alone decides). A chat can additionally turn memory off for itself.
- */
+/** User-level memory switches; each chat can also turn memory off. */
 export interface MemorySettings {
   /** Master switch: off = the agent neither reads nor learns memories, and no memory gates run. */
   enabled: boolean
@@ -801,7 +797,8 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
-  /** Exact participant-authored text when `content` carries a provider wrapper. */
+  /** Exact user-authored text when `content` carries a provider wrapper.
+   * The field name is retained for transcripts written by older versions. */
   participantContent?: string
   attachments?: ChatAttachment[]
   steered?: boolean
@@ -1147,7 +1144,7 @@ export interface PreviewAttention {
 export interface MemoryPreviewEntry extends TranscriptEntryBase {
   kind: "memory_preview"
   previewId: string
-  /** Formal-study task that owned this preview; durable late-evidence lineage. */
+  /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   turn?: number
   /** User task used by the turn-scoped Use Planner. */
@@ -1192,7 +1189,7 @@ export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
 }
 
 /**
- * Per-memory interrupt (2026-08-19 C1/C2): the participant stopped the turn
+ * Per-memory interrupt (2026-08-19 C1/C2): the user stopped the turn
  * because they identified a problem involving one working-memory item. Appended right after the
  * cancellation; the client renders it as the inline recovery card. Pending
  * until a matching MemoryInterruptResolutionEntry is appended.
@@ -1200,9 +1197,9 @@ export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
 export interface MemoryInterruptEntry extends TranscriptEntryBase {
   kind: "memory_interrupt"
   interruptId: string
-  /** The memory the participant flagged by clicking its citation chip. */
+  /** The memory the user flagged by clicking its citation chip. */
   memoryId: string
-  /** The streamed sentence the participant stopped at — the recovery card's anchor quote. */
+  /** The streamed sentence the user stopped at — the recovery card's anchor quote. */
   quote?: string
   /** The interrupted turn's original user prompt; resume re-dispatches it. */
   prompt: string
@@ -1211,11 +1208,11 @@ export interface MemoryInterruptEntry extends TranscriptEntryBase {
   turn?: number
 }
 
-/** The participant's recovery decision for one interrupt. */
+/** The user's recovery decision for one interrupt. */
 export interface MemoryInterruptResolutionEntry extends TranscriptEntryBase {
   kind: "memory_interrupt_resolution"
   interruptId: string
-  /** Participant-authored, turn-local correction sent with the resumed run. */
+  /** User-authored, turn-local correction sent with the resumed run. */
   correction?: string
   /** Read compatibility for transcripts written before recovery used one composer. */
   action?: "content_fixed" | "usage_correction" | "removed_only"
@@ -1247,7 +1244,7 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
 export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
   kind: "memory_preview_update"
   previewId: string
-  /** Formal-study task that owned this regenerated preview revision. */
+  /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   revision: number
   memories: Array<{ id: string; content: string; scope: string }>
@@ -1265,7 +1262,7 @@ export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
 export interface MemoryProposalsEntry extends TranscriptEntryBase {
   kind: "memory_proposals"
   proposalsId: string
-  /** Durable opening-Board claim that owns this otherwise ordinary gate. */
+  /** Legacy opening-Board metadata, read only. */
   openingReviewId?: string
   turn?: number
   /** True while the prompt-side capture pass is still running. */
@@ -1432,7 +1429,7 @@ export interface MemoryTransferDecisionEntry extends TranscriptEntryBase {
  */
 export interface MemoryPreparationResetEntry extends TranscriptEntryBase {
   kind: "memory_preparation_reset"
-  /** Durable opening preparation lineage; absent for ordinary in-chat Review again. */
+  /** Legacy opening preparation lineage, read only. */
   openingReviewId?: string
   /** Present after the injected-set preview exists; absent when Step 1 is reopened from Step 2. */
   previewId?: string

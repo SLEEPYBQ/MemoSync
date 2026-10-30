@@ -1,21 +1,19 @@
+import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
-import { Loader2, PanelLeft, X, Menu, Plus, Settings, BrainCircuit } from "lucide-react"
 import { useLocation, useNavigate } from "react-router-dom"
+import type { KeybindingsSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
 import { BrandIcon, useBrandName } from "../components/BrandMark"
-import { Button } from "../components/ui/button"
-import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
-import { formatSidebarAgeLabel } from "../lib/formatters"
-import { getSidebarChatTimestamp } from "../lib/sidebarChats"
-import { cn } from "../lib/utils"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
+import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
+import { Button } from "../components/ui/button"
+import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
+import { getLastBoardVisit } from "../lib/boardVisit"
+import { formatSidebarAgeLabel } from "../lib/formatters"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { memoriesApi } from "../lib/memoriesApi"
-import { getLastBoardVisit } from "../lib/boardVisit"
-import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
-import type { KeybindingsSnapshot, SidebarData, SidebarChatRow, UpdateSnapshot } from "../../shared/types"
-import type { SocketStatus } from "./socket"
-import { useConditionPolicy } from "../lib/conditionApi"
+import { getSidebarChatTimestamp } from "../lib/sidebarChats"
+import { cn } from "../lib/utils"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -23,27 +21,12 @@ import {
   isSidebarModifierShortcut,
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
+import type { SocketStatus } from "./socket"
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "memosync:sidebar-width"
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
 export const MAX_SIDEBAR_WIDTH = 520
-
-export function resolveSidebarProjectControls(studyMode: boolean) {
-  const enabled = !studyMode
-  return {
-    addProject: enabled,
-    // Participants may open another chat inside the assigned canonical
-    // project; project admission, not chat count, is the treatment boundary.
-    createChat: true,
-    mutateProject: enabled,
-    reorderProjects: enabled,
-  }
-}
-
-export function resolveSidebarMemoryOpen(studyMode: boolean): "overlay" | "route" {
-  return studyMode ? "overlay" : "route"
-}
 
 export function clampSidebarWidth(width: number) {
   if (!Number.isFinite(width)) return DEFAULT_SIDEBAR_WIDTH
@@ -136,8 +119,6 @@ function AppSidebarImpl({
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
   const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
-  const conditionPolicy = useConditionPolicy()
-  const projectControls = resolveSidebarProjectControls(conditionPolicy.studyMode)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const visibleChats = useMemo(
     () => getVisibleSidebarChats(data.projectGroups, collapsedSections, expandedGroups),
@@ -224,7 +205,7 @@ function AppSidebarImpl({
       <ChatRow
         key={chat._id}
         chat={chat}
-        showFork={!conditionPolicy.studyMode}
+        showFork={true}
         activeChatId={activeChatId}
         nowMs={nowMs}
         shortcutHint={visibleIndex ? getSidebarNumberJumpHint(resolvedKeybindings, visibleIndex) : null}
@@ -241,7 +222,7 @@ function AppSidebarImpl({
         onDeleteChat={() => onDeleteChat(chat)}
       />
     )
-  }, [activeChatId, conditionPolicy.studyMode, navigate, nowMs, onArchiveChat, onClose, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
+  }, [activeChatId, navigate, nowMs, onArchiveChat, onClose, onDeleteChat, onForkChat, onOpenExternalPath, onRenameChat, onShareChat, resolvedKeybindings, showNumberJumpHints, visibleIndexByChatId])
 
   useEffect(() => {
     const intervalId = window.setInterval(() => {
@@ -255,7 +236,7 @@ function AppSidebarImpl({
     function handleKeyDown(event: KeyboardEvent) {
       setShowNumberJumpHints(shouldShowSidebarNumberJumpHints(resolvedKeybindings, event))
 
-      if (projectControls.createChat && isSidebarModifierShortcut(resolvedKeybindings, "createChatInCurrentProject", event)) {
+      if (isSidebarModifierShortcut(resolvedKeybindings, "createChatInCurrentProject", event)) {
         if (!currentProjectId) {
           return
         }
@@ -265,7 +246,7 @@ function AppSidebarImpl({
         return
       }
 
-      if (projectControls.addProject && isSidebarModifierShortcut(resolvedKeybindings, "openAddProject", event)) {
+      if (isSidebarModifierShortcut(resolvedKeybindings, "openAddProject", event)) {
         event.preventDefault()
         navigate("/")
         onClose()
@@ -305,7 +286,7 @@ function AppSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, projectControls.addProject, projectControls.createChat, resolvedKeybindings])
+  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, true, true, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -374,7 +355,7 @@ function AppSidebarImpl({
   const [memoryBadge, setMemoryBadge] = useState(false)
   const [pendingCount, setPendingCount] = useState(0)
   useEffect(() => {
-    if (!conditionPolicy.boardVisible) return
+
     let disposed = false
     const check = async () => {
       try {
@@ -398,7 +379,7 @@ function AppSidebarImpl({
       disposed = true
       window.clearInterval(timer)
     }
-  }, [conditionPolicy.boardVisible, location.pathname])
+  }, [location.pathname])
   const isLocalProjectsActive = location.pathname === "/"
   const isSettingsActive = location.pathname.startsWith("/settings")
   const isMemoryActive = location.pathname.startsWith("/memory")
@@ -477,7 +458,7 @@ function AppSidebarImpl({
             <span className="font-logo text-base uppercase sm:text-md text-section-title">{brandName}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
-            {projectControls.addProject ? <Button
+            {<Button
               variant="ghost"
               size="icon"
               onClick={() => {
@@ -488,7 +469,7 @@ function AppSidebarImpl({
               title="New project"
             >
               <Plus className="h-5 w-5" />
-            </Button> : null}
+            </Button>}
             {showDevBadge ? (
               <span
                 className="mr-1 hidden md:inline-flex items-center rounded-full border border-border bg-muted px-2 py-0.5 text-[11px] font-bold tracking-wider text-muted-foreground"
@@ -509,7 +490,7 @@ function AppSidebarImpl({
                 UPDATE
               </Button>
             ) : null}
-            {projectControls.addProject ? <Button
+            {<Button
               variant="ghost"
               size="icon"
               onClick={() => {
@@ -520,7 +501,7 @@ function AppSidebarImpl({
               title="New project"
             >
               <Plus className="size-4" />
-            </Button> : null}
+            </Button>}
           </div>
         </div>
 
@@ -562,39 +543,37 @@ function AppSidebarImpl({
 
             <LocalProjectsSection
               projectGroups={data.projectGroups}
-              onReorderGroups={projectControls.reorderProjects ? onReorderProjectGroups : undefined}
+              onReorderGroups={onReorderProjectGroups}
               collapsedSections={collapsedSections}
               expandedGroups={expandedGroups}
               onToggleSection={toggleSection}
               onToggleExpandedGroup={toggleExpandedGroup}
               renderChatRow={renderChatRow}
-              onShowArchivedProject={projectControls.mutateProject ? setArchivedProjectId : undefined}
-              onNewLocalChat={projectControls.createChat ? (localPath) => {
+              onShowArchivedProject={setArchivedProjectId}
+              onNewLocalChat={(localPath) => {
                 const projectId = projectIdByPath.get(localPath)
                 if (projectId) {
                   onCreateChat(projectId)
                 }
-              } : undefined}
-              onCopyPath={projectControls.mutateProject ? onCopyPath : undefined}
-              onOpenExternalPath={projectControls.mutateProject ? onOpenExternalPath : undefined}
-              onRenameProject={projectControls.mutateProject ? onRenameProject : undefined}
-              onHideProject={projectControls.mutateProject ? onHideProject : undefined}
+              }}
+              onCopyPath={onCopyPath}
+              onOpenExternalPath={onOpenExternalPath}
+              onRenameProject={onRenameProject}
+              onHideProject={onHideProject}
               isConnected={connectionStatus === "connected"}
             />
           </div>
         </div>
 
         <div className="border-t border-border p-2">
-          {conditionPolicy.boardVisible ? (
+          {(
             <button
               type="button"
               onClick={() => {
-                if (resolveSidebarMemoryOpen(conditionPolicy.studyMode) === "overlay") {
-                  onOpenMemoryBoard()
-                } else {
+
                   // Normal product keeps the global route and project lens.
                   navigate(`/memory${currentProjectId ? `?project=${encodeURIComponent(currentProjectId)}` : ""}`)
-                }
+
                 onClose()
               }}
               className={cn(
@@ -626,7 +605,7 @@ function AppSidebarImpl({
                 ) : null}
               </div>
             </button>
-          ) : null}
+          )}
             <button
             type="button"
             onClick={() => {

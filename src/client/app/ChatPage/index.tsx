@@ -10,7 +10,6 @@ import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
 import { GitPanel } from "../../components/chat-ui/GitPanel"
 import { SessionMemoriesPanel } from "../../components/memory-chat/SessionMemoriesPanel"
 import { TurnInterruptContext, type TurnInterruptApi } from "../../components/messages/shared"
-import { submitStudyPrompt } from "../study/studyPromptIntercept"
 import { useAppDialog } from "../../components/ui/app-dialog"
 import { Card, CardContent } from "../../components/ui/card"
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "../../components/ui/resizable"
@@ -838,23 +837,8 @@ export function ChatPage() {
     content: string,
     options?: Parameters<typeof state.handleSend>[1],
   ) => {
-    // Opening-Board flow (2026-08-19 E1): the first prompt of an unreviewed
-    // study task is captured; the Board modal runs, then the prompt continues
-    // on its own. Everything else passes straight through.
-    await submitStudyPrompt({
-      content,
-      attachments: options?.attachments,
-      dispatchOptions: {
-        provider: options?.provider,
-        model: options?.model,
-        modelOptions: options?.modelOptions,
-        planMode: options?.planMode,
-      },
-      dispatch: async (openingReviewId) => {
-        await scrollToTranscriptEnd(false)
-        await state.handleSend(content, { ...options, openingReviewId })
-      },
-    })
+    await scrollToTranscriptEnd(false)
+    await state.handleSend(content, options)
   }, [scrollToTranscriptEnd, state])
 
   useEffect(() => {

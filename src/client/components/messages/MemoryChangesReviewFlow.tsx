@@ -8,7 +8,7 @@ import {
   useMemoryBoardLauncher,
   type FocusedMemoryReviewController,
   type FocusedMemoryReviewSnapshot,
-} from "../../app/study/MemoryBoardLauncher"
+} from "../../app/memory/MemoryBoardLauncher"
 import { Button } from "../ui/button"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { TranscriptChatContextProvider, useTranscriptChatContext } from "./render-context"
@@ -428,16 +428,6 @@ export function MemoryChangesReviewFlow({
   useEffect(() => controllerRef.current?.update(review), [review])
 
   const openingReviewId = messages.find((message) => message.openingReviewId)?.openingReviewId
-  const reviewChatId = chatContext.chatId
-  useEffect(() => {
-    if (!openingReviewId || !reviewChatId) return
-    return boardLauncher.focusedReviews.register(
-      reviewChatId,
-      openingReviewId,
-      controllerRef.current!,
-    )
-  }, [boardLauncher.focusedReviews, openingReviewId, reviewChatId])
-
   const activeReview = !stale && (
     messages.some((message) => message.decision === undefined)
     || canReopenProposals

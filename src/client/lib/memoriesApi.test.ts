@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { initializeStudyTelemetryOutbox, stopStudyTelemetryOutbox } from "../app/study/studyTelemetry";
+import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "./usageTelemetry";
 import { memoriesApi, recordWorkingMemorySelection, setUiMonitorSuppressed } from "./memoriesApi";
 
 class MemoryStorage {
@@ -66,7 +66,7 @@ test("Candidate Undo sends its control surface and chat provenance to the server
   })
 })
 
-test("Audit Enforce sends one stable operation id with the participant action", async () => {
+test("Audit Enforce sends one stable operation id with the user action", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -88,7 +88,7 @@ test("Audit Enforce sends one stable operation id with the participant action", 
   })
 })
 
-test("Audit Draft a fix sends one stable operation id with the participant action", async () => {
+test("Audit Draft a fix sends one stable operation id with the user action", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -108,7 +108,7 @@ test("Audit Draft a fix sends one stable operation id with the participant actio
   })
 })
 
-test("Working Memory Ask sends one stable operation id with the participant instruction", async () => {
+test("Working Memory Ask sends one stable operation id with the user instruction", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -168,12 +168,9 @@ test("Working Memory use planning binds the request to its chat and preview", as
 
 test("Working Memory Add and Remove enqueue distinct semantic operation ids", async () => {
   const delivered: Array<{ endpoint: string; body: Record<string, unknown> }> = []
-  await initializeStudyTelemetryOutbox({
-    condition: "memosync",
-    resetForNewParticipant: true,
+  await initializeUsageTelemetryOutbox({
     storage: new MemoryStorage(),
     onlineTarget: null,
-    randomId: () => "participant-scope",
     fetcher: async (input, init) => {
       delivered.push({
         endpoint: String(input),
@@ -212,5 +209,5 @@ test("Working Memory Add and Remove enqueue distinct semantic operation ids", as
     },
   ])
   expect(delivered[0]!.body.operationId).not.toBe(delivered[1]!.body.operationId)
-  stopStudyTelemetryOutbox()
+  stopUsageTelemetryOutbox()
 })

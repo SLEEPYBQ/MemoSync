@@ -1,8 +1,3 @@
-// Stable anonymous identity for one local deployment. Longitudinal analysis
-// aggregates events.jsonl files collected from many machines; stamping every
-// event with a persisted per-install id keeps those streams separable without
-// accounts or manual labeling. PARTICIPANT_ID (study orchestration) wins when
-// present.
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 

@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import type { AppSettingsPatch } from "../../../shared/types"
-import { Switch } from "../../components/ui/switch"
 import { SelectItem } from "../../components/ui/select"
-import { useConditionPolicy, type ConditionPolicy } from "../../lib/conditionApi"
+import { Switch } from "../../components/ui/switch"
 import { memoriesApi } from "../../lib/memoriesApi"
 import type { AppState } from "../useAppState"
 import { SETTINGS_ROWS } from "./registry"
@@ -14,20 +13,17 @@ type MemoryState = Pick<AppState, "appSettings" | "handleWriteAppSettings">
 /** Pure view also makes all policy and disabled states verifiable without network hooks. */
 export function MemorySettingsGroups({
   settings,
-  policy,
   mode,
   save,
   setMode,
 }: {
   settings: AppState["appSettings"]
-  policy: ConditionPolicy
   mode: "ask" | "auto" | undefined
   save: (patch: AppSettingsPatch) => void
   setMode: (mode: "ask" | "auto") => void
 }) {
-  // In study mode the server's condition policy, rather than personal switches, is authoritative.
-  const enabled = policy.studyMode || settings?.memory.enabled !== false
-  const learn = policy.studyMode || settings?.memory.learn !== false
+  const enabled = settings?.memory.enabled !== false
+  const learn = settings?.memory.learn !== false
   const memoryReason = " Turn on Use Memory to change this."
   const changesDisabled = !enabled || !learn || mode === undefined
   const changesReason = !enabled
@@ -41,7 +37,7 @@ export function MemorySettingsGroups({
   return (
     <>
       <SettingsGroups>
-        {!policy.studyMode ? (
+        {(
           <SettingsGroup>
             <SettingsRow def={SETTINGS_ROWS.memoryEnabled}>
               <Switch
@@ -63,8 +59,8 @@ export function MemorySettingsGroups({
               />
             </SettingsRow>
           </SettingsGroup>
-        ) : null}
-        {policy.preview ? (
+        )}
+        {(
           <SettingsGroup title="Before Each Turn">
             <SettingsRow
               def={SETTINGS_ROWS.memoryPreview}
@@ -91,7 +87,7 @@ export function MemorySettingsGroups({
               />
             </SettingsRow>
           </SettingsGroup>
-        ) : null}
+        )}
         <SettingsGroup title="Changes">
           <SettingsRow
             def={SETTINGS_ROWS.memoryChanges}
@@ -111,7 +107,7 @@ export function MemorySettingsGroups({
           </SettingsRow>
         </SettingsGroup>
       </SettingsGroups>
-      {policy.boardVisible ? (
+      {(
         <div className="px-[17px] pt-6">
           <Link
             className="inline-flex min-h-9 items-center text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:underline"
@@ -120,13 +116,12 @@ export function MemorySettingsGroups({
             Open Memory Board
           </Link>
         </div>
-      ) : null}
+      )}
     </>
   )
 }
 
 export function MemorySection({ state }: { state: MemoryState }) {
-  const policy = useConditionPolicy()
   const [mode, setMode] = useState<"ask" | "auto" | undefined>()
   const [error, setError] = useState<string | null>(null)
 
@@ -173,7 +168,7 @@ export function MemorySection({ state }: { state: MemoryState }) {
       {error ? <SettingsErrorBanner message={error} /> : null}
       <MemorySettingsGroups
         settings={state.appSettings}
-        policy={policy}
+
         mode={mode}
         save={(patch) => {
           void save(patch)

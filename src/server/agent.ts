@@ -1,73 +1,55 @@
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 import { homedir } from "node:os"
+import type { ClientCommand } from "../shared/protocol"
+import { normalizeToolCall } from "../shared/tools"
 import type {
   AgentProvider,
+  ChatActivityStatus,
   ChatAttachment,
   ContextWindowUsageSnapshot,
+  MemoryPreviewDecision,
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
-  ChatActivityStatus,
   QueuedChatMessage,
   TranscriptEntry,
 } from "../shared/types"
-import { normalizeToolCall } from "../shared/tools"
-import type { ClientCommand } from "../shared/protocol"
-import { EventStore } from "./event-store"
-import { CodexAppServerManager } from "./codex-app-server"
-import { type GenerateChatTitleResult, generateTitleForChatDetailed } from "./generate-title"
-import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
-import {
-  applyClaudeSdkModels,
-  type ClaudeSdkModelInfo,
-  codexServiceTierFromModelOptions,
-  getServerProviderCatalog,
-  normalizeClaudeModelOptions,
-  normalizeCodexModelOptions,
-  normalizePiModelOptions,
-  normalizeServerModel,
-} from "./provider-catalog"
-import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import { resolveClaudeApiModelId } from "../shared/types"
-import { fallbackTitleFromMessage } from "./generate-title"
+import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
+import { claudeSessionFileExists } from "./claude-session-files"
+import { CodexAppServerManager } from "./codex-app-server"
+import { EventStore } from "./event-store"
+import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
+import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
-import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext } from "./memory/tools"
+import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
+import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
+import { memoryStageSchema } from "./memory/branch-schemas"
+import {
+  buildAuditBranchPrompt,
+  buildWorkingMemoryBranchPrompt,
+  MemoryBranchResultError,
+  parseAuditBranchResult,
+  parseWorkingMemoryBranchResult,
+} from "./memory/branch-stages"
+import type { CaptureOutcome, CaptureService } from "./memory/capture"
+import { runForkCapture } from "./memory/capture-fork"
+import type { CheckupResult, CheckupService } from "./memory/checkup"
+import { extractCitations } from "./memory/citations"
+import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
+import { toCodexDynamicTools } from "./memory/codex-adapter"
+import type { RevisionService } from "./memory/evolution"
+import { runForkQuery } from "./memory/fork-query"
 import {
   computeMemoryTurnDelta,
   normalizeMemorySelection,
   planMemoryInjection,
   type MemoryInjectionPlan,
 } from "./memory/injection"
-import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
-import { resolveConditionPolicy, type ConditionPolicy } from "./experiment/condition"
-import {
-  buildDeliveredStoreFocusEvent,
-  persistDeliveredStoreFocusEvent,
-  recordDeliveredStoreFocus,
-} from "./experiment/focus"
-import type { StudyMemoryStore } from "./experiment/study-memory-store"
-import type { StudyPromptGate, StudyPromptGateInput } from "./study-prompt-gate"
-import { claudeSessionFileExists } from "./claude-session-files"
-import { ensureProjectDirectory } from "./paths"
-import { toCodexDynamicTools } from "./memory/codex-adapter"
-import { extractCitations } from "./memory/citations"
-import type { CaptureOutcome, CaptureService } from "./memory/capture"
 import type { RelevanceService, RelevantMemory } from "./memory/relevance"
-import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
+import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext } from "./memory/tools"
 import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memory/trace"
 import { runForkTrace } from "./memory/trace-fork"
-import { runForkCapture } from "./memory/capture-fork"
-import { runForkQuery } from "./memory/fork-query"
-import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
-import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
-import { memoryStageSchema } from "./memory/branch-schemas"
-import {
-  buildWorkingMemoryBranchPrompt, parseWorkingMemoryBranchResult,
-  buildAuditBranchPrompt, parseAuditBranchResult, MemoryBranchResultError,
-} from "./memory/branch-stages"
-import { buildIsolatedClaudeEnv, assertIsolatedClaudeCredentials, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
-import type { RevisionService } from "./memory/evolution"
-import type { CheckupResult, CheckupService } from "./memory/checkup"
 import type {
   TransferDetectService,
   TransferSuggestionCard,
@@ -75,15 +57,23 @@ import type {
   TransferTaskResult,
 } from "./memory/transfer-detect"
 import type { MemoryItem } from "./memory/types"
-import type { MemoryPreviewDecision } from "../shared/types"
-import type {
-  MemoryBoardBacklogService,
-  MemoryBoardOpeningPromptRecovery,
-} from "./memory/board-backlog"
-import { studyProjectSubprocessEnv } from "./study-project-runtime"
-import type { StudyPreviewRuntimeController } from "./study-preview-runtime"
-import { toClaudeStudyPreviewMcpServer } from "./study-preview-claude-adapter"
-import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
+import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
+import { ensureProjectDirectory } from "./paths"
+import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
+import {
+  applyClaudeSdkModels,
+  codexServiceTierFromModelOptions,
+  getServerProviderCatalog,
+  normalizeClaudeModelOptions,
+  normalizeCodexModelOptions,
+  normalizePiModelOptions,
+  normalizeServerModel,
+  type ClaudeSdkModelInfo,
+} from "./provider-catalog"
+import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
+import {
+  recordDeliveredStoreFocus,
+} from "./usage/focus"
 
 export function toMemoryCandidateReferences(items: Array<Pick<MemoryItem, "id">>) {
   return items.map(({ id }) => ({ id }))
@@ -185,7 +175,6 @@ const CLAUDE_ENGINE_ENV_ALLOWLIST = new Set([
 
 export function buildClaudeSubprocessEnv(args: {
   localPath: string
-  rawStudyProjects: string | undefined
   baseEnv?: Readonly<Record<string, string | undefined>>
 }): Record<string, string | undefined> {
   const rawEnv = args.baseEnv ?? process.env
@@ -195,7 +184,7 @@ export function buildClaudeSubprocessEnv(args: {
       delete baseEnv[key]
     }
   }
-  return studyProjectSubprocessEnv(baseEnv, args.localPath, args.rawStudyProjects)
+  return baseEnv
 }
 
 const CLAUDE_TOOLSET = [
@@ -255,28 +244,16 @@ function createMemoryPreparationCancellation(): MemoryPreparationCancellation {
   }
 }
 
-// Appended to the system prompt in every arm (blinding-safe: names no memory
-// system). The agent otherwise cannot know that a dev server it starts is what
-// the user previews, or how it becomes reachable. The web app you build is the
-// deliverable the user watches, so treat "start a server the user can open" as
-// part of finishing a web task.
+// Explain the product Browser/proxy boundary to every provider.
 const BROWSER_USAGE_GUIDE = [
-  "## Showing web apps in the participant's Browser panel",
-  "",
-  "The participant views the app through the Browser panel built into this study interface. The web server runs inside your project container; the participant's own browser cannot reach that container through `localhost`.",
-  "",
-  "- The supplied study workspace already has its starter dependencies and a project-specific PostgreSQL database. Use the existing `DB_*` environment variables; do not start or reconfigure a system PostgreSQL cluster unless a readiness check proves the provided database is unavailable.",
-  "- The study runtime owns one preview server for the assigned project: frontend port 3000 and backend port 3001. It starts and stops that server automatically for every study condition.",
-  "- Do not run commands that start, stop, detach, or replace a development server. In particular, do not use `npm run dev`, `npm run start:dev`, `next dev`, `nohup`, `setsid`, `disown`, `pkill`, or `kill`, and do not move either service to another port.",
-  "- Do not run a production build (`npm run build`, `next build`, or an equivalent root build) while the managed preview owns this workspace: Next production builds rewrite the same `.next` artifacts used by the live preview. Tests, lint, and `tsc --noEmit` remain available.",
-  "- Edit the application normally and rely on the managed server's hot reload. Use preview_status to inspect its phase, fixed ports, and bounded recent log; if it reports degraded or exited, use preview_restart. Do not repair its process lifecycle through Bash.",
-  "- Do not deploy, tunnel, or expose the app through an external service.",
-  "- Do not tell the participant to open `http://localhost:<port>` in their own browser.",
-  "- After the server is ready, tell the participant exactly: open **Browser**, press **Home** if needed, find the server under **Local Servers**, and click the green server card belonging to the current project.",
-  "- Prefer browser-side relative URLs such as `/api`. When a separate API server is needed, configure the frontend dev server to proxy those relative API requests to it. Do not embed a participant-facing `localhost` API URL.",
-  "- Continue normal code and task verification after making the preview available. A quick HTTP readiness check is enough for the first preview; do not install browser automation solely to prove that the Browser panel can open it. Container-local success does not prove that the participant-visible Browser preview rendered successfully.",
-  "- Ask the participant to test the result in the Browser panel. If hot reload is unavailable, ask them to press the Browser panel's **Refresh** button after your changes.",
-  "- If the participant reports a blank page, do not claim the app is visible merely because `curl` or local Playwright succeeds. Re-check server logs and app errors, and report that the participant-visible preview may have failed.",
+  "## Showing web apps in the Browser panel",
+  "The Browser panel previews local web servers through MemoSync's proxy.",
+  "Start the project's development server when a web task needs a live preview, and wait until it is ready.",
+  "Bind the server to 0.0.0.0 when the workspace runs in a container or on a remote machine.",
+  "Tell the user the port and the page to open in the Browser panel. Their own localhost may be a different machine.",
+  "Use the project's documented scripts and environment. Inspect the existing configuration before choosing a port or changing dependencies.",
+  "Use relative URLs such as /api and configure the frontend dev server to proxy backend requests when necessary.",
+  "The user can press Home, select the project's server card, and use the Browser panel's Refresh button. Verify the proxied page if the user reports a blank page; local server success alone does not prove it renders through the proxy.",
 ].join("\n")
 
 export function buildClaudeSystemAppend(memoryBlock: string) {
@@ -305,14 +282,13 @@ export interface TurnMemoryState {
   readonly learnActive: boolean
 }
 
-/** Snapshot once at admission; study conditions retain sole control of memory. */
+/** Snapshot the user settings and chat switch once when a turn starts. */
 export function resolveTurnMemoryState(
-  policy: Pick<ConditionPolicy, "studyMode">,
   settings: { enabled: boolean; learn: boolean },
   memoryDisabled = false,
 ): TurnMemoryState {
-  const memoryActive = policy.studyMode || (settings.enabled && !memoryDisabled)
-  return { memoryActive, learnActive: memoryActive && (policy.studyMode || settings.learn) }
+  const memoryActive = (settings.enabled && !memoryDisabled)
+  return { memoryActive, learnActive: memoryActive && (settings.learn) }
 }
 
 interface StartTurnArgs {
@@ -322,7 +298,7 @@ interface StartTurnArgs {
   content: string
   attachments: ChatAttachment[]
   /** Immutable private copies used only at the provider boundary. The
-   * participant transcript continues to own `attachments`. */
+   * user transcript continues to own `attachments`. */
   providerAttachments?: ChatAttachment[]
   model: string
   effort?: string
@@ -350,17 +326,6 @@ interface StartTurnArgs {
    * result instead of persisting the client selection it started from.
    */
   onMemoryDeliveryAccepted?: (focusedIds: readonly string[]) => void
-  /** First-message Long-term review stays inside the blocking Board until explicit Continue. */
-  openingReview?: { taskId: string; reviewId: string }
-  /** Restart continuation after Candidate → Transfer → Checkup was already durable. */
-  openingLongTermAlreadyReady?: boolean
-  /** Durable dependency-CAS lineage; positive values force all Long-term stages to recompute in place. */
-  openingLongTermRevision?: number
-  /** Exact durable Working Memory decision that linearizes provider dispatch. */
-  openingWorkingMemory?: {
-    previewId: string
-    decision: "go_on" | "without_memory"
-  }
   startupReservation?: StartupReservation
 }
 
@@ -404,10 +369,8 @@ interface ActiveTurn {
   profilingStartedAt?: number
   /** 1-based user-visible turn number (count of user_prompt entries) — memory provenance. */
   turnNumber?: number
-  /** Stable logical turn id for experiment records. */
+  /** Stable logical turn id for local usage records. */
   turnId: string
-  /** Study task active when this turn began; null outside the study. */
-  taskId: string | null
   /** Immutable memory plan used for this turn's boot, prompt text, and measurement. */
   memoryPlan: MemoryInjectionPlan | null
   /** The user message that started this turn — input to the post-turn memory passes. */
@@ -514,33 +477,12 @@ interface AgentCoordinatorArgs {
   memoryCheckup?: CheckupService | null
   /** Transfer detection over out-of-context memories (Transfer design 2026-08-08); null disables. */
   memoryTransferDetect?: TransferDetectService | null
-  /** Study-arm policy; decides injection shape + tool registration (default: resolved from env). */
-  policy?: ConditionPolicy
   /** User switches, sampled only when a new turn begins. */
   getMemorySettings?: () => { enabled: boolean; learn: boolean }
-  /** Live preview-gate settings (STUDY_PLAN §2.4); default: always on, auto-proceed on empty plans. */
+
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
-  /** Active serial-study task, stamped at turn start. */
-  getActiveStudyTaskId?: () => string | null
-  /** Study-only project/instruction admission, checked at every queue boundary. */
-  studyPromptGate?: StudyPromptGate | null
-  /** Durable participant-prompt evidence keyed by the transcript turn id. */
-  onParticipantPromptRecorded?: (input: {
-    taskId: string
-    turnId: string
-    chatId: string
-    content: string
-    attachments: ChatAttachment[]
-    acceptedAt: string
-  }) => void
-  /** Durable first-message Board state machine; absent outside study MemoSync. */
-  openingBoardBacklog?: MemoryBoardBacklogService | null
-  /** Durable source of truth for study focus/freeze/questionnaire data. */
-  studyMemoryStore?: StudyMemoryStore | null
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
   claudeSessionFileExists?: (localPath: string, sessionToken: string) => boolean
-  /** Formal-study preview owner shared with the session coordinator. */
-  studyPreviewRuntime?: StudyAgentPreviewRuntime | null
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
   claudeRetireTimeoutMs?: number
   startClaudeSession?: (args: {
@@ -556,33 +498,17 @@ interface AgentCoordinatorArgs {
     capture?: CaptureService | null
     projectId?: string
     chatId?: string
-    policy?: ConditionPolicy
     subprocessEnv?: Record<string, string | undefined>
     /** Precomputed once for this turn so boot, prompt, and measurement share exact text. */
     memoryPlan?: MemoryInjectionPlan | null
     restrictMemoryIds?: string[]
     onMemoryProposal?: (created: MemoryItem[]) => void
-    studyPreviewRuntime?: StudyAgentPreviewRuntime | null
   }) => Promise<ClaudeSessionHandle>
 }
 
 interface SendToStartingProfile {
   traceId: string
   startedAt: number
-}
-
-export interface StudyMemoryQualityFlag {
-  code:
-    | "capture_failed"
-    | "trace_failed"
-    | "post_turn_failed"
-    | "post_turn_incomplete"
-    | "focus_persistence_failed"
-  blocking: boolean
-  taskId: string
-  chatId: string
-  turnId: string
-  turn?: number
 }
 
 interface PostTurnMemoryPassArgs {
@@ -592,7 +518,6 @@ interface PostTurnMemoryPassArgs {
   engine: string
   turnNumber?: number
   turnId: string
-  taskId: string | null
   userText: string
   assistantText: string
   citedIds: string[]
@@ -796,8 +721,6 @@ export function normalizeClaudeUsageSnapshot(
     ...(toolUses !== undefined ? { toolUses } : {}),
     ...(durationMs !== undefined ? { durationMs } : {}),
     ...(typeof maxTokens === "number" && maxTokens > 0 ? { maxTokens } : {}),
-    // Auto-compact is enabled in this deployment (the study-era kill switch
-    // is gone), so the context meter should say so up front.
     compactsAutomatically: true,
   }
 }
@@ -1031,7 +954,7 @@ export async function* createClaudeHarnessStream(
         if (typeof item.tool_use_id !== "string") return "unknown"
         const inherited = lineageOrigins.get(item.tool_use_id)
         // A missing id, or a batched frame that joins different lineages,
-        // must not borrow the currently active participant root.
+        // must not borrow the currently active user root.
         if (inherited === undefined) return "unknown"
         if (inheritedOrigin !== undefined && inheritedOrigin !== inherited) return "unknown"
         inheritedOrigin = inherited
@@ -1164,9 +1087,9 @@ export async function* createClaudeHarnessStream(
       rootOrigin = "unknown"
       outboundOrigins?.finishResult(origin)
       rootOrigin = outboundOrigins?.current() ?? "unknown"
-      // Results from background and participant roots may interleave. Retire
+      // Results from background and user roots may interleave. Retire
       // only the lineage that actually completed: clearing the whole table on
-      // a task result would erase a still-live participant parent, while
+      // a task result would erase a still-live user parent, while
       // retaining a completed human lineage would authorize its late child.
       for (const [toolUseId, lineageOrigin] of lineageOrigins) {
         if (lineageOrigin !== origin) continue
@@ -1233,7 +1156,7 @@ export class ClaudeToolOriginResolver {
 }
 
 /**
- * Outbound participant prompts are authoritative even when Claude Code does
+ * Outbound user prompts are authoritative even when Claude Code does
  * not echo their SDKUserMessage. A nonhuman continuation may finish first;
  * pending human turns remain reserved and resume as the root fallback.
  */
@@ -1265,7 +1188,7 @@ export class ClaudeOutboundOriginTracker {
   /**
    * A later `system_init` proves that these older FIFO prompts can no longer
    * emit a result. Release their exact provenance reservations without
-   * touching the current participant turn or any non-human lineage.
+   * touching the current user turn or any non-human lineage.
    */
   discardHumanTurnReservations(promptSeqs: readonly number[]): number {
     const discarded = new Set(promptSeqs)
@@ -1294,32 +1217,6 @@ export class ClaudeOutboundOriginTracker {
     this.pendingHumanTurns.splice(0, this.pendingHumanTurns.length)
     this.root = "unknown"
   }
-}
-
-export function isStudyToolOriginAllowed(origin: HarnessEvent["origin"]) {
-  return origin === "human"
-}
-
-export function isStudyBackgroundToolRequest(toolName: string, input: Record<string, unknown>) {
-  if (input.run_in_background === true || input.background === true) return true
-  if (toolName !== "Bash") return false
-  const command = typeof input.command === "string" ? input.command : ""
-  return /\b(?:nohup|setsid|disown)\b/i.test(command)
-    || /(?<![>&])&(?!&)\s*(?:$|[;\n])/m.test(command)
-}
-
-/** Study previews are owned by the server supervisor, never by Claude Bash. */
-export function isStudyPreviewLifecycleCommand(command: string): boolean {
-  const normalized = command.toLowerCase()
-  return [
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start(?::dev)?)\b/,
-    /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/,
-    /\b(?:run\s+dev|run\s+start:dev|npx\s+next\s+dev|bunx\s+next\s+dev)\b/,
-    /\b(?:next|nest)\s+(?:dev|start|build)\b/,
-    /\b(?:nohup|setsid|disown)\b/,
-    /\b(?:pkill|killall|kill)\b/,
-    /\bfuser\b[^\n]*\s-k\b/,
-  ].some((pattern) => pattern.test(normalized))
 }
 
 class AsyncMessageQueue<T> implements AsyncIterable<T> {
@@ -1409,8 +1306,6 @@ export async function startClaudeSession(args: {
   capture?: CaptureService | null
   projectId?: string
   chatId?: string
-  /** Study-arm policy; decides injection shape + tool registration (default memosync). */
-  policy?: ConditionPolicy
   /** Exact environment inherited by Claude Code and its Bash/tool children. */
   subprocessEnv?: Record<string, string | undefined>
   /** Precomputed once by the coordinator; tests/direct callers may omit it. */
@@ -1420,22 +1315,13 @@ export async function startClaudeSession(args: {
   /** Fires when the session agent's propose_memory lands candidates — the
    * coordinator appends the transcript review card. */
   onMemoryProposal?: (created: MemoryItem[]) => void
-  /** Same server-owned preview diagnostics in every formal study condition. */
-  studyPreviewRuntime?: StudyAgentPreviewRuntime | null
 }): Promise<ClaudeSessionHandle> {
-  // MemoSync memory: what gets injected (and whether the mcp__memory__* tools
-  // exist) is the study arm's call — planMemoryInjection is the single source
-  // of truth shared with the coordinator's rebuild check. The session is
-  // persistent (reused across turns); skills-mode content changes ride per-turn
-  // deltas, so this boot block is set once and survives edits (REDESIGN D1).
-  const policy = args.policy ?? resolveConditionPolicy()
   const toolOriginResolver = new ClaudeToolOriginResolver()
   const outboundOrigins = new ClaudeOutboundOriginTracker()
   const plan: MemoryInjectionPlan | null = args.memoryPlan !== undefined
     ? args.memoryPlan
     : args.memory
       ? planMemoryInjection({
-        policy,
         memory: args.memory,
         projectId: args.projectId,
         chatId: args.chatId,
@@ -1468,44 +1354,11 @@ export async function startClaudeSession(args: {
         })
       : []
   const memoryBlock = plan?.block ?? ""
-  // Environment guidance appended to the system prompt in EVERY arm (it names
-  // no memory system, so it is blinding-safe): the agent otherwise has no way
-  // to know that a dev server it starts becomes visible to the user, or how.
+  // Append environment guidance so the agent knows how a dev server it
+  // starts becomes visible to the user.
   const systemAppend = buildClaudeSystemAppend(memoryBlock)
   const canUseTool: CanUseTool = async (toolName, input, options) => {
-    if (policy.studyMode) {
-      const toolOrigin = await toolOriginResolver.take(options.toolUseID, options.signal)
-      if (!isStudyToolOriginAllowed(toolOrigin)) {
-        return {
-          behavior: "deny",
-          message: toolOrigin
-            ? `SDK ${toolOrigin} continuations cannot use tools in a participant study session.`
-            : "Tool provenance was unavailable; study tools fail closed.",
-        }
-      }
-      if (isStudyBackgroundToolRequest(toolName, input)) {
-        return {
-          behavior: "deny",
-          message: "Background processes are disabled in study tasks. Use foreground tests, lint, and type-check commands; the study server owns the preview and its build artifacts.",
-        }
-      }
-    }
-    if (policy.studyMode && toolName === "KillShell") {
-      return {
-        behavior: "deny",
-        message: "The study server owns preview process lifecycle; KillShell is unavailable in study tasks.",
-      }
-    }
-    if (
-      policy.studyMode
-      && toolName === "Bash"
-      && isStudyPreviewLifecycleCommand(typeof input?.command === "string" ? input.command : "")
-    ) {
-      return {
-        behavior: "deny",
-        message: "The study server owns the preview on fixed ports 3000 and 3001. Edit the project and use the managed hot reload; do not start, stop, or replace preview processes.",
-      }
-    }
+
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
       return {
         behavior: "allow",
@@ -1564,7 +1417,6 @@ export async function startClaudeSession(args: {
 
   const baseSubprocessEnv = args.subprocessEnv ?? buildClaudeSubprocessEnv({
     localPath: args.localPath,
-    rawStudyProjects: policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
   })
   const sdkRuntime = buildClaudeSdkRuntimeOptions({
     requestedModel: args.model,
@@ -1575,9 +1427,6 @@ export async function startClaudeSession(args: {
     prompt: promptQueue,
     options: {
       cwd: args.localPath,
-      // The internal provider remains Claude Code. In formal DeepSeek study
-      // sessions sdkRuntime adds the CLI-only [1m] selector; the CLI removes
-      // it before calling the Anthropic-compatible endpoint.
       model: sdkRuntime.model,
       effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
       resume: args.sessionToken ?? undefined,
@@ -1592,17 +1441,12 @@ export async function startClaudeSession(args: {
       systemPrompt: systemAppend
         ? { type: "preset", preset: "claude_code", append: systemAppend }
         : undefined,
-      mcpServers: memorySpecs.length || (policy.studyMode && args.studyPreviewRuntime)
+      mcpServers: memorySpecs.length
         ? {
-            ...(memorySpecs.length ? { memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext) } : {}),
-            ...(policy.studyMode && args.studyPreviewRuntime
-              ? { preview: toClaudeStudyPreviewMcpServer(args.studyPreviewRuntime, args.localPath) }
-              : {}),
+            memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
           }
         : undefined,
-      // Study mode narrows to user settings only: a workspace CLAUDE.md would
-      // otherwise be a second, uncontrolled memory channel in every arm.
-      settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : policy.studyMode ? ["user"] : ["user", "project", "local"],
+      settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : ["user", "project", "local"],
       // MemoSync IS the memory system. The harness's own auto-memory
       // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
       // read+write channel — observed live: the model wrote MEMORY.md there
@@ -1616,7 +1460,7 @@ export async function startClaudeSession(args: {
   return {
     provider: "claude",
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
-      if (policy.studyMode) toolOriginResolver.register(toolUseId, origin)
+
     }, outboundOrigins),
     getAccountInfo: async () => {
       try {
@@ -1674,17 +1518,6 @@ export async function startClaudeSession(args: {
   }
 }
 
-interface PreviewControlOperation {
-  operationId: string
-  taskId: string
-  sessionId: string
-  chatId: string
-  surface: "working_memory"
-  action: MemoryPreviewDecision
-  controlType: "working_memory"
-  payload: { previewId: string; requestedIds: string[]; effectiveIds: string[] }
-}
-
 interface PendingMemoryPreview {
   chatId?: string
   previewId: string
@@ -1704,7 +1537,7 @@ interface PendingMemoryPreview {
     d: MemoryPreviewDecision,
     memoryIds?: string[],
     expectedUses?: ExpectedMemoryUse[],
-    controlOperation?: PreviewControlOperation,
+    operationId?: string,
   ) => void
   reopen?: (from: "proposals" | "checkup" | "transfer", stageId: string) => void
 }
@@ -1745,21 +1578,11 @@ export class AgentCoordinator {
   private readonly memoryPreview: boolean
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
-  private readonly policy: ConditionPolicy
   private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
-  private readonly getActiveStudyTaskId: () => string | null
-  private readonly studyPromptGate: StudyPromptGate | null
-  private readonly onParticipantPromptRecorded: AgentCoordinatorArgs["onParticipantPromptRecorded"]
-  private readonly openingBoardBacklog: MemoryBoardBacklogService | null
-  private readonly studyMemoryStore: StudyMemoryStore | null
   private readonly claudeSessionFileExists: (localPath: string, sessionToken: string) => boolean
-  private readonly studyPreviewRuntime: StudyAgentPreviewRuntime | null
   private readonly claudeRetireTimeoutMs: number
-  private readonly studyTaskChats = new Map<string, Set<string>>()
-  private readonly studyTaskProjectPaths = new Map<string, Set<string>>()
   private reportBackgroundError: ((message: string) => void) | null = null
-  private readonly claimedPreviewControlOperationIds = new Set<string>()
   /** A response owns the parked preview from before its first await until its
    * decision has finished. This closes concurrent Start/without-memory races. */
   private readonly claimedPreviewResponses = new Map<string, string>()
@@ -1849,27 +1672,6 @@ export class AgentCoordinator {
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
   /**
-   * Claude result delivery makes the chat look idle before capture/trace have
-   * settled. Study freeze waits on these task-scoped promises; unrelated
-   * checkup work and Transfer source-rule preparation deliberately continue
-   * in the background.
-   */
-  private readonly inFlightStudyMemoryJobs = new Set<{
-    taskId: string
-    promise: Promise<StudyMemoryQualityFlag[]>
-  }>()
-  private readonly studyMemoryQualityByTask = new Map<string, StudyMemoryQualityFlag[]>()
-  private readonly pendingStudyMemoryQualityClears = new Map<string, {
-    taskId: string
-    chatId: string
-    turnId: string
-    code: string
-  }>()
-  /** One startup/retry owner per durable opening-Board claim. */
-  private readonly openingBoardRecoveryTasks = new Set<string>()
-  private readonly openingBoardRecoveryRetryAttempts = new Map<string, number>()
-  private readonly openingBoardRecoveryRetryTimers = new Map<string, ReturnType<typeof setTimeout>>()
-  /**
    * In-flight assistant text per chat, accumulated from assistant_delta harness
    * events (DeepSeek/codex agentMessage deltas). Broadcast via ChatRuntime.
    * streamingText only — never persisted; cleared the moment the final
@@ -1897,19 +1699,12 @@ export class AgentCoordinator {
     this.memoryPreview = args.memoryPreview ?? false
     this.memoryCheckup = args.memoryCheckup ?? null
     this.memoryTransferDetect = args.memoryTransferDetect ?? null
-    this.policy = args.policy ?? resolveConditionPolicy()
     this.getMemorySettings = args.getMemorySettings ?? (() => ({ enabled: true, learn: true }))
-    this.memoryBranches = this.policy.condition === "memosync" && (args.memoryBranches ?? Boolean(args.createMemoryBranch))
+    this.memoryBranches = (args.memoryBranches ?? Boolean(args.createMemoryBranch))
     this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
     this.getMemoryPreviewSettings =
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
-    this.getActiveStudyTaskId = args.getActiveStudyTaskId ?? (() => null)
-    this.studyPromptGate = args.studyPromptGate ?? null
-    this.onParticipantPromptRecorded = args.onParticipantPromptRecorded
-    this.openingBoardBacklog = args.openingBoardBacklog ?? null
-    this.studyMemoryStore = args.studyMemoryStore ?? null
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
-    this.studyPreviewRuntime = args.studyPreviewRuntime ?? null
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
 
@@ -1919,7 +1714,7 @@ export class AgentCoordinator {
     if (!project) throw new Error("Memory branch project is unavailable")
     const runtime = args.provider === "claude" ? buildClaudeSdkRuntimeOptions({
       requestedModel: args.model,
-      env: buildClaudeSubprocessEnv({ localPath: project.localPath, rawStudyProjects: process.env.STUDY_PROJECTS }),
+      env: buildClaudeSubprocessEnv({ localPath: project.localPath }),
     }) : null
     const branch = this.createMemoryBranchFn({
       provider: args.provider,
@@ -2080,10 +1875,6 @@ export class AgentCoordinator {
     expectedUses?: ExpectedMemoryUse[]
     operationId?: string
   }) {
-    const suppliedOperationId = command.operationId?.trim()
-    if (suppliedOperationId && this.claimedPreviewControlOperationIds.has(suppliedOperationId)) {
-      throw new Error("This Working Memory Control operation was already recorded")
-    }
     if (this.claimedPreviewResponses.get(command.chatId) === command.previewId) {
       throw new Error("This Working Memory preview is already being handled")
     }
@@ -2101,10 +1892,8 @@ export class AgentCoordinator {
     const requestedIds = command.decision === "go_on"
       ? [...(command.memoryIds ?? pending.memoryIds)]
       : [...(command.memoryIds ?? [])]
-    const taskId = this.getActiveStudyTaskId()
-    const isFormalMemoSync = this.policy.studyMode && this.policy.condition === "memosync" && Boolean(taskId)
     let effectiveIds = [...requestedIds]
-    if ((isFormalMemoSync || this.memoryBranches) && command.decision === "go_on") {
+    if (command.decision === "go_on") {
       if (!this.memory) throw new Error("Memory service is unavailable")
       const chat = this.store.requireChat(command.chatId)
       const previewPool = new Set(pending.memoryIds)
@@ -2116,22 +1905,6 @@ export class AgentCoordinator {
       })
     }
     if (command.decision !== "go_on") effectiveIds = []
-    let controlOperation: PreviewControlOperation | undefined
-    if (isFormalMemoSync && taskId) {
-      const operationId = suppliedOperationId || `control:${taskId}:working-memory:${command.previewId}:${command.decision}`
-      if (operationId.length > 200) throw new Error("operationId must be at most 200 characters")
-      controlOperation = {
-        operationId,
-        taskId,
-        sessionId: taskId,
-        chatId: command.chatId,
-        surface: "working_memory",
-        action: command.decision,
-        controlType: "working_memory",
-        payload: { previewId: command.previewId, requestedIds, effectiveIds },
-      }
-    }
-
     // Claim and remove this exact map entry before expected-use planning (or
     // any other await). A second response sees the claim and cannot emit its
     // own attempted event, expire the winner's card, or dispatch Claude.
@@ -2140,56 +1913,23 @@ export class AgentCoordinator {
     }
 
     let handedOff = false
-    let attemptedRecorded = false
     try {
-      if (controlOperation) {
-        const attempted = this.memory?.logger.event({
-          type: "study.control_operation",
-          ...controlOperation,
-          phase: "attempted",
-        })
-        if (
-          attempted !== null
-          && typeof attempted === "object"
-          && "durableCreated" in attempted
-          && attempted.durableCreated === false
-        ) {
-          throw new Error("This Working Memory Control operation was already recorded")
-        }
-        attemptedRecorded = true
-        this.claimedPreviewControlOperationIds.add(controlOperation.operationId)
-      }
 
-      let authoritativeExpectedUses = command.expectedUses
-      if (isFormalMemoSync || this.memoryBranches) {
-        authoritativeExpectedUses = command.decision === "go_on"
-          ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
-          : []
-      }
+      const authoritativeExpectedUses = command.decision === "go_on"
+        ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
+        : []
 
       handedOff = true
       pending.respond(
         command.decision,
         command.decision === "go_on"
-          ? isFormalMemoSync || this.memoryBranches ? effectiveIds : command.memoryIds
+          ? effectiveIds
           : undefined,
         authoritativeExpectedUses,
-        controlOperation,
+        command.operationId,
       )
     } catch (error) {
       if (!handedOff) this.restorePendingPreviewResponse(command.chatId, pending)
-      if (attemptedRecorded && controlOperation) {
-        try {
-          this.memory?.logger.event({
-            type: "study.control_operation",
-            ...controlOperation,
-            phase: "failed",
-            errorClass: error instanceof Error ? error.constructor.name : typeof error,
-          })
-        } catch {
-          // Preserve the server-authority failure as the caller-visible error.
-        }
-      }
       throw error
     }
   }
@@ -2486,8 +2226,7 @@ export class AgentCoordinator {
     const pending = this.pendingTransferGates.get(command.chatId)
     if (!pending || pending.transferId !== command.transferId) {
       // A duplicate or late click on an already-settled card is a no-op, not
-      // an error banner (pilot report 2026-08-11: the red "No matching
-      // pending memory transfer card" surfaced while the flow had moved on).
+      // an error banner: the flow has already moved on.
       if (this.isMemoryGateDecided(command.chatId, "memory_transfer_decision", "transferId", command.transferId)) return
       if (await this.expireOrphanedTransfer(command.chatId, command.transferId)) return
       throw new Error("No matching pending memory transfer card")
@@ -2638,7 +2377,7 @@ export class AgentCoordinator {
     args: { chatId: string; turnNumber?: number; memoryState?: TurnMemoryState },
   ): Set<string> {
     const applied = new Set<string>()
-    if (!this.memory || args.memoryState?.learnActive === false || this.policy.capture !== "review") return applied
+    if (!this.memory || args.memoryState?.learnActive === false || false) return applied
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
     if (mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
@@ -2686,70 +2425,6 @@ export class AgentCoordinator {
       else for (const projectId of projectIds) this.memory.syncProjection(projectId)
     }
     return applied
-  }
-
-  /**
-   * The post-turn memory passes (SPEC §4.1 capture, §4.10 trace), run
-   * fire-and-forget after a successful turn's final result. Never throws — failures go to
-   * the background-error reporter and must not break the turn loop.
-   */
-  private noteStudyMemoryQualityFlag(flag: StudyMemoryQualityFlag): void {
-    const existing = this.studyMemoryQualityByTask.get(flag.taskId) ?? []
-    const duplicate = existing.some((candidate) => (
-      candidate.code === flag.code
-      && candidate.chatId === flag.chatId
-      && candidate.turnId === flag.turnId
-    ))
-    try {
-      this.studyMemoryStore?.recordStudyMemoryQualityFlag(flag)
-    } catch (error) {
-      this.reportBackgroundError?.(
-        `[study-quality] failed to persist ${flag.code}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-    if (duplicate) return
-    this.studyMemoryQualityByTask.set(flag.taskId, [...existing, flag])
-  }
-
-  private clearStudyMemoryQualityFlag(args: {
-    taskId: string
-    chatId: string
-    turnId: string
-    code: string
-  }): void {
-    const existing = this.studyMemoryQualityByTask.get(args.taskId) ?? []
-    const remaining = existing.filter((flag) => !(
-      flag.code === args.code
-      && flag.chatId === args.chatId
-      && flag.turnId === args.turnId
-    ))
-    if (remaining.length) this.studyMemoryQualityByTask.set(args.taskId, remaining)
-    else this.studyMemoryQualityByTask.delete(args.taskId)
-    const clearKey = `${args.taskId}\0${args.code}\0${args.chatId}\0${args.turnId}`
-    try {
-      this.studyMemoryStore?.clearStudyMemoryQualityFlag(args)
-      this.pendingStudyMemoryQualityClears.delete(clearKey)
-    } catch (error) {
-      this.pendingStudyMemoryQualityClears.set(clearKey, args)
-      this.reportBackgroundError?.(
-        `[study-quality] failed to clear ${args.code}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-    }
-  }
-
-  private trackStudyMemoryJob(
-    taskId: string,
-    promise: Promise<StudyMemoryQualityFlag[]>,
-    pendingFlag?: StudyMemoryQualityFlag,
-  ): void {
-    const tracked = { taskId, promise }
-    this.inFlightStudyMemoryJobs.add(tracked)
-    void promise.then((flags) => {
-      for (const flag of flags) this.noteStudyMemoryQualityFlag(flag)
-      if (pendingFlag) this.clearStudyMemoryQualityFlag(pendingFlag)
-    }).finally(() => {
-      this.inFlightStudyMemoryJobs.delete(tracked)
-    })
   }
 
   private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
@@ -2806,85 +2481,28 @@ export class AgentCoordinator {
       args.sessionToken = chat?.sessionToken
       args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
     }
-    if (args.engine !== "claude" || !args.taskId) {
-      void this.runPostTurnMemoryPasses(args)
-      return
-    }
-
-    const taskId = args.taskId
-    let resolved = false
-    let resolveSettlement!: (flags: StudyMemoryQualityFlag[]) => void
-    const promise = new Promise<StudyMemoryQualityFlag[]>((resolve) => {
-      resolveSettlement = resolve
-    })
-    const settle = (flags: StudyMemoryQualityFlag[]) => {
-      if (resolved) return
-      resolved = true
-      resolveSettlement(flags)
-    }
-    const pendingFlag: StudyMemoryQualityFlag = {
-      code: "post_turn_incomplete",
-      blocking: false,
-      taskId,
-      chatId: args.chatId,
-      turnId: args.turnId,
-      ...(args.turnNumber !== undefined ? { turn: args.turnNumber } : {}),
-    }
-    this.noteStudyMemoryQualityFlag(pendingFlag)
-    this.trackStudyMemoryJob(taskId, promise, pendingFlag)
-
-    const execution = this.runPostTurnMemoryPasses({
-      ...args,
-      onStudyMeasurementSettled: settle,
-    })
-    void execution.catch((error) => {
-      this.reportBackgroundError?.(
-        `[memory-post-turn] chat ${args.chatId} turn ${args.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`
-      )
-      settle([{
-        code: "post_turn_failed",
-        blocking: false,
-        taskId,
-        chatId: args.chatId,
-        turnId: args.turnId,
-        ...(args.turnNumber !== undefined ? { turn: args.turnNumber } : {}),
-      }])
+    void this.runPostTurnMemoryPasses(args).catch((error) => {
+      this.reportBackgroundError?.(`[memory-post-turn] chat ${args.chatId}: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 
   private async runPostTurnMemoryPasses(
-    args: PostTurnMemoryPassArgs & {
-      onStudyMeasurementSettled?: (flags: StudyMemoryQualityFlag[]) => void
-    },
+    args: PostTurnMemoryPassArgs,
   ) {
     if (args.memoryState?.memoryActive === false || !this.memory || (!args.userText.trim() && !args.assistantText.trim())) {
-      args.onStudyMeasurementSettled?.([])
       return
     }
-
-    const qualityFlag = (
-      code: StudyMemoryQualityFlag["code"],
-    ): StudyMemoryQualityFlag | null => args.taskId
-      ? {
-          code,
-          blocking: code === "focus_persistence_failed",
-          taskId: args.taskId,
-          chatId: args.chatId,
-          turnId: args.turnId,
-          ...(args.turnNumber !== undefined ? { turn: args.turnNumber } : {}),
-        }
-      : null
 
     // Capture and trace are INDEPENDENT LLM passes over the same turn text —
     // run them concurrently instead of back-to-back (the serial order doubled
     // post-turn latency for no reason; inline citations are regex-extracted
     // during the turn and never wait on either). Each pass keeps its own
     // error containment.
-    const capturePass = async (): Promise<StudyMemoryQualityFlag[]> => {
+    const capturePass = async (): Promise<void> => {
       // C reviews the completed trajectory with the next prompt. It already
       // includes extraction and routing in a single forked conversation.
-      if (this.memoryBranches) return []
-      if (!this.capture || args.memoryState?.learnActive === false) return []
+      if (this.memoryBranches) return
+      if (!this.capture || args.memoryState?.learnActive === false) return
       try {
         const captureInput = {
           projectId: args.projectId,
@@ -2943,18 +2561,17 @@ export class AgentCoordinator {
           }
           this.emitStateChange(args.chatId)
         }
-        return []
+        return
       } catch (error) {
         this.reportBackgroundError?.(
           `[memory-capture] chat ${args.chatId} turn ${args.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`
         )
-        const flag = qualityFlag("capture_failed")
-        return flag ? [flag] : []
+        return
       }
     }
 
-    const tracePass = async (): Promise<StudyMemoryQualityFlag[]> => {
-      if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return []
+    const tracePass = async (): Promise<void> => {
+      if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return
       try {
         // "Used" = everything in play this turn: the BOOT-TIME injected
         // snapshot plus any extra memories the model cited (e.g. pulled in via
@@ -3187,7 +2804,7 @@ export class AgentCoordinator {
           })
           this.emitStateChange(args.chatId)
         }
-        return []
+        return
       } catch (error) {
         const errorClass = error instanceof Error ? error.name || "Error" : "Error"
         try {
@@ -3220,13 +2837,11 @@ export class AgentCoordinator {
         this.reportBackgroundError?.(
           `[memory-trace] chat ${args.chatId} turn ${args.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`
         )
-        const flag = qualityFlag("trace_failed")
-        return flag ? [flag] : []
+        return
       }
     }
 
-    const qualityFlags = (await Promise.all([capturePass(), tracePass()])).flat()
-    args.onStudyMeasurementSettled?.(qualityFlags)
+    await Promise.all([capturePass(), tracePass()])
     if (this.memoryBranches) return
 
     const precomputeCheckup = async () => {
@@ -3238,7 +2853,7 @@ export class AgentCoordinator {
       // key). Partial by design: acceptances at the next gate's Step 1 change
       // the library and still trigger a live recompute there.
       // MEMOSYNC_CHECKUP_FORK=0 skips the fork leg (sidecar still runs).
-      if (args.memoryState?.learnActive !== false && this.memoryCheckup && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryCheckup) {
         try {
           const checkupCtx = { projectId: args.projectId, sessionId: args.chatId }
           if (this.memoryCheckup.needsRecompute(checkupCtx)) {
@@ -3279,7 +2894,7 @@ export class AgentCoordinator {
       // read memories from other conversations/projects and Encode only their
       // source-side portable rules. Relevance and Decode/landing deliberately
       // wait for the next prompt, whose task is required to judge both.
-      if (args.memoryState?.learnActive !== false && this.memoryTransferDetect && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryTransferDetect) {
         try {
           await this.memoryTransferDetect.prepareSources({
             projectId: args.projectId,
@@ -3302,121 +2917,6 @@ export class AgentCoordinator {
 
   setBackgroundErrorReporter(report: ((message: string) => void) | null) {
     this.reportBackgroundError = report
-  }
-
-  /**
-   * A synchronous freeze check used after StudyRegistry reserves the task.
-   * Pending gates and queued messages are unfinished user turns just as much
-   * as a streaming reply, so ending the session while any exists is refused.
-   */
-  studyFreezeBlocker(): string | null {
-    if (
-      this.startingChats.size > 0
-      || this.activeTurns.size > 0
-      || this.pendingPreviews.size > 0
-      || this.claimedPreviewResponses.size > 0
-      || this.pendingProposalGates.size > 0
-      || this.pendingCheckupGates.size > 0
-      || this.pendingTransferGates.size > 0
-      || this.activePreparations.size > 0
-      || this.inFlightCheckups.size > 0
-    ) {
-      return "The agent is still working or waiting for a memory decision. Finish or stop that turn first."
-    }
-    if (this.store.getChatIdsWithQueuedMessages().length > 0) {
-      return "A queued message still belongs to this session. Let it finish or remove it first."
-    }
-    return null
-  }
-
-  /** Server-owned task evidence for the Finish gate and researcher dashboard. */
-  studyTaskRunEvidence(taskId: string): {
-    participantPromptCount: number
-    completedAgentTurnCount: number
-    unresolvedMemoryInterruptCount: number
-  } {
-    const promptEvents = (this.studyMemoryStore?.listStudyTelemetryEvents() ?? [])
-      .filter((event) => event.kind === "participant_prompt" && event.taskId !== null)
-    const promptTaskByTurnId = new Map<string, string>()
-    for (const event of promptEvents) {
-      const payloadTurnId = typeof event.payload.turnId === "string" ? event.payload.turnId : null
-      const fallbackTurnId = event.eventId.split(":").at(-1) ?? null
-      const turnId = payloadTurnId?.trim() || fallbackTurnId?.trim()
-      if (turnId) promptTaskByTurnId.set(turnId, event.taskId!)
-    }
-
-    let completedAgentTurnCount = 0
-    const interruptTaskById = new Map<string, string>()
-    const resolvedInterruptIds = new Set<string>()
-    const chatIds = new Set(promptEvents.map((event) => event.chatId).filter((id): id is string => Boolean(id)))
-    for (const chatId of chatIds) {
-      let currentTaskId: string | null = null
-      let countedSuccessForPrompt = false
-      for (const entry of this.store.getMessages(chatId)) {
-        if (entry.kind === "user_prompt") {
-          // Interrupt recovery reuses interruptId as the continuation turn id.
-          // It is not a second participant prompt, but its successful result
-          // still belongs to the task that owned the interrupted run.
-          currentTaskId = promptTaskByTurnId.get(entry._id) ?? interruptTaskById.get(entry._id) ?? null
-          countedSuccessForPrompt = false
-          continue
-        }
-        if (
-          entry.kind === "result"
-          && entry.subtype === "success"
-          && !entry.isError
-          && currentTaskId === taskId
-          && !countedSuccessForPrompt
-        ) {
-          completedAgentTurnCount += 1
-          countedSuccessForPrompt = true
-          continue
-        }
-        if (entry.kind === "memory_interrupt" && currentTaskId) {
-          interruptTaskById.set(entry.interruptId, currentTaskId)
-        } else if (entry.kind === "memory_interrupt_resolution") {
-          resolvedInterruptIds.add(entry.interruptId)
-        }
-      }
-    }
-
-    return {
-      participantPromptCount: promptEvents.filter((event) => event.taskId === taskId).length,
-      completedAgentTurnCount,
-      unresolvedMemoryInterruptCount: [...interruptTaskById]
-        .filter(([interruptId, ownerTaskId]) => ownerTaskId === taskId && !resolvedInterruptIds.has(interruptId))
-        .length,
-    }
-  }
-
-  /** Wait only for questionnaire-changing Claude capture/trace work. */
-  async awaitStudyMemorySettled(taskId: string): Promise<StudyMemoryQualityFlag[]> {
-    while (true) {
-      const pending = [...this.inFlightStudyMemoryJobs]
-        .filter((job) => job.taskId === taskId)
-        .map((job) => job.promise)
-      if (pending.length === 0) {
-        for (const pendingClear of [...this.pendingStudyMemoryQualityClears.values()]) {
-          if (pendingClear.taskId !== taskId) continue
-          this.clearStudyMemoryQualityFlag(pendingClear)
-        }
-        const flags = [...(this.studyMemoryQualityByTask.get(taskId) ?? [])]
-        // A transient SQLite error at the original failure site must not be
-        // hidden forever by the in-memory dedupe. Retry every local terminal
-        // flag before the immutable snapshot is allowed to form.
-        for (const flag of flags) this.noteStudyMemoryQualityFlag(flag)
-        for (const durable of this.studyMemoryStore?.listStudyMemoryQualityFlags(taskId) ?? []) {
-          if (flags.some((flag) => (
-            flag.code === durable.code
-            && flag.chatId === durable.chatId
-            && flag.turnId === durable.turnId
-          ))) continue
-          flags.push(durable as StudyMemoryQualityFlag)
-        }
-        return flags
-      }
-      await Promise.all(pending)
-    }
   }
 
   getActiveStatuses() {
@@ -3620,8 +3120,7 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
-  /** Recompute the exact live gate whose durable Board row was invalidated. */
-  handleBoardBacklogInvalidated(input: { kind: "transfer" | "checkup"; chatId: string; gateId: string }) {
+  invalidateMemoryGate(input: { kind: "transfer" | "checkup"; chatId: string; gateId: string }) {
     if (input.kind === "transfer") {
       const pending = this.pendingTransferGates.get(input.chatId)
       if (pending?.transferId === input.gateId) pending.invalidate()
@@ -3633,32 +3132,7 @@ export class AgentCoordinator {
   }
 
   /** Close every old-project query before the preview process group changes. */
-  private async prepareStudyProjectRuntime(projectPath: string) {
-    if (!this.studyPreviewRuntime) return
-    const oldSessions = [...this.claudeSessions.values()].filter((session) => session.localPath !== projectPath)
-    await Promise.all(oldSessions.map((session) => this.retireClaudeSession(session, "study_project_switch")))
-    await this.studyPreviewRuntime.ensure(projectPath)
-    const taskId = this.getActiveStudyTaskId()
-    if (taskId) {
-      const taskPaths = this.studyTaskProjectPaths.get(taskId) ?? new Set<string>()
-      taskPaths.add(projectPath)
-      this.studyTaskProjectPaths.set(taskId, taskPaths)
-    }
-  }
-
-  /** Freeze boundary: close SDK queries, await pumps, then stop preview descendants. */
-  async retireStudyTaskRuntime(taskId: string) {
-    const chatIds = this.studyTaskChats.get(taskId) ?? new Set<string>()
-    const sessions = [...chatIds]
-      .map((chatId) => this.claudeSessions.get(chatId))
-      .filter((session): session is ClaudeSessionState => Boolean(session))
-    await Promise.all(sessions.map((session) => this.retireClaudeSession(session, `study_task_freeze:${taskId}`)))
-    for (const projectPath of this.studyTaskProjectPaths.get(taskId) ?? []) {
-      await this.studyPreviewRuntime?.stop(projectPath)
-    }
-  }
-
-  async shutdownStudyRuntime() {
+  async shutdownRuntime() {
     this.runtimeStopping = true
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
@@ -3667,7 +3141,6 @@ export class AgentCoordinator {
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
-    await this.studyPreviewRuntime?.stop()
   }
 
   /** Shutdown safety net: a cancel() that fails while persisting the
@@ -3767,11 +3240,6 @@ export class AgentCoordinator {
     }
   }
 
-  private assertStudyPromptAllowed(input: StudyPromptGateInput): void {
-    const refusal = this.studyPromptGate?.(input)
-    if (refusal) throw new Error(refusal)
-  }
-
   private async enqueueMessage(
     chatId: string,
     content: string,
@@ -3779,7 +3247,6 @@ export class AgentCoordinator {
     options?: SendMessageOptions,
     channel: "chat.send" | "message.enqueue" = "chat.send",
   ) {
-    this.assertStudyPromptAllowed({ chatId, content, channel, attachments })
     const queued = await this.store.enqueueMessage(chatId, {
       content,
       attachments,
@@ -3812,21 +3279,13 @@ export class AgentCoordinator {
       }
       return "cancelled"
     }
-    // Validate before removal so a rejected legacy queue item remains visible
-    // and reviewable rather than disappearing during automatic/restart drain.
-    this.assertStudyPromptAllowed({
-      chatId,
-      content: queuedMessage.content,
-      channel: "queue.dispatch",
-      attachments: queuedMessage.attachments,
-    })
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
       // An external queue action can remove the observed head between the
       // scheduler's read and this durable dequeue. Re-read and let the caller
       // continue with the new head instead of treating that race as a failed
-      // participant send.
+      // user send.
       if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
       throw error
     }
@@ -3876,390 +3335,6 @@ export class AgentCoordinator {
     }
   }
 
-  private scheduleOpeningBoardRecovery(taskId: string): void {
-    if (this.openingBoardRecoveryRetryTimers.has(taskId)) return
-    const attempt = (this.openingBoardRecoveryRetryAttempts.get(taskId) ?? 0) + 1
-    if (attempt > 3) return
-    this.openingBoardRecoveryRetryAttempts.set(taskId, attempt)
-    const delayMs = [100, 500, 1_500][attempt - 1]!
-    const timer = setTimeout(() => {
-      this.openingBoardRecoveryRetryTimers.delete(taskId)
-      if (this.getActiveStudyTaskId() !== taskId) return
-      try {
-        this.resumeOpeningBoardPreparation()
-      } catch (error) {
-        // Shutdown/tests can close the durable store before a previously
-        // scheduled retry fires. Keep the timer boundary fail-closed instead
-        // of leaking an uncaught process error.
-        this.reportBackgroundError?.(
-          `[opening-board-recovery] task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-      }
-    }, delayMs)
-    timer.unref?.()
-    this.openingBoardRecoveryRetryTimers.set(taskId, timer)
-  }
-
-  /**
-   * Re-prime the exact first MemoSync prompt after a process restart. The
-   * private Board receipt owns the participant text, uploads, and composer
-   * settings; the durable review id is also the transcript turn id, so a
-   * retry can never append or measure a second logical prompt.
-   */
-  resumeOpeningBoardPreparation(): void {
-    const taskId = this.getActiveStudyTaskId()
-    if (
-      !taskId
-      || !this.openingBoardBacklog
-      || !this.policy.studyMode
-      || this.policy.condition !== "memosync"
-      || this.openingBoardRecoveryTasks.has(taskId)
-    ) return
-    const opening = this.openingBoardBacklog.recoverOpeningPrompt(taskId)
-    if (!opening) return
-    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
-      || this.isEngineStartBlocked(opening.chatId)) return
-
-    this.openingBoardRecoveryTasks.add(taskId)
-    const recover = async () => {
-      if (opening.attachmentFailure) {
-        this.reportBackgroundError?.(
-          `[opening-board-attachment] task ${taskId}: ${opening.attachmentFailure}`,
-        )
-        return
-      }
-      // Recovery is a trusted transport path, not an admission bypass. The
-      // exact durable payload must still pass the same canonical study gate;
-      // the already-written review id grants only the sanctioned Board
-      // exception inside boardPromptRefusal.
-      this.assertStudyPromptAllowed({
-        chatId: opening.chatId,
-        channel: "chat.send",
-        content: opening.content,
-        attachments: opening.providerAttachments,
-        openingReviewId: opening.reviewId,
-        verifiedOpeningSnapshot: true,
-      })
-      const provider = opening.dispatch?.provider ?? "claude"
-      if (provider !== "claude") throw new Error("Opening Memory Board recovery only supports the study Claude provider")
-      const settings = this.getProviderSettings(provider, opening.dispatch ?? {})
-      if (opening.phase === "completed") {
-        const messages = this.store.getMessages(opening.chatId)
-        const promptIndex = messages.findIndex(
-          (message) => message.kind === "user_prompt" && message._id === opening.reviewId,
-        )
-        const nextPromptIndex = promptIndex < 0
-          ? -1
-          : messages.findIndex((message, index) => index > promptIndex && message.kind === "user_prompt")
-        const turnEntries = promptIndex < 0
-          ? []
-          : messages.slice(promptIndex + 1, nextPromptIndex < 0 ? undefined : nextPromptIndex)
-        // A durable Stop owns the opening turn even when it happened before
-        // provider acceptance, so neither in-process nor restart recovery may replay it.
-        if (turnEntries.some((message) => message.kind === "interrupted")) return
-        const preview = turnEntries.find(
-          (message): message is Extract<TranscriptEntry, { kind: "memory_preview" }> => message.kind === "memory_preview",
-        )
-        if (preview) {
-          const decision = turnEntries.filter(
-            (message): message is Extract<TranscriptEntry, { kind: "memory_preview_decision" }> =>
-              message.kind === "memory_preview_decision" && message.previewId === preview.previewId,
-          ).at(-1)
-          if (!decision) {
-            this.restoreOpeningWorkingMemoryPreview(opening, settings, preview)
-            return
-          }
-          const terminalResult = turnEntries.some((message) => message.kind === "result")
-          if (decision.decision === "dismiss") {
-            if (terminalResult) return
-            // The decision is the participant-owned commit point. If the
-            // process died before the turn ledger and transcript terminal were
-            // written, finish that cancellation without ever booting Claude.
-            await this.store.appendMessage(
-              opening.chatId,
-              timestamped({
-                kind: "result",
-                subtype: "cancelled",
-                isError: false,
-                durationMs: 0,
-                result: "The first prompt was cancelled from Working Memory review.",
-              }),
-            )
-            await this.store.recordTurnCancelled(opening.chatId)
-            this.emitStateChange(opening.chatId, { immediate: true })
-            return
-          }
-          if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
-
-          const exactDispatch = {
-            taskId: opening.taskId,
-            chatId: opening.chatId,
-            reviewId: opening.reviewId,
-            phase: opening.phase,
-            previewId: preview.previewId,
-            decision: decision.decision,
-          } as const
-          let delivered = this.studyMemoryStore?.listTaskDeliveries(opening.taskId).some((delivery) =>
-            delivery.chatId === opening.chatId && delivery.turnId === opening.reviewId,
-          ) ?? false
-          let acceptedWithFailedFocusReceipt = this.studyMemoryStore
-            ?.listStudyMemoryQualityFlags(opening.taskId)
-            .some((flag) => flag.code === "focus_persistence_failed"
-              && flag.chatId === opening.chatId
-              && flag.turnId === opening.reviewId) ?? false
-          if (opening.providerDispatch?.phase === "delivered" && !delivered && !acceptedWithFailedFocusReceipt) {
-            try {
-              const focus = opening.providerDispatch.focusDelivery
-              const selectedIds = decision.decision === "without_memory"
-                ? []
-                : [...(decision.selectedIds ?? preview.memories.map((memory) => memory.id))]
-              const selected = new Set(selectedIds)
-              const previewById = new Map(preview.memories.map((memory) => [memory.id, memory]))
-              const focusedIds = focus?.memories.map((memory) => memory.id) ?? []
-              const expectedOutcome = decision.decision === "without_memory"
-                ? "disabled"
-                : selectedIds.length > 0 ? "delivered" : "empty"
-              const validFocus = Boolean(
-                focus
-                && focus.taskId === opening.taskId
-                && focus.chatId === opening.chatId
-                && focus.sessionId === opening.chatId
-                && focus.turnId === opening.reviewId
-                && focus.turn === preview.turn
-                && focus.engine === "claude"
-                && focus.mode === "skills"
-                && focus.deliveryStage === "queued_to_claude"
-                && focus.outcome === expectedOutcome
-                && focusedIds.length === selected.size
-                && focusedIds.every((id) => selected.has(id))
-                && focus.memories.every((memory) => {
-                  const snapshot = previewById.get(memory.id)
-                  return snapshot?.content === memory.content
-                    && snapshot.scope === memory.scope
-                    && memory.sourceRef.kind === "memosync_store"
-                }),
-              )
-              if (!validFocus || !focus || !this.memory) {
-                throw new Error("The accepted opening focus receipt is missing or does not match its Working Memory decision")
-              }
-              persistDeliveredStoreFocusEvent({
-                event: focus,
-                condition: "memosync",
-                logger: this.memory.logger,
-                studyStore: this.studyMemoryStore ?? undefined,
-              })
-              delivered = true
-            } catch (error) {
-              this.noteStudyMemoryQualityFlag({
-                code: "focus_persistence_failed",
-                blocking: true,
-                taskId: opening.taskId,
-                chatId: opening.chatId,
-                turnId: opening.reviewId,
-                turn: preview.turn,
-              })
-              acceptedWithFailedFocusReceipt = true
-              this.reportBackgroundError?.(
-                `[study-focus-recovery] chat ${opening.chatId} turn ${preview.turn}: ${error instanceof Error ? error.message : String(error)}`,
-              )
-            }
-          }
-          if (terminalResult) return
-          const liveOwner = this.activeTurns.has(opening.chatId) || this.startingChats.has(opening.chatId)
-          if (opening.providerDispatch?.phase === "dispatching" && delivered) {
-            this.openingBoardBacklog!.settleOpeningProviderDispatch(exactDispatch, "delivered")
-          }
-          if (
-            delivered
-            || acceptedWithFailedFocusReceipt
-            || opening.providerDispatch?.phase === "delivered"
-            || opening.providerDispatch?.phase === "failed"
-          ) {
-            // In-process retries can observe the durable acceptance while the
-            // provider still owns a live turn. A restarted coordinator has no
-            // such owner: the external prompt must not be replayed, but the
-            // participant still needs one explicit terminal and turn outcome.
-            if (liveOwner) return
-            const message = opening.providerDispatch?.phase === "failed"
-              ? "The first prompt was not accepted by the provider and could not complete."
-              : "The first prompt was accepted, but its reply was interrupted by a server restart. It was not sent again."
-            await this.store.appendMessage(
-              opening.chatId,
-              timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-            )
-            await this.store.recordTurnFailed(opening.chatId, message)
-            this.emitStateChange(opening.chatId, { immediate: true })
-            return
-          }
-          if (opening.providerDispatch?.phase === "dispatching") {
-            // Process death after the durable pre-send claim is ambiguous: the
-            // external provider may have accepted it. Never risk a duplicate.
-            this.openingBoardBacklog!.settleOpeningProviderDispatch(exactDispatch, "failed")
-            const message = "The first prompt could not be safely resumed after provider dispatch was interrupted."
-            await this.store.appendMessage(
-              opening.chatId,
-              timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-            )
-            await this.store.recordTurnFailed(opening.chatId, message)
-            this.emitStateChange(opening.chatId, { immediate: true })
-            return
-          }
-          await this.resumeOpeningWorkingMemoryDecision(opening, settings, preview, decision)
-          return
-        }
-      }
-      if (opening.phase === "dispatch_pending") {
-        this.openingBoardBacklog!.claimOpeningPromptDispatch(opening)
-      }
-      const chat = this.store.getChat(opening.chatId)
-      if (!chat) throw new Error("The opening Memory Board chat no longer exists")
-      await this.startTurnForChat({
-        chatId: opening.chatId,
-        provider,
-        content: opening.content,
-        attachments: opening.attachments,
-        providerAttachments: opening.providerAttachments,
-        model: settings.model,
-        effort: settings.effort,
-        serviceTier: settings.serviceTier,
-        planMode: settings.planMode,
-        appendUserPrompt: true,
-        turnId: opening.reviewId,
-        openingReview: { taskId: opening.taskId, reviewId: opening.reviewId },
-        openingLongTermAlreadyReady: opening.phase === "long_term_ready" || opening.phase === "completed",
-        openingLongTermRevision: opening.longTermRevision ?? 0,
-      })
-    }
-    void recover()
-      .catch((error) => {
-        this.reportBackgroundError?.(
-          `[opening-board-recovery] task ${taskId}: ${error instanceof Error ? error.message : String(error)}`,
-        )
-        this.scheduleOpeningBoardRecovery(taskId)
-      })
-      .finally(() => this.openingBoardRecoveryTasks.delete(taskId))
-  }
-
-  private restoreOpeningWorkingMemoryPreview(
-    opening: MemoryBoardOpeningPromptRecovery,
-    settings: ReturnType<AgentCoordinator["getProviderSettings"]>,
-    preview: Extract<TranscriptEntry, { kind: "memory_preview" }>,
-  ) {
-    if (!this.memory || this.pendingPreviews.has(opening.chatId)) return
-    const chat = this.store.requireChat(opening.chatId)
-    const project = this.store.getProject(chat.projectId)
-    if (!project) throw new Error("The opening Memory Board project no longer exists")
-    const memories = preview.memories.map(({ id }) => this.memory!.store.getById(id))
-    if (memories.some((memory) => !memory)) {
-      throw new Error("The durable Working Memory pool no longer matches the memory store")
-    }
-    const messages = this.store.getMessages(opening.chatId)
-    const expectedUses = messages.filter(
-      (message): message is Extract<TranscriptEntry, { kind: "memory_preview_relevance" }> =>
-        message.kind === "memory_preview_relevance" && message.previewId === preview.previewId,
-    ).at(-1)?.expectedUses ?? []
-    const args: StartTurnArgs = {
-      chatId: opening.chatId,
-      provider: "claude",
-      content: opening.content,
-      attachments: opening.attachments,
-      providerAttachments: opening.providerAttachments,
-      model: settings.model,
-      effort: settings.effort,
-      serviceTier: settings.serviceTier,
-      planMode: settings.planMode,
-      appendUserPrompt: true,
-      turnId: opening.reviewId,
-      openingReview: { taskId: opening.taskId, reviewId: opening.reviewId },
-      openingLongTermAlreadyReady: true,
-    }
-    const memoryIds = preview.memories.map(({ id }) => id)
-    const pending: PendingMemoryPreview = {
-      previewId: preview.previewId,
-      revision: 0,
-      published: true,
-      memoryIds,
-      task: preview.task ?? opening.content,
-      memories: memories as MemoryItem[],
-      expectedUseById: new Map(expectedUses.map((use) => [use.id, use.expectedUse])),
-      respond: (decision, selectedIds, authoritativeExpectedUses, controlOperation) => {
-        void this.finishMemoryPreview({
-          args,
-          chat,
-          project,
-          turnNumber: preview.turn ?? 1,
-          previewId: preview.previewId,
-          memoryIds,
-          decision,
-          selectedIds,
-          expectedUses: authoritativeExpectedUses,
-          controlOperation,
-        })
-      },
-    }
-    this.pendingPreviews.set(opening.chatId, pending)
-    this.emitStateChange(opening.chatId, { immediate: true })
-  }
-
-  /** Resume only the provider half after the Working Memory decision itself
-   * was durable. This deliberately does not append/log that decision again. */
-  private async resumeOpeningWorkingMemoryDecision(
-    opening: MemoryBoardOpeningPromptRecovery,
-    settings: ReturnType<AgentCoordinator["getProviderSettings"]>,
-    preview: Extract<TranscriptEntry, { kind: "memory_preview" }>,
-    decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>,
-  ) {
-    if (decision.decision !== "go_on" && decision.decision !== "without_memory") return
-    if (this.activeTurns.has(opening.chatId) || this.startupReservations.has(opening.chatId)
-      || this.isEngineStartBlocked(opening.chatId)) return
-    const chat = this.store.requireChat(opening.chatId)
-    const project = this.store.getProject(chat.projectId)
-    if (!project) throw new Error("The opening Memory Board project no longer exists")
-    if (decision.decision === "go_on" && decision.selectedIds) {
-      this.turnMemoryRestriction.set(opening.chatId, decision.selectedIds)
-    }
-    if (decision.decision === "go_on" && decision.expectedUses?.length) {
-      this.turnExpectedUses.set(opening.chatId, decision.expectedUses)
-    }
-    const args: StartTurnArgs = {
-      chatId: opening.chatId,
-      provider: "claude",
-      content: opening.content,
-      attachments: opening.attachments,
-      providerAttachments: opening.providerAttachments,
-      model: settings.model,
-      effort: settings.effort,
-      serviceTier: settings.serviceTier,
-      planMode: settings.planMode,
-      appendUserPrompt: true,
-      turnId: opening.reviewId,
-      openingReview: { taskId: opening.taskId, reviewId: opening.reviewId },
-      openingLongTermAlreadyReady: true,
-      openingWorkingMemory: { previewId: preview.previewId, decision: decision.decision },
-    }
-    const reservation = this.reserveStartup(args)
-    try {
-      await this.bootEngineTurn(this.refreshOpeningProviderAttachments(args), {
-        chat,
-        project,
-        turnNumber: preview.turn ?? 1,
-        memoryDisabledForTurn: decision.decision === "without_memory",
-      })
-    } catch (error) {
-      if (reservation.cancelled || reservation.superseded || this.isEngineStartBlocked(opening.chatId)) return
-      const message = error instanceof Error ? error.message : String(error)
-      await this.store.appendMessage(
-        opening.chatId,
-        timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
-      )
-      await this.store.recordTurnFailed(opening.chatId, message)
-      this.emitStateChange(opening.chatId, { immediate: true })
-      throw error
-    } finally {
-      this.settleStartupReservation(opening.chatId, reservation)
-    }
-  }
-
   private async maybeStartNextQueuedMessage(chatId: string) {
     if (this.activeTurns.has(chatId)) return false
     const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
@@ -4286,7 +3361,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(args.chatId)
-    args.memoryState ??= resolveTurnMemoryState(this.policy, this.getMemorySettings(), chat.memoryDisabled)
+    args.memoryState ??= resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
     if (this.activeTurns.has(args.chatId) || this.hasPendingPreviewActivity(args.chatId) || this.startingChats.has(args.chatId)) {
       throw new Error("Chat is already running")
     }
@@ -4318,7 +3393,7 @@ export class AgentCoordinator {
     // A recovery retry reuses one logical user-prompt entry. The first attempt
     // may have durably recorded the continuation before the provider boot
     // failed; duplicating that prompt would also invent a second turn number.
-    let userPromptEntry = (args.resume || args.openingReview)
+    let userPromptEntry = args.resume
       ? existingMessages.find(
           (message): message is Extract<TranscriptEntry, { kind: "user_prompt" }> =>
             message.kind === "user_prompt" && message._id === logicalTurnId,
@@ -4352,6 +3427,7 @@ export class AgentCoordinator {
           {
             kind: "user_prompt",
             content: args.content,
+            // Retain the stored field name for compatibility with older transcripts.
             participantContent: args.memoryUserText ?? args.content,
             attachments: args.attachments,
             steered: args.steered,
@@ -4374,65 +3450,9 @@ export class AgentCoordinator {
       })
     }
 
-    const openingIdentity = args.openingReview
-      ? { taskId: args.openingReview.taskId, chatId: args.chatId, reviewId: args.openingReview.reviewId }
-      : null
-    const openingBookkeeping = openingIdentity && this.openingBoardBacklog
-      ? this.openingBoardBacklog.openingPromptBookkeeping(openingIdentity)
-      : null
-    const openingPromptIndex = userPromptEntry
-      ? existingMessages.findIndex((message) => message._id === userPromptEntry?._id)
-      : -1
-    const hasDurableOpeningProgress = openingPromptIndex >= 0
-      && existingMessages.some((_message, index) => index > openingPromptIndex)
-    const shouldReconcileOpeningPrompt = Boolean(
-      logicalPromptAlreadyAppended
-      && openingIdentity
-      && !args.openingLongTermAlreadyReady
-      && !hasDurableOpeningProgress,
-    )
-    if (userPromptEntry && (shouldAppendUserPrompt || (
-      shouldReconcileOpeningPrompt && !openingBookkeeping?.participantPromptRecorded
-    ))) {
-      const telemetryTaskId = this.onParticipantPromptRecorded ? this.getActiveStudyTaskId() : null
-      if (this.onParticipantPromptRecorded && telemetryTaskId) {
-        const telemetryInput = {
-          taskId: telemetryTaskId,
-          turnId: logicalTurnId,
-          chatId: args.chatId,
-          content: userPromptEntry.participantContent ?? userPromptEntry.content,
-          attachments: userPromptEntry.attachments ?? [],
-          acceptedAt: new Date(userPromptEntry.createdAt).toISOString(),
-        }
-        const persist = () => {
-          try {
-            this.onParticipantPromptRecorded?.(telemetryInput)
-            if (openingIdentity) {
-              this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, {
-                participantPromptRecorded: true,
-              })
-            }
-          } catch (error) {
-            // The prompt already has a durable transcript identity. Never
-            // reject the send and induce a duplicate prompt; retry the same
-            // deterministic telemetry id until SQLite accepts it.
-            this.reportBackgroundError?.(
-              `[study-telemetry] prompt ${logicalTurnId}: ${error instanceof Error ? error.message : String(error)}`,
-            )
-            setTimeout(persist, 1_000)
-          }
-        }
-        persist()
-      }
-    }
-    if (!logicalPromptAlreadyAppended || (
-      shouldReconcileOpeningPrompt && !openingBookkeeping?.turnStarted
-    )) {
+    if (!logicalPromptAlreadyAppended) {
       await this.store.recordTurnStarted(args.chatId)
       if (startupCancelled()) return
-      if (openingIdentity) {
-        this.openingBoardBacklog?.markOpeningPromptBookkeeping(openingIdentity, { turnStarted: true })
-      }
       logSendToStartingProfile(args.profile, "start_turn.turn_started_recorded", {
         chatId: args.chatId,
       })
@@ -4442,14 +3462,6 @@ export class AgentCoordinator {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
 
-    // Per-turn memory Preview gate (SPEC §4.10b): before the engine acts, show
-    // the injection receipt — exactly which memories the turn carries — then
-    // PARK the turn until the user decides go on / dismiss / proceed without
-    // memory. Parking (not blocking) matters: the chat.send ack must return so
-    // the client can subscribe and actually see the preview card.
-    // Preview failures never block the turn (degrade to no-preview).
-    // The gate is a user setting (STUDY_PLAN §2.4): it can be disabled outright,
-    // and an empty injected set can auto-proceed (recorded, not parked).
     const previewSettings = this.getMemoryPreviewSettings()
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
@@ -4457,7 +3469,6 @@ export class AgentCoordinator {
     if (args.memoryState.memoryActive && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
-        policy: this.policy,
         memory: this.memory,
         projectId: chat.projectId,
         chatId: args.chatId,
@@ -4505,66 +3516,24 @@ export class AgentCoordinator {
     ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number },
     options?: { proposalsId?: string; recompute?: boolean },
   ): Promise<{ decision: "none" | "reviewed" | "skipped" | "cancelled"; proposalsId: string }> {
-    const existingMessages = args.openingReview ? this.store.getMessages(args.chatId) : []
-    const existingParent = existingMessages.filter(
-      (message): message is Extract<TranscriptEntry, { kind: "memory_proposals" }> =>
-        message.kind === "memory_proposals" && message.openingReviewId === args.openingReview?.reviewId,
-    ).at(-1)
-    const proposalsId = options?.proposalsId ?? existingParent?.proposalsId ?? crypto.randomUUID()
-    if (existingParent && !options?.recompute) {
-      const existingDecision = existingMessages.filter(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_proposals_decision" }> =>
-          message.kind === "memory_proposals_decision" && message.proposalsId === proposalsId,
-      ).at(-1)?.decision
-      if (existingDecision === "reviewed" || existingDecision === "skipped" || existingDecision === "cancelled") {
-        return { decision: existingDecision, proposalsId }
-      }
-      if (existingDecision === "empty") return { decision: "none", proposalsId }
-      if (existingDecision === "expired") return { decision: "cancelled", proposalsId }
-
-      const existingResult = existingMessages.filter(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_proposals_result" }> =>
-          message.kind === "memory_proposals_result" && message.proposalsId === proposalsId,
-      ).at(-1)
-      if (existingResult) {
-        if (existingResult.candidates.length === 0) {
-          await this.store.appendMessage(
-            args.chatId,
-            timestamped({ kind: "memory_proposals_decision", proposalsId, decision: "empty" }),
-          )
-          this.memory!.logger.event({
-            type: "memory.proposals",
-            sessionId: args.chatId,
-            engine: args.provider,
-            turn: ctx.turnNumber,
-            count: 0,
-            decision: "empty",
-          })
-          return { decision: "none", proposalsId }
-        }
-        const decision = await this.parkExistingProposalsGate(args, ctx, proposalsId)
-        return { decision, proposalsId }
-      }
-    }
+    const proposalsId = options?.proposalsId ?? crypto.randomUUID()
     const prep = this.activePreparations.get(args.chatId)
     if (prep) prep.proposalsId = proposalsId
     // Publish the Step 1 shell before the prompt-side capture pass. The user
     // now sees the same left-to-right skeleton used by Step 2 and injection,
     // rather than a generic processing line followed by a sudden card.
-    if (!existingParent) {
+
       await this.store.appendMessage(
         args.chatId,
         timestamped({
           kind: "memory_proposals",
           proposalsId,
-          openingReviewId: args.openingReview?.reviewId,
           turn: ctx.turnNumber,
           pending: true,
           candidates: [],
         }),
       )
       this.emitStateChange(args.chatId, { immediate: true })
-    }
 
     // The parse has its own hard timeout, but Stop must not wait for it. Keep a
     // terminal handler attached to the detached task so a late rejection never
@@ -4967,10 +3936,10 @@ export class AgentCoordinator {
     stepOneSettled: Promise<unknown> | null,
     options?: { transferId?: string; recompute?: boolean },
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled"; transferId: string }> {
-    const existingMessages = args.openingReview || options?.transferId ? this.store.getMessages(args.chatId) : []
+    const existingMessages = options?.transferId ? this.store.getMessages(args.chatId) : []
     const existingParent = existingMessages.filter(
       (message): message is Extract<TranscriptEntry, { kind: "memory_transfer" }> =>
-        message.kind === "memory_transfer" && (options?.transferId ? message.transferId === options.transferId : message.openingReviewId === args.openingReview?.reviewId),
+        message.kind === "memory_transfer" && message.transferId === options?.transferId,
     ).at(-1)
     const transferId = options?.transferId ?? existingParent?.transferId ?? crypto.randomUUID()
     if (existingParent && !options?.recompute) {
@@ -5061,7 +4030,6 @@ export class AgentCoordinator {
       return enqueue({
         kind: "memory_transfer",
         transferId,
-        openingReviewId: args.openingReview?.reviewId,
         turn: ctx.turnNumber,
         pending: true,
         suggestions: [],
@@ -5317,7 +4285,6 @@ export class AgentCoordinator {
       : await enqueue({
         kind: "memory_transfer",
         transferId,
-        openingReviewId: args.openingReview?.reviewId,
         turn: ctx.turnNumber,
           suggestions: live.map((card) => this.transferSnapshotOf(card)),
         }, finalStillFresh)
@@ -5361,94 +4328,8 @@ export class AgentCoordinator {
     ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number },
     options?: { checkupId?: string; proposalsId?: string; transferId?: string; reuseParent?: boolean },
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled" | "reopen_proposals" | "reopen_transfer"; checkupId: string }> {
-    const existingMessages = args.openingReview ? this.store.getMessages(args.chatId) : []
-    const existingParent = !options?.checkupId
-      ? existingMessages.filter(
-          (message): message is Extract<TranscriptEntry, { kind: "memory_checkup" }> =>
-            message.kind === "memory_checkup" && message.openingReviewId === args.openingReview?.reviewId,
-        ).at(-1)
-      : undefined
-    const checkupId = options?.checkupId ?? existingParent?.checkupId ?? crypto.randomUUID()
-    const reuseParent = Boolean(options?.reuseParent || existingParent)
-    if (existingParent) {
-      const existingDecision = existingMessages.filter(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_checkup_decision" }> =>
-          message.kind === "memory_checkup_decision" && message.checkupId === checkupId,
-      ).at(-1)?.decision
-      if (existingDecision === "handled" || existingDecision === "skipped" || existingDecision === "cancelled") {
-        return { decision: existingDecision, checkupId }
-      }
-      if (existingDecision === "empty" || existingDecision === "failed") return { decision: "none", checkupId }
-      if (existingDecision === "expired") return { decision: "cancelled", checkupId }
-
-      const existingResult = existingMessages.filter(
-        (message): message is Extract<TranscriptEntry, { kind: "memory_checkup_result" }> =>
-          message.kind === "memory_checkup_result" && message.checkupId === checkupId,
-      ).at(-1)
-      if (existingResult) {
-        if (existingResult.suggestions.length === 0) {
-          const failedKinds = [...new Set(existingResult.failedKinds ?? [])]
-          const failed = failedKinds.length > 0
-          await this.store.appendMessage(
-            args.chatId,
-            timestamped({ kind: "memory_checkup_decision", checkupId, decision: failed ? "failed" : "empty" }),
-          )
-          this.memory!.logger.event({
-            type: "memory.checkup",
-            sessionId: args.chatId,
-            engine: args.provider,
-            turn: ctx.turnNumber,
-            suggestions: 0,
-            cached: false,
-            ...(failedKinds.length ? { failedKinds } : {}),
-            decision: failed ? "failed" : "clear",
-          })
-          return { decision: "none", checkupId }
-        }
-        const decision = await new Promise<InternalGateWake<CheckupGateDecision>>((resolve) => {
-          this.pendingCheckupGates.set(args.chatId, {
-            checkupId,
-            proposalsId: options?.proposalsId,
-            transferId: options?.transferId,
-            published: true,
-            respond: (next) => {
-              this.pendingCheckupGates.delete(args.chatId)
-              resolve(next)
-            },
-            invalidate: () => {
-              this.pendingCheckupGates.delete(args.chatId)
-              resolve("invalidated")
-            },
-          })
-          this.emitStateChange(args.chatId, { immediate: true })
-        })
-        if (decision === "invalidated") {
-          return await this.runCheckupGate(args, ctx, {
-            ...options,
-            checkupId,
-            reuseParent: true,
-          })
-        }
-        if (decision === "reopen_proposals" || decision === "reopen_transfer") {
-          return { decision, checkupId }
-        }
-        await this.store.appendMessage(
-          args.chatId,
-          timestamped({ kind: "memory_checkup_decision", checkupId, decision }),
-        )
-        this.memory!.logger.event({
-          type: "memory.checkup",
-          sessionId: args.chatId,
-          engine: args.provider,
-          turn: ctx.turnNumber,
-          suggestions: existingResult.suggestions.length,
-          cached: false,
-          ...(existingResult.failedKinds?.length ? { failedKinds: existingResult.failedKinds } : {}),
-          decision,
-        })
-        return { decision, checkupId }
-      }
-    }
+    const checkupId = options?.checkupId ?? crypto.randomUUID()
+    const reuseParent = Boolean(options?.reuseParent)
     const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId }
     const runState = {
       checkupId,
@@ -5469,7 +4350,6 @@ export class AgentCoordinator {
             timestamped({
               kind: "memory_checkup",
               checkupId,
-              openingReviewId: args.openingReview?.reviewId,
               turn: ctx.turnNumber,
               pending: true,
             }),
@@ -5511,7 +4391,6 @@ export class AgentCoordinator {
       await this.store.appendMessage(args.chatId, timestamped({
         kind: "memory_checkup",
         checkupId,
-        openingReviewId: args.openingReview?.reviewId,
         turn: ctx.turnNumber,
       }))
     }
@@ -5769,7 +4648,6 @@ export class AgentCoordinator {
       }
 
       const injected = planMemoryInjection({
-        policy: this.policy,
         memory: this.memory!,
         projectId: input.ctx.project.id,
         chatId: args.chatId,
@@ -5973,7 +4851,7 @@ export class AgentCoordinator {
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
-      respond: (decision, selectedIds, expectedUses, controlOperation) => {
+      respond: (decision, selectedIds, expectedUses, operationId) => {
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
         void this.finishMemoryPreview({
           args,
@@ -5985,7 +4863,7 @@ export class AgentCoordinator {
           decision,
           selectedIds,
           expectedUses,
-          controlOperation,
+          operationId,
         })
       },
       reopen: (from, stageId) => {
@@ -6007,9 +4885,6 @@ export class AgentCoordinator {
       timestamped({
         kind: "memory_preview_update",
         previewId,
-        ...(this.policy.studyMode && this.policy.condition === "memosync"
-          ? { taskId: this.getActiveStudyTaskId() ?? undefined }
-          : {}),
         revision,
         memories: ctx.injected.map((memory) => ({ id: memory.id, content: memory.content, scope: memory.scope })),
         relevancePending: willAssessRelevance,
@@ -6074,7 +4949,6 @@ export class AgentCoordinator {
       // Flipped by the parked respond closure: once a decision claims the
       // gate, finishMemoryPreview owns the turn — no path here may boot it.
       let claimed = false
-      let automaticOpeningWorkingMemory: StartTurnArgs["openingWorkingMemory"]
       try {
         // The user hit Stop before the gate parked (BUG AGENT-2): cancel()
         // already recorded the interruption — unwind without a preview card,
@@ -6090,72 +4964,17 @@ export class AgentCoordinator {
         let proposalsId: string | undefined
         let transferId: string | undefined
         let checkupId: string | undefined
-        let durableParents: TranscriptEntry[] = []
-        if (args.openingReview) {
-          durableParents = this.store.getMessages(args.chatId)
-          proposalsId = durableParents.filter(
-            (message): message is Extract<TranscriptEntry, { kind: "memory_proposals" }> =>
-              message.kind === "memory_proposals" && message.openingReviewId === args.openingReview?.reviewId,
-          ).at(-1)?.proposalsId
-          transferId = durableParents.filter(
-            (message): message is Extract<TranscriptEntry, { kind: "memory_transfer" }> =>
-              message.kind === "memory_transfer" && message.openingReviewId === args.openingReview?.reviewId,
-          ).at(-1)?.transferId
-          checkupId = durableParents.filter(
-            (message): message is Extract<TranscriptEntry, { kind: "memory_checkup" }> =>
-              message.kind === "memory_checkup" && message.openingReviewId === args.openingReview?.reviewId,
-          ).at(-1)?.checkupId
-        }
+
         // Step 1 and the Transfer card COMPUTE in parallel; the transfer's
         // presentation is staged inside runTransferGate: after Step 1, show a
         // scanning shell only while current-task materialization is still
         // running; otherwise publish only a completed non-empty card. Cancel
         // resolves every parked gate and records the interruption once.
-        if (args.memoryState?.learnActive !== false && !args.openingLongTermAlreadyReady) {
-        const recomputeOpeningLongTerm = Boolean(args.openingReview && (args.openingLongTermRevision ?? 0) > 0)
-        let recomputeProposals = recomputeOpeningLongTerm
-        let recomputeTransfer = recomputeOpeningLongTerm
-        let recomputeCheckup = recomputeOpeningLongTerm
-        if (recomputeOpeningLongTerm && args.openingReview) {
-          const revision = args.openingLongTermRevision!
-          let resetIndex = durableParents.findIndex((message) => (
-            message.kind === "memory_preparation_reset"
-            && message.openingReviewId === args.openingReview?.reviewId
-            && message.revision === revision
-          ))
-          if (resetIndex < 0) {
-            const resetFrom = proposalsId ? "proposals" : transferId ? "transfer" : "checkup"
-            await this.store.appendMessage(
-              args.chatId,
-              timestamped({
-                kind: "memory_preparation_reset",
-                openingReviewId: args.openingReview.reviewId,
-                revision,
-                from: resetFrom,
-                proposalsId,
-                transferId,
-                checkupId,
-              }),
-            )
-            this.emitStateChange(args.chatId, { immediate: true })
-            durableParents = this.store.getMessages(args.chatId)
-            resetIndex = durableParents.findIndex((message) => (
-              message.kind === "memory_preparation_reset"
-              && message.openingReviewId === args.openingReview?.reviewId
-              && message.revision === revision
-            ))
-          }
-          const afterReset = resetIndex < 0 ? [] : durableParents.slice(resetIndex + 1)
-          recomputeProposals = !proposalsId || !afterReset.some((message) => (
-            message.kind === "memory_proposals_decision" && message.proposalsId === proposalsId
-          ))
-          recomputeTransfer = !transferId || !afterReset.some((message) => (
-            message.kind === "memory_transfer_decision" && message.transferId === transferId
-          ))
-          recomputeCheckup = !checkupId || !afterReset.some((message) => (
-            message.kind === "memory_checkup_decision" && message.checkupId === checkupId
-          ))
-        }
+        if (args.memoryState?.learnActive !== false) {
+        let recomputeProposals = false
+        let recomputeTransfer = false
+        let recomputeCheckup = false
+
         this.activePreparations.set(args.chatId, {
           args,
           ctx,
@@ -6165,7 +4984,7 @@ export class AgentCoordinator {
         })
         this.startMemoryBranches(args, ctx)
         const proposalsRun =
-          this.capture && this.policy.capture === "review"
+          this.capture
             ? this.runProposalsGate(args, ctx, recomputeProposals
                 ? { proposalsId, recompute: true }
                 : undefined)
@@ -6181,7 +5000,7 @@ export class AgentCoordinator {
           }).catch(() => {})
         }
         const transferRun =
-          this.memoryTransferDetect && this.policy.capture === "review"
+          this.memoryTransferDetect
             ? this.runTransferGate(
                 args,
                 ctx,
@@ -6276,7 +5095,6 @@ export class AgentCoordinator {
           ctx = {
             ...ctx,
             injected: planMemoryInjection({
-              policy: this.policy,
               memory: this.memory!,
               projectId: ctx.project.id,
               chatId: args.chatId,
@@ -6284,33 +5102,7 @@ export class AgentCoordinator {
           }
         }
         }
-        if (args.openingReview) {
-          if (!this.openingBoardBacklog) {
-            throw new Error("Opening Memory Board state is unavailable")
-          }
-          const openingState = {
-            taskId: args.openingReview.taskId,
-            chatId: args.chatId,
-            reviewId: args.openingReview.reviewId,
-            phase: "preparing" as const,
-          }
-          this.openingBoardBacklog.markOpeningPromptLongTermReady(openingState)
-          this.emitStateChange(args.chatId, { immediate: true })
-          const completion = await this.openingBoardBacklog.waitForOpeningPromptCompletion(openingState)
-          if (completion === "invalidated") {
-            // A Board mutation changed the authoritative Visible Memory Pool
-            // after Candidate → Transfer → Checkup settled. Release this stale
-            // preparation without a terminal; bounded recovery reruns the
-            // complete Long-term pipeline against the new dependency state.
-            // This is a new participant-authored dependency revision, not a
-            // retry of an earlier transient failure, so it owns a fresh retry
-            // budget even if preparation had previously exhausted one.
-            this.openingBoardRecoveryRetryAttempts.delete(args.openingReview.taskId)
-            this.scheduleOpeningBoardRecovery(args.openingReview.taskId)
-            return
-          }
-          if (this.cancelledDuringPreview.delete(args.chatId)) return
-        }
+
         const previewId = crypto.randomUUID()
         // The receipt IS the injection plan: every injected memory, verbatim.
         const memoryIds = ctx.injected.map((m) => m.id)
@@ -6354,7 +5146,7 @@ export class AgentCoordinator {
             proposalsId,
             transferId,
             checkupId,
-            respond: (decision, selectedIds, expectedUses, controlOperation) => {
+            respond: (decision, selectedIds, expectedUses, operationId) => {
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
               void this.finishMemoryPreview({
@@ -6367,7 +5159,6 @@ export class AgentCoordinator {
                 decision,
                 selectedIds,
                 expectedUses,
-                controlOperation,
               })
             },
             reopen: (from, stageId) => {
@@ -6396,9 +5187,6 @@ export class AgentCoordinator {
           timestamped({
             kind: "memory_preview",
             previewId,
-            ...(this.policy.studyMode && this.policy.condition === "memosync"
-              ? { taskId: this.getActiveStudyTaskId() ?? undefined }
-              : {}),
             turn: ctx.turnNumber,
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected.map((m) => ({ id: m.id, content: m.content, scope: m.scope })),
@@ -6463,13 +5251,13 @@ export class AgentCoordinator {
             return
           }
           // No memory in play this turn: record an automatic go_on (the
-          // preview entry above keeps the research log complete) and boot
+          // preview entry above records the empty selection) and boot
           // without parking — the friction is only spent when memory matters.
           await this.store.appendMessage(
             args.chatId,
             timestamped({ kind: "memory_preview_decision", previewId, decision: "go_on", auto: true })
           )
-          if (args.openingReview) automaticOpeningWorkingMemory = { previewId, decision: "go_on" }
+
           this.memory!.logger.event({
             type: "memory.preview",
             sessionId: args.chatId,
@@ -6507,7 +5295,7 @@ export class AgentCoordinator {
           this.pendingPreviews.delete(args.chatId)
           return
         }
-        if (args.openingReview || this.memoryBranches) {
+        if (this.memoryBranches) {
           // The opening Board is an admission barrier, not an optional preview
           // enhancement. A failed durable phase transition must reach the
           // detached outer failure recorder; booting here would bypass the
@@ -6521,7 +5309,7 @@ export class AgentCoordinator {
       }
       if (gated) return
       await this.bootEngineTurn(
-        automaticOpeningWorkingMemory ? { ...args, openingWorkingMemory: automaticOpeningWorkingMemory } : args,
+        args,
         {
         chat: ctx.chat,
         project: ctx.project,
@@ -6541,7 +5329,7 @@ export class AgentCoordinator {
         )
         await this.store.recordTurnFailed(args.chatId, message)
       } finally {
-        if (args.openingReview) this.scheduleOpeningBoardRecovery(args.openingReview.taskId)
+
         this.emitStateChange(args.chatId)
       }
     } finally {
@@ -6580,8 +5368,8 @@ export class AgentCoordinator {
     /** Present when the user EDITED the gate — inject only these this turn. */
     selectedIds?: string[]
     /** Exact instructions approved in the preview UI. */
+    operationId?: string
     expectedUses?: ExpectedMemoryUse[]
-    controlOperation?: PreviewControlOperation
   }) {
     const { args, decision } = ctx
     try {
@@ -6601,7 +5389,7 @@ export class AgentCoordinator {
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       this.memory?.logger.event({
         type: "memory.preview",
-        ...(ctx.controlOperation ? { operationId: ctx.controlOperation.operationId } : {}),
+        operationId: ctx.operationId,
         sessionId: args.chatId,
         engine: args.provider,
         turn: ctx.turnNumber,
@@ -6623,17 +5411,6 @@ export class AgentCoordinator {
         this.restoreUndeliveredEnforcement(args.chatId)
         this.disposeMemoryBranches(args.chatId)
         await this.store.recordTurnCancelled(args.chatId)
-        if (ctx.controlOperation) {
-          try {
-            this.memory?.logger.event({
-              type: "study.control_operation",
-              ...ctx.controlOperation,
-              phase: "completed",
-            })
-          } catch {
-            // The participant decision is already durable in the transcript.
-          }
-        }
         // Cancellation is now durable and any phased terminal was attempted.
         // Release before queue draining, which deliberately treats the claim
         // as a busy owner and would otherwise leave the next row parked.
@@ -6645,42 +5422,16 @@ export class AgentCoordinator {
       }
 
       this.emitStateChange(args.chatId)
-      const providerArgs = args.openingReview && (decision === "go_on" || decision === "without_memory")
-        ? { ...args, openingWorkingMemory: { previewId: ctx.previewId, decision } }
-        : args
-      await this.bootEngineTurn(this.refreshOpeningProviderAttachments(providerArgs), {
+      await this.bootEngineTurn(args, {
         chat: ctx.chat,
         project: ctx.project,
         turnNumber: ctx.turnNumber,
         memoryDisabledForTurn: decision === "without_memory",
       })
-      if (ctx.controlOperation) {
-        try {
-          this.memory?.logger.event({
-            type: "study.control_operation",
-            ...ctx.controlOperation,
-            phase: "completed",
-          })
-        } catch {
-          // Claude accepted the dispatch; do not induce a duplicate retry.
-        }
-      }
     } catch (error) {
       if (args.startupReservation?.cancelled || args.startupReservation?.superseded
         || this.isEngineStartBlocked(args.chatId)) return
       this.restoreUndeliveredEnforcement(args.chatId)
-      if (ctx.controlOperation) {
-        try {
-          this.memory?.logger.event({
-            type: "study.control_operation",
-            ...ctx.controlOperation,
-            phase: "failed",
-            errorClass: error instanceof Error ? error.constructor.name : typeof error,
-          })
-        } catch {
-          // Preserve the provider/transcript error as the participant-visible failure.
-        }
-      }
       // The turn is detached from any chat.send ack here — record the failure
       // in the transcript the way the engine loops do.
       const message = error instanceof Error ? error.message : String(error)
@@ -6694,23 +5445,6 @@ export class AgentCoordinator {
       this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
       this.settleStartupReservation(args.chatId, args.startupReservation)
     }
-  }
-
-  /** Re-verify the private snapshot at the last in-process boundary before
-   * Claude can observe its path. The opening Board may remain visible for
-   * minutes after the first recovery check. */
-  private refreshOpeningProviderAttachments(args: StartTurnArgs): StartTurnArgs {
-    if (!args.openingReview || !this.openingBoardBacklog) return args
-    const recovered = this.openingBoardBacklog.recoverOpeningPrompt(args.openingReview.taskId)
-    if (
-      !recovered
-      || recovered.chatId !== args.chatId
-      || recovered.reviewId !== args.openingReview.reviewId
-    ) {
-      throw new Error("The immutable opening attachment receipt is no longer available")
-    }
-    if (recovered.attachmentFailure) throw new Error(recovered.attachmentFailure)
-    return { ...args, providerAttachments: recovered.providerAttachments }
   }
 
   /** Boot the engine for a turn (post-gate half of startTurnForChat). */
@@ -6750,7 +5484,6 @@ export class AgentCoordinator {
     const turnMemoryPlan =
       this.memory && !memoryDisabledForTurn
         ? planMemoryInjection({
-            policy: this.policy,
             memory: this.memory,
             projectId: chat.projectId,
             chatId: args.chatId,
@@ -6825,7 +5558,7 @@ export class AgentCoordinator {
       // dispatch for this turn.
       const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
       const piMemorySpecs =
-        this.memory && this.policy.memoryTools
+        this.memory
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
@@ -6911,7 +5644,7 @@ export class AgentCoordinator {
         model: args.model,
       })
       // MemoSync memory for Codex: declare the memory tools as dynamic tools
-      // (when the arm has tools at all), inject the arm's block as
+      // when enabled, inject the memory block as
       // developer_instructions, and dispatch item/tool/call to the memory
       // handler. Codex injection is per-turn, so file-mode contents are
       // naturally fresh each turn.
@@ -6920,7 +5653,6 @@ export class AgentCoordinator {
       const codexPlan: MemoryInjectionPlan | null =
         this.memory && !memoryDisabledForTurn
           ? planMemoryInjection({
-              policy: this.policy,
               memory: this.memory,
               projectId: chat.projectId,
               chatId: args.chatId,
@@ -6932,7 +5664,7 @@ export class AgentCoordinator {
       // DECLARATIONS are thread-level and persist across turns by protocol, but
       // with no dispatch handler a call this turn is a no-op.)
       const codexMemorySpecs =
-        this.memory && this.policy.memoryTools
+        this.memory
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
@@ -7072,7 +5804,6 @@ export class AgentCoordinator {
       profilingStartedAt: args.profile?.startedAt,
       turnNumber,
       turnId: args.turnId!,
-      taskId: this.getActiveStudyTaskId(),
       memoryPlan: turnMemoryPlan,
       // Capture/trace judge the user's real words, not the steer wrapper (BUG AGENT-4).
       userText: args.memoryUserText ?? args.content,
@@ -7100,14 +5831,6 @@ export class AgentCoordinator {
     }
     const active = bootedActive
     if (!active) return
-    if (active.taskId) {
-      const taskChats = this.studyTaskChats.get(active.taskId) ?? new Set<string>()
-      taskChats.add(args.chatId)
-      this.studyTaskChats.set(active.taskId, taskChats)
-      const taskPaths = this.studyTaskProjectPaths.get(active.taskId) ?? new Set<string>()
-      taskPaths.add(project.localPath)
-      this.studyTaskProjectPaths.set(active.taskId, taskPaths)
-    }
     logSendToStartingProfile(args.profile, "start_turn.active_turn_registered", {
       chatId: args.chatId,
       status: active.status,
@@ -7226,7 +5949,7 @@ export class AgentCoordinator {
           reminderParts.push(
             "RESUMING AN INTERRUPTED TURN: your previous reply above was stopped by the user midway " +
               `after they identified a problem involving [${resumeCtx.memoryId}]. Do not redo work that already completed; ` +
-              `continue from where it stopped.${selectionNote} Participant correction: ${resumeCtx.correction}`,
+              `continue from where it stopped.${selectionNote} User correction: ${resumeCtx.correction}`,
           )
         }
         const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => deliveredFocusIds.includes(use.id))
@@ -7234,9 +5957,7 @@ export class AgentCoordinator {
         else this.turnExpectedUses.delete(args.chatId)
         if (expectedUses?.length) {
           deliveredExpectedUses = expectedUses
-          const detailIds = this.policy.memoryTools
-            ? expectedUses.filter((use) => Boolean(this.memory!.store.getById(use.id)?.detail)).map((use) => use.id)
-            : []
+          const detailIds = expectedUses.filter((use) => Boolean(this.memory!.store.getById(use.id)?.detail)).map((use) => use.id)
           const withDetail = new Set(detailIds)
           reminderParts.push(
             "How the selected memories are expected to guide this turn:\n" +
@@ -7251,7 +5972,7 @@ export class AgentCoordinator {
         // Cite nudge rides every memory-bearing turn; an edited gate that
         // selected ZERO memories is the one case with nothing to cite.
         const memoryBearingTurn =
-          this.policy.memoryTools && (turnRestriction === undefined || turnRestriction.length > 0)
+          (turnRestriction === undefined || turnRestriction.length > 0)
         if (memoryBearingTurn) {
           reminderParts.push(CITE_NUDGE)
           // Tool salience for DeepSeek: only when the working set really has
@@ -7261,7 +5982,7 @@ export class AgentCoordinator {
             reminderParts.push(DETAIL_NUDGE)
           }
         }
-        if (active.memoryState.learnActive && this.capture && this.policy.memoryTools) reminderParts.push(CAPTURE_NUDGE)
+        if (active.memoryState.learnActive && this.capture) reminderParts.push(CAPTURE_NUDGE)
         if (reminderParts.length > 0) {
           promptText += `\n\n<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`
         }
@@ -7278,39 +5999,6 @@ export class AgentCoordinator {
         contentPreview: args.content.slice(0, 160),
         pendingPromptSeqs: [...session.pendingPromptSeqs],
       })
-      const openingFocusDelivery = args.openingReview && args.openingWorkingMemory && this.memory
-        ? buildDeliveredStoreFocusEvent({
-            condition: "memosync",
-            taskId: active.taskId,
-            chatId: args.chatId,
-            turnId: active.turnId,
-            turn: active.turnNumber ?? turnNumber,
-            mode: "skills",
-            promptText,
-            visiblePool: deliveredVisiblePool,
-            focusedMemories: deliveredFocusedMemories,
-            expectedUses: deliveredExpectedUses,
-            disabled: active.memoryDisabled,
-            resumeOfInterruptId: deliveredResumeInterruptId,
-          })
-        : null
-      const openingProviderDispatch = args.openingReview && args.openingWorkingMemory
-        ? {
-            taskId: args.openingReview.taskId,
-            chatId: args.chatId,
-            reviewId: args.openingReview.reviewId,
-            phase: "completed" as const,
-            previewId: args.openingWorkingMemory.previewId,
-            decision: args.openingWorkingMemory.decision,
-            ...(openingFocusDelivery ? { focusDelivery: openingFocusDelivery } : {}),
-          }
-        : null
-      if (openingProviderDispatch) {
-        const claim = this.openingBoardBacklog?.claimOpeningProviderDispatch(openingProviderDispatch)
-        if (claim !== "claimed") {
-          throw new Error(`Opening prompt provider dispatch is already ${claim ?? "unavailable"}`)
-        }
-      }
       try {
         await session.session.sendPrompt(promptText, {
           allowedMemoryIds: deliveredFocusIds,
@@ -7319,37 +6007,21 @@ export class AgentCoordinator {
           promptSeq,
         })
       } catch (error) {
-        try {
-          if (openingProviderDispatch) {
-            this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "failed")
-          }
-        } finally {
-          // bootEngineTurn registered the turn before asking the persistent
-          // Claude session to accept this prompt. A definitive rejection never
-          // reaches runClaudeSession's event loop, so release only this exact
-          // owner here and close its unusable session. Otherwise the chat and
-          // study freeze barrier remain busy forever.
-          if (this.activeTurns.get(args.chatId) === active) {
-            this.activeTurns.delete(args.chatId)
-          }
-          if (this.claudeSessions.get(args.chatId) === session) {
-            this.claudeSessions.delete(args.chatId)
-          }
-          this.clearStreamingAssistantText(args.chatId)
-          session.session.close()
-          active.turn.close()
-          this.emitStateChange(args.chatId, { immediate: true })
+        // A rejected prompt cannot leave this turn or provider session active.
+        if (this.activeTurns.get(args.chatId) === active) {
+          this.activeTurns.delete(args.chatId)
         }
+        if (this.claudeSessions.get(args.chatId) === session) {
+          this.claudeSessions.delete(args.chatId)
+        }
+        this.clearStreamingAssistantText(args.chatId)
+        session.session.close()
+        active.turn.close()
+        this.emitStateChange(args.chatId, { immediate: true })
         throw error
       }
       if (reservation?.cancelled || active.cancelRequested || this.activeTurns.get(args.chatId) !== active) {
-        if (openingProviderDispatch) {
-          this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
-        }
         return
-      }
-      if (openingProviderDispatch) {
-        this.openingBoardBacklog!.settleOpeningProviderDispatch(openingProviderDispatch, "delivered")
       }
       if (nextMemoryBaseline) session.memoryBaseline = nextMemoryBaseline
       active.memoryDeliveryAccepted = true
@@ -7359,19 +6031,9 @@ export class AgentCoordinator {
       args.onMemoryDeliveryAccepted?.([...deliveredFocusIds])
       if (active.memoryState.memoryActive && this.memory) {
         try {
-          if (openingFocusDelivery) {
-            persistDeliveredStoreFocusEvent({
-              event: openingFocusDelivery,
-              condition: "memosync",
-              logger: this.memory.logger,
-              studyStore: this.studyMemoryStore ?? undefined,
-            })
-          } else {
+
             recordDeliveredStoreFocus({
               logger: this.memory.logger,
-              studyStore: this.studyMemoryStore ?? undefined,
-              condition: "memosync",
-              taskId: active.taskId,
               chatId: args.chatId,
               turnId: active.turnId,
               turn: active.turnNumber ?? turnNumber,
@@ -7383,20 +6045,10 @@ export class AgentCoordinator {
               disabled: active.memoryDisabled,
               resumeOfInterruptId: deliveredResumeInterruptId,
             })
-          }
+
         } catch (error) {
-          if (active.taskId) {
-            this.noteStudyMemoryQualityFlag({
-              code: "focus_persistence_failed",
-              blocking: true,
-              taskId: active.taskId,
-              chatId: args.chatId,
-              turnId: active.turnId,
-              turn: active.turnNumber ?? turnNumber,
-            })
-          }
           this.reportBackgroundError?.(
-            `[study-focus] chat ${args.chatId} turn ${active.turnNumber ?? turnNumber}: ${error instanceof Error ? error.message : String(error)}`
+            `[memory-focus] chat ${args.chatId} turn ${active.turnNumber ?? turnNumber}: ${error instanceof Error ? error.message : String(error)}`
           )
         }
       }
@@ -7429,16 +6081,11 @@ export class AgentCoordinator {
     restrictMemoryIds?: string[]
     startupReservation?: StartupReservation
   }): Promise<HarnessTurn | null> {
-    // Ensure/recover the one managed preview on every participant prompt, not
-    // only when the Claude query happens to rebuild. Project switches retire
-    // the old query before the supervisor replaces its process group.
-    await this.prepareStudyProjectRuntime(args.localPath)
     if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
     const subprocessEnv = buildClaudeSubprocessEnv({
       localPath: args.localPath,
-      rawStudyProjects: this.policy.studyMode ? process.env.STUDY_PROJECTS : undefined,
     })
     const runtimeEnv: Record<string, string | undefined> = buildClaudeSdkRuntimeOptions({ requestedModel: args.model, env: subprocessEnv }).env
     // Endpoint, credentials and profile belong to the subprocess. setModel()
@@ -7458,7 +6105,6 @@ export class AgentCoordinator {
       ? args.memoryPlan
       : memoryEnabled && this.memory
         ? planMemoryInjection({
-            policy: this.policy,
             memory: this.memory,
             projectId: args.projectId,
             chatId: args.chatId,
@@ -7466,7 +6112,7 @@ export class AgentCoordinator {
           })
         : null
     const desiredMemoryHash = (turnPlan?.sessionRebuildKey ?? "memory-off")
-      + (!this.policy.studyMode && memoryEnabled ? `:learn=${args.learnEnabled !== false}` : "")
+      + (memoryEnabled ? `:learn=${args.learnEnabled !== false}` : "")
     if (
       !session ||
       session.retired ||
@@ -7507,8 +6153,6 @@ export class AgentCoordinator {
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
         chatId: args.chatId,
-        policy: this.policy,
-        studyPreviewRuntime: this.studyPreviewRuntime,
         subprocessEnv,
         memoryPlan: turnPlan,
         restrictMemoryIds: args.restrictMemoryIds,
@@ -7598,14 +6242,14 @@ export class AgentCoordinator {
   }
 
   async setMemoryDisabled(chatId: string, disabled: boolean) {
-    if (this.policy.studyMode) throw new Error("Chat memory controls are unavailable in study mode")
+
     if (typeof disabled !== "boolean") throw new Error("disabled must be a boolean")
     await this.store.setMemoryDisabled(chatId, disabled)
     this.emitStateChange(chatId)
   }
 
   async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
-    if (!this.policy.studyMode && command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
+    if (command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
       throw new Error("memoryDisabled must be a boolean")
     }
     const profile = command.clientTraceId
@@ -7618,24 +6262,13 @@ export class AgentCoordinator {
       projectId: command.projectId ?? null,
     })
 
-    // Reject before createChat so a wrong-project or copied prompt cannot
-    // leave an empty chat as its only side effect.
-    this.assertStudyPromptAllowed({
-      chatId,
-      projectId: command.projectId,
-      channel: "chat.send",
-      content: command.content,
-      attachments: command.attachments,
-      openingReviewId: command.openingReviewId,
-    })
-
     if (!chatId) {
       if (!command.projectId) {
         throw new Error("Missing projectId for new chat")
       }
       const created = await this.store.createChat(command.projectId)
       chatId = created.id
-      if (!this.policy.studyMode && command.memoryDisabled !== undefined) {
+      if (command.memoryDisabled !== undefined) {
         await this.store.setMemoryDisabled(chatId, command.memoryDisabled)
       }
       logSendToStartingProfile(profile, "chat_send.chat_created", {
@@ -7644,50 +6277,13 @@ export class AgentCoordinator {
       })
     }
 
-    // Recheck after awaited createChat but before a
-    // prompt can be queued, persisted, focused, or started. With no await
-    // between this check and startTurnForChat's synchronous reservation, a
-    // concurrent study freeze must now either win here or observe the turn.
-    this.assertStudyPromptAllowed({
-      chatId,
-      content: command.content,
-      channel: "chat.send",
-      attachments: command.attachments,
-      openingReviewId: command.openingReviewId,
-    })
-
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(command, chat.provider)
-    let openingReview: StartTurnArgs["openingReview"]
-    if (command.openingReviewId) {
-      const taskId = this.getActiveStudyTaskId()
-      if (
-        !taskId
-        || !this.openingBoardBacklog
-        || !this.policy.studyMode
-        || this.policy.condition !== "memosync"
-        || provider !== "claude"
-      ) {
-        throw new Error("Opening Memory Board prompt preparation is unavailable")
-      }
-      const openingInput = {
-        taskId,
-        chatId,
-        reviewId: command.openingReviewId,
-        content: command.content,
-        attachments: command.attachments ?? [],
-      }
-      if (this.openingBoardBacklog.claimOpeningPromptDispatch(openingInput) === "duplicate") {
-        return { chatId, openingReviewDuplicate: true as const }
-      }
-      openingReview = { taskId, reviewId: command.openingReviewId }
-    }
     if (
       this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
     ) {
-      if (openingReview) throw new Error("The opening first message cannot be queued behind another turn")
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
@@ -7711,8 +6307,6 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       appendUserPrompt: true,
       profile,
-      openingReview,
-      ...(openingReview ? { turnId: openingReview.reviewId } : {}),
     })
 
     logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
@@ -7739,12 +6333,6 @@ export class AgentCoordinator {
     if (!queuedMessage) {
       throw new Error("Queued message not found")
     }
-    this.assertStudyPromptAllowed({
-      chatId: command.chatId,
-      content: queuedMessage.content,
-      channel: "message.steer",
-      attachments: queuedMessage.attachments,
-    })
 
     logClaudeSteer("steer_requested", {
       chatId: command.chatId,
@@ -7816,9 +6404,9 @@ export class AgentCoordinator {
           )
           continue
         }
-        const participantOrigin = event.origin === "human"
-          || (!this.policy.studyMode && (event.origin === undefined || event.origin === "unknown"))
-        if (!participantOrigin) {
+        const userOrigin = event.origin === "human"
+          || ((event.origin === undefined || event.origin === "unknown"))
+        if (!userOrigin) {
           this.reportBackgroundError?.(
             `[claude-background-event] dropped ${event.entry?.kind ?? event.type} with origin ${event.origin} for chat ${session.chatId}`,
           )
@@ -7932,7 +6520,6 @@ export class AgentCoordinator {
               engine: "claude",
               turnNumber: active.turnNumber,
               turnId: active.turnId,
-              taskId: active.taskId,
               userText: active.userText ?? "",
               assistantText: active.assistantChunks.join("\n"),
               citedIds: [...active.citedIds],
@@ -8083,7 +6670,6 @@ export class AgentCoordinator {
               engine: active.provider,
               turnNumber: active.turnNumber,
               turnId: active.turnId,
-              taskId: active.taskId,
               userText: active.userText ?? "",
               assistantText: active.assistantChunks.join("\n"),
               citedIds: [...active.citedIds],
@@ -8190,20 +6776,17 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    // Per-memory interrupt/resume works on every MemoSync engine in normal
-    // deployments (Claude, Codex and Pi all implement resume/enforce handling);
-    // in the study mode it stays restricted to Claude.
-    if (this.policy.condition !== "memosync" || (chat.provider !== "claude" && (this.policy.studyMode || (chat.provider !== "codex" && chat.provider !== "pi")))) {
+    if ((chat.provider !== "claude" && ((chat.provider !== "codex" && chat.provider !== "pi")))) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
 
   /**
-   * Per-memory interrupt (2026-08-19 C1/C3): the participant stopped the turn
+   * Per-memory interrupt (2026-08-19 C1/C3): the user stopped the turn
    * because they identified a problem involving one working-memory item. Cancels exactly like
    * Stop, then adds the attribution a plain Stop lacks: the flagged memory,
    * the anchor quote, the turn's working set — plus the measurement side
-   * effects: a participant-issued violated verdict in the memory event log
+   * effects: a user-issued violated verdict in the memory event log
    * (never an audit card), and a memory.interrupt event. The recovery card
    * parks at the interruption point as a memory_interrupt entry.
    */
@@ -8249,13 +6832,12 @@ export class AgentCoordinator {
 
     const interruptId = crypto.randomUUID()
     const quote = args.quote?.trim() ? args.quote.trim().slice(0, 300) : undefined
-    // Persist the participant control before cancelling the run. A failed
-    // SQLite authority write must leave the treatment state untouched.
+    // Record the local interrupt action before cancelling the run.
     this.memory?.logger.event({
       type: "memory.interrupt",
       eventId: `control:interrupt:${interruptId}`,
       interruptId,
-      ...(active.taskId ? { taskId: active.taskId, sessionId: active.taskId } : { sessionId: chatId }),
+      sessionId: chatId,
       chatId,
       id: memoryId,
       turn: turnNumber,
@@ -8275,7 +6857,7 @@ export class AgentCoordinator {
    * Resume after a per-memory interrupt (2026-08-19 C2): re-dispatch the
    * interrupted prompt as a NEW turn that skips the pre-turn gates and the
    * working-memory confirmation — the recovery card already confirmed the
-   * set — and rides a continuation instruction plus the participant's
+   * set — and rides a continuation instruction plus the user's
    * correction. Continuation is real: the engine session keeps the partial
    * trajectory, so the reminder tells it to keep completed work.
    */
@@ -8306,7 +6888,7 @@ export class AgentCoordinator {
     const correction = args.correction?.trim()
     if (!correction) throw new Error("A correction is required to resume")
     const chat = this.store.requireChat(chatId)
-    const memoryState = resolveTurnMemoryState(this.policy, this.getMemorySettings(), chat.memoryDisabled)
+    const memoryState = resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
     if (!memoryState.memoryActive) throw new Error("Memory is disabled for this chat")
     const memory = this.memory
     if (!memory) throw new Error("Memory service is unavailable")
@@ -8319,34 +6901,6 @@ export class AgentCoordinator {
     })
     if (enforce && !selectedIds.includes(entry.memoryId)) {
       throw new Error("The enforced memory is no longer in the current chat's effective Working Memory")
-    }
-
-    const resumedTaskId = this.getActiveStudyTaskId()
-    if (resumedTaskId) {
-      // The click/decision is the measured Control act. Persist it before the
-      // provider continuation so telemetry failure cannot create an
-      // unmeasured resumed run.
-      this.memory?.logger.event({
-        type: "memory.resume",
-        eventId: `control:resume:${args.interruptId}`,
-        interruptId: args.interruptId,
-        taskId: resumedTaskId,
-        sessionId: resumedTaskId,
-        chatId,
-        id: entry.memoryId,
-        enforced: enforce,
-      })
-      if (enforce) {
-        this.memory?.logger.event({
-          type: "memory.audit_action",
-          eventId: `control:resume-enforce:${args.interruptId}`,
-          taskId: resumedTaskId,
-          sessionId: resumedTaskId,
-          chatId,
-          id: entry.memoryId,
-          action: "enforce",
-        })
-      }
     }
 
     const provider = (chat.provider ?? "claude") as AgentProvider
@@ -8396,6 +6950,25 @@ export class AgentCoordinator {
         ...(enforce ? { enforced: true } : {}),
       }),
     )
+    this.memory?.logger.event({
+      type: "memory.resume",
+      eventId: `resume:${args.interruptId}`,
+      interruptId: args.interruptId,
+      sessionId: chatId,
+      chatId,
+      id: entry.memoryId,
+      enforced: enforce,
+    })
+    if (enforce) {
+      this.memory?.logger.event({
+        type: "memory.audit_action",
+        eventId: `enforce:${args.interruptId}`,
+        sessionId: chatId,
+        chatId,
+        id: entry.memoryId,
+        action: "enforce",
+      })
+    }
     this.emitStateChange(chatId, { immediate: true })
   }
 
@@ -8564,10 +7137,8 @@ export class AgentCoordinator {
     this.activeTurns.delete(chatId)
     this.emitStateChange(chatId)
 
-    // A formal-study Stop leaves an incomplete output. Do not learn from it or
-    // run post-turn audit/precomputation; the participant must complete a fresh
-    // run before Finish can open. Preserve the legacy non-study behavior.
-    if (!this.policy.studyMode && !options?.skipPostTurnMemoryPasses) {
+    // Per-memory interrupts skip post-turn work; ordinary Stop keeps it.
+    if (!options?.skipPostTurnMemoryPasses) {
       const chat = this.store.getChat(chatId)
       this.launchPostTurnMemoryPasses({
         chatId,
@@ -8575,7 +7146,6 @@ export class AgentCoordinator {
         engine: active.provider,
         turnNumber: active.turnNumber,
         turnId: active.turnId,
-        taskId: active.taskId,
         userText: active.userText ?? "",
         assistantText: active.assistantChunks.join("\n"),
         citedIds: [...active.citedIds],
@@ -8590,23 +7160,22 @@ export class AgentCoordinator {
       activePromptSeq: active.claudePromptSeq ?? null,
     })
 
-    // A formal-study Stop keeps the persistent Query once the provider has
-    // started the turn: the CLI acknowledges the cancelled prompt (every pilot
-    // Stop was acknowledged within 100 ms), and if it ever does not, the next
-    // turn's `system_init` drops the orphaned FIFO entry. Only a Stop that
-    // arrives before any provider frame is ambiguous — a positional FIFO could
-    // not tell this turn's late init/ack from the next turn's — so that case
-    // retires the Query fail-closed; the persisted session token resumes
-    // context on the next send.
-    if (this.policy.studyMode && active.provider === "claude" && !active.providerTurnStarted) {
+    // A Stop keeps the persistent Claude Query once the provider has started
+    // the turn: the CLI acknowledges the cancelled prompt, and if it ever does
+    // not, the next turn's `system_init` drops the orphaned FIFO entry. Only a
+    // Stop that arrives before any provider frame is ambiguous — a positional
+    // FIFO could not tell this turn's late init/result from the next turn's —
+    // so that case retires the Query fail-closed; the persisted session token
+    // resumes context on the next send.
+    if (active.provider === "claude" && !active.providerTurnStarted) {
       const session = this.claudeSessions.get(chatId)
       if (session) {
         try {
-          await this.retireClaudeSession(session, "study_turn_cancel_before_start")
+          await this.retireClaudeSession(session, "turn_cancel_before_start")
         } catch (error) {
           // Stop already cancelled the turn; a slow pump must not turn that
-          // into a participant-visible failure. The session is retired and
-          // its remaining frames are dropped by the pump's retired guard.
+          // into a user-visible failure. The session is retired and its
+          // remaining frames are dropped by the pump's retired guard.
           this.reportBackgroundError?.(
             `[claude-retire] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
           )
@@ -8684,4 +7253,3 @@ export class AgentCoordinator {
     this.emitStateChange(command.chatId)
   }
 }
-type StudyAgentPreviewRuntime = Pick<StudyPreviewRuntimeController, "ensure" | "status" | "restart" | "stop">

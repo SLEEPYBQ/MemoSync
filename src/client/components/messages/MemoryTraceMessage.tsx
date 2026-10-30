@@ -1,11 +1,3 @@
-// Auditing Memory Use (4.2.4; four-way redesign 2026-08-19 B2): after the
-// turn, the audit reconciles the reply against the working memory. Four
-// sections in severity order, all expanded on initial render (study owner
-// 2026-08-20); Not applicable and No visible effect keep their OWN collapsible
-// header so the two "didn't act" states never blur together. Every
-// row carries color + text label + a one-line reason; an NA row names the
-// missing object. Rows distinguish the agent's own inline citations
-// (self-report) from what only the audit found (inference).
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { AlertTriangle, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck } from "lucide-react"
@@ -20,8 +12,8 @@ import { MemoryCitationChip, useEnsureMemoriesLoaded } from "./shared"
 import {
   useSurfaceExposure,
   useSurfaceViewportVisibility,
-  type StudySurfaceExposureInitiator,
-} from "../../app/study/surfaceExposure"
+  type SurfaceExposureInitiator,
+} from "../../app/memory/surfaceExposure"
 
 type MemoryTraceHydratedMessage = Extract<HydratedTranscriptMessage, { kind: "memory_trace" }>
 type MemoryTraceLabel = MemoryTraceHydratedMessage["labels"][number]
@@ -84,14 +76,14 @@ function TraceSection({
   count: number
   folded?: boolean
   onToggle?: () => void
-  exposureInitiator: StudySurfaceExposureInitiator
+  exposureInitiator: SurfaceExposureInitiator
   memoryIds: string[]
   children: ReactNode
 }) {
   const { chatId } = useTranscriptChatContext()
   const [initiator, setInitiator] = useState(exposureInitiator)
   const viewport = useSurfaceViewportVisibility<HTMLElement>()
-  const effectiveInitiator = initiator === "participant" ? "participant" : viewport.initiator
+  const effectiveInitiator = initiator === "user" ? "user" : viewport.initiator
   useSurfaceExposure({
     active: folded !== true && viewport.visible,
     surface: "audit_group",
@@ -114,7 +106,7 @@ function TraceSection({
         <button
           type="button"
           onClick={() => {
-            if (folded) setInitiator("participant")
+            if (folded) setInitiator("user")
             onToggle()
           }}
           className="flex w-full items-center gap-1 text-left transition-colors hover:opacity-80"
@@ -268,10 +260,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   // the point of the trace. Hiding them behind a click made "was this memory
   // used?" an extra step (review feedback). Still collapsible for quiet turns.
   const [expanded, setExpanded] = useState(true)
-  const [cardInitiator, setCardInitiator] = useState<StudySurfaceExposureInitiator>("system")
-  // All four groups open on initial render (study-owner decision 2026-08-20):
-  // the two "didn't act" sections keep their own headers and stay separately
-  // collapsible, but no verdict starts hidden behind a fold.
+  const [cardInitiator, setCardInitiator] = useState<SurfaceExposureInitiator>("system")
   const [showNoEffect, setShowNoEffect] = useState(true)
   const [showNotApplicable, setShowNotApplicable] = useState(true)
   const expandReportedRef = useRef(false)
@@ -297,7 +286,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
     active: hasAuditableCard && expanded && cardViewport.visible,
     surface: "audit_card",
     chatId,
-    initiator: cardInitiator === "participant" ? "participant" : cardViewport.initiator,
+    initiator: cardInitiator === "user" ? "user" : cardViewport.initiator,
     memoryIds: message.labels.map((label) => label.id),
     closeReason: "toggle",
   })
@@ -336,7 +325,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
         expandReportedRef.current = true
         if (chatId) recordUiMonitor("trace_expand", { ids: message.labels.map((l) => l.id), sessionId: chatId, interaction: "click" })
       }
-      if (!v) setCardInitiator("participant")
+      if (!v) setCardInitiator("user")
       return !v
     })
   }
@@ -394,8 +383,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   const hasViolation = counts.violated > 0
 
   return (
-    // A formal card, same family as the step gates (redesign 2026-08-07 §3):
-    // the audit is a station of the cycle, not a footnote under the reply.
+    // Give the audit its own card, matching the pre-turn review cards.
     <div className="rounded-xl border border-border/70 bg-card p-4 text-xs" ref={setRootRef}>
       <button type="button" onClick={toggleExpanded} className="group flex w-full flex-wrap items-baseline gap-2 text-left">
         <ChevronRight className={cn("h-3 w-3 self-center text-muted-foreground transition-transform", expanded && "rotate-90")} />

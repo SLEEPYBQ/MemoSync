@@ -16,11 +16,6 @@ export interface PreviewGateTargetLike {
 
 export type PreviewGateKeyAction = "go_on" | "dismiss"
 
-// Keyboard path for the per-turn gate (STUDY_PLAN §2.4): Enter = go on,
-// Esc = dismiss. Only when the user isn't typing: inputs/contentEditable and
-// a non-empty composer draft keep the protection, but the (usually focused,
-// empty) composer right after a send lets Enter/Esc decide. IME composition
-// keydowns never decide — Esc there cancels the pinyin candidate, not the turn.
 export function previewGateKeyAction(
   event: PreviewGateKeyEventLike,
   target: PreviewGateTargetLike | null,

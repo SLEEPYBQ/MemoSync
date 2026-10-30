@@ -10,7 +10,7 @@ import {
   removeCachedLocalHttpServer,
   writeCachedProjectQuickActions,
 } from "../../lib/browserPanelCache"
-import { canKillLocalHttpServer, isProxiedPreviewAddress, localServerPreviewUrl, manualBrowserAddressUrl, previewFrameUrl } from "../../lib/localServerPreview"
+import { isProxiedPreviewAddress, localServerPreviewUrl, manualBrowserAddressUrl, previewFrameUrl } from "../../lib/localServerPreview"
 import { useRightSidebarStore } from "../../stores/rightSidebarStore"
 import { Button } from "../ui/button"
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from "../ui/context-menu"
@@ -561,7 +561,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                             <SquareArrowOutUpRight className="h-3.5 w-3.5" />
                             <span>Open in New Tab</span>
                           </ContextMenuItem>
-                          {canKillLocalHttpServer(server) ? (
+                          {(
                             <ContextMenuItem
                               onSelect={(event) => {
                                 event.preventDefault()
@@ -572,7 +572,7 @@ function BrowserPanelImpl({ projectId, socket, onRunQuickAction, previewDocument
                               <Trash2 className="h-3.5 w-3.5" />
                               <span>Kill Process</span>
                             </ContextMenuItem>
-                          ) : null}
+                          )}
                         </ContextMenuContent> : null}
                       </ContextMenu>
                       )

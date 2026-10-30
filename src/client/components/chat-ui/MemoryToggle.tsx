@@ -1,20 +1,17 @@
-import { useState } from "react"
 import { BrainCircuit, Slash } from "lucide-react"
+import { useState } from "react"
 import { useInRouterContext, useNavigate, useOutletContext } from "react-router-dom"
 import { create } from "zustand"
-import type { AppState } from "../../app/useAppState"
 import type { MemorySettings } from "../../../shared/types"
-import { useConditionPolicy, type ConditionPolicy } from "../../lib/conditionApi"
-import { useAppSettingsStore } from "../../stores/appSettingsStore"
+import type { AppState } from "../../app/useAppState"
 import { cn } from "../../lib/utils"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
 
 export function deriveMemoryToggleState(
-  policy: Pick<ConditionPolicy, "studyMode" | "condition">,
   memory: MemorySettings,
   memoryDisabled: boolean,
 ) {
-  const hidden = policy.studyMode || policy.condition !== "memosync"
   const off = !memory.enabled || memoryDisabled
   const tooltip = !memory.enabled
     ? "Memory is turned off in Settings"
@@ -22,7 +19,6 @@ export function deriveMemoryToggleState(
       ? "This chat doesn't use or learn memories. Click to turn memory back on."
       : "Memory on — click to turn it off for this chat"
   return {
-    hidden,
     off,
     label: off ? "Memory off" : null,
     action: memory.enabled ? ("toggle" as const) : ("settings" as const),
@@ -69,7 +65,6 @@ export function MemoryToggle(props: MemoryToggleProps) {
 function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
   const app = useOutletContext<AppState | null>()
   const navigate = useNavigate()
-  const policy = useConditionPolicy()
   const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { enabled: true, learn: true }
   const draftDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
@@ -77,8 +72,7 @@ function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
   const [error, setError] = useState<string | null>(null)
   const runtime = app?.runtime && app.runtime.chatId === chatId ? app.runtime : null
   const disabled = chatId ? (runtime?.memoryDisabled ?? false) : draftDisabled
-  const state = deriveMemoryToggleState(policy, memory, disabled)
-  if (state.hidden) return null
+  const state = deriveMemoryToggleState(memory, disabled)
 
   async function toggle() {
     if (state.action === "settings") {

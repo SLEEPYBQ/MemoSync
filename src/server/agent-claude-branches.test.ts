@@ -2,18 +2,17 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import type { AgentProvider, TranscriptEntry } from "../shared/types"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
+import type { HarnessEvent } from "./harness-types"
 import { MemoryService } from "./memory"
+import type { MemoryBranchInput } from "./memory/branch-runtime"
 import { createCaptureService } from "./memory/capture"
 import { createCheckupService } from "./memory/checkup"
-import { createTransferDetectService } from "./memory/transfer-detect"
-import { createTransferService } from "./memory/transfer"
 import { createTraceService } from "./memory/trace"
-import type { MemoryBranchInput } from "./memory/branch-runtime"
-import type { AgentProvider, TranscriptEntry } from "../shared/types"
-import type { HarnessEvent } from "./harness-types"
-import { resolveConditionPolicy } from "./experiment/condition"
+import { createTransferService } from "./memory/transfer"
+import { createTransferDetectService } from "./memory/transfer-detect"
 
 function deferred<T>() {
   let resolve!: (value: T) => void
@@ -72,7 +71,6 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
   }
   const coordinator = new AgentCoordinator({
     store, memory, memoryBranches: true, memoryPreview: true,
-    policy: { ...resolveConditionPolicy("memosync"), studyMode: false },
     onStateChange: () => {},
     claudeSessionFileExists: () => true,
     generateTitle: async () => ({ title: "Test", usedFallback: true, failureMessage: null }),
@@ -122,7 +120,7 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
   })
   cleanups.push(async () => {
     events.close()
-    await coordinator.shutdownStudyRuntime()
+    await coordinator.shutdownRuntime()
     memory.close()
     rmSync(directory, { recursive: true, force: true })
   })
@@ -159,7 +157,7 @@ describe("coordinator provider branches", () => {
         }
       },
     })
-    cleanups.push(async () => { await coordinator.shutdownStudyRuntime(); rmSync(directory, { recursive: true, force: true }) })
+    cleanups.push(async () => { await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) })
     for (const [index, model] of ["deepseek-v4-flash", "glm-5.3-flash", "sonnet"].entries()) {
       await coordinator.send({ type: "chat.send", chatId: chat.id, provider: "claude", model, content: "Reply ready" })
       await until(() => results === index + 1 && !coordinator.activeTurns.has(chat.id) && store.getMessages(chat.id).filter((entry) => entry.kind === "result").length === index + 1)

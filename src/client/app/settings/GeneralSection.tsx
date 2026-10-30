@@ -2,29 +2,28 @@ import { useEffect, useState } from "react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import type {
   AppSettingsPatch,
+  AppThemePreference,
   ChatSoundId,
   ChatSoundPreference,
   EditorPreset,
   SubmitWhileRunning,
-  AppThemePreference,
 } from "../../../shared/types"
 import { Input } from "../../components/ui/input"
 import { SelectItem } from "../../components/ui/select"
-import { useConditionPolicy } from "../../lib/conditionApi"
-import { playChatNotificationSound } from "../../lib/chatSounds"
 import {
+  getChatBrowserNotificationDescription,
   getChatBrowserNotificationPermission,
   requestChatBrowserNotificationPermission,
-  getChatBrowserNotificationDescription,
 } from "../../lib/chatBrowserNotifications"
+import { playChatNotificationSound } from "../../lib/chatSounds"
 import { CHAT_SOUND_OPTIONS, useChatSoundPreferencesStore } from "../../stores/chatSoundPreferencesStore"
 import {
-  DEFAULT_TERMINAL_SCROLLBACK,
-  MIN_TERMINAL_SCROLLBACK,
-  MAX_TERMINAL_SCROLLBACK,
   DEFAULT_TERMINAL_MIN_COLUMN_WIDTH,
-  MIN_TERMINAL_MIN_COLUMN_WIDTH,
+  DEFAULT_TERMINAL_SCROLLBACK,
   MAX_TERMINAL_MIN_COLUMN_WIDTH,
+  MAX_TERMINAL_SCROLLBACK,
+  MIN_TERMINAL_MIN_COLUMN_WIDTH,
+  MIN_TERMINAL_SCROLLBACK,
   getDefaultEditorCommandTemplate,
   getEditorPresetLabel,
   useTerminalPreferencesStore,
@@ -32,6 +31,8 @@ import {
 import type { AppState } from "../useAppState"
 import { SETTINGS_ROWS } from "./registry"
 import {
+  SETTINGS_CONTROL_CLASS,
+  SETTINGS_NUMBER_INPUT_CLASS,
   SettingsActionButton,
   SettingsErrorBanner,
   SettingsField,
@@ -39,8 +40,6 @@ import {
   SettingsGroups,
   SettingsRow,
   SettingsSelect,
-  SETTINGS_CONTROL_CLASS,
-  SETTINGS_NUMBER_INPUT_CLASS,
   handleSettingsInputKeyDown,
   resolveChatBrowserNotificationPreferenceAfterPermission,
   shouldPreviewChatSoundChange,
@@ -58,7 +57,6 @@ type GeneralState = Pick<
 >
 
 export function GeneralSection({ state, appVersion }: { state: GeneralState; appVersion: string }) {
-  const policy = useConditionPolicy()
   const terminal = useTerminalPreferencesStore()
   const sounds = useChatSoundPreferencesStore()
   const [error, setError] = useState<string | null>(null)
@@ -175,7 +173,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsRow>
           </SettingsGroup>
         ) : null}
-        {!policy.studyMode ? (
+        {(
           <SettingsGroup title="Appearance">
             <SettingsRow def={SETTINGS_ROWS.theme}>
               <SettingsSelect
@@ -191,7 +189,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
               </SettingsSelect>
             </SettingsRow>
           </SettingsGroup>
-        ) : null}
+        )}
         <SettingsGroup title="Notifications">
           <SettingsRow def={SETTINGS_ROWS.chatSounds}>
             <SettingsSelect

@@ -1,6 +1,3 @@
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
-import { useNavigate } from "react-router-dom"
-import { copyTextToClipboard } from "../lib/clipboard"
 import {
   ArrowLeftRight,
   BrainCircuit,
@@ -16,16 +13,18 @@ import {
   Plus,
   Terminal,
 } from "lucide-react"
+import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
+import { useNavigate } from "react-router-dom"
 import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
+import { PageHeader } from "../app/PageHeader"
 import type { SocketStatus } from "../app/socket"
 import type { AppState } from "../app/useAppState"
-import { PageHeader } from "../app/PageHeader"
+import { copyTextToClipboard } from "../lib/clipboard"
 import { getPathBasename } from "../lib/formatters"
 import { landingHeadline, resolveLandingProjectPath, summarizeMemoriesForLanding } from "../lib/landing"
-import { MEMORY_SCOPE_TEXT_CLASSES } from "../lib/memoryCitations"
 import { memoriesApi } from "../lib/memoriesApi"
-import { useConditionPolicy, type ConditionPolicy } from "../lib/conditionApi"
+import { MEMORY_SCOPE_TEXT_CLASSES } from "../lib/memoryCitations"
 import { useMemoryStore } from "../stores/memoryStore"
 import { BrandIcon } from "./BrandMark"
 import { ChatInput } from "./chat-ui/ChatInput"
@@ -261,8 +260,7 @@ function FeatureCard({
 }
 
 export function LocalDev(props: LocalDevProps) {
-  const conditionPolicy = useConditionPolicy()
-  return <LocalDevContent {...props} conditionPolicy={conditionPolicy} />
+  return <LocalDevContent {...props} />
 }
 
 export function LocalDevContent({
@@ -276,50 +274,25 @@ export function LocalDevContent({
   onSend,
   availableProviders,
   projectIdByPath,
-  conditionPolicy,
-}: LocalDevProps & { conditionPolicy: ConditionPolicy }) {
+}: LocalDevProps & { }) {
   const navigate = useNavigate()
-  // Baseline arms strip the landing down to the hero + composer: no feature
-  // cards ("Add a project" stays reachable from the composer's project picker
-  // and the sidebar), and the hero centers in the freed space.
-  const studyNeutral = conditionPolicy.condition !== "memosync"
   const projects = useMemo(() => snapshot?.projects ?? [], [snapshot?.projects])
   const projectPaths = useMemo(() => projects.map((project) => project.localPath), [projects])
   const isConnecting = connectionStatus === "connecting" || !ready
   const isConnected = connectionStatus === "connected" && ready
 
   const [pickedPath, setPickedPath] = useState<string | null>(null)
-  const [openingAssignment, setOpeningAssignment] = useState(false)
-  const [assignmentError, setAssignmentError] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
   const machineName = snapshot?.machine.displayName ?? "this machine"
 
-  const { summary, attentionCount } = useLandingMemorySummary(isConnected && conditionPolicy.boardVisible)
-  const showCandidatesCard = conditionPolicy.boardVisible && conditionPolicy.capture === "review"
+  const { summary, attentionCount } = useLandingMemorySummary(isConnected)
+  const showCandidatesCard = true
 
   const composerElementRef = useRef<HTMLTextAreaElement | null>(null)
   useEffect(() => {
     if (isConnected && selectedPath) composerElementRef.current?.focus()
   }, [isConnected, selectedPath])
-
-  async function openActiveStudyAssignment() {
-    if (openingAssignment) return
-    setOpeningAssignment(true)
-    setAssignmentError(null)
-    try {
-      const response = await fetch("/api/study/progress", { cache: "no-store" })
-      if (!response.ok) throw new Error(`request failed (${response.status})`)
-      const payload = (await response.json()) as { data?: { activeTaskId?: string | null } }
-      const activeTaskId = payload.data?.activeTaskId
-      if (!activeTaskId) throw new Error("no active assignment")
-      navigate(`/study/${encodeURIComponent(activeTaskId)}`)
-    } catch (error) {
-      setAssignmentError(error instanceof Error ? error.message : "could not open assignment")
-    } finally {
-      setOpeningAssignment(false)
-    }
-  }
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-background overflow-y-auto">
@@ -404,9 +377,7 @@ export function LocalDevContent({
       ) : (
         <div
           className={
-            studyNeutral
-              ? "flex flex-1 flex-col items-center justify-center px-4 pb-12 sm:px-6"
-              : "flex flex-1 flex-col items-center justify-start px-4 pb-12 pt-[12vh] sm:px-6 sm:pt-[16vh]"
+            "flex flex-1 flex-col items-center justify-start px-4 pb-12 pt-[12vh] sm:px-6 sm:pt-[16vh]"
           }
         >
           <div className="flex w-full max-w-3xl flex-col items-center">
@@ -416,20 +387,6 @@ export function LocalDevContent({
             </h1>
 
             <div className="w-full">
-              {conditionPolicy.studyMode ? (
-                <div className="rounded-2xl border border-border bg-card px-5 py-4 text-center text-sm text-muted-foreground">
-                  <p>Open the active task assignment to begin. The assigned project and starter are managed by the study.</p>
-                  <Button
-                    className="mt-3"
-                    disabled={openingAssignment}
-                    onClick={() => void openActiveStudyAssignment()}
-                  >
-                    {openingAssignment ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                    Open current assignment
-                  </Button>
-                  {assignmentError ? <p className="mt-2 text-xs text-destructive">Could not open the assignment: {assignmentError}</p> : null}
-                </div>
-              ) : (
               <ChatInput
                 key="landing"
                 onSubmit={(value, options) => {
@@ -476,7 +433,6 @@ export function LocalDevContent({
                   </>
                 }
               />
-              )}
             </div>
 
             {commandError ? (
@@ -485,9 +441,9 @@ export function LocalDevContent({
               </div>
             ) : null}
 
-            {studyNeutral || conditionPolicy.studyMode ? null : (
+            {(
             <div className="mt-12 flex w-full flex-wrap justify-center gap-3">
-              {conditionPolicy.boardVisible ? (
+              {(
                 <FeatureCard
                   icon={BrainCircuit}
                   title="Memory Board"
@@ -504,7 +460,7 @@ export function LocalDevContent({
                   badge={<CardBadge count={attentionCount} countTitle={`${attentionCount} ${attentionCount === 1 ? "memory needs" : "memories need"} attention`} />}
                   onClick={() => navigate("/memory")}
                 />
-              ) : null}
+              )}
               {showCandidatesCard ? (
                 <FeatureCard
                   icon={Inbox}
@@ -530,13 +486,13 @@ export function LocalDevContent({
         </div>
       )}
 
-      {!conditionPolicy.studyMode ? <NewProjectModal
+      {<NewProjectModal
         open={newProjectOpen}
         onOpenChange={onNewProjectOpenChange}
         onConfirm={(project) => {
           void onCreateProject(project)
         }}
-      /> : null}
+      />}
 
       <div className="py-4 text-center">
         <span className="text-xs text-muted-foreground/50">v{SDK_CLIENT_APP.split("/")[1]}</span>

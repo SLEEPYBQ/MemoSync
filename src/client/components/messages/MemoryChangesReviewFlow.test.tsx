@@ -5,7 +5,7 @@ import type { MemoryItem } from "../../lib/memoriesApi"
 import {
   createFocusedMemoryReviewController,
   MemoryBoardLauncherProvider,
-} from "../../app/study/MemoryBoardLauncher"
+} from "../../app/memory/MemoryBoardLauncher"
 import {
   FocusedMemoryChangesReview,
   MemoryChangesReviewFlow,

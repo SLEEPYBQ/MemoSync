@@ -8,7 +8,7 @@ import { chromium, type Browser, type Page } from "playwright"
 import { previewProxyPath } from "../shared/preview-proxy"
 import { previewProxyTarget, proxyPreviewRequest } from "./preview-proxy"
 
-const dependencySeed = process.env.STUDY_DEPENDENCY_SEED
+const dependencySeed = process.env.MEMOSYNC_TEST_DEPENDENCY_SEED
 const nextModules = dependencySeed ? join(dependencySeed, "frontend", "node_modules") : ""
 const nextE2eRequested = process.env.NEXT_PREVIEW_E2E === "1"
 const nextPackagePath = join(nextModules, "next", "package.json")

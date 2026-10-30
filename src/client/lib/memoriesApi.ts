@@ -12,11 +12,7 @@ import type {
   MemoryType,
 } from "../../server/memory/types"
 import type { ExpectedMemoryUse } from "../../shared/types"
-import type {
-  MemoryBoardBacklogSnapshot,
-  MemoryBoardOpeningPromptState,
-} from "../../server/memory/board-backlog"
-import { enqueueStudyTelemetry } from "../app/study/studyTelemetry"
+import { enqueueUsageTelemetry } from "./usageTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
 import { generateUUID } from "./utils"
 
@@ -47,18 +43,6 @@ export interface CreateMemoryBody {
 
 export type MemoryControlSurface = "board" | "chat_gate"
 
-export interface MemoryBoardActionContext {
-  taskId: string
-  chatId: string
-  gateId: string
-}
-
-export interface MemoryBoardCheckupActionContext extends MemoryBoardActionContext {
-  suggestionKind: "conflict" | "redundancy" | "staleness"
-  memoryId: string
-  otherMemoryId?: string
-}
-
 /** GET /api/memories/:id/history response — the per-item version/usage log (option 乙). */
 export interface MemoryHistory {
   memory: MemoryItem
@@ -70,20 +54,6 @@ export interface MutedProposal {
   content: string | null
   dismissedAt: string
   canUnmute: boolean
-}
-
-export interface MemoryBoardPendingCounts {
-  candidates: number
-  transfers: number
-  checkups: number
-  total: number
-}
-
-export interface MemoryBoardReviewStatus {
-  reviewed: boolean
-  pending: MemoryBoardPendingCounts
-  backlog: MemoryBoardBacklogSnapshot
-  openingPrompt?: MemoryBoardOpeningPromptState
 }
 
 async function unwrap<T>(res: Response): Promise<T> {
@@ -155,39 +125,6 @@ export const memoriesApi = {
       unwrap<{ items: Array<{ memory: MemoryItem; supersededBy: MemoryItem[] }> }>(r),
     ),
 
-  boardReview: (taskId: string) =>
-    fetch(`/api/memories/board-review?taskId=${encodeURIComponent(taskId)}`, { cache: "no-store" }).then((r) =>
-      unwrap<MemoryBoardReviewStatus>(r),
-    ),
-
-  prepareBoardReview: (
-    taskId: string,
-    chatId: string,
-    reviewId: string,
-    content: string,
-    attachments: unknown[],
-    dispatch?: import("../../server/memory/board-backlog").MemoryBoardOpeningPromptInput["dispatch"],
-  ) =>
-    fetch("/api/memories/board-review/prepare", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId, chatId, reviewId, content, attachments, dispatch }),
-    }).then((r) => unwrap<MemoryBoardReviewStatus>(r)),
-
-  resumeBoardReview: (taskId: string) =>
-    fetch("/api/memories/board-review/resume", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId }),
-    }).then((r) => unwrap<MemoryBoardReviewStatus>(r)),
-
-  completeBoardReview: (taskId: string, chatId?: string, reviewId?: string) =>
-    fetch("/api/memories/board-review", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ taskId, chatId, reviewId }),
-    }).then((r) => unwrap<MemoryBoardReviewStatus>(r)),
-
   /** Renew/Archive on a gate attention row — validated + logged as an attention act. */
   resolveAttention: (
     kind: "conflict" | "redundant" | "stale",
@@ -196,7 +133,6 @@ export const memoriesApi = {
     sessionId?: string,
     otherId?: string,
     surface?: MemoryControlSurface,
-    boardResolution?: MemoryBoardCheckupActionContext,
   ) =>
     fetch(`/api/memories/attention-resolve`, {
       method: "POST",
@@ -208,7 +144,6 @@ export const memoriesApi = {
         sessionId,
         otherId,
         surface,
-        boardResolution,
         operationId: controlOperationId(`checkup:${kind}:${id}:${action}`),
       }),
     }).then((r) => unwrap<MemoryItem>(r)),
@@ -387,7 +322,6 @@ export const memoriesApi = {
       /** The chat whose turn accepted this — badges the preview receipt. */
       chatId?: string
       surface?: MemoryControlSurface
-      boardResolution?: MemoryBoardActionContext
     },
   ) =>
     fetch(`/api/memories/${encodeURIComponent(id)}/transfer`, {
@@ -401,7 +335,6 @@ export const memoriesApi = {
     id: string,
     contextKey: string,
     surface?: MemoryControlSurface,
-    boardResolution?: MemoryBoardActionContext,
   ) =>
     fetch(`/api/memories/${encodeURIComponent(id)}/transfer-decline`, {
       method: "POST",
@@ -409,7 +342,6 @@ export const memoriesApi = {
       body: JSON.stringify({
         contextKey,
         surface,
-        boardResolution,
         operationId: controlOperationId(`transfer-decline:${id}`),
       }),
     }).then((r) => unwrap<{ declined: boolean }>(r)),
@@ -455,10 +387,6 @@ export interface TransferProposal {
   landing: TransferLanding
 }
 
-// Monitoring-act telemetry (metamemory mediator data): fire-and-forget, never
-// blocks or surfaces errors — losing a beacon is better than jank.
-// The guide tour renders the same components against fake data; it mutes the
-// beacons wholesale so the study's monitoring metrics never count tour clicks.
 let uiMonitorSuppressed = false
 export function setUiMonitorSuppressed(suppressed: boolean): void {
   uiMonitorSuppressed = suppressed
@@ -476,7 +404,7 @@ export function recordWorkingMemorySelection(input: {
 }): void {
   if (uiMonitorSuppressed) return
   const operationId = controlOperationId(`working-memory-selection:${input.action}:${input.memoryId}`)
-  enqueueStudyTelemetry({
+  enqueueUsageTelemetry({
     eventId: operationId,
     endpoint: "/api/memories/working-memory-selection",
     body: { operationId, clientTimestamp: new Date().toISOString(), ...input },
@@ -489,7 +417,7 @@ export function recordUiMonitor(
 ): void {
   if (uiMonitorSuppressed) return
   const eventId = `monitor:${generateUUID()}`
-  enqueueStudyTelemetry({
+  enqueueUsageTelemetry({
     eventId,
     endpoint: "/api/memories/ui-monitor",
     body: {
