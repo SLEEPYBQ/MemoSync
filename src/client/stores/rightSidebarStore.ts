@@ -4,7 +4,7 @@ import { persist } from "zustand/middleware"
 export interface ProjectRightSidebarVisibilityState {
   rightPanel: "hidden" | "git" | "browser" | "memory" | "files"
   /** How the currently visible panel was opened; persisted layout restoration
-   * is system-owned, while togglePanel is an explicit participant action. */
+   * is system-owned, while togglePanel is an explicit user action. */
   openInitiator: "system" | "user"
 }
 
@@ -142,8 +142,8 @@ export function migrateRightSidebarStore(persistedState: unknown) {
   return { size: DEFAULT_RIGHT_SIDEBAR_SIZE, projects, projectUi: state.projectUi ?? {}, projectBrowser }
 }
 
-/** Restored visibility is system-owned. In particular, a participant-opened
- * panel must not retain participant provenance across a page reload. */
+/** Restored visibility is system-owned. In particular, a user-opened
+ * panel must not retain user provenance across a page reload. */
 export function mergeRightSidebarStore(
   persistedState: unknown,
   currentState: RightSidebarState,

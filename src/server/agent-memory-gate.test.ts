@@ -891,7 +891,7 @@ describe("memory preview gate (coordinator)", () => {
 
   test("Start keeps the preview claim through provider boot until active-turn ownership is installed", runStartKeepsPreviewClaim)
 
-  test("Start restricts treatment to the server-held preview pool and records requested versus effective ids", async () => {
+  test("Start restricts memory injection to the server-held preview pool and records requested versus effective ids", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
       preview: true,
@@ -959,7 +959,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("formal Start falls back to server-authored expected use when the planner fails", async () => {
+  test("preview Start falls back to server-authored expected use when the planner fails", async () => {
     const experimentEvents: Array<Record<string, unknown>> = []
     const h = createHarness({
       preview: true,
@@ -1716,7 +1716,7 @@ describe("memory preview gate (coordinator)", () => {
         content: "Implement the settings page",
       })
       await waitFor(() => h.prompts.length === 1)
-      // The provider starts the turn (system_init) before the participant can
+      // The provider starts the turn (system_init) before the user can
       // interrupt a cited memory; a started turn keeps its persistent Query.
       h.emitEntry({ kind: "system_init", provider: "claude", model: "claude-opus-4-1", tools: [], agents: [], slashCommands: [], mcpServers: [] })
       await waitFor(() => h.store.messages.some((message) => message.kind === "system_init"))
@@ -2186,29 +2186,29 @@ describe("memory preview gate (coordinator)", () => {
       interrupted.cleanup()
     }
 
-    const nonStudy = createHarness({
+    const cancelled = createHarness({
       preview: false,
       capture,
     })
     try {
-      await nonStudy.coordinator.send({
+      await cancelled.coordinator.send({
         type: "chat.send",
         chatId: "chat-1",
         provider: "claude",
-        content: "Implement a non-study form",
+        content: "Implement another form",
       })
-      await waitFor(() => nonStudy.prompts.length === 1)
-      nonStudy.emitEntry({ kind: "assistant_text", text: "partial result", messageId: "m3" })
-      await waitFor(() => nonStudy.store.messages.some((message) => message.kind === "assistant_text"))
-      await nonStudy.coordinator.cancel("chat-1")
+      await waitFor(() => cancelled.prompts.length === 1)
+      cancelled.emitEntry({ kind: "assistant_text", text: "partial result", messageId: "m3" })
+      await waitFor(() => cancelled.store.messages.some((message) => message.kind === "assistant_text"))
+      await cancelled.coordinator.cancel("chat-1")
       await waitFor(() => calls.capture === 1)
       expect(calls.capture).toBe(1)
     } finally {
-      nonStudy.cleanup()
+      cancelled.cleanup()
     }
   })
 
-  test("MemoSync non-study accepts the per-memory control gate for Pi", async () => {
+  test("MemoSync accepts the per-memory control gate for Pi", async () => {
     const h = createHarness({ preview: false })
     try {
       const memory = h.memory.store.create(
@@ -2234,13 +2234,13 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("non-study MemoSync (the deployment) passes the gate — interrupt fails only for lack of a running turn", async () => {
+  test("MemoSync accepts the Claude control gate — interrupt requires a running turn", async () => {
     const h = createHarness({
       preview: false,
     })
     try {
       await h.store.setChatProvider("chat-1", "claude")
-      // The gate no longer rejects; with no active turn the method reaches the
+      // The gate accepts Claude; with no active turn the method reaches the
       // "turn must be running" guard instead of the engine-availability error.
       await expect(h.coordinator.interruptMemory({
         chatId: "chat-1",
@@ -2451,7 +2451,7 @@ describe("memory preview gate (coordinator)", () => {
   })
 })
 
-describe("preview settings (coordinator, STUDY_PLAN §2.4)", () => {
+describe("preview settings (coordinator)", () => {
   test("enabled:false skips the gate entirely — no preview pass, no entries", async () => {
     const h = createHarness({
       preview: true,
@@ -2480,7 +2480,7 @@ describe("preview settings (coordinator, STUDY_PLAN §2.4)", () => {
       expect(decision).toBeDefined()
       expect(decision.decision).toBe("go_on")
       expect(decision.auto).toBe(true)
-      // The preview entry is still recorded (research data completeness).
+      // The preview entry is recorded even when the gate proceeds automatically.
       expect(timestampedKinds(h.store.messages)).toContain("memory_preview")
     } finally {
       h.cleanup()

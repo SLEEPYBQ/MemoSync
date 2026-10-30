@@ -75,7 +75,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
   }
 }
 
-describe("memoryPreview settings (STUDY_PLAN §2.4)", () => {
+describe("memoryPreview settings", () => {
   test("defaults to enabled + auto-proceed-when-empty", async () => {
     const filePath = await createTempFilePath()
     const snapshot = await readAppSettingsSnapshot(filePath)

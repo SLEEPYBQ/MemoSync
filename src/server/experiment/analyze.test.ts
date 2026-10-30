@@ -42,7 +42,7 @@ describe("analyzeEvents", () => {
 
     const s2 = report.sessions["s2"]
     expect(s2.previewDecisions.dismiss).toBe(1)
-    // auto_go_on is its own category (STUDY_PLAN §2.4: distinguish from manual go_on)
+    // Count automatic go_on separately from manual go_on.
     expect(s2.previewDecisions.auto_go_on).toBe(1)
     expect(s2.bringIns).toBe(1)
   })
@@ -123,6 +123,7 @@ test("Board and chat-gate Control stay separate from Monitoring in analysis", ()
 })
 
 test("keeps historical metadata without merging chats by task or inventing product labels", () => {
+  // Stored metadata keys, values and event types below were written by older versions.
   const events = [
     { type: "memory.inject", sessionId: "old-a", taskId: "shared-task", condition: "static", participant: "P,1", allocationMode: "study", memories: [] },
     { type: "memory.inject", sessionId: "old-b", taskId: "shared-task", condition: "auto", allocationMode: "internal_qa", memories: [] },

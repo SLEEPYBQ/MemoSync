@@ -1581,15 +1581,15 @@ describe('memory routes', () => {
 
     const response = await callWithServices('POST', '/api/memories/pay-attention', {
       id: item.id,
-      sessionId: 'chat-from-completed-task',
+      sessionId: 'chat-outside-pool',
       quote: 'The labels disappeared.',
     }, {
-      auditAdmission: () => 'This chat belongs to a completed study session.',
+      auditAdmission: () => 'Memory is outside this chat Visible Memory Pool.',
     });
 
     expect(response!.status).toBe(409);
     expect((await json(response)).error.code).toBe('ENFORCE_NOT_ALLOWED');
-    expect(memory.store.getKv(`pay_attention:chat-from-completed-task`)).toBeNull();
+    expect(memory.store.getKv(`pay_attention:chat-outside-pool`)).toBeNull();
     expect(events).toEqual([]);
   });
 

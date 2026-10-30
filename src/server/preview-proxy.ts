@@ -8,7 +8,7 @@ import { SESSION_COOKIE_NAME } from "./auth"
 //
 // A browser on the Docker host uses http://<targetPort>.localhost:<appPort>.
 // A browser reaching MemoSync through Cloudflare / SSH cannot use localhost
-// (that would be the participant's computer), so it uses the same app origin:
+// (that would be the user's computer), so it uses the same app origin:
 //   /__memosync/preview/<targetPort>/...
 // Text responses on the path form adapt URL-bearing syntax so root-relative
 // assets and module imports remain inside that prefix. Ordinary JavaScript

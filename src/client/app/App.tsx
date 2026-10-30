@@ -235,8 +235,6 @@ function AppLayout() {
   const navigate = useNavigate()
   const params = useParams()
   const state = useAppState(params.chatId ?? null)
-  // "" until the condition policy resolves — the title effects below wait for
-  // it rather than stamping the MemoSync name onto a baseline arm's tab.
   const brandName = useBrandName()
   useBrandFavicon()
   const [memoryBoardRequest, setMemoryBoardRequest] = useState<ResolvedMemoryBoardLaunchRequest | null>(null)

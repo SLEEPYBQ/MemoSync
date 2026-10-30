@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { UsageLogger, NoopUsageLogger } from "./logger"
 
-test("local usage events append in order with install identity and no research allocation", () => {
+test("local usage events append in order with install identity and no legacy metadata", () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-log-"))
   try {
     const filePath = join(dir, "experiments", "events.jsonl")
@@ -16,6 +16,7 @@ test("local usage events append in order with install identity and no research a
     expect(records[0]).toMatchObject({ type: "memory.cite", sessionId: "chat-1", installId: "install-1", citedIds: ["M-01"] })
     expect(Number.isFinite(Date.parse(records[0].ts))).toBe(true)
     expect(records[1].action).toBe("accept")
+    // These stored metadata keys from older versions must not appear in new events.
     for (const key of ["participant", "allocationMode", "condition", "taskId"]) expect(records[0]).not.toHaveProperty(key)
   } finally { rmSync(dir, { recursive: true, force: true }) }
 })
