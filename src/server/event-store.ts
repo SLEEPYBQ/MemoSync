@@ -20,6 +20,7 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
+const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
 // Bound both retained objects and serialized payload size; oversized transcripts
 // remain readable without flushing the smaller chats the user is switching among.
 const TRANSCRIPT_CACHE_CHAT_LIMIT = 8
@@ -361,6 +362,9 @@ export class EventStore {
   private readonly transcriptCache = new Map<string, { entries: TranscriptEntry[]; bytes: number }>()
   private transcriptCacheBytes = 0
   private transcriptCacheEntries = 0
+  private readonly chatsWithRecencyStamp = new Set<string>()
+  /** Recency stamps whose chat-log write failed; retried on the next write. */
+  private readonly pendingRecencyStamps = new Map<string, number>()
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -497,6 +501,7 @@ export class EventStore {
     this.sidebarProjectOrder = []
     this.legacySidebarProjectOrder = []
     this.clearTranscriptCache()
+    this.chatsWithRecencyStamp.clear()
   }
 
   private clearLegacyTranscriptState() {
@@ -777,6 +782,7 @@ export class EventStore {
       case "chat_last_message_at_set": {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
+        this.chatsWithRecencyStamp.add(event.chatId)
         chat.lastMessageAt = Math.max(chat.lastMessageAt ?? event.at, event.at)
         chat.hasMessages = true
         chat.updatedAt = Math.max(chat.updatedAt, event.at)
@@ -878,20 +884,21 @@ export class EventStore {
   }
 
   /**
-   * Restore metadata without retaining transcripts in the hot cache. A stamp
-   * may predate a later durable prompt whose stamp failed, and prompt timestamps
-   * need not be ordered. Stream every row to recover the maximum prompt time;
-   * neither a historical stamp nor a tail prompt proves the rest is covered.
-   * Output-only old transcripts fall back to their newest entry; genuinely
-   * empty chats stay undated.
+   * Restore metadata without retaining transcripts in the hot cache. New logs
+   * carry prompt stamps, so a bounded tail is enough. For unstamped old chats
+   * whose prompt is buried, scan the full file to recover the exact prompt time
+   * rather than substituting a later tool/assistant timestamp. Output-only old
+   * transcripts fall back to their newest entry; genuinely empty chats stay undated.
    */
   private async hydrateChatMetadataFromTranscripts() {
     for (const chat of this.state.chatsById.values()) {
       if (chat.deletedAt) continue
       let newestEntryAt: number | undefined
+      let hasPrompt = false
       const consumeEntry = (entry: unknown) => {
         if (!isValidTranscriptEntry(entry)) return
         this.applyMessageMetadata(chat.id, entry)
+        if (entry.kind === "user_prompt") hasPrompt = true
         newestEntryAt = Math.max(newestEntryAt ?? entry.createdAt, entry.createdAt)
       }
       const consumeText = (text: string) => {
@@ -910,7 +917,21 @@ export class EventStore {
         try {
           const file = await open(this.transcriptPath(chat.id), "r")
           try {
-            for await (const line of file.readLines({ autoClose: false })) consumeText(line)
+            const { size } = await file.stat()
+            const start = Math.max(0, size - TRANSCRIPT_METADATA_TAIL_BYTES)
+            const bytes = Buffer.alloc(size - start)
+            const { bytesRead } = await file.read(bytes, 0, bytes.length, start)
+            let text = bytes.subarray(0, bytesRead).toString("utf8")
+            if (start > 0) {
+              const newline = text.indexOf("\n")
+              text = newline === -1 ? "" : text.slice(newline + 1)
+            }
+            consumeText(text)
+            // A snapshot's date alone can be stale: older builds appended
+            // transcripts without logging recency after their last compaction.
+            if (!hasPrompt && !this.chatsWithRecencyStamp.has(chat.id) && start > 0) {
+              consumeText(await readFile(this.transcriptPath(chat.id), "utf8"))
+            }
           } finally { await file.close() }
         } catch {
           // Missing/unreadable files must not prevent snapshot/log recovery.
@@ -927,6 +948,10 @@ export class EventStore {
     if (at === undefined) return
     const chat = this.state.chatsById.get(chatId)
     if (!chat || (chat.lastMessageAt !== undefined && chat.lastMessageAt >= at)) return
+    await this.writeRecencyStamp(chatId, at)
+  }
+
+  private async writeRecencyStamp(chatId: string, at: number) {
     const event: ChatEvent = {
       v: STORE_VERSION,
       type: "chat_last_message_at_set",
@@ -936,7 +961,20 @@ export class EventStore {
     }
     // Do not enqueue another task here: the caller already owns the write chain.
     await appendFile(this.chatsLogPath, `${JSON.stringify(event)}\n`, "utf8")
+    this.pendingRecencyStamps.delete(chatId)
     this.applyEvent(event)
+  }
+
+  /**
+   * Retry stamps that failed earlier, inside the caller's write-chain task. A
+   * transcript can only bury a prompt past the startup tail window through later
+   * writes, and each of those retries the stamp first.
+   */
+  private async flushPendingRecencyStamps() {
+    for (const [chatId, at] of [...this.pendingRecencyStamps]) {
+      if (!this.state.chatsById.has(chatId)) { this.pendingRecencyStamps.delete(chatId); continue }
+      try { await this.writeRecencyStamp(chatId, at) } catch { return }
+    }
   }
 
   /**
@@ -1327,8 +1365,13 @@ export class EventStore {
       // yielding to the stamp I/O. A concurrent read must not load the durable
       // row from disk only to have us push it a second time after the stamp.
       const stampWrite = persistedEntry.kind === "user_prompt"
-        ? this.recordLastMessageAt(chatId, persistedEntry.createdAt)
-        : null
+        ? this.recordLastMessageAt(chatId, persistedEntry.createdAt).catch((error) => {
+            // The transcript row is durable, so the append succeeded; failing it
+            // would invite a duplicate retry. Keep the stamp for the next write.
+            this.pendingRecencyStamps.set(chatId, Math.max(this.pendingRecencyStamps.get(chatId) ?? persistedEntry.createdAt, persistedEntry.createdAt))
+            console.warn(`${LOG_PREFIX} recency stamp for chat ${chatId} failed; will retry`, error)
+          })
+        : this.flushPendingRecencyStamps()
       this.applyMessageMetadata(chatId, persistedEntry)
       const cached = this.transcriptCache.get(chatId)
       if (cached) {
@@ -1343,9 +1386,7 @@ export class EventStore {
         }
         this.trimTranscriptCache()
       }
-      // A failed stamp cannot undo the transcript append. Memory/cache already
-      // match disk; startup recovery can reconstruct the missing stamp.
-      if (stampWrite) await stampWrite
+      await stampWrite
       logSendToStartingProfile("event_store.append_message", {
         chatId,
         entryId: entry._id,

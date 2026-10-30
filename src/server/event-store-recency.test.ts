@@ -186,7 +186,8 @@ describe("durable chat recency", () => {
       if (String(args[0]).endsWith("/chats.jsonl")) throw new Error("stamp unavailable")
       return append(...args)
     })
-    try { await expect(store.appendMessage(chat.id, prompt(1000))).rejects.toThrow("stamp unavailable") }
+    // The transcript row is durable, so the append itself succeeds.
+    try { await store.appendMessage(chat.id, prompt(1000)) }
     finally { failure.mockRestore() }
     expect(store.getMessages(chat.id)).toEqual([prompt(1000)])
     expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(1000)
@@ -207,12 +208,15 @@ describe("durable chat recency", () => {
       if (String(args[0]).endsWith("/chats.jsonl")) throw new Error("stamp unavailable")
       return append(...args)
     })
-    try { await expect(store.appendMessage(chat.id, prompt(2000))).rejects.toThrow("stamp unavailable") }
+    // The prompt row is durable, so the append succeeds and the stamp is retried.
+    try { await store.appendMessage(chat.id, prompt(2000)) }
     finally { failure.mockRestore() }
+    expect((await stamps(dir)).filter(e => e.chatId === chat.id).map(e => e.at)).toEqual([1000])
     await store.appendMessage(chat.id, output(3000, 300 * 1024))
     await store.appendMessage(chat.id, output(4000))
     if (olderTailPrompt) await store.appendMessage(chat.id, prompt(500))
-    expect((await stamps(dir)).filter(e => e.chatId === chat.id).map(e => e.at)).toEqual([1000])
+    // The next write retried the stamp before the prompt could be buried.
+    expect((await stamps(dir)).filter(e => e.chatId === chat.id).map(e => e.at)).toEqual([1000, 2000])
     const recovered = await reload(dir)
     expect(recovered.getChat(chat.id)?.lastMessageAt).toBe(2000)
     expect(recovered.listChatsByProject(project.id)[0]?.id).toBe(chat.id)
