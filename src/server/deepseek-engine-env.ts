@@ -17,8 +17,7 @@ import { DEFAULT_DEEPSEEK_MODEL_ID } from "../shared/types"
 export const DEEPSEEK_ANTHROPIC_PATH = "/anthropic"
 
 // Compaction budget for the 1M window (only effective on a [1m] model id).
-// 786432 is DeepSeek's own documented value for Claude Code — the researcher
-// chose it 2026-08-24 over the more conservative 400k. If long sessions
+// If long sessions
 // repeatedly drop mid-stream around ~500k (observed once), fall back to
 // "400000" so compaction lands below that range.
 export const DEEPSEEK_AUTO_COMPACT_WINDOW = "786432"

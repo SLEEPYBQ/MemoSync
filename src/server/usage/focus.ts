@@ -31,7 +31,7 @@ export interface BuildDeliveredStoreFocusArgs {
   mode: "skills"
   resumeOfInterruptId?: string
   promptText: string
-  /** Exact repeated focus text when the condition has a dedicated turn block. */
+  /** Exact repeated focus text when the turn has a dedicated focus block. */
   focusPayloadText?: string
   visiblePool: MemoryItem[]
   focusedMemories: MemoryItem[]

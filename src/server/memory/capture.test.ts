@@ -519,7 +519,7 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     expect(memory.store.getConflicts(fresh.id).map((m) => m.id)).toContain(stale.id);
     // The stale memory is discoverable as needing attention (target of a conflict).
     expect(memory.store.listConflicted('RenderX').map((m) => m.id)).toContain(stale.id);
-    // A memory.conflict event is logged for the study (drift signal).
+    // A memory.conflict event records the conflicting candidates.
     const conflictEvent = events.find((e) => (e as { type?: string }).type === 'memory.conflict') as
       | { staleId?: string; newId?: string; turn?: number }
       | undefined;
@@ -1089,7 +1089,7 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     expect((captureEvents[0] as { channel?: string }).channel).toBe('prompt');
   });
 
-  it('keeps durable prompt-capture replay disabled unless the study server explicitly enables it', async () => {
+  it('does not reuse prompt-capture results after reopening the store', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     memory = new MemoryService({ dbPath, dataDir: dir });
     let providerCalls = 0;

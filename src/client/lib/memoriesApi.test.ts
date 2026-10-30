@@ -66,7 +66,7 @@ test("Candidate Undo sends its control surface and chat provenance to the server
   })
 })
 
-test("Audit Enforce sends one stable operation id with the participant action", async () => {
+test("Audit Enforce sends one stable operation id with the user action", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -88,7 +88,7 @@ test("Audit Enforce sends one stable operation id with the participant action", 
   })
 })
 
-test("Audit Draft a fix sends one stable operation id with the participant action", async () => {
+test("Audit Draft a fix sends one stable operation id with the user action", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
@@ -108,7 +108,7 @@ test("Audit Draft a fix sends one stable operation id with the participant actio
   })
 })
 
-test("Working Memory Ask sends one stable operation id with the participant instruction", async () => {
+test("Working Memory Ask sends one stable operation id with the user instruction", async () => {
   const originalFetch = globalThis.fetch
   let body: Record<string, unknown> | null = null
   globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {

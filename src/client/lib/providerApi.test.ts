@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import { PROVIDERS } from "../../shared/types"
 import { requestProviders } from "./providerApi"
 
-test("reads the server's real model catalog without a condition policy", async () => {
+test("reads the server's configured model catalog", async () => {
   const providers = [{ ...PROVIDERS[0], models: [{ ...PROVIDERS[0].models[0], id: "configured-model" }] }]
   expect(await requestProviders(async () => Response.json({ data: providers }))).toEqual(providers)
 })

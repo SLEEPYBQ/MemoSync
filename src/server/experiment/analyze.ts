@@ -251,6 +251,7 @@ export function analyzeEvents(lines: string[]): AnalysisReport {
 
     if (!analysisSessionId) continue
     const s = forSession(analysisSessionId)
+    // Preserve exact metadata keys written by older versions.
     const metadata = Object.fromEntries(["condition", "participant", "allocationMode", "taskId"]
       .filter((key) => typeof e[key] === "string").map((key) => [key, e[key]]))
     if (Object.keys(metadata).length) {

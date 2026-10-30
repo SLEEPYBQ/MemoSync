@@ -359,7 +359,7 @@ async function startLockedMemoSyncServer(
     const scan = memoryRevision.scanAndPropose.bind(memoryRevision)
     memoryRevision.scanAndPropose = input => branchMemory.run({ sessionId: input.sessionId }, () => scan(input))
   }
-  // Applies participant-reviewed Checkup actions. Detection belongs to the
+  // Applies user-reviewed Checkup actions. Detection belongs to the
   // Checkup service; this service only validates and commits those actions.
   // The session clock shared by Checkup and Transfer: prior sessions of
   // the project that actually RAN a turn (lastTurnOutcome is replayed from
@@ -379,14 +379,12 @@ async function startLockedMemoSyncServer(
         // Enables the redundant-pair merge action (LLM-drafted merge proposals).
         callJson: memoryLlm,
       })
-  // Step-one library checkup (redesign 2026-08-07 §3): three parallel LLM
-  // queries + merge, cache keyed on library content — exists only where the
-  // step-one gates exist (the review arm's chat flow).
+  // Library checkup: three parallel LLM queries + merge, cached by library content.
   const memoryCheckup =
     createCheckupService({ memory, callJson: memoryLlm, listRecentSessions })
   // Transfer detection: turn end prepares source-side rules from other
   // contexts; each next prompt reruns relevance and task-bound Decode/landing.
-  // Rides the same arm gating as the checkup, plus the transfer service.
+  // Requires the transfer service to prepare and land rules.
   const memoryTransferDetect =
     memoryTransfer
       ? createTransferDetectService({
@@ -679,8 +677,7 @@ async function startLockedMemoSyncServer(
           }
 
           // Add Project's path picker browses the WORKSPACE machine's
-          // filesystem — participants otherwise read the path field as their
-          // own computer (pilot feedback 2026-08-11).
+          // filesystem so users can select a path where the agent runs.
           if (url.pathname === "/api/workspace/dirs") {
             return uiJson({ data: listWorkspaceDirectories(url.searchParams.get("path") ?? undefined) })
           }

@@ -637,7 +637,7 @@ describe('recentlyDismissedCandidates (capture negative examples)', () => {
     const cand = store.create({ content: 'Prefers tabs over spaces', scope: 'personal', type: 'preference', status: 'candidate' }, { actor: 'agent' });
     const dismissed = store.dismissCandidate(cand.id, { actor: 'user', sessionId: 's9' });
     expect(dismissed.status).toBe('discarded');
-    // Text retained (negative example / study distractor)…
+    // Text is retained as a negative example.
     expect(store.getById(cand.id)?.content).toBe('Prefers tabs over spaces');
     // …fingerprint written (exact-repeat suppression)…
     expect(store.wasCandidateDismissed('  prefers TABS over spaces ')).toBe(true);
