@@ -87,7 +87,8 @@ h1, h2, h3 { margin: 0; letter-spacing: -0.02em; }
   border-radius: 10px; background: var(--ink); color: var(--paper); text-decoration: none; font-weight: 600; font-size: 14px;
 }
 .gh .stars { padding-left: 8px; margin-left: 2px; border-left: 1px solid rgba(255, 255, 255, 0.25); font-variant-numeric: tabular-nums; }
-.gh .stars::before { content: "★ "; color: var(--amber); }
+.gh .stars { display: inline-flex; align-items: center; gap: 4px; }
+.gh .stars svg { width: 13px; height: 13px; fill: var(--amber); }
 
 /* ───────── shared bits ───────── */
 .chip {
@@ -132,42 +133,38 @@ section h2 { font-size: clamp(32px, 4.4vw, 52px); line-height: 1.08; font-weight
 .cta { display: flex; gap: 12px; flex-wrap: wrap; }
 .hero .fine { margin-top: 18px; }
 
-/* Geometry (in % of a 560 × 504 box): heads are 40% wide with the circle at
-   76% of that, both tops at 44%; the cat perches on each circle's crown. */
-.duo { position: relative; aspect-ratio: 560 / 504; width: 100%; max-width: 580px; justify-self: center; }
-.hop-path { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-.hop-path path { fill: none; stroke: var(--line-2); stroke-width: 2.5; stroke-dasharray: 2 10; stroke-linecap: round; vector-effect: non-scaling-stroke; }
-.duo .head { position: absolute; width: 40%; top: 44%; }
+/* The duo lives in a 560 × 504 design box (all % below are of it). Back layer:
+   the dotted track and hand-drawn arrows; front: heads, then the cat. The cat's
+   belly runs along the track (see hero motion in main.ts). */
+.duo { position: relative; aspect-ratio: 560 / 504; width: 100%; max-width: 580px; justify-self: center; container-type: inline-size; }
+.duo-ink { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.duo-ink path { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.duo-ink .track { stroke: var(--line-2); stroke-width: 2.5; stroke-dasharray: 1 9; }
+.duo-ink .arrow { stroke: var(--ink-3); stroke-width: 1.8; }
+.duo .head { position: absolute; width: 40%; top: 44%; z-index: 1; }
 .duo .head-ben { left: 2%; }
 .duo .head-agent { right: 2%; }
 .duo .head img { width: 100%; }
-.duo-cat { position: absolute; width: 30%; aspect-ratio: 900 / 576; left: 8.4%; top: 33.6%; animation: hop 7s cubic-bezier(0.45, 0, 0.25, 1) infinite; }
-.duo-cat .pose { position: absolute; left: 0; bottom: 0; width: 100%; }
-.duo-cat .pose-hop { width: 104%; left: -2%; bottom: 8%; }
-.duo-cat .pose-perch { animation: perch 7s infinite step-end; }
-.duo-cat .pose-hop { animation: flying 7s infinite step-end; opacity: 0; }
-@keyframes hop {
-  0%, 30% { transform: translate(0, 0) scaleX(1); }
-  32% { transform: translate(0, 8%) scaleX(1); }
-  41% { transform: translate(94%, -150%) scaleX(1) rotate(-4deg); }
-  49% { transform: translate(187%, -6%) scaleX(1); }
-  51%, 80% { transform: translate(187%, 0) scaleX(-1); }
-  82% { transform: translate(187%, 8%) scaleX(-1); }
-  91% { transform: translate(94%, -150%) scaleX(-1) rotate(4deg); }
-  99%, 100% { transform: translate(0, 0) scaleX(-1); }
-}
-@keyframes perch { 0% { opacity: 1; } 33% { opacity: 0; } 49% { opacity: 1; } 83% { opacity: 0; } 99% { opacity: 1; } }
-@keyframes flying { 0% { opacity: 0; } 33% { opacity: 1; } 49% { opacity: 0; } 83% { opacity: 1; } 99% { opacity: 0; } }
-.duo .float { position: absolute; animation: bob 5s ease-in-out infinite; box-shadow: var(--shadow); }
-.duo .f1 { left: 0%; top: 12%; animation-delay: -1s; }
-.duo .f2 { left: 26%; top: 3%; animation-delay: -2.5s; }
-.duo .f3 { right: 0%; top: 18%; animation-delay: -0.4s; }
-.duo .f4 { left: 45%; bottom: 14%; animation-delay: -3.3s; }
+/* Positioned by script: left/top is the point on the track, the frame hangs above it. */
+.duo-cat { position: absolute; left: 0; top: 0; width: 30%; aspect-ratio: 900 / 576; z-index: 3; transform-origin: 50% 100%; will-change: transform; pointer-events: none; }
+.duo-cat img { position: absolute; left: 50%; bottom: 0; width: 100%; max-width: none; transform: translateX(-50%); opacity: 0; }
+.duo-cat img.on { opacity: 1; }
+/* Airborne drawings ride the track by their body, not their feet: the tail and
+   raised legs would otherwise climb into the label at the top of the arc. */
+.duo-cat img[data-frame="launch"], .duo-cat img[data-frame="glide"], .duo-cat img[data-frame="descend"],
+.cat img[data-pose="launch"], .cat img[data-pose="glide"], .cat img[data-pose="descend"] { bottom: -30%; }
+.duo .float { position: absolute; z-index: 2; animation: bob 5s ease-in-out infinite; box-shadow: var(--shadow); }
+.duo .f1 { left: 1%; top: 4%; animation-delay: -1s; }
+.duo .f2 { right: 1%; top: 2%; animation-delay: -2.5s; }
+.duo .f3 { left: 41%; top: 61%; animation-delay: -0.4s; }
+.duo .f4 { left: 53%; top: 80%; animation-delay: -3.3s; }
 @keyframes bob { 50% { transform: translateY(-9px) rotate(-2deg); } }
 .duo .note { position: absolute; margin: 0; color: var(--ink-3); font-size: 18px; }
 .note-ben { left: 17%; bottom: 0%; }
 .note-agent { right: 13%; bottom: 0%; }
-.note-cat { left: 50%; top: 31%; transform: translateX(-50%) rotate(-3deg); white-space: nowrap; }
+/* Sized with the drawing so the arrows always start just clear of the words. */
+.duo .note-cat { left: 50%; top: 1%; transform: translateX(-50%) rotate(-2deg); white-space: nowrap; color: var(--ink-2); font-size: 3.25cqw; }
+.duo .note-ben, .duo .note-agent { font-size: clamp(15px, 3.3cqw, 19px); }
 
 /* ───────── story ───────── */
 .story { position: relative; height: 820svh; }
@@ -210,7 +207,9 @@ mark { background: linear-gradient(to right, rgba(224, 163, 58, 0.38), rgba(224,
 .lines p { display: flex; align-items: center; gap: 8px; }
 .cmd code { font-size: 14px; }
 .ok { font: 500 13px var(--mono); color: var(--sage-fg); }
-.ok::before { content: "✓ "; }
+.ok { display: inline-flex; align-items: center; gap: 4px; }
+.ok svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.hand-arrow-down { width: 14px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .cmd { position: relative; }
 .stopped {
   font: 600 12px var(--sans); text-transform: uppercase; letter-spacing: 0.06em; color: var(--red);
@@ -259,15 +258,16 @@ mark { background: linear-gradient(to right, rgba(224, 163, 58, 0.38), rgba(224,
 .head { pointer-events: none; }
 .head.big { position: absolute; width: 150px; left: 0; top: 0; will-change: transform; }
 .head.big img, .cat img { position: absolute; inset: 0; width: 100%; opacity: 0; transition: opacity 0.12s; }
+/* The cat is drawn frame by frame: cut between drawings, never cross-fade. */
+.cat img { transition: none; }
 .head.big img.on, .cat img.on { opacity: 1; }
 .head.big::after { content: ""; display: block; padding-top: 100%; }
 .head.big.agent { width: 128px; }
-.cat { position: absolute; left: 0; top: 0; width: 150px; height: 130px; will-change: transform; z-index: 5; pointer-events: none; }
-.cat img { top: auto; bottom: 0; }
+.cat { position: absolute; left: 0; top: 0; width: 170px; height: 110px; will-change: transform; z-index: 5; pointer-events: none; transform-origin: 50% 100%; }
+.cat img { top: auto; bottom: 0; left: 50%; max-width: none; transform: translateX(-50%); }
 .anchor { position: absolute; width: 1px; height: 1px; pointer-events: none; }
 [data-anchor="benHome"] { left: 26px; top: 236px; }
-[data-anchor="agentHome"] { left: 690px; top: 104px; }
-[data-anchor="catTug"] { left: 590px; top: 160px; }
+[data-anchor="agentHome"] { left: 778px; top: 106px; }
 [data-anchor="catAuto"] { left: 990px; top: 700px; }
 [data-anchor="ballOut"] { left: -200px; top: 700px; }
 
@@ -324,12 +324,11 @@ mark { background: linear-gradient(to right, rgba(224, 163, 58, 0.38), rgba(224,
 .portrait .card b { width: fit-content; font-size: 11px; }
 .portrait .head.big { width: 92px; }
 .portrait .head.big.agent { width: 80px; }
-.portrait .cat { width: 98px; height: 86px; }
+.portrait .cat { width: 110px; height: 72px; }
 .portrait .paper-ball { width: 80px; }
 .portrait .auto { left: 250px; width: 156px; top: 540px; font-size: 12px; }
 .portrait [data-anchor="benHome"] { left: 300px; top: 470px; }
 .portrait [data-anchor="agentHome"] { left: 336px; top: 18px; }
-.portrait [data-anchor="catTug"] { left: 300px; top: 104px; }
 .portrait [data-anchor="catAuto"] { left: 160px; top: 740px; }
 .portrait [data-anchor="ballOut"] { left: -160px; top: 420px; }
 .portrait .caption { bottom: 12px; padding: 12px 16px 14px; }
@@ -415,9 +414,7 @@ mark { background: linear-gradient(to right, rgba(224, 163, 58, 0.38), rgba(224,
 /* ───────── reduced motion ───────── */
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  .duo-cat, .duo-cat .pose, .duo .float, .nap-cat { animation: none !important; }
-  .duo-cat .pose-hop { opacity: 0 !important; }
-  .duo-cat .pose-perch { opacity: 1 !important; }
+  .duo .float, .nap-cat { animation: none !important; }
   .scribble path { animation: none; stroke-dashoffset: 0; }
   .caption.swap h2, .caption.swap p { animation: none; }
 }

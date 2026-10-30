@@ -1,0 +1,17 @@
+{
+  "carry-card": 1.1986,
+  "crouch": 1.3183,
+  "descend": 1.2641,
+  "glide": 1.2731,
+  "hop": 1.1851,
+  "land": 1.0632,
+  "launch": 1.3544,
+  "magnifier": 0.9074,
+  "perch": 1.0,
+  "point": 1.1693,
+  "sit": 0.7178,
+  "sleep-card": 0.9436,
+  "stamp": 0.8623,
+  "stretch": 1.8758,
+  "tug": 1.693
+}
