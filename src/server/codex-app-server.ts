@@ -927,7 +927,7 @@ export class CodexAppServerManager {
       if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
       const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
       const guard = fileURLToPath(new URL("./memory/codex-branch-guard.ts", import.meta.url))
-      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)}`
+      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)} ${quote(args.cwd)}`
       // Codex normalizes hook identity to sorted JSON before hashing. Session
       // flags are not implicitly trusted; keep trust local to this declaration.
       // scripts/smoke-branch-prefix.ts proves the hook denies on the installed CLI.

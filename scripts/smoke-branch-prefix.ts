@@ -13,7 +13,7 @@
  *   bun scripts/smoke-branch-prefix.ts --codex-no-web
  */
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { startClaudeSession } from '../src/server/agent'
@@ -43,6 +43,10 @@ const codexNoWeb = process.argv.includes('--codex-no-web')
 const root = mkdtempSync(join(tmpdir(), 'memosync-prefix-'))
 const cwd = join(root, 'project')
 mkdirSync(cwd)
+writeFileSync(join(root, 'outside.txt'), 'OUTSIDE_READ_MUST_BE_DENIED')
+writeFileSync(join(cwd, 'inside.txt'), 'INSIDE_PROJECT_READ_OK')
+symlinkSync(root, join(cwd, 'escape'))
+const outsidePaths = [join(root, 'outside.txt'), '../outside.txt', 'escape/outside.txt']
 mkdirSync(join(root, 'claude'))
 writeFileSync(join(root, 'claude', 'settings.json'), JSON.stringify({ permissions: { allow: ['Write', 'Bash', 'mcp__memory__*'] } }))
 const memory = new MemoryService({ dbPath: ':memory:', dataDir: join(root, 'memory') })
@@ -60,6 +64,8 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
     { name: 'Bash', input: { command: `touch ${join(cwd, 'BASH_MUST_NOT_EXIST')}` } },
     { name: body.tools.find((tool: any) => tool.name?.startsWith('mcp__memory__'))?.name, input: { ids: [] } },
     { name: 'WebSearch', input: { query: 'MUST NOT CONTACT NETWORK' } },
+    ...outsidePaths.map(file_path => ({ name: 'Read', input: { file_path } })),
+    { name: 'Read', input: { file_path: 'inside.txt' } },
   ]
   const probe = branchMode ? probes[branchCalls++] : undefined
   const call = Boolean(probe)
@@ -103,7 +109,7 @@ try {
   branchMode = true
   branch = createMemoryBranch({ provider: 'claude', model: runtime.model, localPath: cwd, parentSessionToken: token,
     runtime, parentLaunch: main.parentLaunch, timeoutMs: 30000 })
-  await branch.ask('Analyze memory.', { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] } })
+  await branch.ask('Analyze memory.', { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'] }, budget: { maxTurns: 16, maxToolCalls: 12 } })
   const branchRequest = requests[requests.indexOf(firstMain) + 1]
   branchMode = false
   await main.sendPrompt('Continue.')
@@ -116,17 +122,19 @@ try {
   writeFileSync(join(root, 'claude-requests.json'), JSON.stringify(requests, null, 2))
   assert(!existsSync(join(cwd, 'MUST_NOT_EXIST')), 'Write bypassed branch guard')
   assert(!existsSync(join(cwd, 'BASH_MUST_NOT_EXIST')), 'Bash bypassed branch guard')
-  for (const body of requests.slice(requests.indexOf(branchRequest) + 1, -1)) {
+  assert(branchCalls >= 8, 'Claude must exercise every read probe')
+  for (const body of requests.slice(requests.indexOf(branchRequest) + 1, -2)) {
     const results = body.messages.at(-1).content.filter((item: any) => item.type === 'tool_result')
     assert(results.some((item: any) => item.is_error && item.content.includes('Memory-analysis branches may only inspect files')), 'tool probe must be denied')
   }
+  assert(JSON.stringify(requests.at(-2).messages.at(-1)).includes('INSIDE_PROJECT_READ_OK'), 'Claude must permit an inside-project read')
   equal(branchRequest.model, mainRequest.model, '$.model')
   equal(branchRequest.thinking, mainRequest.thinking, '$.thinking')
   equal(branchRequest.output_config, mainRequest.output_config, '$.output_config')
   equal(branchRequest.tools, mainRequest.tools, '$.tools')
   equal(branchRequest.system, mainRequest.system, '$.system')
   equal(branchRequest.messages.slice(0, -1), mainRequest.messages.slice(0, -1), '$.messages')
-  console.log('Claude PASS: tools (including memory MCP), system, history, model/effort; Write/Bash/memory/web denied despite allow rules + disableAllHooks')
+  console.log('Claude PASS: tools (including memory MCP), system, history, model/effort; Write/Bash/memory/web and absolute/../symlink reads denied despite allow rules + disableAllHooks')
 } catch (error) {
   console.error(`Claude FAIL: ${(error as Error).message}`); process.exitCode = 1
 } finally {
@@ -142,9 +150,14 @@ const codexServer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req)
   if (req.method !== 'POST') return Response.json({ data: [] })
   const body: any = await req.json()
   codexRequests.push(body)
-  const call = codexBranchMode && codexBranchCalls++ < 2
-  const item = call && codexBranchCalls === 2 ? { type: 'function_call', id: 'fc_memory', call_id: 'probe_memory', name: 'propose_memory', arguments: '{}' } : call ? { type: 'function_call', id: 'fc_probe', call_id: 'probe', name: 'exec_command', arguments: JSON.stringify({ cmd: `touch ${join(cwd, 'CODEX_MUST_NOT_EXIST')}`, max_output_tokens: 100 }) }
-    : { type: 'message', id: `msg_${codexRequests.length}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '{"ok":true}', annotations: [] }] }
+  const probes = [
+    { type: 'function_call', id: 'fc_write', call_id: 'probe_write', name: 'exec_command', arguments: JSON.stringify({ cmd: `touch ${join(cwd, 'CODEX_MUST_NOT_EXIST')}`, max_output_tokens: 100 }) },
+    { type: 'function_call', id: 'fc_memory', call_id: 'probe_memory', name: 'propose_memory', arguments: '{}' },
+    ...outsidePaths.map((path, index) => ({ type: 'function_call', id: `fc_read_${index}`, call_id: `probe_read_${index}`, name: 'exec_command', arguments: JSON.stringify({ cmd: `cat "${path}"`, max_output_tokens: 100 }) })),
+    { type: 'function_call', id: 'fc_inside', call_id: 'probe_inside', name: 'exec_command', arguments: JSON.stringify({ cmd: 'cat inside.txt', max_output_tokens: 100 }) },
+  ]
+  const probe = codexBranchMode ? probes[codexBranchCalls++] : undefined
+  const item = probe ?? { type: 'message', id: `msg_${codexRequests.length}`, role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: '{"ok":true}', annotations: [] }] }
   const response = { id: `resp_${codexRequests.length}`, object: 'response', status: 'completed', output: [item], usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15 } }
   return new Response([
     sse('response.created', { type: 'response.created', response: { ...response, status: 'in_progress', output: [] } }),
@@ -171,7 +184,7 @@ try {
   codexBranchMode = true
   codexBranch = createMemoryBranch({ provider: 'codex', model: codexRuntime.model, localPath: cwd, parentSessionToken: token,
     runtime: codexRuntime, parentLaunch: { provider: 'codex', session: sessionOptions, turn: turnOptions }, timeoutMs: 30000 })
-  await codexBranch.ask('Analyze memory.')
+  await codexBranch.ask('Analyze memory.', { budget: { maxTurns: 16, maxToolCalls: 12 } })
   const branchRequest = codexRequests[codexRequests.indexOf(firstMain) + 1]
   codexBranchMode = false
   const next = await manager.startTurn({ ...turnOptions, content: 'Continue.' })
@@ -179,13 +192,15 @@ try {
   const mainRequest = codexRequests.at(-1)
   writeFileSync(join(root, 'codex-requests.json'), JSON.stringify(codexRequests, null, 2))
   assert(!existsSync(join(cwd, 'CODEX_MUST_NOT_EXIST')), 'Codex write bypassed sandbox')
-  const guardResult = codexRequests[codexRequests.indexOf(branchRequest) + 1].input.at(-1).output
-  assert(codexRequests[codexRequests.indexOf(branchRequest) + 2].input.at(-1).output.includes('blocked by PreToolUse hook'), 'memory probe must be denied')
-  assert(guardResult.includes('blocked by PreToolUse hook'), 'Codex hook must deny before executing the command')
+  assert(codexBranchCalls >= 6, 'Codex must exercise every read probe')
+  assert(codexRequests.at(-2).input.at(-1).output.includes('INSIDE_PROJECT_READ_OK'), 'Codex must permit an inside-project read')
+  for (const body of codexRequests.slice(codexRequests.indexOf(branchRequest) + 1, -2)) {
+    assert(body.input.at(-1).output.includes('blocked by PreToolUse hook'), 'Codex hook must deny every write, memory, and outside-project read probe before execution')
+  }
   const toolDifference = firstDifference(branchRequest.tools, mainRequest.tools, '$.tools')
   console.log(toolDifference
     ? `Codex PREFIX FAIL: ${toolDifference}`
-    : `Codex PREFIX PASS${codexNoWeb ? ' (parent web disabled)' : ''}: tools/instructions/history content retained; SAFETY PASS: native hook denies command + memory calls`)
+    : `Codex PREFIX PASS${codexNoWeb ? ' (parent web disabled)' : ''}: tools/instructions/history content retained; SAFETY PASS: native hook denies command + memory calls + absolute/../symlink reads`)
   equal(branchRequest.instructions, mainRequest.instructions, '$.instructions')
   const withoutIds = (items: any[]) => items.map(({ id, ...item }) => item)
   equal(withoutIds(branchRequest.input.slice(0, mainRequest.input.length - 1)), withoutIds(mainRequest.input.slice(0, -1)), '$.input')
@@ -212,6 +227,8 @@ const piServer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(req) {
     { name: 'write', arguments: JSON.stringify({ path: join(cwd, 'PI_MUST_NOT_EXIST'), content: 'unsafe' }) },
     { name: 'bash', arguments: JSON.stringify({ command: `touch ${join(cwd, 'PI_BASH_MUST_NOT_EXIST')}` }) },
     { name: 'propose_memory', arguments: '{}' },
+    ...outsidePaths.map(path => ({ name: 'read', arguments: JSON.stringify({ path }) })),
+    { name: 'read', arguments: JSON.stringify({ path: 'inside.txt' }) },
   ]
   const probe = piBranchMode ? probes[piCalls++] : undefined
   const chunks = probe
@@ -240,7 +257,7 @@ try {
   piBranchMode = true
   piBranch = createMemoryBranch({ provider: 'pi', model: piOptions.model, localPath: cwd, parentSessionToken: token,
     parentLaunch: piRecorded, timeoutMs: 30000 }, { piManager, resolvePiConnection: async () => connection })
-  await piBranch.ask('Analyze memory.')
+  await piBranch.ask('Analyze memory.', { budget: { maxTurns: 16, maxToolCalls: 12 } })
   const branchRequest = piRequests[piRequests.indexOf(firstMain) + 1]
   piBranchMode = false
   const next = await piManager.startTurn({ ...piOptions, cwd, chatId: 'pi-main', content: 'Continue.', sessionToken: token, forkSession: false })
@@ -253,8 +270,10 @@ try {
   equal(branchRequest.messages.slice(0, -1), mainRequest.messages.slice(0, -1), '$.messages')
   equal(branchRequest.model, mainRequest.model, '$.model')
   equal(branchRequest.reasoning_effort, mainRequest.reasoning_effort, '$.reasoning_effort')
-  for (const body of piRequests.slice(piRequests.indexOf(branchRequest) + 1, -1)) assert(body.messages.at(-1).content.includes('Memory branches may only inspect files.'))
-  console.log('Pi PASS: real SDK requests have identical tools/system/history/model/effort; write/bash/memory denied')
+  assert(piCalls >= 7, 'Pi must exercise every read probe')
+  assert(piRequests.at(-2).messages.at(-1).content.includes('INSIDE_PROJECT_READ_OK'), 'Pi must permit an inside-project read')
+  for (const body of piRequests.slice(piRequests.indexOf(branchRequest) + 1, -2)) assert(body.messages.at(-1).content.includes('Memory branches may only inspect files.'))
+  console.log('Pi PASS: real SDK requests have identical tools/system/history/model/effort; write/bash/memory and absolute/../symlink reads denied')
 } catch (error) {
   console.error(`Pi FAIL: ${(error as Error).message}`); process.exitCode = 1
 } finally {

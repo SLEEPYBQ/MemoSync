@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, test } from "bun:test"
 import type { query, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from "../codex-app-server"
 import { ModelAccessService } from "../model-access/service"
@@ -15,10 +18,13 @@ import {
   type MemoryBranchInput,
 } from "./branch-runtime"
 
+const projectPath = mkdtempSync(join(tmpdir(), 'memosync-branch-unit-'))
+afterAll(() => rmSync(projectPath, { recursive: true, force: true }))
+
 const base: MemoryBranchInput = {
   provider: "claude",
   parentSessionToken: "main-session",
-  localPath: "/tmp/memosync-branch-unit",
+  localPath: projectPath,
   model: "test-model",
   subprocessEnv: {},
 }

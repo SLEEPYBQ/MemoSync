@@ -1,4 +1,4 @@
-import { isReadOnlyBranchCommand } from './branch-read-policy'
+import { BRANCH_READ_DENIAL, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
 export { isReadOnlyBranchCommand } from './branch-read-policy'
 import type { ParentLaunch } from './parent-launch'
 import { toClaudeMemoryMcpServer } from './claude-adapter'
@@ -96,12 +96,14 @@ const BRANCH_INSTRUCTIONS = [
 ].join("\n")
 
 /** Exported to verify that branch tools cannot silently inherit main write access. */
-export const canUseMemoryBranchTool: NonNullable<Options["canUseTool"]> = async (toolName, input) => {
-  if (READ_TOOLS.includes(toolName)
-    || (toolName === "Bash" && typeof input.command === "string" && isReadOnlyBranchCommand(input.command))) {
-    return { behavior: "allow", updatedInput: input }
+export async function canUseMemoryBranchTool(toolName: string, input: Record<string, unknown>,
+  _context: Parameters<NonNullable<Options["canUseTool"]>>[2], projectRoot = process.cwd()) {
+  if ((READ_TOOLS.includes(toolName) && isProjectBranchPath(toolName === "Read" ? input.file_path : input.path, projectRoot)
+      && (toolName !== "Glob" || isProjectBranchPath(input.pattern, projectRoot)))
+    || (toolName === "Bash" && typeof input.command === "string" && isReadOnlyBranchCommand(input.command, projectRoot))) {
+    return { behavior: "allow" as const, updatedInput: input }
   }
-  return { behavior: "deny", message: "Memory-analysis branches may only inspect files and run simple read-only commands." }
+  return { behavior: "deny" as const, message: BRANCH_READ_DENIAL }
 }
 
 class MemoryBranchOutputError extends Error {}
@@ -214,7 +216,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     delete env.CLAUDECODE
     const admittedReads = new Set<string>()
     const canUseTool: NonNullable<Options["canUseTool"]> = async (name, toolInput, context) => {
-      const permission = await canUseMemoryBranchTool(name, toolInput, context)
+      const permission = await canUseMemoryBranchTool(name, toolInput, context, input.localPath)
       if (permission?.behavior !== "allow") return permission
       if (!admittedReads.has(context.toolUseID)) {
         if (admittedReads.size >= budget.maxToolCalls) {
@@ -317,8 +319,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       forkSession: !sessionToken && Boolean(input.parentSessionToken),
       connection: input.parentLaunch?.provider === "pi" ? input.parentLaunch.options.connection : connection,
       beforeToolCall: async (name, args) => {
-        if (["read", "grep", "find", "ls"].includes(name) && admittedReads < budget.maxToolCalls) { admittedReads++; return undefined }
-        return { block: true, reason: "Memory branches may only inspect files." }
+        if (["read", "grep", "find", "ls"].includes(name) && isPiBranchPath(args.path, input.localPath, name === "read") && admittedReads < budget.maxToolCalls) { admittedReads++; return undefined }
+        return { block: true, reason: "Memory branches may only inspect files. Reads are limited to the project and the request's read budget." }
       },
       memoryDispatch: async () => ({ text: "Memory tools are disabled in analysis branches.", isError: true }),
     })
