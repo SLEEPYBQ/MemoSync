@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 // Recovery card: parked inline at the interruption point after a per-memory
 // interrupt. The user writes one turn-local correction; sending it is
 // Resume. Working Memory remains visible as lightweight context and can still
@@ -61,12 +62,12 @@ export function MemoryInterruptMessage({ message }: Props) {
   // Settled: one quiet receipt line, same idiom as the settled gates.
   if (message.resolution) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
+        <span className="flex flex-wrap items-center gap-1.5">
           <CircleSlash className="h-3 w-3" />
-          <span className="font-medium text-foreground">Interrupted over</span>
+          <span className="shrink-0 font-semibold text-foreground">Interrupted over</span>
           <MemoryCitationChip id={message.memoryId} />
-          <span>
+          <span className="basis-full @lg:basis-auto">
             — {resolutionReceipt(message.resolution)}
             {message.resolution.enforced ? "; one-run enforce applied" : ""}
           </span>
@@ -76,10 +77,10 @@ export function MemoryInterruptMessage({ message }: Props) {
   }
 
   return (
-    <section className="rounded-xl border border-border/70 bg-card p-4 text-xs">
+    <section className={MEMORY_CARD}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <CircleSlash className="h-3.5 w-3.5 self-center text-destructive" />
-        <span className="text-sm font-medium text-foreground">You stopped this turn over</span>
+        <CircleSlash className="h-4 w-4 self-center text-muted-foreground" />
+        <span className="text-sm font-semibold text-foreground">You stopped this turn over</span>
         <MemoryCitationChip id={message.memoryId} />
       </div>
       {message.quote ? (
@@ -96,7 +97,7 @@ export function MemoryInterruptMessage({ message }: Props) {
         This instruction applies to the resumed run. Sending continues from where the assistant stopped.
       </p>
       <form
-        className="relative mt-2 rounded-xl border border-border/70 bg-background"
+        className="relative mt-2 rounded-lg border border-border/70 bg-background"
         onSubmit={(event) => {
           event.preventDefault()
           void resume()
@@ -114,7 +115,7 @@ export function MemoryInterruptMessage({ message }: Props) {
           }}
           rows={2}
           placeholder="What went wrong, or what should the assistant do differently?"
-          className="block min-h-16 w-full resize-y bg-transparent px-3 py-2 pb-9 pr-11 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
+          className="block min-h-16 w-full resize-y bg-transparent px-3 py-2 pb-9 pr-11 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
         />
         <div className="absolute inset-x-2 bottom-2 flex items-center gap-2">
           <label className="inline-flex min-w-0 cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
@@ -131,7 +132,7 @@ export function MemoryInterruptMessage({ message }: Props) {
             aria-label="Send and resume"
             title="Send and resume"
             disabled={busy || !correction.trim()}
-            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-600 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
+            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>
@@ -150,12 +151,12 @@ export function MemoryInterruptMessage({ message }: Props) {
               <div key={item.id} className={cn("inline-flex items-center gap-1 rounded-md px-1 py-0.5", removed && "opacity-40")}>
                 <MemoryCitationChip id={item.id} />
                 {item.cited ? (
-                  <span className="text-[10px] text-muted-foreground/70">
+                  <span className="text-[11px] text-muted-foreground/70">
                     cited #{index + 1}
                   </span>
                 ) : null}
                 {isFlagged ? (
-                  <span className="text-[10px] text-destructive">
+                  <span className="text-[11px] text-destructive">
                     flagged
                   </span>
                 ) : null}
@@ -173,7 +174,7 @@ export function MemoryInterruptMessage({ message }: Props) {
                   }
                   title={enforceLocked ? "Enforced for this resumed run" : removed ? "Put it back for the resume" : "Remove from the resumed turn"}
                   aria-label={enforceLocked ? `Memory ${item.id} is enforced for this resumed run` : removed ? `Put ${item.id} back for the resume` : `Remove ${item.id} from the resumed turn`}
-                  className="ml-auto rounded p-0.5 text-muted-foreground/60 transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-35"
+                  className="ml-auto rounded p-0.5 text-destructive transition-colors hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>

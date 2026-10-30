@@ -1,3 +1,6 @@
+import { Info } from "lucide-react"
+import { MemoryBadge } from "./MemoryBadge"
+import { MemoryCallout } from "./MemorySurface"
 import { useState } from "react"
 import { useOutletContext } from "react-router-dom"
 import type { AppState } from "../../app/useAppState"
@@ -7,7 +10,7 @@ import { Button } from "../ui/button"
 export function MemoryOffBadge() {
   const enabled = useAppSettingsStore((s) => s.settings?.memory.enabled ?? true)
   return !enabled ? (
-    <span className="rounded px-1 text-[10px] text-muted-foreground">Off</span>
+    <MemoryBadge>Off</MemoryBadge>
   ) : null
 }
 
@@ -31,30 +34,29 @@ export function MemorySettingsBanner() {
     }
   }
   return (
-    <div
-      role="status"
-      className="mb-4 flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm text-muted-foreground"
-    >
-      <span className="flex-1">
-        {off
-          ? "Memory is off. The agent isn't using or learning memories — you can still browse and edit them here."
-          : "Learning is paused. The agent uses these memories but won't suggest new ones."}
-      </span>
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={pending || !app}
-        onClick={() => {
-          void resume()
-        }}
-      >
-        {off ? "Turn on" : "Resume"}
-      </Button>
-      {error ? (
-        <span role="alert" className="w-full text-destructive">
-          {error}
+    <MemoryCallout icon={Info} role="status" className="mb-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <span className="min-w-0 flex-1 basis-48">
+          {off
+            ? "Memory is off. The agent isn't using or learning memories — you can still browse and edit them here."
+            : "Learning is paused. The agent uses these memories but won't suggest new ones."}
         </span>
-      ) : null}
-    </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={pending || !app}
+          onClick={() => {
+            void resume()
+          }}
+        >
+          {off ? "Turn on" : "Resume"}
+        </Button>
+        {error ? (
+          <span role="alert" className="w-full text-destructive">
+            {error}
+          </span>
+        ) : null}
+      </div>
+    </MemoryCallout>
   )
 }

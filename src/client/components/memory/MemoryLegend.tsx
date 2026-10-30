@@ -36,7 +36,7 @@ function Row({ swatch, meaning }: { swatch: ReactNode; meaning: string }) {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground/80">{title}</p>
+      <p className="mb-1.5 text-[11px] font-semibold text-muted-foreground/80">{title}</p>
       <ul className="space-y-1.5">{children}</ul>
     </div>
   )
@@ -51,7 +51,7 @@ export function MemoryLegend({
   className?: string
 }) {
   return (
-    <div className={cn("space-y-3", className)}>
+    <div className={cn("memory-ui space-y-3", className)}>
       {sections.includes("scope") ? (
         <Section title="Scope — where it applies">
           {SCOPE_LEGEND.map(({ scope, meaning }) => (

@@ -1,3 +1,5 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
+import { MemoryBadge } from "../memory/MemoryBadge"
 // The Transfer card (Transfer design 2026-08-08; pipeline form follows the
 // user's own five-station figure, 2026-08-09). Memories from OUTSIDE this
 // conversation's context — other projects or other chats of this project —
@@ -81,12 +83,11 @@ const SCOPE_ICONS = { session: MessagesSquare, project: FolderGit2, personal: Us
 export const MEMORY_TRANSFER_HELP_COPY =
   "These are memories saved in other projects or conversations that could help here. The Encoder removes source-specific details and the Decoder adapts the rule to this project. Bring in saves the result to the Visible Memory Pool. Before Claude starts, the Working Memory review decides whether that saved memory is focused for this turn."
 
-/** Both memory cards wear their scope's color — the same three hues the
- * MemoSync icon fans out. The localized card switches live with the picker. */
+/** Source and landing surfaces stay neutral; scope hues belong to chips. */
 const SCOPE_CARD_TINT: Record<MemoryScope, string> = {
-  session: "border-session-border bg-session-surface",
-  project: "border-project-border bg-project-surface",
-  personal: "border-personal-border bg-personal-surface",
+  session: "border-border/70 bg-background/60 dark:bg-muted/40",
+  project: "border-border/70 bg-background/60 dark:bg-muted/40",
+  personal: "border-border/70 bg-background/60 dark:bg-muted/40",
 }
 
 const HEX_COLOR_RE = /#(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})\b/g
@@ -171,7 +172,7 @@ function ValueChippedText({ text, marks }: { text: string; marks?: string[] }) {
 
 function StageLabel({ icon: IconCmp, children }: { icon: typeof Lightbulb; children: React.ReactNode }) {
   return (
-    <p className="mb-1.5 flex min-w-0 items-center gap-1.5 text-[10px] font-medium text-muted-foreground">
+    <p className="mb-1.5 flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
       <IconCmp className="h-3 w-3" /> {children}
     </p>
   )
@@ -191,12 +192,12 @@ function StageMachine({ name, hint, expand }: { name: string; hint: string; expa
   const points = expand ? "8,26 48,10 48,86 8,70" : "8,10 48,26 48,70 8,86"
   return (
     <>
-      <div className="hidden w-full self-stretch sm:flex sm:flex-col" title={hint}>
+      <div className="hidden w-full self-stretch @2xl:flex @2xl:flex-col" title={hint}>
         <div aria-hidden className="h-[21px]" />
-        <div className="relative flex min-h-[86px] flex-1 flex-col items-center justify-center gap-1 text-violet-600 dark:text-violet-300">
+        <div className="relative flex min-h-[86px] flex-1 flex-col items-center justify-center gap-1 text-info-foreground dark:text-info-foreground">
           <svg
             aria-hidden
-            className="absolute inset-0 h-full w-full text-violet-500 opacity-10 dark:text-violet-400 dark:opacity-15"
+            className="absolute inset-0 h-full w-full text-info-foreground opacity-10 dark:text-info-foreground dark:opacity-15"
             viewBox="0 0 56 96"
             preserveAspectRatio="none"
           >
@@ -209,10 +210,10 @@ function StageMachine({ name, hint, expand }: { name: string; hint: string; expa
             />
           </svg>
           <Sparkles className="relative h-3.5 w-3.5" />
-          <span className="relative text-[10px] font-medium">{name}</span>
+          <span className="relative text-[11px] font-medium">{name}</span>
         </div>
       </div>
-      <div className="flex items-center justify-center gap-1 text-[10px] font-medium text-violet-600 sm:hidden dark:text-violet-300" title={hint}>
+      <div className="flex items-center justify-center gap-1 text-[11px] font-medium text-info-foreground @2xl:hidden dark:text-info-foreground" title={hint}>
         <Sparkles className="h-3 w-3" /> {name} ↓
       </div>
     </>
@@ -240,7 +241,7 @@ export function MemoryTransferGate({
 
   if (renderOptions.readonly) {
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         Step {stepNumber} · Transfer Suggestions — {suggestions.length} omitted from this export for privacy.
       </div>
     )
@@ -251,7 +252,7 @@ export function MemoryTransferGate({
   if (message.decision === "empty" || (!message.pending && suggestions.length === 0 && !message.decision)) {
     if (!message.pending && suggestions.length === 0 && message.decision === undefined) return null
     return (
-      <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span className="font-medium text-foreground">Step {stepNumber} · Transfer Suggestions</span>
         <span className="ml-1">✓ Nothing worth bringing in from your other projects or conversations.</span>
       </div>
@@ -294,12 +295,12 @@ export function MemoryTransferGate({
   }
 
   return (
-    <div className="rounded-xl border border-border bg-card p-4 shadow-sm" data-memory-control-surface={surface}>
+    <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-          <ArrowRightLeft className="h-3 w-3" /> Step {stepNumber}
+          <ArrowRightLeft className="h-4 w-4" /> Step {stepNumber}
         </span>
-        <span className="text-sm font-medium text-foreground">Transfer Suggestions</span>
+        <span className="text-sm font-semibold text-foreground">Transfer Suggestions</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
@@ -357,12 +358,12 @@ export function MemoryTransferGate({
           </div>
         ) : null
       ) : (
-        <div className="mt-3 flex items-center justify-end">
+        <div className="mt-3 flex flex-wrap items-center justify-end">
           {stale ? (
             <p className="text-xs text-muted-foreground">This card belongs to an earlier turn and is no longer active.</p>
           ) : (
             <Button
-              variant="juicy"
+              variant="default"
               size="xs"
               disabled={submitting || (requireAllRows && pendingCount > 0)}
               onClick={() => void settle(pendingCount === 0 ? "handled" : "skipped")}
@@ -498,7 +499,7 @@ function TransferSuggestionRow({
   if (settledText) {
     return (
       <div className="flex items-center gap-2 py-2.5 text-xs text-muted-foreground">
-        <Check className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        <Check className="h-3.5 w-3.5 shrink-0 text-success-foreground dark:text-success-foreground" />
         <span className="font-mono text-[11px]">{suggestion.sourceId}</span>
         <span>— {settledText}</span>
       </div>
@@ -507,21 +508,21 @@ function TransferSuggestionRow({
 
   return (
     <div className="py-3">
-      <div className="grid grid-cols-1 items-stretch gap-1.5 sm:grid-cols-[1fr_56px_1.15fr_56px_1.05fr]">
+      <div className="grid grid-cols-1 items-stretch gap-1.5 @2xl:grid-cols-[1fr_56px_1.15fr_56px_1.05fr]">
         {/* Station 1 — the source, wearing ITS scope's color. Stripped
             values render as chips: compare them with the last card's chips
             and the move is visible. */}
         <RiseIn freshAt={freshAt} delay={0} className="flex min-w-0 flex-col">
           <StageLabel icon={SourceIcon}>
             <span className="truncate">Source · {suggestion.sourceLabel}</span>
-            <span
+            <MemoryBadge
               className={cn(
-                "ml-0.5 inline-flex w-fit items-center rounded-full border px-1.5 py-0.5 font-mono text-[10px] leading-none",
+                "ml-0.5 inline-flex w-fit shrink-0 items-center whitespace-nowrap rounded-md border px-1.5 py-0.5 font-mono text-[11px] leading-4",
                 MEMORY_SCOPE_CHIP_CLASSES[suggestion.sourceScope],
               )}
             >
               {suggestion.sourceId}
-            </span>
+            </MemoryBadge>
           </StageLabel>
           <div className={cn("flex flex-1 flex-col rounded-lg border p-2.5", SCOPE_CARD_TINT[suggestion.sourceScope])}>
             <p className="text-sm leading-snug text-foreground">
@@ -541,7 +542,7 @@ function TransferSuggestionRow({
             (amber = metadata, never a memory item). */}
         <RiseIn freshAt={freshAt} delay={0.24} className="flex min-w-0 flex-col">
           <StageLabel icon={Lightbulb}>Abstract rule</StageLabel>
-          <div className="flex flex-1 flex-col rounded-lg border border-amber-500/35 bg-amber-500/[0.07] dark:bg-amber-500/10 p-2.5">
+          <div className="flex flex-1 flex-col rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 p-2.5">
             {suggestion.rule ? (
               <p className="text-sm italic leading-snug text-foreground">
                 <ColorizedText text={suggestion.rule} />
@@ -605,7 +606,7 @@ function TransferSuggestionRow({
             <ScopeControl value={scope} onValueChange={setScopeChoice} />
           </>
         )}
-        <div className="ml-auto flex shrink-0 items-center gap-1.5">
+        <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
           <Button variant="ghost" size="xs" disabled={busy !== null} onClick={() => void decline()}>
             {busy === "decline" ? <Loader2 className="h-3 w-3 animate-spin" /> : <X className="h-3 w-3" />}
             Not this one
@@ -617,7 +618,7 @@ function TransferSuggestionRow({
             </Button>
           ) : null}
           <Button
-            variant="juicy"
+            variant="default"
             size="xs"
             disabled={busy !== null || !decoded || (!reinforcing && !content.trim())}
             onClick={() => void accept()}
@@ -640,8 +641,8 @@ function LandingNote({ landing }: { landing: MemoryTransferSuggestionSnapshot["l
   if (!landing) return null
   if (landing.route === "reinforces") {
     return (
-      <div className="mt-2 flex items-start gap-1.5 border-l-2 border-emerald-500/50 py-0.5 pl-2 text-[11px] leading-snug text-muted-foreground">
-        <GitMerge className="mt-0.5 h-3 w-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      <div className="mt-2 flex items-start gap-1.5 py-0.5 text-sm leading-snug text-muted-foreground">
+        <GitMerge className="mt-0.5 h-3 w-3 shrink-0 text-success-foreground dark:text-success-foreground" />
         <span>
           This project already knows this
           {landing.targetContent ? <> — “{landing.targetContent}”</> : null}. Accepting reinforces that memory
@@ -652,8 +653,8 @@ function LandingNote({ landing }: { landing: MemoryTransferSuggestionSnapshot["l
   }
   if (landing.route === "conflicts") {
     return (
-      <div className="mt-2 flex items-start gap-1.5 border-l-2 border-amber-500/50 py-0.5 pl-2 text-[11px] leading-snug text-muted-foreground">
-        <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400" />
+      <div className="mt-2 flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface p-3 text-sm leading-snug text-muted-foreground">
+        <TriangleAlert className="mt-0.5 h-3 w-3 shrink-0 text-cand-fg dark:text-cand-fg" />
         <span>
           May conflict with an existing memory
           {landing.targetContent ? <> — “{landing.targetContent}”</> : null}. Both are kept and flagged for you.

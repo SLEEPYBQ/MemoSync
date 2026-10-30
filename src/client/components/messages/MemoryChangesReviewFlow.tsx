@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { Info, LibraryBig } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
@@ -59,17 +60,18 @@ function MemoryChangesReviewSurface({
 }) {
   return (
     <section
-      className="overflow-hidden rounded-3xl border border-border bg-card shadow-sm"
+      className="memory-ui @container min-w-0 space-y-3"
       data-focused-memory-review={placement}
     >
-      <header className="border-b border-border/70 bg-muted/20 px-4 py-3">
+      <header className="border-b border-border/70 px-3 py-3">
         {placement === "board" ? (
-          <p className="mb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-violet-600 dark:text-violet-300">
+          <p className="mb-1 text-[11px] font-medium text-muted-foreground">
             Memory Board review
           </p>
         ) : null}
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
+            <LibraryBig aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
             <h2 className="text-sm font-semibold text-foreground">Long-term Memory Management</h2>
             <HoverCard>
               <HoverCardTrigger asChild>
@@ -110,7 +112,7 @@ function MemoryChangesReviewSurface({
         </p>
       </header>
 
-      <div className="flex flex-col gap-3 bg-muted/10 p-3">
+      <div className="flex flex-col gap-3">
         {/* data-entry-id: jump anchors for the sidebar Memory Record — the
             three stations share one transcript row, so the row id alone
             cannot address them. */}
@@ -291,7 +293,7 @@ export function FocusedMemoryCandidateStep({
         />
       ) : null}
       {remaining.length > 0 ? (
-        <div className="rounded-xl border border-border bg-card p-4 shadow-sm" data-remaining-candidate-review="true">
+        <div className={MEMORY_CARD} data-remaining-candidate-review="true">
           <div className="mb-3 flex flex-wrap items-baseline gap-2">
             {!currentProposal ? <span className="text-[11px] font-semibold text-muted-foreground">Step 1</span> : null}
             <h2 className="text-sm font-medium text-foreground">
@@ -308,7 +310,7 @@ export function FocusedMemoryCandidateStep({
         </div>
       ) : null}
       {!currentProposal && remaining.length === 0 ? (
-        <div className="rounded-lg border border-border/60 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+        <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
           <span className="font-medium text-foreground">Step 1 · Review New Memory Candidates</span>
           <span className="ml-1">✓ No pending memory candidates.</span>
         </div>
@@ -445,7 +447,7 @@ export function MemoryChangesReviewFlow({
   if (openingReviewId && !activeReview) {
     return (
       <section
-        className="rounded-2xl border border-border/70 bg-muted/20 px-4 py-3 text-sm text-muted-foreground"
+        className="memory-ui rounded-xl border border-border bg-card px-4 py-3 text-sm text-muted-foreground"
         data-opening-board-review-receipt="true"
       >
         <span className="font-medium text-foreground">Long-term Memory reviewed in the Memory Board.</span>{" "}

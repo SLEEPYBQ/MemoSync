@@ -7,7 +7,7 @@ import { ShieldAlert } from "lucide-react"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { cn } from "../../lib/utils"
-import { Chip, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
+import { Chip, ScopeBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
 // Trace-dot and freshness color maps live in memoryVocab so this card and the
 // MemoryLegend render the exact same swatches (they can no longer drift).
 import { FRESHNESS_CLASSES, TRACE_DOT_CLASSES } from "./memoryVocab"
@@ -58,7 +58,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
           : undefined
       }
       className={cn(
-        "rounded-2xl border p-3 shadow-sm transition-colors",
+        "memory-ui @container min-w-0 rounded-xl border p-3 transition-colors",
         variant === "candidate" ? "border-cand-border bg-cand-surface" : scopeCardClasses(item.scope),
         onClick && "cursor-pointer",
         draggable && "active:cursor-grabbing",
@@ -76,6 +76,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {freshness ? <Chip className={FRESHNESS_CLASSES[freshness]}>{freshness}</Chip> : null}
         <Chip className="font-mono">{item.id}</Chip>
+        <ScopeBadge scope={item.scope} />
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}
         {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">used {item.usageCount}×</span> : null}
         {item.lastTraceLabel ? (
@@ -92,7 +93,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         </p>
       ) : null}
       {footer ? (
-        <div className="mt-2 flex flex-wrap items-center gap-1.5" onClick={handleFooterClick}>
+        <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5" onClick={handleFooterClick}>
           {footer}
         </div>
       ) : null}

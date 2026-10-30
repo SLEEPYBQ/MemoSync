@@ -1,3 +1,4 @@
+import { MemoryBadge } from "./MemoryBadge"
 // Right-side detail panel for a selected memory (SPEC §4.9, §4.11). Two tabs:
 // "Details" (editable fields + scope move + provenance/usage/sensitive) and
 // "History" (the per-item version/usage timeline with rollback, option 乙).
@@ -208,8 +209,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     : null
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-3">
+    <div className="memory-ui @container min-w-0 flex h-full flex-col">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
         <Chip className="font-mono">{item.id}</Chip>
         <Chip className={item.status === "candidate" ? "border-cand-border bg-cand-surface text-cand-fg" : undefined}>
           {item.status}
@@ -219,7 +220,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
         </Button>
       </div>
 
-      <div className="flex items-center gap-2 px-4 pt-3">
+      <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
         <ScopeBadge scope={item.scope} />
         <SegmentedControl<"details" | "history">
           size="sm"
@@ -242,16 +243,16 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   <p className="text-xs text-cand-fg">
                     Review this sensitive draft here. Prepare a redacted proposal or edit it manually; the original text cannot be accepted unchanged.
                   </p>
-                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
                     <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleSanitize()}>
                       {busy === "sanitize" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
                       Prepare sanitized
                     </Button>
-                    <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
+                    <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleArchive()}>
                       <X className="h-3.5 w-3.5" /> Dismiss
                     </Button>
                     <Button
-                      variant="juicy"
+                      variant="default"
                       size="sm"
                       disabled={busyState || !reviewedSensitivePatch}
                       onClick={() => void handleAccept()}
@@ -261,12 +262,12 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
-                  <Button variant="juicy" size="sm" disabled={busyState} onClick={() => void handleAccept()}>
-                    <Check className="h-3.5 w-3.5" /> Accept
-                  </Button>
-                  <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleArchive()}>
                     <X className="h-3.5 w-3.5" /> Dismiss
+                  </Button>
+                  <Button variant="default" size="sm" disabled={busyState} onClick={() => void handleAccept()}>
+                    <Check className="h-3.5 w-3.5" /> Accept
                   </Button>
                 </div>
               )
@@ -274,12 +275,12 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
             {sanitized ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
-                <ShieldCheck className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+                <ShieldCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
                 Redaction proposal staged for your review
                 {sanitized.map((redaction) => (
-                  <span key={redaction.placeholder} className="rounded-full border border-border bg-muted px-1.5 py-0.5 font-mono text-[10px]">
+                  <MemoryBadge key={redaction.placeholder} className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                     {redaction.placeholder} {redaction.kind}
-                  </span>
+                  </MemoryBadge>
                 ))}
               </p>
             ) : null}
@@ -305,7 +306,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
             {sensitiveCandidate ? null : (
               <div className="flex justify-end">
-                <Button variant="juicy" size="sm" disabled={busyState || !isDirty || !draft.content.trim()} onClick={() => void handleSave()}>
+                <Button variant={item.status === "candidate" ? "outline" : "default"} size="sm" disabled={busyState || !isDirty || !draft.content.trim()} onClick={() => void handleSave()}>
                   Save
                 </Button>
               </div>
@@ -315,7 +316,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 {item.scope === "session" ? "session-scoped — move to widen reach" : "scope"}
               </label>
-              <div className="inline-flex items-center rounded-lg border border-border p-[3px]">
+              <div className="inline-flex max-w-full flex-wrap items-center rounded-lg border border-border p-[3px]">
                 {MOVE_SCOPES.map((scope) => {
                   const Icon = SCOPE_ICONS[scope]
                   const active = scope === item.scope
@@ -347,16 +348,16 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             <p className="text-xs text-muted-foreground">used {item.usageCount}×</p>
 
             {sensitiveCandidate ? (
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-cand-border bg-cand-surface px-2.5 py-1 text-xs font-medium text-cand-fg">
+              <MemoryBadge className="inline-flex items-center gap-1.5 rounded-md border border-cand-border bg-cand-surface px-1.5 py-1 text-[11px] font-medium text-cand-fg">
                 <ShieldAlert className="h-3.5 w-3.5" /> Sensitive
-              </span>
+              </MemoryBadge>
             ) : (
               <button
                 type="button"
                 disabled={busyState}
                 onClick={() => void handleToggleSensitive()}
                 className={cn(
-                  "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                  "inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
                   item.sensitive ? "border-cand-border bg-cand-surface text-cand-fg" : "border-border bg-muted text-muted-foreground",
                 )}
               >
@@ -371,8 +372,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   <ArrowRightLeft className="h-3.5 w-3.5" /> Transfer…
                 </Button>
                 {archiveArmed ? (
-                  <div className="flex items-center gap-2">
-                    <Button variant="destructive" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button variant="ghost" className="text-destructive hover:text-destructive" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
                       Confirm archive
                     </Button>
                     <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setArchiveArmed(false)}>
@@ -380,7 +381,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                     </Button>
                   </div>
                 ) : (
-                  <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setArchiveArmed(true)}>
+                  <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => setArchiveArmed(true)}>
                     Archive
                   </Button>
                 )}

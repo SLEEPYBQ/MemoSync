@@ -59,6 +59,8 @@
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
     --success: oklch(69.6% 0.17 162.48); /* emerald-500 */
+    --success-foreground: oklch(43% 0.1 162.48);
+    --info-foreground: oklch(43% 0.11 237.323);
     --info: oklch(68.5% 0.169 237.323); /* sky-500 */
     --section-title: oklch(44.6% 0.043 257.281); /* slate-600 */
     --logo: oklch(71.2% 0.194 13.428);
@@ -116,6 +118,8 @@
     --color-slate-900: oklch(21% 0.012 60);
     --color-slate-950: oklch(13% 0.012 60);
     --success: oklch(76.5% 0.177 163.223); /* emerald-400 */
+    --success-foreground: oklch(80% 0.13 163.223);
+    --info-foreground: oklch(80% 0.12 232.661);
     --info: oklch(74.6% 0.16 232.661); /* sky-400 */
     --section-title: var(--color-slate-300);
     --logo: oklch(71.2% 0.194 13.428);
@@ -162,6 +166,8 @@
   --color-muted-icon: hsl(var(--muted-icon));
   --color-success: var(--success);
   --color-info: var(--info);
+  --color-success-foreground: var(--success-foreground);
+  --color-info-foreground: var(--info-foreground);
   --color-section-title: var(--section-title);
   --color-logo: var(--logo);
   --color-personal: rgb(var(--scope-personal));
@@ -684,4 +690,39 @@
 .citation-flash-block {
   animation: citation-flash-block 1.9s ease-out 1;
   border-radius: 0.375rem;
+}
+
+/* Memory surfaces opt back into visible keyboard focus. Keep the existing chat
+   chrome untouched; outline survives the legacy global button shadow reset. */
+@layer base {
+  .memory-ui:focus-visible,
+  .memory-ui :is(button, a, input, textarea, select, summary, [role="button"], [role="tab"]):focus-visible {
+    outline: 2px solid var(--color-ring) !important;
+    outline-offset: 3px;
+  }
+}
+
+.memory-ui :is(button, input, textarea, select) {
+  max-width: 100%;
+}
+
+.memory-card {
+  overflow-wrap: anywhere;
+}
+
+/* A gate may host candidate cards. Their detail/reference text stays flat so
+   the gate, row, and reference never become three nested boxes. */
+.memory-card .memory-card {
+  border-radius: var(--radius-lg);
+  border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-background) 60%, transparent);
+}
+.dark .memory-card .memory-card {
+  background: color-mix(in srgb, var(--color-muted) 40%, transparent);
+}
+.memory-card .memory-card .memory-reference {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding-inline: 0;
 }

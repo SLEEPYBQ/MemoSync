@@ -1,3 +1,4 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
 import { AlertTriangle, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck } from "lucide-react"
@@ -33,14 +34,14 @@ const LABEL_TEXT: Record<MemoryTraceLabel["label"], string> = {
 }
 
 function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
-  if (label === "operational") return <Check className="mt-0.5 h-3 w-3 shrink-0 text-session-fg" />
+  if (label === "operational") return <Check className="mt-0.5 h-3 w-3 shrink-0 text-success-foreground" />
   if (label === "violated") return <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
   if (label === "not_applicable")
     return (
       <span className="mt-1.5 flex h-3 w-3 shrink-0 items-center justify-center">
         {/* Hollow ring: never entered play — visually distinct from the filled
             no-effect dot (played, changed nothing). */}
-        <span className="h-1.5 w-1.5 rounded-full border border-slate-400 dark:border-border" />
+        <span className="h-1.5 w-1.5 rounded-full border border-border" />
       </span>
     )
   return (
@@ -54,8 +55,8 @@ function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
  * no green anywhere per the 2026-08-10 sidebar rule. */
 const SECTION_TONE: Record<MemoryTraceLabel["label"], { bar: string; head: string }> = {
   violated: { bar: "bg-destructive", head: "text-destructive" },
-  operational: { bar: "bg-foreground/70", head: "text-foreground" },
-  not_applicable: { bar: "bg-slate-400 dark:bg-muted-foreground", head: "text-slate-600 dark:text-muted-foreground" },
+  operational: { bar: "bg-success", head: "text-success-foreground" },
+  not_applicable: { bar: "bg-muted-foreground/50", head: "text-muted-foreground" },
   injected_without_effect: { bar: "bg-muted-foreground/40", head: "text-muted-foreground" },
 }
 
@@ -96,8 +97,8 @@ function TraceSection({
   const header = (
     <span className="inline-flex items-center gap-1.5">
       <span className={cn("h-2 w-2 rounded-[2px]", colors.bar)} />
-      <span className={cn("text-[10px] font-semibold uppercase tracking-wide", colors.head)}>{title}</span>
-      <span className="text-[10px] text-muted-foreground/70">{count}</span>
+      <span className={cn("text-[11px] font-semibold", colors.head)}>{title}</span>
+      <span className="text-[11px] text-muted-foreground/70">{count}</span>
     </span>
   )
   return (
@@ -165,7 +166,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
           </span>
           {/* Fact/inference line: the reply's own [M-NN] citation is a
               self-report; a verdict only the audit produced is an inference. */}
-          <span className="text-[10px] text-muted-foreground/70">
+          <span className="text-[11px] text-muted-foreground/70">
             {label.cited ? "self-reported" : "audit-found"}
           </span>
         </div>
@@ -174,7 +175,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
           <p className="mt-0.5 leading-relaxed text-muted-foreground/80">{CAUSE_TEXT[label.cause]}</p>
         ) : null}
         {onJump || violated ? (
-          <div className="mt-2 flex min-h-7 flex-wrap items-center gap-2">
+          <div className="mt-2 flex min-h-7 flex-wrap items-center justify-end gap-2">
             {onJump ? (
               <button
                 type="button"
@@ -202,7 +203,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                         "enforced — locked into the next run; it must be followed",
                       )
                     }
-                    className="rounded-md border border-destructive/40 bg-background px-2 py-1 font-medium text-destructive transition-colors hover:bg-destructive/10"
+                    className="rounded-md border border-border bg-background px-2 py-1 font-medium text-foreground transition-colors hover:bg-muted"
                   >
                     {busy === "attention" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} Enforce this next run
                   </button>
@@ -333,7 +334,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   if (message.status === "pending") {
     // The audit is running (up to ~90s): a quiet shimmer, never a dead gap.
     return (
-      <div className="flex items-center gap-1.5 text-[11px]" role="status">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm" role="status">
         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-muted-foreground" />
         <AnimatedShinyText className="mx-0 max-w-none italic">auditing memory use…</AnimatedShinyText>
       </div>
@@ -344,7 +345,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
     // Zero memories in play: an explicit nothing-to-audit terminal so the
     // audit stage never just vanishes (2026-08-19 evening revision).
     return (
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground" role="status">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm text-muted-foreground" role="status">
         <ShieldCheck className="h-3 w-3 shrink-0" />
         No memories were in play this turn. Nothing to audit.
       </div>
@@ -356,7 +357,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
       ? "Memory audit unavailable for this turn."
       : "Memory audit discarded because the memory changed before the verdict was saved."
     return (
-      <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground" role="status">
+      <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 flex items-center gap-1.5 text-sm text-muted-foreground" role="status">
         <AlertTriangle className="h-3 w-3 shrink-0" />
         {text}
       </div>
@@ -384,10 +385,11 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
 
   return (
     // Give the audit its own card, matching the pre-turn review cards.
-    <div className="rounded-xl border border-border/70 bg-card p-4 text-xs" ref={setRootRef}>
+    <div className={MEMORY_CARD} ref={setRootRef}>
       <button type="button" onClick={toggleExpanded} className="group flex w-full flex-wrap items-baseline gap-2 text-left">
+        <ShieldCheck aria-hidden className="h-4 w-4 text-muted-foreground" />
         <ChevronRight className={cn("h-3 w-3 self-center text-muted-foreground transition-transform", expanded && "rotate-90")} />
-        <span className="text-[11px] font-semibold text-muted-foreground">Auditing Memory Use</span>
+        <span className="text-sm font-semibold text-foreground">Auditing Memory Use</span>
         <span className={cn("text-xs", hasViolation ? "font-medium text-destructive" : "text-muted-foreground")}>
           {summaryParts.join(" · ")}
         </span>

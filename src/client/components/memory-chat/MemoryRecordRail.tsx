@@ -47,7 +47,7 @@ interface Props {
 
 const PULSE_CLASSES: Record<ReturnType<typeof turnPulse>, string> = {
   violated: "bg-destructive",
-  shaped: "bg-foreground/60",
+  shaped: "bg-success",
   quiet: "border border-muted-foreground/40 bg-background",
 }
 
@@ -174,7 +174,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
   }
   return (
     <div className="flex flex-col gap-2">
-      <p className="text-[10px] text-muted-foreground/70">
+      <p className="text-[11px] text-muted-foreground/70">
         Memory Use Audit — this turn's output checked against each working-memory item
       </p>
       {audit.labels.map((label) => (
@@ -184,7 +184,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
             {label.label === "violated" ? (
               <>
                 <span className="font-medium text-destructive">violated</span>
-                <span className="mt-0.5 block text-[10px] leading-relaxed text-muted-foreground">
+                <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
                   {label.quote ? <span className="text-foreground/80">“{truncate(label.quote, 110)}”</span> : null}
                   {label.note ? <span className="block">{label.note}</span> : null}
                   {label.quote || label.toolId ? (
@@ -206,7 +206,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
             ) : label.label === "not_applicable" ? (
               // Slate + the named missing object: "never entered play" must not
               // blur into "played, changed nothing" (mentor 2026-08-15).
-              <span className="text-slate-600 dark:text-muted-foreground">
+              <span className="text-muted-foreground">
                 not applicable
                 {label.missing ? <span className="text-muted-foreground"> — {label.missing}</span> : null}
               </span>
@@ -254,7 +254,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
       <div className={cn("min-w-0 flex-1", !isLast && "pb-5")}>
         {/* Head: turn number + the settled recap (or the turn's fate). */}
         <div className="flex items-baseline gap-2">
-          <span className="font-mono text-[10px] font-semibold leading-relaxed text-muted-icon">t{turn.turn}</span>
+          <span className="font-mono text-[11px] font-semibold leading-relaxed text-muted-icon">t{turn.turn}</span>
           <div className="min-w-0 flex-1">
             {expired ? (
               <p className="text-[11px] italic text-muted-foreground">cancelled before running (server restart)</p>
@@ -566,7 +566,7 @@ export function MemoryRecordRail({ chatId, messages, streamingText = null, isTur
 
   return (
     <div
-      className="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+      className="memory-ui min-h-0 flex-1 overflow-y-auto px-3 py-3"
       onClick={() => recordInteraction("click")}
       onScroll={() => recordInteraction("scroll")}
     >

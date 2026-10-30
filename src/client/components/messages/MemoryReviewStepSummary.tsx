@@ -1,5 +1,6 @@
+import { MEMORY_CARD } from "../memory/MemorySurface"
 import type { ReactNode } from "react"
-import { Loader2, RotateCcw } from "lucide-react"
+import { CheckCheck, Loader2, RotateCcw } from "lucide-react"
 import { Button } from "../ui/button"
 
 interface Props {
@@ -17,11 +18,12 @@ interface Props {
  */
 export function MemoryReviewStepSummary({ title, outcome, consequence, reopening, onReopen }: Props) {
   return (
-    <div className="rounded-xl border border-border bg-card px-4 py-3 shadow-sm">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+    <div className={MEMORY_CARD}>
+      <div className="flex flex-col gap-2 @lg:flex-row @lg:items-center @lg:justify-between @lg:gap-4">
         <div className="min-w-0">
           <div className="flex flex-wrap items-baseline gap-x-1 gap-y-0.5 text-xs">
-            <span className="font-medium text-foreground">{title}</span>
+            <CheckCheck aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span className="text-sm font-semibold text-foreground">{title}</span>
             <span className="text-muted-foreground">{outcome}</span>
           </div>
           {onReopen ? (
@@ -33,7 +35,7 @@ export function MemoryReviewStepSummary({ title, outcome, consequence, reopening
           <Button
             variant="outline"
             size="xs"
-            className="shrink-0 self-start sm:self-center"
+            className="shrink-0 self-start @lg:self-center"
             disabled={reopening}
             onClick={() => void onReopen()}
           >
