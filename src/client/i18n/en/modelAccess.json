@@ -1,4 +1,5 @@
 {
+  "viaTranslation": "via translation",
   "engines": "Engines",
   "enginesDescription": "Executable, access and model defaults for each engine.",
   "connections": "Connections",

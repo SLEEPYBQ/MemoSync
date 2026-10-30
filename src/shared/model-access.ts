@@ -10,9 +10,7 @@
 //      Connection mode always runs in a MemoSync-owned profile so the user's
 //      own CLI configuration is never read or changed.
 //
-// Phase 1 speaks each engine's native protocol only (see ENGINE_PROTOCOLS).
-// Translating between protocols (e.g. Claude Code on an OpenAI Chat endpoint)
-// is a later phase.
+// Native protocols take precedence; Chat translation is a fallback for Claude and Codex.
 
 export type EngineId = "claude" | "codex" | "pi"
 
@@ -24,6 +22,21 @@ export const ENGINE_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>
   claude: ["anthropic-messages"],
   codex: ["openai-responses"],
   pi: ["openai-chat", "openai-responses"],
+}
+
+/** Fallback protocols translated by the loopback gateway. Pi uses native endpoints. */
+export const ENGINE_TRANSLATED_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>> = {
+  claude: ["openai-chat"], codex: ["openai-chat"], pi: [],
+}
+
+export function connectionSupport(engine: EngineId, connection: Pick<ApiConnection, "endpoints">): "native" | "translated" | "unsupported" {
+  if (endpointForEngine(engine, connection)) return "native"
+  return connection.endpoints.some(e => ENGINE_TRANSLATED_PROTOCOLS[engine].includes(e.protocol)) ? "translated" : "unsupported"
+}
+
+/** The upstream endpoint, preferring native access. Does not start the gateway. */
+export function compatibleEndpointForEngine(engine: EngineId, connection: Pick<ApiConnection, "endpoints">): ConnectionEndpoint | null {
+  return endpointForEngine(engine, connection) ?? connection.endpoints.find(e => ENGINE_TRANSLATED_PROTOCOLS[engine].includes(e.protocol)) ?? null
 }
 
 /** Engines that can use the agent's own sign-in. Pi has none. */
@@ -119,6 +132,8 @@ export interface EngineStatus {
   executable: ExecutableStatus
   /** True when a turn on this engine can start right now. */
   ready: boolean
+  /** Connection uses the local protocol translation gateway. */
+  translated?: boolean
   /** Why it isn't ready, as a stable code the client translates. */
   problem?:
     | "executable-missing"

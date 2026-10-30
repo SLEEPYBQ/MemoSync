@@ -1,5 +1,5 @@
 import { getModelAccessService } from "./model-access/service"
-import { endpointForEngine } from "../shared/model-access"
+import { compatibleEndpointForEngine } from "../shared/model-access"
 import type {
   AgentProvider,
   ClaudeContextWindow,
@@ -59,7 +59,7 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
   const access = getModelAccessService()
   if (access) return SERVER_PROVIDERS.map(provider => {
     const setup = access.setup(provider.id)
-    const connections = access.connections().filter(c => endpointForEngine(provider.id, c))
+    const connections = access.connections().filter(c => compatibleEndpointForEngine(provider.id, c))
     const models: ProviderModelOption[] = connections.flatMap(c => c.models.map(m => ({
       id: m.id, label: m.label || m.id, supportsEffort: m.supportsReasoning ?? true,
       connectionId: c.id, vendor: c.name,

@@ -62,3 +62,8 @@ test("connection identity and custom model survive edits, new-chat cloning and p
   }
   useChatPreferencesStore.setState({ chatStates: {} })
 })
+
+test("Claude and Codex model pickers include Chat fallback connections", () => {
+  const connection = { ...valid, id: "chat-only", keySource: "none" as const }
+  for (const engine of ["claude", "codex"] as const) expect(connectionGroups(engine, [connection]).map(g => g.connection.id)).toEqual(["chat-only"])
+})
