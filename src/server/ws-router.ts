@@ -27,7 +27,7 @@ import { KeybindingsManager } from "./keybindings"
 import { killLocalHttpServer, listLocalHttpServers } from "./local-http-servers"
 import { ensureProjectDirectory, resolveLocalPath } from "./paths"
 import { readProjectQuickActions, writeProjectQuickActions } from "./project-quick-actions"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
+import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
@@ -1498,6 +1498,14 @@ export function createWsRouter({
           }
           return
         }
+        case "chat.getPreview": {
+          const chat = store.getChat(command.chatId)
+          const result = chat
+            ? deriveChatPreview(store.getMessages(chat.id), agent.getPendingTool(chat.id)?.toolUseId)
+            : null
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
         case "chat.getGitHubPublishInfo": {
           const { project } = resolveChatProject(command.chatId)
           const result = await resolvedDiffStore.getGitHubPublishInfo({
@@ -1728,6 +1736,7 @@ export function createWsRouter({
             steer: (value) => agent.steer(value),
             isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
             isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
+            remove: (chatId, messageId) => store.removeQueuedMessage(chatId, messageId),
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)

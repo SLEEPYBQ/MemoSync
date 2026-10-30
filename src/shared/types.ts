@@ -707,6 +707,11 @@ export interface TodoItem {
   activeForm: string
 }
 
+/** On-demand notification preview; null on the wire when no visible reply exists. */
+export interface ChatPreview {
+  lastAgentMessagePreview: string
+}
+
 interface TranscriptEntryBase {
   _id: string
   messageId?: string

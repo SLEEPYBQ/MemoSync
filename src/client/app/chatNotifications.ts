@@ -1,6 +1,6 @@
 import { chatTitle } from "../i18n/uiText"
 import { t } from "../i18n"
-import type { SidebarData } from "../../shared/types"
+import type { ChatPreview, SidebarData } from "../../shared/types"
 
 export function getNotificationTitleCount(sidebarData: SidebarData) {
   return sidebarData.projectGroups.reduce((count, group) => (
@@ -53,11 +53,34 @@ export interface ChatNotificationEvent {
   projectTitle: string
   chatTitle: string
   /**
-   * The question or plan the chat is waiting on, when that is what changed.
+   * Immediate waiting-for-response copy when the chat starts waiting.
    * `null` for a chat that only turned unread: the sidebar carries no message
-   * previews, so the caller fetches one (`chat.getPreview`) before showing.
+   * previews, so showChatNotificationEvents fetches one via chat.getPreview,
+   * falling back to t("chat:newChatActivity") if unavailable.
    */
   message: string | null
+}
+
+/** Keep waiting notifications immediate and fetch at most once per unread event. */
+export async function showChatNotificationEvents(args: {
+  enabled: boolean
+  events: ChatNotificationEvent[]
+  loadPreview: (chatId: string) => Promise<ChatPreview | null>
+  showNotification: (event: ChatNotificationEvent & { message: string }) => void
+}): Promise<void> {
+  if (!args.enabled) return
+  await Promise.all(args.events.map(async (event) => {
+    let message = event.message
+    if (message === null) {
+      try {
+        const preview = await args.loadPreview(event.chatId)
+        message = preview?.lastAgentMessagePreview || t("chat:newChatActivity")
+      } catch {
+        message = t("chat:newChatActivity")
+      }
+    }
+    args.showNotification({ ...event, message })
+  }))
 }
 
 
