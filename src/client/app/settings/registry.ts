@@ -151,6 +151,18 @@ export const SETTINGS_ROWS = defineRows({
     get title() { return t("settings:memoryChanges") },
     get description() { return t("settings:askFirstHoldsEveryProposalForYourReviewApplyAutomatically") },
   },
+  modelEngines: {
+    sectionId: "providers",
+    get title() { return t("modelAccess:engines") },
+    get description() { return t("modelAccess:enginesDescription") },
+    get keywords() { return t("modelAccess:searchKeywords").split(",") },
+  },
+  apiConnections: {
+    sectionId: "providers",
+    get title() { return t("modelAccess:connections") },
+    get description() { return t("modelAccess:connectionsDescription") },
+    get keywords() { return t("modelAccess:searchKeywords").split(",") },
+  },
   defaultProvider: {
     sectionId: "providers",
     get title() { return t("settings:defaultProvider") },

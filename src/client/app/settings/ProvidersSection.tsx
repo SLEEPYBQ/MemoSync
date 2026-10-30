@@ -1,5 +1,8 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
+import { EngineCard } from "./EngineCard"
+import { ConnectionsSection } from "./ConnectionsSection"
+import { useModelAccessStore } from "../../model-access/modelAccess"
 import { useState } from "react"
 import type {
   AgentProvider,
@@ -45,12 +48,13 @@ function modelOptionsPatch(
 export function ProvidersSection({
   state,
 }: {
-  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders">
+  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket">>
 }) {
   useI18n()
   const preferences = useChatPreferencesStore()
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
+  const snapshot = useModelAccessStore(s => s.snapshot)
 
   async function save(patch: AppSettingsPatch) {
     try {
@@ -75,6 +79,8 @@ export function ProvidersSection({
             availableProviders={providers}
             selectedProvider={provider}
             showProviderPicker={false}
+            showModelPicker={snapshot?.engines[provider].setup.access.mode !== "connection"}
+            useModelAccess={false}
             providerLocked
             model={defaults.model}
             modelOptions={defaults.modelOptions}
@@ -126,11 +132,13 @@ export function ProvidersSection({
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <SettingsGroup title={t("settings:modelDefaults")}>
-          {renderDefaults("claude")}
-          {providers.some((provider) => provider.id === "codex") ? renderDefaults("codex") : null}
-          {providers.some((provider) => provider.id === "pi") ? renderDefaults("pi") : null}
+        <SettingsGroup title={t("modelAccess:engines")}>
+          <SettingsRow def={SETTINGS_ROWS.modelEngines}><span className="text-xs text-muted-foreground">{snapshot ? "" : t("modelAccess:loading")}</span></SettingsRow>
         </SettingsGroup>
+        {(["claude", "codex", "pi"] as const).map(engine => <EngineCard key={engine} engine={engine} status={snapshot?.engines[engine]} connections={snapshot?.connections ?? []} socket={state.socket}>
+          {renderDefaults(engine)}
+        </EngineCard>)}
+        <ConnectionsSection connections={snapshot?.connections ?? []} presets={snapshot?.presets ?? []} socket={state.socket} />
       </SettingsGroups>
     </>
   )

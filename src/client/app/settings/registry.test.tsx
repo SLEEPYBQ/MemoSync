@@ -47,7 +47,7 @@ describe("settings registry and section rendering", () => {
       }
     }
     expect(htmlBySection.general).not.toContain("Memory Preview")
-    expect(htmlBySection.providers).not.toContain(">Codex<")
+    expect(htmlBySection.providers).toContain('data-engine="codex"')
   })
   test("memory-off dims and disables dependents with actionable reasons", () => {
     const html = memoryHtml({ enabled: false })

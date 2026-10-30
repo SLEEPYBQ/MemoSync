@@ -1,3 +1,5 @@
+import { FirstRunCallout } from "../../model-access/FirstRunCallout"
+import { useModelAccessStore, type AccessModelOptions } from "../../model-access/modelAccess"
 import { httpUiError } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
@@ -190,6 +192,12 @@ function getEffectiveComposerState(
     return composerState
   }
 
+  if (activeProvider === "pi") return {
+    provider: "pi",
+    model: providerDefaults.pi.model,
+    modelOptions: { ...providerDefaults.pi.modelOptions },
+    planMode: false,
+  }
   return activeProvider === "claude"
     ? {
       provider: "claude",
@@ -236,7 +244,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     providerDefaults,
     getComposerState,
     initializeComposerForChat,
-    setChatComposerModel,
     setChatComposerPlanMode,
     resetChatComposerFromProvider,
   } = useChatPreferencesStore()
@@ -302,7 +309,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }, [chatId, textDraftKey, getDraft])
 
   const providerLocked = activeProvider !== null
-  const providerPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
+  const modelAccess = useModelAccessStore(s => s.snapshot)
+  const baseProviderPrefs = getEffectiveComposerState(composerState, activeProvider, providerDefaults)
+  const engineAccess = modelAccess?.engines[baseProviderPrefs.provider].setup.access
+  const providerPrefs = !baseProviderPrefs.connectionId && engineAccess?.mode === "connection"
+    ? { ...baseProviderPrefs, connectionId: engineAccess.connectionId, model: engineAccess.defaultModel ?? modelAccess?.connections.find(c => c.id === engineAccess.connectionId)?.models[0]?.id ?? baseProviderPrefs.model }
+    : baseProviderPrefs
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
@@ -603,7 +615,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const nextValue = value
     const previousAttachments = attachmentsRef.current
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
-    let modelOptions: ModelOptions
+    let modelOptions: AccessModelOptions
     if (providerPrefs.provider === "claude") {
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "pi") {
@@ -611,6 +623,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
+    if (providerPrefs.connectionId) modelOptions.connectionId = providerPrefs.connectionId
     const submitOptions = {
       steer,
       provider: selectedProvider,
@@ -808,6 +821,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
   return (
     <div>
+      {!chatId ? <FirstRunCallout /> : null}
       <div className={cn("px-3 pt-0", isStandalone && "px-5")}>
         <div className="max-w-[840px] mx-auto rounded-[32px]">
           {attachments.length > 0 ? (
@@ -962,12 +976,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               if (providerLocked) return
               resetChatComposerFromProvider(composerChatId, provider)
             }}
-            onModelChange={(_, model) => {
-              if (providerLocked) {
-                updateComposerState((state) => withNormalizedContextWindow(state, model))
-                return
-              }
-              setChatComposerModel(composerChatId, model)
+            connectionId={providerPrefs.connectionId}
+            onModelChange={(_, model, connectionId) => {
+              updateComposerState(state => ({ ...withNormalizedContextWindow(state, model), connectionId }))
             }}
             onModelOptionChange={(change) => {
               switch (change.type) {

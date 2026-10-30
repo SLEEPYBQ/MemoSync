@@ -1,3 +1,4 @@
+import { connectionGroups, useModelAccessStore } from "../../model-access/modelAccess"
 import { effortLabel } from "../../i18n/labels"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useState, type ComponentType, type SVGProps } from "react"
@@ -17,6 +18,7 @@ import {
   type PiReasoningEffort,
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
+  getProviderCatalog,
 } from "../../../shared/types"
 import { piEffortOptions, resolvePiEffort } from "../../../shared/model-capabilities"
 import { useRegistryModels } from "../../hooks/useRegistryModels"
@@ -140,7 +142,7 @@ export function PopoverMenuItem({
       )}
     >
       {icon}
-      <div>
+      <div className="min-w-0 [overflow-wrap:anywhere]">
         <div className="text-sm font-medium">{label}</div>
         {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
       </div>
@@ -194,7 +196,7 @@ export function InputPopover({
         </button>
       </PopoverTrigger>
       <PopoverContent align="center" className="w-64 p-1">
-        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
+        <div className="max-h-[70dvh] space-y-1 overflow-y-auto">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
       </PopoverContent>
     </Popover>
   )
@@ -243,12 +245,15 @@ interface ChatPreferenceControlsProps {
   availableProviders: ProviderCatalogEntry[]
   selectedProvider: AgentProvider
   showProviderPicker?: boolean
+  showModelPicker?: boolean
+  useModelAccess?: boolean
+  connectionId?: string
   providerLocked?: boolean
   showCodexCliRequirementHints?: boolean
   model: string
   modelOptions: ClaudeModelOptions | CodexModelOptions | PiModelOptions
   onProviderChange?: (provider: AgentProvider) => void
-  onModelChange: (provider: AgentProvider, model: string) => void
+  onModelChange: (provider: AgentProvider, model: string, connectionId?: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
   planMode?: boolean
   onPlanModeChange?: (planMode: boolean) => void
@@ -260,6 +265,9 @@ export function ChatPreferenceControls({
   availableProviders,
   selectedProvider,
   showProviderPicker = true,
+  showModelPicker = true,
+  useModelAccess = true,
+  connectionId,
   providerLocked = false,
   showCodexCliRequirementHints = false,
   model,
@@ -273,13 +281,21 @@ export function ChatPreferenceControls({
   className,
 }: ChatPreferenceControlsProps) {
   useI18n()
-  const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const registry = useRegistryModels(selectedProvider === "pi", model)
+  const snapshot = useModelAccessStore(s => s.snapshot)
+  const accessSnapshot = useModelAccess ? snapshot : null
+  const access = accessSnapshot?.engines[selectedProvider].setup.access
+  const groups = connectionGroups(selectedProvider, accessSnapshot?.connections ?? [])
+  const activeConnectionId = connectionId ?? (access?.mode === "connection" ? access.connectionId : undefined)
+  const connectionModel = groups.find(g => g.connection.id === activeConnectionId)?.models.find(m => m.id === model)
+  const showAccountModels = !accessSnapshot || access?.mode === "account"
+  const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? getProviderCatalog(selectedProvider)
+  const registry = useRegistryModels(selectedProvider === "pi" && showModelPicker && !accessSnapshot, model)
   const [modelSearch, setModelSearch] = useState("")
   const modelCard = registry.models.find(candidate => candidate.id === model)
   const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === model)
   const piRequested = (modelOptions as PiModelOptions).reasoningEffort
-  const piEffort = resolvePiEffort(modelCard, piRequested)
+  const useConnectionEfforts = Boolean(accessSnapshot) || !showModelPicker
+  const piEffort = useConnectionEfforts ? piRequested : resolvePiEffort(modelCard, piRequested)
   useEffect(() => {
     if (selectedProvider === "pi" && registry.loaded && piRequested !== piEffort) {
       onModelOptionChange({ type: "piReasoningEffort", effort: piEffort })
@@ -293,7 +309,7 @@ export function ChatPreferenceControls({
     if (candidate.vendor && !acc.includes(candidate.vendor)) acc.push(candidate.vendor)
     return acc
   }, [])
-  const useVendorPicker = vendors.length > 1
+  const useVendorPicker = showModelPicker && !accessSnapshot && vendors.length > 1
   const baseModelList = useVendorPicker && selectedVendor
     ? (providerConfig?.models ?? []).filter((candidate) => candidate.vendor === selectedVendor)
     : (providerConfig?.models ?? [])
@@ -376,23 +392,29 @@ export function ChatPreferenceControls({
         </InputPopover>
       ) : null}
 
-      <InputPopover
+      {showModelPicker ? <InputPopover
         onOpen={selectedProvider === "pi" ? () => { setModelSearch(""); registry.refresh() } : undefined}
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
-            <span>{selectedModelEntry?.label ?? model}</span>
+            <span className="max-w-[200px] truncate">{connectionModel?.label ?? selectedModelEntry?.label ?? model}</span>
           </>
         )}
       >
         {(close) => (
           <>
-            {selectedProvider === "pi" ? <PiCustomModelItem onSearch={setModelSearch} onSubmit={(modelId) => {
+            {groups.map(({ connection, models }) => <div key={connection.id} role="group" aria-label={connection.name} className="max-h-60 overflow-y-auto border-b border-border pb-1 last:border-0">
+              <p className="break-words px-2 py-1 text-xs text-muted-foreground">{connection.name}</p>
+              {models.map(candidate => <PopoverMenuItem key={candidate.id} onClick={() => { onModelChange(selectedProvider, candidate.id, connection.id); close() }} selected={activeConnectionId === connection.id && model === candidate.id} icon={<Box className="size-4 text-muted-foreground" />} label={candidate.label ?? candidate.id} />)}
+            </div>)}
+            {accessSnapshot && !showAccountModels && !groups.length ? <p className="p-2 text-sm text-muted-foreground">{t("modelAccess:noCompatibleModels")}</p> : null}
+            {accessSnapshot && showAccountModels ? <p className="px-2 py-1 text-xs text-muted-foreground">{t("modelAccess:accountModels")}</p> : null}
+            {selectedProvider === "pi" && !accessSnapshot ? <PiCustomModelItem onSearch={setModelSearch} onSubmit={(modelId) => {
               onModelChange(selectedProvider, modelId)
               close()
             }} /> : null}
             <div className="max-h-72 overflow-y-auto">
-            {modelList.map((candidate) => {
+            {(showAccountModels ? modelList : []).map((candidate) => {
               const Icon = Box
               return (
                 <PopoverMenuItem
@@ -401,7 +423,7 @@ export function ChatPreferenceControls({
                     onModelChange(selectedProvider, candidate.id)
                     close()
                   }}
-                  selected={model === candidate.id}
+                  selected={!activeConnectionId && model === candidate.id}
                   icon={<Icon className="h-4 w-4 text-muted-foreground" />}
                   label={
                     showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
@@ -419,7 +441,7 @@ export function ChatPreferenceControls({
               )
             })}
             </div>
-            {selectedProvider === "pi" ? (
+            {selectedProvider === "pi" && !accessSnapshot ? (
               <>
                 {/* Pi accepts any non-empty registry model id; show the active
                     custom id when it is not one of the catalog suggestions. */}
@@ -437,7 +459,7 @@ export function ChatPreferenceControls({
             ) : null}
           </>
         )}
-      </InputPopover>
+      </InputPopover> : null}
 
       <InputPopover
         trigger={(
@@ -471,7 +493,7 @@ export function ChatPreferenceControls({
               />
             ))
             : selectedProvider === "pi"
-              ? piEffortOptions(modelCard).filter((effort) =>
+              ? (useConnectionEfforts ? PI_REASONING_OPTIONS : piEffortOptions(modelCard)).filter((effort) =>
                   !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
                 ).map((effort) => (
                 <PopoverMenuItem
