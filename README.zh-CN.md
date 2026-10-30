@@ -131,9 +131,11 @@ bun run start
 
 | 引擎 | 运行的程序 | 接入方式 |
 | --- | --- | --- |
-| **Claude Code** | 你装好的 `claude`；没装就用 Agent SDK 自带的那份 | 自己的登录，或支持 Anthropic API 的 API 连接 |
-| **Codex** | 你装好的 `codex`（必须安装） | 自己的登录，或支持 OpenAI Responses API 的 API 连接 |
+| **Claude Code** | 你装好的 `claude`；没装就用 Agent SDK 自带的那份 | 自己的登录，或支持 Anthropic API 或 OpenAI Chat 的 API 连接 |
+| **Codex** | 你装好的 `codex`（必须安装） | 自己的登录，或支持 OpenAI Responses API 或 OpenAI Chat 的 API 连接 |
 | **Pi** | MemoSync 内置 | 支持 OpenAI Chat 或 Responses API 的 API 连接 |
+
+连接只支持 OpenAI Chat 时，MemoSync 会在本机 `127.0.0.1` 上起一个转换层，替 Claude Code 和 Codex 做协议转换，引擎卡片上会标出**经协议转换**。引擎本身拿不到你的 key。
 
 **自己的登录**：直接沿用你本机已有的登录和配置，MemoSync 不会往里加任何东西。引擎显示**还没有登录**的话，先在终端里登录，再点**重新检测**。
 

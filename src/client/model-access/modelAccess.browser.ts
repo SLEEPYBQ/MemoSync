@@ -570,7 +570,7 @@ test("Chat fallback is selectable for Claude and Codex and translation status is
   await open()
   for (const engine of ["claude", "codex"] as const) {
     const card = page.locator(`[data-engine="${engine}"]`)
-    await card.getByRole("button", { name: "API connection", exact: true }).click()
+    await card.getByRole("radio", { name: "API connection", exact: true }).click()
     await card.getByLabel("API connection", { exact: true }).click()
     const chat = page.getByRole("option", { name: "Local Chat", exact: true })
     expect(await chat.getAttribute("data-disabled")).toBeNull()

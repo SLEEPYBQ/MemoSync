@@ -130,9 +130,11 @@ An **engine** is the agent that does the work. **Access** is how it reaches a mo
 
 | Engine | What it runs | Access |
 | --- | --- | --- |
-| **Claude Code** | Your installed `claude`, or the copy bundled with the Agent SDK | Your sign-in, or an API connection that speaks the Anthropic API |
-| **Codex** | Your installed `codex` (required) | Your sign-in, or an API connection that speaks the OpenAI Responses API |
+| **Claude Code** | Your installed `claude`, or the copy bundled with the Agent SDK | Your sign-in, or an API connection that speaks the Anthropic API or OpenAI Chat |
+| **Codex** | Your installed `codex` (required) | Your sign-in, or an API connection that speaks the OpenAI Responses API or OpenAI Chat |
 | **Pi** | Built into MemoSync | An API connection that speaks OpenAI Chat or Responses |
+
+When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code and Codex through a local gateway on `127.0.0.1`; the engine card says **via translation**. The engine never sees your key.
 
 **Your sign-in.** The engine uses the login and settings you already have, and MemoSync adds nothing to them. If the engine shows **Not signed in**, sign in from your terminal, then press **Detect again**.
 
