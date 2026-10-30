@@ -102,6 +102,7 @@
   "serverMemoryProjectUnavailable": "Memory branch project is unavailable",
   "serverNewChat": "New Chat",
   "serverForkedChat": "Fork: {{v0}}",
+  "serverForkedNewChat": "Fork: New Chat",
   "serverGitInitFailed": "Initialize git failed",
   "serverGitInitMessage": "Git could not initialize this folder.",
   "serverGhMissing": "GitHub CLI is not installed.",

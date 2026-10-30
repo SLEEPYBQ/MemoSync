@@ -3,6 +3,7 @@
 export const SERVER_UI_COPY = {
   "newChat": "New Chat",
   "forkedChat": "Fork: {{v0}}",
+  "forkedNewChat": "Fork: New Chat",
   "projectNotFound": "Project not found",
   "chatNotFound": "Chat not found",
   "unavailable": "Unavailable",

@@ -46,13 +46,13 @@ const TRACE_LABEL_CLASSES: Record<string, string> = {
 const FIELD_LABELS: Record<string, string> = {
   get content() { return t("memory:content") },
   get detail() { return t("memory:detail2") },
-  scope: t("memory:fieldScope"),
-  type: t("memory:fieldType"),
-  status: t("memory:fieldStatus"),
-  topic: t("memory:fieldTopic"),
-  abstractionLevel: t("memory:fieldAbstraction"),
-  projectId: t("memory:fieldProject"),
-  sessionId: t("memory:fieldSession"),
+  get scope() { return t("memory:fieldScope") },
+  get type() { return t("memory:fieldType") },
+  get status() { return t("memory:fieldStatus") },
+  get topic() { return t("memory:fieldTopic") },
+  get abstractionLevel() { return t("memory:fieldAbstraction") },
+  get projectId() { return t("memory:fieldProject") },
+  get sessionId() { return t("memory:fieldSession") },
 }
 
 function fieldLabel(key: string): string {

@@ -102,6 +102,7 @@
   "serverMemoryProjectUnavailable": "记忆分支的项目不可用",
   "serverNewChat": "新建对话",
   "serverForkedChat": "分叉：{{v0}}",
+  "serverForkedNewChat": "分叉：新建对话",
   "serverGitInitFailed": "Git 初始化失败",
   "serverGitInitMessage": "Git 无法初始化此文件夹。",
   "serverGhMissing": "尚未安装 GitHub CLI。",

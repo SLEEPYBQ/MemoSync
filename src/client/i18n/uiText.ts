@@ -5,6 +5,7 @@ import { describeServerUiText, type UiTextReference, type UiCopyCode, type UiTex
 const serverKeys = {
   "newChat": "errors:serverNewChat",
   "forkedChat": "errors:serverForkedChat",
+  "forkedNewChat": "errors:serverForkedNewChat",
   "projectNotFound": "errors:serverProjectNotFound",
   "chatNotFound": "errors:serverChatNotFound",
   "unavailable": "errors:serverUnavailable",
