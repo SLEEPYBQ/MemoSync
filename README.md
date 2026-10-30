@@ -5,7 +5,7 @@
 <h1 align="center">MemoSync</h1>
 
 <p align="center">
-  <strong>See what your coding agent remembers, decide what it keeps, choose what it uses, and check how it used it.</strong>
+  <strong>Co-manage memory with your coding agent across sessions.</strong>
 </p>
 
 <p align="center">

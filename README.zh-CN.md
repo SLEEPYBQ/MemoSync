@@ -5,7 +5,7 @@
 <h1 align="center">MemoSync</h1>
 
 <p align="center">
-  <strong>看清编程智能体记住了什么，决定它留下什么、这次用什么，事后再核对它用得对不对。</strong>
+  <strong>和你的编程智能体一起管理记忆，跨越每一次会话。</strong>
 </p>
 
 <p align="center">
