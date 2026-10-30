@@ -65,10 +65,8 @@
   "loadingMemoryChangesPreference": " Loading memory changes preference…",
   "useMemory": "Use Memory",
   "learnFromChats": "Learn From Chats",
-  "beforeEachTurn": "Before Each Turn",
   "memoryPreview": "Memory Preview",
   "autoProceedWhenNoMemoryApplies": "Auto-proceed When No Memory Applies",
-  "changes": "Changes",
   "memoryChanges": "Memory Changes",
   "askFirst": "Ask First",
   "applyAutomatically": "Apply Automatically",
@@ -207,6 +205,8 @@
   "memoryControl": "Control",
   "reviewEachTurn": "Review each turn",
   "automatic": "Automatic",
-  "memoryControlDescription": "Review each turn: you confirm memory changes and the working memory before the agent starts. Automatic: the agent reads the memory index and loads what it needs; safe changes apply on their own and can be reverted, sensitive ones wait on the Memory Board, and the review only speaks up when a memory was broken.",
-  "setControlToReviewToChangeThis": "Set Control to Review each turn to change this."
+  "memoryControlDescription": "Confirm memory yourself each turn, or let the agent handle it.",
+  "memoryControlReviewDescription": "You confirm memory changes and the working memory before the agent starts.",
+  "memoryControlAutoDescription": "The agent reads the memory index and loads what it needs. Safe changes apply on their own and can be reverted, sensitive ones wait on the Memory Board, and the review only speaks up when a memory was broken.",
+  "whenReviewingEachTurn": "When Reviewing Each Turn"
 }

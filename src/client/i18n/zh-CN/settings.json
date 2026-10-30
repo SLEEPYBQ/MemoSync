@@ -65,10 +65,8 @@
   "loadingMemoryChangesPreference": " 正在加载记忆变更偏好…",
   "useMemory": "使用记忆",
   "learnFromChats": "从对话中学习",
-  "beforeEachTurn": "每轮开始前",
   "memoryPreview": "记忆预览",
   "autoProceedWhenNoMemoryApplies": "无适用记忆时自动继续",
-  "changes": "变更",
   "memoryChanges": "记忆变更",
   "askFirst": "先询问",
   "applyAutomatically": "自动应用",
@@ -207,6 +205,8 @@
   "memoryControl": "控制方式",
   "reviewEachTurn": "每轮确认",
   "automatic": "自动",
-  "memoryControlDescription": "每轮确认：记忆改动和本轮工作记忆都由你确认后，智能体才开始。自动：智能体自己查看记忆索引、按需读取；不敏感的改动直接生效、可以撤销，敏感的留在记忆看板，审查只在发现违反时提醒。",
-  "setControlToReviewToChangeThis": "把控制方式设为「每轮确认」后才能修改。"
+  "memoryControlDescription": "每轮由你确认记忆，还是交给智能体自己处理。",
+  "memoryControlReviewDescription": "记忆改动和本轮用哪些记忆，都等你确认后智能体才开始。",
+  "memoryControlAutoDescription": "智能体自己查看记忆索引、按需读取。不敏感的改动直接生效、可以撤销，敏感的留在记忆看板等你确认，审查只在发现违反时提醒。",
+  "whenReviewingEachTurn": "每轮确认时"
 }

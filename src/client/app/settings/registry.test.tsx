@@ -76,18 +76,16 @@ describe("settings registry and section rendering", () => {
     expect(html.match(/aria-disabled="true"/g)?.length).toBe(1)
     expect(html).toContain("Turn on Learn From Chats to change this.")
   })
-  test("control is the first row, searchable in both languages; automatic disables its three dependents", () => {
+  test("control follows the two switches; automatic hides the per-turn review rows", () => {
     const html = memoryHtml({ control: "auto" })
-    expect(html.indexOf('id="memoryControl"')).toBeLessThan(html.indexOf('id="memoryEnabled"'))
+    expect(html.indexOf('id="memoryLearn"')).toBeLessThan(html.indexOf('id="memoryControl"'))
     expect(html).toContain('aria-label="Control"')
-    expect(html.match(/aria-disabled="true"/g)?.length).toBe(3)
-    expect(html.match(/Set Control to Review each turn to change this./g)?.length).toBe(3)
-    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) {
-      const row = html.slice(html.indexOf(`id="${id}"`)).split(/<div id="memory/)[0]!
-      expect(row).toContain('aria-disabled="true"')
-      expect(row).toContain('disabled=""')
-    }
-    expect(memoryHtml().match(/aria-disabled="true"/g)).toBeNull()
+    expect(html).toContain("The agent reads the memory index")
+    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) expect(html).not.toContain(`id="${id}"`)
+    const review = memoryHtml()
+    expect(review).toContain("You confirm memory changes")
+    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) expect(review).toContain(`id="${id}"`)
+    expect(review.match(/aria-disabled="true"/g)).toBeNull()
     for (const keyword of ["automatic", "review each turn", "控制方式", "自动", "每轮确认"]) {
       expect(SETTINGS_ROWS.memoryControl.keywords).toContain(keyword)
     }
