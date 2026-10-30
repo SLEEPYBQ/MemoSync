@@ -424,6 +424,7 @@ interface ClaudeSessionState {
   sessionToken: string | null
   accountInfoLoaded: boolean
   nextPromptSeq: number
+  cancelledPromptSeqs: Set<number>
   pendingPrompts: Array<{ seq: number; id: string }>
   echoesPromptIds: boolean
   /** Retired sessions may still have SDK messages queued while Query.close() settles. */
@@ -6240,6 +6241,7 @@ export class AgentCoordinator {
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPrompts: [],
+        cancelledPromptSeqs: new Set(),
         echoesPromptIds: started.echoesPromptIds ?? false,
         retired: false,
         retireReason: null,
@@ -6481,6 +6483,12 @@ export class AgentCoordinator {
         const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
           ? this.takeAnsweredClaudePrompts(session, event) : []
         if ((event.entry.kind === "result" || event.entry.kind === "interrupted") && completedPromptSeqs.length === 0) continue
+        // Stop already persisted the interruption. A late SDK result belongs
+        // to the cancelled prompts, even if steer has started a new turn.
+        const cancelledResult = completedPromptSeqs.length > 0
+          && completedPromptSeqs.every(seq => session.cancelledPromptSeqs.has(seq))
+        for (const seq of completedPromptSeqs) session.cancelledPromptSeqs.delete(seq)
+        if (cancelledResult && event.entry.kind === "result") continue
         if (event.entry.kind === "assistant_text" || event.entry.kind === "result" || event.entry.kind === "interrupted") {
           // Final text replaces the streaming preview in the same broadcast;
           // result/interrupted also sweep it in case no final text arrived.
@@ -6518,6 +6526,7 @@ export class AgentCoordinator {
               const releasedOriginReservations = session.session
                 .discardHumanTurnReservations?.(orphaned) ?? 0
               session.pendingPrompts = session.pendingPrompts.filter(prompt => prompt.seq >= activeSeq)
+              for (const seq of orphaned) session.cancelledPromptSeqs.delete(seq)
               logClaudeSteer("claude_prompt_fifo_resync", {
                 chatId: session.chatId,
                 sessionId: session.id,
@@ -7145,6 +7154,10 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+    if (active.provider === "claude" && active.claudePromptSeq !== undefined) {
+      const session = this.claudeSessions.get(chatId)
+      session?.cancelledPromptSeqs.add(active.claudePromptSeq)
+    }
     if (active.startupReservation) {
       this.cancelStartupReservation(chatId, active.startupReservation)
     }

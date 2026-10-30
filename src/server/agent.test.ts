@@ -3518,6 +3518,34 @@ describe("Claude prompt UUID lifecycle", () => {
     expect(tracker.current()).toBe("unknown")
   })
 
+  for (const ids of ["single", "missing", "mixed"] as const) {
+    test(`cancel interrupt errors are attributed without hiding the next real error (${ids})`, async () => {
+      const h = harness()
+      let failures = 0
+      ;(h.store as any).recordTurnFailed = async () => { failures++ }
+      try {
+        await h.send("cancel me")
+        h.init()
+        await h.flush()
+        await h.coordinator.cancel("chat-1")
+        await h.send("next turn")
+        const cancelledIds = ids === "missing" ? undefined : [h.prompts[0]!.promptId]
+        h.events.push({ type: "transcript", promptIds: cancelledIds,
+          entry: timestamped({ kind: "result", subtype: "error_during_execution", isError: true, durationMs: 1, result: "interrupt error" }) })
+        await h.flush()
+        expect(h.store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(0)
+        expect(h.store.messages.filter(m => m.kind === "interrupted")).toHaveLength(1)
+        expect(failures).toBe(0)
+        expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+        h.events.push({ type: "transcript", promptIds: ids === "mixed" ? h.prompts.map(p => p.promptId) : [h.prompts[1]!.promptId],
+          entry: timestamped({ kind: "result", subtype: "error_during_execution", isError: true, durationMs: 1, result: "real later failure" }) })
+        await waitFor(() => failures === 1)
+        expect(h.store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(1)
+        expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
+      } finally { h.events.close() }
+    })
+  }
+
   test("a replaced Claude stream throwing cannot fail or clear the successor", async () => {
     const h = harness()
     let rejectStream!: (error: Error) => void
