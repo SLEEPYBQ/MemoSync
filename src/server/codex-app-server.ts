@@ -816,7 +816,8 @@ export class CodexAppServerManager {
     this.spawnProcess = args.spawnProcess ?? ((cwd, _env, runtime) => {
       if (!runtime) throw new Error("engine-runtime-missing")
       const prepared = prepareCodexRuntime(runtime.env)
-      return spawn(runtime.executable.path || "codex", prepared.args, {
+      const command = runtime.launcher?.command ?? runtime.executable.path ?? "codex"
+      return spawn(command, [...(runtime.launcher?.args ?? []), ...prepared.args], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: runtime.env,

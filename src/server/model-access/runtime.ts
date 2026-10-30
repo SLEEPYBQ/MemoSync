@@ -4,7 +4,8 @@ import type { ApiConnection, ConnectionEndpoint, ConnectionModel, EngineId, Exec
 import { endpointForEngine } from "../../shared/model-access"
 import type { PiConnection } from "../pi-agent"
 import { isCliIsolationEnabled, prepareProfileDir } from "../provider-runtime"
-import { resolveEngineExecutable } from "./executables"
+import { executableLauncher, resolveEngineExecutable } from "./executables"
+import type { ExecutableLauncher } from "./launcher"
 import { connectionNeedsKey, getModelAccessService, ModelAccessService, validateConnection } from "./service"
 import { executableEnvironment, type RuntimeEnv } from "./legacy"
 
@@ -17,6 +18,8 @@ export interface EngineRuntime {
   isolated: boolean
   connectionId?: string
   piConnection?: PiConnection
+  /** How to start a Codex executable: a JS entry needs a runtime even on a GUI's node-less PATH. */
+  launcher?: ExecutableLauncher
 }
 
 // An inherited environment is a capability, not a serialized credential bundle.
@@ -61,6 +64,13 @@ export function claudeConnectionEnv(base: RuntimeEnv, endpoint: ConnectionEndpoi
   return { env, model: (model.contextWindow ?? 0) >= 1_000_000 ? `${bare}[1m]` : model.id }
 }
 
+async function withLauncher(runtime: EngineRuntime): Promise<EngineRuntime> {
+  if (runtime.engine === "codex" && runtime.executable.path && !runtime.launcher) {
+    runtime.launcher = await executableLauncher(runtime.executable.path, executableEnvironment(runtime.env))
+  }
+  return rememberRuntime(runtime)
+}
+
 export async function resolveEngineRuntime(input: {
   engine: EngineId; model?: string; connectionId?: string; env?: RuntimeEnv; service?: ModelAccessService; inherited?: EngineRuntime
 }): Promise<EngineRuntime> {
@@ -90,7 +100,7 @@ export async function resolveEngineRuntime(input: {
     const env = cleanConnectionEnv(base)
     if (base.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = base.CLAUDE_CONFIG_DIR
     if (base.CODEX_HOME) env.CODEX_HOME = base.CODEX_HOME
-    return rememberRuntime({ engine: input.engine, executable, env, args: input.engine === "codex" ? ["app-server"] : [], model: (input.engine === "codex" ? base.CODEX_MODEL : undefined) || input.model || (input.engine === "claude" ? "sonnet" : "gpt-5.5"), isolated: false })
+    return withLauncher({ engine: input.engine, executable, env, args: input.engine === "codex" ? ["app-server"] : [], model: (input.engine === "codex" ? base.CODEX_MODEL : undefined) || input.model || (input.engine === "claude" ? "sonnet" : "gpt-5.5"), isolated: false })
   }
   const connection: ApiConnection | undefined = service.connection(access.connectionId)
   if (!connection) throw new Error("connection-missing")
@@ -128,5 +138,5 @@ export async function resolveEngineRuntime(input: {
   } else {
     runtime.piConnection = { provider: connection.presetId === "openrouter" || connection.id === "env-openrouter" ? "openrouter" : "custom", baseUrl: endpoint.baseUrl, apiKey: key || "", protocol: endpoint.protocol === "openai-responses" ? "openai-responses" : "openai-chat", contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens }
   }
-  return rememberRuntime(runtime)
+  return withLauncher(runtime)
 }
