@@ -424,6 +424,8 @@ interface ClaudeSessionState {
   effort?: string
   planMode: boolean
   sessionToken: string | null
+  /** Latest prompt whose token was saved, including untagged current-turn frames. */
+  sessionTokenPromptSeq: number
   accountInfoLoaded: boolean
   nextPromptSeq: number
   cancelledPromptSeqs: Set<number>
@@ -6335,6 +6337,7 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: resumeToken,
+        sessionTokenPromptSeq: 0,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
         pendingPrompts: [],
@@ -6556,7 +6559,9 @@ export class AgentCoordinator {
         // Tagged stale results (including their token/usage metadata) cannot
         // mutate a later turn. Unidentified successful background results also
         // cannot consume a prompt on a UUID-capable session.
-        if (event.promptIds?.length && !session.pendingPrompts.some(prompt => event.promptIds!.includes(prompt.id))) continue
+        const matchingPrompts = event.promptIds?.length
+          ? session.pendingPrompts.filter(prompt => event.promptIds!.includes(prompt.id)) : []
+        if (event.promptIds?.length && matchingPrompts.length === 0) continue
         this.cancelIdleClose(session.chatId)
         this.updateIdleClose(session.chatId)
         const userOrigin = event.origin === "human"
@@ -6568,6 +6573,12 @@ export class AgentCoordinator {
           continue
         }
         if (event.type === "session_token" && event.sessionToken) {
+          // A cancelled prompt may still supply the newest resume token. Keep
+          // it unless a later prompt has already supplied a token of its own.
+          const promptSeq = matchingPrompts.length > 0
+            ? Math.max(...matchingPrompts.map(prompt => prompt.seq)) : session.nextPromptSeq
+          if (promptSeq < session.sessionTokenPromptSeq) continue
+          session.sessionTokenPromptSeq = promptSeq
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
@@ -6580,6 +6591,10 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
+        // Result-derived usage arrives before the result itself. Suppress it
+        // without consuming the reservations needed to attribute that result.
+        if (event.entry.kind === "context_window_updated" && matchingPrompts.length > 0
+          && matchingPrompts.every(prompt => session.cancelledPromptSeqs.has(prompt.seq))) continue
         const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
           ? this.takeAnsweredClaudePrompts(session, event) : []
         if ((event.entry.kind === "result" || event.entry.kind === "interrupted") && completedPromptSeqs.length === 0) continue

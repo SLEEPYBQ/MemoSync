@@ -3417,7 +3417,7 @@ test("Claude streaming deltas and unstamped entries never serialize raw SDK mess
 })
 
 describe("Claude prompt UUID lifecycle", () => {
-  function harness() {
+  function harness(sdkStream = false) {
     const events = new AsyncEventQueue<any>()
     const store = createFakeStore()
     const prompts: Array<{ promptId: string; promptSeq: number }> = []
@@ -3425,7 +3425,8 @@ describe("Claude prompt UUID lifecycle", () => {
     const coordinator = new AgentCoordinator({
       store: store as never, onStateChange: () => {}, claudeSessionFileExists: () => true,
       startClaudeSession: async () => ({
-        provider: "claude", echoesPromptIds: true, stream: events,
+        provider: "claude", echoesPromptIds: true,
+        stream: sdkStream ? createClaudeHarnessStream(events as never) : events,
         close: () => events.close(), interrupt: async () => {},
         setModel: async () => {}, setPermissionMode: async () => {},
         sendPrompt: async (_content: string, context: any) => { prompts.push(context) },
@@ -3433,15 +3434,125 @@ describe("Claude prompt UUID lifecycle", () => {
     })
     ;(coordinator as any).launchPostTurnMemoryPasses = (args: any) => passes.push(args)
     const send = (content: string) => coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content })
-    const init = () => events.push({ type: "transcript", entry: timestamped({ kind: "system_init", provider: "claude", model: "test", tools: [], agents: [], slashCommands: [], mcpServers: [] }) })
+    const init = (sessionToken?: string) => {
+      if (sdkStream) {
+        events.push({ type: "system", subtype: "init", session_id: sessionToken, model: "test", tools: [], slash_commands: [], mcp_servers: [] })
+      } else {
+        events.push({ type: "transcript", entry: timestamped({ kind: "system_init", provider: "claude", model: "test", tools: [], agents: [], slashCommands: [], mcpServers: [] }) })
+      }
+    }
     const result = (promptIds?: string[], text = "done") => events.push({ type: "transcript", promptIds, entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: text }) })
     const flush = async () => {
       const marker = timestamped({ kind: "assistant_text", text: "barrier" })
-      events.push({ type: "transcript", entry: marker })
-      await waitFor(() => store.messages.some(m => m._id === marker._id))
+      if (sdkStream) {
+        events.push({ type: "assistant", uuid: marker._id, message: { content: [{ type: "text", text: "barrier" }] } })
+      } else {
+        events.push({ type: "transcript", entry: marker })
+      }
+      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker._id : m._id === marker._id))
     }
     return { events, store, prompts, passes, coordinator, send, init, result, flush }
   }
+
+  test("cancelled SDK result cannot overwrite a newer turn's session token", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init("first-token")
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init("second-token")
+      await h.flush()
+      h.passes.splice(0)
+      const second = h.coordinator.activeTurns.get("chat-1")
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuid: h.prompts[0]!.promptId, session_id: "late-first-token", result: "late first" })
+      await h.flush()
+      expect(h.store.chat.sessionToken).toBe("second-token")
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      expect(session.sessionToken).toBe("second-token")
+      expect(session.pendingPrompts.map(p => p.id)).toEqual([h.prompts[1]!.promptId])
+      expect(session.cancelledPromptSeqs.size).toBe(0)
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(second)
+      expect(h.store.messages.filter(m => m.kind === "result")).toHaveLength(0)
+      expect(h.passes).toHaveLength(0)
+    } finally { h.events.close() }
+  })
+
+  test("cancelled SDK result cannot overwrite the current turn's context usage", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init()
+      h.events.push({ type: "assistant", message: { id: "second-usage", content: [], usage: { input_tokens: 80, output_tokens: 20 } } })
+      await h.flush()
+      const usage = h.store.messages.filter(m => m.kind === "context_window_updated")
+      expect(usage).toHaveLength(1)
+      h.passes.splice(0)
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuids: [h.prompts[0]!.promptId], usage: { input_tokens: 10, output_tokens: 1 },
+        modelUsage: { test: { contextWindow: 12345 } }, result: "late first" })
+      await h.flush()
+      expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toEqual(usage)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.passes).toHaveLength(0)
+    } finally { h.events.close() }
+  })
+
+  for (const startNext of [false, true]) {
+    test(`cancelled SDK result preserves the newest session token (next prompt: ${startNext})`, async () => {
+      const h = harness(true)
+      try {
+        await h.send("first")
+        h.init("initial-token")
+        await h.flush()
+        await h.coordinator.cancel("chat-1")
+        if (startNext) await h.send("second")
+        h.events.push({ type: "result", subtype: "success", is_error: false,
+          user_message_uuid: h.prompts[0]!.promptId, session_id: "newest-token",
+          usage: { input_tokens: 10, output_tokens: 1 }, result: "cancelled first" })
+        await h.flush()
+        expect(h.store.chat.sessionToken).toBe("newest-token")
+        expect(h.coordinator.claudeSessions.get("chat-1")!.sessionToken).toBe("newest-token")
+        expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toHaveLength(0)
+        expect(h.store.messages.filter(m => m.kind === "result")).toHaveLength(0)
+        expect(h.store.turnFinishedCount).toBe(0)
+      } finally { h.events.close() }
+    })
+  }
+
+  test("mixed cancelled and active SDK result keeps the active prompt's metadata", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init("first-token")
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init("second-token")
+      await h.flush()
+      h.passes.splice(0)
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuids: h.prompts.map(p => p.promptId), session_id: "batched-token",
+        usage: { input_tokens: 80, output_tokens: 20 }, result: "second done" })
+      await h.flush()
+      expect(h.store.chat.sessionToken).toBe("batched-token")
+      expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toMatchObject([
+        { usage: { usedTokens: 100 } },
+      ])
+      expect(h.store.turnFinishedCount).toBe(1)
+      expect(h.passes).toHaveLength(1)
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      expect(session.pendingPrompts).toHaveLength(0)
+      expect(session.cancelledPromptSeqs.size).toBe(0)
+    } finally { h.events.close() }
+  })
 
   test("UUID result cannot finish a different prompt or launch its memory passes", async () => {
     const h = harness()
