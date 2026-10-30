@@ -19,6 +19,7 @@ interface Props {
   focusRequestVersion?: number
   pendingCommandsByTerminalId?: Record<string, string>
   splitTerminalShortcut?: string[]
+  closeHidesLastPane?: boolean
   onAddTerminal: (projectId: string, afterTerminalId?: string) => void
   onRemoveTerminal: (projectId: string, terminalId: string) => void
   onTerminalLayout: (projectId: string, sizes: number[]) => void
@@ -27,6 +28,7 @@ interface Props {
 }
 
 interface TerminalWorkspacePaneProps {
+  closeLabel: string
   projectId: string
   terminalId: string
   size: number
@@ -50,6 +52,7 @@ interface TerminalWorkspacePaneProps {
 }
 
 const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
+  closeLabel,
   projectId,
   terminalId,
   size,
@@ -141,7 +144,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label={t("terminal:archiveTerminal")}
+                aria-label={closeLabel}
                 onClick={handleRemoveTerminal}
               >
                 <X className="size-3.5" />
@@ -170,6 +173,7 @@ const TerminalWorkspacePane = memo(function TerminalWorkspacePane({
 })
 
 function TerminalWorkspaceImpl({
+  closeHidesLastPane = false,
   projectId,
   layout,
   socket,
@@ -294,6 +298,7 @@ function TerminalWorkspaceImpl({
                 focusRequestVersion={index === 0 ? focusRequestVersion : 0}
                 initialCommand={pendingCommandsByTerminalId?.[terminalPane.id]}
                 splitTerminalShortcut={splitTerminalShortcut}
+                closeLabel={t(closeHidesLastPane && layout.terminals.length === 1 ? "terminal:hideTerminal" : "terminal:closeTerminal")}
                 onAddTerminal={onAddTerminal}
                 onRemoveTerminal={onRemoveTerminal}
                 onClearTerminal={handleClearTerminal}

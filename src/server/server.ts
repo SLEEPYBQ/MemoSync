@@ -167,7 +167,7 @@ export interface StartMemoSyncServerOptions {
    * ~/.codex) — tests and QA harnesses pass () => [] so a server boot never
    * walks the developer's real home directory.
    */
-  discoverProjects?: () => DiscoveredProject[]
+  discoverProjects?: () => DiscoveredProject[] | Promise<DiscoveredProject[]>
   onMigrationProgress?: (message: string) => void
   update?: {
     version: string
@@ -300,7 +300,7 @@ async function startLockedMemoSyncServer(
   let discoveredProjects: DiscoveredProject[] = []
 
   async function refreshDiscovery() {
-    discoveredProjects = (options.discoverProjects ?? discoverProjects)()
+    discoveredProjects = await (options.discoverProjects ?? discoverProjects)()
     return discoveredProjects
   }
 

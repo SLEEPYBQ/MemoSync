@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { ReadResultImages, ToolCallMessage } from "./ToolCallMessage"
+import { CollapsedToolGroup } from "./CollapsedToolGroup"
+import type { ProcessedToolCall } from "./types"
 
 describe("ToolCallMessage", () => {
   test("keeps its provider tool anchor mounted while tool details are collapsed", () => {
@@ -29,3 +31,21 @@ describe("ToolCallMessage", () => {
     expect(html).toContain("alt=\"Read result 1\"")
   })
 })
+
+for (const grouped of [false, true]) {
+  test(`does not inspect or serialize collapsed tool bodies (${grouped ? "grouped" : "single"})`, () => {
+    let bodyReads = 0
+    const message = {
+      kind: "tool", toolKind: "read_file", toolName: "Read", toolId: "lazy-call", id: "lazy-entry",
+      input: { filePath: "/fixture/file" }, timestamp: "2026-10-30T00:00:00Z",
+      result: { toJSON() { bodyReads++; return { content: "expensive result" } }, get blocks() { bodyReads++; return [] } },
+      get rawResult() { bodyReads++; return [] },
+    } as ProcessedToolCall
+    const messages = [message, { ...message, id: "second", toolId: "lazy-call-2" }]
+    bodyReads = 0
+    renderToStaticMarkup(grouped
+      ? <CollapsedToolGroup messages={messages} expanded isLoading={false} onExpandedChange={() => {}} />
+      : <ToolCallMessage message={message} />)
+    expect(bodyReads).toBe(0)
+  })
+}

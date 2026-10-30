@@ -891,3 +891,43 @@ describe("single live indicator (status row vs footer)", () => {
     expect(getTrailingSdkStatus([])).toBeUndefined()
   })
 })
+
+
+describe("live memory card row identity", () => {
+  const latestToolIds = { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null }
+  const base = { id: "live-card", timestamp: "2026-10-30T00:00:00Z", turn: 1 }
+  const cases: Array<[string, HydratedTranscriptMessage, Record<string, unknown>]> = [
+    ["preview selection errors", { ...base, kind: "memory_preview", previewId: "p", memories: [] }, { selectionError: "selection failed" }],
+    ["preview transferred ids", { ...base, kind: "memory_preview", previewId: "p", memories: [] }, { transferredIds: ["M-01"] }],
+    ["trace status and summary", { ...base, kind: "memory_trace", status: "pending", labels: [] }, { status: "failed", summary: "audit failed", errorClass: "timeout", dropped: 1 }],
+    ["interrupt working set", { ...base, kind: "memory_interrupt", interruptId: "i", memoryId: "M-01", prompt: "before", workingSet: [] }, { prompt: "after", workingSet: [{ id: "M-01", cited: true }] }],
+    ["checkup failures", { ...base, kind: "memory_checkup", checkupId: "c", suggestions: [] }, { failedKinds: ["conflict"] }],
+  ]
+  for (const [name, message, patch] of cases) {
+    test(`invalidates ${name} while keeping unaffected rows stable`, () => {
+      const other: HydratedTranscriptMessage = { ...base, id: "reply", kind: "assistant_text", text: "unchanged" }
+      const previousRows = buildResolvedTranscriptRows([message, other], { isLoading: false, latestToolIds })
+      const state = { byId: new Map(previousRows.map(row => [row.id, row])), result: previousRows }
+      const nextRows = buildResolvedTranscriptRows([{ ...message, ...patch } as HydratedTranscriptMessage, { ...other }], { isLoading: false, latestToolIds })
+      const next = computeStableResolvedTranscriptRows(nextRows, state)
+      expect(next.result[0]).not.toBe(previousRows[0])
+      expect(next.result[1]).toBe(previousRows[1])
+    })
+  }
+})
+
+
+test("reuses current-turn membership across equivalent streamed snapshots and clears it on settle", () => {
+  const messages: HydratedTranscriptMessage[] = [
+    { id: "prompt", kind: "user_prompt", content: "work", timestamp: "2026-10-30T00:00:00Z" },
+    { id: "reply", kind: "assistant_text", text: "first", timestamp: "2026-10-30T00:00:00Z" },
+  ]
+  const previous = getCurrentTurnAssistantMessageIds(messages, true)
+  const nextMessages = structuredClone(messages)
+  if (nextMessages[1].kind === "assistant_text") nextMessages[1].text += " delta"
+  expect(getCurrentTurnAssistantMessageIds(nextMessages, true, previous)).toBe(previous)
+  const settled = getCurrentTurnAssistantMessageIds(nextMessages, false, previous)
+  expect(settled.size).toBe(0)
+  expect(settled).not.toBe(previous)
+  expect(getCurrentTurnAssistantMessageIds(nextMessages, false, settled)).toBe(settled)
+})

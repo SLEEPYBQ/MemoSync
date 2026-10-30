@@ -1,3 +1,5 @@
+import { applySidebarPatch } from "../../shared/sidebar-patch"
+import type { SidebarData } from "../../shared/types"
 import { localizeUiResult, translateServerUiText } from "../i18n/uiText"
 import { t } from "../i18n"
 import type {
@@ -7,6 +9,7 @@ import type {
   SubscriptionTopic,
   TerminalEvent,
   TerminalSnapshot,
+  TerminalTailResult,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
 import { generateUUID } from "../lib/utils"
@@ -39,8 +42,10 @@ const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "memosync:profile-send-to-starting"
 
 interface SubscriptionEntry<TSnapshot, TEvent = never> {
   topic: SubscriptionTopic
+  sidebar?: { revision: number; data: SidebarData }
   listener: SnapshotListener<TSnapshot>
   eventListener?: EventListener<TEvent>
+  topicOnReconnect?: () => SubscriptionTopic
 }
 
 function isSendToStartingProfilingEnabled() {
@@ -115,6 +120,9 @@ export class AppSocket {
       pending.reject(new Error("Socket disposed"))
     }
     this.pending.clear()
+    this.outboundQueue.length = 0
+    this.subscriptions.clear()
+    this.statusListeners.clear()
   }
 
   onStatus(listener: StatusListener) {
@@ -166,13 +174,20 @@ export class AppSocket {
     handlers: {
       onSnapshot: SnapshotListener<TerminalSnapshot | null>
       onEvent?: EventListener<TerminalEvent>
+      onTail?: SnapshotListener<TerminalTailResult>
+      getCursor?: () => { sinceVersion: number | null; sessionId?: string }
     }
   ) {
     const id = generateUUID()
-    const topic: SubscriptionTopic = { type: "terminal", terminalId }
+    const getTopic = (): SubscriptionTopic => ({ type: "terminal", terminalId, ...handlers.getCursor?.() })
+    const topic = getTopic()
     this.subscriptions.set(id, {
       topic,
-      listener: handlers.onSnapshot as SnapshotListener<unknown>,
+      listener: (value) => {
+        if (value && typeof value === "object" && "tail" in value) handlers.onTail?.(value as TerminalTailResult)
+        else handlers.onSnapshot(value as TerminalSnapshot | null)
+      },
+      topicOnReconnect: getTopic,
       eventListener: handlers.onEvent as EventListener<unknown> | undefined,
     })
     this.enqueue({ v: 1, type: "subscribe", id, topic })
@@ -229,8 +244,10 @@ export class AppSocket {
     }
     this.emitStatus("connecting")
     this.ws = new WebSocket(this.url)
+    const connection = this.ws
 
     this.ws.addEventListener("open", () => {
+      if (!this.started || this.ws !== connection) return
       this.reconnectDelayMs = 750
       this.reconnectImmediatelyOnClose = false
       this.lastOpenAt = Date.now()
@@ -238,7 +255,7 @@ export class AppSocket {
       this.emitStatus("connected")
       this.startHeartbeat()
       for (const [id, subscription] of this.subscriptions.entries()) {
-        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topic })
+        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topicOnReconnect?.() ?? subscription.topic })
       }
       while (this.outboundQueue.length > 0) {
         const envelope = this.outboundQueue.shift()
@@ -256,6 +273,7 @@ export class AppSocket {
     })
 
     this.ws.addEventListener("message", (event) => {
+      if (!this.started || this.ws !== connection) return
       this.lastMessageAt = Date.now()
       const receivedAt = performance.now()
       const rawText = String(event.data)
@@ -288,6 +306,19 @@ export class AppSocket {
 
       if (payload.type === "snapshot") {
         const subscription = this.subscriptions.get(payload.id)
+        if (subscription && payload.snapshot.type === "sidebar-patch") {
+          const patch = payload.snapshot.data
+          try {
+            if (patch.from !== null && subscription.sidebar?.revision !== patch.from) throw new Error("Sidebar revision gap")
+            const data = applySidebarPatch(subscription.sidebar?.data ?? null, patch)
+            subscription.sidebar = { revision: patch.to, data }
+            subscription.listener(data)
+          } catch {
+            subscription.sidebar = undefined
+            this.enqueue({ v: 1, type: "subscribe", id: payload.id, topic: subscription.topic })
+          }
+          return
+        }
         subscription?.listener(payload.snapshot.data)
         return
       }
@@ -333,6 +364,7 @@ export class AppSocket {
     })
 
     this.ws.addEventListener("close", () => {
+      if (!this.started || this.ws !== connection) return
       if (!this.started) {
         return
       }
@@ -360,21 +392,22 @@ export class AppSocket {
 
   private async probeAuthLockout() {
     if (typeof fetch !== "function") return
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => controller.abort(), 2_000)
     try {
-      const controller = new AbortController()
-      const abortTimer = setTimeout(() => controller.abort(), 2_000)
       const response = await fetch("/auth/status", {
         cache: "no-store",
         headers: { Accept: "application/json" },
         signal: controller.signal,
       })
-      clearTimeout(abortTimer)
       if (!response.ok) return
       if (!isLockedOutAuthStatus(await response.json())) return
     } catch {
       // Network trouble — indistinguishable from a real outage; let the
       // normal reconnect loop keep trying.
       return
+    } finally {
+      clearTimeout(abortTimer)
     }
     if (!this.started) return
     this.dispose()

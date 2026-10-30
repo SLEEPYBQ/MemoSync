@@ -1,3 +1,4 @@
+import { diffSidebarIndex, indexSidebarData, type SidebarIndex } from "../shared/sidebar-patch"
 import type { ModelAccessService } from "./model-access/service"
 import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
 import type { ServerWebSocket } from "bun"
@@ -115,6 +116,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
+  sidebarRevisions?: Map<string, number>
   protectedDraftChatIds?: Set<string>
 }
 
@@ -167,9 +169,13 @@ interface SnapshotBroadcastFilter {
 }
 
 interface SnapshotComputationCache {
+  chats?: Map<string, { snapshot: Extract<ServerEnvelope, { type: "snapshot" }>["snapshot"]; signature: string }>
   sidebar?: {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
+    revision: number
+    index: SidebarIndex | null
+    previous?: { revision: number; index: SidebarIndex | null }
   }
 }
 
@@ -709,15 +715,31 @@ export function createWsRouter({
     return true
   }
 
+  let disposed = false
+  let retainedSidebar: SnapshotComputationCache["sidebar"]
+  let retainedSidebarKey = ""
+  let sidebarExpiresAt = 0
+  let sidebarRevision = 0
+
   function getSidebarSnapshotCacheEntry(cache?: SnapshotComputationCache) {
     if (cache?.sidebar) {
       return cache.sidebar
     }
 
+    const statuses = agent.getActiveStatuses()
+    const draining = agent.getDrainingChatIds()
+    // Status and draining state live outside EventStore: memory gates must
+    // invalidate immediately even if no transcript append has occurred yet.
+    const version = store.getSidebarVersion?.()
+    const key = JSON.stringify([version, [...statuses].sort(), [...draining].sort()])
+    if (version !== undefined && retainedSidebar && retainedSidebarKey === key && Date.now() < sidebarExpiresAt) {
+      if (cache) cache.sidebar = retainedSidebar
+      return retainedSidebar
+    }
     const startedAt = performance.now()
-    const data = deriveSidebarData(store.state, agent.getActiveStatuses(), {
+    const data = deriveSidebarData(store.state, statuses, {
       sidebarProjectOrder: getSidebarProjectOrder(store),
-      drainingChatIds: agent.getDrainingChatIds(),
+      drainingChatIds: draining,
     })
     if (isSendToStartingProfilingEnabled()) {
       const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
@@ -731,14 +753,31 @@ export function createWsRouter({
       }))
     }
 
+    // Sidebar recent/older membership also changes with wall time.
+    const now = Date.now()
+    sidebarExpiresAt = Infinity
+    for (const chat of store.state.chatsById.values()) {
+      const expiresAt = (chat.lastMessageAt ?? chat.createdAt) + 24 * 60 * 60 * 1000
+      if (!chat.deletedAt && !chat.archivedAt && expiresAt > now) sidebarExpiresAt = Math.min(sidebarExpiresAt, expiresAt)
+    }
+    const signature = JSON.stringify({ type: "sidebar" as const, data })
+    // A version bump that leaves the sidebar identical (e.g. a queued message)
+    // keeps the current revision, so subscribers can still receive row patches.
+    if (retainedSidebar && retainedSidebar.signature === signature) {
+      retainedSidebarKey = key
+      if (cache) cache.sidebar = retainedSidebar
+      return retainedSidebar
+    }
     const sidebar = {
+      revision: ++sidebarRevision,
+      index: indexSidebarData(data),
+      previous: retainedSidebar ? { revision: retainedSidebar.revision, index: retainedSidebar.index } : undefined,
       data,
-      signature: JSON.stringify({
-        type: "sidebar" as const,
-        data,
-      }),
+      signature,
     }
 
+    retainedSidebar = sidebar
+    retainedSidebarKey = key
     if (cache) {
       cache.sidebar = sidebar
     }
@@ -827,7 +866,9 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "terminal",
-          data: terminals.getSnapshot(topic.terminalId),
+          data: topic.sinceVersion === undefined
+            ? terminals.getSnapshot(topic.terminalId)
+            : terminals.getTail(topic.terminalId, topic.sinceVersion, topic.sessionId),
         },
       }
     }
@@ -855,7 +896,10 @@ export function createWsRouter({
       }
     }
 
-    return {
+    const chatKey = JSON.stringify([topic.chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT])
+    const cachedChat = cache?.chats?.get(chatKey)
+    if (cachedChat) return { v: PROTOCOL_VERSION, type: "snapshot", id, snapshot: cachedChat.snapshot }
+    const envelope: Extract<ServerEnvelope, { type: "snapshot" }> = {
       v: PROTOCOL_VERSION,
       type: "snapshot",
       id,
@@ -879,12 +923,18 @@ export function createWsRouter({
         ),
       },
     }
+    if (cache) {
+      cache.chats ??= new Map()
+      cache.chats.set(chatKey, { snapshot: envelope.snapshot, signature: JSON.stringify(envelope.snapshot) })
+    }
+    return envelope
   }
 
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
-    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache; retryDropped?: boolean }
+    options?: { skipPrune?: boolean; skipTerminals?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache; retryDropped?: boolean }
   ) {
+    if (disposed) return
     const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
@@ -893,6 +943,7 @@ export function createWsRouter({
     let sentCount = 0
     let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
+      if (options?.skipTerminals && topic.type === "terminal") continue
       if (!shouldIncludeTopic(topic, options?.filter)) {
         continue
       }
@@ -922,7 +973,9 @@ export function createWsRouter({
       if (envelope.type !== "snapshot") continue
       const signature = topic.type === "sidebar"
         ? getSidebarSnapshotCacheEntry(options?.cache).signature
-        : JSON.stringify(envelope.snapshot)
+        : topic.type === "chat"
+          ? options?.cache?.chats?.get(JSON.stringify([topic.chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT]))?.signature ?? JSON.stringify(envelope.snapshot)
+          : JSON.stringify(envelope.snapshot)
       const signatureReadyAt = topic.type === "sidebar" ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
         skippedCount += 1
@@ -939,11 +992,34 @@ export function createWsRouter({
           signatureBytes: signature.length,
         })
       }
-      const { payloadBytes, status } = send(ws, envelope)
+      let delivery = envelope
+      let sidebarRevision: number | undefined
+      if (topic.type === "sidebar" && topic.patches) {
+        const sidebar = getSidebarSnapshotCacheEntry(options?.cache)
+        const previousRevision = ws.data.sidebarRevisions?.get(id)
+        if (sidebar.index) {
+          const previous = sidebar.previous?.revision === previousRevision ? sidebar.previous : undefined
+          let patch = diffSidebarIndex(previous?.index ?? null, sidebar.index, previous?.revision ?? null, sidebar.revision)
+          const reset = diffSidebarIndex(null, sidebar.index, null, sidebar.revision)
+          if (JSON.stringify(reset).length < JSON.stringify(patch).length) patch = reset
+          delivery = { ...envelope, snapshot: { type: "sidebar-patch", data: patch } }
+          sidebarRevision = sidebar.revision
+        }
+      }
+      // The heavy snapshot JSON is shared even when subscription IDs differ.
+      const payload = delivery === envelope
+        ? `{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${signature}}`
+        : JSON.stringify(delivery)
+      const payloadBytes = payload.length
+      const status = ws.send(payload)
       // Bun reports -1 after accepting the message into its queue; only 0
       // means the snapshot was dropped and still needs a later retry.
       if (status !== 0) {
         snapshotSignatures.set(id, signature)
+        if (sidebarRevision !== undefined) {
+          ws.data.sidebarRevisions ??= new Map()
+          ws.data.sidebarRevisions.set(id, sidebarRevision)
+        }
         sentCount += 1
       } else {
         dirtySnapshotSockets.add(ws)
@@ -979,7 +1055,11 @@ export function createWsRouter({
       socketCount += 1
       // One socket's failure must never starve the rest of the batch (BUG WS-2).
       try {
-        await pushSnapshots(ws, { skipPrune: true, cache })
+        // Terminal output already streams as events. Rebuilding from the
+        // subscription's original cursor here repeats growing tails on every
+        // unrelated change; subscriptions and dropped-snapshot retries still
+        // include terminals for catch-up.
+        await pushSnapshots(ws, { skipPrune: true, skipTerminals: true, cache })
       } catch (error) {
         console.error("[ws-router] broadcastSnapshots: skipped a socket after error", error)
       }
@@ -1029,6 +1109,7 @@ export function createWsRouter({
   }
 
   function scheduleBroadcast() {
+    if (disposed) return
     pendingBroadcastAll = true
     pendingBroadcastChatIds.clear()
     if (pendingBroadcastTimer) {
@@ -1054,6 +1135,7 @@ export function createWsRouter({
   }
 
   function scheduleChatStateBroadcast(chatId: string) {
+    if (disposed) return
     if (!pendingBroadcastAll) {
       pendingBroadcastChatIds.add(chatId)
     }
@@ -1147,12 +1229,19 @@ export function createWsRouter({
     for (const ws of sockets) {
       for (const [id, topic] of ws.data.subscriptions.entries()) {
         if (topic.type !== "terminal" || topic.terminalId !== terminalId) continue
-        send(ws, {
+        const { status } = send(ws, {
           v: PROTOCOL_VERSION,
           type: "event",
           id,
           event,
         })
+        // Ordinary broadcasts skip terminals, so a dropped chunk (possibly the
+        // last one) would never be repaired. Reuse the dropped-snapshot path:
+        // its retry and drain resync resend this terminal's catch-up.
+        if (status === 0) {
+          dirtySnapshotSockets.add(ws)
+          scheduleDroppedSnapshotRetry(ws)
+        }
       }
     }
   }
@@ -1529,7 +1618,7 @@ export function createWsRouter({
           const changed = await resolvedDiffStore.refreshSnapshot(project.id, project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           if (changed) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1541,7 +1630,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1581,7 +1670,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1611,7 +1700,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1625,7 +1714,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1638,7 +1727,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1652,7 +1741,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1677,7 +1766,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1690,7 +1779,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1703,7 +1792,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1817,7 +1906,8 @@ export function createWsRouter({
             rows: command.rows,
             scrollback: command.scrollback,
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: command.sinceVersion === undefined
+            ? snapshot : terminals.getTail(command.terminalId, command.sinceVersion, command.sessionId) })
           return
         }
         case "terminal.input": {
@@ -1834,6 +1924,10 @@ export function createWsRouter({
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           pushTerminalSnapshot(command.terminalId)
+          return
+        }
+        case "terminal.tail": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: terminals.getTail(command.terminalId, command.sinceVersion, command.sessionId) })
           return
         }
       }
@@ -1861,6 +1955,9 @@ export function createWsRouter({
       sockets.delete(ws)
       dirtySnapshotSockets.delete(ws)
       clearDroppedSnapshotRetry(ws)
+      ws.data.subscriptions.clear()
+      ws.data.snapshotSignatures?.clear()
+      ws.data.sidebarRevisions?.clear()
     },
     handleDrain,
     broadcastSnapshots,
@@ -1886,11 +1983,14 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.set(parsed.id, parsed.topic)
         snapshotSignatures.delete(parsed.id)
+        ws.data.sidebarRevisions?.delete(parsed.id)
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
-            if (ws.data.subscriptions.has(parsed.id)) {
+            if (!disposed && sockets.has(ws) && ws.data.subscriptions.get(parsed.id) === parsed.topic) {
               void pushSnapshots(ws, { skipPrune: true })
             }
+          }).catch(error => {
+            if (!disposed && sockets.has(ws)) send(ws, { v: PROTOCOL_VERSION, type: "error", id: parsed.id, message: String(error) })
           })
           return
         }
@@ -1902,6 +2002,7 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.delete(parsed.id)
         snapshotSignatures.delete(parsed.id)
+        ws.data.sidebarRevisions?.delete(parsed.id)
         send(ws, { v: PROTOCOL_VERSION, type: "ack", id: parsed.id })
         return
       }
@@ -1909,6 +2010,15 @@ export function createWsRouter({
       await handleCommand(ws, parsed)
     },
     dispose() {
+      disposed = true
+      retainedSidebar = undefined
+      pendingBroadcastChatIds.clear()
+      for (const ws of sockets) {
+        ws.data.subscriptions.clear()
+        ws.data.snapshotSignatures?.clear()
+        ws.data.sidebarRevisions?.clear()
+      }
+      sockets.clear()
       if (pendingBroadcastTimer) {
         clearTimeout(pendingBroadcastTimer)
       }

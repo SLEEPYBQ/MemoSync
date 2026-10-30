@@ -1,3 +1,4 @@
+import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
 import type {
@@ -52,14 +53,14 @@ export interface ProjectQuickAction {
 }
 
 export type SubscriptionTopic =
-  | { type: "sidebar" }
+  | { type: "sidebar"; patches?: boolean }
   | { type: "local-projects" }
   | { type: "update" }
   | { type: "keybindings" }
   | { type: "app-settings" }
   | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "project-git"; projectId: string }
-  | { type: "terminal"; terminalId: string }
+  | { type: "terminal"; terminalId: string; sinceVersion?: number | null; sessionId?: string }
   | { type: "model-access" }
 
 export interface TerminalSnapshot {
@@ -74,11 +75,24 @@ export interface TerminalSnapshot {
   status: "running" | "exited"
   exitCode: number | null
   signal?: number
+  /** UTF-16 output count represented by serializedState. Optional for old peers. */
+  outputVersion?: number
+  /** Changes when the same terminal id is closed and recreated. */
+  sessionId?: string
 }
 
 export type TerminalEvent =
-  | { type: "terminal.output"; terminalId: string; data: string }
+  | { type: "terminal.output"; terminalId: string; data: string; version?: number; sessionId?: string }
   | { type: "terminal.exit"; terminalId: string; exitCode: number; signal?: number }
+
+export interface TerminalTailResult {
+  terminalId: string
+  sessionId: string
+  tail: { data: string; version: number } | null
+  snapshot: TerminalSnapshot | null
+  status: "running" | "exited"
+  exitCode: number | null
+}
 
 export type ClientCommand =
   | { type: "project.open"; localPath: string }
@@ -263,10 +277,11 @@ export type ClientCommand =
       chatId: string
       queuedMessageId: string
     }
-  | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number }
+  | { type: "terminal.create"; projectId: string; terminalId: string; cols: number; rows: number; scrollback: number; sinceVersion?: number | null; sessionId?: string }
   | { type: "terminal.input"; terminalId: string; data: string }
   | { type: "terminal.resize"; terminalId: string; cols: number; rows: number }
   | { type: "terminal.close"; terminalId: string }
+  | { type: "terminal.tail"; terminalId: string; sinceVersion: number | null; sessionId?: string }
 
 export type OpenExternalAction = Extract<ClientCommand, { type: "system.openExternal" }>["action"]
 
@@ -277,6 +292,7 @@ export type ClientEnvelope =
 
 export type ServerSnapshot =
   | { type: "sidebar"; data: SidebarData }
+  | { type: "sidebar-patch"; data: SidebarPatch }
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
@@ -285,7 +301,7 @@ export type ServerSnapshot =
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }
-  | { type: "terminal"; data: TerminalSnapshot | null }
+  | { type: "terminal"; data: TerminalSnapshot | TerminalTailResult | null }
 
 export type ServerEnvelope =
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }

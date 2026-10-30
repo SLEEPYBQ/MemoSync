@@ -1,6 +1,6 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
@@ -28,8 +28,8 @@ import {
   type ResolvedMemoryBoardLaunchRequest,
 } from "./memory/MemoryBoardLauncher"
 import { MemoryBoardOverlay } from "./memory/MemoryBoardOverlay"
-import { MemoryBoardPage } from "./MemoryBoardPage"
-import { SettingsPage } from "./SettingsPage"
+import { LazyMemoryBoardPage, LazySettingsPage } from "./lazyPages"
+import { PanelLoading } from "../components/ui/panel-loading"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
 import { useAppState } from "./useAppState"
 
@@ -477,8 +477,8 @@ export function App() {
           <Route element={<AppLayout />}>
             <Route path="/" element={<LocalProjectsPage />} />
             <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
-            <Route path="/settings/:sectionId" element={<SettingsPage />} />
-            <Route path="/memory" element={<MemoryBoardPage />} />
+            <Route path="/settings/:sectionId" element={<Suspense fallback={<PanelLoading />}><LazySettingsPage /></Suspense>} />
+            <Route path="/memory" element={<Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage /></Suspense>} />
             <Route path="/chat/:chatId" element={<ChatPage />} />
           </Route>
         </Routes>
