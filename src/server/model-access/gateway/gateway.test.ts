@@ -129,6 +129,49 @@ for (const target of ["anthropic", "responses"] as const) {
       expect(final.output_text).toBe("Hello")
     }
   })
+  test(`${target}: official SDK consumes interleaved text, reasoning and parallel tools`, async () => {
+    const chunks = [
+      chunk({ tool_calls: [{ index: 0, id: "call_weather", function: { name: "weather", arguments: '{"city":' } }] }),
+      chunk({ tool_calls: [{ index: 1, id: "call_units", function: { name: "units", arguments: '{"unit":' } }] }),
+      chunk({ content: "Checking" }),
+      chunk({ reasoning_content: "Think" }),
+      chunk({ tool_calls: [{ index: 0, function: { arguments: '"SF"}' } }] }),
+      chunk({ content: " now" }),
+      chunk({ tool_calls: [{ index: 1, function: { arguments: '"C"}' } }] }, "tool_calls"),
+    ]
+    const f = await fixture(() => sse(chunks))
+    const route = gatewayEndpoint(f.service, f.connection.id, target)
+    const buffered = await (await post(route, target, body(target, false))).json()
+    if (target === "anthropic") {
+      const client = new Anthropic({ baseURL: route.endpoint.baseUrl, apiKey: route.key, maxRetries: 0 })
+      const completed: Wire[] = []
+      const stream = client.messages.stream({ model: "m", max_tokens: 100, messages: [{ role: "user", content: "Hello" }] })
+      stream.on("contentBlock", block => completed.push(block))
+      const final = await stream.finalMessage()
+      expect(final.stop_reason).toBe("tool_use")
+      expect(final.content).toEqual(buffered.content)
+      expect(completed).toEqual(final.content)
+      expect(final.content).toMatchObject([
+        { type: "tool_use", id: "call_weather", name: "weather", input: { city: "SF" } },
+        { type: "text", text: "Checking" },
+        { type: "thinking", thinking: "Think", signature: "" },
+        { type: "text", text: " now" },
+        { type: "tool_use", id: "call_units", name: "units", input: { unit: "C" } },
+      ])
+    } else {
+      const client = new OpenAI({ baseURL: route.endpoint.baseUrl, apiKey: route.key, maxRetries: 0 })
+      const final = await client.responses.stream({ model: "m", input: "Hello" }).finalResponse()
+      expect(final.status).toBe("completed")
+      const withoutIds = (items: Wire[]) => items.map(({ id, ...item }) => item)
+      expect(withoutIds(final.output)).toMatchObject(withoutIds(buffered.output))
+      expect(final.output.filter(c => c.type === "function_call")).toMatchObject([
+        { call_id: "call_weather", name: "weather", arguments: '{"city":"SF"}' },
+        { call_id: "call_units", name: "units", arguments: '{"unit":"C"}' },
+      ])
+      expect(final.output.filter(c => c.type === "message").flatMap(c => c.content).map(c => c.type === "output_text" ? c.text : "").join("")).toBe("Checking now")
+      expect(final.output.find(c => c.type === "reasoning")).toMatchObject({ summary: [{ type: "summary_text", text: "Think" }] })
+    }
+  })
 }
 
 test("gateway authenticates, reuses listener, reads rotated keys and rejects deleted bindings", async () => {

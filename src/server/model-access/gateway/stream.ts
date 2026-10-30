@@ -36,6 +36,7 @@ type Event = { kind: "text" | "thinking" | "args"; text: string }
   | { kind: "stop"; reason: string }
 interface Usage { input: number; output: number; cached: number; reasoning: number }
 interface Call { index: number; id: string; name: string; args: string; emitted: boolean }
+interface ClientItem { kind: "text" | "thinking" | "tool"; id: string; name?: string; callId?: string; text: string }
 export class ChatDecoder {
   private choice?: number
   private calls: Call[] = []
@@ -108,7 +109,9 @@ export class ClientEncoder {
   private id: string
   private created = Math.floor(Date.now() / 1000)
   private output: Wire[] = []
-  private current?: { kind: "text" | "thinking" | "tool"; id: string; name?: string; callId?: string; text: string }
+  private current?: ClientItem
+  private pendingTool?: ClientItem
+  private deferred: { kind: "text" | "thinking"; text: string }[] = []
   private usage: Usage = { input: 0, output: 0, cached: 0, reasoning: 0 }
   private stop = "stop"
   private hasTools = false
@@ -132,7 +135,7 @@ export class ClientEncoder {
     }
   }
   private close() {
-    const c = this.current
+    const c = this.pendingTool ?? this.current
     if (!c) return
     if (c.kind === "tool" && !c.text) this.delta("{}")
     if (this.target === "anthropic") {
@@ -175,12 +178,20 @@ export class ClientEncoder {
       this.output.push(item)
     }
     this.current = undefined
+    this.pendingTool = undefined
+  }
+  private flushDeferred() {
+    const events = this.deferred
+    this.deferred = []
+    for (const ev of events) { this.open(ev.kind); this.delta(ev.text) }
   }
   private open(kind: "text" | "thinking" | "tool", id?: string, name?: string) {
     if (this.current?.kind === kind && kind !== "tool") return
     this.close()
     const itemId = `${kind === "tool" ? "fc" : kind === "thinking" ? "rs" : "msg"}_${crypto.randomUUID()}`
-    this.current = { kind, id: itemId, callId: id, name, text: "" }
+    const item = { kind, id: itemId, callId: id, name, text: "" }
+    if (kind === "tool") this.pendingTool = item
+    else this.current = item
     this.customStream = new CustomInputStream()
     if (kind === "tool") this.hasTools = true
     if (this.target === "anthropic") {
@@ -197,7 +208,7 @@ export class ClientEncoder {
     }
   }
   private delta(text: string) {
-    const c = this.current!
+    const c = (this.pendingTool ?? this.current)!
     c.text += text
     if (this.target === "anthropic") {
       const delta = c.kind === "text" ? { type: "text_delta", text } : c.kind === "thinking" ? { type: "thinking_delta", thinking: text } : { type: "input_json_delta", partial_json: text }
@@ -214,16 +225,26 @@ export class ClientEncoder {
   }
   event(ev: Event) {
     switch (ev.kind) {
-      case "text": case "thinking": this.open(ev.kind); this.delta(ev.text); break
-      case "tool": this.open("tool", ev.id, ev.name); break
+      case "text": case "thinking":
+        // Client blocks stay serial. A text/thinking interlude cannot close an
+        // unfinished call; its later argument fragments still belong to it.
+        if (this.pendingTool) this.deferred.push({ kind: ev.kind, text: ev.text })
+        else { this.open(ev.kind); this.delta(ev.text) }
+        break
+      case "tool":
+        // The decoder only starts another call once the upstream has finished
+        // collecting it (parallel calls are held and then given whole).
+        this.close(); this.flushDeferred(); this.open("tool", ev.id, ev.name); break
       case "args":
-        if (this.current?.kind !== "tool") throw new GatewayError("Out-of-order upstream tool arguments", 502)
+        if (!this.pendingTool) throw new GatewayError("Out-of-order upstream tool arguments", 502)
         this.delta(ev.text); break
       case "usage": this.usage = ev.usage; break
       case "stop": this.stop = ev.reason; break
     }
   }
   finish() {
+    this.close()
+    this.flushDeferred()
     this.close()
     if (this.target === "anthropic") {
       const reason = this.stop === "length" ? "max_tokens" : this.stop === "content_filter" ? "refusal" : this.hasTools ? "tool_use" : "end_turn"

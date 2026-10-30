@@ -24,6 +24,71 @@ for (const target of ["anthropic", "responses"] as const) {
     expect(result.usage).toMatchObject(target === "anthropic" ? { input_tokens: 9, output_tokens: 4, cache_read_input_tokens: 3 } : { input_tokens: 12, output_tokens: 4, total_tokens: 16, output_tokens_details: { reasoning_tokens: 2 } })
     if (target === "responses") expect(events.map(e => e.sequence_number)).toEqual(events.map((_, i) => i))
   })
+  for (const interlude of [{ content: "Checking" }, { reasoning_content: "Thinking" }, { reasoning: "Thinking" }]) {
+    for (const parallel of [false, true]) test(`${target}: tool arguments survive ${Object.keys(interlude)[0]} interleaving (parallel=${parallel})`, () => {
+      const decoder = new ChatDecoder(), encoder = new ClientEncoder(target, "m")
+      encoder.start()
+      const events: Wire[] = []
+      const feed = (data: string) => {
+        for (const ev of decoder.decode(data)) encoder.event(ev)
+        const batch = encoder.drain()
+        events.push(...batch)
+        return batch
+      }
+      const first = feed(chunk({ tool_calls: [{ index: 0, id: "call_weather", function: { name: "weather", arguments: '{"city":' } }] }))
+      // The first partial arguments must reach the client before any interlude or stop.
+      expect(first.find(e => target === "anthropic" ? e.delta?.type === "input_json_delta" : e.type === "response.function_call_arguments.delta")).toMatchObject(target === "anthropic" ? { delta: { partial_json: '{"city":' } } : { delta: '{"city":' })
+      if (parallel) feed(chunk({ tool_calls: [{ index: 1, id: "call_units", function: { name: "units", arguments: '{"unit":' } }] }))
+      feed(chunk(interlude))
+      feed(chunk({ tool_calls: [{ index: 0, id: "call_weather", function: { arguments: '"SF"}' } }] }))
+      if (parallel) feed(chunk({ tool_calls: [{ index: 1, function: { arguments: '"C"}' } }] }))
+      const starts = () => events.filter(e => e.type === (target === "anthropic" ? "content_block_start" : "response.output_item.added"))
+      expect(starts().some(e => (e.content_block?.id ?? e.item?.call_id) === "call_units")).toBe(false)
+      feed(chunk({}, "tool_calls"))
+      feed("[DONE]")
+      encoder.finish()
+      events.push(...encoder.drain())
+
+      const output: Wire[] = target === "anthropic" ? encoder.result!.content : encoder.result!.output
+      const calls = output.filter(c => c.type === (target === "anthropic" ? "tool_use" : "function_call"))
+      const expected = [["call_weather", "weather", { city: "SF" }], ...(parallel ? [["call_units", "units", { unit: "C" }]] : [])]
+      expect(calls.map(c => [target === "anthropic" ? c.id : c.call_id, c.name, target === "anthropic" ? c.input : JSON.parse(c.arguments)])).toEqual(expected)
+      expect(output.filter(c => ["text", "message", "thinking", "reasoning"].includes(c.type)).map(c => c.text ?? c.thinking ?? c.content?.[0].text ?? c.summary?.[0].text)).toEqual([Object.values(interlude)[0]])
+
+      // Reconstruct each client block/item, checking one start, one stop and complete JSON.
+      let active: number | undefined
+      const argumentsByIndex = new Map<number, string>()
+      const stopped = new Set<number>()
+      for (const ev of events) {
+        const index = target === "anthropic" ? ev.index : ev.output_index
+        if (ev.type === (target === "anthropic" ? "content_block_start" : "response.output_item.added")) {
+          expect(active).toBeUndefined()
+          expect(stopped.has(index)).toBe(false)
+          active = index
+          const item = ev.content_block ?? ev.item
+          if (["tool_use", "function_call"].includes(item.type)) argumentsByIndex.set(index, "")
+        } else if (ev.type === "content_block_delta" || ev.type.endsWith(".delta")) {
+          expect(index).toBe(active)
+          if (ev.delta?.type === "input_json_delta" || ev.type === "response.function_call_arguments.delta") argumentsByIndex.set(index, argumentsByIndex.get(index)! + (ev.delta.partial_json ?? ev.delta))
+        } else if (ev.type === (target === "anthropic" ? "content_block_stop" : "response.output_item.done")) {
+          expect(index).toBe(active)
+          stopped.add(index)
+          active = undefined
+        }
+      }
+      expect(active).toBeUndefined()
+      expect(stopped.size).toBe(output.length)
+      expect([...argumentsByIndex.values()].map(args => JSON.parse(args))).toEqual(expected.map(c => c[2]))
+      if (parallel) {
+        const second = starts().find(e => (e.content_block?.id ?? e.item?.call_id) === "call_units")!
+        const deltas = events.filter(e => target === "anthropic" ? e.index === second.index && e.delta?.type === "input_json_delta" : e.item_id === second.item.id && e.type === "response.function_call_arguments.delta")
+        expect(deltas).toHaveLength(1)
+      }
+      expect(events.at(-1)?.type).toBe(target === "anthropic" ? "message_stop" : "response.completed")
+      if (target === "anthropic") expect(encoder.result!.stop_reason).toBe("tool_use")
+      else expect(encoder.result!.status).toBe("completed")
+    })
+  }
   for (const [name, chunks] of Object.entries(fixtures)) {
     if (name === "TestChatTranslationKeepsFirstChoice") continue
     test(`${target}: Magpie ${name}`, () => {
@@ -98,7 +163,7 @@ test("SSE accepts split UTF-8, CRLF, comments, multiline data and data without a
   expect(out).toEqual(['{"text":\n"你好"}', "[DONE]"])
 })
 
-test("Responses custom and namespaced tools preserve schema, call identity and next-turn history", () => {
+test("Responses custom and namespaced tools preserve interleaved input, call identity and next-turn history", () => {
   const input = { model: "m", input: "edit", tools: [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "apply_patch", format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } }, { type: "function", name: "run", parameters: { type: "object" }, strict: true }] }], tool_choice: { type: "custom", namespace: "functions", name: "apply_patch" } }
   const r = parseRequest("responses", input)
   const chat = encodeChat(r)
@@ -110,7 +175,11 @@ test("Responses custom and namespaced tools preserve schema, call identity and n
   const args = JSON.stringify({ input: patch })
   const decoder = new ChatDecoder(), encoder = new ClientEncoder("responses", "m", r.toolMappings)
   encoder.start()
-  const chunks = [chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "functions__apply_patch", arguments: args.slice(0, 24) } }] }), chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(24) } }] }, "tool_calls")]
+  const chunks = [
+    chunk({ tool_calls: [{ index: 0, id: "call_1", function: { name: "functions__apply_patch", arguments: args.slice(0, 24) } }] }),
+    chunk({ content: "Applying patch", reasoning_content: "Check file" }),
+    chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(24) } }] }, "tool_calls"),
+  ]
   for (const c of chunks) for (const e of decoder.decode(c)) encoder.event(e)
   encoder.finish()
   const events = encoder.drain()
