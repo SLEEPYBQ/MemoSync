@@ -142,9 +142,15 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     suppressTrailingStatus: showsLiveFooter,
   }), [isProcessing, latestToolIds, localPath, messages, showsLiveFooter])
   const resolvedRows = useStableResolvedRows(rawRows)
-  const currentTurnAssistantMessageIds = useMemo(
-    () => getCurrentTurnAssistantMessageIds(messages, canCancel),
-    [canCancel, messages],
+  const currentTurnAssistantMessageIdsRef = useRef(new Set<string>())
+  const currentTurnAssistantMessageIds = useMemo(() => {
+    const next = getCurrentTurnAssistantMessageIds(messages, canCancel, currentTurnAssistantMessageIdsRef.current)
+    currentTurnAssistantMessageIdsRef.current = next
+    return next
+  }, [canCancel, messages])
+  const listExtraData = useMemo(
+    () => ({ toolGroupExpanded, currentTurnAssistantMessageIds }),
+    [toolGroupExpanded, currentTurnAssistantMessageIds],
   )
   // One label for the whole working phase: the activity status ("Running…").
   // SDK statuses like "requesting" are hidden so users see one activity label.
@@ -368,7 +374,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         <LegendList<ResolvedTranscriptRow>
           ref={listRef}
           data={resolvedRows}
-          extraData={{ toolGroupExpanded, currentTurnAssistantMessageIds }}
+          extraData={listExtraData}
           keyExtractor={keyExtractor}
           renderItem={renderItem}
           estimatedItemSize={96}
