@@ -658,7 +658,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             )}
           </section>
 
-          <section data-memory-board-section="library" className="mb-6">
+          <section data-memory-board-section="library" className="@container/library mb-6">
             {sections.searchAndCreate ? <div className="mb-4 flex flex-wrap items-center gap-2">
               <div className="relative max-w-xs flex-1">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -730,7 +730,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               </div>
             ) : null}
 
-            <div className="grid gap-4 @3xl/board:grid-cols-3">
+            {/* Measure the library after the detail panel takes its share.
+                At 56rem, three cards still have at least 280px each. */}
+            <div className="grid gap-4 @4xl/library:grid-cols-3">
               {SCOPES.map((scope) => {
                 const entries = boardItemsByScope[scope]
                 const list = entries.map((entry) => entry.item)
