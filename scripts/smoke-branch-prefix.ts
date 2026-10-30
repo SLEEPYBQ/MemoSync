@@ -1,4 +1,17 @@
-/** Offline native-engine proof. All credentials are fake; upstream binds loopback. */
+/**
+ * Offline proof that a memory branch shares its parent's prompt prefix and
+ * stays read-only, on the real Claude Code (SDK-bundled), Codex and Pi.
+ *
+ * Fake upstreams on loopback record every request; credentials are fake and
+ * nothing leaves the machine. For each engine the branch's first request must
+ * equal the parent's next request on tools, system/instructions, earlier
+ * messages, model and effort (Codex fork regenerates message ids, which are
+ * excluded), and write / non-allowlisted Bash / memory calls must be denied
+ * even when the user's settings allow them.
+ *
+ *   bun scripts/smoke-branch-prefix.ts               # parent with web search
+ *   bun scripts/smoke-branch-prefix.ts --codex-no-web
+ */
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -169,19 +182,16 @@ try {
   const guardResult = codexRequests[codexRequests.indexOf(branchRequest) + 1].input.at(-1).output
   assert(codexRequests[codexRequests.indexOf(branchRequest) + 2].input.at(-1).output.includes('blocked by PreToolUse hook'), 'memory probe must be denied')
   assert(guardResult.includes('blocked by PreToolUse hook'), 'Codex hook must deny before executing the command')
-  equal(branchRequest.tools, mainRequest.tools.filter((tool: any) => tool.type !== 'web_search'), '$.tools')
   const toolDifference = firstDifference(branchRequest.tools, mainRequest.tools, '$.tools')
   console.log(toolDifference
-    ? `Codex PREFIX FAIL: ${toolDifference} (server-side web_search removed for safety); SAFETY PASS: native hook denies command + memory calls`
-    : 'Codex PREFIX PASS (parent web disabled): tools/instructions/history content retained; SAFETY PASS')
+    ? `Codex PREFIX FAIL: ${toolDifference}`
+    : `Codex PREFIX PASS${codexNoWeb ? ' (parent web disabled)' : ''}: tools/instructions/history content retained; SAFETY PASS: native hook denies command + memory calls`)
   equal(branchRequest.instructions, mainRequest.instructions, '$.instructions')
   const withoutIds = (items: any[]) => items.map(({ id, ...item }) => item)
   equal(withoutIds(branchRequest.input.slice(0, mainRequest.input.length - 1)), withoutIds(mainRequest.input.slice(0, -1)), '$.input')
   equal(branchRequest.model, mainRequest.model, '$.model')
   equal(branchRequest.reasoning, mainRequest.reasoning, '$.reasoning')
   console.log('Codex HISTORY PASS: sandbox/environment changes append after history; generated message IDs excluded from content comparison')
-  // Keep the literal prefix failure visible to automation. The documented
-  // exception in requirement 3 prioritizes safety over cache reuse.
   if (toolDifference) process.exitCode = 1
 } catch (error) {
   console.error(`Codex FAIL: ${(error as Error).message}`); process.exitCode = 1
