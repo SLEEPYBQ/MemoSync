@@ -52,3 +52,30 @@ test("streaming retains sidebar derivation while memory waiting and recency inva
     expect(received.at(-1).snapshot.data.from).toBeNull()
   } finally { router.dispose(); await rm(dir, { recursive: true, force: true }) }
 })
+
+test("an unchanged sidebar after a version bump keeps its revision, so the next change is a row patch", async () => {
+  const dir = await mkdtemp("/tmp/memosync-delivery-")
+  const store = new EventStore(dir)
+  await store.initialize()
+  const project = await store.openProject(dir)
+  const chat = await store.createChat(project.id)
+  const agent = { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set<string>(), getStreamingAssistantTexts: () => new Map() }
+  const router = createWsRouter({ store, agent: agent as never, terminals: { onEvent: () => () => {} } as never, keybindings: { onChange: () => () => {} } as never, refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "test", updateManager: null })
+  let sidebar: SidebarData | null = null
+  const received: any[] = []
+  const ws = { data: { subscriptions: new Map(), snapshotSignatures: new Map() }, send(raw: string) { const message = JSON.parse(raw); received.push(message); if (message.snapshot?.type === "sidebar-patch") sidebar = applySidebarPatch(sidebar, message.snapshot.data); return raw.length } }
+  router.handleOpen(ws as never)
+  try {
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id: "sidebar", topic: { type: "sidebar", patches: true } }))
+    const version = store.getSidebarVersion()
+    // Queued messages bump the store version but are not part of the sidebar.
+    await store.enqueueMessage(chat.id, { id: "queued-1", content: "later", attachments: [], provider: "claude", model: "m", planMode: false } as never)
+    await router.broadcastChatStateImmediately(chat.id)
+    expect(store.getSidebarVersion()).toBeGreaterThan(version)
+    await store.renameChat(chat.id, "renamed")
+    await router.broadcastChatStateImmediately(chat.id)
+    const last = received.filter(message => message.snapshot?.type === "sidebar-patch").at(-1)
+    expect(last.snapshot.data.from).not.toBeNull()
+    expect(sidebar as SidebarData | null).toEqual(deriveSidebarData(store.state, agent.getActiveStatuses()))
+  } finally { router.dispose(); await rm(dir, { recursive: true, force: true }) }
+})

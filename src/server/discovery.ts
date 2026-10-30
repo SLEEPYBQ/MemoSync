@@ -237,7 +237,10 @@ async function readCodexSessionMetadata(sessionsDir: string, cache: Map<string, 
     const stamp = `${fileStat.mtimeMs}:${fileStat.size}`
     const cached = cache.get(sessionFile)
     const firstLine = cached?.stamp === stamp ? cached.line : await readBoundedFirstLine(sessionFile)
-    cache.set(sessionFile, { stamp, line: firstLine })
+    // Cache only successful reads: a transient open/read failure must be retried
+    // on the next scan, not hide the session until the file changes.
+    if (firstLine === null) cache.delete(sessionFile)
+    else cache.set(sessionFile, { stamp, line: firstLine })
     if (!firstLine?.trim()) continue
 
     const record = parseJsonRecord(firstLine)
