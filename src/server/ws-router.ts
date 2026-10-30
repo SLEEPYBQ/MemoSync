@@ -153,6 +153,7 @@ interface SnapshotBroadcastFilter {
 }
 
 interface SnapshotComputationCache {
+  chats?: Map<string, { snapshot: Extract<ServerEnvelope, { type: "snapshot" }>["snapshot"]; signature: string }>
   sidebar?: {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
@@ -696,6 +697,7 @@ export function createWsRouter({
     return true
   }
 
+  let disposed = false
   let retainedSidebar: SnapshotComputationCache["sidebar"]
   let retainedSidebarKey = ""
   let sidebarExpiresAt = 0
@@ -860,7 +862,10 @@ export function createWsRouter({
       }
     }
 
-    return {
+    const chatKey = JSON.stringify([topic.chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT])
+    const cachedChat = cache?.chats?.get(chatKey)
+    if (cachedChat) return { v: PROTOCOL_VERSION, type: "snapshot", id, snapshot: cachedChat.snapshot }
+    const envelope: Extract<ServerEnvelope, { type: "snapshot" }> = {
       v: PROTOCOL_VERSION,
       type: "snapshot",
       id,
@@ -884,12 +889,18 @@ export function createWsRouter({
         ),
       },
     }
+    if (cache) {
+      cache.chats ??= new Map()
+      cache.chats.set(chatKey, { snapshot: envelope.snapshot, signature: JSON.stringify(envelope.snapshot) })
+    }
+    return envelope
   }
 
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
     options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache; retryDropped?: boolean }
   ) {
+    if (disposed) return
     const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
       await maybePruneStaleEmptyChats([ws])
@@ -927,7 +938,9 @@ export function createWsRouter({
       if (envelope.type !== "snapshot") continue
       const signature = topic.type === "sidebar"
         ? getSidebarSnapshotCacheEntry(options?.cache).signature
-        : JSON.stringify(envelope.snapshot)
+        : topic.type === "chat"
+          ? options?.cache?.chats?.get(JSON.stringify([topic.chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT]))?.signature ?? JSON.stringify(envelope.snapshot)
+          : JSON.stringify(envelope.snapshot)
       const signatureReadyAt = topic.type === "sidebar" ? createdAt : performance.now()
       if (snapshotSignatures.get(id) === signature) {
         skippedCount += 1
@@ -958,7 +971,12 @@ export function createWsRouter({
           sidebarRevision = sidebar.revision
         }
       }
-      const { payloadBytes, status } = send(ws, delivery)
+      // The heavy snapshot JSON is shared even when subscription IDs differ.
+      const payload = delivery === envelope
+        ? `{"v":${PROTOCOL_VERSION},"type":"snapshot","id":${JSON.stringify(id)},"snapshot":${signature}}`
+        : JSON.stringify(delivery)
+      const payloadBytes = payload.length
+      const status = ws.send(payload)
       // Bun reports -1 after accepting the message into its queue; only 0
       // means the snapshot was dropped and still needs a later retry.
       if (status !== 0) {
@@ -1052,6 +1070,7 @@ export function createWsRouter({
   }
 
   function scheduleBroadcast() {
+    if (disposed) return
     pendingBroadcastAll = true
     pendingBroadcastChatIds.clear()
     if (pendingBroadcastTimer) {
@@ -1077,6 +1096,7 @@ export function createWsRouter({
   }
 
   function scheduleChatStateBroadcast(chatId: string) {
+    if (disposed) return
     if (!pendingBroadcastAll) {
       pendingBroadcastChatIds.add(chatId)
     }
@@ -1532,7 +1552,7 @@ export function createWsRouter({
           const changed = await resolvedDiffStore.refreshSnapshot(project.id, project.localPath)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           if (changed) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1544,7 +1564,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1584,7 +1604,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1614,7 +1634,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1628,7 +1648,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1641,7 +1661,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1655,7 +1675,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1680,7 +1700,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1693,7 +1713,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1706,7 +1726,7 @@ export function createWsRouter({
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           if (result.snapshotChanged) {
-            void broadcastSnapshots()
+            await broadcastFilteredSnapshots({ projectIds: new Set([project.id]) })
           }
           return
         }
@@ -1861,6 +1881,9 @@ export function createWsRouter({
       sockets.delete(ws)
       dirtySnapshotSockets.delete(ws)
       clearDroppedSnapshotRetry(ws)
+      ws.data.subscriptions.clear()
+      ws.data.snapshotSignatures?.clear()
+      ws.data.sidebarRevisions?.clear()
     },
     handleDrain,
     broadcastSnapshots,
@@ -1889,9 +1912,11 @@ export function createWsRouter({
         ws.data.sidebarRevisions?.delete(parsed.id)
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
-            if (ws.data.subscriptions.has(parsed.id)) {
+            if (!disposed && sockets.has(ws) && ws.data.subscriptions.get(parsed.id) === parsed.topic) {
               void pushSnapshots(ws, { skipPrune: true })
             }
+          }).catch(error => {
+            if (!disposed && sockets.has(ws)) send(ws, { v: PROTOCOL_VERSION, type: "error", id: parsed.id, message: String(error) })
           })
           return
         }
@@ -1911,6 +1936,15 @@ export function createWsRouter({
       await handleCommand(ws, parsed)
     },
     dispose() {
+      disposed = true
+      retainedSidebar = undefined
+      pendingBroadcastChatIds.clear()
+      for (const ws of sockets) {
+        ws.data.subscriptions.clear()
+        ws.data.snapshotSignatures?.clear()
+        ws.data.sidebarRevisions?.clear()
+      }
+      sockets.clear()
       if (pendingBroadcastTimer) {
         clearTimeout(pendingBroadcastTimer)
       }

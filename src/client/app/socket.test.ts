@@ -363,6 +363,19 @@ describe("AppSocket", () => {
     expect(received.length).toBe(3)
     socket.dispose()
   })
+  test("dispose releases queued subscriptions and ignores a late open event", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    socket.subscribe({ type: "sidebar", patches: true }, () => {})
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    socket.dispose()
+    ws.open()
+    expect(ws.sent).toEqual([])
+    expect(timers.intervals.size).toBe(0)
+    expect((socket as any).subscriptions.size).toBe(0)
+    expect((socket as any).outboundQueue.length).toBe(0)
+  })
+
 })
 
 describe("isLockedOutAuthStatus", () => {

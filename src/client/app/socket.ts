@@ -118,6 +118,9 @@ export class AppSocket {
       pending.reject(new Error("Socket disposed"))
     }
     this.pending.clear()
+    this.outboundQueue.length = 0
+    this.subscriptions.clear()
+    this.statusListeners.clear()
   }
 
   onStatus(listener: StatusListener) {
@@ -232,8 +235,10 @@ export class AppSocket {
     }
     this.emitStatus("connecting")
     this.ws = new WebSocket(this.url)
+    const connection = this.ws
 
     this.ws.addEventListener("open", () => {
+      if (!this.started || this.ws !== connection) return
       this.reconnectDelayMs = 750
       this.reconnectImmediatelyOnClose = false
       this.lastOpenAt = Date.now()
@@ -259,6 +264,7 @@ export class AppSocket {
     })
 
     this.ws.addEventListener("message", (event) => {
+      if (!this.started || this.ws !== connection) return
       this.lastMessageAt = Date.now()
       const receivedAt = performance.now()
       const rawText = String(event.data)
@@ -349,6 +355,7 @@ export class AppSocket {
     })
 
     this.ws.addEventListener("close", () => {
+      if (!this.started || this.ws !== connection) return
       if (!this.started) {
         return
       }
@@ -376,21 +383,22 @@ export class AppSocket {
 
   private async probeAuthLockout() {
     if (typeof fetch !== "function") return
+    const controller = new AbortController()
+    const abortTimer = setTimeout(() => controller.abort(), 2_000)
     try {
-      const controller = new AbortController()
-      const abortTimer = setTimeout(() => controller.abort(), 2_000)
       const response = await fetch("/auth/status", {
         cache: "no-store",
         headers: { Accept: "application/json" },
         signal: controller.signal,
       })
-      clearTimeout(abortTimer)
       if (!response.ok) return
       if (!isLockedOutAuthStatus(await response.json())) return
     } catch {
       // Network trouble — indistinguishable from a real outage; let the
       // normal reconnect loop keep trying.
       return
+    } finally {
+      clearTimeout(abortTimer)
     }
     if (!this.started) return
     this.dispose()
