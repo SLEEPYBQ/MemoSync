@@ -65,10 +65,8 @@
   "loadingMemoryChangesPreference": " Loading memory changes preference…",
   "useMemory": "Use Memory",
   "learnFromChats": "Learn From Chats",
-  "beforeEachTurn": "Before Each Turn",
   "memoryPreview": "Memory Preview",
   "autoProceedWhenNoMemoryApplies": "Auto-proceed When No Memory Applies",
-  "changes": "Changes",
   "memoryChanges": "Memory Changes",
   "askFirst": "Ask First",
   "applyAutomatically": "Apply Automatically",
@@ -146,6 +144,7 @@
   "uninstallValue0": "Uninstall {{v0}}",
   "editGlobalAppShortcutsStoredInValue0": "Edit global app shortcuts stored in {{v0}}.",
   "toggleEmbeddedTerminal": "Toggle Embedded Terminal",
+  "toggleLeftSidebar": "Toggle Left Sidebar",
   "toggleRightSidebar": "Toggle Right Sidebar",
   "openInFinder": "Open In Finder",
   "openInEditor": "Open In Editor",
@@ -202,5 +201,12 @@
   "aboutProjects": "Indexed projects",
   "aboutLicense": "Open source under the MIT License.",
   "aboutRepository": "Source code",
-  "aboutNotices": "Third-party notices"
+  "aboutNotices": "Third-party notices",
+  "memoryControl": "Control",
+  "reviewEachTurn": "Review each turn",
+  "automatic": "Automatic",
+  "memoryControlDescription": "Confirm memory yourself each turn, or let the agent handle it.",
+  "memoryControlReviewDescription": "You confirm memory changes and the working memory before the agent starts.",
+  "memoryControlAutoDescription": "The agent reads the memory index and loads what it needs. Safe changes apply on their own and can be reverted, sensitive ones wait on the Memory Board, and the review only speaks up when a memory was broken.",
+  "whenReviewingEachTurn": "When Reviewing Each Turn"
 }

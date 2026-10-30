@@ -161,6 +161,12 @@ export const SETTINGS_ROWS = defineRows({
     get title() { return t("settings:terminalMinColumnWidth") },
     get description() { return t("settings:minimumWidthForEachTerminalPane") },
   },
+  memoryControl: {
+    sectionId: "memory",
+    get title() { return t("settings:memoryControl") },
+    get description() { return t("settings:memoryControlDescription") },
+    keywords: ["control", "automatic", "review each turn", "控制方式", "自动", "每轮确认"],
+  },
   memoryEnabled: {
     sectionId: "memory",
     get title() { return t("settings:useMemory") },

@@ -378,5 +378,21 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
     }
   }
 
-  return messages
+  // Background learning can finish after newer turns have started. Keep its
+  // auto/Revert card with the producing turn while retaining append-only log
+  // order on disk. Count user prompts exactly as the server's turn provenance.
+  const turnStarts = messages.flatMap((message, index) => message.kind === "user_prompt" ? [index] : [])
+  const lateCards = new Map<number, HydratedTranscriptMessage[]>()
+  const moved = new Set<HydratedTranscriptMessage>()
+  messages.forEach((message, index) => {
+    if (message.kind !== "memory_candidates" || !message.turn || message.turn < 1) return
+    const nextTurn = turnStarts[message.turn]
+    if (nextTurn === undefined || index < nextTurn) return
+    const cards = lateCards.get(nextTurn) ?? []
+    cards.push(message)
+    lateCards.set(nextTurn, cards)
+    moved.add(message)
+  })
+  if (!moved.size) return messages
+  return messages.flatMap((message, index) => [...(lateCards.get(index) ?? []), ...(moved.has(message) ? [] : [message])])
 }

@@ -10,6 +10,7 @@ import {
 const KEYBINDINGS: KeybindingsSnapshot = {
   bindings: {
     toggleEmbeddedTerminal: ["cmd+j"],
+    toggleLeftSidebar: ["cmd+b"],
     toggleRightSidebar: ["cmd+b"],
     openInFinder: ["cmd+alt+f"],
     openInEditor: ["cmd+shift+o"],

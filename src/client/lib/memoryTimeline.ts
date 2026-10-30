@@ -124,7 +124,9 @@ export function buildMemoryRecord(
   }
 
   for (const message of messages) {
-    if (message.hidden) continue
+    // Automatic control hides quiet audits in chat only. Their verdicts must
+    // still populate the Memory Record, including pending/empty/error states.
+    if (message.hidden && message.kind !== "memory_trace") continue
     switch (message.kind) {
       case "memory_proposals": {
         if (message.turn === undefined) break

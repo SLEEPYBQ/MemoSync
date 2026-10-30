@@ -30,6 +30,7 @@ const KEYBINDING_ACTIONS = (Object.keys(KEYBINDING_ACTION_LABELS) as KeybindingA
 function buildKeybindingPayload(source: Record<string, string>): Record<KeybindingAction, string[]> {
   return {
     toggleEmbeddedTerminal: parseKeybindingInput(source.toggleEmbeddedTerminal ?? ""),
+    toggleLeftSidebar: parseKeybindingInput(source.toggleLeftSidebar ?? ""),
     toggleRightSidebar: parseKeybindingInput(source.toggleRightSidebar ?? ""),
     openInFinder: parseKeybindingInput(source.openInFinder ?? ""),
     openInEditor: parseKeybindingInput(source.openInEditor ?? ""),

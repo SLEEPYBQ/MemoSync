@@ -6,6 +6,7 @@ import { useLocation, useNavigate, useOutletContext, useParams } from "react-rou
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import type { AppState } from "./useAppState"
 import { ALL_SETTINGS_ROWS, SETTINGS_NAV_GROUPS, SETTINGS_ROWS, SETTINGS_SECTIONS as sidebarItems, getSettingsRowHref, resolveSettingsSectionId } from "./settings/registry"
@@ -37,11 +38,21 @@ export {
 export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
-/** The command template row exists only for the custom editor; send other presets to the picker that enables it. */
+const REVIEW_ONLY_MEMORY_ROWS: string[] = [SETTINGS_ROWS.memoryPreview.id, SETTINGS_ROWS.memoryAutoProceed.id, SETTINGS_ROWS.memoryChanges.id]
+
+/**
+ * Some rows exist only in one mode: the command template only for the custom
+ * editor, the per-turn review rows only under Review each turn. A search hit
+ * on a hidden row goes to the control that brings it back.
+ */
 function searchTarget(row: (typeof ALL_SETTINGS_ROWS)[number]) {
-  return row.id === SETTINGS_ROWS.editorCommandTemplate.id && useTerminalPreferencesStore.getState().editorPreset !== "custom"
-    ? SETTINGS_ROWS.defaultEditor
-    : row
+  if (row.id === SETTINGS_ROWS.editorCommandTemplate.id && useTerminalPreferencesStore.getState().editorPreset !== "custom") {
+    return SETTINGS_ROWS.defaultEditor
+  }
+  if (REVIEW_ONLY_MEMORY_ROWS.includes(row.id) && useAppSettingsStore.getState().settings?.memory.control === "auto") {
+    return SETTINGS_ROWS.memoryControl
+  }
+  return row
 }
 
 export function SettingsPage() {

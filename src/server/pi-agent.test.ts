@@ -524,3 +524,35 @@ test.each([false, true])("an official SDK model keeps limits and prices when met
     expect(selected.thinkingLevelMap.off).toBeNull()
   } finally { manager.dispose() }
 })
+
+test('memory forks pin effective metadata and system prompt, and refresh their tool gate on reuse', async () => {
+  const { parseRegistryModelCard } = await import('./registry-models')
+  const card = parseRegistryModelCard({ id: 'model', reasoning: { supported_efforts: ['high'], default_effort: 'high' } })!
+  const created: any[] = []
+  const contexts: any[] = []
+  const session = { ...fakeSession(), systemPrompt: 'parent prompt', agent: {
+    streamFn: (_model: unknown, context: unknown) => { contexts.push(context) },
+    beforeToolCall: undefined as any,
+  } }
+  const sdk = { ...fakeSdk(), createAgentSession: async (args: any) => { created.push(args); return { session } } }
+  let catalogReads = 0
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => { catalogReads++; return [] } })
+  let recorded: any
+  try {
+    const turn = await manager.startTurn({ ...startupArgs, model: 'model', effort: 'high', modelCard: card,
+      systemPrompt: 'parent frozen prompt', onLaunch: launch => { recorded = launch },
+      beforeToolCall: async () => ({ block: true, reason: 'read-only branch' }) })
+    await collectEvents(turn.stream)
+    expect(recorded.options.effort).toBe('high')
+    expect(recorded.options.modelCard).toBe(card)
+    expect(created[0].thinkingLevel).toBe('high')
+    expect(catalogReads).toBe(0)
+    session.agent.streamFn({}, { systemPrompt: 'reloaded project prompt' })
+    expect(contexts[0].systemPrompt).toBe('parent frozen prompt')
+    expect(await session.agent.beforeToolCall({ toolCall: { name: 'write' }, args: {} })).toMatchObject({ block: true })
+    const next = await manager.startTurn({ ...startupArgs, model: 'model', effort: 'high', modelCard: card,
+      beforeToolCall: async () => ({ block: true, reason: 'zero reads left' }) })
+    await collectEvents(next.stream)
+    expect(await session.agent.beforeToolCall({ toolCall: { name: 'read' }, args: {} })).toMatchObject({ block: true, reason: 'zero reads left' })
+  } finally { manager.dispose() }
+})

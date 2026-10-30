@@ -74,7 +74,12 @@ const HotkeyTooltipContent = React.forwardRef<
         )}
         {...props}
       >
-        {firstShortcut ? (
+        {firstShortcut && children ? (
+          <span className="flex items-center gap-2">
+            <span className="pl-1.5">{children}</span>
+            {renderShortcutKeys(firstShortcut)}
+          </span>
+        ) : firstShortcut ? (
           renderShortcutKeys(firstShortcut)
         ) : (
           <span>{typeof children === "string" ? formatHotkeyLabel(children) : children}</span>
