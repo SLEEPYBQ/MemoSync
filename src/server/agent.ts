@@ -765,7 +765,7 @@ function getClaudeAssistantMessageUsageId(message: any): string | null {
 }
 
 export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
-  const debugRaw = JSON.stringify(message)
+  // Keep raw SDK JSON only for the init raw view and tool_use_result extraction.
   const messageId = typeof message.uuid === "string" ? message.uuid : undefined
 
   if (message.type === "system" && message.subtype === "init") {
@@ -781,7 +781,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           ? message.slash_commands.filter((entry: string) => !entry.startsWith("._"))
           : [],
         mcpServers: Array.isArray(message.mcp_servers) ? message.mcp_servers : [],
-        debugRaw,
+        debugRaw: JSON.stringify(message),
       }),
     ]
   }
@@ -794,7 +794,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           kind: "assistant_text",
           messageId,
           text: content.text,
-          debugRaw,
         }))
       }
       if (content.type === "tool_use" && typeof content.name === "string" && typeof content.id === "string") {
@@ -806,7 +805,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
             toolId: content.id,
             input: (content.input ?? {}) as Record<string, unknown>,
           }),
-          debugRaw,
         }))
       }
     }
@@ -815,15 +813,17 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "user" && Array.isArray(message.message?.content)) {
     const entries: TranscriptEntry[] = []
+    let debugRaw: string | undefined
     for (const content of message.message.content) {
       if (content.type === "tool_result" && typeof content.tool_use_id === "string") {
+        debugRaw ??= JSON.stringify(message)
         entries.push(timestamped({
           kind: "tool_result",
+          debugRaw,
           messageId,
           toolId: content.tool_use_id,
           content: content.content,
           isError: Boolean(content.is_error),
-          debugRaw,
         }))
       }
       if (message.message.role === "user" && typeof message.message.content === "string") {
@@ -831,7 +831,6 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
           kind: "compact_summary",
           messageId,
           summary: message.message.content,
-          debugRaw,
         }))
       }
     }
@@ -840,7 +839,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
 
   if (message.type === "result") {
     if (message.subtype === "cancelled") {
-      return [timestamped({ kind: "interrupted", messageId, debugRaw })]
+      return [timestamped({ kind: "interrupted", messageId })]
     }
     return [
       timestamped({
@@ -851,21 +850,20 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
         durationMs: typeof message.duration_ms === "number" ? message.duration_ms : 0,
         result: typeof message.result === "string" ? message.result : stringFromUnknown(message.result),
         costUsd: typeof message.total_cost_usd === "number" ? message.total_cost_usd : undefined,
-        debugRaw,
       }),
     ]
   }
 
   if (message.type === "system" && message.subtype === "status" && typeof message.status === "string") {
-    return [timestamped({ kind: "status", messageId, status: message.status, debugRaw })]
+    return [timestamped({ kind: "status", messageId, status: message.status })]
   }
 
   if (message.type === "system" && message.subtype === "compact_boundary") {
-    return [timestamped({ kind: "compact_boundary", messageId, debugRaw })]
+    return [timestamped({ kind: "compact_boundary", messageId })]
   }
 
   if (message.type === "system" && message.subtype === "context_cleared") {
-    return [timestamped({ kind: "context_cleared", messageId, debugRaw })]
+    return [timestamped({ kind: "context_cleared", messageId })]
   }
 
   if (
@@ -874,7 +872,7 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
     typeof message.message.content === "string" &&
     message.message.content.startsWith("This session is being continued")
   ) {
-    return [timestamped({ kind: "compact_summary", messageId, summary: message.message.content, debugRaw })]
+    return [timestamped({ kind: "compact_summary", messageId, summary: message.message.content })]
   }
 
   return []

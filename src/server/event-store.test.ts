@@ -1036,3 +1036,23 @@ describe("per-chat memory controls", () => {
     expect(restored.requireChat(chat.id).memoryDisabled).toBe(false)
   })
 })
+
+
+test("appended cache entries cannot alias nested caller objects and match cold disk reads", async () => {
+  const dataDir = await createTempDataDir()
+  const store = new EventStore(dataDir)
+  await store.initialize()
+  const project = await store.openProject("/tmp/cache-project")
+  const chat = await store.createChat(project.id)
+  store.getMessages(chat.id) // Warm the single-chat cache before append.
+  const nested = { type: "text", text: "written" }
+  const message: TranscriptEntry = { _id: "nested", createdAt: 100, kind: "tool_result", toolId: "tool-1", content: [nested], isError: false }
+  await store.appendMessage(chat.id, message)
+  nested.text = "mutated"
+  const written = JSON.parse(await readFile(join(dataDir, "transcripts", `${chat.id}.jsonl`), "utf8"))
+  expect(written.content[0].text).toBe("written")
+  expect(store.getMessages(chat.id)).toEqual([written])
+  const cold = new EventStore(dataDir)
+  await cold.initialize()
+  expect(cold.getMessages(chat.id)).toEqual(store.getMessages(chat.id))
+})

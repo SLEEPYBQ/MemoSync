@@ -1368,7 +1368,7 @@ export function createWsRouter({
         case "project.rename": {
           await store.renameProjectSidebarTitle(command.projectId, command.title)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "project.remove": {
@@ -1410,13 +1410,13 @@ export function createWsRouter({
         case "chat.create": {
           const chat = await store.createChat(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: { chatId: chat.id } })
-          await broadcastChatAndSidebar(chat.id)
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true, chatIds: new Set([chat.id]) })
           return
         }
         case "chat.fork": {
           const result = await agent.forkChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.rename": {
@@ -1428,13 +1428,13 @@ export function createWsRouter({
         case "chat.archive": {
           await store.archiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true })
           return
         }
         case "chat.unarchive": {
           await store.unarchiveChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastChatAndSidebar(command.chatId)
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true, chatIds: new Set([command.chatId]) })
           return
         }
         case "chat.delete": {
@@ -1442,7 +1442,7 @@ export function createWsRouter({
           await agent.closeChat(command.chatId)
           await store.deleteChat(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
-          await broadcastFilteredSnapshots({ includeSidebar: true })
+          await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true, chatIds: new Set([command.chatId]) })
           return
         }
         case "chat.markRead": {
