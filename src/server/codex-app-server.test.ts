@@ -367,7 +367,7 @@ describe("CodexAppServerManager", () => {
       const read = process.messages.find((message: any) => message.method === "config/read") as any
       expect(read.params).toEqual({ includeLayers: false, cwd: "/tmp/project" })
       const thread = process.messages.find((message: any) => message.method === `thread/${mode}`) as any
-      expect(thread.params.config).toEqual({ "features.multi_agent": false, web_search: "disabled", "mcp_servers.repo_tools.enabled": false, "mcp_servers.github.enabled": false })
+      expect(thread.params.config).toMatchObject({ "features.multi_agent": false, web_search: "disabled", "mcp_servers.repo_tools.enabled": false, "mcp_servers.github.enabled": false })
       expect(JSON.stringify(process.messages)).not.toContain("fixture-secret-not-forwarded")
       expect(process.messages.some((message: any) => message.method.startsWith("config/") && message.method !== "config/read")).toBe(false)
       manager.stopAll()

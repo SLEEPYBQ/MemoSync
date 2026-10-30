@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -923,7 +925,19 @@ export class CodexAppServerManager {
       if (!config) throw new Error("Cannot establish read-only memory branch: invalid Codex configuration response")
       const servers = config.mcp_servers === undefined ? {} : asRecord(config.mcp_servers)
       if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
-      branchConfig = { "features.multi_agent": false, web_search: "disabled" }
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
+      const guard = fileURLToPath(new URL("./memory/codex-branch-guard.ts", import.meta.url))
+      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)}`
+      // Codex normalizes hook identity to sorted JSON before hashing. Session
+      // flags are not implicitly trusted; keep trust local to this declaration.
+      // See docs/branch-cache-verification.md and the native offline smoke.
+      const identity = JSON.stringify({ event_name: "pre_tool_use", hooks: [{ async: false, command, timeout: 10, type: "command" }] })
+      const hash = `sha256:${createHash("sha256").update(identity).digest("hex")}`
+      branchConfig = {
+        "hooks.state": { "/<session-flags>/config.toml:pre_tool_use:0:0": { enabled: true, trusted_hash: hash } },
+        "features.multi_agent": false, web_search: "disabled",
+        "hooks.PreToolUse": [{ hooks: [{ type: "command", command, timeout: 10 }] }],
+      }
       for (const name of Object.keys(servers)) {
         // Config overrides use dotted paths. Ambiguous names must not disable
         // the wrong server and silently leave the intended one available.

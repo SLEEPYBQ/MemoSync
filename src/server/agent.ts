@@ -1,3 +1,4 @@
+import type { ParentLaunch, ClaudeParentLaunch } from './memory/parent-launch'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -399,6 +400,7 @@ interface ActiveTurn {
 }
 
 interface ClaudeSessionHandle {
+  parentLaunch?: ClaudeParentLaunch
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
   getAccountInfo?: () => Promise<any>
@@ -1427,42 +1429,50 @@ export async function startClaudeSession(args: {
   const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model, env: args.subprocessEnv })
   const sdkRuntime = { ...engineRuntime, settings: { autoMemoryEnabled: false, autoDreamEnabled: false } }
 
-  const q = query({
-    prompt: promptQueue,
+  const launchOptions = {
+    cwd: args.localPath,
+    model: sdkRuntime.model,
+    effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
+    resume: args.sessionToken ?? undefined,
+    forkSession: args.forkSession,
+    permissionMode: args.planMode ? "plan" : "acceptEdits",
+    canUseTool,
+    // Body text streams into ChatRuntime.streamingText as it is written —
+    // without this the reply pops in whole at turn end (the DeepSeek
+    // Anthropic-compatible endpoint streams SSE like the real one).
+    includePartialMessages: true,
+    tools: [...CLAUDE_TOOLSET],
+    systemPrompt: systemAppend
+      ? { type: "preset", preset: "claude_code", append: systemAppend }
+      : undefined,
+    mcpServers: memorySpecs.length
+      ? {
+          memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
+        }
+      : undefined,
+    settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
+    // MemoSync IS the memory system. The harness's own auto-memory
+    // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
+    // read+write channel — observed live: the model wrote MEMORY.md there
+    // on a "记住…" request. Flag-level settings outrank user settings.
+    settings: sdkRuntime.settings,
+    pathToClaudeCodeExecutable: engineRuntime.executable.path,
+    env: sdkRuntime.env,
+  } satisfies import("@anthropic-ai/claude-agent-sdk").Options
+  const parentLaunch: ClaudeParentLaunch = {
+    provider: "claude", memorySpecs,
     options: {
-      cwd: args.localPath,
-      model: sdkRuntime.model,
-      effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
-      resume: args.sessionToken ?? undefined,
-      forkSession: args.forkSession,
-      permissionMode: args.planMode ? "plan" : "acceptEdits",
-      canUseTool,
-      // Body text streams into ChatRuntime.streamingText as it is written —
-      // without this the reply pops in whole at turn end (the DeepSeek
-      // Anthropic-compatible endpoint streams SSE like the real one).
-      includePartialMessages: true,
-      tools: [...CLAUDE_TOOLSET],
-      systemPrompt: systemAppend
-        ? { type: "preset", preset: "claude_code", append: systemAppend }
-        : undefined,
-      mcpServers: memorySpecs.length
-        ? {
-            memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
-          }
-        : undefined,
-      settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
-      // MemoSync IS the memory system. The harness's own auto-memory
-      // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
-      // read+write channel — observed live: the model wrote MEMORY.md there
-      // on a "记住…" request. Flag-level settings outrank user settings.
-      settings: sdkRuntime.settings,
-      pathToClaudeCodeExecutable: engineRuntime.executable.path,
-      env: sdkRuntime.env,
+      model: launchOptions.model, effort: launchOptions.effort, tools: launchOptions.tools,
+      systemPrompt: launchOptions.systemPrompt, settingSources: launchOptions.settingSources,
+      settings: launchOptions.settings, permissionMode: launchOptions.permissionMode,
+      env: launchOptions.env, pathToClaudeCodeExecutable: launchOptions.pathToClaudeCodeExecutable,
     },
-  })
+  }
+  const q = query({ prompt: promptQueue, options: launchOptions })
 
   return {
     provider: "claude",
+    parentLaunch,
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
 
     }, outboundOrigins),
@@ -1504,10 +1514,13 @@ export async function startClaudeSession(args: {
     ),
     setModel: async (model: string) => {
       const bare = model.replace(/\[1m\]$/, "")
-      await q.setModel(sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare)
+      const selected = sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare
+      await q.setModel(selected)
+      parentLaunch.options.model = selected
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
+      parentLaunch.options.permissionMode = planMode ? "plan" : "acceptEdits"
     },
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
@@ -1727,6 +1740,7 @@ export class AgentCoordinator {
       subprocessEnv: runtime?.env,
       runtime,
       purpose,
+      parentLaunch: this.parentLaunches.get(args.chatId) ?? this.sessionLaunches.get(`${args.provider}:${parent ?? chat.pendingForkSessionToken ?? chat.sessionToken}`),
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
     return branch
@@ -1743,6 +1757,8 @@ export class AgentCoordinator {
 
   private readonly runtimeSelections = new Map<string, string>()
   private readonly sessionRuntimes = new Map<string, EngineRuntime>()
+  private readonly parentLaunches = new Map<string, ParentLaunch>()
+  private readonly sessionLaunches = new Map<string, ParentLaunch>()
 
   memoryRuntimeChoice(chatId: string) {
     const current = this.activeTurns.get(chatId) ?? this.branchPreparations.get(chatId)?.args
@@ -3134,6 +3150,7 @@ export class AgentCoordinator {
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
+    this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
@@ -5656,7 +5673,7 @@ export class AgentCoordinator {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
       const piPrompt = buildPromptText(args.content, providerAttachments)
-      turn = await this.piManager.startTurn({
+      const piLaunch: import("./pi-agent").StartPiTurnArgs = {
         signal: startController.signal,
         chatId: args.chatId,
         cwd: project.localPath,
@@ -5668,7 +5685,10 @@ export class AgentCoordinator {
         connection,
         memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
         memoryDispatch: piMemoryDispatch,
-      })
+        onLaunch: (launch) => this.parentLaunches.set(args.chatId, launch),
+      }
+      this.parentLaunches.set(args.chatId, { provider: "pi", options: { model: piLaunch.model, effort: piLaunch.effort, connection, memorySpecs: piLaunch.memorySpecs, toolNames: piLaunch.toolNames } })
+      turn = await this.piManager.startTurn(piLaunch)
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         turn.close()
         return
@@ -5764,7 +5784,7 @@ export class AgentCoordinator {
             return { text: r.text, isError: r.isError }
           }
         : undefined
-      const sessionToken = await this.codexManager.startSession({
+      const codexLaunch: import("./codex-app-server").StartCodexSessionArgs = {
         runtime: args.engineRuntime,
         signal: startController.signal,
         chatId: args.chatId,
@@ -5774,7 +5794,9 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
-      })
+      }
+      this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
+      const sessionToken = await this.codexManager.startSession(codexLaunch)
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         return
       }
@@ -6223,6 +6245,7 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
+      if (started.parentLaunch) this.parentLaunches.set(args.chatId, started.parentLaunch)
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
         try {
           started.close()
@@ -6461,6 +6484,8 @@ export class AgentCoordinator {
           continue
         }
         if (event.type === "session_token" && event.sessionToken) {
+          const launch = this.parentLaunches.get(session.chatId)
+          if (launch) this.sessionLaunches.set(`claude:${event.sessionToken}`, launch)
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
@@ -6671,6 +6696,8 @@ export class AgentCoordinator {
         if (active.cancelRequested) break
 
         if (event.type === "session_token" && event.sessionToken) {
+          const launch = this.parentLaunches.get(active.chatId)
+          if (launch) this.sessionLaunches.set(`${active.provider}:${event.sessionToken}`, launch)
           await this.store.setSessionToken(active.chatId, event.sessionToken)
           const chat = this.store.getChat(active.chatId)
           if (

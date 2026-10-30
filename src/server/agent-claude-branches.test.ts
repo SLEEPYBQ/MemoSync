@@ -106,7 +106,7 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
     },
     startClaudeSession: async (options) => {
       mainOptions.push(options)
-      return { provider: "claude", stream: events, interrupt: async () => {}, close: () => events.close(), setModel: async () => {}, setPermissionMode: async () => {}, sendPrompt: async (prompt) => { mainPrompts.push(prompt) } }
+      return { parentLaunch: { provider: "claude", options: { model: options.model, effort: options.effort as "high", tools: ["Read", "Write"] }, memorySpecs: [] }, provider: "claude", stream: events, interrupt: async () => {}, close: () => events.close(), setModel: async () => {}, setPermissionMode: async () => {}, sendPrompt: async (prompt) => { mainPrompts.push(prompt) } }
     },
     codexManager: {
       async startSession(options: Record<string, unknown>) { mainOptions.push(options); return "parent-before-turn" },
@@ -209,6 +209,9 @@ describe("coordinator provider branches", () => {
       await until(() => h.store.getMessages(h.chat.id).some((entry) => entry.kind === "memory_trace" && entry.status === "ok"))
       const audit = h.created.find((branch) => branch.purpose === "audit")!
       expect(audit.parentSessionToken).toBe("parent-after-turn")
+      expect(audit.parentLaunch?.provider).toBe(provider)
+      if (audit.parentLaunch?.provider === "claude") expect(audit.parentLaunch.options.tools).toEqual(["Read", "Write"])
+      if (audit.parentLaunch?.provider === "codex") expect(audit.parentLaunch.session.dynamicTools?.length).toBeGreaterThan(0)
       expect(h.calls.find((call) => call.purpose === "audit")?.prompt).toContain("Sorted 1, 2, 3.")
       expect(h.sidecarCalls()).toBe(0)
       expect(h.disposed).toContain("audit")
