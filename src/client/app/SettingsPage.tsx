@@ -6,8 +6,9 @@ import { useLocation, useNavigate, useOutletContext, useParams } from "react-rou
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
+import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import type { AppState } from "./useAppState"
-import { ALL_SETTINGS_ROWS, SETTINGS_NAV_GROUPS, SETTINGS_SECTIONS as sidebarItems, getSettingsRowHref, resolveSettingsSectionId } from "./settings/registry"
+import { ALL_SETTINGS_ROWS, SETTINGS_NAV_GROUPS, SETTINGS_ROWS, SETTINGS_SECTIONS as sidebarItems, getSettingsRowHref, resolveSettingsSectionId } from "./settings/registry"
 import { GeneralSection } from "./settings/GeneralSection"
 import { MemorySection } from "./settings/MemorySection"
 import { ProvidersSection } from "./settings/ProvidersSection"
@@ -36,8 +37,15 @@ export {
 export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
+/** The command template row exists only for the custom editor; send other presets to the picker that enables it. */
+function searchTarget(row: (typeof ALL_SETTINGS_ROWS)[number]) {
+  return row.id === SETTINGS_ROWS.editorCommandTemplate.id && useTerminalPreferencesStore.getState().editorPreset !== "custom"
+    ? SETTINGS_ROWS.defaultEditor
+    : row
+}
+
 export function SettingsPage() {
-  useI18n()
+  const activeLanguage = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const { sectionId } = useParams<{ sectionId: string }>()
@@ -141,7 +149,7 @@ export function SettingsPage() {
       [row.title, row.description, ...(row.keywords ?? [])].some((text) => text.toLowerCase().includes(needle)),
     ).slice(0, 12)
     // Labels are getters over the active language; recompute when it changes.
-  }, [query, state.appSettings?.language])
+  }, [query, activeLanguage])
 
   async function handleSidebarSignOut() {
     if (signingOut) return
@@ -195,7 +203,7 @@ export function SettingsPage() {
                       <button
                         key={row.id}
                         type="button"
-                        onClick={() => { setQuery(""); navigate(getSettingsRowHref(row)) }}
+                        onClick={() => { setQuery(""); navigate(getSettingsRowHref(searchTarget(row))) }}
                         className="flex w-full cursor-pointer flex-col items-start rounded-lg px-2.5 py-1.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
                       >
                         <span className="text-[13px] text-foreground">{row.title}</span>
