@@ -280,6 +280,9 @@ test("legacy own Anthropic, custom Codex, GLM and Pi defaults resolve independen
   const glm = fixture({ MEMOSYNC_CODEX_PROVIDER: "glm", GLM_API_KEY: "g", GLM_CODEX_BASE_URL: "https://glm-code.test", GLM_MODEL: "glm-5.3", MEMOSYNC_CODEX_API_KEY: "ignored" }); await glm.initialize()
   expect((await resolveEngineRuntime({ engine: "codex", service: glm })).args.join(" ")).toContain("https://glm-code.test")
   expect((await resolveEngineRuntime({ engine: "codex", service: glm })).model).toBe("glm-5.3")
+  // A Codex model set for GLM in the environment is kept, not swapped for the first listed one.
+  const glmModel = fixture({ MEMOSYNC_CODEX_PROVIDER: "glm", GLM_API_KEY: "g", MEMOSYNC_CODEX_MODEL: "glm-5.2" }); await glmModel.initialize()
+  expect((await resolveEngineRuntime({ engine: "codex", service: glmModel })).model).toBe("glm-5.2")
   const own = fixture({ MEMOSYNC_USE_OWN_ANTHROPIC: "1", ANTHROPIC_AUTH_TOKEN: "token", ANTHROPIC_MODEL: "own", ANTHROPIC_DEFAULT_HAIKU_MODEL: "cheap" }); await own.initialize()
   const ownRuntime = await resolveEngineRuntime({ engine: "claude", service: own })
   expect(ownRuntime.env.ANTHROPIC_AUTH_TOKEN).toBe("token")
