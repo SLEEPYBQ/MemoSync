@@ -741,7 +741,7 @@ describe("memory preview gate (coordinator)", () => {
     } finally { h.cleanup() }
   })
 
-  test("Stop during Claude sendPrompt interrupts the active owner and permits a new turn", async () => {
+  test("Stop during Claude sendPrompt retires the not-yet-started session and permits a new turn", async () => {
     let promptStarted!: () => void
     const started = new Promise<void>((resolve) => { promptStarted = resolve })
     let releasePrompt!: () => void
@@ -760,12 +760,16 @@ describe("memory preview gate (coordinator)", () => {
     try {
       await started
       await h.coordinator.cancel("chat-1")
-      expect(h.interrupts).toBe(1)
+      // No provider frame yet, so the Query is retired instead of interrupted:
+      // its late frames could otherwise finish the next turn.
+      expect(h.interrupts).toBe(0)
+      expect(h.claudeSessionCloses[0]).toBeGreaterThan(0)
       expect(h.store.turnCancelledCount).toBe(1)
 
       const later = await h.coordinator.send({
         type: "chat.send", chatId: "chat-1", provider: "claude", content: "after stop",
       })
+      expect(h.sessionStarts).toHaveLength(2)
       expect(later).not.toMatchObject({ queued: true })
       await waitFor(() => h.prompts.some((prompt) => prompt.startsWith("after stop")))
       expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)

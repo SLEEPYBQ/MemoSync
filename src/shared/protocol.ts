@@ -130,6 +130,7 @@ export type ClientCommand =
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
+  | { type: "chat.getPreview"; chatId: string }
   | { type: "chat.setMemoryDisabled"; chatId: string; disabled: boolean }
   | {
       type: "chat.send"
