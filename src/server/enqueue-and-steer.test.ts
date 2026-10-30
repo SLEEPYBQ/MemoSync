@@ -25,7 +25,20 @@ describe("enqueueAndMaybeSteer", () => {
     }
     await expect(enqueueAndMaybeSteer(command, dependencies)).resolves.toEqual({ queuedMessageId: "q1" })
     await expect(enqueueAndMaybeSteer(command, { ...dependencies, isRunning: () => false })).rejects.toThrow("Queued message not found")
-    await expect(enqueueAndMaybeSteer(command, { ...dependencies, isQueued: () => true })).rejects.toThrow("Queued message not found")
     await expect(enqueueAndMaybeSteer(command, { ...dependencies, steer: async () => { throw new Error("permission denied") } })).rejects.toThrow("permission denied")
+  })
+  test("a steer that fails while the message stays queued succeeds as an enqueue, so a retry can't duplicate it", async () => {
+    const queue = new Set<string>()
+    let next = 0
+    const dependencies = {
+      enqueue: async () => { const id = `q${++next}`; queue.add(id); return { queuedMessageId: id } },
+      // Steer re-checks after cancelling and refuses before touching the queue.
+      steer: async () => { throw new Error("Chat is still running") },
+      isQueued: (_chatId: string, id: string) => queue.has(id),
+      isRunning: () => true,
+    }
+    const command = { type: "message.enqueue" as const, chatId: "c1", content: "hello", steer: true }
+    await expect(enqueueAndMaybeSteer(command, dependencies)).resolves.toEqual({ queuedMessageId: "q1" })
+    expect([...queue]).toEqual(["q1"])
   })
 })

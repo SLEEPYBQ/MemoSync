@@ -211,6 +211,7 @@ function createHarness(
     preview?: boolean
     getMemorySettings?: () => { enabled: boolean; learn: boolean }
     codexManager?: import("./codex-app-server").CodexAppServerManager
+    piManager?: unknown
     traceInputs?: TraceInput[]
     /** Full trace-service override (takes precedence over traceInputs). */
     trace?: TraceService | null
@@ -322,6 +323,9 @@ function createHarness(
     store: store as never,
     getMemorySettings: opts.getMemorySettings,
     codexManager: opts.codexManager,
+    ...(opts.piManager
+      ? { piManager: opts.piManager as never, resolvePiConnection: async () => ({ provider: "custom", baseUrl: "https://example.test/v1", apiKey: "test" }) as never }
+      : {}),
     onStateChange: opts.onStateChange ?? (() => {}),
     memory,
     studyMemoryStore,
@@ -7580,6 +7584,43 @@ describe("memory on/off turn controls", () => {
       }
       expect(s.calls.capture).toBe(mode === "on" ? 1 : 0)
       expect(s.calls.propose).toBe(0)
+    } finally { events.close(); h.cleanup() }
+  })
+
+  for (const mode of ["off", "readonly", "on"] as const) test(`Pi ${mode} gates memory tools, dispatch and injection`, async () => {
+    const s = services()
+    let turnArgs: any
+    const events = new AsyncEventQueue<any>()
+    const piManager = {
+      startTurn: async (args: any) => { turnArgs = args; return { provider: "pi", stream: events, interrupt: async () => {}, close: () => events.close() } },
+      closeChat() {}, dispose() {},
+    }
+    const h = createHarness({ capture: s.capture, piManager, getMemorySettings: () => ({ enabled: mode !== "off", learn: mode === "on" }) })
+    try {
+      const item = seed(h)
+      await h.coordinator.send({ ...send, provider: "pi", content: "Remember that I prefer pnpm" })
+      await waitFor(() => Boolean(turnArgs))
+      const names: string[] = turnArgs.memorySpecs?.map((spec: any) => spec.name) ?? []
+      if (mode === "off") {
+        expect(turnArgs.content).not.toContain(item.content)
+        expect(turnArgs.memoryDispatch).toBeUndefined()
+      } else {
+        expect(turnArgs.content).toContain(item.content)
+        expect(names).toContain("load_memory_detail")
+        expect(names.includes("propose_memory")).toBe(mode === "on")
+        const detail = await turnArgs.memoryDispatch("load_memory_detail", { ids: [item.id] })
+        expect(detail.isError).not.toBe(true)
+        if (mode === "readonly") {
+          const before = h.memory.store.list().length
+          const proposal = await turnArgs.memoryDispatch("propose_memory", { content: "Prefer pnpm", scope: "personal", type: "preference" })
+          expect(proposal.isError).toBe(true)
+          expect(h.memory.store.list()).toHaveLength(before)
+        }
+      }
+      events.push({ type: "transcript", entry: { _id: crypto.randomUUID(), createdAt: Date.now(), kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" } })
+      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(s.calls.capture).toBe(mode === "on" ? 1 : 0)
     } finally { events.close(); h.cleanup() }
   })
 })

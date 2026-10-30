@@ -266,7 +266,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [slashDismissed, setSlashDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
-  const [draftMemoryDisabled, setDraftMemoryDisabled] = useDraftMemoryDisabled(draftKey)
+  const draftMemoryDisabled = useDraftMemoryDisabled((s) => s.disabled)
+  const setDraftMemoryDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
   const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
   const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
@@ -655,7 +656,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         if (submissionRef.current === submission && !ownsDraft()) return
         if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
         if (!ownsDraft()) return
-        setDraftMemoryDisabled(false)
+        if (!chatId) setDraftMemoryDisabled(false)
         setValue("")
         if (textareaRef.current) textareaRef.current.style.height = "auto"
         clearAttachments({ cleanupPreviews: false })
@@ -976,7 +977,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {leadingControls}
           {/* Before the preference chips: the row scrolls with a hidden
               scrollbar, and the memory state must stay in view. */}
-          <MemoryToggle chatId={chatId} draftKey={draftKey} />
+          <MemoryToggle chatId={chatId} />
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}
