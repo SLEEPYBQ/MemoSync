@@ -5,265 +5,234 @@
 <h1 align="center">MemoSync</h1>
 
 <p align="center">
-  <strong>Co-manage your coding agent's memory: see what it remembers, decide what it keeps, choose what it uses, and audit how it used it.</strong>
+  <strong>See what your coding agent remembers, decide what it keeps, choose what it uses, and check how it used it.</strong>
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
   <img alt="Bun 1.3.5+" src="https://img.shields.io/badge/bun-%E2%89%A51.3.5-f9f1e1.svg" />
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.8-3178c6.svg" />
-  <img alt="React 19" src="https://img.shields.io/badge/React-19-61dafb.svg" />
   <img alt="Local-first" src="https://img.shields.io/badge/data-local--first-2ea44f.svg" />
 </p>
 
-<br />
+<p align="center">
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a>
+</p>
 
 <p align="center">
   <img src="docs/figures/main-ui.png" alt="MemoSync in the middle of a turn" width="960" />
 </p>
 
-<p align="center">
-  <sub>MemoSync in the middle of a turn. <b>(A)</b> the pre-turn review of long-term memory, <b>(B)</b> the Memory Board, <b>(C)</b> the working memory confirmed for this turn, <b>(D)</b> inline memory citations with a Stop control, <b>(E)</b> the post-turn Memory Use Audit, <b>(F)</b> the per-turn Memory Record.</sub>
-</p>
-
-<br />
-
-## Demo video
-
 https://github.com/user-attachments/assets/488a1e41-5a01-4c01-ac76-5c37b8e764f0
 
-## Why MemoSync
+---
 
-Coding agents accumulate memory — `CLAUDE.md` files, auto-extracted notes, session summaries — but the developer rarely knows what is in it, what the agent brought into a turn, or whether the agent followed it. Memory changes behind your back, stale rules from an old project leak into a new one, and a violated constraint only shows up when the tests fail.
+Coding agents keep memory: `CLAUDE.md` files, notes they extract, lessons from earlier sessions. You rarely see what is in it, what the agent took into this task, or whether it followed it. MemoSync is a local workbench for Claude Code, Codex and Pi that puts that memory on screen.
 
-MemoSync is a local web workbench for coding agents that treats agent memory as a **shared, operable representation**: a store of versioned memory items that you and the agent both read, propose changes to, and act on. At every stage of a turn the system shows what changed and proposes an action; you review and decide. Nothing is written to memory, injected into a turn, or enforced on the agent without your say-so.
+- Every change to memory waits for your review.
+- Before each turn, you confirm what goes in.
+- While the agent works, its replies cite the memories they use.
+- After the turn, a separate check reports what was followed and what was ignored.
 
-<p align="center">
-  <img src="docs/figures/metamemory-loop.png" alt="The metamemory loop, distributed between developer and agent" width="860" />
-</p>
-
-<p align="center">
-  <sub>The design borrows the <em>metamemory</em> loop from cognitive psychology: meta-level judgements <b>monitor</b> object-level memory processes and <b>control</b> them. With a coding agent, that loop is split across the human–agent boundary — the agent runs the memory processes, but the developer needs to keep the monitoring and control. MemoSync closes the loop at five points: how memory is represented, how it evolves, what is selected for a turn, how it is applied during execution, and what effect it had.</sub>
-</p>
-
-Each memory item is a one-line summary with a scope (**personal**, **project**, or **session**) plus metadata that accumulates over time: a detailed form the agent loads on demand, a version number, a status, a usage count, and a history log. The same item takes a different form at each stage of a turn — a proposal card, a working-memory row, an inline citation, an audit verdict — and two persistent views, the Memory Board and the Memory Record, carry it between turns.
-
-## Contents
-
-- [How a turn works](#how-a-turn-works)
-  - [1 · Evolution — review changes to long-term memory](#1--evolution--review-changes-to-long-term-memory)
-  - [2 · Selection — compose the working memory](#2--selection--compose-the-working-memory)
-  - [3 · Execution — trace and interrupt memory use](#3--execution--trace-and-interrupt-memory-use)
-  - [4 · Impact — audit memory use and enforce a rule](#4--impact--audit-memory-use-and-enforce-a-rule)
-  - [Between turns — Memory Board and Memory Record](#between-turns--memory-board-and-memory-record)
-- [Features at a glance](#features-at-a-glance)
-- [Quickstart](#quickstart)
-- [Configuration](#configuration)
-- [Command line](#command-line)
-- [How it is built](#how-it-is-built)
-- [Development](#development)
-- [Data, privacy, and usage logging](#data-privacy-and-usage-logging)
-- [Acknowledgements](#acknowledgements)
-- [License](#license)
-
-## How a turn works
-
-The walkthrough below follows a developer adding Stripe checkout to a small shop whose store already holds personal habits (`M-02` "Use pnpm, never npm"), project facts (`M-07` "Prices are stored as integer cents, never floats"), and lessons from an earlier payments project.
-
-### 1 · Evolution — review changes to long-term memory
+When a turn doesn't need that much attention, switch to [Automatic](#automatic) and the agent handles memory on its own.
 
 <p align="center">
-  <img src="docs/figures/evolution.png" alt="Reviewing changes to long-term memory" width="960" />
+  <img src="docs/figures/metamemory-loop.png" alt="Monitoring and control of memory, shared between developer and agent" width="820" />
 </p>
 
-Before a turn starts, MemoSync presents three review steps for proposed changes to long-term memory. Each change needs explicit approval before it is written to the store.
+## A turn with memory
 
-1. **Review New Memory Candidates** — items extracted from the last exchange (including the real work trajectory: files touched, commands run, errors hit), each with a proposed scope. Accept, edit, rescope, or dismiss.
-2. **Memory Transfer Suggestions** — rules from *other* projects that may apply here. Copying a rule verbatim drags in source-project details, so transfer is two-staged: an **encoder** abstracts the source rule into a project-independent form, a **decoder** rewrites it against this project's memory and the current task. Source, abstract rule, and rewritten rule sit side by side so every transformation is reviewable.
-3. **Review Suggested Changes to Existing Memories** — conflicts between new and old items, redundant pairs to merge, and items that have gone stale, each with a one-line reason. Repeatedly violated items surface here with a revision proposal.
+Memory is a set of short items. Each has a scope (**personal**, **project** or **session**), a version and a history. The same item shows up in four places during a turn.
 
-### 2 · Selection — compose the working memory
+### 1. Review what the agent learned
 
-<p align="center">
-  <img src="docs/figures/selection.png" alt="Composing the working memory for a turn" width="960" />
-</p>
+<p align="center"><img src="docs/figures/evolution.png" alt="Reviewing proposed memory changes" width="900" /></p>
 
-**Working Memory for This Turn** opens before the agent starts. Each proposed row shows the item, its scope, and a line stating *how the agent is expected to use it* ("Compute the checkout total from stored prices, not the client payload"). Remove a row, add items from the memory pool, or adjust the selection in plain language — "Anything about the API server setup? Drop the commit-style ones" — and the in-card assistant answers with live `M-NN` chips. What you confirm is exactly what the agent is charged against later.
+Before a turn starts, MemoSync shows the memory changes it proposes, in three groups. Accept, edit, rescope or dismiss each one. Nothing reaches the store until you do.
 
-### 3 · Execution — trace and interrupt memory use
+- **New candidates:** taken from your last exchange and from what the agent actually did (files, commands, errors).
+- **Transfers from other projects:** a rule from another project is first rewritten in general terms, then adapted to this project. You see all three versions side by side.
+- **Fixes to existing items:** conflicts, duplicates to merge, and rules that have gone stale or keep being broken.
 
-<p align="center">
-  <img src="docs/figures/execution.png" alt="Tracing and interrupting memory application" width="960" />
-</p>
+### 2. Choose the working memory
 
-As the reply streams, the agent is instructed to cite each memory it applies. Hover a citation for the item's content, scope, version, and usage count. Every citation includes a **Stop** control: press it when the agent does the opposite of what the item says, and execution is interrupted. A recovery card quotes the sentence and asks what should have happened; write the correction, optionally tick **Enforce for this resumed run**, and the agent continues in the same main session. Use the item's Save control to retain corrected memory content.
+<p align="center"><img src="docs/figures/selection.png" alt="Choosing working memory for a turn" width="900" /></p>
 
-### 4 · Impact — audit memory use and enforce a rule
+**Working Memory for This Turn** lists the items the agent intends to use, each with one line saying how. Remove rows or add others from your library. You can also ask in plain words, for example "drop the commit-style ones". The agent starts only after you confirm, and the audit later checks it against exactly this list.
 
-<p align="center">
-  <img src="docs/figures/impact.png" alt="Auditing memory use after a turn" width="960" />
-</p>
+### 3. Follow it while it works
 
-When a turn ends, the **Memory Use Audit** reports one of four verdicts for each injected item: **violated**, **shaped** the turn, **not applicable**, or **no visible effect**. To avoid relying on the agent's self-report, a separate judgment of the full exchange runs after the turn, so an item violated without being cited is still caught — verdicts are tagged **audit-found** or **self-reported**. A violated row offers **Where used** (scroll to the judged sentence and the tool call behind it) and **Enforce this next run** (the item becomes a mandatory row in the next turn's working memory that only you can remove). Verdicts are written into each item's history.
+<p align="center"><img src="docs/figures/execution.png" alt="Inspecting a citation and stopping the turn" width="900" /></p>
 
-### Between turns — Memory Board and Memory Record
+Replies cite the memories they apply (`M-07`). Hover a citation to see the item.
 
-<p align="center">
-  <img src="docs/figures/memory-board.png" alt="The Memory Board" width="960" />
-</p>
+If the agent is doing the opposite of a memory:
+1. Press **Stop** on that citation.
+2. Write what should have happened.
+3. Optionally enforce the item for the rest of the run.
 
-The **Memory Board** shows every item as one column per scope. Drag an item between columns to rescope it (dropping into another project runs the same encoder/decoder preview as a transfer); open an item to edit its content and detailed form, change its scope, transfer or archive it, and read its full history; archived items can be restored. The **Memory files** card keeps a Markdown copy of the board in sync, so the accumulated memory stays usable with `CLAUDE.md`-style files and other agents, and can import an existing configuration file as candidates for review.
+The agent resumes from the sentence where you stopped it, and your correction is saved to the item.
 
-The **Memory Record** in the sidebar lists, for each turn of a session, what was proposed, selected, cited, interrupted, and audited. It persists independently of the agent's context window, so after the conversation is compacted both you and the agent can still refer to it.
+Citations are what the agent says it used, not proof that it did. That is why step 4 exists.
 
-## Features at a glance
+### 4. Check the result
 
-- **Versioned memory items** — one line each, optional detail loaded on demand, scoped to personal / project / session, with status, usage count, and full history with revert.
-- **Mixed-initiative review at every stage** — the system proposes, you decide: candidates, transfers, conflicts/redundancy/staleness, per-turn selection, audit follow-ups.
-- **Cross-project transfer** with an encoder/decoder pair that abstracts and re-localizes rules instead of copying them.
-- **Inline citations with per-citation Stop**, correction-and-resume, and one-run enforcement.
-- **Independent post-turn audit** with four verdicts and source tags (audit-found / self-reported).
-- **Memory Board + Memory files** — drag-to-rescope, search, archive/restore, Markdown projection that syncs both ways, import of existing config files.
-- **Memory Record** — a per-turn ledger that survives context compaction.
-- **Stable session injection** — confirmed memory rides the session as a snapshot plus per-turn deltas, so memory edits can take effect without restarting the conversation.
-- **Claude Code, Codex, and Pi engines** — official CLI subscriptions, isolated GLM testing, or an in-process Pi agent on any OpenAI-compatible endpoint via the Model Registry; memory reasoning forks from the chosen engine's conversation. Claude Code also offers DeepSeek and per-chat vendor selection.
-- **A full coding workbench underneath** — project-first sidebar, plan mode, rich transcript rendering, embedded terminal, file and git panels, session resumption, local-first persistence.
+<p align="center"><img src="docs/figures/impact.png" alt="Memory use audit after a turn" width="900" /></p>
 
-## Quickstart
+When the turn ends, a separate pass reads the whole exchange and rates every selected item: **violated**, **shaped** the turn, **not applicable**, or **no visible effect**. Each verdict says whether the audit found it or the agent reported it, so a violation the agent never cited still shows up.
 
-Requirements: [Bun](https://bun.sh) 1.3.5 or newer and a configured provider. MemoSync bundles the Claude Agent SDK runtime; the Codex engine also requires a current `codex` CLI on `PATH`. You can use your official CLI subscriptions, or test both engines with GLM in a separate profile. The Pi engine runs in-process (no CLI to install): give it any OpenAI-compatible endpoint through the Model Registry in Settings → Providers, or export `OPENROUTER_API_KEY`. Its model picker takes any registry model id, not just the catalog suggestions.
+For a violated item:
+- **Where used** jumps to the sentence and tool call behind the verdict.
+- **Enforce this next run** makes the item a required row in the next turn. Only you can remove it.
+
+The audit is a model judgment and can be wrong.
+
+### Between turns
+
+<p align="center"><img src="docs/figures/memory-board.png" alt="The Memory Board" width="900" /></p>
+
+**The Memory Board** is the whole library, one column per scope.
+- Drag an item to change its scope.
+- Open an item to edit it, read its history, or archive it.
+- **Memory files** keeps a Markdown copy for other tools, and imports an existing `CLAUDE.md` as candidates for review.
+
+**The Memory Record**, on the right of every chat, logs each turn: what was proposed, selected, cited, stopped and audited. It survives context compaction, so you and the agent can still refer back to it.
+
+### Automatic
+
+Reviewing every turn pays off when memory matters, and is too much for a quick question. Set **Settings → Memory → Control** to **Automatic**:
+- No cards before the turn. The agent reads the memory index and loads the items it needs.
+- After the turn it learns in the background. Safe changes apply on their own, each with Revert; sensitive ones wait on the Memory Board, which shows a count in the sidebar.
+- The audit still runs, but speaks up in the chat only when a memory was violated. Every verdict stays in the Memory Record.
+
+## Quick start
+
+You need [Bun](https://bun.sh) 1.3.5 or newer, plus one of:
+- Claude Code or Codex already signed in, or
+- an API key from any provider.
 
 ```bash
-git clone <this repository> MemoSync
+git clone https://github.com/SLEEPYBQ/MemoSync.git
 cd MemoSync
 bun install
-cp .env.example .env      # then set GLM_API_KEY for isolated testing
 bun run build
 bun run start
 ```
 
-MemoSync opens at [`localhost:3210`](http://localhost:3210). For GLM, choose **Claude Code → GLM**, or **Codex** (the isolated configuration supplies its GLM model). Add a project folder and send a message to prepare the first memory review.
+MemoSync opens at <http://localhost:3210>. Then:
 
-If Bun is not installed:
+1. Open **Settings → Models**, pick an engine and give it access (see the next section).
+2. Click **+** in the sidebar, then **Add project** to open a folder.
+3. Send a task. Your library starts empty, so the first turns are mostly proposals. Review them, and the memory builds up as you work.
 
-```bash
-curl -fsSL https://bun.sh/install | bash
-```
+## Connect a model
 
-A step-by-step guide in Chinese, written so that an AI coding assistant can execute it end to end, is in [docs/DEPLOY.zh-CN.md](docs/DEPLOY.zh-CN.md).
+An **engine** is the agent that does the work. **Access** is how it reaches a model. Both are set in **Settings → Models**.
 
-## Configuration
-
-All configuration is read from `.env` in the project directory (see [`.env.example`](.env.example)).
-
-| Variable | Default | Purpose |
+| Engine | What it runs | Access |
 | --- | --- | --- |
-| `DEEPSEEK_API_KEY` | — | Optional DeepSeek credential for the Claude Code engine. |
-| `DEEPSEEK_MODEL` | `deepseek-v4-flash` | Default chat model; each chat can switch to `deepseek-v4-flash-vision-exp` or `deepseek-v4-pro` in the picker. |
-| `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | Override for proxies or compatible endpoints. |
-| `PORT` | `3210` | HTTP port. |
-| `GLM_API_KEY` | — | GLM credential for Claude Code and isolated Codex sessions; their memory branches inherit the same provider. |
-| `GLM_MODEL` | `glm-5.3-flash` | GLM model for isolated helper calls and the default isolated Codex configuration. |
-| `GLM_BASE_URL` | `https://open.bigmodel.cn/api/anthropic` | GLM endpoint (`https://api.z.ai/api/anthropic` for the international service). |
-| `GLM_CODEX_BASE_URL` | `https://open.bigmodel.cn/api/v1` | GLM's Codex Responses endpoint; separate from its Chat Completions endpoint. |
-| `MEMOSYNC_ISOLATE_CLI` | unset | Set to `1` to isolate both CLI profiles and require explicit API credentials. The example configuration enables this. |
-| `MEMOSYNC_CLI_PROFILE_DIR` | MemoSync data root `/cli-profiles` | Optional absolute profile root; also enables isolation. Main sessions and forks share their engine's subdirectory. |
-| `MEMOSYNC_CODEX_PROVIDER` | `glm` when `GLM_API_KEY` is set | Isolated Codex provider: `glm` or `custom`. |
-| `MEMOSYNC_CODEX_MODEL` | GLM model above | Explicit model for isolated Codex. Legacy `CODEX_MODEL` is also accepted. |
-| `MEMOSYNC_CODEX_API_KEY`, `MEMOSYNC_CODEX_BASE_URL` | — | Explicit key and Responses endpoint for isolated `custom` Codex; also set `MEMOSYNC_CODEX_MODEL`. |
-| `CLAUDE_CODE_AUTO_COMPACT_WINDOW` | `786432` | Token count at which the engine auto-compacts the conversation. MemoSync selects the 1M context window on every DeepSeek session; a "Context compacted" marker appears in the transcript when compaction happens. |
-| `MEMOSYNC_USE_OWN_ANTHROPIC` | — | Set to `1` to run the chat engine on your own exported `ANTHROPIC_*` variables (a real Anthropic key or another Anthropic-compatible endpoint) instead of the derived DeepSeek bundle. |
-| `OPENROUTER_API_KEY` | — | Fallback credential for the Pi engine when no Model Registry connection is configured in Settings. |
+| **Claude Code** | Your installed `claude`, or the copy bundled with the Agent SDK | Your sign-in, or an API connection that speaks the Anthropic API |
+| **Codex** | Your installed `codex` (required) | Your sign-in, or an API connection that speaks the OpenAI Responses API |
+| **Pi** | Built into MemoSync | An API connection that speaks OpenAI Chat or Responses |
 
-With `DEEPSEEK_API_KEY` set, MemoSync derives the whole `ANTHROPIC_*` bundle itself and ignores leftover `ANTHROPIC_*` / `CLAUDE_CODE_*` exports from other Claude Code setups in your shell, so a stray `ANTHROPIC_BASE_URL` cannot hijack the engine.
+**Your sign-in.** The engine uses the login and settings you already have, and MemoSync adds nothing to them. If the engine shows **Not signed in**, sign in from your terminal, then press **Detect again**.
 
-The composer exposes an engine picker and, for Claude Code, a vendor picker (DeepSeek, GLM, Anthropic). For official Claude subscriptions choose an Anthropic model; the `sonnet` and `opus` aliases resolve in the installed Claude runtime. Leave `MEMOSYNC_ISOLATE_CLI` and `MEMOSYNC_CLI_PROFILE_DIR` unset when using existing official subscriptions.
+**API connection.**
+1. Click **Add connection**.
+2. Either pick a provider or choose **Custom endpoint**:
+   - **A provider** from the built-in list: more than seventy vendors, relays and local servers, with endpoints filled in and, for most, their models. Paste your key, and add a model ID if the list is empty.
+   - **Custom endpoint:** enter a base URL, its protocol, a key and model IDs.
+3. Press **Test** to send one small request and confirm the endpoint answers.
+4. Back on the engine, choose the connection and a default model.
 
-Isolated mode gives child processes separate `CLAUDE_CONFIG_DIR` and `CODEX_HOME` directories without changing the server's `HOME`, shell settings, `~/.claude`, or `~/.codex`. It strips inherited OAuth and provider routing variables. Codex receives a provider definition through process arguments and a key through an environment variable, with an ephemeral credential store; no credential is written to a Codex config or auth file. Missing explicit credentials fail rather than use your normal login. Claude memory branches and title helpers use the same isolation rules.
+Engines on an API connection run in a separate profile under `~/.memosync/data/cli-profiles`, so your own `~/.claude` and `~/.codex` are never read or changed. Keys are stored in `~/.memosync/data/credentials.json`, readable only by you, and are never sent back to the browser.
 
-For a live check of both engines, export `GLM_API_KEY` in the current shell and run:
+MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card.
+
+## Everyday controls
+
+**In the composer**, under the message box:
+- the project;
+- memory on or off for this chat;
+- the engine and the model;
+- reasoning effort;
+- Plan Mode, where the agent proposes a plan and waits for you before it acts.
+
+**In Settings → Memory:**
+
+| Setting | What it does |
+| --- | --- |
+| **Use Memory** | Turn memory off everywhere. Your library stays on the Memory Board. |
+| **Learn From Chats** | Keep using memory, but stop proposing new items. |
+| **Control** | **Review each turn** runs the four steps above. **Automatic** works without asking; see [Automatic](#automatic). |
+| **Memory Changes** | **Ask First** holds every proposal for review. **Apply Automatically** applies non-sensitive ones right away, each with a one-click Revert. Sensitive proposals always ask. |
+| **Memory Preview** | Show the working memory card before each turn, or skip it when nothing applies. |
+
+Memory Changes and Memory Preview apply under Review each turn.
+
+**Elsewhere in Settings:**
+- **Appearance:** language (English or 简体中文) and theme.
+- **Notifications:** sounds and system notifications when a chat needs you.
+- **Keybindings:** all shortcuts.
+- **Skills:** globally installed agent skills.
+
+## Run it elsewhere
 
 ```bash
-bun run scripts/smoke-isolated-branches.ts
+bun run start --port 4000        # another port
+bun run start --no-open          # don't open a browser
+bun run start --remote           # listen on 0.0.0.0 (LAN, Tailscale)
+bun run start --password <pw>    # ask for a password before the app loads
+bun run start --share            # temporary public URL with a QR code
 ```
 
-The check creates a temporary workspace and profile, exercises three parallel forks, review continuation, working-memory selection, main-context isolation, and post-turn audit, then removes its temporary files. Add `claude` or `codex` to test one engine. Provider calls use the configured GLM account.
+`bun run start --help` lists every option.
 
-`bun run scripts/smoke-memosync-pipeline.ts claude` exercises the complete application coordinator with the real memory prompts and parsers across two turns, automatically reviewing the test proposals. Use `codex` for the other engine. Both checks isolate all CLI state in a temporary profile; the full pipeline check has a ten-minute limit.
+## Data and privacy
 
-The GLM endpoints and Claude `[1m]` selector follow the [GLM model guide](https://docs.bigmodel.cn/cn/coding-plan/latest-model). CLI profile behavior is documented in the [Claude environment reference](https://code.claude.com/docs/en/env-vars) and [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+Everything MemoSync stores lives under `~/.memosync/data/` on your machine:
+- memories (SQLite, plus the Markdown copy);
+- chats and settings;
+- API connections;
+- a local usage log of how the memory features are used.
 
-## Command line
+Nothing is uploaded by MemoSync. Your model provider does receive the conversation, the selected memories and the project context the agent reads.
+
+The agent and its terminals run as your user, with access to your files. Profile isolation separates configuration, not the filesystem.
+
+To stop the usage log, set `MEMOSYNC_USAGE_LOG=0`. To bundle your data into an archive:
 
 ```bash
-bun run start                  # localhost:3210, opens the browser
-bun run start --port 4000      # custom port
-bun run start --no-open        # do not open the browser
-bun run start --remote         # bind 0.0.0.0 for LAN / Tailscale access
-bun run start --password <s>   # require a password before the app loads
-bun run start --share          # temporary public trycloudflare.com URL + QR code
-bun run export-data [--full]   # bundle local data into a tar.gz (see below)
+bun run export-data          # usage log, memories and settings
+bun run export-data --full   # also chat transcripts
 ```
 
-## How it is built
+Exports never include API connections or keys.
 
-- **Stack.** React 19 + TypeScript on the client, Bun on the server. Memory items and their histories live in SQLite; projects, chats, and transcripts are append-only JSONL logs with snapshot compaction.
-- **Agent runtime.** Claude Code runs through the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript) `query()` interface with an asynchronous prompt queue. Codex runs through the [Codex app-server](https://developers.openai.com/codex/app-server/) protocol with native thread creation, resume, fork, dynamic tools, and per-turn developer instructions. Pi runs in-process through the [pi-coding-agent](https://github.com/badlogic/pi-mono) SDK against the Model Registry connection, with per-chat session files under the MemoSync data root, resume/fork through the session file, and the memory block prepended to the prompt (Pi has no developer-instructions channel). Its bash tool spawns with a scrubbed environment (credential-looking variables are removed), though — like the other engines — it shares the server's user account, so a model can still read files the server can. All three support official authentication or the isolated provider profile described above.
-- **Pi model capabilities.** Before the first message, the picker reads the configured registry's `/models` list and looks up the selected ID, including manually entered models. Live metadata takes priority; [models.dev](https://models.dev) fills missing capabilities for the actual endpoint, followed by Pi's bundled metadata for official OpenAI/OpenRouter endpoints. A custom relay can also obtain reasoning levels by an unambiguous model ID/canonical ID match, preferring the model maker's record; another endpoint's prices, context and output capabilities are not borrowed this way. Both the picker and request transport use this resolver, including OpenRouter's mandatory reasoning, defaults and `max`, and gateways' `supported_reasoning_levels`. Each field is merged separately: live context, prices (including zero), input modalities and explicit structured-output support stay intact when reasoning levels are missing. Unknown capabilities use **Provider default**; a thinking switch, token budget or explicit empty level list does not invent effort levels. Pi turns read the last cached snapshot synchronously and refresh metadata in the background; a cold cache leaves reasoning and unknown output limits unspecified instead of delaying a message for a catalog timeout. Provider responses are cached per endpoint and credential for five minutes; the public models.dev catalog is cached on disk for 24 hours, fetched without provider credentials, and retains its last good data offline. No additional LiteLLM service is required. This resolver serves the Pi Model Registry path; Claude Code and Codex retain their own CLI/SDK integrations.
-- **Memory tools.** The agent sees the memory store through an MCP server: `load_memory_detail` fetches an item's detailed form on demand and `propose_memory` lets the agent nominate a candidate mid-turn (it still goes through your review).
-- **Parallel memory branches.** Candidate extraction (C), transfer (T), and memory changes (M) start together. Candidate decisions continue T and M in their existing conversations; transfer decisions continue M. A further branch selects working memory and writes expected uses after approved changes reach the store. An audit branch judges the completed turn, including uncited tool evidence. MemoSync has no direct-API fallback: every memory model call uses the chosen CLI runtime. Before the first main turn is persisted, branches explicitly start with empty history because Claude cannot fork an unpersisted session. [Implementation and validation details](docs/MEMORY_BRANCHES.md).
-- **Confirmed memory injection.** Only confirmed items enter the main Memory Block and detail-tool allowlist. Claude keeps its session and updates selections through deltas; Codex receives the selected block and expected uses through per-turn developer instructions. Branch analysis transcripts stay out of the main conversation. Provider cache reuse depends on the runtime and provider; no latency saving is assumed.
-- **Local-first.** Everything is stored under `~/.memosync/data/`; there is no server component beyond the local Bun process.
-
-```
-src/
-├── client/                React UI
-│   ├── app/               Router, pages (chat, Memory Board, settings), central state
-│   ├── components/        Transcript messages, memory cards and gates, chat chrome
-│   └── stores/            Zustand stores
-├── server/                Bun backend
-│   ├── agent.ts           Turn coordination: review gates, injection, interrupt/resume, post-turn passes
-│   ├── deepseek-engine-env.ts   Derives the engine's ANTHROPIC_* bundle from DEEPSEEK_API_KEY
-│   ├── chat-providers.ts  Per-chat vendor routing (DeepSeek / GLM)
-│   ├── memory/            The memory engine
-│   │   ├── MemoryStore.ts     Versioned items, events, relations (SQLite)
-│   │   ├── capture.ts         Candidate extraction and routing
-│   │   ├── checkup.ts         Conflict / redundancy / staleness / promotion checks
-│   │   ├── relevance.ts       Per-turn suggestion and expected-use planning
-│   │   ├── trace.ts           Post-turn memory-use audit
-│   │   ├── transfer.ts        Cross-project transfer (encoder / decoder)
-│   │   ├── injection.ts       Snapshot + delta injection planning
-│   │   ├── fork-query.ts      Out-of-band questions on a fork of the session
-│   │   └── tools.ts           MCP tools exposed to the agent
-│   ├── event-store.ts     JSONL persistence, replay, and compaction
-│   └── ws-router.ts       WebSocket routing and subscriptions
-└── shared/                Types, protocol, tool hydration
-```
+[docs/DATA_AND_TELEMETRY.md](docs/DATA_AND_TELEMETRY.md) describes each file and event.
 
 ## Development
 
 ```bash
-bun run dev          # client (5174) + server (5175) with hot reload
-bun test src/        # unit + integration suite (LLM passes are stub-injected; no network)
-bun run check        # typecheck + both client builds
+bun run dev       # client :5174 + server :5175, hot reload
+bun test src/     # unit and integration tests, no network
+bun run check     # typecheck + client builds
 ```
 
-End-to-end scripts under `scripts/` (`e2e-claude-memory.ts`, `e2e-full-app.ts`, `e2e-memory-matrix.ts`, `ui-flows-check.ts`) drive a live instance with real model calls and are not part of `bun test`.
+The server code is in `src/server/`:
+- `agent.ts` coordinates a turn;
+- `memory/` holds the memory engine: capture, checkup, selection, audit and transfer;
+- `model-access/` resolves engines and connections.
 
-## Data, privacy, and usage logging
-
-Everything MemoSync produces stays on your machine under `~/.memosync/data/`: the memory store (`memory.sqlite`), its Markdown projection (`memories/`), the chat and project logs, and a local usage log (`experiments/events.jsonl`) that records how the memory features are used — reviews, injections, citations, interrupts, audits, panel visibility — stamped with a random per-install id. **Nothing is uploaded automatically.** Set `MEMOSYNC_USAGE_LOG=0` to disable local usage logging (`EXPERIMENT_LOG=0` remains a compatibility alias). The log can include memory content and revision instructions; see [data and telemetry](docs/DATA_AND_TELEMETRY.md).
-
-```bash
-bun run export-data          # usage log + memory library
-bun run export-data --full   # additionally chat/session logs and transcripts
-```
-
-The default bundle deliberately excludes chat transcripts and project logs; `--full` is opt-in. See [docs/DATA_AND_TELEMETRY.md](docs/DATA_AND_TELEMETRY.md) for the exact file layout and event families.
+The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
 ## Acknowledgements
 
-MemoSync builds on [Kanna](https://github.com/jakemor/kanna), an open-source agent workbench, and on the [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk-typescript). The default models are served by [DeepSeek](https://platform.deepseek.com); GLM models by [Zhipu AI](https://bigmodel.cn).
+MemoSync started as a fork of [Kanna](https://github.com/jakemor/kanna). It runs:
+- [Claude Code](https://github.com/anthropics/claude-agent-sdk-typescript) through the Agent SDK;
+- [Codex](https://developers.openai.com/codex/app-server/) through `codex app-server`;
+- [Pi](https://github.com/badlogic/pi-mono).
+
+Provider presets and engine discovery are adapted from [Magpie](https://github.com/yetone/magpie). Provider marks come from [Lobe Icons](https://github.com/lobehub/lobe-icons). Licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
