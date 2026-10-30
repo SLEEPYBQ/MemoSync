@@ -4,7 +4,7 @@ import type { ApiConnection, ConnectionEndpoint, ConnectionModel, EngineId, Exec
 import { endpointForEngine } from "../../shared/model-access"
 import type { PiConnection } from "../pi-agent"
 import { isCliIsolationEnabled, prepareProfileDir } from "../provider-runtime"
-import { executableLauncher, resolveEngineExecutable } from "./executables"
+import { executableLauncher } from "./executables"
 import type { ExecutableLauncher } from "./launcher"
 import { connectionNeedsKey, getModelAccessService, ModelAccessService, validateConnection } from "./service"
 import { executableEnvironment, type RuntimeEnv } from "./legacy"
@@ -91,7 +91,7 @@ export async function resolveEngineRuntime(input: {
     if (legacy && (service.connection(legacy) || access.mode === "connection") && !(base.MEMOSYNC_USE_OWN_ANTHROPIC === "1" && legacy === "env-deepseek")) access = { mode: "connection", connectionId: legacy }
     else if (/^(sonnet|opus|haiku|claude-)/.test(input.model) && base.MEMOSYNC_USE_OWN_ANTHROPIC !== "1") access = { mode: "account" }
   }
-  const executable = await resolveEngineExecutable(input.engine, setup, executableEnvironment(base))
+  const executable = await service.resolveExecutable(input.engine, setup, executableEnvironment(base))
   if (!["ready", "not-needed"].includes(executable.state)) throw new Error(`executable-${executable.state}`)
   if (access.mode === "account") {
     if (input.engine === "pi") throw new Error("connection-missing")

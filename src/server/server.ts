@@ -271,6 +271,9 @@ async function startLockedMemoSyncServer(
     .map((origin) => origin.trim())
     .filter(Boolean)
   const store = new EventStore(options.dataDir)
+  // initialize() resolves executables and creates the first Settings snapshot.
+  // Gate both that work and the HTTP/WebSocket server on the imported PATH.
+  await shellPathReady
   const modelAccess = await new ModelAccessService({ dataDir: store.dataDir }).initialize()
   setModelAccessService(modelAccess)
   const disposeModelAccess = () => { if (getModelAccessService() === modelAccess) setModelAccessService(undefined) }
@@ -722,8 +725,6 @@ async function startLockedMemoSyncServer(
   onStartupCleanup(() => server.stop(true))
   // Do not launch writers until startup can no longer fail to bind, and not
   // before agents can find their CLIs on the login shell's PATH.
-  await shellPathReady
-  await modelAccess.refreshExecutables()
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
       .then(() => router.broadcastSnapshots())

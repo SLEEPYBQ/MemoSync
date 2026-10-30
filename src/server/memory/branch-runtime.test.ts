@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import type { query, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from "../codex-app-server"
+import { ModelAccessService } from "../model-access/service"
+import { resolveEngineRuntime } from "../model-access/runtime"
+import { fakeExecutableResolver } from "../model-access/test-fixtures"
 import type { HarnessEvent } from "../harness-types"
 import { MISSING_PI_CONNECTION_MESSAGE, type StartPiTurnArgs } from "../pi-agent"
 import {
@@ -247,7 +250,8 @@ describe("persistent memory branches", () => {
     const claudeQuery: typeof query = () => Object.assign((async function* () {
       await new Promise<void>((resolve) => { release = resolve })
     })(), { close() { closed = true; release?.() } }) as unknown as Query
-    const branch = createMemoryBranch({ ...base, timeoutMs: 5 }, { claudeQuery })
+    const runtime = await resolveEngineRuntime({ engine: "claude", service: new ModelAccessService({ env: {}, resolveExecutable: fakeExecutableResolver }) })
+    const branch = createMemoryBranch({ ...base, runtime, timeoutMs: 5 }, { claudeQuery })
     const first = branch.ask("Prepare changes")
     const next = branch.ask("Follow up")
     await expect(first).rejects.toThrow("timed out")
@@ -269,7 +273,8 @@ describe("persistent memory branches", () => {
         else yield { type: "result", subtype: "success", is_error: false, session_id: "saved-child", result: '{"selected":[]}' } as SDKMessage
       })(), { close() { release?.() } }) as unknown as Query
     }
-    const branch = createMemoryBranch({ ...base, timeoutMs: 5 }, { claudeQuery })
+    const runtime = await resolveEngineRuntime({ engine: "claude", service: new ModelAccessService({ env: {}, resolveExecutable: fakeExecutableResolver }) })
+    const branch = createMemoryBranch({ ...base, runtime, timeoutMs: 5 }, { claudeQuery })
     await expect(branch.ask("Select working memory")).rejects.toThrow("timed out")
     expect(branch.sessionToken).toBe("saved-child")
     expect(await branch.ask("Retry the selection using your saved analysis")).toEqual({ selected: [] })

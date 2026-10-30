@@ -57,6 +57,8 @@ export function validateConnection(input: ApiConnectionInput): Omit<ApiConnectio
 export class ModelAccessService {
   readonly dataDir: string
   readonly env: RuntimeEnv
+  /** Shared by Settings snapshots and launches; production always uses real discovery. */
+  readonly resolveExecutable: typeof resolveEngineExecutable
   private readonly credentials: CredentialStore
   private readonly readLegacyPi: () => Promise<LlmProviderSnapshot | null>
   private data: ModelAccessData = { version: 1, connections: [], engines: {} }
@@ -65,8 +67,9 @@ export class ModelAccessService {
   revision = 0
   private listeners = new Set<() => void>()
   private pending: Promise<unknown> = Promise.resolve()
-  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null> } = {}) {
+  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
     this.env = args.env ?? process.env
+    this.resolveExecutable = args.resolveExecutable ?? resolveEngineExecutable
     this.dataDir = args.dataDir ?? getDataDir(this.env.HOME || homedir(), this.env)
     this.credentials = args.credentials ?? new FileCredentialStore(this.dataDir)
     this.readLegacyPi = args.readLegacyPi ?? (async () => normalizeLlmProviderSnapshot(readJson(getLlmProviderFilePath(this.env.HOME || homedir(), this.env), null)))
@@ -139,7 +142,7 @@ export class ModelAccessService {
     this.legacyPi = await this.readLegacyPi().catch(() => null)
     const entries = await Promise.all(engines.map(async engine => {
       const setup = this.setup(engine)
-      const executable = await resolveEngineExecutable(engine, setup, executableEnvironment(this.env))
+      const executable = await this.resolveExecutable(engine, setup, executableEnvironment(this.env))
       let problem: EngineStatus["problem"]
       if (["missing", "broken", "incompatible"].includes(executable.state)) problem = `executable-${executable.state}` as EngineStatus["problem"]
       else if (setup.access.mode === "connection") {

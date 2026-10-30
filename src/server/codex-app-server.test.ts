@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import { CodexAppServerManager } from "./codex-app-server"
+import { ModelAccessService } from "./model-access/service"
+import { resolveEngineRuntime } from "./model-access/runtime"
+import { fakeExecutableResolver } from "./model-access/test-fixtures"
 
 class FakeCodexProcess extends EventEmitter {
   readonly stdin = new PassThrough()
@@ -235,6 +238,7 @@ describe("CodexAppServerManager", () => {
     const firstRequest = new Promise<void>((resolve) => { firstRequested = resolve })
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
     const subprocessEnv = { CODEX_HOME: "abort-queued-start-test" }
+    const runtime = await resolveEngineRuntime({ engine: "codex", service: new ModelAccessService({ env: subprocessEnv, resolveExecutable: fakeExecutableResolver }) })
     const manager = new CodexAppServerManager({
       serializeStarts: true,
       spawnProcess: () => {
@@ -259,6 +263,7 @@ describe("CodexAppServerManager", () => {
       model: "test",
       sessionToken: null,
       subprocessEnv,
+      runtime,
     })
     await firstRequest
     const controller = new AbortController()
@@ -269,6 +274,7 @@ describe("CodexAppServerManager", () => {
       model: "test",
       sessionToken: null,
       subprocessEnv,
+      runtime,
     })
     const secondResult = second.catch((error) => error)
 
@@ -497,7 +503,8 @@ describe("CodexAppServerManager", () => {
     let spawnEnv: Record<string, string | undefined> | undefined
     const manager = new CodexAppServerManager({ spawnProcess: (_cwd, env) => { spawnEnv = env; return process as never } })
     const env = { CODEX_MODEL: "isolated-model" }
-    expect(await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "picker-model", sessionToken: null, pendingForkSessionToken: "main", sandbox: "read-only", subprocessEnv: env })).toBe("memory-child")
+    const runtime = await resolveEngineRuntime({ engine: "codex", service: new ModelAccessService({ env, resolveExecutable: fakeExecutableResolver }) })
+    expect(await manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "picker-model", sessionToken: null, pendingForkSessionToken: "main", sandbox: "read-only", subprocessEnv: env, runtime })).toBe("memory-child")
     const schema = { type: "object", properties: { labels: { type: "array" } } }
     for (const content of ["Audit the turn", "Update only the reviewed items"]) {
       const turn = await manager.startTurn({ chatId: "memory", model: "picker-model", content, planMode: false, outputSchema: schema, onToolRequest: async () => ({}) })

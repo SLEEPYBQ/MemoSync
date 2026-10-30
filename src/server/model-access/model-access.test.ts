@@ -3,17 +3,55 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:f
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelAccessService } from "./service"
+import { fakeExecutableResolver } from "./test-fixtures"
 import { resolveEngineRuntime } from "./runtime"
 import { legacyConnections } from "./legacy"
 import { testEndpoint } from "./test-connection"
+import type { ExecutableStatus } from "../../shared/model-access"
 
 const dirs: string[] = []
 function fixture(env: Record<string, string> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ma-test-")); dirs.push(dir)
-  return new ModelAccessService({ dataDir: dir, env: { ...env, MEMOSYNC_CLI_PROFILE_DIR: join(dir, "profiles") }, readLegacyPi: async () => null })
+  return new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: dir, env: { ...env, MEMOSYNC_CLI_PROFILE_DIR: join(dir, "profiles") }, readLegacyPi: async () => null })
 }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 const input = { name: "Private", endpoints: [{ protocol: "anthropic-messages" as const, baseUrl: "https://example.test" }], models: [{ id: "large", contextWindow: 1_000_000 }] }
+
+test("snapshots and runtime use the same injected resolver, including fresh failures", async () => {
+  const parent = fixture()
+  let status: ExecutableStatus = { state: "ready", path: "/test/selected-claude", source: "configured" }
+  const calls: unknown[] = []
+  const env = { HOME: parent.dataDir, PATH: "/test/login-shell", ANTHROPIC_API_KEY: "test-key" }
+  const service = await new ModelAccessService({ dataDir: parent.dataDir, env, readLegacyPi: async () => null,
+    resolveExecutable: async (engine, setup, base) => {
+      if (engine !== "claude") return fakeExecutableResolver(engine, setup, base)
+      calls.push([setup, base])
+      return { ...status }
+    },
+  }).initialize()
+  await service.setEngine("claude", { executablePath: "/test/selected-claude", access: { mode: "connection", connectionId: "env-anthropic" } })
+  const snapshot = service.getSnapshot().engines.claude
+  const runtime = await resolveEngineRuntime({ engine: "claude", service })
+  expect(snapshot.ready).toBe(true)
+  expect(runtime.executable).toEqual(snapshot.executable)
+  expect(calls.at(-1)).toEqual(calls.at(-2))
+  expect(calls.at(-1)).toEqual([service.setup("claude"), { HOME: env.HOME, PATH: env.PATH }])
+  for (const state of ["broken", "missing", "incompatible"] as const) {
+    status = { ...status, state }
+    // Launches re-check discovery even before Settings is refreshed.
+    await expect(resolveEngineRuntime({ engine: "claude", service })).rejects.toThrow(`executable-${state}`)
+    await service.refreshExecutables()
+    expect(service.getSnapshot().engines.claude).toMatchObject({ ready: false, problem: `executable-${state}`, executable: status })
+  }
+})
+
+test("the default service resolver rejects a nonexistent explicitly configured CLI", async () => {
+  const parent = fixture()
+  const service = await new ModelAccessService({ dataDir: parent.dataDir, env: { HOME: parent.dataDir, PATH: parent.dataDir }, readLegacyPi: async () => null }).initialize()
+  await service.setEngine("codex", { executablePath: join(parent.dataDir, "absent-codex"), access: { mode: "account" } })
+  expect(service.getSnapshot().engines.codex).toMatchObject({ ready: false, problem: "executable-broken" })
+  await expect(resolveEngineRuntime({ engine: "codex", service })).rejects.toThrow("executable-broken")
+})
 
 test("storage keeps secrets separate, atomic and private, preserving keys on metadata edits", async () => {
   const service = fixture(); await service.initialize()
@@ -71,7 +109,7 @@ for (const protocol of ["anthropic-messages", "openai-responses", "openai-chat"]
 test("credentials survive restart and concurrent saves without metadata leakage", async () => {
   const service = fixture(); await service.initialize()
   const saved = await Promise.all(["one", "two", "three"].map(name => service.saveConnection({ ...input, name, apiKey: `key-${name}` })))
-  const reopened = await new ModelAccessService({ dataDir: service.dataDir, env: service.env, readLegacyPi: async () => null }).initialize()
+  const reopened = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: service.dataDir, env: service.env, readLegacyPi: async () => null }).initialize()
   expect(reopened.getSnapshot().connections).toHaveLength(3)
   for (const c of saved) expect(await reopened.getKey(c.id)).toBe(`key-${c.name}`)
   expect(JSON.stringify(reopened.getSnapshot())).not.toContain("key-one")
@@ -113,12 +151,12 @@ test("validation rejects credentials in URLs and never persists extra request fi
 test("account modes use own profiles without vendor injection and isolated account mode refuses", async () => {
   const isolated = fixture(); await isolated.initialize()
   for (const engine of ["claude", "codex"] as const) await expect(resolveEngineRuntime({ engine, service: isolated })).rejects.toThrow("account-signed-out")
-  const service = await new ModelAccessService({ dataDir: isolated.dataDir, env: { HOME: isolated.dataDir, CLAUDE_CONFIG_DIR: "/own/claude", CODEX_HOME: "/own/codex", ANTHROPIC_API_KEY: "ambient", DEEPSEEK_API_KEY: "ambient-d" }, readLegacyPi: async () => null }).initialize()
+  const service = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: isolated.dataDir, env: { HOME: isolated.dataDir, CLAUDE_CONFIG_DIR: "/own/claude", CODEX_HOME: "/own/codex", ANTHROPIC_API_KEY: "ambient", DEEPSEEK_API_KEY: "ambient-d" }, readLegacyPi: async () => null }).initialize()
   for (const engine of ["claude", "codex"] as const) {
-    await service.setEngine(engine, { access: { mode: "account" }, executablePath: `/fake/${engine}` })
+    await service.setEngine(engine, { access: { mode: "account" }, executablePath: process.execPath })
     const r = await resolveEngineRuntime({ engine, service })
     expect(r.isolated).toBe(false)
-    expect(r.executable.path).toBe(`/fake/${engine}`)
+    expect(r.executable.path).toBe(process.execPath)
     expect(r.env.CLAUDE_CONFIG_DIR).toBe("/own/claude")
     expect(r.env.CODEX_HOME).toBe("/own/codex")
     expect(r.env.ANTHROPIC_API_KEY).toBeUndefined()
@@ -134,7 +172,7 @@ for (const engine of ["claude", "codex", "pi"] as const) {
     const endpoints = [{ protocol: "anthropic-messages" as const, baseUrl: "https://a.test", authHeader: "x-api-key" as const }, { protocol: "openai-responses" as const, baseUrl: "https://a.test/v1" }]
     const a = await service.saveConnection({ ...input, endpoints, apiKey: "key-a" })
     const b = await service.saveConnection({ ...input, name: "B", endpoints: endpoints.map(e => ({ ...e, baseUrl: e.baseUrl.replace("a.test", "b.test") })), apiKey: "key-b" })
-    await service.setEngine(engine, { access: { mode: "connection", connectionId: a.id }, executablePath: "/fake/engine" })
+    await service.setEngine(engine, { access: { mode: "connection", connectionId: a.id }, executablePath: process.execPath })
     const r = await resolveEngineRuntime({ engine, model: "large", connectionId: b.id, service })
     expect(r.connectionId).toBe(b.id)
     if (engine === "claude") { expect(r.env.ANTHROPIC_API_KEY).toBe("key-b"); expect(r.env.ANTHROPIC_AUTH_TOKEN).toBeUndefined() }
@@ -170,7 +208,7 @@ test("legacy own Anthropic, custom Codex, GLM and Pi defaults resolve independen
 
 test("legacy Pi file is read only, has no secret snapshot, and wins over the env fallback", async () => {
   const parent = fixture()
-  const service = await new ModelAccessService({ dataDir: parent.dataDir, env: { HOME: parent.dataDir, OPENROUTER_API_KEY: "fallback" }, readLegacyPi: async () => ({ provider: "custom", apiKey: "file-secret", baseUrl: "https://pi.test", resolvedBaseUrl: "https://pi.test", model: "file-model", enabled: true, warning: null, filePathDisplay: "legacy.json" }) }).initialize()
+  const service = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: parent.dataDir, env: { HOME: parent.dataDir, OPENROUTER_API_KEY: "fallback" }, readLegacyPi: async () => ({ provider: "custom", apiKey: "file-secret", baseUrl: "https://pi.test", resolvedBaseUrl: "https://pi.test", model: "file-model", enabled: true, warning: null, filePathDisplay: "legacy.json" }) }).initialize()
   expect(service.setup("pi").access).toMatchObject({ connectionId: "env-llm-provider" })
   expect(JSON.stringify(service.getSnapshot())).not.toContain("file-secret")
   expect((await resolveEngineRuntime({ engine: "pi", service })).piConnection?.apiKey).toBe("file-secret")

@@ -230,7 +230,8 @@ describe("coordinator provider branches", () => {
 test("per-chat connectionId routes identical model names to different credentials and rebuilds the main session", async () => {
   const { ModelAccessService, setModelAccessService } = await import("./model-access/service")
   const directory = mkdtempSync(join(tmpdir(), "memosync-chat-connection-"))
-  const service = await new ModelAccessService({ dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
+  const { fakeExecutableResolver } = await import("./model-access/test-fixtures")
+  const service = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
   const connections = await Promise.all(["A", "B"].map(name => service.saveConnection({ name, apiKey: `fake-key-${name}`, endpoints: [{ protocol: "anthropic-messages", baseUrl: `https://${name.toLowerCase()}.test` }], models: [{ id: "same-model" }] })))
   setModelAccessService(service)
   const store = new EventStore(join(directory, "events")); await store.initialize()
