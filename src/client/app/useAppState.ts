@@ -903,7 +903,7 @@ export function useAppState(activeChatId: string | null): AppState {
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
 
   useEffect(() => {
-    return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
+    return socket.subscribe<SidebarData>({ type: "sidebar", patches: true }, (snapshot) => {
       setSidebarData(snapshot)
       setOptimisticSidebarProjectOrder((current) => (
         current && applySidebarProjectOrder(snapshot.projectGroups, current) === snapshot.projectGroups

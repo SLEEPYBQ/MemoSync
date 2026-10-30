@@ -370,6 +370,27 @@ describe("AppSocket", () => {
     await Promise.resolve()
     socket.dispose()
   })
+  test("sidebar revision gaps resubscribe and recover with a reset", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    const received: unknown[] = []
+    socket.subscribe({ type: "sidebar", patches: true }, data => received.push(data))
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    ws.open()
+    const id = ws.sent.find(message => message.type === "subscribe")!.id
+    const push = (from: number | null, to: number) => ws.receive({ v: 1, type: "snapshot", id, snapshot: { type: "sidebar-patch", data: { from, to, order: [] } } })
+    push(null, 1)
+    expect(received).toEqual([{ projectGroups: [] }])
+    const sends = ws.sent.length
+    push(2, 3)
+    expect(received.length).toBe(1)
+    expect(ws.sent.length).toBe(sends + 1)
+    expect(ws.sent.at(-1)).toMatchObject({ type: "subscribe", id, topic: { type: "sidebar", patches: true } })
+    push(null, 4)
+    push(4, 5)
+    expect(received.length).toBe(3)
+    socket.dispose()
+  })
 })
 
 describe("isLockedOutAuthStatus", () => {
@@ -382,4 +403,6 @@ describe("isLockedOutAuthStatus", () => {
     expect(isLockedOutAuthStatus(null)).toBe(false)
     expect(isLockedOutAuthStatus("enabled")).toBe(false)
   })
+
+
 })

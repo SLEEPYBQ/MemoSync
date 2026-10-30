@@ -1,3 +1,4 @@
+import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
 import type {
   AgentProvider,
@@ -51,7 +52,7 @@ export interface ProjectQuickAction {
 }
 
 export type SubscriptionTopic =
-  | { type: "sidebar" }
+  | { type: "sidebar"; patches?: boolean }
   | { type: "local-projects" }
   | { type: "update" }
   | { type: "keybindings" }
@@ -283,6 +284,7 @@ export type ClientEnvelope =
 
 export type ServerSnapshot =
   | { type: "sidebar"; data: SidebarData }
+  | { type: "sidebar-patch"; data: SidebarPatch }
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }

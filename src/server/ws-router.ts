@@ -1,3 +1,4 @@
+import { diffSidebarIndex, indexSidebarData, type SidebarIndex } from "../shared/sidebar-patch"
 import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
 import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
@@ -113,6 +114,7 @@ function countSubscriptionsByTopic(ws: ServerWebSocket<ClientState>) {
 export interface ClientState {
   subscriptions: Map<string, SubscriptionTopic>
   snapshotSignatures: Map<string, string>
+  sidebarRevisions?: Map<string, number>
   protectedDraftChatIds?: Set<string>
 }
 
@@ -154,6 +156,9 @@ interface SnapshotComputationCache {
   sidebar?: {
     data: ReturnType<typeof deriveSidebarData>
     signature: string
+    revision: number
+    index: SidebarIndex | null
+    previous?: { revision: number; index: SidebarIndex | null }
   }
 }
 
@@ -691,15 +696,30 @@ export function createWsRouter({
     return true
   }
 
+  let retainedSidebar: SnapshotComputationCache["sidebar"]
+  let retainedSidebarKey = ""
+  let sidebarExpiresAt = 0
+  let sidebarRevision = 0
+
   function getSidebarSnapshotCacheEntry(cache?: SnapshotComputationCache) {
     if (cache?.sidebar) {
       return cache.sidebar
     }
 
+    const statuses = agent.getActiveStatuses()
+    const draining = agent.getDrainingChatIds()
+    // Status and draining state live outside EventStore: memory gates must
+    // invalidate immediately even if no transcript append has occurred yet.
+    const version = store.getSidebarVersion?.()
+    const key = JSON.stringify([version, [...statuses].sort(), [...draining].sort()])
+    if (version !== undefined && retainedSidebar && retainedSidebarKey === key && Date.now() < sidebarExpiresAt) {
+      if (cache) cache.sidebar = retainedSidebar
+      return retainedSidebar
+    }
     const startedAt = performance.now()
-    const data = deriveSidebarData(store.state, agent.getActiveStatuses(), {
+    const data = deriveSidebarData(store.state, statuses, {
       sidebarProjectOrder: getSidebarProjectOrder(store),
-      drainingChatIds: agent.getDrainingChatIds(),
+      drainingChatIds: draining,
     })
     if (isSendToStartingProfilingEnabled()) {
       const totalChats = data.projectGroups.reduce((count, group) => count + group.chats.length, 0)
@@ -713,14 +733,31 @@ export function createWsRouter({
       }))
     }
 
+    // Sidebar recent/older membership also changes with wall time.
+    const now = Date.now()
+    sidebarExpiresAt = Infinity
+    for (const chat of store.state.chatsById.values()) {
+      const expiresAt = (chat.lastMessageAt ?? chat.createdAt) + 24 * 60 * 60 * 1000
+      if (!chat.deletedAt && !chat.archivedAt && expiresAt > now) sidebarExpiresAt = Math.min(sidebarExpiresAt, expiresAt)
+    }
+    const signature = JSON.stringify({ type: "sidebar" as const, data })
+    // A version bump that leaves the sidebar identical (e.g. a queued message)
+    // keeps the current revision, so subscribers can still receive row patches.
+    if (retainedSidebar && retainedSidebar.signature === signature) {
+      retainedSidebarKey = key
+      if (cache) cache.sidebar = retainedSidebar
+      return retainedSidebar
+    }
     const sidebar = {
+      revision: ++sidebarRevision,
+      index: indexSidebarData(data),
+      previous: retainedSidebar ? { revision: retainedSidebar.revision, index: retainedSidebar.index } : undefined,
       data,
-      signature: JSON.stringify({
-        type: "sidebar" as const,
-        data,
-      }),
+      signature,
     }
 
+    retainedSidebar = sidebar
+    retainedSidebarKey = key
     if (cache) {
       cache.sidebar = sidebar
     }
@@ -915,11 +952,29 @@ export function createWsRouter({
           signatureBytes: signature.length,
         })
       }
-      const { payloadBytes, status } = send(ws, envelope)
+      let delivery = envelope
+      let sidebarRevision: number | undefined
+      if (topic.type === "sidebar" && topic.patches) {
+        const sidebar = getSidebarSnapshotCacheEntry(options?.cache)
+        const previousRevision = ws.data.sidebarRevisions?.get(id)
+        if (sidebar.index) {
+          const previous = sidebar.previous?.revision === previousRevision ? sidebar.previous : undefined
+          let patch = diffSidebarIndex(previous?.index ?? null, sidebar.index, previous?.revision ?? null, sidebar.revision)
+          const reset = diffSidebarIndex(null, sidebar.index, null, sidebar.revision)
+          if (JSON.stringify(reset).length < JSON.stringify(patch).length) patch = reset
+          delivery = { ...envelope, snapshot: { type: "sidebar-patch", data: patch } }
+          sidebarRevision = sidebar.revision
+        }
+      }
+      const { payloadBytes, status } = send(ws, delivery)
       // Bun reports -1 after accepting the message into its queue; only 0
       // means the snapshot was dropped and still needs a later retry.
       if (status !== 0) {
         snapshotSignatures.set(id, signature)
+        if (sidebarRevision !== undefined) {
+          ws.data.sidebarRevisions ??= new Map()
+          ws.data.sidebarRevisions.set(id, sidebarRevision)
+        }
         sentCount += 1
       } else {
         dirtySnapshotSockets.add(ws)
@@ -1855,6 +1910,7 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.set(parsed.id, parsed.topic)
         snapshotSignatures.delete(parsed.id)
+        ws.data.sidebarRevisions?.delete(parsed.id)
         if (parsed.topic.type === "local-projects") {
           void refreshDiscovery().then(() => {
             if (ws.data.subscriptions.has(parsed.id)) {
@@ -1871,6 +1927,7 @@ export function createWsRouter({
         const snapshotSignatures = ensureSnapshotSignatures(ws)
         ws.data.subscriptions.delete(parsed.id)
         snapshotSignatures.delete(parsed.id)
+        ws.data.sidebarRevisions?.delete(parsed.id)
         send(ws, { v: PROTOCOL_VERSION, type: "ack", id: parsed.id })
         return
       }

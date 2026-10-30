@@ -269,26 +269,40 @@ export async function killLocalHttpServer(port: number) {
   }
 }
 
-export async function readProcessCwd(pid: number) {
+/** One asynchronous lsof for every owner. Partial stdout is useful when a
+ * process exits between listener discovery and cwd lookup. */
+export async function readProcessCwds(
+  pids: number[],
+  run: (command: string, args: string[], options: { timeout: number; maxBuffer: number }) => Promise<{ stdout: string }> = execFileAsync,
+) {
+  const uniquePids = [...new Set(pids)]
+  const result = new Map<number, string>()
+  if (!uniquePids.length) return result
+  let stdout = ""
   try {
-    const { stdout } = await execFileAsync("lsof", ["-p", String(pid), "-a", "-d", "cwd", "-Fn"], {
-      timeout: 500,
-      maxBuffer: 128 * 1024,
-    })
-    const cwd = stdout.split("\n").find((line) => line.startsWith("n"))?.slice(1)
-    if (cwd) return cwd
-  } catch {
-    // Fall through to /proc on Linux. Debian lsof can omit listeners and cwd
-    // for Next's worker even though the process owns a visible socket.
+    stdout = (await run("lsof", ["-p", uniquePids.join(","), "-a", "-d", "cwd", "-Fn"], {
+      timeout: 500, maxBuffer: 1024 * 1024,
+    })).stdout
+  } catch (error) {
+    const partial = (error as { stdout?: unknown }).stdout
+    if (typeof partial === "string") stdout = partial
+  }
+  let pid: number | undefined
+  for (const line of stdout.split("\n")) {
+    if (line.startsWith("p")) pid = Number(line.slice(1))
+    else if (line.startsWith("n") && pid !== undefined) result.set(pid, line.slice(1))
   }
   if (process.platform === "linux") {
-    try {
-      return await readlink(`/proc/${pid}/cwd`)
-    } catch {
-      // Process exit and permission races are normal during discovery.
-    }
+    await Promise.all(uniquePids.filter(pid => !result.has(pid)).map(async pid => {
+      const cwd = await readlink(`/proc/${pid}/cwd`).catch(() => undefined)
+      if (cwd) result.set(pid, cwd)
+    }))
   }
-  return undefined
+  return result
+}
+
+export async function readProcessCwd(pid: number) {
+  return (await readProcessCwds([pid])).get(pid)
 }
 
 async function readParentProcessMap() {
@@ -382,12 +396,7 @@ export async function listLocalHttpServers(options: {
   }
 
   const parentByPid = await readParentProcessMap()
-  const ownerCwds = new Map<number, string | undefined>()
-
-  await Promise.all(entries.flatMap((entry) => entry.owners.map(async (owner) => {
-    if (ownerCwds.has(owner.pid)) return
-    ownerCwds.set(owner.pid, await readProcessCwd(owner.pid))
-  })))
+  const ownerCwds = await readProcessCwds(entries.flatMap(entry => entry.owners.map(owner => owner.pid)))
 
   const results = await Promise.all(entries.map((entry) => {
     const primaryOwner = entry.owners[0]
@@ -408,6 +417,11 @@ export async function listLocalHttpServers(options: {
   ).sort((a, b) => Number(b.sameProject) - Number(a.sameProject) || a.port - b.port)
   const scanComplete = results.every((result) => result !== null)
   if (scanComplete && filteredResults.length > 0) {
+    // Keep discovery bounded when users visit many project paths.
+    for (const [key, entry] of localHttpServerCache) {
+      if (Date.now() - entry.scannedAt >= LOCAL_HTTP_CACHE_TTL_MS) localHttpServerCache.delete(key)
+    }
+    if (localHttpServerCache.size >= 32) localHttpServerCache.delete(localHttpServerCache.keys().next().value!)
     localHttpServerCache.set(cacheKey, {
       signature,
       scannedAt: Date.now(),

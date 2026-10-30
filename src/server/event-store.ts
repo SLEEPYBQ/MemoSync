@@ -342,6 +342,10 @@ function assertValidSnapshot(parsed: unknown): asserts parsed is SnapshotFile {
 }
 
 export class EventStore {
+  private sidebarVersion = 0
+
+  getSidebarVersion() { return this.sidebarVersion }
+
   readonly dataDir: string
   readonly state: StoreState = createEmptyState()
   private writeChain = Promise.resolve()
@@ -667,6 +671,7 @@ export class EventStore {
   }
 
   private applyEvent(event: StoreEvent) {
+    if (event.type !== "message_appended") this.sidebarVersion += 1
     switch (event.type) {
       case "project_opened": {
         const localPath = resolveLocalPath(event.localPath)
@@ -876,11 +881,14 @@ export class EventStore {
   private applyMessageMetadata(chatId: string, entry: TranscriptEntry) {
     const chat = this.state.chatsById.get(chatId)
     if (!chat) return
+    const previousRecency = chat.lastMessageAt
+    const hadMessages = chat.hasMessages
     chat.hasMessages = true
     if (entry.kind === "user_prompt") {
       chat.lastMessageAt = Math.max(chat.lastMessageAt ?? entry.createdAt, entry.createdAt)
     }
     chat.updatedAt = Math.max(chat.updatedAt, entry.createdAt)
+    if (!hadMessages || previousRecency !== chat.lastMessageAt) this.sidebarVersion += 1
   }
 
   /**
@@ -1116,6 +1124,7 @@ export class EventStore {
     return this.enqueueWrite(async () => {
       await this.writeSidebarProjectOrderFile(uniqueProjectIds)
       this.sidebarProjectOrder = [...uniqueProjectIds]
+      this.sidebarVersion += 1
     })
   }
 
