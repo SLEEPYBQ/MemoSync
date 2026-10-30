@@ -69,10 +69,22 @@ describe("provider catalog normalization", () => {
   })
 
   test("normalizes server model ids through the shared alias catalog", () => {
-    expect(normalizeServerModel("codex")).toBe("gpt-5.5")
-    expect(normalizeServerModel("claude", "fable")).toBe("deepseek-v4-flash")
-    expect(normalizeServerModel("claude", "opus")).toBe("opus")
-    expect(normalizeServerModel("codex", "gpt-5-codex")).toBe("gpt-5.3-codex")
+    // Pure catalog test: no runtime is started, and deployment env is covered below.
+    const isolation = process.env.MEMOSYNC_ISOLATE_CLI
+    const profile = process.env.MEMOSYNC_CLI_PROFILE_DIR
+    delete process.env.MEMOSYNC_ISOLATE_CLI
+    delete process.env.MEMOSYNC_CLI_PROFILE_DIR
+    try {
+      expect(normalizeServerModel("codex")).toBe("gpt-5.5")
+      expect(normalizeServerModel("claude", "fable")).toBe("deepseek-v4-flash")
+      expect(normalizeServerModel("claude", "opus")).toBe("opus")
+      expect(normalizeServerModel("codex", "gpt-5-codex")).toBe("gpt-5.3-codex")
+    } finally {
+      if (isolation === undefined) delete process.env.MEMOSYNC_ISOLATE_CLI
+      else process.env.MEMOSYNC_ISOLATE_CLI = isolation
+      if (profile === undefined) delete process.env.MEMOSYNC_CLI_PROFILE_DIR
+      else process.env.MEMOSYNC_CLI_PROFILE_DIR = profile
+    }
   })
 
   test("keeps DeepSeek API model ids unchanged regardless of context window", () => {

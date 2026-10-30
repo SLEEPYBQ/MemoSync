@@ -3,5 +3,7 @@
   "terminal": "Terminal",
   "clearTerminal": "Clear terminal",
   "addTerminalToTheRight": "Add terminal to the right",
-  "archiveTerminal": "Archive terminal"
+  "archiveTerminal": "Archive terminal",
+  "hideTerminal": "Hide terminal",
+  "closeTerminal": "Close terminal"
 }

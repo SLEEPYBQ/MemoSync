@@ -67,7 +67,7 @@ export function useChatPageSidebarActions({
 
   const refreshDiffs = useCallback(() => {
     const chatId = activeChatIdRef.current
-    if (!chatId || !showRightSidebar) {
+    if (!chatId || !showRightSidebar || document.visibilityState !== "visible") {
       return
     }
     void state.socket.command({ type: "chat.refreshDiffs", chatId }).catch(() => {})

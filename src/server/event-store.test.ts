@@ -967,7 +967,7 @@ describe("EventStore", () => {
     expect(forked.sessionToken).toBeNull()
     expect(forked.pendingForkSessionToken).toBe("session-1")
     expect(forked.lastTurnOutcome).toBeNull()
-    expect(forked.lastMessageAt).toBeUndefined()
+    expect(forked.lastMessageAt).toBe(source.createdAt + 1)
     expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
   })
 

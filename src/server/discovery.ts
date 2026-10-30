@@ -1,4 +1,8 @@
-import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs"
+import { access, open, readFile, readdir, stat } from "node:fs/promises"
+
+async function exists(filePath: string) {
+  try { await access(filePath); return true } catch { return false }
+}
 import { homedir } from "node:os"
 import path from "node:path"
 import type { AgentProvider } from "../shared/types"
@@ -16,10 +20,10 @@ export interface ProviderDiscoveredProject extends DiscoveredProject {
 
 export interface ProjectDiscoveryAdapter {
   provider: AgentProvider
-  scan(homeDir?: string): ProviderDiscoveredProject[]
+  scan(homeDir?: string): ProviderDiscoveredProject[] | Promise<ProviderDiscoveredProject[]>
 }
 
-function resolveEncodedClaudePath(folderName: string) {
+async function resolveEncodedClaudePath(folderName: string) {
   const segments = folderName.replace(/^-/, "").split("-").filter(Boolean)
   let currentPath = ""
   let remainingSegments = [...segments]
@@ -31,7 +35,7 @@ function resolveEncodedClaudePath(folderName: string) {
       const segment = remainingSegments.slice(0, index).join("-")
       const candidate = `${currentPath}/${segment}`
 
-      if (existsSync(candidate)) {
+      if (await exists(candidate)) {
         currentPath = candidate
         remainingSegments = remainingSegments.slice(index)
         found = true
@@ -49,10 +53,10 @@ function resolveEncodedClaudePath(folderName: string) {
   return currentPath || "/"
 }
 
-function normalizeExistingDirectory(localPath: string) {
+async function normalizeExistingDirectory(localPath: string) {
   try {
     const normalized = resolveLocalPath(localPath)
-    if (!statSync(normalized).isDirectory()) {
+    if (!(await stat(normalized)).isDirectory()) {
       return null
     }
     return normalized
@@ -86,30 +90,31 @@ function mergeDiscoveredProjects(projects: Iterable<DiscoveredProject>): Discove
 export class ClaudeProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
   readonly provider = "claude" as const
 
-  scan(homeDir: string = homedir()): ProviderDiscoveredProject[] {
+  async scan(homeDir: string = homedir()): Promise<ProviderDiscoveredProject[]> {
     const projectsDir = path.join(homeDir, ".claude", "projects")
-    if (!existsSync(projectsDir)) {
+    if (!await exists(projectsDir)) {
       return []
     }
 
-    const entries = readdirSync(projectsDir, { withFileTypes: true })
+    const entries = await readdir(projectsDir, { withFileTypes: true })
     const projects: ProviderDiscoveredProject[] = []
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue
 
-      const resolvedPath = resolveEncodedClaudePath(entry.name)
-      const normalizedPath = normalizeExistingDirectory(resolvedPath)
+      const resolvedPath = await resolveEncodedClaudePath(entry.name)
+      const normalizedPath = await normalizeExistingDirectory(resolvedPath)
       if (!normalizedPath) {
         continue
       }
 
-      const stat = statSync(path.join(projectsDir, entry.name))
+      const marker = await stat(path.join(projectsDir, entry.name)).catch(() => null)
+      if (!marker) continue
       projects.push({
         provider: this.provider,
         localPath: normalizedPath,
         title: path.basename(normalizedPath) || normalizedPath,
-        modifiedAt: stat.mtimeMs,
+        modifiedAt: marker.mtimeMs,
       })
     }
 
@@ -134,13 +139,13 @@ function parseJsonRecord(line: string): Record<string, unknown> | null {
   }
 }
 
-function readCodexSessionIndex(indexPath: string) {
+async function readCodexSessionIndex(indexPath: string) {
   const updatedAtById = new Map<string, number>()
-  if (!existsSync(indexPath)) {
+  if (!await exists(indexPath)) {
     return updatedAtById
   }
 
-  for (const line of readFileSync(indexPath, "utf8").split("\n")) {
+  for (const line of (await readFile(indexPath, "utf8")).split("\n")) {
     if (!line.trim()) continue
     const record = parseJsonRecord(line)
     if (!record) continue
@@ -158,16 +163,16 @@ function readCodexSessionIndex(indexPath: string) {
   return updatedAtById
 }
 
-function collectCodexSessionFiles(directory: string): string[] {
-  if (!existsSync(directory)) {
+async function collectCodexSessionFiles(directory: string): Promise<string[]> {
+  if (!await exists(directory)) {
     return []
   }
 
   const files: string[] = []
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
     const fullPath = path.join(directory, entry.name)
     if (entry.isDirectory()) {
-      files.push(...collectCodexSessionFiles(fullPath))
+      files.push(...await collectCodexSessionFiles(fullPath))
       continue
     }
     if (entry.isFile() && entry.name.endsWith(".jsonl")) {
@@ -177,14 +182,14 @@ function collectCodexSessionFiles(directory: string): string[] {
   return files
 }
 
-function readCodexConfiguredProjects(configPath: string) {
+async function readCodexConfiguredProjects(configPath: string) {
   const projects = new Map<string, number>()
-  if (!existsSync(configPath)) {
+  if (!await exists(configPath)) {
     return projects
   }
 
-  const configMtime = statSync(configPath).mtimeMs
-  for (const line of readFileSync(configPath, "utf8").split("\n")) {
+  const configMtime = (await stat(configPath)).mtimeMs
+  for (const line of (await readFile(configPath, "utf8")).split("\n")) {
     const match = line.match(/^\[projects\."(.+)"\]$/)
     if (!match?.[1]) continue
     projects.set(match[1], configMtime)
@@ -200,32 +205,42 @@ function readCodexConfiguredProjects(configPath: string) {
 // is well under 8 KB; anything longer parses as null and is skipped.
 const FIRST_LINE_READ_BYTES = 8192
 
-function readBoundedFirstLine(filePath: string): string | null {
-  let fd: number
+async function readBoundedFirstLine(filePath: string): Promise<string | null> {
+  let fd: Awaited<ReturnType<typeof open>>
   try {
-    fd = openSync(filePath, "r")
+    fd = await open(filePath, "r")
   } catch {
     return null
   }
   try {
     const buffer = Buffer.alloc(FIRST_LINE_READ_BYTES)
-    const bytes = readSync(fd, buffer, 0, buffer.length, 0)
+    const { bytesRead: bytes } = await fd.read(buffer, 0, buffer.length, 0)
     const text = buffer.toString("utf8", 0, bytes)
     const newline = text.indexOf("\n")
     return newline === -1 ? text : text.slice(0, newline)
   } catch {
     return null
   } finally {
-    closeSync(fd)
+    await fd.close()
   }
 }
 
-function readCodexSessionMetadata(sessionsDir: string) {
+async function readCodexSessionMetadata(sessionsDir: string, cache: Map<string, { stamp: string; line: string | null }>) {
   const metadataById = new Map<string, { cwd: string; modifiedAt: number }>()
 
-  for (const sessionFile of collectCodexSessionFiles(sessionsDir)) {
-    const fileStat = statSync(sessionFile)
-    const firstLine = readBoundedFirstLine(sessionFile)
+  const files = await collectCodexSessionFiles(sessionsDir)
+  const liveFiles = new Set(files)
+  for (const key of cache.keys()) if (!liveFiles.has(key)) cache.delete(key)
+  for (const sessionFile of files) {
+    const fileStat = await stat(sessionFile).catch(() => null)
+    if (!fileStat) continue
+    const stamp = `${fileStat.mtimeMs}:${fileStat.size}`
+    const cached = cache.get(sessionFile)
+    const firstLine = cached?.stamp === stamp ? cached.line : await readBoundedFirstLine(sessionFile)
+    // Cache only successful reads: a transient open/read failure must be retried
+    // on the next scan, not hide the session until the file changes.
+    if (firstLine === null) cache.delete(sessionFile)
+    else cache.set(sessionFile, { stamp, line: firstLine })
     if (!firstLine?.trim()) continue
 
     const record = parseJsonRecord(firstLine)
@@ -251,14 +266,15 @@ function readCodexSessionMetadata(sessionsDir: string) {
 
 export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
   readonly provider = "codex" as const
+  private readonly metadataCache = new Map<string, { stamp: string; line: string | null }>()
 
-  scan(homeDir: string = homedir()): ProviderDiscoveredProject[] {
+  async scan(homeDir: string = homedir()): Promise<ProviderDiscoveredProject[]> {
     const indexPath = path.join(homeDir, ".codex", "session_index.jsonl")
     const sessionsDir = path.join(homeDir, ".codex", "sessions")
     const configPath = path.join(homeDir, ".codex", "config.toml")
-    const updatedAtById = readCodexSessionIndex(indexPath)
-    const metadataById = readCodexSessionMetadata(sessionsDir)
-    const configuredProjects = readCodexConfiguredProjects(configPath)
+    const updatedAtById = await readCodexSessionIndex(indexPath)
+    const metadataById = await readCodexSessionMetadata(sessionsDir, this.metadataCache)
+    const configuredProjects = await readCodexConfiguredProjects(configPath)
     const projects: ProviderDiscoveredProject[] = []
 
     for (const [sessionId, metadata] of metadataById.entries()) {
@@ -271,7 +287,7 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
         continue
       }
 
-      const normalizedPath = normalizeExistingDirectory(cwd)
+      const normalizedPath = await normalizeExistingDirectory(cwd)
       if (!normalizedPath) {
         continue
       }
@@ -289,7 +305,7 @@ export class CodexProjectDiscoveryAdapter implements ProjectDiscoveryAdapter {
         continue
       }
 
-      const normalizedPath = normalizeExistingDirectory(configuredPath)
+      const normalizedPath = await normalizeExistingDirectory(configuredPath)
       if (!normalizedPath) {
         continue
       }
@@ -319,13 +335,20 @@ export const DEFAULT_PROJECT_DISCOVERY_ADAPTERS: ProjectDiscoveryAdapter[] = [
   new ClaudeProjectDiscoveryAdapter(),
 ]
 
+// Concurrent reconnects share a scan. Entries are removed on both success and
+// failure, so an errored scan never poisons subsequent discovery.
+const inFlight = new WeakMap<ProjectDiscoveryAdapter[], Map<string, Promise<DiscoveredProject[]>>>()
 export function discoverProjects(
   homeDir: string = homedir(),
   adapters: ProjectDiscoveryAdapter[] = DEFAULT_PROJECT_DISCOVERY_ADAPTERS
-): DiscoveredProject[] {
-  const mergedProjects = mergeDiscoveredProjects(
-    adapters.flatMap((adapter) => adapter.scan(homeDir).map(({ provider: _provider, ...project }) => project))
-  )
-
-  return mergedProjects
+): Promise<DiscoveredProject[]> {
+  let scans = inFlight.get(adapters)
+  if (!scans) { scans = new Map(); inFlight.set(adapters, scans) }
+  const pending = scans.get(homeDir)
+  if (pending) return pending
+  const result = Promise.all(adapters.map(adapter => adapter.scan(homeDir)))
+    .then(results => mergeDiscoveredProjects(results.flat().map(({ provider: _provider, ...project }) => project)))
+    .finally(() => scans!.delete(homeDir))
+  scans.set(homeDir, result)
+  return result
 }

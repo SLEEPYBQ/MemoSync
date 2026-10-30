@@ -1,3 +1,4 @@
+import { readProcessCwds } from "./local-http-servers"
 import { describe, expect, test } from "bun:test"
 import {
   buildProcListeningEntries,
@@ -165,3 +166,13 @@ other   12347 jake   23u  IPv4 123458      0t0  TCP 127.0.0.1:8080 (LISTEN)
     expect((await listLocalHttpServers(options)).map((server) => server.port)).toEqual([31338, 31339])
   })
 })
+
+ test("cwd discovery batches owners and preserves partial lsof output", async () => {
+   const calls: string[][] = []
+   const result = await readProcessCwds([900001, 900002, 900001], async (_command, args) => {
+     calls.push(args)
+     throw Object.assign(new Error("process exited"), { stdout: "p900001\nfcwd\nn/tmp/first\np900002\nfcwd\nn/tmp/second\n" })
+   })
+   expect(calls).toEqual([["-p", "900001,900002", "-a", "-d", "cwd", "-Fn"]])
+   expect([...result]).toEqual([[900001, "/tmp/first"], [900002, "/tmp/second"]])
+ })

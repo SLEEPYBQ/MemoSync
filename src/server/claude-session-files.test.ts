@@ -23,9 +23,9 @@ describe("claudeSessionFileExists", () => {
     const dir = join(home, ".claude", "projects", "-root-Kanna-test")
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, "abc-123.jsonl"), "{}")
-    expect(claudeSessionFileExists("/root/Kanna/test", "abc-123", home)).toBe(true)
-    expect(claudeSessionFileExists("/root/Kanna/test", "gone-456", home)).toBe(false)
-    expect(claudeSessionFileExists("/other/project", "abc-123", home)).toBe(false)
+    expect(claudeSessionFileExists("/root/Kanna/test", "abc-123", home, {})).toBe(true)
+    expect(claudeSessionFileExists("/root/Kanna/test", "gone-456", home, {})).toBe(false)
+    expect(claudeSessionFileExists("/other/project", "abc-123", home, {})).toBe(false)
   })
 
   test("rejects traversal-shaped tokens outright", () => {

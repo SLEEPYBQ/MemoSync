@@ -859,7 +859,7 @@ async function listDirtyPaths(repoRoot: string) {
   // unreadable: stat/read failed, the file vanished from the diff panel, and
   // commit/discard/ignore operated on the wrong (escaped) path (BUG INFRA-1).
   // The tracked-stats path already reads raw paths via `-z`, so both agree.
-  const status = await runGit(["-c", "core.quotepath=off", "status", "--short", "--untracked-files=all"], repoRoot)
+  const status = await runGit(["--no-optional-locks", "-c", "core.quotepath=off", "status", "--short", "--untracked-files=all"], repoRoot)
   if (status.exitCode !== 0) {
     throw new Error(status.stderr.trim() || "Failed to read git status")
   }
@@ -1115,8 +1115,46 @@ export function appendGitIgnoreEntry(currentContents: string | null, entry: stri
   return `${prefix}${entry}\n`
 }
 
+/** A conservative poll gate: status discovers new dirty paths; refs include
+ * tags, nested branches and symbolic remote HEADs; config includes upstream
+ * changes. lstat (including ctime/inode) catches edits to already-dirty files,
+ * atomic saves and symlink replacement. A failed probe always runs a full scan.
+ */
+async function readRefreshStamp(repo: { repoRoot: string; baseCommit: string | null }) {
+  try {
+    const [status, refs, config, gitDir] = await Promise.all([
+      runGit(["--no-optional-locks", "status", "--porcelain=v1", "-z", "--untracked-files=all"], repo.repoRoot),
+      runGit(["for-each-ref", "--format=%(refname) %(objectname) %(symref)"], repo.repoRoot),
+      runGit(["config", "--null", "--list"], repo.repoRoot),
+      runGit(["rev-parse", "--git-dir"], repo.repoRoot),
+    ])
+    if ([status, refs, config, gitDir].some(result => result.exitCode !== 0)) return null
+    const paths: string[] = []
+    const records = status.stdout.split("\0")
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i]!
+      if (!record) continue
+      paths.push(path.join(repo.repoRoot, record.slice(3)))
+      if (/[RC]/.test(record.slice(0, 2))) i++ // porcelain -z rename source
+    }
+    // Dirty submodules/nested repositories are directories. Their contents
+    // and HEAD can change without changing the directory's own timestamps.
+    if ((await Promise.all(paths.map(file => lstat(file).catch(() => null)))).some(info => info?.isDirectory())) return null
+    const directory = path.resolve(repo.repoRoot, gitDir.stdout.trim())
+    paths.push(...["HEAD", "index", "FETCH_HEAD", "ORIG_HEAD", "logs/HEAD"].map(file => path.join(directory, file)))
+    const stamps = await Promise.all(paths.map(file => lstat(file)
+      .then(info => [file, info.mtimeMs, info.ctimeMs, info.size, info.ino, info.mode])
+      .catch(() => [file, "missing"])))
+    return createHash("sha256").update(JSON.stringify([repo, status.stdout, refs.stdout, config.stdout, stamps])).digest("hex")
+  } catch { return null }
+}
+
 export class DiffStore {
   private readonly states = new Map<string, StoredChatDiffState>()
+  private readonly refreshStamps = new Map<string, string>()
+  private readonly refreshTails = new Map<string, Promise<boolean>>()
+  /** Whether the most recent poll skipped patch/history computation. */
+  lastRefreshSkipped = false
 
   constructor(_: string) {
   }
@@ -1369,9 +1407,23 @@ export class DiffStore {
     }
   }
 
-  async refreshSnapshot(projectId: string, projectPath: string) {
+  refreshSnapshot(projectId: string, projectPath: string) {
+    // A mutation arriving during a scan gets a subsequent scan, never the
+    // in-flight result from before its edit. Different projects stay parallel.
+    const previous = this.refreshTails.get(projectId) ?? Promise.resolve(false)
+    const result = previous.catch(() => false).then(() => this.refreshSnapshotNow(projectId, projectPath))
+    this.refreshTails.set(projectId, result)
+    void result.finally(() => {
+      if (this.refreshTails.get(projectId) === result) this.refreshTails.delete(projectId)
+    }).catch(() => {})
+    return result
+  }
+
+  private async refreshSnapshotNow(projectId: string, projectPath: string) {
+    this.lastRefreshSkipped = false
     const repo = await resolveRepo(projectPath)
     if (!repo) {
+      this.refreshStamps.delete(projectId)
       const nextState = {
         status: "no_repo",
         branchName: undefined,
@@ -1390,6 +1442,12 @@ export class DiffStore {
       return changed
     }
 
+    const beforeStamp = await readRefreshStamp(repo)
+    if (beforeStamp !== null && beforeStamp === this.refreshStamps.get(projectId)) {
+      this.lastRefreshSkipped = true
+      return false
+    }
+    this.refreshStamps.delete(projectId)
     const files = await computeCurrentFiles(repo.repoRoot, repo.baseCommit)
     const branchName = await getBranchName(repo.repoRoot)
     const defaultBranchName = await resolveDefaultBranchName(repo.repoRoot)
@@ -1423,6 +1481,13 @@ export class DiffStore {
     } satisfies StoredChatDiffState
     const changed = !snapshotsEqual(this.states.get(projectId), nextState)
     this.states.set(projectId, nextState)
+    // Only bank a stable scan. If files/refs changed while reading patches,
+    // the next refresh must scan again instead of blessing a mixed snapshot.
+    const afterStamp = await readRefreshStamp(repo)
+    if (beforeStamp !== null && beforeStamp === afterStamp) {
+      if (this.refreshStamps.size >= 64) this.refreshStamps.delete(this.refreshStamps.keys().next().value!)
+      this.refreshStamps.set(projectId, afterStamp)
+    }
     return changed
   }
 

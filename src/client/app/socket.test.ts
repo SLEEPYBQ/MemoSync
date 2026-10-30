@@ -157,6 +157,34 @@ describe("AppSocket", () => {
     socket.dispose()
   })
 
+  test("terminal reconnect subscribes from the current cursor and dispatches tails", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    let version = 3
+    const tails: unknown[] = []
+    const snapshots: unknown[] = []
+    socket.subscribeTerminal("a", {
+      getCursor: () => ({ sinceVersion: version, sessionId: "epoch" }),
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onTail: (tail) => tails.push(tail),
+    })
+    socket.start()
+    const first = FakeWebSocket.instances[0]!
+    first.open()
+    const subscription = first.sent[0]!
+    expect(subscription.topic).toEqual({ type: "terminal", terminalId: "a", sinceVersion: 3, sessionId: "epoch" })
+    version = 12
+    ;(socket as any).reconnectNow()
+    timers.runTimeout((socket as any).reconnectTimer)
+    const second = FakeWebSocket.instances.at(-1)!
+    second.open()
+    expect(second.sent[0]?.topic).toEqual({ type: "terminal", terminalId: "a", sinceVersion: 12, sessionId: "epoch" })
+    const result = { terminalId: "a", sessionId: "epoch", tail: { data: "next", version: 16 }, snapshot: null, status: "running", exitCode: null }
+    second.receive({ v: 1, type: "snapshot", id: subscription.id, snapshot: { type: "terminal", data: result } })
+    expect(tails).toEqual([result])
+    expect(snapshots).toEqual([])
+    socket.dispose()
+  })
+
   test("pings a stale open connection and resolves when acked", async () => {
     const socket = new AppSocket("ws://localhost/ws")
     socket.start()
@@ -342,6 +370,40 @@ describe("AppSocket", () => {
     await Promise.resolve()
     socket.dispose()
   })
+  test("sidebar revision gaps resubscribe and recover with a reset", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    const received: unknown[] = []
+    socket.subscribe({ type: "sidebar", patches: true }, data => received.push(data))
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    ws.open()
+    const id = ws.sent.find(message => message.type === "subscribe")!.id
+    const push = (from: number | null, to: number) => ws.receive({ v: 1, type: "snapshot", id, snapshot: { type: "sidebar-patch", data: { from, to, order: [] } } })
+    push(null, 1)
+    expect(received).toEqual([{ projectGroups: [] }])
+    const sends = ws.sent.length
+    push(2, 3)
+    expect(received.length).toBe(1)
+    expect(ws.sent.length).toBe(sends + 1)
+    expect(ws.sent.at(-1)).toMatchObject({ type: "subscribe", id, topic: { type: "sidebar", patches: true } })
+    push(null, 4)
+    push(4, 5)
+    expect(received.length).toBe(3)
+    socket.dispose()
+  })
+  test("dispose releases queued subscriptions and ignores a late open event", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    socket.subscribe({ type: "sidebar", patches: true }, () => {})
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    socket.dispose()
+    ws.open()
+    expect(ws.sent).toEqual([])
+    expect(timers.intervals.size).toBe(0)
+    expect((socket as any).subscriptions.size).toBe(0)
+    expect((socket as any).outboundQueue.length).toBe(0)
+  })
+
 })
 
 describe("isLockedOutAuthStatus", () => {
@@ -354,4 +416,6 @@ describe("isLockedOutAuthStatus", () => {
     expect(isLockedOutAuthStatus(null)).toBe(false)
     expect(isLockedOutAuthStatus("enabled")).toBe(false)
   })
+
+
 })

@@ -64,6 +64,14 @@ export type ProjectEvent = {
 }
 
 export type ChatEvent =
+  | {
+      v: 2
+      type: "chat_last_message_at_set"
+      timestamp: number
+      chatId: string
+      /** Persist prompt recency independently of transcript size and compaction. */
+      at: number
+    }
   | { v: 2; type: "chat_memory_disabled_set"; timestamp: number; chatId: string; disabled: boolean }
   | {
       v: 2

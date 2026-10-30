@@ -1,10 +1,60 @@
 import { SerializeAddon } from "@xterm/addon-serialize"
 import { Terminal } from "@xterm/headless"
+import { Unicode11Addon } from "@xterm/addon-unicode11"
 import defaultShell, { detectDefaultShell } from "default-shell"
 import { existsSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import type { TerminalEvent, TerminalSnapshot } from "../shared/protocol"
+import type { TerminalEvent, TerminalSnapshot, TerminalTailResult } from "../shared/protocol"
+
+/** A bounded, segmented UTF-16 log. Versions address decoded strings, not PTY bytes. */
+export class TerminalOutputLog {
+  private chunks: Array<{ start: number; data: string }> = []
+  private retained = 0
+  version = 0
+
+  constructor(private readonly limit = 1_000_000, private readonly segmentSize = 65_536) {}
+
+  append(data: string) {
+    const start = this.version
+    this.version += data.length
+    // Do not allocate a segment for every byte, or retain an oversized PTY read.
+    if (data.length >= this.limit) {
+      this.clear()
+      data = data.slice(-this.limit)
+    }
+    let offset = 0
+    while (offset < data.length) {
+      let last = this.chunks.at(-1)
+      if (!last || last.data.length >= this.segmentSize) {
+        last = { start: Math.max(start, this.version - data.length) + offset, data: "" }
+        this.chunks.push(last)
+      }
+      const part = data.slice(offset, offset + this.segmentSize - last.data.length)
+      last.data += part
+      offset += part.length
+      this.retained += part.length
+    }
+    while (this.retained > this.limit) {
+      const first = this.chunks[0]!
+      const remove = Math.min(first.data.length, this.retained - this.limit)
+      this.retained -= remove
+      if (remove === first.data.length) this.chunks.shift()
+      else { first.start += remove; first.data = first.data.slice(remove) }
+    }
+    return this.version
+  }
+
+  get segmentCount() { return this.chunks.length }
+  get retainedCharacters() { return this.retained }
+
+  tailSince(version: number): string | null {
+    if (!Number.isSafeInteger(version) || version < this.version - this.retained || version > this.version) return null
+    return this.chunks.map((chunk) => chunk.data.slice(Math.max(0, version - chunk.start))).join("")
+  }
+
+  clear() { this.chunks = []; this.retained = 0 }
+}
 
 const DEFAULT_COLS = 80
 const DEFAULT_ROWS = 24
@@ -24,6 +74,8 @@ interface CreateTerminalArgs {
 }
 
 interface TerminalSession {
+  sessionId: string
+  output: TerminalOutputLog
   terminalId: string
   title: string
   cwd: string
@@ -102,12 +154,24 @@ function resolveShellArgs(shellPath: string) {
   return []
 }
 
+export function applyUtf8Locale<T extends Record<string, string | undefined>>(env: T): T {
+  const utf8 = /\.utf-?8$/i
+  const effective = env.LC_ALL || env.LC_CTYPE || env.LANG
+  if (effective && utf8.test(effective)) return env
+  const fallback = process.platform === "darwin" ? "en_US.UTF-8" : "C.UTF-8"
+  const locale: Record<string, string | undefined> = env
+  for (const key of ["LANG", "LC_ALL", "LC_CTYPE"]) {
+    if ((key === "LANG" || locale[key]) && !utf8.test(locale[key] ?? "")) locale[key] = fallback
+  }
+  return env
+}
+
 function createTerminalEnv() {
-  return {
+  return applyUtf8Locale({
     ...process.env,
     TERM: "xterm-256color",
     COLORTERM: "truecolor",
-  }
+  })
 }
 
 function updateFocusReportingState(session: Pick<TerminalSession, "focusReportingEnabled" | "modeSequenceTail">, chunk: string) {
@@ -213,8 +277,12 @@ export class TerminalManager {
     const headless = new Terminal({ cols, rows, scrollback, allowProposedApi: true })
     const serializeAddon = new SerializeAddon()
     headless.loadAddon(serializeAddon)
+    headless.loadAddon(new Unicode11Addon())
+    headless.unicode.activeVersion = "11"
 
     const session: TerminalSession = {
+      sessionId: crypto.randomUUID(),
+      output: new TerminalOutputLog(),
       terminalId: args.terminalId,
       title,
       cwd: args.projectPath,
@@ -262,11 +330,12 @@ export class TerminalManager {
   private writeOutput(session: TerminalSession, chunk: string) {
     if (!chunk || this.sessions.get(session.terminalId) !== session) return
     updateFocusReportingState(session, chunk)
-    session.headless.write(chunk)
-    this.emit({
-      type: "terminal.output",
-      terminalId: session.terminalId,
-      data: chunk,
+    // xterm parses asynchronously. Publish the log/version only after parsing,
+    // so every synchronous snapshot describes exactly the published version.
+    session.headless.write(chunk, () => {
+      if (this.sessions.get(session.terminalId) !== session) return
+      const version = session.output.append(chunk)
+      this.emit({ type: "terminal.output", terminalId: session.terminalId, data: chunk, version, sessionId: session.sessionId })
     })
   }
 
@@ -316,6 +385,17 @@ export class TerminalManager {
     return session ? this.snapshotOf(session) : null
   }
 
+  getTail(terminalId: string, sinceVersion: number | null, sessionId?: string): TerminalTailResult | null {
+    const session = this.sessions.get(terminalId)
+    if (!session) return null
+    const data = sinceVersion === null || sessionId !== session.sessionId ? null : session.output.tailSince(sinceVersion)
+    return {
+      terminalId, sessionId: session.sessionId, status: session.status, exitCode: session.exitCode,
+      tail: data === null ? null : { data, version: session.output.version },
+      snapshot: data === null ? this.snapshotOf(session) : null,
+    }
+  }
+
   write(terminalId: string, data: string) {
     const session = this.sessions.get(terminalId)
     if (!session || session.status === "exited") return
@@ -344,6 +424,7 @@ export class TerminalManager {
     if (!session) return
 
     this.sessions.delete(terminalId)
+    session.output.clear()
     killTerminalProcessTree(session.process)
     session.terminal.close()
     session.serializeAddon.dispose()
@@ -387,6 +468,8 @@ export class TerminalManager {
       serializedState: session.serializeAddon.serialize({ scrollback: session.scrollback }),
       status: session.status,
       exitCode: session.exitCode,
+      sessionId: session.sessionId,
+      outputVersion: session.output.version,
     }
   }
 
