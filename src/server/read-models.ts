@@ -1,6 +1,7 @@
 import process from "node:process"
 import type {
   ChatRuntime,
+  ChatPreview,
   ChatSnapshot,
   ChatActivityStatus,
   LocalProjectsSnapshot,
@@ -12,9 +13,34 @@ import type {
 import type { ChatRecord, StoreState } from "./events"
 import { resolveLocalPath } from "./paths"
 import { deployedProviders } from "./provider-catalog"
+import { toMessagePreview } from "../shared/message-preview"
 
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
+
+/** Only visible assistant prose or the currently pending question/plan may escape. */
+export function deriveChatPreview(entries: TranscriptEntry[], pendingToolId?: string): ChatPreview | null {
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const entry = entries[i]!
+    if (entry.hidden) continue
+    let text = ""
+    if (entry.kind === "assistant_text") {
+      text = entry.text
+    } else if (entry.kind === "tool_call" && entry.tool.toolId === pendingToolId) {
+      const tool = entry.tool
+      if (tool.toolKind === "ask_user_question") {
+        text = tool.input.questions.map((question) => question.question).join("\n")
+      } else if (tool.toolKind === "exit_plan_mode") {
+        text = tool.input.summary?.trim() || tool.input.plan || ""
+      }
+    }
+    const preview = toMessagePreview(text)
+    if (preview) {
+      return { lastAgentMessagePreview: preview.length > 140 ? `${preview.slice(0, 139)}…` : preview }
+    }
+  }
+  return null
+}
 
 const MEMORY_RECORD_KINDS = new Set<TranscriptEntry["kind"]>([
   "memory_candidates",

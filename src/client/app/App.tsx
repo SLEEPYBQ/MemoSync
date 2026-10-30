@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
-import type { AppSettingsSnapshot } from "../../shared/types"
+import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
 import { BrandIcon, useBrandFavicon, useBrandName } from "../components/BrandMark"
 import { StandaloneShareDialog } from "../components/chat-ui/StandaloneShareDialog"
 import { AppDialogProvider } from "../components/ui/app-dialog"
@@ -15,7 +15,7 @@ import { initializeUsageTelemetryOutbox, stopUsageTelemetryOutbox } from "../lib
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import { AppSidebar } from "./AppSidebar"
-import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount, showChatNotificationEvents } from "./chatNotifications"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
 import {
@@ -402,20 +402,22 @@ function AppLayout() {
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
-    if (state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference)) {
-      for (const event of events) {
+    void showChatNotificationEvents({
+      enabled: !!state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference),
+      events,
+      loadPreview: (chatId) => state.socket.command<ChatPreview | null>({ type: "chat.getPreview", chatId }),
+      showNotification: (event) => {
         showChatBrowserNotification({
           ...event,
-          message: event.message ?? "New chat activity.",
           onClick: () => { window.focus(); navigate(`/chat/${event.chatId}`) },
         })
-      }
-    }
+      },
+    })
     if (burstCount <= 0) return
     if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady])
+  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady, state.socket])
 
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>
