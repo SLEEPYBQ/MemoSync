@@ -22,7 +22,11 @@ export function legacyConnections(env: RuntimeEnv, pi?: LlmProviderSnapshot | nu
     { protocol: "anthropic-messages", baseUrl: env.GLM_BASE_URL?.trim() || "https://open.bigmodel.cn/api/anthropic" },
     { protocol: "openai-responses", baseUrl: env.GLM_CODEX_BASE_URL?.trim() || "https://open.bigmodel.cn/api/v1" },
     { protocol: "openai-chat", baseUrl: "https://open.bigmodel.cn/api/coding/paas/v4" },
-  ], [...new Set([env.GLM_MODEL?.trim() || "glm-5.3-flash", "glm-5.3"])].map(id => ({ id, contextWindow: 1_000_000, supportsReasoning: true })))
+  ], [...new Set([
+    env.GLM_MODEL?.trim() || "glm-5.3-flash", "glm-5.3",
+    // MEMOSYNC_CODEX_PROVIDER=glm points Codex here; its configured model must be one this connection lists.
+    ...(env.MEMOSYNC_CODEX_PROVIDER === "glm" ? [env.MEMOSYNC_CODEX_MODEL?.trim() || env.CODEX_MODEL?.trim()].filter((id): id is string => Boolean(id)) : []),
+  ])].map(id => ({ id, contextWindow: 1_000_000, supportsReasoning: true })))
   if (env.MEMOSYNC_USE_OWN_ANTHROPIC === "1" || (!env.DEEPSEEK_API_KEY && (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN))) {
     const key = env.ANTHROPIC_AUTH_TOKEN?.trim() ? "ANTHROPIC_AUTH_TOKEN" : "ANTHROPIC_API_KEY"
     add("env-anthropic", "anthropic", key, [{ protocol: "anthropic-messages", baseUrl: env.ANTHROPIC_BASE_URL?.trim() || "https://api.anthropic.com", authHeader: key === "ANTHROPIC_API_KEY" ? "x-api-key" : "bearer" }], [{ id: env.ANTHROPIC_MODEL?.trim() || "sonnet" }])
