@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
+import type { ModelAccessSnapshot } from "../shared/model-access"
 import { isClientEnvelope } from "../shared/protocol"
 import type {
   AppSettingsPatch,
@@ -116,7 +117,23 @@ export interface ClientState {
   protectedDraftChatIds?: Set<string>
 }
 
+/** Model access service (src/server/model-access/). Optional so tests can omit it. */
+export interface ModelAccessRouterService {
+  getSnapshot(): ModelAccessSnapshot
+}
+
+const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
+  connections: [],
+  presets: [],
+  engines: {
+    claude: { engine: "claude", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    codex: { engine: "codex", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    pi: { engine: "pi", setup: { access: { mode: "account" } }, executable: { state: "not-needed" }, ready: false, problem: "connection-missing" },
+  },
+}
+
 interface CreateWsRouterArgs {
+  modelAccess?: ModelAccessRouterService
   store: EventStore
   diffStore?: Pick<DiffStore, "getProjectSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
   agent: AgentCoordinator
@@ -425,6 +442,7 @@ export function createWsRouter({
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
+  modelAccess,
   getSelfPort,
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
@@ -811,6 +829,15 @@ export function createWsRouter({
           type: "terminal",
           data: terminals.getSnapshot(topic.terminalId),
         },
+      }
+    }
+
+    if (topic.type === "model-access") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: { type: "model-access", data: modelAccess?.getSnapshot() ?? EMPTY_MODEL_ACCESS_SNAPSHOT },
       }
     }
 

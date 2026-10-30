@@ -1,4 +1,5 @@
 import type { UiTextReference } from "./ui-copy"
+import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
 import type {
   AgentProvider,
   AppSettingsPatch,
@@ -59,6 +60,7 @@ export type SubscriptionTopic =
   | { type: "chat"; chatId: string; recentLimit?: number }
   | { type: "project-git"; projectId: string }
   | { type: "terminal"; terminalId: string }
+  | { type: "model-access" }
 
 export interface TerminalSnapshot {
   terminalId: string
@@ -131,6 +133,12 @@ export type ClientCommand =
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
+  /** Model access (src/shared/model-access.ts). Ack results: save → { connectionId }, test → ConnectionTestResult. */
+  | { type: "modelAccess.saveConnection"; connection: ApiConnectionInput }
+  | { type: "modelAccess.deleteConnection"; connectionId: string }
+  | { type: "modelAccess.setEngine"; engine: EngineId; setup: EngineSetup }
+  | { type: "modelAccess.testConnection"; connection: ApiConnectionInput | { connectionId: string }; engine?: EngineId; model?: string }
+  | { type: "modelAccess.refreshExecutables" }
   | { type: "chat.getPreview"; chatId: string }
   | { type: "chat.setMemoryDisabled"; chatId: string; disabled: boolean }
   | {
@@ -273,6 +281,7 @@ export type ServerSnapshot =
   | { type: "update"; data: UpdateSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "app-settings"; data: AppSettingsSnapshot }
+  | { type: "model-access"; data: ModelAccessSnapshot }
   | { type: "llm-provider"; data: LlmProviderSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
   | { type: "project-git"; data: ChatDiffSnapshot | null }
