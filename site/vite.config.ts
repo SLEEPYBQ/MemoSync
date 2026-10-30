@@ -1,8 +1,8 @@
 import { defineConfig } from "vite"
 
-// Served from https://sleepybq.github.io/MemoSync/ ; override with SITE_BASE for a custom domain.
+// Served at the root of https://memosync.baiqiaozhang.cc/ ; SITE_BASE overrides it.
 export default defineConfig({
-  base: process.env.SITE_BASE ?? "/MemoSync/",
+  base: process.env.SITE_BASE ?? "/",
   server: { port: 4410, fs: { allow: [".."] } },
   build: { outDir: "dist", assetsInlineLimit: 0 },
 })
