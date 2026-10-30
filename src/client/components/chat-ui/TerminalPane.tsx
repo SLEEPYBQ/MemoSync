@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type MutableRefObject } from "react"
+import { useTheme } from "../../hooks/useTheme"
 import { SerializeAddon } from "@xterm/addon-serialize"
 import { WebLinksAddon } from "@xterm/addon-web-links"
 import { Terminal, type ITheme, type ITerminalOptions } from "@xterm/xterm"
@@ -42,6 +43,16 @@ const TERMINAL_THEME_LIGHT: ITheme = {
   brightMagenta: "#a855f7",
   brightCyan: "#06b6d4",
   brightWhite: "#e2e8f0",
+}
+
+// Warm graphite chrome; ANSI colors retain their conventional meanings.
+const TERMINAL_THEME_DARK: ITheme = {
+  foreground: "#f2f1ee", background: "transparent", cursor: "#f2f1ee", cursorAccent: "#211f1e",
+  selectionBackground: "rgba(207, 204, 199, 0.22)", selectionInactiveBackground: "rgba(207, 204, 199, 0.14)",
+  black: "#211f1e", brightBlack: "#aaa69f", white: "#cfccc7", brightWhite: "#f2f1ee",
+  red: "#f87171", brightRed: "#fca5a5", green: "#b0c792", brightGreen: "#c4d7ac",
+  yellow: "#e6b860", brightYellow: "#fcd285", blue: "#9ec4e9", brightBlue: "#bdd9f2",
+  magenta: "#c4b5fd", brightMagenta: "#ddd6fe", cyan: "#67e8f9", brightCyan: "#a5f3fc",
 }
 
 function getTerminalSize(terminal: Terminal) {
@@ -239,7 +250,8 @@ export function TerminalPane({
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const [metadata, setMetadata] = useState<Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const terminalTheme = TERMINAL_THEME_LIGHT
+  const { resolvedTheme } = useTheme()
+  const terminalTheme = resolvedTheme === "dark" ? TERMINAL_THEME_DARK : TERMINAL_THEME_LIGHT
   const sendInput = (data: string) => {
     void socket.command({
       type: "terminal.input",

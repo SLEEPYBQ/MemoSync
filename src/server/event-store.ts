@@ -118,6 +118,7 @@ function getReplayEventPriority(event: StoreEvent) {
       return 1
     case "chat_renamed":
     case "chat_provider_set":
+    case "chat_memory_disabled_set":
     case "chat_plan_mode_set":
       return 2
     case "message_appended":
@@ -238,6 +239,8 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
       return hasChatId()
     case "chat_provider_set":
       return hasChatId() && (event.provider === "claude" || event.provider === "codex" || event.provider === "pi")
+    case "chat_memory_disabled_set":
+      return hasChatId() && typeof event.disabled === "boolean"
     case "chat_plan_mode_set":
       return hasChatId() && typeof event.planMode === "boolean"
     case "chat_read_state_set":
@@ -418,6 +421,7 @@ export class EventStore {
       this.state.chatsById.set(chat.id, {
         ...chat,
         unread: chat.unread ?? false,
+        memoryDisabled: chat.memoryDisabled ?? false,
         pendingForkSessionToken: chat.pendingForkSessionToken ?? null,
       })
     }
@@ -678,6 +682,7 @@ export class EventStore {
           updatedAt: event.timestamp,
           unread: false,
           provider: null,
+          memoryDisabled: false,
           planMode: false,
           sessionToken: null,
           pendingForkSessionToken: null,
@@ -721,6 +726,14 @@ export class EventStore {
         if (!chat) break
         chat.provider = event.provider
         chat.updatedAt = event.timestamp
+        break
+      }
+      case "chat_memory_disabled_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (chat) {
+          chat.memoryDisabled = event.disabled
+          chat.updatedAt = event.timestamp
+        }
         break
       }
       case "chat_plan_mode_set": {
@@ -1013,6 +1026,7 @@ export class EventStore {
     await this.append(this.chatsLogPath, createEvent)
     await this.setChatProvider(chatId, sourceChat.provider)
     await this.setPlanMode(chatId, sourceChat.planMode)
+    await this.setMemoryDisabled(chatId, sourceChat.memoryDisabled ?? false)
     await this.setPendingForkSessionToken(chatId, sourceSessionToken)
 
     const sourceEntries = this.getMessages(sourceChatId)
@@ -1142,6 +1156,14 @@ export class EventStore {
       provider,
     }
     await this.append(this.chatsLogPath, event)
+  }
+
+  async setMemoryDisabled(chatId: string, disabled: boolean) {
+    const chat = this.requireChat(chatId)
+    if (chat.memoryDisabled === disabled) return
+    await this.append(this.chatsLogPath, {
+      v: STORE_VERSION, type: "chat_memory_disabled_set", timestamp: Date.now(), chatId, disabled,
+    } satisfies ChatEvent)
   }
 
   async setPlanMode(chatId: string, planMode: boolean) {

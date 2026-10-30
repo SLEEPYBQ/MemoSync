@@ -1084,7 +1084,7 @@ export class CodexAppServerManager {
         chatId,
         cwd: args.cwd,
         model: args.model ?? "gpt-5.5",
-        serviceTier: args.serviceTier ?? "fast",
+        serviceTier: args.serviceTier,
         sessionToken: null,
       })
 
@@ -1092,7 +1092,7 @@ export class CodexAppServerManager {
         chatId,
         model: args.model ?? "gpt-5.5",
         effort: args.effort,
-        serviceTier: args.serviceTier ?? "fast",
+        serviceTier: args.serviceTier,
         content: args.prompt,
         planMode: false,
         onToolRequest: async () => ({}),

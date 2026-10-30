@@ -89,6 +89,7 @@ describe("getNotificationTitleCount", () => {
             unread: true,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
           {
@@ -100,6 +101,7 @@ describe("getNotificationTitleCount", () => {
             unread: false,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
           {
@@ -111,6 +113,7 @@ describe("getNotificationTitleCount", () => {
             unread: true,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
         ])],
@@ -129,6 +132,7 @@ describe("chat sound helpers", () => {
         unread: false,
         localPath: "/tmp/project",
         provider: null,
+        memoryDisabled: false,
         hasAutomation: false,
       }])],
   }
@@ -145,6 +149,7 @@ describe("chat sound helpers", () => {
             unread: true,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
           {
@@ -156,6 +161,7 @@ describe("chat sound helpers", () => {
             unread: false,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
         ])],
@@ -181,6 +187,7 @@ describe("chat sound helpers", () => {
             unread: true,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
           {
@@ -192,6 +199,7 @@ describe("chat sound helpers", () => {
             unread: true,
             localPath: "/tmp/project",
             provider: null,
+            memoryDisabled: false,
             hasAutomation: false,
           },
         ])],
@@ -209,6 +217,7 @@ describe("chat sound helpers", () => {
           unread: false,
           localPath: "/tmp/project",
           provider: null,
+          memoryDisabled: false,
           hasAutomation: false,
         }])],
     }

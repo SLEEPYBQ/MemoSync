@@ -300,7 +300,23 @@ interface ResumeInterruptedTurn {
   selectedIds: string[]
 }
 
+export interface TurnMemoryState {
+  readonly memoryActive: boolean
+  readonly learnActive: boolean
+}
+
+/** Snapshot once at admission; study conditions retain sole control of memory. */
+export function resolveTurnMemoryState(
+  policy: Pick<ConditionPolicy, "studyMode">,
+  settings: { enabled: boolean; learn: boolean },
+  memoryDisabled = false,
+): TurnMemoryState {
+  const memoryActive = policy.studyMode || (settings.enabled && !memoryDisabled)
+  return { memoryActive, learnActive: memoryActive && (policy.studyMode || settings.learn) }
+}
+
 interface StartTurnArgs {
+  memoryState?: TurnMemoryState
   chatId: string
   provider: AgentProvider
   content: string
@@ -360,6 +376,7 @@ interface StartupReservation {
 }
 
 interface ActiveTurn {
+  memoryState: TurnMemoryState
   chatId: string
   provider: AgentProvider
   turn: HarnessTurn
@@ -431,6 +448,8 @@ interface ClaudeSessionHandle {
 }
 
 interface ClaudeSessionState {
+  /** Retained after result so late provider frames obey the last turn snapshot. */
+  memoryState?: TurnMemoryState
   id: string
   chatId: string
   session: ClaudeSessionHandle
@@ -497,6 +516,8 @@ interface AgentCoordinatorArgs {
   memoryTransferDetect?: TransferDetectService | null
   /** Study-arm policy; decides injection shape + tool registration (default: resolved from env). */
   policy?: ConditionPolicy
+  /** User switches, sampled only when a new turn begins. */
+  getMemorySettings?: () => { enabled: boolean; learn: boolean }
   /** Live preview-gate settings (STUDY_PLAN §2.4); default: always on, auto-proceed on empty plans. */
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   /** Active serial-study task, stamped at turn start. */
@@ -565,6 +586,7 @@ export interface StudyMemoryQualityFlag {
 }
 
 interface PostTurnMemoryPassArgs {
+  memoryState?: TurnMemoryState
   chatId: string
   projectId?: string
   engine: string
@@ -1724,6 +1746,7 @@ export class AgentCoordinator {
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
   private readonly policy: ConditionPolicy
+  private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   private readonly getActiveStudyTaskId: () => string | null
   private readonly studyPromptGate: StudyPromptGate | null
@@ -1875,6 +1898,7 @@ export class AgentCoordinator {
     this.memoryCheckup = args.memoryCheckup ?? null
     this.memoryTransferDetect = args.memoryTransferDetect ?? null
     this.policy = args.policy ?? resolveConditionPolicy()
+    this.getMemorySettings = args.getMemorySettings ?? (() => ({ enabled: true, learn: true }))
     this.memoryBranches = this.policy.condition === "memosync" && (args.memoryBranches ?? Boolean(args.createMemoryBranch))
     this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
     this.getMemoryPreviewSettings =
@@ -2577,8 +2601,8 @@ export class AgentCoordinator {
    * That is inherent to conversational engines — the telemetry names it so
    * analysis never mistakes carryover for fresh injection.
    */
-  private recordMemoryCitations(text: string, sessionId?: string): string[] {
-    if (!this.memory || !text) return []
+  private recordMemoryCitations(text: string, sessionId?: string, memoryState?: TurnMemoryState): string[] {
+    if (!this.memory || !text || memoryState?.memoryActive === false) return []
     const cited = extractCitations(text)
     if (!cited.length) return []
     const counted: string[] = []
@@ -2611,10 +2635,10 @@ export class AgentCoordinator {
    */
   private autoApplyProposals(
     proposals: MemoryItem[],
-    args: { chatId: string; turnNumber?: number },
+    args: { chatId: string; turnNumber?: number; memoryState?: TurnMemoryState },
   ): Set<string> {
     const applied = new Set<string>()
-    if (!this.memory || this.policy.capture !== "review") return applied
+    if (!this.memory || args.memoryState?.learnActive === false || this.policy.capture !== "review") return applied
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
     if (mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
@@ -2760,6 +2784,7 @@ export class AgentCoordinator {
   }
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
+    if (args.memoryState?.memoryActive === false) return
     const active = this.activeTurns.get(args.chatId)
     if (this.memoryBranches && active) {
       args.injectedMemories = active.memoryPlan?.injectedMemories.map(item => ({ ...item }))
@@ -2832,7 +2857,7 @@ export class AgentCoordinator {
       onStudyMeasurementSettled?: (flags: StudyMemoryQualityFlag[]) => void
     },
   ) {
-    if (!this.memory || (!args.userText.trim() && !args.assistantText.trim())) {
+    if (args.memoryState?.memoryActive === false || !this.memory || (!args.userText.trim() && !args.assistantText.trim())) {
       args.onStudyMeasurementSettled?.([])
       return
     }
@@ -2859,7 +2884,7 @@ export class AgentCoordinator {
       // C reviews the completed trajectory with the next prompt. It already
       // includes extraction and routing in a single forked conversation.
       if (this.memoryBranches) return []
-      if (!this.capture) return []
+      if (!this.capture || args.memoryState?.learnActive === false) return []
       try {
         const captureInput = {
           projectId: args.projectId,
@@ -3061,7 +3086,7 @@ export class AgentCoordinator {
             // proposal — surfaced through the same review lane as capture
             // candidates. In Ask mode the user ratifies; in delegating/Auto
             // mode the proposal applies immediately with a revert handle.
-            if (this.memoryRevision) {
+            if (this.memoryRevision && args.memoryState?.learnActive !== false) {
               try {
                 const proposals = await this.memoryRevision.scanAndPropose({
                   sessionId: args.chatId,
@@ -3213,7 +3238,7 @@ export class AgentCoordinator {
       // key). Partial by design: acceptances at the next gate's Step 1 change
       // the library and still trigger a live recompute there.
       // MEMOSYNC_CHECKUP_FORK=0 skips the fork leg (sidecar still runs).
-      if (this.memoryCheckup && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryCheckup && this.policy.capture === "review") {
         try {
           const checkupCtx = { projectId: args.projectId, sessionId: args.chatId }
           if (this.memoryCheckup.needsRecompute(checkupCtx)) {
@@ -3254,7 +3279,7 @@ export class AgentCoordinator {
       // read memories from other conversations/projects and Encode only their
       // source-side portable rules. Relevance and Decode/landing deliberately
       // wait for the next prompt, whose task is required to judge both.
-      if (this.memoryTransferDetect && this.policy.capture === "review") {
+      if (args.memoryState?.learnActive !== false && this.memoryTransferDetect && this.policy.capture === "review") {
         try {
           await this.memoryTransferDetect.prepareSources({
             projectId: args.projectId,
@@ -4261,6 +4286,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(args.chatId)
+    args.memoryState ??= resolveTurnMemoryState(this.policy, this.getMemorySettings(), chat.memoryDisabled)
     if (this.activeTurns.has(args.chatId) || this.hasPendingPreviewActivity(args.chatId) || this.startingChats.has(args.chatId)) {
       throw new Error("Chat is already running")
     }
@@ -4428,7 +4454,7 @@ export class AgentCoordinator {
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
     // working memory (2026-08-19 C2).
-    if (this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
+    if (args.memoryState.memoryActive && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
         policy: this.policy,
@@ -4457,7 +4483,7 @@ export class AgentCoordinator {
       }
     }
 
-    await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: false })
+    await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
       // either way those guard the chat, so releasing the reservation is safe.
@@ -6085,7 +6111,7 @@ export class AgentCoordinator {
         // scanning shell only while current-task materialization is still
         // running; otherwise publish only a completed non-empty card. Cancel
         // resolves every parked gate and records the interruption once.
-        if (!args.openingLongTermAlreadyReady) {
+        if (args.memoryState?.learnActive !== false && !args.openingLongTermAlreadyReady) {
         const recomputeOpeningLongTerm = Boolean(args.openingReview && (args.openingLongTermRevision ?? 0) > 0)
         let recomputeProposals = recomputeOpeningLongTerm
         let recomputeTransfer = recomputeOpeningLongTerm
@@ -6768,6 +6794,8 @@ export class AgentCoordinator {
         onToolRequest,
         projectId: chat.projectId,
         memoryEnabled: !memoryDisabledForTurn,
+        learnEnabled: args.memoryState?.learnActive !== false,
+        memoryState: args.memoryState,
         memoryPlan: turnMemoryPlan,
         restrictMemoryIds: turnRestriction,
         startupReservation: reservation,
@@ -6799,9 +6827,9 @@ export class AgentCoordinator {
       const piMemorySpecs =
         this.memory && this.policy.memoryTools
           ? buildMemoryToolSpecs(this.memory, {
-              capture: this.capture,
+              capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
-                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId, memoryState: args.memoryState })
                 const autoApplied = created.filter(({ id }) => autoIds.has(id))
                 if (!autoApplied.length) return
                 void this.store
@@ -6906,13 +6934,13 @@ export class AgentCoordinator {
       const codexMemorySpecs =
         this.memory && this.policy.memoryTools
           ? buildMemoryToolSpecs(this.memory, {
-              capture: this.capture,
+              capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
                 // Redesign 2026-08-07 §3: mid-turn proposals park in the store
                 // and surface at the NEXT turn's step-one gate. Only
                 // auto-applied ones (delegating policy) card immediately —
                 // they took effect without asking.
-                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId, memoryState: args.memoryState })
                 const autoApplied = created.filter(({ id }) => autoIds.has(id))
                 if (!autoApplied.length) return
                 void this.store
@@ -7024,6 +7052,7 @@ export class AgentCoordinator {
     }
 
     const active: ActiveTurn = {
+      memoryState: args.memoryState ?? { memoryActive: true, learnActive: true },
       chatId: args.chatId,
       provider: args.provider,
       turn,
@@ -7232,7 +7261,7 @@ export class AgentCoordinator {
             reminderParts.push(DETAIL_NUDGE)
           }
         }
-        if (this.capture && this.policy.memoryTools) reminderParts.push(CAPTURE_NUDGE)
+        if (active.memoryState.learnActive && this.capture && this.policy.memoryTools) reminderParts.push(CAPTURE_NUDGE)
         if (reminderParts.length > 0) {
           promptText += `\n\n<system-reminder>\n${reminderParts.join("\n\n")}\n</system-reminder>`
         }
@@ -7328,7 +7357,7 @@ export class AgentCoordinator {
       active.injectedIds = deliveredFocusIds
       if (active.memoryPlan) active.memoryPlan = { ...active.memoryPlan, injectedMemories: deliveredFocusedMemories.map(item => ({ ...item })) }
       args.onMemoryDeliveryAccepted?.([...deliveredFocusIds])
-      if (this.memory) {
+      if (active.memoryState.memoryActive && this.memory) {
         try {
           if (openingFocusDelivery) {
             persistDeliveredStoreFocusEvent({
@@ -7392,6 +7421,8 @@ export class AgentCoordinator {
     projectId?: string
     /** false = "proceed without memory": boot/reboot the session without the memory block/tools. */
     memoryEnabled?: boolean
+    learnEnabled?: boolean
+    memoryState?: TurnMemoryState
     /** Exact plan already computed for this turn. */
     memoryPlan?: MemoryInjectionPlan | null
     /** Exact turn-only selection confirmed by the gate or interrupt recovery card. */
@@ -7434,7 +7465,8 @@ export class AgentCoordinator {
             restrictToIds: args.restrictMemoryIds,
           })
         : null
-    const desiredMemoryHash = turnPlan?.sessionRebuildKey ?? "memory-off"
+    const desiredMemoryHash = (turnPlan?.sessionRebuildKey ?? "memory-off")
+      + (!this.policy.studyMode && memoryEnabled ? `:learn=${args.learnEnabled !== false}` : "")
     if (
       !session ||
       session.retired ||
@@ -7472,7 +7504,7 @@ export class AgentCoordinator {
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
         memory: memoryEnabled ? this.memory : null,
-        capture: memoryEnabled ? this.capture : null,
+        capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
         chatId: args.chatId,
         policy: this.policy,
@@ -7485,6 +7517,7 @@ export class AgentCoordinator {
         // ones. Only auto-applied proposals (delegating policy) card
         // immediately — they took effect without asking.
         onMemoryProposal: (created) => {
+          if (!memoryEnabled || args.learnEnabled === false) return
           const autoIds = this.autoApplyProposals(created, { chatId: args.chatId })
           const autoApplied = created.filter(({ id }) => autoIds.has(id))
           if (!autoApplied.length) return
@@ -7531,6 +7564,7 @@ export class AgentCoordinator {
         retired: false,
         retireReason: null,
         pump: null,
+        memoryState: args.memoryState,
         memorySetHash: desiredMemoryHash,
         providerRuntimeKey,
         memoryBaseline:
@@ -7551,6 +7585,7 @@ export class AgentCoordinator {
       }
     }
 
+    session.memoryState = args.memoryState
     return {
       provider: "claude",
       stream: {
@@ -7562,7 +7597,17 @@ export class AgentCoordinator {
     }
   }
 
+  async setMemoryDisabled(chatId: string, disabled: boolean) {
+    if (this.policy.studyMode) throw new Error("Chat memory controls are unavailable in study mode")
+    if (typeof disabled !== "boolean") throw new Error("disabled must be a boolean")
+    await this.store.setMemoryDisabled(chatId, disabled)
+    this.emitStateChange(chatId)
+  }
+
   async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+    if (!this.policy.studyMode && command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
+      throw new Error("memoryDisabled must be a boolean")
+    }
     const profile = command.clientTraceId
       ? { traceId: command.clientTraceId, startedAt: performance.now() }
       : null
@@ -7590,6 +7635,9 @@ export class AgentCoordinator {
       }
       const created = await this.store.createChat(command.projectId)
       chatId = created.id
+      if (!this.policy.studyMode && command.memoryDisabled !== undefined) {
+        await this.store.setMemoryDisabled(chatId, command.memoryDisabled)
+      }
       logSendToStartingProfile(profile, "chat_send.chat_created", {
         chatId,
         projectId: command.projectId,
@@ -7796,7 +7844,7 @@ export class AgentCoordinator {
         }
         await this.store.appendMessage(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
-        if (event.entry.kind === "compact_boundary") {
+        if (event.entry.kind === "compact_boundary" && (active?.memoryState ?? session.memoryState)?.memoryActive !== false) {
           // Longitudinal signal: recall/citation behavior changes character
           // across a compaction boundary, so the record needs its timestamp.
           this.memory?.logger.event({
@@ -7807,7 +7855,7 @@ export class AgentCoordinator {
           })
         }
         if (event.entry.kind === "assistant_text") {
-          const counted = this.recordMemoryCitations(event.entry.text, session.chatId)
+          const counted = this.recordMemoryCitations(event.entry.text, session.chatId, active?.memoryState ?? session.memoryState)
           if (active) {
             active.assistantChunks.push(event.entry.text)
             for (const id of counted) active.citedIds.add(id)
@@ -7888,6 +7936,7 @@ export class AgentCoordinator {
               userText: active.userText ?? "",
               assistantText: active.assistantChunks.join("\n"),
               citedIds: [...active.citedIds],
+              memoryState: active.memoryState,
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
               claudeSessionToken: chat?.sessionToken,
@@ -8012,7 +8061,7 @@ export class AgentCoordinator {
         }
         await this.store.appendMessage(active.chatId, event.entry)
         if (event.entry.kind === "assistant_text") {
-          const counted = this.recordMemoryCitations(event.entry.text, active.chatId)
+          const counted = this.recordMemoryCitations(event.entry.text, active.chatId, active.memoryState)
           active.assistantChunks.push(event.entry.text)
           for (const id of counted) active.citedIds.add(id)
         }
@@ -8038,6 +8087,7 @@ export class AgentCoordinator {
               userText: active.userText ?? "",
               assistantText: active.assistantChunks.join("\n"),
               citedIds: [...active.citedIds],
+              memoryState: active.memoryState,
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
             })
@@ -8164,6 +8214,7 @@ export class AgentCoordinator {
     if (!active) {
       throw new Error("A MemoSync turn must be running before a memory can interrupt it")
     }
+    if (!active.memoryState.memoryActive) throw new Error("Memory is disabled for this turn")
     // Snapshot BEFORE cancel(): it tears down the active turn and drops the
     // streaming text this attribution is built from.
     const turnNumber = active.turnNumber
@@ -8255,6 +8306,8 @@ export class AgentCoordinator {
     const correction = args.correction?.trim()
     if (!correction) throw new Error("A correction is required to resume")
     const chat = this.store.requireChat(chatId)
+    const memoryState = resolveTurnMemoryState(this.policy, this.getMemorySettings(), chat.memoryDisabled)
+    if (!memoryState.memoryActive) throw new Error("Memory is disabled for this chat")
     const memory = this.memory
     if (!memory) throw new Error("Memory service is unavailable")
     const enforce = args.enforce === true
@@ -8314,6 +8367,7 @@ export class AgentCoordinator {
       // Stable across retries: if provider boot fails after the prompt entry is
       // durable, startTurn reuses that entry and its turn number.
       turnId: args.interruptId,
+      memoryState,
       onMemoryDeliveryAccepted: (focusedIds) => {
         deliveryAccepted = true
         deliveredSelectedIds = [...focusedIds]
@@ -8525,6 +8579,7 @@ export class AgentCoordinator {
         userText: active.userText ?? "",
         assistantText: active.assistantChunks.join("\n"),
         citedIds: [...active.citedIds],
+        memoryState: active.memoryState,
         memoryDisabled: true,
         injectedIds: [],
       })

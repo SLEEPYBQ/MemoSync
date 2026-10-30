@@ -457,7 +457,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         {message.memories.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">no memories are available for this turn</p>
         ) : (
-          <div className={cn("mt-2 flex flex-col gap-1.5", !pending && "opacity-60")}>
+          <div className={cn("mt-2 flex flex-col gap-1.5", !pending && "opacity-60 dark:opacity-100")}>
             {seeding ? (
               <MemoryReviewSkeleton
                 label="Preparing the working memory"
@@ -499,7 +499,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                               "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none",
                               source === "suggested" && "border-border text-muted-foreground",
                               source === "attention" && "border-destructive/40 bg-destructive/10 text-destructive",
-                              source === "manual" && "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                              source === "manual" && "border-emerald-500/40 bg-success/10 text-emerald-700 dark:text-emerald-300",
                             )}
                           >
                             {label}
@@ -532,7 +532,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                         ) : null}
                       </div>
                       <div className="mt-2 border-t border-border/60 pt-2">
-                        <p className="text-xs font-medium text-muted-foreground/75">
+                        <p className="text-xs font-medium text-muted-foreground/75 dark:text-muted-foreground">
                           How the agent is expected to use it
                         </p>
                         {planning ? (
@@ -552,7 +552,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               })
             )}
             {message.relevant !== undefined && !selectionError && injectedIds.length > 0 ? (
-              <p className="text-[10px] italic text-muted-foreground/70">
+              <p className="text-[10px] italic text-muted-foreground/70 dark:text-muted-foreground">
                 suggestions are a model prediction — adjust the list before starting
               </p>
             ) : null}
@@ -652,7 +652,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 aria-label="Send"
                 disabled={revising || seeding || !reviseText.trim()}
                 onClick={() => void askAgentToRevise()}
-                className="h-7 w-7 shrink-0 rounded-full bg-slate-600 text-white hover:bg-slate-700 dark:bg-white dark:text-slate-900 dark:hover:bg-white/90"
+                className="h-7 w-7 shrink-0 rounded-full bg-slate-600 text-white hover:bg-slate-700 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
               >
                 {revising ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowUp className="h-3.5 w-3.5" />}
               </Button>

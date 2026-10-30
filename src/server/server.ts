@@ -1,3 +1,4 @@
+import { inheritShellPath } from "./process-utils"
 import path from "node:path"
 import { homedir } from "node:os"
 import { stat } from "node:fs/promises"
@@ -335,6 +336,8 @@ async function startLockedMemoSyncServer(
   const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
+  // Resolve the login environment alongside store setup, before any agent can resume.
+  const shellPathReady = inheritShellPath()
   const trustProxy = options.trustProxy ?? false
   // Isolated origins for executable preview content (see preview-proxy.ts).
   // An HTTPS MEMOSYNC_PREVIEW_ORIGIN is required when the app is reached
@@ -689,6 +692,7 @@ async function startLockedMemoSyncServer(
     openingBoardBacklog: conditionPolicy.studyMode && conditionPolicy.condition === "memosync"
       ? memoryBoardBacklog
       : null,
+    getMemorySettings: () => appSettings.getSnapshot().memory,
     getMemoryPreviewSettings: () => appSettings.getSnapshot().memoryPreview,
     capture: memoryCapture,
     // No logger: the coordinator CAS-validates trace verdicts against live
@@ -1156,7 +1160,9 @@ async function startLockedMemoSyncServer(
   }
 
   onStartupCleanup(() => server.stop(true))
-  // Do not launch writers until startup can no longer fail to bind.
+  // Do not launch writers until startup can no longer fail to bind, and not
+  // before agents can find their CLIs on the login shell's PATH.
+  await shellPathReady
   activeAgent.resumeOpeningBoardPreparation()
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()

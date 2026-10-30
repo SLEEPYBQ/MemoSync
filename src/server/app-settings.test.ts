@@ -24,6 +24,8 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
+    submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -57,6 +59,10 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
         },
         planMode: false,
       },
+    },
+    memory: {
+      enabled: true,
+      learn: true,
     },
     memoryPreview: {
       enabled: true,

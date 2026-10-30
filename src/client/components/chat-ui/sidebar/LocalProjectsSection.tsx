@@ -133,12 +133,12 @@ function EmptyProjectChatButton({
       title={!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
       className={cn(
         "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
-        "border-border/0 dark:hover:border-slate-400/10",
+        "border-border/0 dark:hover:border-border",
         disabled && "cursor-not-allowed opacity-50 active:scale-100"
       )}
       onClick={() => onNewLocalChat(localPath)}
     >
-      <span className="text-sm truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-slate-400">
+      <span className="text-sm truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-muted-foreground">
         New Chat
       </span>
       <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
@@ -249,7 +249,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
             <ChevronRight className="translate-y-[1px] size-3.5 shrink-0 text-slate-400 transition-all duration-200" />
           ) : (
             <>
-              <FolderOpen className="absolute inset-0 translate-y-[1px] size-3.5 shrink-0 text-slate-400 dark:text-slate-500 transition-all duration-200 group-hover/section:opacity-0" />
+              <FolderOpen className="absolute inset-0 translate-y-[1px] size-3.5 shrink-0 text-slate-400 dark:text-muted-foreground transition-all duration-200 group-hover/section:opacity-0" />
               <ChevronRight className="absolute inset-0 translate-y-[1px] size-3.5 shrink-0 rotate-90 text-slate-400 opacity-0 transition-all duration-200 group-hover/section:opacity-100" />
             </>
           )} */}
@@ -276,7 +276,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                   className="h-5.5 w-5.5 !rounded"
                   onClick={openContextMenuFromButton}
                 >
-                  <MoreHorizontal className="size-3.5 text-slate-500 dark:text-slate-400" />
+                  <MoreHorizontal className="size-3.5 text-slate-500 dark:text-muted-foreground" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right" sideOffset={4}>
@@ -301,9 +301,9 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                   }}
                 >
                   {startingLocalPath === localPath ? (
-                    <Loader2 className="size-4 text-slate-500 dark:text-slate-400 animate-spin" />
+                    <Loader2 className="size-4 text-slate-500 dark:text-muted-foreground animate-spin" />
                   ) : (
-                    <SquarePen className="size-3.5 text-slate-500 dark:text-slate-400" />
+                    <SquarePen className="size-3.5 text-slate-500 dark:text-muted-foreground" />
                   )}
                 </Button>
               </TooltipTrigger>

@@ -15,6 +15,8 @@ import {
 import { Button, buttonVariants } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
+import { resolveComposerEnter } from "../../../shared/submit-mode"
+import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
@@ -24,6 +26,7 @@ import { useChatInputStore } from "../../stores/chatInputStore"
 import { runRetainedDraftSubmission } from "./chatDraftSubmission"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
+import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import {
@@ -128,10 +131,12 @@ interface ComposerAttachment extends ChatAttachment {
 interface Props {
   onSubmit: (
     value: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; attachments?: ChatAttachment[] }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: ChatAttachment[]; steer?: boolean }
   ) => Promise<void>
   onLayoutChange?: () => void
   onCancel?: () => void
+  onSendOldestQueued?: () => void
+  isRunning?: boolean
   disabled: boolean
   canCancel?: boolean
   chatId?: string | null
@@ -206,6 +211,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
   onLayoutChange,
   onCancel,
+  onSendOldestQueued,
+  isRunning = false,
   disabled,
   canCancel,
   chatId,
@@ -259,6 +266,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const [slashDismissed, setSlashDismissed] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const isStandalone = useIsStandalone()
+  const draftMemoryDisabled = useDraftMemoryDisabled((s) => s.disabled)
+  const setDraftMemoryDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
   const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
   const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
@@ -610,7 +619,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     },
   }), [enqueueFiles, setValue])
 
-  async function handleSubmit() {
+  async function handleSubmit(steer?: boolean) {
     if (!canSubmit || hasPendingUploads || submissionRef.current) return
 
     const submission = {}
@@ -630,11 +639,13 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }
     const submitOptions = {
+      steer,
       provider: selectedProvider,
       model: providerPrefs.model,
       modelOptions,
       planMode: showPlanMode ? providerPrefs.planMode : false,
       attachments: attachmentsForSubmit,
+      memoryDisabled: chatId ? undefined : draftMemoryDisabled || undefined,
     }
     // The opening Long-term Memory Board may hold this Promise for minutes.
     // Keep both local and persisted drafts intact until the *real* send is
@@ -645,6 +656,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         if (submissionRef.current === submission && !ownsDraft()) return
         if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
         if (!ownsDraft()) return
+        if (!chatId) setDraftMemoryDisabled(false)
         setValue("")
         if (textareaRef.current) textareaRef.current.style.height = "auto"
         clearAttachments({ cleanupPreviews: false })
@@ -741,9 +753,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
 
     const isTouchDevice = "ontouchstart" in window || navigator.maxTouchPoints > 0
-    if (event.key === "Enter" && !event.shiftKey && !isTouchDevice && !disabled && hasTextToSend && !hasPendingUploads) {
+    const action = resolveComposerEnter({
+      key: event.key, shiftKey: event.shiftKey, metaKey: event.metaKey, ctrlKey: event.ctrlKey,
+      nativeEvent: event.nativeEvent, disabled, touch: isTouchDevice, pendingUploads: hasPendingUploads,
+      running: isRunning, mode: useAppSettingsStore.getState().settings?.submitWhileRunning ?? "queue",
+      text: value, attachmentCount: attachmentsRef.current.length, hasQueuedMessage: Boolean(onSendOldestQueued),
+    })
+    if (action === "send-oldest-queued") {
       event.preventDefault()
-      void handleSubmit()
+      onSendOldestQueued?.()
+    } else if (action !== "none") {
+      event.preventDefault()
+      void handleSubmit(action === "steer")
     }
   }
 
@@ -928,7 +949,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               }}
               disabled={disabled || (!canCancel && !canSubmit) || hasPendingUploads}
               size="icon"
-              className="flex-shrink-0 bg-slate-600 text-white dark:bg-white dark:text-slate-900 rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700"
+              className="flex-shrink-0 bg-slate-600 text-white dark:bg-primary dark:text-primary-foreground rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700 dark:disabled:bg-primary/60 dark:disabled:text-primary-foreground"
             >
               {hasTextToSend ? (
                 <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
@@ -954,6 +975,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           {/* One mx-auto group so leading chips and preference chips center TOGETHER — no gap between them. */}
           <div className="mx-auto flex shrink-0 items-center gap-0.5">
           {leadingControls}
+          {/* Before the preference chips: the row scrolls with a hidden
+              scrollbar, and the memory state must stay in view. */}
+          <MemoryToggle chatId={chatId} />
           <ChatPreferenceControls
             availableProviders={availableProviders}
             selectedProvider={selectedProvider}

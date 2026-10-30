@@ -17,6 +17,7 @@ import { closeBrackets } from "@codemirror/autocomplete"
 import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
 import { languages } from "@codemirror/language-data"
 import { tags as t } from "@lezer/highlight"
+import { useTheme } from "../../hooks/useTheme"
 
 interface CodeEditorProps {
   fileName: string
@@ -29,7 +30,7 @@ interface CodeEditorProps {
   reveal?: { line: number; nonce: number }
 }
 
-// Palette follows GitHub's light theme (the app is light-locked); the chrome
+// Palette follows GitHub's light theme; the chrome
 // (background, gutter) inherits the app CSS variables instead so the editor
 // blends in without hardcoding surface colors.
 const lightHighlight = HighlightStyle.define([
@@ -45,6 +46,17 @@ const lightHighlight = HighlightStyle.define([
   { tag: [t.link, t.url], color: "#0a3069" },
   { tag: [t.regexp, t.escape], color: "#116329" },
   { tag: [t.deleted], color: "#cf222e" },
+  { tag: [t.strong], fontWeight: "bold" },
+  { tag: [t.emphasis], fontStyle: "italic" },
+])
+
+const darkHighlight = HighlightStyle.define([
+  { tag: [t.keyword, t.modifier, t.operatorKeyword, t.deleted], color: "rgb(var(--scope-personal-fg))" },
+  { tag: [t.string, t.special(t.string), t.inserted, t.tagName, t.regexp, t.escape], color: "rgb(var(--scope-session-fg))" },
+  { tag: [t.number, t.bool, t.null, t.atom, t.heading, t.link, t.url], color: "rgb(var(--scope-project-fg))" },
+  { tag: [t.propertyName, t.attributeName, t.typeName, t.className, t.namespace], color: "rgb(var(--cand-fg))" },
+  { tag: [t.function(t.variableName), t.function(t.propertyName)], color: "hsl(var(--foreground))" },
+  { tag: [t.comment, t.meta], color: "hsl(var(--muted-foreground))", fontStyle: "italic" },
   { tag: [t.strong], fontWeight: "bold" },
   { tag: [t.emphasis], fontStyle: "italic" },
 ])
@@ -93,6 +105,7 @@ export function matchEditorLanguage(fileName: string): LanguageDescription | nul
 }
 
 export function CodeEditor({ fileName, initialValue, readOnly = false, onChange, onSave, reveal }: CodeEditorProps) {
+  const { resolvedTheme } = useTheme()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
 
@@ -174,6 +187,13 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
     // doc changes for the same file are handled by CodeMirror itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fileName, compartments])
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: compartments.highlight.reconfigure([
+      syntaxHighlighting(resolvedTheme === "dark" ? darkHighlight : lightHighlight),
+      EditorView.theme({}, { dark: resolvedTheme === "dark" }),
+    ]) })
+  }, [resolvedTheme, compartments])
 
   useEffect(() => {
     viewRef.current?.dispatch({

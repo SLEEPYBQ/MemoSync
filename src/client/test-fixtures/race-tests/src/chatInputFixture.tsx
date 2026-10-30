@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS } from "../../../../shared/types"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
+import { TooltipProvider } from "../../../components/ui/tooltip"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { useChatInputStore } from "../../../stores/chatInputStore"
 import { ChatInput } from "../../../components/chat-ui/ChatInput"
@@ -65,9 +66,11 @@ export function mountChatInputFixture(root: HTMLElement) {
   createRoot(root).render(
     <MemoryRouter>
       <ThemeProvider>
-        <AppDialogProvider>
-          <ChatInputHost />
-        </AppDialogProvider>
+        <TooltipProvider>
+          <AppDialogProvider>
+            <ChatInputHost />
+          </AppDialogProvider>
+        </TooltipProvider>
       </ThemeProvider>
     </MemoryRouter>
   )

@@ -23,6 +23,7 @@ function createChat(chatId: string, lastMessageAt: number): SidebarChatRow {
     localPath: "/tmp/project-a",
     provider: "codex",
     lastMessageAt,
+    memoryDisabled: false,
     hasAutomation: false,
   }
 }

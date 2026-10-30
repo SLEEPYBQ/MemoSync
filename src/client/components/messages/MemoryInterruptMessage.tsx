@@ -131,7 +131,7 @@ export function MemoryInterruptMessage({ message }: Props) {
             aria-label="Send and resume"
             title="Send and resume"
             disabled={busy || !correction.trim()}
-            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-600 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 dark:bg-white dark:text-slate-900 dark:hover:bg-white/90"
+            className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-600 text-white transition-colors hover:bg-slate-700 disabled:opacity-50 dark:bg-primary dark:text-primary-foreground dark:hover:bg-primary/90"
           >
             {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </button>

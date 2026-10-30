@@ -20,6 +20,7 @@ import {
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
+  type ChatBrowserNotificationPreference,
   type ChatProviderPreferences,
   type ChatSoundId,
   type ChatSoundPreference,
@@ -28,8 +29,10 @@ import {
   type DefaultProviderPreference,
   type EditorPreset,
   type MemoryPreviewSettings,
+  type MemorySettings,
   type PiModelOptions,
   type ProviderPreference,
+  type SubmitWhileRunning,
 } from "../shared/types"
 
 interface AppSettingsFile {
@@ -37,6 +40,8 @@ interface AppSettingsFile {
   theme?: unknown
   chatSoundPreference?: unknown
   chatSoundId?: unknown
+  chatBrowserNotificationPreference?: unknown
+  submitWhileRunning?: unknown
   terminal?: {
     scrollbackLines?: unknown
     minColumnWidth?: unknown
@@ -51,9 +56,20 @@ interface AppSettingsFile {
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
     pi?: Partial<ProviderPreference<Partial<PiModelOptions>>> & { effort?: unknown }
   }
+  memory?: {
+    enabled?: unknown
+    learn?: unknown
+  }
   memoryPreview?: {
     enabled?: unknown
     autoProceedWhenEmpty?: unknown
+  }
+}
+
+function normalizeMemory(value: AppSettingsFile["memory"] | undefined): MemorySettings {
+  return {
+    enabled: typeof value?.enabled === "boolean" ? value.enabled : true,
+    learn: typeof value?.learn === "boolean" ? value.learn : true,
   }
 }
 
@@ -81,6 +97,9 @@ const MAX_TERMINAL_MIN_COLUMN_WIDTH = 900
 const DEFAULT_EDITOR_PRESET: EditorPreset = "cursor"
 const DEFAULT_CHAT_SOUND_PREFERENCE: ChatSoundPreference = "always"
 const DEFAULT_CHAT_SOUND_ID: ChatSoundId = "funk"
+// Off until the user opts in: turning it on is what asks for browser permission.
+const DEFAULT_CHAT_BROWSER_NOTIFICATION_PREFERENCE: ChatBrowserNotificationPreference = "never"
+const DEFAULT_SUBMIT_WHILE_RUNNING: SubmitWhileRunning = "queue"
 
 function formatDisplayPath(filePath: string) {
   const homePath = homedir()
@@ -155,6 +174,16 @@ function normalizeChatSoundId(value: unknown): ChatSoundId {
     default:
       return DEFAULT_CHAT_SOUND_ID
   }
+}
+
+function normalizeChatBrowserNotificationPreference(value: unknown): ChatBrowserNotificationPreference {
+  return value === "never" || value === "unfocused" || value === "always"
+    ? value
+    : DEFAULT_CHAT_BROWSER_NOTIFICATION_PREFERENCE
+}
+
+function normalizeSubmitWhileRunning(value: unknown): SubmitWhileRunning {
+  return value === "steer" ? "steer" : DEFAULT_SUBMIT_WHILE_RUNNING
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
@@ -254,10 +283,13 @@ function toFilePayload(state: AppSettingsState) {
     theme: state.theme,
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
+    chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
+    submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
+    memory: state.memory,
     memoryPreview: state.memoryPreview,
   }
 }
@@ -268,10 +300,13 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     theme: state.theme,
     chatSoundPreference: state.chatSoundPreference,
     chatSoundId: state.chatSoundId,
+    chatBrowserNotificationPreference: state.chatBrowserNotificationPreference,
+    submitWhileRunning: state.submitWhileRunning,
     terminal: state.terminal,
     editor: state.editor,
     defaultProvider: state.defaultProvider,
     providerDefaults: state.providerDefaults,
+    memory: state.memory,
     memoryPreview: state.memoryPreview,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
@@ -297,6 +332,8 @@ function normalizeAppSettings(
     theme: normalizeTheme(source?.theme),
     chatSoundPreference: normalizeChatSoundPreference(source?.chatSoundPreference),
     chatSoundId: normalizeChatSoundId(source?.chatSoundId),
+    chatBrowserNotificationPreference: normalizeChatBrowserNotificationPreference(source?.chatBrowserNotificationPreference),
+    submitWhileRunning: normalizeSubmitWhileRunning(source?.submitWhileRunning),
     terminal: {
       scrollbackLines: clampNumber(source?.terminal?.scrollbackLines, DEFAULT_TERMINAL_SCROLLBACK, MIN_TERMINAL_SCROLLBACK, MAX_TERMINAL_SCROLLBACK),
       minColumnWidth: clampNumber(source?.terminal?.minColumnWidth, DEFAULT_TERMINAL_MIN_COLUMN_WIDTH, MIN_TERMINAL_MIN_COLUMN_WIDTH, MAX_TERMINAL_MIN_COLUMN_WIDTH),
@@ -307,6 +344,7 @@ function normalizeAppSettings(
     },
     defaultProvider: normalizeDefaultProvider(source?.defaultProvider),
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
+    memory: normalizeMemory(source?.memory),
     memoryPreview: normalizeMemoryPreview(source?.memoryPreview),
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
@@ -330,10 +368,13 @@ function toComparablePayload(source: AppSettingsFile) {
     theme: source.theme,
     chatSoundPreference: source.chatSoundPreference,
     chatSoundId: source.chatSoundId,
+    chatBrowserNotificationPreference: source.chatBrowserNotificationPreference,
+    submitWhileRunning: source.submitWhileRunning,
     terminal: source.terminal,
     editor: source.editor,
     defaultProvider: source.defaultProvider,
     providerDefaults: source.providerDefaults,
+    memory: source.memory,
     memoryPreview: source.memoryPreview,
   }
 }
@@ -375,6 +416,10 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
           ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
+    },
+    memory: {
+      ...state.memory,
+      ...patch.memory,
     },
     memoryPreview: {
       ...state.memoryPreview,

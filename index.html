@@ -7,12 +7,19 @@
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <link rel="manifest" href="/manifest.webmanifest" />
-    <!-- Theme is locked to light — no dark-mode bootstrap. -->
-    <style>
-      :root {
-        color-scheme: light;
-      }
-    </style>
+    <script>
+      (() => {
+        let resolved = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
+        try {
+          const cached = localStorage.getItem("memosync:resolved-theme")
+          if (cached === "light" || cached === "dark") resolved = cached
+        } catch {}
+        document.documentElement.classList.toggle("dark", resolved === "dark")
+        document.documentElement.style.colorScheme = resolved
+        document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "dark" ? "rgb(33, 32, 31)" : "rgb(255, 255, 255)")
+        document.querySelector('meta[name="apple-mobile-web-app-status-bar-style"]')?.setAttribute("content", resolved === "dark" ? "black-translucent" : "default")
+      })()
+    </script>
     <!-- Brand is condition-aware (study arms must not show the MemoSync
          identity): the empty title and the favicon are filled in by
          BrandMark once /api/condition resolves. -->

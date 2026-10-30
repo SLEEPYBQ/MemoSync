@@ -1,3 +1,4 @@
+import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -20,7 +21,7 @@ import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import type { StudyProjectAccess } from "./study-project-access"
 import type { StudyPreviewRuntimeController } from "./study-preview-runtime"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
+import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
@@ -530,6 +531,8 @@ export function createWsRouter({
     theme: "system",
     chatSoundPreference: "always",
     chatSoundId: "funk",
+    chatBrowserNotificationPreference: "never",
+    submitWhileRunning: "queue",
     terminal: {
       scrollbackLines: 1_000,
       minColumnWidth: 450,
@@ -563,6 +566,10 @@ export function createWsRouter({
         },
         planMode: false,
       },
+    },
+    memory: {
+      enabled: true,
+      learn: true,
     },
     memoryPreview: {
       enabled: true,
@@ -607,6 +614,10 @@ export function createWsRouter({
           ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
+    },
+    memory: {
+      ...snapshot.memory,
+      ...patch.memory,
     },
     memoryPreview: {
       ...snapshot.memoryPreview,
@@ -1535,6 +1546,12 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
+        case "chat.setMemoryDisabled": {
+          await agent.setMemoryDisabled(command.chatId, command.disabled)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+          await broadcastChatAndSidebar(command.chatId)
+          return
+        }
         case "chat.send": {
           // AgentCoordinator owns study admission. Keeping it at the queue
           // authority covers send, steer, auto-drain and restart without
@@ -1572,6 +1589,14 @@ export function createWsRouter({
           if (result.snapshotChanged) {
             void broadcastSnapshots()
           }
+          return
+        }
+        case "chat.getPreview": {
+          const chat = store.getChat(command.chatId)
+          const result = chat
+            ? deriveChatPreview(store.getMessages(chat.id), agent.getPendingTool(chat.id)?.toolUseId)
+            : null
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.getGitHubPublishInfo": {
@@ -1799,7 +1824,13 @@ export function createWsRouter({
           return
         }
         case "message.enqueue": {
-          const result = await agent.enqueue(command)
+          const result = await enqueueAndMaybeSteer(command, {
+            enqueue: (value) => agent.enqueue(value),
+            steer: (value) => agent.steer(value),
+            isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
+            isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
+            remove: (chatId, messageId) => store.removeQueuedMessage(chatId, messageId),
+          })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)
           return

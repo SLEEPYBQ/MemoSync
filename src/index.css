@@ -43,7 +43,7 @@
     --secondary: 240 4.8% 95.9%;
     --secondary-foreground: 240 5.9% 10%;
     --muted: 210 20% 97%;
-    --muted-foreground: 215 16% 47%;
+    --muted-foreground: 215 16% 46.42%; /* AA on the existing muted surface (4.50:1). */
     --accent: 240 4.8% 95.9%;
     --accent-foreground: 240 5.9% 10%;
     --destructive: var(--logo);
@@ -58,6 +58,9 @@
     --chart-3: 221 83% 53%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+    --success: oklch(69.6% 0.17 162.48); /* emerald-500 */
+    --info: oklch(68.5% 0.169 237.323); /* sky-500 */
+    --section-title: oklch(44.6% 0.043 257.281); /* slate-600 */
     --logo: oklch(71.2% 0.194 13.428);
     /* MemoSync scope colors (canonical v1 values, SPEC §2): RGB triplets.
        DEFAULT = dot/fill; fg = AA-legible text; surface = tint; border = outline. */
@@ -81,37 +84,40 @@
   }
 
   .dark {
-    --background: 223 4% 13%;
-    --foreground: 0 0% 98%;
-    --card: 231 4% 16%;
-    --card-foreground: 0 0% 98%;
-    --popover: 223 4% 13%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 2% 10%;
-    --secondary: 240 2% 19%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 223 4% 18.5%;
-    --muted-foreground: 240 2.5% 64.9%;
-    --accent: 240 2% 19%;
-    --accent-foreground: 0 0% 98%;
+    --background: 30 4% 12.5%;
+    --foreground: 40 14% 94%;
+    --card: 30 4% 15.5%;
+    --card-foreground: 40 14% 94%;
+    --popover: 30 4% 14%;
+    --popover-foreground: 40 14% 94%;
+    --primary: 40 14% 94%;
+    --primary-foreground: 30 4% 11%;
+    --secondary: 30 3% 19%;
+    --secondary-foreground: 40 14% 94%;
+    --muted: 30 4% 18%;
+    --muted-foreground: 34 5% 65%;
+    --accent: 30 3% 19%;
+    --accent-foreground: 40 14% 94%;
     --destructive: var(--logo);
     --destructive-foreground: var(--background);
-    --border: 220 2.5% 23.5%;
-    --input: 240 4% 19%;
-    --ring: 240 4.9% 83.9%;
-    --muted-icon: 240 5% 48%;
-    --color-slate-50: oklch(98.5% 0.001 247.839);
-    --color-slate-100: oklch(96.7% 0.0013 264.542);
-    --color-slate-200: oklch(92.8% 0.0026 264.531);
-    --color-slate-300: oklch(87.2% 0.004 258.338);
-    --color-slate-400: oklch(70.7% 0.01 261.325);
-    --color-slate-500: oklch(55.1% 0.012 264.364);
-    --color-slate-600: oklch(44.6% 0.013 256.802);
-    --color-slate-700: oklch(37.3% 0.015 259.733);
-    --color-slate-800: oklch(27.8% 0.0145 256.848);
-    --color-slate-900: oklch(21% 0.015 264.665);
-    --color-slate-950: oklch(13% 0.012 261.692);
+    --border: 30 3% 23%;
+    --input: 30 3% 20%;
+    --ring: 34 6% 80%;
+    --muted-icon: 32 4% 48%;
+    --color-slate-50: oklch(98.5% 0.001 60);
+    --color-slate-100: oklch(96.7% 0.0013 60);
+    --color-slate-200: oklch(92.8% 0.0026 60);
+    --color-slate-300: oklch(87.2% 0.004 60);
+    --color-slate-400: oklch(70.7% 0.01 60);
+    --color-slate-500: oklch(55.1% 0.012 60);
+    --color-slate-600: oklch(44.6% 0.012 60);
+    --color-slate-700: oklch(37.3% 0.012 60);
+    --color-slate-800: oklch(27.8% 0.012 60);
+    --color-slate-900: oklch(21% 0.012 60);
+    --color-slate-950: oklch(13% 0.012 60);
+    --success: oklch(76.5% 0.177 163.223); /* emerald-400 */
+    --info: oklch(74.6% 0.16 232.661); /* sky-400 */
+    --section-title: var(--color-slate-300);
     --logo: oklch(71.2% 0.194 13.428);
     --scope-personal: 217 119 87;
     --scope-personal-fg: 235 170 130;
@@ -154,6 +160,9 @@
   --color-card: hsl(var(--card));
   --color-card-foreground: hsl(var(--card-foreground));
   --color-muted-icon: hsl(var(--muted-icon));
+  --color-success: var(--success);
+  --color-info: var(--info);
+  --color-section-title: var(--section-title);
   --color-logo: var(--logo);
   --color-personal: rgb(var(--scope-personal));
   --color-personal-fg: rgb(var(--scope-personal-fg));

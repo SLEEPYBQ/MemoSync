@@ -33,7 +33,7 @@ import { defaultTransferScope, transferScopeDisabled } from "../../lib/transferT
 import { cn } from "../../lib/utils"
 
 const VERDICT_META: Record<TransferProposal["verdict"], { label: string; className: string }> = {
-  as_is: { label: "transfers as-is", className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" },
+  as_is: { label: "transfers as-is", className: "bg-success/10 text-emerald-700 dark:text-emerald-300" },
   rewrite: { label: "adapted for the target", className: "bg-amber-500/10 text-amber-700 dark:text-amber-300" },
   context_bound: { label: "context-bound — not recommended", className: "bg-red-500/10 text-red-700 dark:text-red-300" },
 }
@@ -359,7 +359,7 @@ export function TransferMemoryDialog({
               {/* Landing: how the instantiated form meets what already lives
                   in the target context (same vocabulary as capture). */}
               {landing?.route === "reinforces" ? (
-                <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-2 text-xs">
+                <div className="flex items-start gap-2 rounded-lg border border-emerald-500/30 bg-success/5 px-2.5 py-2 text-xs">
                   <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
                     {targetLabel} already knows this
@@ -370,7 +370,7 @@ export function TransferMemoryDialog({
                   </p>
                 </div>
               ) : landing?.route === "conflicts" ? (
-                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-2.5 py-2 text-xs">
+                <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 dark:bg-amber-500/10 px-2.5 py-2 text-xs">
                   <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
                     This may conflict with an existing memory in {targetLabel}

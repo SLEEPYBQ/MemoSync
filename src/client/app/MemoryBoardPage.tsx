@@ -21,6 +21,7 @@ import {
   type MemoryScope,
   type MutedProposal,
 } from "../lib/memoriesApi"
+import { MemorySettingsBanner } from "../components/memory/MemorySettingsBanner"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
@@ -652,6 +653,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     <div className="flex min-h-0 flex-1">
       <div className="min-w-0 flex-1 overflow-y-auto px-6 py-6" onScroll={recordBoardScroll}>
         <div className="mx-auto max-w-5xl">
+          <MemorySettingsBanner />
           <header className="mb-4 flex items-center gap-3">
             {/* The board is a full-page detour with no other exit affordance
                 (pilot feedback 2026-08-11): give it an explicit way back.
@@ -965,9 +967,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           </section>
 
           {sections.activeLibrary && needsAttention.length > 0 ? (
-            <section className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 p-3">
+            <section className="mb-6 rounded-lg border border-amber-500/40 bg-amber-500/5 dark:bg-amber-500/10 p-3">
               <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
+                <AlertTriangle className="h-4 w-4 text-amber-500 dark:text-amber-400" />
                 Needs attention · <span className="text-muted-foreground">{needsAttention.length} {needsAttention.length === 1 ? "conflict" : "conflicts"} to resolve</span>
               </h2>
               <div className="flex flex-col gap-3">

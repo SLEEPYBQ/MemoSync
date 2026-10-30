@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
 import { resolveConditionPolicy } from "../../server/experiment/condition"
+import { TooltipProvider } from "./ui/tooltip"
 import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 
 const emptySnapshot: LocalProjectsSnapshot = {
@@ -19,7 +20,7 @@ function renderEmptyLanding(condition: string) {
   return renderToStaticMarkup(createElement(
     MemoryRouter,
     null,
-    createElement(LocalDevContent, {
+    createElement(TooltipProvider, null, createElement(LocalDevContent, {
       connectionStatus: "connected",
       ready: true,
       snapshot: emptySnapshot,
@@ -31,7 +32,7 @@ function renderEmptyLanding(condition: string) {
       availableProviders: PROVIDERS,
       projectIdByPath: {},
       conditionPolicy: resolveConditionPolicy(condition),
-    }),
+    })),
   ))
 }
 

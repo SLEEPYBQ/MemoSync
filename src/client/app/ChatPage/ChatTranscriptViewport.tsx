@@ -485,7 +485,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       >
         <button
           onClick={scrollToBottom}
-          className="flex aspect-square cursor-pointer items-center gap-1.5 rounded-full border border-border bg-white px-2 text-sm text-primary transition-colors hover:bg-muted hover:text-foreground dark:border-slate-600 dark:bg-slate-700 dark:text-slate-100 dark:hover:bg-slate-600"
+          className="flex aspect-square cursor-pointer items-center gap-1.5 rounded-full border border-border bg-white px-2 text-sm text-primary transition-colors hover:bg-muted hover:text-foreground dark:border-border dark:bg-card dark:text-foreground dark:hover:bg-accent"
         >
           <ArrowDown className="h-5 w-5" />
         </button>

@@ -530,7 +530,7 @@ export function ChatPreferenceControls({
               <span>{codexModelOptions?.fastMode ? "Fast Mode" : "Standard"}</span>
             </>
           )}
-          triggerClassName={codexModelOptions?.fastMode ? "text-emerald-500 dark:text-emerald-400" : undefined}
+          triggerClassName={codexModelOptions?.fastMode ? "text-success" : undefined}
         >
           {(close) => (
             <>

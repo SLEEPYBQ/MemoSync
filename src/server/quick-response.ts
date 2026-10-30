@@ -232,12 +232,20 @@ export class QuickResponseAdapter {
 
   constructor(args: QuickResponseAdapterArgs = {}) {
     this.isolationEnabled = isCliIsolationEnabled(args.env ?? process.env)
+    // Under `bun test` (see test-setup.ts) the defaults never reach a real
+    // provider: a test that boots an AgentCoordinator without stubbing title
+    // generation would otherwise call this machine's LLM provider, Claude and
+    // Codex on every run. Runners a test passes explicitly still run.
+    const offline = process.env.MEMOSYNC_QUICK_RESPONSE_OFFLINE === "1"
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
-    this.readLlmProvider = args.readLlmProvider ?? (() => readLlmProviderSnapshot())
+    this.readLlmProvider = args.readLlmProvider ?? (offline
+      ? async () => ({ ...(await readLlmProviderSnapshot()), enabled: false })
+      : () => readLlmProviderSnapshot())
     this.runOpenAIStructured = args.runOpenAIStructured ?? runOpenAIStructured
-    this.runClaudeStructured = args.runClaudeStructured ?? runClaudeStructured
-    this.runCodexStructured = args.runCodexStructured ?? ((structuredArgs) =>
-      runCodexStructured(this.codexManager, structuredArgs))
+    this.runClaudeStructured = args.runClaudeStructured ?? (offline ? async () => null : runClaudeStructured)
+    this.runCodexStructured = args.runCodexStructured ?? (offline && !args.codexManager
+      ? async () => null
+      : (structuredArgs) => runCodexStructured(this.codexManager, structuredArgs))
   }
   async generateStructured<T>(args: StructuredQuickResponseArgs<T>): Promise<T | null> {
     const result = await this.generateStructuredWithDiagnostics(args)

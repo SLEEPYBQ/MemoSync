@@ -1130,7 +1130,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               {activeBuffer?.saving ? (
                 <Loader2 className="size-3.5 animate-spin" />
               ) : activeBuffer?.justSaved ? (
-                <Check className="size-3.5 text-green-600" />
+                <Check className="size-3.5 text-green-600 dark:text-green-400" />
               ) : (
                 <Save className="size-3.5" />
               )}
@@ -1139,7 +1139,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           {active ? (
             <>
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyActivePath} title="Copy path">
-                {copied ? <Check className="size-3.5 text-green-600" /> : <Copy className="size-3.5" />}
+                {copied ? <Check className="size-3.5 text-green-600 dark:text-green-400" /> : <Copy className="size-3.5" />}
               </Button>
               <Button
                 variant="ghost"

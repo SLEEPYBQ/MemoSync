@@ -131,8 +131,11 @@ export type ClientCommand =
   | { type: "chat.delete"; chatId: string }
   | { type: "chat.setDraftProtection"; chatIds: string[] }
   | { type: "chat.markRead"; chatId: string }
+  | { type: "chat.getPreview"; chatId: string }
+  | { type: "chat.setMemoryDisabled"; chatId: string; disabled: boolean }
   | {
       type: "chat.send"
+      memoryDisabled?: boolean
       chatId?: string
       projectId?: string
       clientTraceId?: string
@@ -233,6 +236,8 @@ export type ClientCommand =
   | { type: "chat.reopenMemoryPreparation"; chatId: string; from: "proposals" | "checkup" | "transfer"; stageId: string }
   | {
       type: "message.enqueue"
+      /** Interrupt via the existing message.steer path after enqueue. */
+      steer?: boolean
       chatId: string
       content: string
       attachments?: ChatAttachment[]

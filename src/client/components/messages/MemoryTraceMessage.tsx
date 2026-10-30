@@ -48,7 +48,7 @@ function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
       <span className="mt-1.5 flex h-3 w-3 shrink-0 items-center justify-center">
         {/* Hollow ring: never entered play — visually distinct from the filled
             no-effect dot (played, changed nothing). */}
-        <span className="h-1.5 w-1.5 rounded-full border border-slate-400 dark:border-slate-500" />
+        <span className="h-1.5 w-1.5 rounded-full border border-slate-400 dark:border-border" />
       </span>
     )
   return (
@@ -63,7 +63,7 @@ function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
 const SECTION_TONE: Record<MemoryTraceLabel["label"], { bar: string; head: string }> = {
   violated: { bar: "bg-destructive", head: "text-destructive" },
   operational: { bar: "bg-foreground/70", head: "text-foreground" },
-  not_applicable: { bar: "bg-slate-400 dark:bg-slate-500", head: "text-slate-600 dark:text-slate-400" },
+  not_applicable: { bar: "bg-slate-400 dark:bg-muted-foreground", head: "text-slate-600 dark:text-muted-foreground" },
   injected_without_effect: { bar: "bg-muted-foreground/40", head: "text-muted-foreground" },
 }
 

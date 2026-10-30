@@ -10,8 +10,9 @@ import { TooltipProvider } from "../components/ui/tooltip"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStore"
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
+import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount, showChatNotificationEvents } from "./chatNotifications"
 import { AppSidebar } from "./AppSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -29,7 +30,7 @@ import {
 } from "./study/MemoryBoardLauncher"
 import { useConditionPolicyLoadFailed, useConditionPolicyResolved } from "../lib/conditionApi"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
-import type { AppSettingsSnapshot } from "../../shared/types"
+import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
 
 const VERSION_SEEN_STORAGE_KEY = "memosync:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
@@ -107,7 +108,7 @@ function PasswordScreen({
           <div className="flex items-center gap-3">
             <BrandIcon className="h-5 w-5" />
             <div>
-              <CardTitle className="font-logo text-xl uppercase text-slate-600 dark:text-slate-100">{brandName}</CardTitle>
+              <CardTitle className="font-logo text-xl uppercase text-section-title">{brandName}</CardTitle>
             </div>
           </div>
           <CardDescription className="leading-6">
@@ -412,14 +413,29 @@ function AppLayout() {
   }, [brandName, state.sidebarData])
 
   useEffect(() => {
+    // The empty placeholder before the first sidebar snapshot is not a baseline:
+    // diffing against it would announce every already-unread or waiting chat on reload.
+    if (!state.sidebarReady) return
+    const events = getChatNotificationEvents(previousSidebarDataRef.current, state.sidebarData)
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
+    void showChatNotificationEvents({
+      enabled: !!state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference),
+      events,
+      loadPreview: (chatId) => state.socket.command<ChatPreview | null>({ type: "chat.getPreview", chatId }),
+      showNotification: (event) => {
+        showChatBrowserNotification({
+          ...event,
+          onClick: () => { window.focus(); navigate(`/chat/${event.chatId}`) },
+        })
+      },
+    })
     if (burstCount <= 0) return
     if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, state.appSettings, state.sidebarData])
+  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady, state.socket])
 
   // Memory surfaces fail closed until the server's feature policy resolves.
   if (conditionPolicyForGuide === null) {

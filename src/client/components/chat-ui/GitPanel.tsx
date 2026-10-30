@@ -1,3 +1,4 @@
+import { useTheme } from "../../hooks/useTheme"
 import { PatchDiff } from "@pierre/diffs/react"
 import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
@@ -274,19 +275,19 @@ function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchH
       {entry.tags.length > 0 ? (
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
           {entry.tags.map((tag) => (
-            <span key={tag} className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-white/10 border dark:border-white/10  px-2 py-0.5 text-[11px]">
+            <span key={tag} className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-muted border dark:border-border  px-2 py-0.5 text-[11px]">
               {tag}
             </span>
           ))}
           {isPendingPush ? (
-            <span className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-white/10 border dark:border-white/10  px-2 py-0.5 text-[11px]">
+            <span className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-muted border dark:border-border  px-2 py-0.5 text-[11px]">
               <ArrowUp className="size-3" />
             </span>
           ) : null}
         </div>
       ) : isPendingPush ? (
         <div className="flex shrink-0 flex-wrap justify-end gap-1">
-          <span className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-white/10 border dark:border-white/10  px-2 py-0.5 text-[11px]">
+          <span className="inline-flex items-center rounded-full bg-slate-900/10 border-black/10 dark:bg-muted border dark:border-border  px-2 py-0.5 text-[11px]">
             <ArrowUp className="size-3" />
           </span>
         </div>
@@ -920,6 +921,7 @@ function DiffFileCard({
   isPatchLoading: boolean
   onLoadPatch: (path: string) => Promise<string>
 }) {
+  const { resolvedTheme } = useTheme()
   const canIgnore = canIgnoreDiffFile(file)
   const canIgnoreFolder = canIgnoreDiffFolder(file)
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
@@ -1097,6 +1099,7 @@ function DiffFileCard({
                     patch={patch}
                     options={{
                       diffStyle: diffRenderMode,
+                      themeType: resolvedTheme,
                       disableFileHeader: true,
                       disableBackground: false,
                       overflow: wrapLines ? "wrap" : "scroll",
