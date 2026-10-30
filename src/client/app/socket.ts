@@ -1,3 +1,5 @@
+import { applySidebarPatch } from "../../shared/sidebar-patch"
+import type { SidebarData } from "../../shared/types"
 import { localizeUiResult, translateServerUiText } from "../i18n/uiText"
 import { t } from "../i18n"
 import type {
@@ -39,6 +41,7 @@ const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "memosync:profile-send-to-starting"
 
 interface SubscriptionEntry<TSnapshot, TEvent = never> {
   topic: SubscriptionTopic
+  sidebar?: { revision: number; data: SidebarData }
   listener: SnapshotListener<TSnapshot>
   eventListener?: EventListener<TEvent>
 }
@@ -288,6 +291,19 @@ export class AppSocket {
 
       if (payload.type === "snapshot") {
         const subscription = this.subscriptions.get(payload.id)
+        if (subscription && payload.snapshot.type === "sidebar-patch") {
+          const patch = payload.snapshot.data
+          try {
+            if (patch.from !== null && subscription.sidebar?.revision !== patch.from) throw new Error("Sidebar revision gap")
+            const data = applySidebarPatch(subscription.sidebar?.data ?? null, patch)
+            subscription.sidebar = { revision: patch.to, data }
+            subscription.listener(data)
+          } catch {
+            subscription.sidebar = undefined
+            this.enqueue({ v: 1, type: "subscribe", id: payload.id, topic: subscription.topic })
+          }
+          return
+        }
         subscription?.listener(payload.snapshot.data)
         return
       }

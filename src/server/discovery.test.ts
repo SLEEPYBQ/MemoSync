@@ -27,8 +27,8 @@ afterEach(() => {
   }
 })
 
-describe("project discovery", () => {
-  test("Claude adapter decodes saved project paths", () => {
+describe("project discovery", async () => {
+  test("Claude adapter decodes saved project paths", async () => {
     const homeDir = makeTempDir()
     const projectDir = path.join(homeDir, "workspace", "alpha-project")
     const claudeProjectsDir = path.join(homeDir, ".claude", "projects")
@@ -38,7 +38,7 @@ describe("project discovery", () => {
     mkdirSync(projectMarkerDir, { recursive: true })
     utimesSync(projectMarkerDir, new Date("2026-03-16T10:00:00.000Z"), new Date("2026-03-16T10:00:00.000Z"))
 
-    const projects = new ClaudeProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await new ClaudeProjectDiscoveryAdapter().scan(homeDir)
 
     expect(projects).toEqual([
       {
@@ -50,7 +50,7 @@ describe("project discovery", () => {
     ])
   })
 
-  test("Codex adapter reads cwd from session metadata and ignores stale or invalid entries", () => {
+  test("Codex adapter reads cwd from session metadata and ignores stale or invalid entries", async () => {
     const homeDir = makeTempDir()
     const sessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "16")
     const liveProjectDir = path.join(homeDir, "workspace", "kanna")
@@ -106,7 +106,7 @@ describe("project discovery", () => {
       }),
     ].join("\n"))
 
-    const projects = new CodexProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await new CodexProjectDiscoveryAdapter().scan(homeDir)
 
     expect(projects).toEqual([
       {
@@ -118,7 +118,7 @@ describe("project discovery", () => {
     ])
   })
 
-  test("Codex adapter falls back to session timestamps and config projects when session index misses CLI entries", () => {
+  test("Codex adapter falls back to session timestamps and config projects when session index misses CLI entries", async () => {
     const homeDir = makeTempDir()
     const sessionsDir = path.join(homeDir, ".codex", "sessions", "2026", "03", "16")
     const cliProjectDir = path.join(homeDir, "workspace", "codex-test-2")
@@ -148,7 +148,7 @@ describe("project discovery", () => {
       }),
     ].join("\n"))
 
-    const projects = new CodexProjectDiscoveryAdapter().scan(homeDir)
+    const projects = await new CodexProjectDiscoveryAdapter().scan(homeDir)
 
     expect(projects.map((project) => project.localPath).sort()).toEqual([
       cliProjectDir,
@@ -159,7 +159,7 @@ describe("project discovery", () => {
     )
   })
 
-  test("discoverProjects de-dupes provider results by normalized path and keeps the newest timestamp", () => {
+  test("discoverProjects de-dupes provider results by normalized path and keeps the newest timestamp", async () => {
     const adapters: ProjectDiscoveryAdapter[] = [
       {
         provider: "claude",
@@ -195,7 +195,7 @@ describe("project discovery", () => {
       },
     ]
 
-    expect(discoverProjects("/unused-home", adapters)).toEqual([
+    expect(await discoverProjects("/unused-home", adapters)).toEqual([
       {
         localPath: "/tmp/project",
         title: "Codex Project",
@@ -209,3 +209,18 @@ describe("project discovery", () => {
     ])
   })
 })
+
+ test("concurrent discovery shares one asynchronous scan and releases it afterwards", async () => {
+   let calls = 0
+   let release!: () => void
+   const gate = new Promise<void>(resolve => { release = resolve })
+   const adapters: ProjectDiscoveryAdapter[] = [{ provider: "claude", async scan() { calls++; await gate; return [] } }]
+   const first = discoverProjects("/test", adapters)
+   const second = discoverProjects("/test", adapters)
+   expect(first).toBe(second)
+   release()
+   await first
+   expect(calls).toBe(1)
+   await discoverProjects("/test", adapters)
+   expect(calls).toBe(2)
+ })

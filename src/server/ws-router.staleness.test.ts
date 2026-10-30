@@ -1,3 +1,5 @@
+import { applySidebarPatch, type SidebarPatch } from "../shared/sidebar-patch"
+import type { SidebarData } from "../shared/types"
 import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -45,8 +47,19 @@ class FakeWebSocket {
   }
 
   lastSnapshot(id: string) {
-    return this.snapshotsById(id).at(-1)?.snapshot
+    let latest: { type: string; data: unknown } | undefined
+    for (const entry of this.snapshotsById(id)) {
+      if (entry.snapshot?.type === "sidebar-patch") {
+        latest = { type: "sidebar", data: applySidebarPatch(latest?.data as SidebarData ?? null, entry.snapshot.data as SidebarPatch) }
+      } else latest = entry.snapshot
+    }
+    return latest
   }
+}
+
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item)
 }
 
 const TOPIC_IDS = {
@@ -507,17 +520,18 @@ const CASES: StalenessCase[] = [
   },
 ]
 
-async function subscribeToAllTopics(router: ReturnType<typeof createWsRouter>, ws: FakeWebSocket) {
+async function subscribeToAllTopics(router: ReturnType<typeof createWsRouter>, ws: FakeWebSocket, patches = false) {
   for (const [id, topic] of ALL_TOPICS) {
-    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id, topic }))
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id, topic: topic.type === "sidebar" ? { ...topic, patches } : topic }))
   }
   // local-projects pushes asynchronously after refreshDiscovery resolves.
   await settle()
 }
 
 describe("ws-router broadcast staleness invariant", () => {
+  for (const patches of [false, true]) {
   for (const stalenessCase of CASES) {
-    test(`${stalenessCase.name} leaves no subscriber stale`, async () => {
+    test(`${stalenessCase.name} leaves no subscriber stale (patches=${patches})`, async () => {
       const projectPath = await mkdtemp(path.join(tmpdir(), "kanna-staleness-"))
       const world = createWorld()
       try {
@@ -528,13 +542,14 @@ describe("ws-router broadcast staleness invariant", () => {
         const observer = new FakeWebSocket()
         router.handleOpen(actor as never)
         router.handleOpen(observer as never)
-        await subscribeToAllTopics(router, observer)
+        await subscribeToAllTopics(router, observer, patches)
+        if (patches) expect(observer.snapshotsById(TOPIC_IDS.sidebar)[0]?.snapshot?.type).toBe("sidebar-patch")
 
         const initialSnapshots = new Map<TopicId, string>()
         for (const [id] of ALL_TOPICS) {
           const snapshot = observer.lastSnapshot(id)
           expect(snapshot).toBeDefined()
-          initialSnapshots.set(id, JSON.stringify(snapshot))
+          initialSnapshots.set(id, canonical(snapshot))
         }
 
         const command = typeof stalenessCase.command === "function"
@@ -558,8 +573,8 @@ describe("ws-router broadcast staleness invariant", () => {
         const changedTopics: TopicId[] = []
         const staleTopics: TopicId[] = []
         for (const [id] of ALL_TOPICS) {
-          const groundTruth = JSON.stringify(probe.lastSnapshot(id))
-          const observed = JSON.stringify(observer.lastSnapshot(id))
+          const groundTruth = canonical(probe.lastSnapshot(id))
+          const observed = canonical(observer.lastSnapshot(id))
           if (groundTruth !== initialSnapshots.get(id)) {
             changedTopics.push(id)
           }
@@ -582,5 +597,6 @@ describe("ws-router broadcast staleness invariant", () => {
         await rm(projectPath, { recursive: true, force: true })
       }
     })
+  }
   }
 })
