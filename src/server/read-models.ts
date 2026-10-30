@@ -18,10 +18,12 @@ import { toMessagePreview } from "../shared/message-preview"
 const SIDEBAR_RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000
 const SIDEBAR_FALLBACK_PREVIEW_LIMIT = 5
 
-/** Only visible assistant prose or the currently pending question/plan may escape. */
+/** Only visible assistant prose or the currently pending question/plan of the
+ * latest turn may escape; a turn without either (e.g. one that failed) has none. */
 export function deriveChatPreview(entries: TranscriptEntry[], pendingToolId?: string): ChatPreview | null {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i]!
+    if (entry.kind === "user_prompt") break
     if (entry.hidden) continue
     let text = ""
     if (entry.kind === "assistant_text") {
