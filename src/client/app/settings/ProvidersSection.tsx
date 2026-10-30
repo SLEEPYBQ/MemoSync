@@ -1,9 +1,10 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { EngineCard } from "./EngineCard"
-import { ConnectionsSection } from "./ConnectionsSection"
+import { ConnectionDialog, ConnectionsSection } from "./ConnectionsSection"
 import { useModelAccessStore } from "../../model-access/modelAccess"
 import { useState } from "react"
+import type { ApiProtocol } from "../../../shared/model-access"
 import type {
   AgentProvider,
   AppSettingsPatch,
@@ -16,7 +17,14 @@ import { SelectItem } from "../../components/ui/select"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import type { AppState } from "../useAppState"
 import { SETTINGS_ROWS, type SettingsRowDef } from "./registry"
-import { SettingsErrorBanner, SettingsGroups, SettingsGroup, SettingsRow, SettingsSelect } from "./shared"
+import {
+  SettingsErrorBanner,
+  SettingsGroups,
+  SettingsGroup,
+  SettingsRow,
+  SettingsSelect,
+  SettingsGroupHeading,
+} from "./shared"
 
 const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
   claude: SETTINGS_ROWS.claudeDefaults,
@@ -54,7 +62,8 @@ export function ProvidersSection({
   const preferences = useChatPreferencesStore()
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
-  const snapshot = useModelAccessStore(s => s.snapshot)
+  const snapshot = useModelAccessStore((s) => s.snapshot)
+  const [adding, setAdding] = useState<{ protocol?: ApiProtocol } | null>(null)
 
   async function save(patch: AppSettingsPatch) {
     try {
@@ -67,10 +76,14 @@ export function ProvidersSection({
 
   function renderDefaults(provider: AgentProvider) {
     const defaults = preferences.providerDefaults[provider]
+    const setup = snapshot?.engines[provider].setup
+    const access = setup?.access
     return (
       <SettingsRow
         key={provider}
         def={DEFAULTS_ROWS[provider]}
+        title={t("modelAccess:defaults")}
+        description={null}
         wideControl
         alignStart
       >
@@ -79,12 +92,32 @@ export function ProvidersSection({
             availableProviders={providers}
             selectedProvider={provider}
             showProviderPicker={false}
-            showModelPicker={snapshot?.engines[provider].setup.access.mode !== "connection"}
-            useModelAccess={false}
+            useModelAccess={access?.mode === "connection"}
+            selectedConnectionOnly
+            connectionId={access?.mode === "connection" ? access.connectionId : undefined}
             providerLocked
-            model={defaults.model}
+            model={
+              access?.mode === "connection"
+                ? (access.defaultModel ??
+                  snapshot?.connections.find((connection) => connection.id === access.connectionId)?.models[0]?.id ??
+                  t("modelAccess:chooseModel"))
+                : defaults.model
+            }
             modelOptions={defaults.modelOptions}
             onModelChange={(_, model) => {
+              if (setup && access?.mode === "connection" && state.socket) {
+                setError(null)
+                void state.socket
+                  .command({
+                    type: "modelAccess.setEngine",
+                    engine: provider,
+                    setup: { ...setup, access: { ...access, defaultModel: model } },
+                  })
+                  .catch((reason) =>
+                    setError(reason instanceof Error ? reason.message : t("modelAccess:commandFailed")),
+                  )
+                return
+              }
               preferences.setProviderDefaultModel(provider, model)
               void save({ providerDefaults: { [provider]: { model } } })
             }}
@@ -110,7 +143,7 @@ export function ProvidersSection({
   }
 
   return (
-    <>
+    <div className="model-access-ui @container">
       {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       <SettingsGroups>
         <SettingsGroup title={t("settings:defaultProvider")}>
@@ -132,14 +165,38 @@ export function ProvidersSection({
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <SettingsGroup title={t("modelAccess:engines")}>
-          <SettingsRow def={SETTINGS_ROWS.modelEngines}><span className="text-xs text-muted-foreground">{snapshot ? "" : t("modelAccess:loading")}</span></SettingsRow>
-        </SettingsGroup>
-        {(["claude", "codex", "pi"] as const).map(engine => <EngineCard key={engine} engine={engine} status={snapshot?.engines[engine]} connections={snapshot?.connections ?? []} socket={state.socket}>
-          {renderDefaults(engine)}
-        </EngineCard>)}
-        <ConnectionsSection connections={snapshot?.connections ?? []} presets={snapshot?.presets ?? []} socket={state.socket} />
+        <section id={SETTINGS_ROWS.modelEngines.id} className="space-y-3">
+          <SettingsGroupHeading>{t("modelAccess:engines")}</SettingsGroupHeading>
+          {(["claude", "codex", "pi"] as const).map((engine) => (
+            <EngineCard
+              key={engine}
+              engine={engine}
+              status={snapshot?.engines[engine]}
+              connections={snapshot?.connections ?? []}
+              socket={state.socket}
+              onAddConnection={(protocol) => setAdding({ protocol })}
+            >
+              {renderDefaults(engine)}
+            </EngineCard>
+          ))}
+        </section>
+        <div id={SETTINGS_ROWS.apiConnections.id}>
+          <ConnectionsSection
+            connections={snapshot?.connections ?? []}
+            presets={snapshot?.presets ?? []}
+            socket={state.socket}
+            onAddConnection={() => setAdding({})}
+          />
+        </div>
       </SettingsGroups>
-    </>
+      {adding && state.socket ? (
+        <ConnectionDialog
+          presets={snapshot?.presets ?? []}
+          initialProtocol={adding.protocol}
+          socket={state.socket}
+          onClose={() => setAdding(null)}
+        />
+      ) : null}
+    </div>
   )
 }

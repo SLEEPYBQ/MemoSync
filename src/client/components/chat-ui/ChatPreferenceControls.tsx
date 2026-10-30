@@ -248,6 +248,7 @@ interface ChatPreferenceControlsProps {
   showModelPicker?: boolean
   useModelAccess?: boolean
   connectionId?: string
+  selectedConnectionOnly?: boolean
   providerLocked?: boolean
   showCodexCliRequirementHints?: boolean
   model: string
@@ -268,6 +269,7 @@ export function ChatPreferenceControls({
   showModelPicker = true,
   useModelAccess = true,
   connectionId,
+  selectedConnectionOnly = false,
   providerLocked = false,
   showCodexCliRequirementHints = false,
   model,
@@ -284,8 +286,8 @@ export function ChatPreferenceControls({
   const snapshot = useModelAccessStore(s => s.snapshot)
   const accessSnapshot = useModelAccess ? snapshot : null
   const access = accessSnapshot?.engines[selectedProvider].setup.access
-  const groups = connectionGroups(selectedProvider, accessSnapshot?.connections ?? [])
   const activeConnectionId = connectionId ?? (access?.mode === "connection" ? access.connectionId : undefined)
+  const groups = connectionGroups(selectedProvider, accessSnapshot?.connections ?? []).filter(group => !selectedConnectionOnly || group.connection.id === activeConnectionId)
   const connectionModel = groups.find(g => g.connection.id === activeConnectionId)?.models.find(m => m.id === model)
   const showAccountModels = !accessSnapshot || access?.mode === "account"
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? getProviderCatalog(selectedProvider)
