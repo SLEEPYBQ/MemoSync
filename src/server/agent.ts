@@ -1571,6 +1571,13 @@ export class AgentCoordinator {
     snapshots: { transfer: Map<string, string>; changes: Map<string, string> }
   }>()
   private readonly workingBranches = new Map<string, MemoryBranch>()
+  /** Detached from turn/preparation ownership: one running C and one latest
+   * completed turn per chat. Sending/Stopping the next turn never waits on C. */
+  private readonly automaticCaptures = new Map<string, {
+    controller: AbortController
+    branch?: MemoryBranch
+    pending?: PostTurnMemoryPassArgs
+  }>()
   private readonly memoryRelevance: RelevanceService | null
   private readonly memoryUsePlan: UsePlanService | null
   /** Exact per-memory instructions shown in the preview and injected into Claude. */
@@ -2496,6 +2503,99 @@ export class AgentCoordinator {
     })
   }
 
+  private cancelAutomaticCapture(chatId: string): void {
+    const run = this.automaticCaptures.get(chatId)
+    if (!run) return
+    run.pending = undefined
+    run.controller.abort(new Error("Automatic memory capture cancelled"))
+    run.branch?.dispose()
+    this.automaticCaptures.delete(chatId)
+  }
+
+  private launchAutomaticCapture(args: PostTurnMemoryPassArgs): void {
+    if (!this.memory || !this.capture?.buildBranchPrompt || !this.capture.captureFromBranch
+      || args.memoryState?.control !== "auto" || !args.memoryState.memoryActive
+      || !args.memoryState.learnActive || args.memoryDisabled || this.isEngineStartBlocked(args.chatId)) return
+    const existing = this.automaticCaptures.get(args.chatId)
+    if (existing) {
+      existing.pending = args
+      return
+    }
+    const run: {
+      controller: AbortController
+      branch?: MemoryBranch
+      pending?: PostTurnMemoryPassArgs
+    } = { controller: new AbortController(), pending: args }
+    this.automaticCaptures.set(args.chatId, run)
+    const signal = run.controller.signal
+    const task = async () => {
+      try {
+        while (run.pending && !signal.aborted) {
+          const finished = run.pending
+          run.pending = undefined
+          try {
+            const input = {
+              projectId: finished.projectId, sessionId: finished.chatId,
+              turn: finished.turnNumber, engine: finished.engine, userText: finished.userText, signal,
+            }
+            const request = this.capture!.buildBranchPrompt!(input)
+            const provider = finished.engine as AgentProvider
+            const settings = { ...this.getProviderSettings(provider, { model: finished.model, effort: finished.effort }), serviceTier: finished.serviceTier }
+            // Snapshot taken at completion, never the current chat/session: a
+            // coalesced run may start after another main turn has already begun.
+            const branch = this.newMemoryBranch({ chatId: finished.chatId, provider, ...settings, engineRuntime: finished.engineRuntime }, "candidate", finished.sessionToken ?? finished.claudeSessionToken ?? null)
+            run.branch = branch
+            let rejectAbort!: () => void
+            const cancelled = new Promise<never>((_, reject) => {
+              rejectAbort = () => reject(signal.reason)
+              signal.addEventListener("abort", rejectAbort, { once: true })
+            })
+            let raw: Record<string, unknown>
+            try {
+              raw = await Promise.race([branch.ask(request.prompt, { schema: memoryStageSchema("candidate"), signal }), cancelled])
+            } finally {
+              signal.removeEventListener("abort", rejectAbort)
+              // cancelAutomaticCapture already disposes an aborted branch.
+              if (!signal.aborted) branch.dispose()
+              run.branch = undefined
+            }
+            signal.throwIfAborted()
+            // Same validation, snapshot guard, dismissal dedup and routing as C
+            // at the review gate. Passing the signal also guards late persistence.
+            const outcome = await this.capture!.captureFromBranch!(raw, input, request.dependencyKey)
+            signal.throwIfAborted()
+            await this.publishCapturedProposals(outcome, finished)
+          } catch (error) {
+            if (!signal.aborted) this.reportBackgroundError?.(
+              `[memory-auto-capture] chat ${finished.chatId} turn ${finished.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
+        }
+      } finally {
+        // Clear ownership in the same microtask as the final pending check;
+        // a completion arriving afterwards must launch its own worker.
+        if (this.automaticCaptures.get(args.chatId) === run) this.automaticCaptures.delete(args.chatId)
+      }
+    }
+    void task()
+  }
+
+  private async publishCapturedProposals(outcome: CaptureOutcome, args: PostTurnMemoryPassArgs): Promise<void> {
+    if (!outcome.created.length) return
+    const autoIds = this.autoApplyProposals(outcome.created, args)
+    // Pending (including sensitive) proposals live on the Memory Board. Only
+    // applied items get the existing auto card and one-click Revert.
+    const autoApplied = outcome.created.filter(({ id }) => autoIds.has(id))
+    if (autoApplied.length) {
+      await this.store.appendMessage(args.chatId, timestamped({
+        kind: "memory_candidates", turn: args.turnNumber,
+        // Keep content out of the append-only transcript, including drafts.
+        candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
+      }))
+    }
+    this.emitStateChange(args.chatId)
+  }
+
   private async runPostTurnMemoryPasses(
     args: PostTurnMemoryPassArgs,
   ) {
@@ -2509,9 +2609,12 @@ export class AgentCoordinator {
     // during the turn and never wait on either). Each pass keeps its own
     // error containment.
     const capturePass = async (): Promise<void> => {
-      // C reviews the completed trajectory with the next prompt. It already
-      // includes extraction and routing in a single forked conversation.
-      if (this.memoryBranches) return
+      // Review C stays pre-turn. Automatic C learns from this finished turn
+      // independently of both the next turn and the concurrent audit.
+      if (this.memoryBranches) {
+        this.launchAutomaticCapture(args)
+        return
+      }
       if (!this.capture || args.memoryState?.learnActive === false) return
       try {
         const captureInput = {
@@ -2548,30 +2651,7 @@ export class AgentCoordinator {
           }
         }
         if (!outcome) outcome = await this.capture.capture(captureInput)
-        if (outcome.created.length) {
-          const autoIds = this.autoApplyProposals(outcome.created, args)
-          // Redesign 2026-08-07 §3: pending proposals no longer card at the
-          // turn's end — they park in the store and surface in the NEXT
-          // turn's step-one gate. Only auto-applied ones (delegating policy)
-          // still card here: they took effect without asking, and the auto
-          // badge + Revert is their monitoring surface.
-          const autoApplied = outcome.created.filter(({ id }) => autoIds.has(id))
-          if (autoApplied.length) {
-            await this.store.appendMessage(
-              args.chatId,
-              timestamped({
-                kind: "memory_candidates",
-                turn: args.turnNumber,
-                // The memory DB is the live source for card content. Persisting
-                // raw candidate text here would duplicate sensitive drafts into
-                // the append-only transcript even after the user dismissed or
-                // sanitized them.
-                candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
-              })
-            )
-          }
-          this.emitStateChange(args.chatId)
-        }
+        await this.publishCapturedProposals(outcome, args)
         return
       } catch (error) {
         this.reportBackgroundError?.(
@@ -3121,6 +3201,7 @@ export class AgentCoordinator {
 
   async closeChat(chatId: string) {
     this.closedChats.add(chatId)
+    this.cancelAutomaticCapture(chatId)
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
     if (reservation) {
@@ -3157,6 +3238,7 @@ export class AgentCoordinator {
   /** Close every old-project query before the preview process group changes. */
   async shutdownRuntime() {
     this.runtimeStopping = true
+    for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId)
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)

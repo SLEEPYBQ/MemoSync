@@ -46,7 +46,7 @@ class Queue implements AsyncIterable<HarnessEvent> {
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
 
-async function fixture(provider: AgentProvider, failCandidate = false) {
+async function fixture(provider: AgentProvider, failCandidate = false, automatic = false) {
   const directory = mkdtempSync(join(tmpdir(), "memosync-coordinator-branches-"))
   const store = new EventStore(join(directory, "events"))
   await store.initialize()
@@ -71,6 +71,7 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
   }
   const coordinator = new AgentCoordinator({
     store, memory, memoryBranches: true, memoryPreview: true,
+    getMemorySettings: () => ({ enabled: true, learn: true, control: automatic ? "auto" : "review" }),
     onStateChange: () => {},
     claudeSessionFileExists: () => true,
     generateTitle: async () => ({ title: "Test", usedFallback: true, failureMessage: null }),
@@ -125,12 +126,30 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
     rmSync(directory, { recursive: true, force: true })
   })
   await coordinator.send({ type: "chat.send", chatId: chat.id, provider, model: provider === "claude" ? "glm-5.3-flash" : "gpt-5.5", content: "Return the numbers 3, 1, 2 sorted. For this project remember to use Bun for scripts." })
-  await until(() => calls.length === 3)
+  await until(() => automatic ? mainPrompts.length === 1 : calls.length === 3)
   if (failCandidate) candidate.reject(new Error("Candidate branch transport failed"))
   return { store, chat, memory, rule, coordinator, candidate, created, calls, disposed, mainOptions, mainPrompts, finishedMain, sidecarCalls: () => sidecarCalls }
 }
 
 describe("coordinator provider branches", () => {
+  test("Claude Automatic C forks the finished session alongside audit and uses the same proposal persistence", async () => {
+    const h = await fixture("claude", false, true)
+    expect(h.calls).toHaveLength(0)
+    h.finishedMain()
+    await until(() => h.disposed.includes("audit"))
+    expect(h.calls.map(call => call.purpose).sort()).toEqual(["audit", "candidate"])
+    expect(h.created.every(branch => branch.parentSessionToken === "parent-after-turn")).toBe(true)
+    expect(h.created.every(branch => branch.model === "glm-5.3-flash")).toBe(true)
+    expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(false)
+    h.candidate.resolve({ candidates: [{ proposalId: "C:1", content: "Use Bun for project scripts", type: "constraint", scope: "project", abstractionLevel: "contextual", sensitive: false, route: "new" }] })
+    await until(() => h.store.getMessages(h.chat.id).some(entry => entry.kind === "memory_candidates"))
+    const learned = h.memory.store.list().find(item => item.content === "Use Bun for project scripts")!
+    expect(learned).toMatchObject({ status: "active", provenanceTurn: 1, provenanceSessionId: h.chat.id })
+    expect(h.store.getMessages(h.chat.id).filter(entry => entry.kind === "memory_candidates"))
+      .toMatchObject([{ turn: 1, candidates: [{ id: learned.id, auto: true }] }])
+    expect(h.sidecarCalls()).toBe(0)
+  })
+
   test("switching Claude vendors rebuilds the query with the same conversation token", async () => {
     const directory = mkdtempSync(join(tmpdir(), "memosync-vendor-switch-"))
     const previousDeepseek = process.env.DEEPSEEK_API_KEY
