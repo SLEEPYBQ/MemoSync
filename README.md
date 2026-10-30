@@ -130,7 +130,7 @@ An **engine** is the agent that does the work. **Access** is how it reaches a mo
 **API connection.**
 1. Click **Add connection**.
 2. Either pick a provider or choose **Custom endpoint**:
-   - **A provider** from the built-in list: more than seventy vendors, relays and local servers, with endpoints and models filled in. Paste your key.
+   - **A provider** from the built-in list: more than seventy vendors, relays and local servers, with endpoints filled in and, for most, their models. Paste your key, and add a model ID if the list is empty.
    - **Custom endpoint:** enter a base URL, its protocol, a key and model IDs.
 3. Press **Test** to send one small request and confirm the endpoint answers.
 4. Back on the engine, choose the connection and a default model.
@@ -193,6 +193,8 @@ To stop the usage log, set `MEMOSYNC_USAGE_LOG=0`. To bundle your data into an a
 bun run export-data          # usage log, memories and settings
 bun run export-data --full   # also chat transcripts
 ```
+
+Exports never include API connections or keys.
 
 [docs/DATA_AND_TELEMETRY.md](docs/DATA_AND_TELEMETRY.md) describes each file and event.
 
