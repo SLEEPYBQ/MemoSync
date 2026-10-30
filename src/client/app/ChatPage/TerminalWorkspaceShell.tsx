@@ -1,7 +1,9 @@
-import { memo } from "react"
-import { TerminalWorkspace } from "../../components/chat-ui/TerminalWorkspace"
+import { lazy, Suspense, memo } from "react"
+import { PanelLoading } from "../../components/ui/panel-loading"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import type { AppState } from "../useAppState"
+
+const TerminalWorkspace = lazy(() => import("../../components/chat-ui/TerminalWorkspace").then(module => ({ default: module.TerminalWorkspace })))
 
 interface TerminalWorkspaceShellProps {
   projectId: string
@@ -40,22 +42,24 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
 }: TerminalWorkspaceShellProps) {
   return (
     <div style={fixedTerminalHeight > 0 ? { height: `${fixedTerminalHeight}px` } : undefined}>
-      <TerminalWorkspace
-        projectId={projectId}
-        layout={terminalLayout}
-        onAddTerminal={addTerminal}
-        socket={socket}
-        connectionStatus={connectionStatus}
-        scrollback={scrollback}
-        minColumnWidth={minColumnWidth}
-        splitTerminalShortcut={splitTerminalShortcut}
-        focusRequestVersion={focusRequestVersion}
-        pendingCommandsByTerminalId={pendingCommandsByTerminalId}
-        onTerminalCommandSent={onTerminalCommandSent}
-        onInitialTerminalCommandSent={onInitialTerminalCommandSent}
-        onRemoveTerminal={onRemoveTerminal}
-        onTerminalLayout={onTerminalLayout}
-      />
+      <Suspense fallback={<PanelLoading />}>
+        <TerminalWorkspace
+          projectId={projectId}
+          layout={terminalLayout}
+          onAddTerminal={addTerminal}
+          socket={socket}
+          connectionStatus={connectionStatus}
+          scrollback={scrollback}
+          minColumnWidth={minColumnWidth}
+          splitTerminalShortcut={splitTerminalShortcut}
+          focusRequestVersion={focusRequestVersion}
+          pendingCommandsByTerminalId={pendingCommandsByTerminalId}
+          onTerminalCommandSent={onTerminalCommandSent}
+          onInitialTerminalCommandSent={onInitialTerminalCommandSent}
+          onRemoveTerminal={onRemoveTerminal}
+          onTerminalLayout={onTerminalLayout}
+        />
+      </Suspense>
     </div>
   )
 })

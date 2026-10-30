@@ -1,6 +1,7 @@
 import { t, useI18n } from "../../i18n"
-import { useEffect } from "react"
-import { MemoryBoardPage } from "../MemoryBoardPage"
+import { Suspense, useEffect } from "react"
+import { LazyMemoryBoardPage } from "../lazyPages"
+import { PanelLoading } from "../../components/ui/panel-loading"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "../../components/ui/dialog"
 import { recordUiMonitor } from "../../lib/memoriesApi"
 import type { FocusedMemoryReviewController } from "./MemoryBoardLauncher"
@@ -28,7 +29,7 @@ export function MemoryBoardOverlay({ chatId, focusedReview, onClose }: {
         <DialogTitle className="sr-only">{t("common:memoryBoard")}</DialogTitle>
         <DialogDescription className="sr-only">{t("board:reviewAndManageLongTermMemory")}</DialogDescription>
         <div className="flex h-full max-h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl bg-background">
-          <MemoryBoardPage overlay={{ chatId, focusedReview, onClose }} />
+          <Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage overlay={{ chatId, focusedReview, onClose }} /></Suspense>
         </div>
       </DialogContent>
     </Dialog>
