@@ -189,7 +189,7 @@ export function ProvidersSection({
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <section id={SETTINGS_ROWS.modelEngines.id}>
+        <section id={SETTINGS_ROWS.modelEngines.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <SettingsGroup title={t("modelAccess:engines")}>
             {(["claude", "codex", "pi"] as const).map((engine) => (
               <EngineCard
@@ -207,7 +207,7 @@ export function ProvidersSection({
             ))}
           </SettingsGroup>
         </section>
-        <div id={SETTINGS_ROWS.apiConnections.id}>
+        <div id={SETTINGS_ROWS.apiConnections.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <ConnectionsSection
             connections={snapshot?.connections ?? []}
             presets={snapshot?.presets ?? []}
