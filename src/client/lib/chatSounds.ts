@@ -16,10 +16,43 @@ export function isBrowserUnfocused(doc: Pick<Document, "visibilityState" | "hasF
   return doc.visibilityState !== "visible" || !doc.hasFocus()
 }
 
-function playSingleChatSound(soundId: ChatSoundId) {
-  const audio = new Audio(CHAT_SOUND_SRC[soundId])
-  audio.preload = "auto"
-  return audio.play()
+// Buffer sources do not register the notification as the OS Now Playing media.
+let audioContext: AudioContext | null = null
+const bufferCache = new Map<ChatSoundId, Promise<AudioBuffer>>()
+
+async function playSingleChatSound(soundId: ChatSoundId) {
+  try {
+    audioContext ??= new AudioContext()
+    const context = audioContext
+    if (context.state === "suspended") await context.resume()
+    let pending = bufferCache.get(soundId)
+    if (!pending) {
+      pending = fetch(CHAT_SOUND_SRC[soundId])
+        .then((response) => {
+          if (!response.ok) throw new Error(`Failed to load chat sound: ${response.status}`)
+          return response.arrayBuffer()
+        })
+        .then((bytes) => context.decodeAudioData(bytes))
+      bufferCache.set(soundId, pending)
+      void pending.catch(() => bufferCache.delete(soundId))
+    }
+    const buffer = await pending
+    await new Promise<void>((resolve) => {
+      const source = context.createBufferSource()
+      source.buffer = buffer
+      source.connect(context.destination)
+      source.onended = () => {
+        source.disconnect()
+        resolve()
+      }
+      source.start()
+    })
+  } catch {
+    // Older browsers and unsupported codecs retain the existing audio fallback.
+    const audio = new Audio(CHAT_SOUND_SRC[soundId])
+    audio.preload = "auto"
+    await audio.play()
+  }
 }
 
 export async function playChatNotificationSound(soundId: ChatSoundId, count: number) {
