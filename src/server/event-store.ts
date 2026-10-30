@@ -20,6 +20,11 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
+// Bound both retained objects and serialized payload size; oversized transcripts
+// remain readable without flushing the smaller chats the user is switching among.
+const TRANSCRIPT_CACHE_CHAT_LIMIT = 8
+const TRANSCRIPT_CACHE_ENTRY_LIMIT = 20_000
+const TRANSCRIPT_CACHE_BYTE_LIMIT = 16 * 1024 * 1024
 const STALE_EMPTY_CHAT_MAX_AGE_MS = 30 * 60 * 1000
 const SIDEBAR_PROJECT_ORDER_FILE = "sidebar-order.json"
 
@@ -350,7 +355,9 @@ export class EventStore {
   private legacySidebarProjectOrder: string[] = []
   private sidebarProjectOrder: string[] = []
   private snapshotHasLegacyMessages = false
-  private cachedTranscript: { chatId: string; entries: TranscriptEntry[] } | null = null
+  private readonly transcriptCache = new Map<string, { entries: TranscriptEntry[]; bytes: number }>()
+  private transcriptCacheBytes = 0
+  private transcriptCacheEntries = 0
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -485,7 +492,7 @@ export class EventStore {
     this.state.queuedMessagesByChatId.clear()
     this.sidebarProjectOrder = []
     this.legacySidebarProjectOrder = []
-    this.cachedTranscript = null
+    this.clearTranscriptCache()
   }
 
   private clearLegacyTranscriptState() {
@@ -890,12 +897,11 @@ export class EventStore {
   private loadTranscriptFromDisk(chatId: string) {
     const transcriptPath = this.transcriptPath(chatId)
     if (!existsSync(transcriptPath)) {
-      return []
+      return { entries: [], bytes: 0 }
     }
 
     const text = readFileSyncImmediate(transcriptPath, "utf8")
-    if (!text.trim()) return []
-    return parseTranscriptText(text, chatId).entries
+    return { entries: parseTranscriptText(text, chatId).entries, bytes: Buffer.byteLength(text) }
   }
 
   private async prepareTranscriptForAppend(chatId: string, transcriptPath: string) {
@@ -1060,9 +1066,7 @@ export class EventStore {
           chat.hasMessages = true
           chat.updatedAt = Math.max(chat.updatedAt, createdAt)
         }
-        if (this.cachedTranscript?.chatId === chatId) {
-          this.cachedTranscript = { chatId, entries: cloneTranscriptEntries(sourceEntries) }
-        }
+        this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries), Buffer.byteLength(payload) + 1)
       })
     }
 
@@ -1135,7 +1139,11 @@ export class EventStore {
       if (chat.deletedAt || chat.archivedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
       if (chat.hasMessages) continue
-      if (this.getMessages(chat.id).length > 0) {
+      // Maintenance must neither insert cold transcripts nor refresh LRU order.
+      const entries = this.transcriptCache.get(chat.id)?.entries
+        ?? this.legacyMessagesByChatId.get(chat.id)
+        ?? this.loadTranscriptFromDisk(chat.id).entries
+      if (entries.length > 0) {
         chat.hasMessages = true
         continue
       }
@@ -1150,9 +1158,7 @@ export class EventStore {
 
       const transcriptPath = this.transcriptPath(chat.id)
       await rm(transcriptPath, { force: true })
-      if (this.cachedTranscript?.chatId === chat.id) {
-        this.cachedTranscript = null
-      }
+      this.deleteCachedTranscript(chat.id)
 
       prunedChatIds.push(chat.id)
     }
@@ -1234,9 +1240,18 @@ export class EventStore {
       }
       const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
-      if (this.cachedTranscript?.chatId === chatId) {
+      const cached = this.transcriptCache.get(chatId)
+      if (cached) {
         // Clone the serialized disk payload so nested caller mutations cannot alter the cache.
-        this.cachedTranscript.entries.push(JSON.parse(payload) as TranscriptEntry)
+        cached.entries.push(JSON.parse(payload) as TranscriptEntry)
+        const bytes = Buffer.byteLength(payload)
+        cached.bytes += bytes
+        this.transcriptCacheBytes += bytes
+        this.transcriptCacheEntries += 1
+        if (cached.bytes > TRANSCRIPT_CACHE_BYTE_LIMIT || cached.entries.length > TRANSCRIPT_CACHE_ENTRY_LIMIT) {
+          this.deleteCachedTranscript(chatId)
+        }
+        this.trimTranscriptCache()
       }
       logSendToStartingProfile("event_store.append_message", {
         chatId,
@@ -1399,20 +1414,57 @@ export class EventStore {
     }
   }
 
+  /** Internal read-only view. Public callers receive copies of only the rows they need. */
+  private getTranscriptEntries(chatId: string): TranscriptEntry[] {
+    const cached = this.transcriptCache.get(chatId)
+    if (cached) {
+      this.transcriptCache.delete(chatId)
+      this.transcriptCache.set(chatId, cached)
+      return cached.entries
+    }
+    const legacy = this.legacyMessagesByChatId.get(chatId)
+    const { entries, bytes } = legacy
+      ? { entries: cloneTranscriptEntries(legacy), bytes: legacy.reduce((sum, entry) => sum + Buffer.byteLength(JSON.stringify(entry)) + 1, 0) }
+      : this.loadTranscriptFromDisk(chatId)
+    this.setCachedTranscript(chatId, entries, bytes)
+    return entries
+  }
+
+  private deleteCachedTranscript(chatId: string) {
+    const cached = this.transcriptCache.get(chatId)
+    if (!cached) return
+    this.transcriptCacheBytes -= cached.bytes
+    this.transcriptCacheEntries -= cached.entries.length
+    this.transcriptCache.delete(chatId)
+  }
+
+  private clearTranscriptCache() {
+    this.transcriptCache.clear()
+    this.transcriptCacheBytes = 0
+    this.transcriptCacheEntries = 0
+  }
+
+  private trimTranscriptCache() {
+    while (this.transcriptCache.size > TRANSCRIPT_CACHE_CHAT_LIMIT
+      || this.transcriptCacheBytes > TRANSCRIPT_CACHE_BYTE_LIMIT
+      || this.transcriptCacheEntries > TRANSCRIPT_CACHE_ENTRY_LIMIT) {
+      const oldest = this.transcriptCache.keys().next().value
+      if (oldest === undefined) break
+      this.deleteCachedTranscript(oldest)
+    }
+  }
+
+  private setCachedTranscript(chatId: string, entries: TranscriptEntry[], bytes: number) {
+    this.deleteCachedTranscript(chatId)
+    if (bytes > TRANSCRIPT_CACHE_BYTE_LIMIT || entries.length > TRANSCRIPT_CACHE_ENTRY_LIMIT) return
+    this.transcriptCache.set(chatId, { entries, bytes })
+    this.transcriptCacheBytes += bytes
+    this.transcriptCacheEntries += entries.length
+    this.trimTranscriptCache()
+  }
+
   getMessages(chatId: string) {
-    if (this.cachedTranscript?.chatId === chatId) {
-      return cloneTranscriptEntries(this.cachedTranscript.entries)
-    }
-
-    const legacyEntries = this.legacyMessagesByChatId.get(chatId)
-    if (legacyEntries) {
-      this.cachedTranscript = { chatId, entries: cloneTranscriptEntries(legacyEntries) }
-      return cloneTranscriptEntries(this.cachedTranscript.entries)
-    }
-
-    const entries = this.loadTranscriptFromDisk(chatId)
-    this.cachedTranscript = { chatId, entries }
-    return cloneTranscriptEntries(entries)
+    return cloneTranscriptEntries(this.getTranscriptEntries(chatId))
   }
 
   getQueuedMessages(chatId: string) {
@@ -1441,8 +1493,7 @@ export class EventStore {
       return { messages: [], hasOlder: false, olderCursor: null }
     }
 
-    const entries = this.getMessages(chatId)
-    const page = this.getMessagesPageFromEntries(entries, limit)
+    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit)
 
     return {
       messages: page.entries,
@@ -1457,8 +1508,7 @@ export class EventStore {
     }
 
     const beforeIndex = decodeCursor(beforeCursor)
-    const entries = this.getMessages(chatId)
-    const page = this.getMessagesPageFromEntries(entries, limit, beforeIndex)
+    const page = this.getMessagesPageFromEntries(this.getTranscriptEntries(chatId), limit, beforeIndex)
 
     return {
       messages: page.entries,
@@ -1593,7 +1643,7 @@ export class EventStore {
 
     this.clearLegacyTranscriptState()
     await this.compact()
-    this.cachedTranscript = null
+    this.clearTranscriptCache()
     onProgress?.(`${LOG_PREFIX} transcript migration complete`)
     return true
   }
