@@ -535,6 +535,8 @@ export interface LocalProjectsSnapshot {
 
 /** User-level memory switches; each chat can also turn memory off. */
 export interface MemorySettings {
+  /** Review each turn, or let the agent manage its working memory automatically. */
+  control: "review" | "auto"
   /** Master switch: off = the agent neither reads nor learns memories, and no memory gates run. */
   enabled: boolean
   /** While enabled: whether the agent may propose new memories / library changes from conversations. */
@@ -1089,6 +1091,8 @@ export interface MemoryCandidatesEntry extends TranscriptEntryBase {
 /** Post-turn audit (4.2.4 Auditing Memory Use): each in-play memory labeled by the audit pass. */
 export interface MemoryTraceEntry extends TranscriptEntryBase {
   kind: "memory_trace"
+  /** Hide this audit card in chat only; the Memory Record retains every verdict. */
+  hidden?: boolean
   labels: Array<{
     id: string
     label: "operational" | "injected_without_effect" | "violated" | "not_applicable"

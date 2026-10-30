@@ -203,5 +203,10 @@
   "aboutProjects": "Indexed projects",
   "aboutLicense": "Open source under the MIT License.",
   "aboutRepository": "Source code",
-  "aboutNotices": "Third-party notices"
+  "aboutNotices": "Third-party notices",
+  "memoryControl": "Control",
+  "reviewEachTurn": "Review each turn",
+  "automatic": "Automatic",
+  "memoryControlDescription": "Review each turn: you confirm memory changes and the working memory before the agent starts. Automatic: the agent reads the memory index and loads what it needs; safe changes apply on their own and can be reverted, sensitive ones wait on the Memory Board, and the review only speaks up when a memory was broken.",
+  "setControlToReviewToChangeThis": "Set Control to Review each turn to change this."
 }

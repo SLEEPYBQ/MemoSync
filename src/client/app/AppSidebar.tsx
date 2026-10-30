@@ -17,6 +17,7 @@ import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { memoriesApi } from "../lib/memoriesApi"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
 import { SIDEBAR_ROW_ACTIVE_CLASS, SIDEBAR_ROW_CLASS } from "../components/chat-ui/sidebar/rowStyles"
 import {
   getSidebarJumpTargetIndex,
@@ -46,6 +47,21 @@ function readStoredSidebarWidth() {
 function persistSidebarWidth(width: number) {
   if (typeof window === "undefined") return
   window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
+}
+
+export function MemoryPendingBadge({ count, automatic }: { count: number; automatic: boolean }) {
+  useI18n()
+  if (count <= 0) return null
+  return (
+    <span
+      title={automatic ? t("sidebar:pendingSensitive", { count }) : t("sidebar:pendingCandidates", { count })}
+      className={cn("ml-auto rounded-full px-1.5 text-[10px] font-medium leading-4", automatic
+        ? "bg-muted text-muted-foreground"
+        : "border border-cand-border bg-cand-surface text-cand-fg")}
+    >
+      {count}
+    </span>
+  )
 }
 
 interface AppSidebarProps {
@@ -405,6 +421,8 @@ function AppSidebarImpl({
   // is invisible until the next Board visit.
   const [memoryBadge, setMemoryBadge] = useState(false)
   const [pendingCount, setPendingCount] = useState(0)
+  const [pendingSensitiveCount, setPendingSensitiveCount] = useState(0)
+  const automatic = useAppSettingsStore((s) => s.settings?.memory.control === "auto")
   useEffect(() => {
 
     let disposed = false
@@ -420,6 +438,7 @@ function AppSidebarImpl({
         const fresh = prev !== null && items.some((m) => Date.parse(m.updatedAt) > prev)
         setMemoryBadge(attention.items.length > 0 || fresh)
         setPendingCount(candidates.length)
+        setPendingSensitiveCount(candidates.filter((item) => item.sensitive).length)
       } catch {
         // keep the last state — a missed poll must not flicker the badge
       }
@@ -430,7 +449,7 @@ function AppSidebarImpl({
       disposed = true
       window.clearInterval(timer)
     }
-  }, [location.pathname])
+  }, [location.pathname, automatic])
   const isLocalProjectsActive = location.pathname === "/"
   const isSettingsActive = location.pathname.startsWith("/settings")
   const isMemoryActive = location.pathname.startsWith("/memory")
@@ -671,7 +690,7 @@ function AppSidebarImpl({
               <div className="flex w-full items-center gap-2">
                 <span className="relative">
                   <BrainCircuit className="h-4 w-4 text-muted-foreground" />
-                  {memoryBadge ? (
+                  {memoryBadge && !automatic ? (
                     <span
                       title={t("sidebar:memoryChangedSinceYourLastBoardVisitOrNeedsAttention")}
                       className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-red-500"
@@ -680,14 +699,7 @@ function AppSidebarImpl({
                 </span>
                 <span className="text-[13px]">{t("common:memory")}</span>
                 <MemoryOffBadge />
-                {pendingCount > 0 ? (
-                  <span
-                    title={t("sidebar:pendingCandidates", { count: pendingCount })}
-                    className="ml-auto rounded-full border border-cand-border bg-cand-surface px-1.5 text-[10px] font-medium leading-4 text-cand-fg"
-                  >
-                    {pendingCount}
-                  </span>
-                ) : null}
+                <MemoryPendingBadge count={automatic ? pendingSensitiveCount : pendingCount} automatic={automatic} />
               </div>
             </button>
           )}

@@ -48,7 +48,7 @@ function entry(value: Record<string, unknown>): TranscriptEntry {
   return { _id: crypto.randomUUID(), createdAt: Date.now(), ...value } as TranscriptEntry;
 }
 
-async function setup(options: { blockPreparation?: boolean; workingFailsOnce?: boolean; invalidAuditReplies?: number } = {}) {
+async function setup(options: { blockPreparation?: boolean; workingFailsOnce?: boolean; invalidAuditReplies?: number; getMemorySettings?: () => { enabled: boolean; learn: boolean; control: "review" | "auto" } } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'memosync-agent-branches-'));
   const store = new EventStore(join(directory, 'events'));
   await store.initialize();
@@ -77,6 +77,7 @@ async function setup(options: { blockPreparation?: boolean; workingFailsOnce?: b
   } as unknown as CodexAppServerManager;
   const coordinator = new AgentCoordinator({
     store, memory, codexManager, onStateChange: () => {},
+    getMemorySettings: options.getMemorySettings,
     memoryPreview: true, memoryBranches: true,
     capture: createCaptureService({ memory, callJson }),
     memoryCheckup: createCheckupService({ memory, callJson, listRecentSessions: () => [] }),
@@ -125,6 +126,27 @@ async function setup(options: { blockPreparation?: boolean; workingFailsOnce?: b
 }
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  it('switching to auto skips C/T/M/W and clears the previous review planner guidance', async () => {
+    let control: "review" | "auto" = "review";
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control }) });
+    try {
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some((message) => message.kind === 'memory_preview_relevance'));
+      await h.start();
+      expect(h.mainTurns[0]!.developerInstructions).toContain('Represent the charge amount as integer cents.');
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      const preparationCalls = h.calls.length;
+      control = "auto";
+      await h.send();
+      expect(h.mainTurns).toHaveLength(2);
+      expect(h.calls).toHaveLength(preparationCalls);
+      expect(h.coordinator.pendingPreviews.size).toBe(0);
+      expect(h.mainTurns[1]!.developerInstructions).toContain(h.item.content);
+      expect(h.mainTurns[1]!.developerInstructions).not.toContain('Represent the charge amount as integer cents.');
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+    } finally { h.close(); }
+  });
+
   for (const invalidAuditReplies of [1, 2]) {
     it(`bounds audit schema correction to one zero-read follow-up (${invalidAuditReplies} malformed replies)`, async () => {
       const h = await setup({ invalidAuditReplies });

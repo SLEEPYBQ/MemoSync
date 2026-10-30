@@ -58,6 +58,7 @@ interface AppSettingsFile {
     pi?: Partial<ProviderPreference<Partial<PiModelOptions>>> & { effort?: unknown }
   }
   memory?: {
+    control?: unknown
     enabled?: unknown
     learn?: unknown
   }
@@ -69,6 +70,7 @@ interface AppSettingsFile {
 
 function normalizeMemory(value: AppSettingsFile["memory"] | undefined): MemorySettings {
   return {
+    control: value?.control === "auto" ? "auto" : "review",
     enabled: typeof value?.enabled === "boolean" ? value.enabled : true,
     learn: typeof value?.learn === "boolean" ? value.learn : true,
   }

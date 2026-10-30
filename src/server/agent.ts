@@ -283,17 +283,18 @@ interface ResumeInterruptedTurn {
 }
 
 export interface TurnMemoryState {
+  readonly control: "review" | "auto"
   readonly memoryActive: boolean
   readonly learnActive: boolean
 }
 
 /** Snapshot the user settings and chat switch once when a turn starts. */
 export function resolveTurnMemoryState(
-  settings: { enabled: boolean; learn: boolean },
+  settings: { enabled: boolean; learn: boolean; control?: "review" | "auto" },
   memoryDisabled = false,
 ): TurnMemoryState {
   const memoryActive = (settings.enabled && !memoryDisabled)
-  return { memoryActive, learnActive: memoryActive && (settings.learn) }
+  return { control: settings.control ?? "review", memoryActive, learnActive: memoryActive && (settings.learn) }
 }
 
 interface StartTurnArgs {
@@ -485,7 +486,7 @@ interface AgentCoordinatorArgs {
   /** Transfer detection over out-of-context memories (Transfer design 2026-08-08); null disables. */
   memoryTransferDetect?: TransferDetectService | null
   /** User switches, sampled only when a new turn begins. */
-  getMemorySettings?: () => { enabled: boolean; learn: boolean }
+  getMemorySettings?: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
 
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
@@ -1580,7 +1581,7 @@ export class AgentCoordinator {
   private readonly memoryPreview: boolean
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
-  private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
+  private readonly getMemorySettings: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   private readonly claudeSessionFileExists: typeof claudeSessionFileExists
   private readonly claudeRetireTimeoutMs: number
@@ -2383,9 +2384,11 @@ export class AgentCoordinator {
     args: { chatId: string; turnNumber?: number; memoryState?: TurnMemoryState },
   ): Set<string> {
     const applied = new Set<string>()
-    if (!this.memory || args.memoryState?.learnActive === false || false) return applied
+    if (!this.memory) return applied
+    const memoryState = args.memoryState ?? resolveTurnMemoryState(this.getMemorySettings(), this.store.requireChat(args.chatId).memoryDisabled)
+    if (!memoryState.learnActive) return applied
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
-    if (mode !== "auto") return applied
+    if (memoryState.control !== "auto" && mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
     for (const proposal of proposals) {
       if (proposal.sensitive) continue
@@ -2580,6 +2583,9 @@ export class AgentCoordinator {
 
     const tracePass = async (): Promise<void> => {
       if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return
+      // Hidden entries still hydrate and feed the Memory Record. Even the
+      // pending skeleton stays quiet until a terminal verdict finds a violation.
+      const automatic = args.memoryState?.control === "auto"
       try {
         // "Used" = everything in play this turn: the BOOT-TIME injected
         // snapshot plus any extra memories the model cited (e.g. pulled in via
@@ -2594,7 +2600,7 @@ export class AgentCoordinator {
           // final entry for the same turn supersedes it at hydration.
           await this.store.appendMessage(
             args.chatId,
-            timestamped({ kind: "memory_trace", turn: args.turnNumber, status: "pending", labels: [] })
+            timestamped({ kind: "memory_trace", hidden: automatic, turn: args.turnNumber, status: "pending", labels: [] })
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
@@ -2676,6 +2682,7 @@ export class AgentCoordinator {
               args.chatId,
               timestamped({
                 kind: "memory_trace",
+                hidden: automatic && !labelsWithSource.some(({ label }) => label === "violated"),
                 turn: args.turnNumber,
                 status: "ok",
                 labels: labelsWithSource,
@@ -2749,6 +2756,7 @@ export class AgentCoordinator {
               args.chatId,
               timestamped({
                 kind: "memory_trace",
+                hidden: automatic,
                 turn: args.turnNumber,
                 status: "discarded",
                 labels: [],
@@ -2772,6 +2780,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "discarded",
               labels: [],
@@ -2798,6 +2807,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "empty",
               labels: [],
@@ -2821,6 +2831,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "failed",
               labels: [],
@@ -3391,6 +3402,9 @@ export class AgentCoordinator {
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
     this.turnMemoryRestriction.delete(args.chatId)
+    // A review planner's task-specific guidance belongs to its own turn. Auto
+    // starts from the index; interrupt recovery retains its existing context.
+    if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
     try {
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
@@ -3492,7 +3506,7 @@ export class AgentCoordinator {
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
     // working memory (2026-08-19 C2).
-    if (args.memoryState.memoryActive && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
+    if (args.memoryState.memoryActive && args.memoryState.control !== "auto" && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
         memory: this.memory,
@@ -5814,7 +5828,7 @@ export class AgentCoordinator {
     }
 
     const active: ActiveTurn = {
-      memoryState: args.memoryState ?? { memoryActive: true, learnActive: true },
+      memoryState: args.memoryState ?? { control: "review", memoryActive: true, learnActive: true },
       chatId: args.chatId,
       provider: args.provider,
       turn,
@@ -6194,7 +6208,7 @@ export class AgentCoordinator {
         // immediately — they took effect without asking.
         onMemoryProposal: (created) => {
           if (!memoryEnabled || args.learnEnabled === false) return
-          const autoIds = this.autoApplyProposals(created, { chatId: args.chatId })
+          const autoIds = this.autoApplyProposals(created, { chatId: args.chatId, memoryState: this.activeTurns.get(args.chatId)?.memoryState })
           const autoApplied = created.filter(({ id }) => autoIds.has(id))
           if (!autoApplied.length) return
           void this.store

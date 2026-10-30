@@ -27,21 +27,43 @@ export function MemorySettingsGroups({
   useI18n()
   const enabled = settings?.memory.enabled !== false
   const learn = settings?.memory.learn !== false
+  const automatic = settings?.memory.control === "auto"
   const memoryReason = t("settings:turnOnUseMemoryToChangeThis")
-  const changesDisabled = !enabled || !learn || mode === undefined
+  const controlReason = ` ${t("settings:setControlToReviewToChangeThis")}`
+  const previewDisabled = !enabled || automatic
+  const previewReason = !enabled ? memoryReason : automatic ? controlReason : ""
+  const changesDisabled = !enabled || automatic || !learn || mode === undefined
   const changesReason = !enabled
     ? memoryReason
-    : !learn
-      ? t("settings:turnOnLearnFromChatsToChangeThis")
-      : mode === undefined
-        ? t("settings:loadingMemoryChangesPreference")
-        : ""
+    : automatic
+      ? controlReason
+      : !learn
+        ? t("settings:turnOnLearnFromChatsToChangeThis")
+        : mode === undefined
+          ? t("settings:loadingMemoryChangesPreference")
+          : ""
 
   return (
     <>
       <SettingsGroups>
         {(
           <SettingsGroup>
+            <SettingsRow
+              def={SETTINGS_ROWS.memoryControl}
+              disabled={!enabled}
+              description={SETTINGS_ROWS.memoryControl.description + (!enabled ? memoryReason : "")}
+              wideControl
+            >
+              <SettingsSelect
+                aria-label={t("settings:memoryControl")}
+                value={settings?.memory.control ?? "review"}
+                disabled={!enabled}
+                onValueChange={(value) => save({ memory: { control: value as "review" | "auto" } })}
+              >
+                <SelectItem value="review">{t("settings:reviewEachTurn")}</SelectItem>
+                <SelectItem value="auto">{t("settings:automatic")}</SelectItem>
+              </SettingsSelect>
+            </SettingsRow>
             <SettingsRow def={SETTINGS_ROWS.memoryEnabled}>
               <Switch
                 aria-label={t("settings:useMemory")}
@@ -67,25 +89,25 @@ export function MemorySettingsGroups({
           <SettingsGroup title={t("settings:beforeEachTurn")}>
             <SettingsRow
               def={SETTINGS_ROWS.memoryPreview}
-              disabled={!enabled}
-              description={SETTINGS_ROWS.memoryPreview.description + (!enabled ? memoryReason : "")}
+              disabled={previewDisabled}
+              description={SETTINGS_ROWS.memoryPreview.description + previewReason}
             >
               <Switch
                 aria-label={t("settings:memoryPreview")}
                 checked={settings?.memoryPreview.enabled !== false}
-                disabled={!enabled}
+                disabled={previewDisabled}
                 onCheckedChange={(checked) => save({ memoryPreview: { enabled: checked } })}
               />
             </SettingsRow>
             <SettingsRow
               def={SETTINGS_ROWS.memoryAutoProceed}
-              disabled={!enabled}
-              description={SETTINGS_ROWS.memoryAutoProceed.description + (!enabled ? memoryReason : "")}
+              disabled={previewDisabled}
+              description={SETTINGS_ROWS.memoryAutoProceed.description + previewReason}
             >
               <Switch
                 aria-label={t("settings:autoProceedWhenNoMemoryApplies")}
                 checked={settings?.memoryPreview.autoProceedWhenEmpty !== false}
-                disabled={!enabled}
+                disabled={previewDisabled}
                 onCheckedChange={(checked) => save({ memoryPreview: { autoProceedWhenEmpty: checked } })}
               />
             </SettingsRow>
