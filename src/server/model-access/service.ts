@@ -110,9 +110,19 @@ export class ModelAccessService {
     const previousKey = await this.readCredential(id)
     const key = input.apiKey === undefined ? previousKey : input.apiKey?.trim() || undefined
     const connection: ApiConnection = { ...clean, id, keySource: key ? "stored" : "none" }
+    const reconciledEngines = { ...this.data.engines }
+    for (const engine of engines) {
+      const setup = reconciledEngines[engine]
+      if (!setup) continue
+      const access = setup.access
+      if (access.mode === "connection" && access.connectionId === id && access.defaultModel && !connection.models.some(m => m.id === access.defaultModel)) {
+        const { defaultModel: _, ...nextAccess } = access
+        reconciledEngines[engine] = { ...setup, access: nextAccess }
+      }
+    }
     // Whitelist metadata above; unknown request fields and apiKey can never reach this file.
     await this.writeCredential(id, key ?? null)
-    try { this.persist({ ...this.data, connections: [...this.data.connections.filter(c => c.id !== id), connection] }) }
+    try { this.persist({ ...this.data, connections: [...this.data.connections.filter(c => c.id !== id), connection], engines: reconciledEngines }) }
     catch (error) { await this.writeCredential(id, previousKey ?? null); throw error }
     await this.refreshExecutables()
     return structuredClone(connection)
@@ -161,10 +171,12 @@ export class ModelAccessService {
   async testConnection(input: ApiConnectionInput | { connectionId: string }, engine?: EngineId, model?: string) {
     const c = "connectionId" in input ? this.connection(input.connectionId) : validateConnection(input)
     if (!c) throw new Error("connection-missing")
-    const endpoint = engine ? endpointForEngine(engine, c) : c.endpoints[0]
-    if (!endpoint) throw new Error("connection-protocol-unsupported")
+    const endpoint = engine ? endpointForEngine(engine, c) : undefined
+    const endpoints = engine ? (endpoint ? [endpoint] : []) : c.endpoints
+    if (!endpoints.length) throw new Error("connection-protocol-unsupported")
     const key = "connectionId" in input ? await this.getKey(input.connectionId) : input.apiKey === undefined && input.id ? await this.getKey(input.id) : input.apiKey ?? undefined
-    return testEndpoint(endpoint, key, model || c.models[0]?.id || "")
+    const results = await Promise.all(endpoints.map(endpoint => testEndpoint(endpoint, key, model || c.models[0]?.id || "")))
+    return results.find(result => !result.ok) ?? results[0]!
   }
 }
 

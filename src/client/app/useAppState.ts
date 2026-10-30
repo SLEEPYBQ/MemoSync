@@ -533,45 +533,46 @@ function logSendToStartingTrace(
   })
 }
 
-function composerStateFromSendOptions(options?: {
+export function composerStateFromSendOptions(options?: {
   provider?: AgentProvider
   model?: string
   modelOptions?: AccessModelOptions
   planMode?: boolean
 }): ComposerState | null {
-  if (options?.provider === "claude" && options.model && options.modelOptions?.claude) {
+  const connectionId = options?.modelOptions?.connectionId ?? (options?.provider ? options.modelOptions?.[options.provider]?.connectionId : undefined)
+  if (options?.provider === "claude" && options.model && (options.modelOptions?.claude || connectionId)) {
     return {
       provider: "claude",
       model: options.model,
-      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
-        contextWindow: normalizeClaudeContextWindow(options.model, options.modelOptions.claude.contextWindow),
+        reasoningEffort: options.modelOptions?.claude?.reasoningEffort ?? "high",
+        contextWindow: normalizeClaudeContextWindow(options.model, options.modelOptions?.claude?.contextWindow),
       },
       planMode: Boolean(options.planMode),
     }
   }
 
-  if (options?.provider === "codex" && options.model && options.modelOptions?.codex) {
+  if (options?.provider === "codex" && options.model && (options.modelOptions?.codex || connectionId)) {
     return {
       provider: "codex",
       model: options.model,
-      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "high",
-        fastMode: options.modelOptions.codex.fastMode ?? false,
+        reasoningEffort: options.modelOptions?.codex?.reasoningEffort ?? "high",
+        fastMode: options.modelOptions?.codex?.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),
     }
   }
 
-  if (options?.provider === "pi" && options.model && options.modelOptions?.pi) {
+  if (options?.provider === "pi" && options.model && (options.modelOptions?.pi || connectionId)) {
     return {
       provider: "pi",
       model: options.model,
-      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: isPiReasoningEffort(options.modelOptions.pi.reasoningEffort)
+        reasoningEffort: isPiReasoningEffort(options.modelOptions?.pi?.reasoningEffort)
           ? options.modelOptions.pi.reasoningEffort
           : "medium",
       },
