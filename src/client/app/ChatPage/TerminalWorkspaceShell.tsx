@@ -41,6 +41,7 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
   return (
     <div style={fixedTerminalHeight > 0 ? { height: `${fixedTerminalHeight}px` } : undefined}>
       <TerminalWorkspace
+        closeHidesLastPane
         projectId={projectId}
         layout={terminalLayout}
         onAddTerminal={addTerminal}

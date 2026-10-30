@@ -3,5 +3,7 @@
   "terminal": "终端",
   "clearTerminal": "清空终端",
   "addTerminalToTheRight": "在右侧添加终端",
-  "archiveTerminal": "归档终端"
+  "archiveTerminal": "归档终端",
+  "hideTerminal": "隐藏终端",
+  "closeTerminal": "关闭终端"
 }
