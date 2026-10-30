@@ -6,15 +6,17 @@ on:
     branches: [main]
     paths: ["site/**", "src/client/components/brand/brand-svgs.ts", ".github/workflows/site.yml"]
   pull_request:
-    paths: ["site/**", ".github/workflows/site.yml"]
+    paths: ["site/**", "src/client/components/brand/brand-svgs.ts", ".github/workflows/site.yml"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# Pull requests only build, each in its own group; deployments queue in one
+# group and are never cancelled half-way.
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: site-${{ github.event_name == 'pull_request' && github.ref || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
