@@ -79,7 +79,7 @@ function statusLabel(status: string): string {
     case "connected": return t("chat:connected")
     case "failed": return t("chat:failed")
     case "needs-auth": return t("chat:needsAuth")
-    case "pending": return "Connecting..."
+    case "pending": return t("chat:connecting")
     case "disabled": return t("chat:disabled")
     default: return status
   }

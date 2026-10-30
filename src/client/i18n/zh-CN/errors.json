@@ -118,7 +118,7 @@
   "serverGhLogin": "运行 `gh auth login` 后重试。",
   "serverRepoRequired": "必须提供所有者和仓库名称。",
   "serverGhPublishFailed": "GitHub CLI 无法发布此仓库。",
-  "serverBranchCurrent": "{{v0}}已与{{v1}}保持同步。",
+  "serverBranchCurrent": "{{v0}} 已与 {{v1}} 保持同步。",
   "serverMergeBlockedTitle": "无法合并",
   "serverMergeBlocked": "合并前请提交、放弃或暂存本地更改。",
   "serverUpToDateTitle": "已是最新",

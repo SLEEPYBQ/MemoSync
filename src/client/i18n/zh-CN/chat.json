@@ -181,6 +181,7 @@
   "signOutFailedWithStatusValue0": "退出登录失败，状态码{{v0}}",
   "deleteValue0ThisCannotBeUndone": "删除“{{v0}}”？此操作无法撤销。",
   "thisMachine": "本机",
+  "connecting": "正在连接…",
   "connectingValue0": "正在连接{{v0}}",
   "connectValue0": "连接{{v0}}",
   "value0IsStartingUpAndLoadingYourLocalProjects": "{{v0}}正在启动并加载本地项目。",

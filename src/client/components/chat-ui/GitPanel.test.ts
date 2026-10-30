@@ -1,13 +1,19 @@
-import { describe, expect, mock, test } from "bun:test"
+import { afterEach, describe, expect, mock, test } from "bun:test"
 import { createElement, type ReactNode } from "react"
 import { renderToStaticMarkup as renderStatic } from "react-dom/server"
-import { GitPanel, canIgnoreDiffFile, canIgnoreDiffFolder, getPrimaryCommitActionPrefix, shouldLoadDiffPatchNow } from "./GitPanel"
+import { GitPanel, MergePreviewSummary, canIgnoreDiffFile, canIgnoreDiffFolder, getPrimaryCommitActionPrefix, shouldLoadDiffPatchNow } from "./GitPanel"
+import { i18n } from "../../i18n"
+import { localizeUiResult } from "../../i18n/uiText"
+import { withUiTextFields } from "../../../shared/ui-copy"
+import type { ChatMergePreviewResult } from "../../../shared/types"
 import { TooltipProvider } from "../ui/tooltip"
 import { ThemeProvider } from "../../hooks/useTheme"
 
 function renderToStaticMarkup(element: ReactNode) {
   return renderStatic(createElement(ThemeProvider, null, element))
 }
+
+afterEach(() => { void i18n.changeLanguage("en") })
 
 describe("GitPanel", () => {
   test("loads missing patches for expanded rows", () => {
@@ -171,34 +177,76 @@ describe("GitPanel", () => {
     expect(markup).not.toContain("Publish Branch")
   })
 
-  test("labels the primary commit action for empty and filled messages", () => {
-    expect(getPrimaryCommitActionPrefix({
-      hasSummary: false,
-      isGenerating: false,
-      isCommitting: false,
-      isGeneratedCommitInFlight: false,
-      commitModeInFlight: null,
-      primaryCommitMode: "commit_and_push",
-    })).toBe("Generate & push to")
+  for (const language of ["en", "zh-CN"] as const) {
+    test(`labels every idle and in-flight commit action in ${language}`, async () => {
+      await i18n.changeLanguage(language)
+      const idle = {
+        hasSummary: false,
+        isGenerating: false,
+        isCommitting: false,
+        isGeneratedCommitInFlight: false,
+        commitModeInFlight: null,
+        primaryCommitMode: "commit_and_push",
+      } as const
+      const cases: [Partial<Parameters<typeof getPrimaryCommitActionPrefix>[0]>, string, string][] = [
+        [{}, "Generate & push to", "生成提交信息并推送到"],
+        [{ primaryCommitMode: "commit_only" }, "Generate & commit to", "生成提交信息并提交到"],
+        [{ hasSummary: true }, "Commit & push to", "提交并推送到"],
+        [{ hasSummary: true, primaryCommitMode: "commit_only" }, "Commit to", "提交到"],
+        [{ isGenerating: true }, "Generating...", "正在生成…"],
+        // In-flight mode wins even if the next action's mode has changed.
+        [{ hasSummary: true, isCommitting: true, commitModeInFlight: "commit_only" }, "Committing...", "正在提交…"],
+        [{ hasSummary: true, isCommitting: true, commitModeInFlight: "commit_and_push", primaryCommitMode: "commit_only" }, "Committing & Pushing...", "正在提交并推送…"],
+        [{ hasSummary: true, isCommitting: true, isGeneratedCommitInFlight: true, commitModeInFlight: "commit_only" }, "Committing...", "正在提交…"],
+        [{ hasSummary: true, isCommitting: true, isGeneratedCommitInFlight: true, commitModeInFlight: "commit_and_push" }, "Pushing...", "正在推送…"],
+      ]
+      for (const [state, english, chinese] of cases) {
+        expect(getPrimaryCommitActionPrefix({ ...idle, ...state })).toBe(language === "en" ? english : chinese)
+      }
+    })
+  }
 
-    expect(getPrimaryCommitActionPrefix({
-      hasSummary: true,
-      isGenerating: false,
-      isCommitting: false,
-      isGeneratedCommitInFlight: false,
-      commitModeInFlight: null,
-      primaryCommitMode: "commit_and_push",
-    })).toBe("Commit & push to")
+  const mergePreviews: [ChatMergePreviewResult["status"], string, string, string?][] = [
+    ["mergeable", "2 commits from feature/test will merge into main.", "将从 feature/test 向 main 合并 2 个提交。"],
+    ["mergeable", "1 commit from feature/test will merge into main.", "将从 feature/test 向 main 合并 1 个提交。"],
+    ["conflicts", "2 commits from feature/test would merge into main, but conflicts are expected.", "将从 feature/test 向 main 合并 2 个提交，但预计会产生冲突。"],
+    ["conflicts", "1 commit from feature/test would merge into main, but conflicts are expected.", "将从 feature/test 向 main 合并 1 个提交，但预计会产生冲突。"],
+    ["mergeable", "1 commit from feature/test will merge into the current branch.", "将从 feature/test 向 当前分支 合并 1 个提交。", "1 commit from feature/test will merge into current branch."],
+    ["up_to_date", "main is already up to date with feature/test.", "main 已与 feature/test 保持同步。"],
+    ["error", "Could not preview this merge.", "无法预览此合并。"],
+    ["error", "Merge preview unavailable.", "合并预览不可用。"],
+  ]
 
-    expect(getPrimaryCommitActionPrefix({
-      hasSummary: true,
-      isGenerating: false,
-      isCommitting: true,
-      isGeneratedCommitInFlight: true,
-      commitModeInFlight: "commit_and_push",
-      primaryCommitMode: "commit_and_push",
-    })).toBe("Pushing...")
-  })
+  for (const [status, message, chinese, english = message] of mergePreviews) {
+    test(`renders ${status} preview copy in both languages: ${message}`, async () => {
+      const preview: ChatMergePreviewResult = {
+        currentBranchName: "main",
+        targetBranchName: "feature/test",
+        targetDisplayName: "feature/test",
+        status,
+        commitCount: message.startsWith("1 ") ? 1 : 2,
+        hasConflicts: status === "conflicts",
+        message,
+        detail: "CONFLICT in src/New Chat.ts: check Git output",
+      }
+      // Exercise the same metadata + localizer path as a WebSocket ack.
+      await i18n.changeLanguage("zh-CN")
+      const received = localizeUiResult(withUiTextFields(preview))
+      expect(received.message).toBe(chinese)
+      const render = (value: ChatMergePreviewResult) => renderToStaticMarkup(createElement(MergePreviewSummary, { preview: value }))
+      expect(render(received)).toContain(chinese)
+      // Older servers and direct callbacks may supply only the English copy.
+      expect(render(preview)).toContain(chinese)
+      expect(render(received)).toContain(preview.detail!)
+      expect(preview.message).toBe(message)
+      // A preview already received in Chinese must re-render after switching.
+      await i18n.changeLanguage("en")
+      expect(render(received)).toContain(english)
+      expect(render(preview)).toContain(english)
+      await i18n.changeLanguage("zh-CN")
+      expect(render(received)).toContain(chinese)
+    })
+  }
 
   test("renders the branch switcher affordance", () => {
     const onClose = mock(() => {})

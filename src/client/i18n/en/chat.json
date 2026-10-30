@@ -181,6 +181,7 @@
   "signOutFailedWithStatusValue0": "Sign out failed with status {{v0}}",
   "deleteValue0ThisCannotBeUndone": "Delete \"{{v0}}\"? This cannot be undone.",
   "thisMachine": "this machine",
+  "connecting": "Connecting...",
   "connectingValue0": "Connecting {{v0}}",
   "connectValue0": "Connect {{v0}}",
   "value0IsStartingUpAndLoadingYourLocalProjects": "{{v0}} is starting up and loading your local projects.",

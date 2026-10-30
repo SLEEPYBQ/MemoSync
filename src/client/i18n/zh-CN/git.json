@@ -3,6 +3,10 @@
   "commitPushTo": "提交并推送到",
   "generateCommitTo": "生成提交信息并提交到",
   "generatePushTo": "生成提交信息并推送到",
+  "committing": "正在提交…",
+  "pushing": "正在推送…",
+  "committingAndPushing": "正在提交并推送…",
+  "generating": "正在生成…",
   "excludeFileFromCommit": "从提交中排除此文件",
   "includeFileInCommit": "将此文件纳入提交",
   "justNow": "刚刚",
@@ -78,8 +82,8 @@
   "noOtherBranches": "没有匹配搜索的其他分支。",
   "noLocalBranches": "暂无本地分支。",
   "noRemoteBranches": "暂无远程分支。",
-  "mergeCommits_one": "将从{{source}}向 {{target}} 合并 {{count}} 个提交。",
-  "mergeCommits_other": "将从{{source}}向 {{target}} 合并 {{count}} 个提交。",
-  "mergeConflictingCommits_one": "将从{{source}}向 {{target}} 合并 {{count}} 个提交，但预计会产生冲突。",
-  "mergeConflictingCommits_other": "将从{{source}}向 {{target}} 合并 {{count}} 个提交，但预计会产生冲突。"
+  "mergeCommits_one": "将从 {{source}} 向 {{target}} 合并 {{count}} 个提交。",
+  "mergeCommits_other": "将从 {{source}} 向 {{target}} 合并 {{count}} 个提交。",
+  "mergeConflictingCommits_one": "将从 {{source}} 向 {{target}} 合并 {{count}} 个提交，但预计会产生冲突。",
+  "mergeConflictingCommits_other": "将从 {{source}} 向 {{target}} 合并 {{count}} 个提交，但预计会产生冲突。"
 }
