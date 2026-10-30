@@ -3,9 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { MemoryRecordRail } from "./MemoryRecordRail"
 
+const userPrompt: HydratedTranscriptMessage = {
+  kind: "user_prompt", id: "user-1", content: "Task", timestamp: "2026-08-17T00:00:00.000Z",
+}
+
 describe("MemoryRecordRail", () => {
   test("labels a failed empty Checkup as incomplete instead of nothing needs attention", () => {
-    const messages = [{
+    const messages = [userPrompt, {
       kind: "memory_checkup",
       id: "checkup-row",
       checkupId: "checkup-failed",
@@ -24,7 +28,7 @@ describe("MemoryRecordRail", () => {
   })
 
   test("shows citations from in-flight Claude text before the final transcript row arrives", () => {
-    const messages = [{
+    const messages = [userPrompt, {
       kind: "memory_proposals",
       id: "candidate-row",
       proposalsId: "proposals-1",
@@ -73,7 +77,7 @@ describe("MemoryRecordRail", () => {
   })
 
   test("does not mark a completed Memory Record turn as interruptible", () => {
-    const messages = [{
+    const messages = [userPrompt, {
       kind: "memory_preview",
       id: "preview-row",
       previewId: "preview-1",
@@ -95,7 +99,7 @@ describe("MemoryRecordRail", () => {
   })
 
   test("keeps the active turn interruptible between persisted text segments", () => {
-    const messages = [{
+    const messages = [userPrompt, {
       kind: "memory_preview",
       id: "preview-row",
       previewId: "preview-1",

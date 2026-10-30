@@ -523,6 +523,8 @@ interface SendToStartingProfile {
 }
 
 interface PostTurnMemoryPassArgs {
+  /** Launch of the completed turn; detached passes must never use the next turn. */
+  parentLaunch?: ParentLaunch
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
   chatId: string
@@ -1732,14 +1734,15 @@ export class AgentCoordinator {
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
 
-  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null) {
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null, parentLaunch?: ParentLaunch) {
     const chat = this.store.requireChat(args.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("Memory branch project is unavailable")
     const runtime = args.engineRuntime ?? this.sessionRuntimes.get(args.chatId)
+    const parentSessionToken = parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent
     const branch = this.createMemoryBranchFn({
       provider: args.provider,
-      parentSessionToken: parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent,
+      parentSessionToken,
       localPath: project.localPath,
       model: runtime?.model ?? args.model,
       effort: args.effort,
@@ -1747,7 +1750,8 @@ export class AgentCoordinator {
       subprocessEnv: runtime?.env,
       runtime,
       purpose,
-      parentLaunch: this.parentLaunches.get(args.chatId) ?? this.sessionLaunches.get(`${args.provider}:${parent ?? chat.pendingForkSessionToken ?? chat.sessionToken}`),
+      // A completion snapshot also disambiguates successive models on one token.
+      parentLaunch: parentLaunch ?? this.sessionLaunches.get(`${args.provider}:${parentSessionToken}`) ?? this.parentLaunches.get(args.chatId),
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
     return branch
@@ -2492,6 +2496,7 @@ export class AgentCoordinator {
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
     args.engineRuntime ??= this.sessionRuntimes.get(args.chatId)
+    args.parentLaunch ??= this.parentLaunches.get(args.chatId)
     if (args.memoryState?.memoryActive === false) return
     const active = this.activeTurns.get(args.chatId)
     if (this.memoryBranches && active) {
@@ -2559,7 +2564,7 @@ export class AgentCoordinator {
             const settings = { ...this.getProviderSettings(provider, { model: finished.model, effort: finished.effort }), serviceTier: finished.serviceTier }
             // Snapshot taken at completion, never the current chat/session: a
             // coalesced run may start after another main turn has already begun.
-            const branch = this.newMemoryBranch({ chatId: finished.chatId, provider, ...settings, engineRuntime: finished.engineRuntime }, "candidate", finished.sessionToken ?? finished.claudeSessionToken ?? null)
+            const branch = this.newMemoryBranch({ chatId: finished.chatId, provider, ...settings, engineRuntime: finished.engineRuntime }, "candidate", finished.sessionToken ?? finished.claudeSessionToken ?? null, finished.parentLaunch)
             run.branch = branch
             let rejectAbort!: () => void
             const cancelled = new Promise<never>((_, reject) => {
@@ -2708,7 +2713,7 @@ export class AgentCoordinator {
             const chat = this.store.requireChat(args.chatId)
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
-            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken, args.parentLaunch)
             const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
@@ -5879,6 +5884,8 @@ export class AgentCoordinator {
       }
       this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
       const sessionToken = await this.codexManager.startSession(codexLaunch)
+      const launch = this.parentLaunches.get(args.chatId)
+      if (sessionToken && launch) this.sessionLaunches.set(`codex:${sessionToken}`, launch)
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         return
       }

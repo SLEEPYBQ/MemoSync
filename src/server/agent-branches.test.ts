@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TranscriptEntry } from '../shared/types';
 import { AgentCoordinator } from './agent';
+import type { PiAgentManager } from './pi-agent';
 import type { CodexAppServerManager } from './codex-app-server';
 import { EventStore } from './event-store';
 import type { HarnessEvent, HarnessTurn } from './harness-types';
@@ -84,7 +85,17 @@ async function setup(options: {
     stopAll: () => {},
   } as unknown as CodexAppServerManager;
   const coordinator = new AgentCoordinator({
-    store, memory, codexManager, onStateChange: () => {},
+    store, memory, codexManager,
+    piManager: {
+      startTurn: async (args: MainTurnRequest): Promise<HarnessTurn> => {
+        mainTurns.push(args);
+        const events = new Events(); queues.push(events);
+        return { provider: 'pi', stream: events, interrupt: async () => events.close(), close: () => events.close() };
+      },
+      closeChat: () => {}, dispose: () => {},
+    } as unknown as PiAgentManager,
+    resolvePiConnection: async () => ({ provider: 'openrouter', baseUrl: 'https://example.test', apiKey: 'test' }),
+    onStateChange: () => {},
     getMemorySettings: options.getMemorySettings,
     memoryPreview: true, memoryBranches: true,
     capture: createCaptureService({ memory, callJson }),
@@ -216,6 +227,49 @@ describe('Automatic background candidate learning', () => {
       expect(h.memory.store.list().find(item => item.content === 'Validate refund inputs before submitting')!.provenanceTurn).toBe(3);
       await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
     } finally { first.resolve({ candidates: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  for (const next of [{ provider: 'pi' as const, model: 'pi-model', token: 'parent-two' }, { provider: 'codex' as const, model: 'gpt-5.3-codex', token: 'parent-two' }, { provider: 'codex' as const, model: 'gpt-5.3-codex', token: 'main-session' }]) {
+    it(`keeps the completed Codex launch when the next turn switches to ${next.provider}/${next.model} (token ${next.token})`, async () => {
+      const first = deferred<Record<string, unknown>>();
+      let count = 0;
+      const h = await setup({ getMemorySettings: automatic, candidate: async () => ++count === 1 ? first.promise : { candidates: [] } });
+      try {
+        await h.send();
+        await finish(h, 'parent-one');
+        await h.send();
+        await finish(h, next.token);
+        await h.store.setChatProvider(h.chat.id, next.provider);
+        await h.coordinator.send({ type: 'chat.send', chatId: h.chat.id, ...next, content: 'Next task' });
+        first.resolve({ candidates: [] });
+        await until(() => h.branches.filter(b => b.purpose === 'candidate').length === 2);
+        const branch = h.branches.filter(b => b.purpose === 'candidate')[1]!;
+        expect(branch.parentSessionToken).toBe(next.token);
+        expect(branch.parentLaunch?.provider).toBe('codex');
+        expect(branch.parentLaunch?.provider === 'codex' && branch.parentLaunch.turn.model).toBe('gpt-5.4');
+        // Exact token provenance also wins for a foreground fork.
+        const exact = (h.coordinator as any).newMemoryBranch({ chatId: h.chat.id, provider: 'codex', model: next.model }, 'probe', 'parent-one');
+        expect(h.branches.at(-1)!.parentLaunch).toMatchObject({ provider: 'codex', turn: { model: 'gpt-5.4' } });
+        exact.dispose();
+      } finally { first.resolve({ candidates: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('records Codex tokens at session start and Pi tokens at stream delivery', async () => {
+    const h = await setup({ getMemorySettings: automatic });
+    try {
+      await h.send();
+      expect((h.coordinator as any).sessionLaunches.get('codex:main-session')?.provider).toBe('codex');
+      await finish(h, 'codex-finished');
+      await h.store.setChatProvider(h.chat.id, 'pi');
+      await h.coordinator.send({ type: 'chat.send', chatId: h.chat.id, provider: 'pi', model: 'pi-model', content: 'Pi task' });
+      await finish(h, 'pi-finished');
+      await h.store.setChatProvider(h.chat.id, 'codex');
+      await h.send();
+      const branch = (h.coordinator as any).newMemoryBranch({ chatId: h.chat.id, provider: 'pi', model: 'other-pi-model' }, 'probe', 'pi-finished');
+      expect(h.branches.at(-1)!.parentLaunch?.provider).toBe('pi');
+      branch.dispose();
+    } finally { await h.coordinator.shutdownRuntime(); h.close(); }
   });
 
   it('uses C routing and dismissal dedup without creating duplicate memories or sidecar calls', async () => {
