@@ -1821,6 +1821,7 @@ export function createWsRouter({
             steer: (value) => agent.steer(value),
             isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
             isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
+            remove: (chatId, messageId) => store.removeQueuedMessage(chatId, messageId),
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)
