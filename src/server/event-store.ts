@@ -968,7 +968,7 @@ export class EventStore {
   /**
    * Retry stamps that failed earlier, inside the caller's write-chain task. A
    * transcript can only bury a prompt past the startup tail window through later
-   * writes, and each of those retries the stamp first.
+   * appends (prompts included, even older-dated ones), and each one retries.
    */
   private async flushPendingRecencyStamps() {
     for (const [chatId, at] of [...this.pendingRecencyStamps]) {
@@ -1370,7 +1370,7 @@ export class EventStore {
             // would invite a duplicate retry. Keep the stamp for the next write.
             this.pendingRecencyStamps.set(chatId, Math.max(this.pendingRecencyStamps.get(chatId) ?? persistedEntry.createdAt, persistedEntry.createdAt))
             console.warn(`${LOG_PREFIX} recency stamp for chat ${chatId} failed; will retry`, error)
-          })
+          }).then(() => this.flushPendingRecencyStamps())
         : this.flushPendingRecencyStamps()
       this.applyMessageMetadata(chatId, persistedEntry)
       const cached = this.transcriptCache.get(chatId)

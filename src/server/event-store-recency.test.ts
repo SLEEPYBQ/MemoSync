@@ -224,6 +224,22 @@ describe("durable chat recency", () => {
     expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(2000)
   })
 
+  test("older-dated prompts appended after a failed stamp still retry it before burying the newer prompt", async () => {
+    const { dir, store, chat } = await setup()
+    await store.appendMessage(chat.id, prompt(1000))
+    const append = fs.appendFile
+    const failure = spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith("/chats.jsonl")) throw new Error("stamp unavailable")
+      return append(...args)
+    })
+    try { await store.appendMessage(chat.id, prompt(2000)) }
+    finally { failure.mockRestore() }
+    // Older-dated prompts never advance recency, so only the retry can persist 2000.
+    for (let i = 0; i < 8; i += 1) await store.appendMessage(chat.id, { ...prompt(500 + i), content: "x".repeat(40 * 1024) })
+    expect((await stamps(dir)).filter(e => e.chatId === chat.id).map(e => e.at)).toEqual([1000, 2000])
+    expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(2000)
+  })
+
   test("reads during an in-flight stamp never duplicate the durable transcript row", async () => {
     const { dir, store, chat } = await setup()
     const append = fs.appendFile
