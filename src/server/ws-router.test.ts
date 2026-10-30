@@ -983,6 +983,42 @@ describe("ws-router", () => {
     } finally { router.dispose() }
   })
 
+  test("a dropped final terminal chunk is repaired by the dropped-snapshot retry", async () => {
+    let output = "abc"
+    let emit!: (event: TerminalEvent) => void
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getStreamingAssistantTexts: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => null,
+        getTail: (terminalId: string, sinceVersion: number, sessionId: string) => (
+          { terminalId, sessionId, tail: { data: output.slice(sinceVersion), version: output.length }, snapshot: null, status: "running", exitCode: null }
+        ),
+        onEvent: (listener: (event: TerminalEvent) => void) => { emit = listener; return () => {} },
+      } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Local Machine", updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    try {
+      await router.handleMessage(ws as never, JSON.stringify({
+        v: 1, type: "subscribe", id: "terminal", topic: { type: "terminal", terminalId: "a", sinceVersion: 3, sessionId: "epoch" },
+      }))
+      ws.sent.length = 0
+      // The command prints its last line while the socket is backpressured.
+      output += "done"
+      ws.sendStatuses.push(0)
+      emit({ type: "terminal.output", terminalId: "a", data: "done", version: 7, sessionId: "epoch" })
+      expect(ws.sent).toEqual([])
+      await new Promise((resolve) => setTimeout(resolve, 30))
+      expect(ws.sent).toEqual([expect.objectContaining({
+        type: "snapshot", id: "terminal",
+        snapshot: { type: "terminal", data: expect.objectContaining({ tail: { data: "done", version: 7 } }) },
+      })])
+    } finally { router.dispose() }
+  })
+
   test("subscribes and unsubscribes chat topics", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,

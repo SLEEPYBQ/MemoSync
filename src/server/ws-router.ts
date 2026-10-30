@@ -1127,12 +1127,19 @@ export function createWsRouter({
     for (const ws of sockets) {
       for (const [id, topic] of ws.data.subscriptions.entries()) {
         if (topic.type !== "terminal" || topic.terminalId !== terminalId) continue
-        send(ws, {
+        const { status } = send(ws, {
           v: PROTOCOL_VERSION,
           type: "event",
           id,
           event,
         })
+        // Ordinary broadcasts skip terminals, so a dropped chunk (possibly the
+        // last one) would never be repaired. Reuse the dropped-snapshot path:
+        // its retry and drain resync resend this terminal's catch-up.
+        if (status === 0) {
+          dirtySnapshotSockets.add(ws)
+          scheduleDroppedSnapshotRetry(ws)
+        }
       }
     }
   }
