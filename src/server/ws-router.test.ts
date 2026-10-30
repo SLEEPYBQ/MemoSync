@@ -897,6 +897,33 @@ describe("ws-router", () => {
     ])
   })
 
+  test("terminal subscriptions opt into tails while legacy clients retain snapshots", async () => {
+    const snapshot = { terminalId: "a", serializedState: "legacy", outputVersion: 6 }
+    const tail = { terminalId: "a", sessionId: "epoch", tail: { data: "def", version: 6 }, snapshot: null, status: "exited", exitCode: 0 }
+    const requests: unknown[] = []
+    const router = createWsRouter({
+      store: { state: createEmptyState() } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getStreamingAssistantTexts: () => new Map() } as never,
+      terminals: {
+        getSnapshot: () => snapshot,
+        getTail: (...args: unknown[]) => { requests.push(args); return tail },
+        onEvent: () => () => {},
+      } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Local Machine", updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    try {
+      await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id: "old", topic: { type: "terminal", terminalId: "a" } }))
+      await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id: "new", topic: { type: "terminal", terminalId: "a", sinceVersion: 3, sessionId: "epoch" } }))
+      await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id: "repair", command: { type: "terminal.tail", terminalId: "a", sinceVersion: 3, sessionId: "epoch" } }))
+      expect(ws.sent).toContainEqual({ v: 1, type: "snapshot", id: "old", snapshot: { type: "terminal", data: snapshot } })
+      expect(ws.sent).toContainEqual({ v: 1, type: "snapshot", id: "new", snapshot: { type: "terminal", data: tail } })
+      expect(ws.sent).toContainEqual({ v: 1, type: "ack", id: "repair", result: tail })
+      expect(requests).toEqual([["a", 3, "epoch"], ["a", 3, "epoch"]])
+    } finally { router.dispose() }
+  })
+
   test("subscribes and unsubscribes chat topics", async () => {
     const router = createWsRouter({
       store: { state: createEmptyState() } as never,

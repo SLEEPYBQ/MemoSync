@@ -809,7 +809,9 @@ export function createWsRouter({
         id,
         snapshot: {
           type: "terminal",
-          data: terminals.getSnapshot(topic.terminalId),
+          data: topic.sinceVersion === undefined
+            ? terminals.getSnapshot(topic.terminalId)
+            : terminals.getTail(topic.terminalId, topic.sinceVersion, topic.sessionId),
         },
       }
     }
@@ -1770,7 +1772,8 @@ export function createWsRouter({
             rows: command.rows,
             scrollback: command.scrollback,
           })
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: command.sinceVersion === undefined
+            ? snapshot : terminals.getTail(command.terminalId, command.sinceVersion, command.sessionId) })
           return
         }
         case "terminal.input": {
@@ -1787,6 +1790,10 @@ export function createWsRouter({
           terminals.close(command.terminalId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           pushTerminalSnapshot(command.terminalId)
+          return
+        }
+        case "terminal.tail": {
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: terminals.getTail(command.terminalId, command.sinceVersion, command.sessionId) })
           return
         }
       }

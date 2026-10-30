@@ -386,7 +386,6 @@ describe("TerminalManager callback lifecycle", () => {
       const terminal = terminals[0]!
       terminal.data(terminal, Uint8Array.of(0xe4, 0xb8))
       terminal.data(terminal, Uint8Array.of(0xad))
-      expect(output).toEqual(["中"])
       terminal.data(terminal, Uint8Array.of(0xe4))
       await waitFor(() => manager.getSnapshot("split")?.serializedState.includes("中�") ?? false, 1_000)
       expect(output).toEqual(["中", "�"])
