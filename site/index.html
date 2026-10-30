@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MemoSync — co-manage memory with your coding agent</title>
+    <meta name="description" content="MemoSync is a local workbench for Claude Code, Codex and Pi. See what your coding agent remembers, decide what it keeps and uses, and check how it used it — across sessions." />
+    <meta name="theme-color" content="#f6f4ee" />
+    <meta name="color-scheme" content="light" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta property="og:title" content="MemoSync" />
+    <meta property="og:description" content="Co-manage memory with your coding agent across sessions." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="https://sleepybq.github.io/MemoSync/og.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://sleepybq.github.io/MemoSync/og.png" />
+  </head>
+  <body>
+    <a class="skip" href="#story">Skip to the story</a>
+
+    <header class="nav" data-nav>
+      <a class="brand" href="#top" aria-label="MemoSync home">
+        <img src="/favicon.svg" alt="" width="28" height="28" />
+        <span>MemoSync</span>
+      </a>
+      <nav aria-label="Sections">
+        <a href="#story">Story</a>
+        <a href="#film">Film</a>
+        <a href="#engines">Engines</a>
+        <a href="#start">Quick start</a>
+      </nav>
+      <a class="gh" href="https://github.com/SLEEPYBQ/MemoSync" rel="noopener">
+        <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+        <span>GitHub</span>
+        <span class="stars" data-stars hidden></span>
+      </a>
+    </header>
+
+    <main id="top">
+      <!-- ───────────── Hero ───────────── -->
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="hand eyebrow">for Claude Code, Codex &amp; Pi</p>
+          <h1>
+            Co-manage memory with your coding agent
+            <span class="across">across sessions.<svg class="scribble" viewBox="0 0 300 20" preserveAspectRatio="none" aria-hidden="true"><path d="M3 14 C 60 4, 120 18, 180 9 S 270 6, 297 11" /></svg></span>
+          </h1>
+          <p class="lede">
+            Coding agents keep memory, but you rarely see it. MemoSync is a local workbench that shows what your agent remembers,
+            lets you decide what it keeps and what it uses, and checks afterwards whether it followed it.
+          </p>
+          <div class="cta">
+            <a class="btn primary" href="#start">Get started</a>
+            <a class="btn" href="#story">See how it works <span aria-hidden="true">↓</span></a>
+          </div>
+          <p class="fine">Free · runs on your machine · your data stays in <code>~/.memosync</code></p>
+        </div>
+
+        <div class="duo" aria-hidden="true">
+          <svg class="hop-path" viewBox="0 0 560 504" preserveAspectRatio="none"><path d="M130 228 C 190 40, 370 40, 430 228" /></svg>
+          <div class="head head-ben"><img src="/art/ben-neutral.webp" alt="" /></div>
+          <div class="head head-agent"><img src="/art/agent-neutral.webp" alt="" /></div>
+          <div class="duo-cat">
+            <img class="pose pose-perch" src="/art/cat-perch.webp" alt="" />
+            <img class="pose pose-hop" src="/art/cat-hop.webp" alt="" />
+          </div>
+          <span class="chip float f1 personal">M-11</span>
+          <span class="chip float f2 project">M-07</span>
+          <span class="chip float f3 session">M-16</span>
+          <span class="chip float f4 project">M-02</span>
+          <p class="hand note note-ben">you</p>
+          <p class="hand note note-agent">your agent</p>
+          <p class="hand note note-cat">↖ the memory you share ↗</p>
+        </div>
+      </section>
+
+      <!-- ───────────── Story ───────────── -->
+      <section id="story" class="story" data-story aria-label="How MemoSync works, in seven scenes">
+        <div class="stage" data-stage>
+          <div class="world" data-world>
+            <p class="hand lane-label lane-context">context <span>— this session</span></p>
+            <p class="hand lane-label lane-memory">memory <span>— stays</span></p>
+            <div class="lane-divider"></div>
+
+            <!-- session 1 -->
+            <article class="sheet" data-el="sheet1">
+              <header><span class="dot"></span>Session 1<span class="time">Mon 09:12</span></header>
+              <div class="msg me">
+                <span class="avatar ben"></span>
+                <p data-type="m1a">Set up the checkout service. This repo uses <mark data-anchor="phrase" data-el="phrase">bun — never npm</mark>.</p>
+              </div>
+              <div class="msg agent">
+                <span class="avatar agent"></span>
+                <div class="lines">
+                  <p data-type="m1b">On it. Installing dependencies with bun.</p>
+                  <p data-type="m1c" class="cmd"><code>bun add stripe hono</code></p>
+                  <p data-type="m1d" class="cmd"><code>bun test</code> <span class="ok">12 passed</span></p>
+                  <p data-type="m1e">Checkout service is scaffolded under <code>services/checkout</code>.</p>
+                </div>
+              </div>
+            </article>
+            <img class="paper-ball" data-el="ball" src="/art/prop-paper-ball.webp" alt="" />
+
+            <!-- session 2 -->
+            <article class="sheet" data-el="sheet2" data-anchor="sheet2">
+              <header><span class="dot"></span>Session 2<span class="time">Thu 15:40</span></header>
+              <div class="msg me">
+                <span class="avatar ben"></span>
+                <p data-type="m2a">Add Stripe checkout next to the PayPal flow.</p>
+              </div>
+              <div class="tray" data-el="tray">
+                <span class="tray-title">Working memory for this turn</span>
+                <span class="chip project" data-el="tray02" data-anchor="tray02">M-02</span>
+                <span class="chip project" data-el="tray07" data-anchor="tray07">M-07</span>
+              </div>
+              <div class="msg agent">
+                <span class="avatar agent"></span>
+                <div class="lines">
+                  <p data-type="l1">Installing stripe with bun <span class="chip project cite">M-02</span></p>
+                  <p data-type="l2">Totals stay in integer cents <span class="chip project cite">M-07</span></p>
+                  <p class="cmd" data-el="bad" data-anchor="bad"><code>npm run build</code><span class="stopped">stopped</span></p>
+                  <p class="cmd good" data-el="good"><code>bun run build</code> <span class="chip project cite">M-02</span></p>
+                </div>
+              </div>
+              <div class="audit" data-el="audit" data-anchor="audit">
+                <span class="tray-title">Memory use audit</span>
+                <p data-el="a1"><span class="chip project">M-02</span><span class="verdict violated">violated, then corrected</span></p>
+                <p data-el="a2"><span class="chip project">M-07</span><span class="verdict shaped">shaped this turn</span></p>
+                <p data-el="a3"><span class="chip personal">M-11</span><span class="verdict na">not applicable</span></p>
+              </div>
+            </article>
+
+            <!-- memory board -->
+            <aside class="board" data-el="board">
+              <header>Memory Board</header>
+              <div class="slot" data-anchor="slot0"></div>
+              <div class="slot" data-anchor="slot1"></div>
+              <div class="slot" data-anchor="slot2"></div>
+              <div class="slot" data-anchor="slot3"></div>
+              <div class="slot" data-anchor="slot4"></div>
+            </aside>
+            <div class="card" data-el="c07" data-scope="project"><b>M-07</b><span>Money stays in integer cents.</span><i>project</i></div>
+            <div class="card" data-el="c11" data-scope="personal"><b>M-11</b><span>Commit messages in English.</span><i>personal</i></div>
+            <div class="card" data-el="c02" data-scope="project"><b>M-02</b><span>Use bun, never npm.</span><i data-el="c02tag">proposed</i></div>
+            <div class="card" data-el="c19" data-scope="project"><b>M-19</b><span>Run tests with <code>bun test</code>.</span><i>auto · revert</i></div>
+            <div class="card sensitive" data-el="c20" data-scope="personal"><b>M-20</b><span>Deploy keys live in 1Password.</span><i>sensitive · waits</i></div>
+
+            <!-- characters -->
+            <div class="head big" data-el="ben"><img src="/art/ben-neutral.webp" alt="" data-face="neutral" /><img src="/art/ben-happy.webp" alt="" data-face="happy" /><img src="/art/ben-thinking.webp" alt="" data-face="thinking" /><img src="/art/ben-surprised.webp" alt="" data-face="surprised" /><img src="/art/ben-wink.webp" alt="" data-face="wink" /></div>
+            <div class="head big agent" data-el="agent">
+              <img src="/art/agent-neutral.webp" alt="" data-face="neutral" />
+              <img src="/art/agent-blank.webp" alt="" data-face="blank" />
+              <img src="/art/agent-thinking.webp" alt="" data-face="thinking" />
+              <img src="/art/agent-happy.webp" alt="" data-face="happy" />
+            </div>
+            <div class="cat" data-el="cat">
+              <img src="/art/cat-perch.webp" alt="" data-pose="perch" />
+              <img src="/art/cat-hop.webp" alt="" data-pose="hop" />
+              <img src="/art/cat-tug.webp" alt="" data-pose="tug" />
+              <img src="/art/cat-stamp.webp" alt="" data-pose="stamp" />
+              <img src="/art/cat-sleep-card.webp" alt="" data-pose="sleep" />
+              <img src="/art/cat-stretch.webp" alt="" data-pose="stretch" />
+              <img src="/art/cat-carry-card.webp" alt="" data-pose="carry" />
+              <img src="/art/cat-point.webp" alt="" data-pose="point" />
+              <img src="/art/cat-magnifier.webp" alt="" data-pose="magnifier" />
+              <img src="/art/cat-sit.webp" alt="" data-pose="sit" />
+            </div>
+
+            <!-- anchors the choreography reads from the layout -->
+            <i class="anchor" data-anchor="benHome"></i>
+            <i class="anchor" data-anchor="agentHome"></i>
+            <i class="anchor" data-anchor="catTug"></i>
+            <i class="anchor" data-anchor="catAuto"></i>
+            <i class="anchor" data-anchor="ballOut"></i>
+
+            <!-- automatic toggle -->
+            <div class="auto" data-el="auto">
+              <span>Automatic</span>
+              <span class="switch"><span></span></span>
+            </div>
+          </div>
+
+          <div class="caption" data-caption aria-live="polite">
+            <p class="kicker"><span data-act-num>01</span> / 07 · <span data-act-name>Learn</span></p>
+            <h2 data-act-title>It learns while you work.</h2>
+            <p data-act-body>MemoSync notices what is worth remembering in the conversation and proposes it as memory.</p>
+          </div>
+
+          <ol class="rail" data-rail aria-hidden="true">
+            <li>Learn</li><li>Review</li><li>Persist</li><li>Choose</li><li>Follow</li><li>Check</li><li>Automatic</li>
+          </ol>
+        </div>
+
+        <ol class="sr-only">
+          <li>Learn: MemoSync notices what is worth remembering in the conversation and proposes it as memory.</li>
+          <li>Review: nothing is kept until you say so. Every proposed change waits for review.</li>
+          <li>Persist: context clears, memory stays. The memory board carries what matters into the next session.</li>
+          <li>Choose: before a turn starts, you confirm which memories go in and how they will be used.</li>
+          <li>Follow: replies cite the memories they apply, and you can stop the agent when it drifts.</li>
+          <li>Check: a separate audit marks each memory as shaped, violated, not applicable or no visible effect.</li>
+          <li>Automatic: safe changes apply on their own; sensitive ones wait; the audit speaks up only when something broke.</li>
+        </ol>
+      </section>
+
+      <!-- ───────────── Film ───────────── -->
+      <section id="film" class="film">
+        <div class="section-head">
+          <p class="hand eyebrow">the full story, on film</p>
+          <h2>Watch one turn, start to finish.</h2>
+        </div>
+        <div class="screen">
+          <video controls preload="none" playsinline poster="/film/poster.webp" data-video>
+            <source src="/film/memosync.mp4" type="video/mp4" />
+          </video>
+          <img class="screen-cat" src="/art/cat-sit.webp" alt="" />
+        </div>
+      </section>
+
+      <!-- ───────────── Engines ───────────── -->
+      <section id="engines" class="engines">
+        <div class="section-head">
+          <p class="hand eyebrow">bring your own agent</p>
+          <h2>Runs the agents you already use.</h2>
+          <p class="lede">Use your own sign-in, or an API connection to any provider. Engines on an API connection run in a separate profile, so your own <code>~/.claude</code> and <code>~/.codex</code> are never touched.</p>
+        </div>
+        <div class="engine-grid">
+          <article class="engine">
+            <span class="mark" data-brand="claude"></span>
+            <h3>Claude Code</h3>
+            <p>Your installed <code>claude</code>, or the copy bundled with the Agent SDK.</p>
+            <p class="access">Your sign-in · Anthropic API · OpenAI Chat <em>via translation</em></p>
+          </article>
+          <article class="engine">
+            <span class="mark" data-brand="openai"></span>
+            <h3>Codex</h3>
+            <p>Your installed <code>codex</code>, driven through <code>codex app-server</code>.</p>
+            <p class="access">Your sign-in · OpenAI Responses · OpenAI Chat <em>via translation</em></p>
+          </article>
+          <article class="engine">
+            <span class="mark"><svg viewBox="0 0 4 4" aria-hidden="true" shape-rendering="crispEdges"><rect x="0" y="0" width="3" height="1" fill="#e48a7a"/><rect x="2" y="1" width="1" height="1" fill="#e48a7a"/><rect x="0" y="1" width="1" height="3" fill="#4f8eb3"/><rect x="1" y="2" width="1" height="1" fill="#4f8eb3"/><rect x="3" y="2" width="1" height="2" fill="#eab65d"/></svg></span>
+            <h3>Pi</h3>
+            <p>Built into MemoSync. Nothing else to install.</p>
+            <p class="access">OpenAI Chat · OpenAI Responses</p>
+          </article>
+        </div>
+        <div class="providers">
+          <div class="logos" data-logos></div>
+          <p class="hand">…and more than seventy presets, with endpoints and models filled in.</p>
+        </div>
+      </section>
+
+      <!-- ───────────── Quick start ───────────── -->
+      <section id="start" class="start">
+        <div class="start-copy">
+          <p class="hand eyebrow">two minutes</p>
+          <h2>Start on your machine.</h2>
+          <ol class="steps">
+            <li><b>Install</b> <a href="https://bun.sh">Bun</a> 1.3.5 or newer, and have Claude Code or Codex signed in — or an API key from any provider.</li>
+            <li><b>Run</b> the commands. MemoSync opens at <code>localhost:3210</code>.</li>
+            <li><b>Connect</b> a model in Settings → Models, open a project, and send a task.</li>
+          </ol>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar"><span></span><span></span><span></span><button type="button" data-copy>Copy</button></div>
+<pre><code data-commands>git clone https://github.com/SLEEPYBQ/MemoSync.git
+cd MemoSync
+bun install
+bun run build
+bun run start</code></pre>
+          <img class="terminal-cat" src="/art/cat-sit.webp" alt="" />
+        </div>
+      </section>
+    </main>
+
+    <footer class="foot">
+      <div class="nap" aria-hidden="true">
+        <img class="nap-ben" src="/art/ben-happy.webp" alt="" />
+        <img class="nap-cat" src="/art/cat-sleep-card.webp" alt="" />
+        <img class="nap-agent" src="/art/agent-blank.webp" alt="" />
+      </div>
+      <p class="foot-line">MemoSync remembers so the next session doesn't start from zero.</p>
+      <nav class="foot-links" aria-label="Footer">
+        <a href="https://github.com/SLEEPYBQ/MemoSync">GitHub</a>
+        <a href="https://github.com/SLEEPYBQ/MemoSync#readme">README</a>
+        <a href="https://github.com/SLEEPYBQ/MemoSync/blob/main/README.zh-CN.md">简体中文</a>
+        <a href="https://github.com/SLEEPYBQ/MemoSync/blob/main/LICENSE">License</a>
+      </nav>
+      <p class="fine">Built on <a href="https://github.com/jakemor/kanna">Kanna</a> by Jake Mor. Made by <a href="https://baiqiaozhang.cc/">Baiqiao Zhang</a>.</p>
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
