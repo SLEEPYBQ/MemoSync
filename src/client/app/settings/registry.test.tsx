@@ -10,10 +10,10 @@ import { KeybindingsSection } from "./KeybindingsSection"
 import { MemorySettingsGroups } from "./MemorySection"
 import { ProvidersSection } from "./ProvidersSection"
 import { SkillsSection } from "./SkillsSection"
-import { ALL_SETTINGS_ROWS, SETTINGS_SECTIONS, getSettingsRowHref, resolveSettingsSectionId } from "./registry"
+import { ALL_SETTINGS_ROWS, SETTINGS_ROWS, SETTINGS_SECTIONS, getSettingsRowHref, resolveSettingsSectionId } from "./registry"
 
 const settings: AppSettingsSnapshot = await readAppSettingsSnapshot("/tmp/memosync-settings-registry-nonexistent/settings.json")
-const memoryHtml = (overrides: { enabled?: boolean; learn?: boolean } = {}) => renderToStaticMarkup(<MemoryRouter><MemorySettingsGroups settings={{ ...settings, memory: { enabled: overrides.enabled ?? true, learn: overrides.learn ?? true } }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>)
+const memoryHtml = (overrides: Partial<AppSettingsSnapshot["memory"]> = {}) => renderToStaticMarkup(<MemoryRouter><MemorySettingsGroups settings={{ ...settings, memory: { ...settings.memory, ...overrides } }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>)
 
 describe("settings registry and section rendering", () => {
   test("stable unique ids, section order and deep links", () => {
@@ -67,13 +67,29 @@ describe("settings registry and section rendering", () => {
   test("memory-off dims and disables dependents with actionable reasons", () => {
     const html = memoryHtml({ enabled: false })
     expect(html).toContain('aria-label="Use Memory"')
-    expect(html.match(/aria-disabled="true"/g)?.length).toBe(4)
-    expect(html.match(/Turn on Use Memory to change this./g)?.length).toBe(4)
+    expect(html.match(/aria-disabled="true"/g)?.length).toBe(5)
+    expect(html.match(/Turn on Use Memory to change this./g)?.length).toBe(5)
     expect(html).toContain('href="/memory"')
   })
   test("learning-off only disables memory changes, keeping preview usable", () => {
     const html = memoryHtml({ learn: false })
     expect(html.match(/aria-disabled="true"/g)?.length).toBe(1)
     expect(html).toContain("Turn on Learn From Chats to change this.")
+  })
+  test("control is the first row, searchable in both languages; automatic disables its three dependents", () => {
+    const html = memoryHtml({ control: "auto" })
+    expect(html.indexOf('id="memoryControl"')).toBeLessThan(html.indexOf('id="memoryEnabled"'))
+    expect(html).toContain('aria-label="Control"')
+    expect(html.match(/aria-disabled="true"/g)?.length).toBe(3)
+    expect(html.match(/Set Control to Review each turn to change this./g)?.length).toBe(3)
+    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) {
+      const row = html.slice(html.indexOf(`id="${id}"`)).split(/<div id="memory/)[0]!
+      expect(row).toContain('aria-disabled="true"')
+      expect(row).toContain('disabled=""')
+    }
+    expect(memoryHtml().match(/aria-disabled="true"/g)).toBeNull()
+    for (const keyword of ["automatic", "review each turn", "控制方式", "自动", "每轮确认"]) {
+      expect(SETTINGS_ROWS.memoryControl.keywords).toContain(keyword)
+    }
   })
 })

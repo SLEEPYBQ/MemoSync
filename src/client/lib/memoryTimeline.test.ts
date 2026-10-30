@@ -205,11 +205,11 @@ describe("buildMemoryRecord", () => {
     })
   })
 
-  it("skips hidden messages and entries without turns; empty transcript → empty record", () => {
-    const hiddenTrace = { ...trace(9, [{ id: "M-09", label: "operational" }]), hidden: true } as HydratedTranscriptMessage
+  it("skips hidden conversation messages and entries without turns; empty transcript → empty record", () => {
+    const hiddenReply = { ...text("hidden", "Hidden [M-09]"), hidden: true } as HydratedTranscriptMessage
     const noTurn = { ...trace(0, [{ id: "M-08", label: "operational" }]), turn: undefined } as HydratedTranscriptMessage
     const orphanText = text("a-9", "Citations [M-11] before any turn exists.")
-    const record = buildMemoryRecord([orphanText, hiddenTrace, noTurn])
+    const record = buildMemoryRecord([orphanText, hiddenReply, noTurn])
     expect(record.turns).toEqual([])
   })
 })

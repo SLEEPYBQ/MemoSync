@@ -62,6 +62,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       },
     },
     memory: {
+      control: "review",
       enabled: true,
       learn: true,
     },
@@ -74,6 +75,34 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     ...overrides,
   }
 }
+
+describe("memory control settings", () => {
+  test("legacy and invalid control values normalise to review without changing the switches", async () => {
+    const filePath = await createTempFilePath()
+    for (const control of [undefined, "invalid", false]) {
+      await writeFile(filePath, JSON.stringify({ memory: { control, enabled: false, learn: false } }))
+      expect((await readAppSettingsSnapshot(filePath)).memory).toEqual({ control: "review", enabled: false, learn: false })
+    }
+  })
+
+  test("control persists through patches, reload and normalised migration", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    try {
+      await manager.initialize()
+      expect(JSON.parse(await readFile(filePath, "utf8")).memory.control).toBe("review")
+      await manager.writePatch({ memory: { control: "auto" } })
+      await manager.writePatch({ memory: { learn: false } })
+      await manager.reload()
+      expect(manager.getSnapshot().memory).toEqual({ control: "auto", enabled: true, learn: false })
+      expect((await readAppSettingsSnapshot(filePath)).memory.control).toBe("auto")
+      await manager.writePatch({ memory: { control: "review" } })
+      expect(manager.getSnapshot().memory).toEqual({ control: "review", enabled: true, learn: false })
+    } finally {
+      manager.dispose()
+    }
+  })
+})
 
 describe("memoryPreview settings", () => {
   test("defaults to enabled + auto-proceed-when-empty", async () => {

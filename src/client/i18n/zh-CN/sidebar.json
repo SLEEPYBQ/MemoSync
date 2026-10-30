@@ -59,5 +59,7 @@
   "fromValue0": "基于{{v0}}",
   "startValue0ToConnect": "启动{{v0}}以连接",
   "pendingCandidates_one": "{{count}} 条候选记忆等待审阅",
-  "pendingCandidates_other": "{{count}} 条候选记忆等待审阅"
+  "pendingCandidates_other": "{{count}} 条候选记忆等待审阅",
+  "pendingSensitive_one": "{{count}} 条敏感提案在记忆看板等待确认",
+  "pendingSensitive_other": "{{count}} 条敏感提案在记忆看板等待确认"
 }

@@ -147,6 +147,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
     },
   },
   memory: {
+    control: "review",
     enabled: true,
     learn: true,
   },

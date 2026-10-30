@@ -202,5 +202,10 @@
   "aboutProjects": "已索引的项目",
   "aboutLicense": "基于 MIT 许可证开源。",
   "aboutRepository": "源代码",
-  "aboutNotices": "第三方声明"
+  "aboutNotices": "第三方声明",
+  "memoryControl": "控制方式",
+  "reviewEachTurn": "每轮确认",
+  "automatic": "自动",
+  "memoryControlDescription": "每轮确认：记忆改动和本轮工作记忆都由你确认后，智能体才开始。自动：智能体自己查看记忆索引、按需读取；不敏感的改动直接生效、可以撤销，敏感的留在记忆看板，审查只在发现违反时提醒。",
+  "setControlToReviewToChangeThis": "把控制方式设为「每轮确认」后才能修改。"
 }
