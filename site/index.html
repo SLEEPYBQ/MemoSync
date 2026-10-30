@@ -34,7 +34,7 @@
       <a class="gh" href="https://github.com/SLEEPYBQ/MemoSync" rel="noopener">
         <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
         <span>GitHub</span>
-        <span class="stars" data-stars hidden></span>
+        <span class="stars" data-stars hidden><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.6l1.9 4.1 4.5.5-3.4 3 1 4.4L8 11.4 4 13.6l1-4.4-3.4-3 4.5-.5z" /></svg><span data-star-count></span></span>
       </a>
     </header>
 
@@ -53,18 +53,30 @@
           </p>
           <div class="cta">
             <a class="btn primary" href="#start">Get started</a>
-            <a class="btn" href="#story">See how it works <span aria-hidden="true">↓</span></a>
+            <a class="btn" href="#story">See how it works <svg class="hand-arrow-down" viewBox="0 0 16 18" aria-hidden="true"><path d="M8 2 C 7.4 6, 8.6 10, 8 15" /><path d="M3.5 10.5 L 8 15.5 L 12.5 10.6" /></svg></a>
           </div>
           <p class="fine">Free · runs on your machine · your data stays in <code>~/.memosync</code></p>
         </div>
 
-        <div class="duo" aria-hidden="true">
-          <svg class="hop-path" viewBox="0 0 560 504" preserveAspectRatio="none"><path d="M130 228 C 190 40, 370 40, 430 228" /></svg>
+        <div class="duo" aria-hidden="true" data-duo>
+          <!-- back layer: the hop track and hand-drawn arrows, all in the 560 x 504 design box -->
+          <svg class="duo-ink" viewBox="0 0 560 504">
+            <path class="track" data-track d="M123 276 C 176 136, 384 136, 437 276" />
+            <path class="arrow" d="M176 40 C 152 48, 138 72, 134 116" />
+            <path class="arrow" d="M124 103 L 134 118 L 146 105" />
+            <path class="arrow" d="M384 40 C 408 48, 422 72, 426 116" />
+            <path class="arrow" d="M414 105 L 426 118 L 436 103" />
+          </svg>
+          <p class="hand note note-cat">the memory you share</p>
           <div class="head head-ben"><img src="/art/ben-neutral.webp" alt="" /></div>
           <div class="head head-agent"><img src="/art/agent-neutral.webp" alt="" /></div>
-          <div class="duo-cat">
-            <img class="pose pose-perch" src="/art/cat-perch.webp" alt="" />
-            <img class="pose pose-hop" src="/art/cat-hop.webp" alt="" />
+          <div class="duo-cat" data-duo-cat>
+            <img data-frame="perch" class="on" src="/art/cat-perch.webp" alt="" />
+            <img data-frame="crouch" src="/art/cat-crouch.webp" alt="" />
+            <img data-frame="launch" src="/art/cat-launch.webp" alt="" />
+            <img data-frame="glide" src="/art/cat-glide.webp" alt="" />
+            <img data-frame="descend" src="/art/cat-descend.webp" alt="" />
+            <img data-frame="land" src="/art/cat-land.webp" alt="" />
           </div>
           <span class="chip float f1 personal">M-11</span>
           <span class="chip float f2 project">M-07</span>
@@ -72,7 +84,6 @@
           <span class="chip float f4 project">M-02</span>
           <p class="hand note note-ben">you</p>
           <p class="hand note note-agent">your agent</p>
-          <p class="hand note note-cat">↖ the memory you share ↗</p>
         </div>
       </section>
 
@@ -96,7 +107,7 @@
                 <div class="lines">
                   <p data-type="m1b">On it. Installing dependencies with bun.</p>
                   <p data-type="m1c" class="cmd"><code>bun add stripe hono</code></p>
-                  <p data-type="m1d" class="cmd"><code>bun test</code> <span class="ok">12 passed</span></p>
+                  <p data-type="m1d" class="cmd"><code>bun test</code> <span class="ok"><svg viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7.4 L 5.6 10.4 L 11.6 3.6" /></svg>12 passed</span></p>
                   <p data-type="m1e">Checkout service is scaffolded under <code>services/checkout</code>.</p>
                 </div>
               </div>
@@ -166,12 +177,16 @@
               <img src="/art/cat-point.webp" alt="" data-pose="point" />
               <img src="/art/cat-magnifier.webp" alt="" data-pose="magnifier" />
               <img src="/art/cat-sit.webp" alt="" data-pose="sit" />
+              <img src="/art/cat-crouch.webp" alt="" data-pose="crouch" />
+              <img src="/art/cat-launch.webp" alt="" data-pose="launch" />
+              <img src="/art/cat-glide.webp" alt="" data-pose="glide" />
+              <img src="/art/cat-descend.webp" alt="" data-pose="descend" />
+              <img src="/art/cat-land.webp" alt="" data-pose="land" />
             </div>
 
             <!-- anchors the choreography reads from the layout -->
             <i class="anchor" data-anchor="benHome"></i>
             <i class="anchor" data-anchor="agentHome"></i>
-            <i class="anchor" data-anchor="catTug"></i>
             <i class="anchor" data-anchor="catAuto"></i>
             <i class="anchor" data-anchor="ballOut"></i>
 

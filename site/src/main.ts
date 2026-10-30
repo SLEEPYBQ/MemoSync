@@ -1,5 +1,7 @@
 import "./style.css"
 import { BRAND_SVGS } from "../../src/client/components/brand/brand-svgs"
+import { startHeroCat } from "./hero-cat"
+import catSizes from "./cat-sizes.json"
 
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T
 const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => [...root.querySelectorAll(sel)] as T[]
@@ -10,6 +12,16 @@ const mix = (a: number, b: number, t: number) => a + (b - a) * t
 const seg = (u: number, a: number, b: number) => ease(clamp((u - a) / (b - a)))
 
 const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)")
+
+// Every cat drawing is shown at the same head size: widths relative to the perch.
+for (const img of $$<HTMLImageElement>("[data-pose], [data-frame]")) {
+  const key = (img.dataset.pose ?? img.dataset.frame)!
+  const name = key === "sleep" ? "sleep-card" : key === "carry" ? "carry-card" : key
+  const rel = (catSizes as Record<string, number>)[name]
+  if (rel) img.style.width = `${rel * 100}%`
+}
+
+startHeroCat($("[data-duo]"), reduceMotion)
 
 /* ───────── small page chrome ───────── */
 
@@ -46,7 +58,7 @@ fetch("https://api.github.com/repos/SLEEPYBQ/MemoSync")
   .then((repo) => {
     if (!repo || typeof repo.stargazers_count !== "number") return
     const el = $("[data-stars]")
-    el.textContent = repo.stargazers_count.toLocaleString("en")
+    $("[data-star-count]", el).textContent = repo.stargazers_count.toLocaleString("en")
     el.hidden = false
   })
   .catch(() => {})
@@ -144,6 +156,8 @@ function catKeys(): CatKey[] {
   const onCard = (i: number) => ({ x: slot(i).x + slot(i).w * 0.62, y: slot(i).y + slot(i).h * 0.55 })
   const tray = () => ({ x: center("tray02").x + 40, y: A("tray02").y + 6 })
   const sheetRight = () => A("sheet2").x + A("sheet2").w
+  // Standing on the speech bubble right above the highlighted phrase, pulling it up and out.
+  const tug = () => ({ x: A("phrase").x + A("phrase").w * 0.5 + (portrait ? 18 : 36), y: A("phrase").y + 4 })
   const stamp = () => ({ x: slot(2).x + slot(2).w - 70, y: slot(2).y + slot(2).h - 6 })
   const nap = () => ({ x: slot(4).x + slot(4).w / 2, y: slot(4).y + slot(4).h })
   // On a phone there is no gutter beside the sheet: the cat stands on its right edge.
@@ -153,8 +167,8 @@ function catKeys(): CatKey[] {
   return [
     { u: 0, at: onBen, pose: "perch" },
     { u: 1.0, at: onBen, pose: "perch" },
-    { u: 1.2, at: () => A("catTug"), pose: "tug", move: "hop", arc: 120 },
-    { u: 1.42, at: () => A("catTug"), pose: "tug" },
+    { u: 1.2, at: tug, pose: "tug", move: "hop", arc: 70 },
+    { u: 1.42, at: tug, pose: "tug" },
     { u: 1.72, at: stamp, pose: "stamp", move: "hop", arc: 160 },
     { u: 2.05, at: stamp, pose: "sit" },
     { u: 2.55, at: stamp, pose: "sit" },
@@ -176,6 +190,12 @@ function catKeys(): CatKey[] {
   ]
 }
 
+/**
+ * Scroll-driven cat. A hop is played as a sequence of drawings — crouch,
+ * launch, glide, descend, land — over the travel, with squash and stretch;
+ * turning around passes the body through a quick turn instead of mirroring
+ * instantly; a pose change while standing gets a small settle.
+ */
 function renderCat(u: number) {
   const keys = catKeys()
   let i = keys.findIndex((k) => k.u > u)
@@ -185,14 +205,71 @@ function renderCat(u: number) {
   const t = from === to ? 1 : clamp((u - from.u) / (to.u - from.u))
   const a = from.at()
   const b = to.at()
-  const travelling = Boolean(to.move) && t > 0 && t < 1 && (a.x !== b.x || a.y !== b.y)
-  const e = ease(t)
-  const x = mix(a.x, b.x, e)
-  const y = mix(a.y, b.y, e) - (travelling ? (to.arc ?? 0) * Math.sin(Math.PI * t) : 0)
-  const pose = travelling ? to.move! : t >= 1 ? to.pose : from.pose
-  const flip = travelling ? b.x < a.x : t >= 1 ? Boolean(to.flip) : Boolean(from.flip)
+  const moving = Boolean(to.move) && t > 0 && t < 1 && (a.x !== b.x || a.y !== b.y)
+  const hop = moving && to.move === "hop"
+
+  let pose = t >= 1 ? to.pose : from.pose
+  let x = t >= 1 ? b.x : a.x
+  let y = t >= 1 ? b.y : a.y
+  let sx = 1
+  let sy = 1
+  let rot = 0
+  const fromFace = from.flip ? -1 : 1
+  let facing = t >= 1 ? (to.flip ? -1 : 1) : fromFace
+
+  if (moving) {
+    const goingLeft = b.x < a.x
+    const travelFace = goingLeft ? -1 : 1
+    if (hop) {
+      // 0–.14 crouch in place (and turn if needed) · .14–.88 airborne · .88–1 land
+      const air = clamp((t - 0.14) / 0.74)
+      const e = ease(air)
+      // Never let the top of the jump leave the stage under the lane labels.
+      const arc = Math.max(0, Math.min(to.arc ?? 0, Math.min(a.y, b.y) - catSize.h * 1.4 - 70))
+      x = mix(a.x, b.x, e)
+      y = mix(a.y, b.y, e) - arc * Math.sin(Math.PI * air)
+      if (t < 0.14) {
+        const c = t / 0.14
+        pose = "crouch"
+        sy = 1 - 0.1 * Math.sin((Math.PI / 2) * c)
+        sx = 1 + 0.05 * Math.sin((Math.PI / 2) * c)
+        facing = fromFace === travelFace ? travelFace : mix(fromFace, travelFace, ease(c))
+      } else if (t < 0.88) {
+        pose = air < 0.2 ? "launch" : air < 0.62 ? "glide" : "descend"
+        const lift = Math.sin(Math.PI * air)
+        sx = 1 + 0.05 * lift
+        sy = 1 - 0.04 * lift
+        rot = (air < 0.5 ? -10 : 10) * Math.sin(Math.PI * air) * travelFace
+        facing = travelFace
+      } else {
+        const l = (t - 0.88) / 0.12
+        pose = "land"
+        sy = 0.86 + 0.14 * ease(l)
+        sx = 1.08 - 0.08 * ease(l)
+        facing = travelFace
+      }
+    } else {
+      // Walking with something in its mouth: a light trot bob.
+      const e = ease(t)
+      x = mix(a.x, b.x, e)
+      y = mix(a.y, b.y, e) - (to.arc ?? 0) * Math.sin(Math.PI * t) - Math.abs(Math.sin(t * Math.PI * 6)) * 5
+      pose = to.move!
+      facing = travelFace
+    }
+  } else if (t >= 1 || from === to) {
+    // Settling into a new pose right after a key.
+    const since = (u - (t >= 1 ? to.u : from.u)) / 0.05
+    if (since >= 0 && since < 1) {
+      const k = ease(since)
+      sy = 0.93 + 0.07 * k
+      sx = 1.04 - 0.04 * k
+    }
+  }
+
   face(el.cat, pose)
-  el.cat.style.transform = `translate(${x - catSize.w / 2}px, ${y - catSize.h}px) scaleX(${flip ? -1 : 1})`
+  // A turn narrows the body a little and flips at the middle, never to a sliver.
+  const turnX = (facing >= 0 ? 1 : -1) * (0.74 + 0.26 * Math.abs(facing))
+  el.cat.style.transform = `translate(${x - catSize.w / 2}px, ${y - catSize.h}px) rotate(${rot}deg) scale(${sx * turnX}, ${sy})`
 }
 
 const cardHome = (i: number) => A(`slot${i}`)

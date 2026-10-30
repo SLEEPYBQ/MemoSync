@@ -26,6 +26,7 @@ OUT = ROOT / "public" / "art"
 
 # name in the site -> (draft file, head fill colour or None)
 PICKS: dict[str, tuple[str, tuple[int, int, int] | None]] = {}
+SIZES: dict[str, tuple[int, int]] = {}
 
 
 def pick(name: str, draft: str, head: tuple[int, int, int] | None = None) -> None:
@@ -38,8 +39,25 @@ SAGE = (196, 210, 178)
 
 for mood in ("neutral", "happy", "thinking", "wink", "surprised"):
     pick(f"ben-{mood}", f"ben-{mood}-v1.png", LAVENDER)
+# The shipped ben-thinking came from an earlier draft that has since been
+# overwritten with an off-model one; keep the committed file.
+del PICKS["ben-thinking"]
 pick("cat-perch", "cat-perch-v1.png")
 pick("cat-tug", "cat-tug-v1.png")
+for frame in ("crouch", "launch", "glide", "descend", "land"):
+    pick(f"cat-{frame}", f"cat-{frame}-v2.png")
+
+# Head size of each cat drawing, as the distance between its pink inner ears
+# in the draft (measured by scripts/cat-scale.py). Every cat is rescaled to the
+# perch's head size so poses can be swapped frame by frame without the cat
+# growing or shrinking. The magnifier pose hides an ear; it matches the sit pose.
+CAT_EARS = {
+    "cat-perch": 267.6, "cat-crouch": 255.0, "cat-launch": 248.7, "cat-glide": 271.6,
+    "cat-descend": 281.3, "cat-land": 288.0, "cat-hop": 265.6, "cat-sit": 329.4,
+    "cat-stamp": 311.2, "cat-sleep-card": 278.7, "cat-stretch": 127.0, "cat-carry-card": 244.6,
+    "cat-point": 269.2, "cat-magnifier": 329.4, "cat-tug": 136.8,
+}
+CAT_SCALE = 0.62  # perch ends up about 640 px wide, 2x for its largest display size
 for mood in ("neutral", "thinking", "blank", "happy"):
     pick(f"agent-{mood}", f"agent-{mood}-v1.png", SAGE)
 for pose, v in {"hop": 1, "carry-card": 1, "sleep-card": 1, "stamp": 2, "magnifier": 1,
@@ -155,8 +173,12 @@ def process(name: str, draft: str, head: tuple[int, int, int] | None) -> None:
     pad = 0 if head else 12
     img = img.crop((max(bbox[0] - pad, 0), max(bbox[1] - pad, 0),
                     min(bbox[2] + pad, img.width), min(bbox[3] + pad, img.height)))
+    if name in CAT_EARS:
+        f = CAT_EARS["cat-perch"] / CAT_EARS[name] * CAT_SCALE
+        img = img.resize((round(img.width * f), round(img.height * f)), Image.LANCZOS)
+        SIZES[name] = img.size
     longest = max(img.size)
-    if longest > 900:
+    if name not in CAT_EARS and longest > 900:
         f = 900 / longest
         img = img.resize((round(img.width * f), round(img.height * f)), Image.LANCZOS)
     OUT.mkdir(parents=True, exist_ok=True)
@@ -177,3 +199,11 @@ if __name__ == "__main__":
             print(f"{name:20s} missing {draft}")
             continue
         process(name, draft, head)
+    if SIZES and not only:
+        import json
+        perch_w = SIZES["cat-perch"][0]
+        # Width of each cat drawing relative to the perch, so the page can show
+        # every pose at the same head size (see src/cat-sizes.ts).
+        rel = {k.removeprefix("cat-"): round(w / perch_w, 4) for k, (w, h) in sorted(SIZES.items())}
+        (ROOT / "src" / "cat-sizes.json").write_text(json.dumps(rel, indent=2) + "\n")
+        print("wrote src/cat-sizes.json")
