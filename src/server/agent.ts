@@ -7160,6 +7160,33 @@ export class AgentCoordinator {
       activePromptSeq: active.claudePromptSeq ?? null,
     })
 
+    // A Stop keeps the persistent Claude Query once the provider has started
+    // the turn: the CLI acknowledges the cancelled prompt, and if it ever does
+    // not, the next turn's `system_init` drops the orphaned FIFO entry. Only a
+    // Stop that arrives before any provider frame is ambiguous — a positional
+    // FIFO could not tell this turn's late init/result from the next turn's —
+    // so that case retires the Query fail-closed; the persisted session token
+    // resumes context on the next send.
+    if (active.provider === "claude" && !active.providerTurnStarted) {
+      const session = this.claudeSessions.get(chatId)
+      if (session) {
+        try {
+          await this.retireClaudeSession(session, "turn_cancel_before_start")
+        } catch (error) {
+          // Stop already cancelled the turn; a slow pump must not turn that
+          // into a user-visible failure. The session is retired and its
+          // remaining frames are dropped by the pump's retired guard.
+          this.reportBackgroundError?.(
+            `[claude-retire] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        }
+      } else {
+        // The pump may have closed concurrently after `active` was captured.
+        active.turn.close()
+      }
+      return
+    }
+
     // Interrupt/close is best-effort — the turn is already removed from
     // active state above, and runTurn()'s finally block will also call close().
     try {

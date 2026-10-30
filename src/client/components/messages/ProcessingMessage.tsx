@@ -19,7 +19,7 @@ interface ProcessingMessageProps {
 
 export function ProcessingMessage({ status }: ProcessingMessageProps) {
   useI18n()
-  const label = (status ? STATUS_LABELS[status] : undefined) || "Processing..."
+  const label = (status ? STATUS_LABELS[status] : undefined) || t("chat:processing")
   const isFailed = status === "failed"
 
   return (

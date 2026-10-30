@@ -1,4 +1,4 @@
-import type { UiTextReference } from "./ui-copy"
+import type { UiTextFields, UiTextReference } from "./ui-copy"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
@@ -707,6 +707,11 @@ export interface TodoItem {
   activeForm: string
 }
 
+/** On-demand notification preview; null on the wire when no visible reply exists. */
+export interface ChatPreview {
+  lastAgentMessagePreview: string
+}
+
 interface TranscriptEntryBase {
   _id: string
   messageId?: string
@@ -985,7 +990,7 @@ export type ChatCreateBranchResult = ChatCreateBranchSuccess | ChatCreateBranchF
 
 export type ChatMergePreviewStatus = "up_to_date" | "mergeable" | "conflicts" | "error"
 
-export interface ChatMergePreviewResult {
+export interface ChatMergePreviewResult extends UiTextFields {
   currentBranchName?: string
   targetBranchName: string
   targetDisplayName: string

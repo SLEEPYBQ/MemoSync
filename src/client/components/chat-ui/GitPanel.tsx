@@ -1,4 +1,4 @@
-import { translateUiText } from "../../i18n/uiText"
+import { translateServerUiText, translateUiText } from "../../i18n/uiText"
 import { formatRelativeTime as relativeTime, t, useI18n } from "../../i18n"
 import { PatchDiff } from "@pierre/diffs/react"
 import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
@@ -122,15 +122,15 @@ export function getPrimaryCommitActionPrefix(args: {
   if (args.hasSummary) {
     if (args.isCommitting) {
       if (args.isGeneratedCommitInFlight) {
-        return args.commitModeInFlight === "commit_only" ? "Committing..." : "Pushing..."
+        return args.commitModeInFlight === "commit_only" ? t("git:committing") : t("git:pushing")
       }
-      return args.commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing..."
+      return args.commitModeInFlight === "commit_only" ? t("git:committing") : t("git:committingAndPushing")
     }
     return args.primaryCommitMode === "commit_only" ? t("git:commitTo") : t("git:commitPushTo")
   }
 
   if (args.isGenerating) {
-    return "Generating..."
+    return t("git:generating")
   }
   return args.primaryCommitMode === "commit_only" ? t("git:generateCommitTo") : t("git:generatePushTo")
 }
@@ -439,6 +439,32 @@ function BranchListSection({
   )
 }
 
+export function MergePreviewSummary({ preview }: { preview: ChatMergePreviewResult }) {
+  useI18n()
+  // Keep the server reference authoritative when a stored preview changes locale.
+  // Older servers/direct callbacks still get the legacy UI-copy fallback.
+  const message = translateServerUiText(preview.uiTextFields?.message, translateUiText(preview.message))
+  return (
+    <div className="flex items-start gap-2">
+      {preview.status === "up_to_date" ? (
+        <Check className="mt-1 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      ) : preview.status === "conflicts" ? (
+        <AlertTriangle className="mt-1 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+      ) : preview.status === "mergeable" ? (
+        <GitBranchPlus className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
+      ) : (
+        <AlertTriangle className="mt-1 size-3.5 shrink-0 text-destructive" />
+      )}
+      <div className="min-w-0 space-y-1">
+        <div className="text-sm font-medium text-foreground">{message}</div>
+        {preview.detail ? (
+          <div className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{preview.detail}</div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function MergeBranchModal({
   open,
   onOpenChange,
@@ -599,26 +625,10 @@ function MergeBranchModal({
               </div>
             ) : previewError ? (
               <div className="text-sm text-destructive">
-                {previewError}
+                {translateUiText(previewError)}
               </div>
             ) : preview ? (
-              <div className="flex items-start gap-2">
-                {preview.status === "up_to_date" ? (
-                  <Check className="mt-1 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                ) : preview.status === "conflicts" ? (
-                  <AlertTriangle className="mt-1 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                ) : preview.status === "mergeable" ? (
-                  <GitBranchPlus className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <AlertTriangle className="mt-1 size-3.5 shrink-0 text-destructive" />
-                )}
-                <div className="min-w-0 space-y-1">
-                  <div className="text-sm font-medium text-foreground">{preview.message}</div>
-                  {preview.detail ? (
-                    <div className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{preview.detail}</div>
-                  ) : null}
-                </div>
-              </div>
+              <MergePreviewSummary preview={preview} />
             ) : (
               <div className="text-sm text-muted-foreground">
                 {t("git:previewUnavailable")}</div>
