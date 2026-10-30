@@ -17,11 +17,15 @@ import type { SettingsRowDef } from "./registry"
  * row's edge; a filled control anchors it.
  */
 const SETTINGS_FOCUS_CLASS =
-  "outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+  "outline-none focus-visible:ring-2 focus-visible:ring-focus/40 focus-visible:ring-offset-0"
 
 /** The fill every control shares, tuned to sit one step above the card in both themes. */
 export const SETTINGS_CONTROL_FILL_CLASS =
   "bg-black/[0.045] hover:bg-black/[0.07] dark:bg-white/[0.07] dark:hover:bg-white/[0.10]"
+
+/** Row icon actions (edit, delete, more): a square that fills on hover, never a bordered circle. */
+export const SETTINGS_ICON_BUTTON_CLASS =
+  "size-8 rounded-lg border-0 text-muted-foreground hover:border-0 hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
 
 const SETTINGS_SELECT_TRIGGER_CLASS = cn(
   "h-8 w-auto min-w-[8.5rem] max-w-full justify-between gap-2 rounded-lg border-0 px-2.5 text-[13px] text-foreground shadow-none",

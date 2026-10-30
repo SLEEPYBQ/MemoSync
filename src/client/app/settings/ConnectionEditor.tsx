@@ -162,7 +162,7 @@ export function ConnectionEditor({
                 >
                   <div className="min-w-0 px-1">
                     <SettingsSelect
-                      className={`rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${MODEL_ACCESS_FOCUS_CLASS}`}
+                      className={`rounded-sm focus-visible:ring-2 focus-visible:ring-focus/60 focus-visible:ring-offset-1 ${MODEL_ACCESS_FOCUS_CLASS}`}
                       aria-label={`${t("modelAccess:protocol")} ${index + 1}`}
                       value={endpoint.protocol}
                       onValueChange={(protocol) => patchEndpoint(index, { protocol: protocol as ApiProtocol })}
@@ -230,7 +230,7 @@ export function ConnectionEditor({
                       <div className="flex flex-wrap items-center justify-between gap-2" key={index}>
                         <span>{t("modelAccess:authHeader")}</span>
                         <SettingsSelect
-                          className={`rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${MODEL_ACCESS_FOCUS_CLASS}`}
+                          className={`rounded-sm focus-visible:ring-2 focus-visible:ring-focus/60 focus-visible:ring-offset-1 ${MODEL_ACCESS_FOCUS_CLASS}`}
                           aria-label={t("modelAccess:authHeader")}
                           value={endpoint.authHeader ?? "bearer"}
                           onValueChange={(authHeader) =>

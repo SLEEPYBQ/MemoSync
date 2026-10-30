@@ -26,6 +26,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/popover"
 import { SelectItem } from "../../components/ui/select"
 import {
+  SETTINGS_ICON_BUTTON_CLASS,
   SettingsActionButton,
   SettingsNotice,
   SettingsRow,
@@ -159,7 +160,7 @@ export function EngineCard({
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="size-8 text-muted-foreground"
+                className={SETTINGS_ICON_BUTTON_CLASS}
                 aria-label={t("modelAccess:engineActions", { engine: ENGINE_NAMES[engine] })}
                 disabled={!socket || !status || pending}
               >

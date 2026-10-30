@@ -21,7 +21,8 @@ import {
   MODEL_ACCESS_FOCUS_CLASS,
   protocolLabel,
 } from "./modelAccessUi"
-import { SettingsActionButton, SettingsBadge, SettingsGroup, SettingsNotice } from "./shared"
+import { cn } from "../../lib/utils"
+import { SETTINGS_ICON_BUTTON_CLASS, SettingsActionButton, SettingsBadge, SettingsGroup, SettingsNotice } from "./shared"
 import { BrandTile, brandForConnection } from "../../components/brand/BrandIcon"
 
 export function ConnectionDialog({
@@ -267,6 +268,7 @@ export function ConnectionsSection({
                       type="button"
                       variant="ghost"
                       size="icon"
+                      className={SETTINGS_ICON_BUTTON_CLASS}
                       aria-label={t("modelAccess:lockedConnection")}
                       disabled={!socket}
                       onClick={() => setEditing(connection)}
@@ -281,6 +283,7 @@ export function ConnectionsSection({
                         type="button"
                         variant="ghost"
                         size="icon"
+                        className={SETTINGS_ICON_BUTTON_CLASS}
                         aria-label={t("modelAccess:edit")}
                         disabled={!socket || pending}
                         onClick={() => setEditing(connection)}
@@ -293,7 +296,7 @@ export function ConnectionsSection({
                         type="button"
                         variant="ghost"
                         size="icon"
-                        className="hover:text-destructive"
+                        className={cn(SETTINGS_ICON_BUTTON_CLASS, "hover:text-destructive")}
                         aria-label={t("modelAccess:delete")}
                         disabled={!socket || pending}
                         onClick={() => {

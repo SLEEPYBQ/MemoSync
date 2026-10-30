@@ -16,6 +16,7 @@ import { getResolvedKeybindings } from "../lib/keybindings"
 import { memoriesApi } from "../lib/memoriesApi"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
+import { SIDEBAR_ROW_ACTIVE_CLASS, SIDEBAR_ROW_CLASS } from "../components/chat-ui/sidebar/rowStyles"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -428,14 +429,14 @@ function AppSidebarImpl({
       <div
         data-sidebar="open"
         className={cn(
-          "fixed inset-0 z-50 bg-background dark:bg-card flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:mr-0 md:h-[calc(100dvh-16px)] md:my-2 md:ml-2 md:border md:border-border md:rounded-2xl",
+          "fixed inset-0 z-50 bg-sidebar flex flex-col h-[100dvh] select-none",
+          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
           open ? "flex" : "hidden md:flex",
           collapsed && "md:hidden"
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
       >
-        <div className="px-[5px] h-[47px] md:h-auto md:py-1 border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:pl-3 md:pr-1 md:flex md:justify-between">
+        <div className="px-[5px] h-[47px] border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:h-12 md:border-b-0 md:pl-4 md:pr-2 md:flex md:justify-between">
           <div className="md:hidden">
             <Button
               variant="ghost"
@@ -498,7 +499,7 @@ function AppSidebarImpl({
                 navigate("/")
                 onClose()
               }}
-              className="hidden md:inline-flex size-10 rounded-lg hover:!border-border/0"
+              className="hidden md:inline-flex size-8 rounded-lg border-0 text-muted-foreground hover:border-0 hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
               title={t("sidebar:newProject")}
             >
               <Plus className="size-4" />
@@ -514,7 +515,7 @@ function AppSidebarImpl({
             touchAction: "pan-y",
           }}
         >
-          <div className="p-[7px]">
+          <div className="px-2 pb-2">
             {!hasVisibleChats && isConnecting ? (
               <div className="space-y-5 px-1 pt-3">
                 {[0, 1, 2].map((section) => (
@@ -566,7 +567,7 @@ function AppSidebarImpl({
           </div>
         </div>
 
-        <div className="border-t border-border p-2">
+        <div className="space-y-0.5 border-t border-border/60 p-2">
           {(
             <button
               type="button"
@@ -577,14 +578,9 @@ function AppSidebarImpl({
 
                 onClose()
               }}
-              className={cn(
-                "mb-1 w-full rounded-xl border px-3 py-2 text-left transition-colors",
-                isMemoryActive
-                  ? "bg-muted border-border"
-                  : "border-border/0 hover:bg-muted hover:border-border active:bg-muted/80"
-              )}
+              className={cn(SIDEBAR_ROW_CLASS, "w-full px-2.5 text-left", isMemoryActive && SIDEBAR_ROW_ACTIVE_CLASS)}
             >
-              <div className="flex items-center gap-2">
+              <div className="flex w-full items-center gap-2">
                 <span className="relative">
                   <BrainCircuit className="h-4 w-4 text-muted-foreground" />
                   {memoryBadge ? (
@@ -594,7 +590,7 @@ function AppSidebarImpl({
                     />
                   ) : null}
                 </span>
-                <span className="text-sm">{t("common:memory")}</span>
+                <span className="text-[13px]">{t("common:memory")}</span>
                 <MemoryOffBadge />
                 {pendingCount > 0 ? (
                   <span
@@ -613,19 +609,14 @@ function AppSidebarImpl({
               navigate("/settings/general")
               onClose()
             }}
-            className={cn(
-              "w-full rounded-xl rounded-t-md border px-3 py-2 text-left transition-colors",
-              isSettingsActive
-                ? "bg-muted border-border"
-                : "border-border/0 hover:bg-muted hover:border-border active:bg-muted/80"
-            )}
+            className={cn(SIDEBAR_ROW_CLASS, "w-full px-2.5 text-left", isSettingsActive && SIDEBAR_ROW_ACTIVE_CLASS)}
           >
-            <div className="flex items- justify-between gap-2">
+            <div className="flex w-full items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Settings className="h-4 w-4 text-muted-foreground" />
-                <span className="text-sm">{t("common:settings")}</span>
+                <span className="text-[13px]">{t("common:settings")}</span>
               </div>
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                 <span>{statusLabel}</span>
                 {isConnecting ? (
                   <Loader2 className="h-2 w-2 animate-spin" />

@@ -166,9 +166,9 @@ export function SettingsPage() {
         {/* Settings navigation: its own column against a hairline, so the
             space between it and the centred content reads as layout, not a gap. */}
         <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border/60 md:flex">
-          <div className="px-3 pb-2 pt-6">
+          <div className="px-3 pb-2 pt-3">
             <div className="px-2.5 pb-3 text-[15px] font-semibold tracking-[-0.01em] text-foreground">{t("common:settings")}</div>
-            <label className="flex h-8 items-center gap-2 rounded-lg bg-black/[0.045] px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-ring/50 dark:bg-white/[0.07]">
+            <label className="flex h-8 items-center gap-2 rounded-lg bg-black/[0.045] px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-focus/40 dark:bg-white/[0.07]">
               <Search className="size-3.5 shrink-0" />
               <input
                 value={query}
