@@ -322,6 +322,7 @@ test("test states cover pending, success and stable error codes, and discard sta
     await form.getByText("Provider details", { exact: true }).click()
     await form.getByText("Fixture provider detail", { exact: true }).waitFor()
     expect(await form.getByTestId("connection-test-result").textContent()).not.toContain("Connected")
+    expect(await form.getByTestId("connection-test-result").textContent()).toContain("Anthropic:")
     await shots(`test-${errorCode}`)
   }
   await page.evaluate(() => window.modelAccessFixture.holdTest(true))

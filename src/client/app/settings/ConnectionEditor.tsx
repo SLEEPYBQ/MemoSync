@@ -433,7 +433,10 @@ export function ConnectionEditor({
                 ) : (
                   <CircleAlert className="size-4 shrink-0" />
                 )}
-                <p>{connectionTestMessage(testResult)}</p>
+                <p>
+                  {!testResult.ok ? `${protocolLabel(testResult.protocol)}: ` : ""}
+                  {connectionTestMessage(testResult)}
+                </p>
               </div>
               {!testResult.ok && testResult.message ? (
                 <details className="mt-2 text-xs">

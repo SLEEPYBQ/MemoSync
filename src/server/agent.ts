@@ -3224,11 +3224,12 @@ export class AgentCoordinator {
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
+    const connectionId = options.modelOptions?.connectionId ?? options.modelOptions?.[provider]?.connectionId
     if (provider === "claude") {
-      const model = options.modelOptions?.claude?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model)
+      const model = connectionId && options.model ? options.model : normalizeServerModel(provider, options.model)
       const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)
       return {
-        connectionId: modelOptions.connectionId,
+        connectionId,
         model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
@@ -3239,8 +3240,8 @@ export class AgentCoordinator {
     if (provider === "pi") {
       const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
       return {
-        connectionId: piModelOptions.connectionId,
-        model: options.modelOptions?.pi?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
+        connectionId,
+        model: connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
         effort: piModelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: false,
@@ -3249,8 +3250,8 @@ export class AgentCoordinator {
 
     const modelOptions = normalizeCodexModelOptions(options.modelOptions, options.effort)
     return {
-      connectionId: modelOptions.connectionId,
-      model: options.modelOptions?.codex?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
+      connectionId,
+      model: connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
       effort: modelOptions.reasoningEffort,
       serviceTier: codexServiceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
