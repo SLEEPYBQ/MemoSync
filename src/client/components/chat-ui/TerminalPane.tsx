@@ -2,10 +2,12 @@ import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useRef, useState, type MutableRefObject } from "react"
 import { useTheme } from "../../hooks/useTheme"
-import { SerializeAddon } from "@xterm/addon-serialize"
 import { WebLinksAddon } from "@xterm/addon-web-links"
+import { Unicode11Addon } from "@xterm/addon-unicode11"
 import { Terminal, type ITheme, type ITerminalOptions } from "@xterm/xterm"
-import type { TerminalSnapshot } from "../../../shared/protocol"
+import type { TerminalSnapshot, TerminalTailResult } from "../../../shared/protocol"
+import { TerminalOutputSync } from "./terminalOutputSync"
+export { TerminalOutputSync } from "./terminalOutputSync"
 import type { AppSocket, SocketStatus } from "../../app/socket"
 
 interface Props {
@@ -154,6 +156,7 @@ export function getTerminalOptions(scrollback: number, theme: ITheme, platform =
     lineHeight: 1,
     convertEol: false,
     allowTransparency: true,
+    allowProposedApi: true,
     fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
     fontSize: 13,
     theme,
@@ -244,11 +247,10 @@ export function TerminalPane({
   useI18n()
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
-  const replayStateRef = useRef<string | null>(null)
+  const outputSyncRef = useRef<TerminalOutputSync | null>(null)
   const onCommandSentRef = useRef<Props["onCommandSent"]>(onCommandSent)
   const hasCreatedRef = useRef(false)
   const createAttemptRef = useRef(0)
-  const lastAppliedSnapshotKeyRef = useRef<string | null>(null)
   const sentInitialCommandRef = useRef<string | null>(null)
   const lastSizeRef = useRef<{ cols: number; rows: number } | null>(null)
   const [metadata, setMetadata] = useState<Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode"> | null>(null)
@@ -299,8 +301,10 @@ export function TerminalPane({
 
   useEffect(() => {
     const terminal = new Terminal(getTerminalOptions(scrollback, terminalTheme))
-    const serializeAddon = new SerializeAddon()
-    terminal.loadAddon(serializeAddon)
+    terminal.loadAddon(new Unicode11Addon())
+    terminal.unicode.activeVersion = "11"
+    const outputSync = new TerminalOutputSync(terminal)
+    outputSyncRef.current = outputSync
     terminal.loadAddon(new WebLinksAddon())
     terminal.attachCustomKeyEventHandler((event) => {
       if (event.type !== "keydown") return true
@@ -319,9 +323,6 @@ export function TerminalPane({
 
     if (element) {
       terminal.open(element)
-      if (replayStateRef.current) {
-        terminal.write(replayStateRef.current)
-      }
       syncTerminalSize(terminal, element, lastSizeRef, false, () => {})
       refreshTerminal(terminal)
       scheduleResizeSync()
@@ -363,7 +364,9 @@ export function TerminalPane({
       observer.disconnect()
       resizeDisposable.dispose()
       dataDisposable.dispose()
-      replayStateRef.current = serializeAddon.serialize()
+      outputSync.dispose()
+      outputSyncRef.current = null
+      hasCreatedRef.current = false
       terminal.dispose()
       terminalRef.current = null
     }
@@ -372,7 +375,7 @@ export function TerminalPane({
     // down and rebuilt it on every light/dark toggle — visible flicker + lost
     // scroll position (BUG PANEL-3). Only structural inputs recreate the term.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scrollback, socket, terminalId])
+  }, [socket, terminalId])
 
   useEffect(() => {
     const terminal = terminalRef.current
@@ -406,11 +409,12 @@ export function TerminalPane({
 
     hasCreatedRef.current = false
     createAttemptRef.current += 1
-    lastAppliedSnapshotKeyRef.current = null
-    replayStateRef.current = null
+    outputSyncRef.current?.dispose()
+    outputSyncRef.current = new TerminalOutputSync(terminal)
     setMetadata(null)
     setError(null)
-    terminal.reset()
+    // Order the clear after any xterm writes already queued by the old session.
+    terminal.write("", () => terminal.reset())
     refreshTerminal(terminal)
     void socket.command({
       type: "terminal.close",
@@ -425,6 +429,10 @@ export function TerminalPane({
   }, [metadata?.cwd, onPathChange])
 
   useEffect(() => {
+    if (connectionStatus !== "connected") return
+    let active = true
+    let catchingUp = false
+    let repairAgain = false
     const applySnapshot = (snapshot: TerminalSnapshot) => {
       const terminal = terminalRef.current
       if (!terminal) return false
@@ -434,31 +442,34 @@ export function TerminalPane({
         status: snapshot.status,
         exitCode: snapshot.exitCode,
       } satisfies Pick<TerminalSnapshot, "cwd" | "shell" | "status" | "exitCode">
-      const snapshotKey = JSON.stringify({
-        cwd: snapshot.cwd,
-        shell: snapshot.shell,
-        cols: snapshot.cols,
-        rows: snapshot.rows,
-        scrollback: snapshot.scrollback,
-        status: snapshot.status,
-        exitCode: snapshot.exitCode,
-        serializedState: snapshot.serializedState,
-      })
-      if (lastAppliedSnapshotKeyRef.current === snapshotKey) {
-        setMetadata((current) => sameTerminalMetadata(current, nextMetadata) ? current : nextMetadata)
-        replayStateRef.current = snapshot.serializedState || null
-        return false
-      }
-      lastAppliedSnapshotKeyRef.current = snapshotKey
       setMetadata((current) => sameTerminalMetadata(current, nextMetadata) ? current : nextMetadata)
-      replayStateRef.current = snapshot.serializedState || null
       terminal.options.scrollback = snapshot.scrollback
-      terminal.reset()
-      if (snapshot.serializedState) {
-        terminal.write(snapshot.serializedState)
-      }
+      const applied = outputSyncRef.current?.snapshot(snapshot) ?? false
       refreshTerminal(terminal)
-      return true
+      return applied
+    }
+
+    const applyTail = (result: TerminalTailResult) => {
+      if (result.snapshot) applySnapshot(result.snapshot)
+      else if (result.tail && !outputSyncRef.current?.output({ ...result.tail, sessionId: result.sessionId })) repairAgain = true
+      setMetadata((current) => current ? { ...current, status: result.status, exitCode: result.exitCode } : current)
+    }
+
+    const catchUp = () => {
+      if (catchingUp) { repairAgain = true; return }
+      catchingUp = true
+      repairAgain = false
+      const outputSync = outputSyncRef.current
+      void socket.command<TerminalTailResult | null>({ type: "terminal.tail", terminalId, sinceVersion: null, ...outputSyncRef.current?.cursor }).then((result) => {
+        if (!active || outputSyncRef.current !== outputSync) return
+        if (result) applyTail(result)
+        else scheduleSessionCreate()
+      }).catch((commandError) => {
+        if (active) setError(commandError instanceof Error ? commandError.message : String(commandError))
+      }).finally(() => {
+        catchingUp = false
+        if (active && repairAgain) catchUp()
+      })
     }
 
     const ensureSession = () => {
@@ -466,6 +477,7 @@ export function TerminalPane({
       const element = containerRef.current
       if (!terminal || !element) return
       const size = getMeasuredTerminalSize(terminal, element) ?? getTerminalSize(terminal)
+      const attempt = createAttemptRef.current
       terminal.resize(size.cols, size.rows)
       lastSizeRef.current = size
       void socket.command({
@@ -475,11 +487,14 @@ export function TerminalPane({
         cols: size.cols,
         rows: size.rows,
         scrollback,
+        ...outputSyncRef.current?.cursor,
       }).then((snapshot) => {
+        if (!active || createAttemptRef.current !== attempt) return
         hasCreatedRef.current = true
         setError(null)
         if (snapshot) {
-          applySnapshot(snapshot as TerminalSnapshot)
+          if ("tail" in (snapshot as TerminalTailResult)) applyTail(snapshot as TerminalTailResult)
+          else applySnapshot(snapshot as TerminalSnapshot)
         }
         if (initialCommand && sentInitialCommandRef.current !== initialCommand) {
           sentInitialCommandRef.current = initialCommand
@@ -488,14 +503,14 @@ export function TerminalPane({
         }
         scheduleResizeSync()
       }).catch((commandError) => {
-        setError(commandError instanceof Error ? commandError.message : String(commandError))
+        if (active) setError(commandError instanceof Error ? commandError.message : String(commandError))
       })
     }
 
     const scheduleSessionCreate = () => {
       const attempt = ++createAttemptRef.current
       const run = () => {
-        if (createAttemptRef.current !== attempt) return
+        if (!active || createAttemptRef.current !== attempt) return
         const terminal = terminalRef.current
         const element = containerRef.current
         if (!terminal || !element) return
@@ -515,13 +530,19 @@ export function TerminalPane({
       })
     }
 
-    scheduleSessionCreate()
-
-    return socket.subscribeTerminal(terminalId, {
+    const unsubscribe = socket.subscribeTerminal(terminalId, {
+      getCursor: () => outputSyncRef.current?.cursor ?? { sinceVersion: null },
+      onTail: (result) => {
+        hasCreatedRef.current = true
+        setError(null)
+        applyTail(result)
+        // Refresh dimensions/scrollback without replaying an identical snapshot.
+        scheduleSessionCreate()
+        if (repairAgain) catchUp()
+      },
       onSnapshot: (snapshot) => {
         if (!snapshot) {
           hasCreatedRef.current = false
-          lastAppliedSnapshotKeyRef.current = null
           if (connectionStatus === "connected") {
             scheduleSessionCreate()
           }
@@ -537,7 +558,7 @@ export function TerminalPane({
         const terminal = terminalRef.current
         if (!terminal) return
         if (event.type === "terminal.output") {
-          terminal.write(event.data)
+          if (!outputSyncRef.current?.output(event)) catchUp()
           return
         }
         if (event.type === "terminal.exit") {
@@ -550,6 +571,7 @@ export function TerminalPane({
         }
       },
     })
+    return () => { active = false; createAttemptRef.current += 1; unsubscribe() }
   }, [connectionStatus, initialCommand, onInitialCommandSent, projectId, scrollback, socket, terminalId])
 
   return (

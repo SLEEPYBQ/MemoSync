@@ -52,6 +52,7 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
     <div style={fixedTerminalHeight > 0 ? { height: `${fixedTerminalHeight}px` } : undefined}>
       <Suspense fallback={<PanelLoading />}>
         <TerminalWorkspace
+          closeHidesLastPane
           projectId={projectId}
           layout={terminalLayout}
           onAddTerminal={addTerminal}

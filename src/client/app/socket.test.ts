@@ -157,6 +157,34 @@ describe("AppSocket", () => {
     socket.dispose()
   })
 
+  test("terminal reconnect subscribes from the current cursor and dispatches tails", () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    let version = 3
+    const tails: unknown[] = []
+    const snapshots: unknown[] = []
+    socket.subscribeTerminal("a", {
+      getCursor: () => ({ sinceVersion: version, sessionId: "epoch" }),
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+      onTail: (tail) => tails.push(tail),
+    })
+    socket.start()
+    const first = FakeWebSocket.instances[0]!
+    first.open()
+    const subscription = first.sent[0]!
+    expect(subscription.topic).toEqual({ type: "terminal", terminalId: "a", sinceVersion: 3, sessionId: "epoch" })
+    version = 12
+    ;(socket as any).reconnectNow()
+    timers.runTimeout((socket as any).reconnectTimer)
+    const second = FakeWebSocket.instances.at(-1)!
+    second.open()
+    expect(second.sent[0]?.topic).toEqual({ type: "terminal", terminalId: "a", sinceVersion: 12, sessionId: "epoch" })
+    const result = { terminalId: "a", sessionId: "epoch", tail: { data: "next", version: 16 }, snapshot: null, status: "running", exitCode: null }
+    second.receive({ v: 1, type: "snapshot", id: subscription.id, snapshot: { type: "terminal", data: result } })
+    expect(tails).toEqual([result])
+    expect(snapshots).toEqual([])
+    socket.dispose()
+  })
+
   test("pings a stale open connection and resolves when acked", async () => {
     const socket = new AppSocket("ws://localhost/ws")
     socket.start()

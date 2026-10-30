@@ -546,6 +546,7 @@ export function ChatPage() {
   const globalRightSidebarSize = useRightSidebarStore((store) => store.size)
   const addTerminal = useTerminalLayoutStore((store) => store.addTerminal)
   const removeTerminal = useTerminalLayoutStore((store) => store.removeTerminal)
+  const hideTerminals = useTerminalLayoutStore((store) => store.hideTerminals)
   const toggleVisibility = useTerminalLayoutStore((store) => store.toggleVisibility)
   const resetMainSizes = useTerminalLayoutStore((store) => store.resetMainSizes)
   const setMainSizes = useTerminalLayoutStore((store) => store.setMainSizes)
@@ -805,9 +806,14 @@ export function ChatPage() {
   }, [state.handleCancel])
 
   const handleRemoveTerminal = useCallback((currentProjectId: string, terminalId: string) => {
+    const count = useTerminalLayoutStore.getState().projects[currentProjectId]?.terminals.length ?? 0
+    if (count === 1) {
+      hideTerminals(currentProjectId)
+      return
+    }
     void state.socket.command({ type: "terminal.close", terminalId }).catch(() => {})
     removeTerminal(currentProjectId, terminalId)
-  }, [removeTerminal, state.socket])
+  }, [hideTerminals, removeTerminal, state.socket])
 
   const clearShowScrollTimeout = useCallback(() => {
     if (showScrollTimeoutRef.current !== null) {

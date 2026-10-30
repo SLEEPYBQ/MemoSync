@@ -7,6 +7,7 @@ import type {
   SubscriptionTopic,
   TerminalEvent,
   TerminalSnapshot,
+  TerminalTailResult,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
 import { generateUUID } from "../lib/utils"
@@ -41,6 +42,7 @@ interface SubscriptionEntry<TSnapshot, TEvent = never> {
   topic: SubscriptionTopic
   listener: SnapshotListener<TSnapshot>
   eventListener?: EventListener<TEvent>
+  topicOnReconnect?: () => SubscriptionTopic
 }
 
 function isSendToStartingProfilingEnabled() {
@@ -166,13 +168,20 @@ export class AppSocket {
     handlers: {
       onSnapshot: SnapshotListener<TerminalSnapshot | null>
       onEvent?: EventListener<TerminalEvent>
+      onTail?: SnapshotListener<TerminalTailResult>
+      getCursor?: () => { sinceVersion: number | null; sessionId?: string }
     }
   ) {
     const id = generateUUID()
-    const topic: SubscriptionTopic = { type: "terminal", terminalId }
+    const getTopic = (): SubscriptionTopic => ({ type: "terminal", terminalId, ...handlers.getCursor?.() })
+    const topic = getTopic()
     this.subscriptions.set(id, {
       topic,
-      listener: handlers.onSnapshot as SnapshotListener<unknown>,
+      listener: (value) => {
+        if (value && typeof value === "object" && "tail" in value) handlers.onTail?.(value as TerminalTailResult)
+        else handlers.onSnapshot(value as TerminalSnapshot | null)
+      },
+      topicOnReconnect: getTopic,
       eventListener: handlers.onEvent as EventListener<unknown> | undefined,
     })
     this.enqueue({ v: 1, type: "subscribe", id, topic })
@@ -238,7 +247,7 @@ export class AppSocket {
       this.emitStatus("connected")
       this.startHeartbeat()
       for (const [id, subscription] of this.subscriptions.entries()) {
-        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topic })
+        this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topicOnReconnect?.() ?? subscription.topic })
       }
       while (this.outboundQueue.length > 0) {
         const envelope = this.outboundQueue.shift()

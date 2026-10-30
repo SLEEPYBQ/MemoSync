@@ -50,4 +50,17 @@ describe("terminalLayoutStore", () => {
     expect(layout.isVisible).toBe(true)
     expect(layout.terminals).toHaveLength(1)
   })
+
+  test("hiding and reopening terminals preserves pane ids, sizes and numbering", () => {
+    const store = useTerminalLayoutStore.getState()
+    const first = store.addTerminal(PROJECT_ID)
+    const second = store.addTerminal(PROJECT_ID)
+    store.setTerminalSizes(PROJECT_ID, [30, 70])
+    const before = useTerminalLayoutStore.getState().projects[PROJECT_ID]!
+    store.hideTerminals(PROJECT_ID)
+    expect(useTerminalLayoutStore.getState().projects[PROJECT_ID]).toEqual({ ...before, isVisible: false })
+    store.toggleVisibility(PROJECT_ID)
+    expect(useTerminalLayoutStore.getState().projects[PROJECT_ID]).toEqual(before)
+    expect(before.terminals.map((pane) => pane.id)).toEqual([first, second])
+  })
 })
