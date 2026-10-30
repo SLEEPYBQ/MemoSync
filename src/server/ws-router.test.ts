@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, TranscriptEntry, UpdateSnapshot } from "../shared/types"
+import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, PendingToolSnapshot, TranscriptEntry, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
 import {
@@ -272,7 +272,7 @@ const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
   filePathDisplay: "~/.kanna/llm-provider.json",
 }
 
-function createChatSnapshotHarness() {
+function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = null) {
   const state = createEmptyState()
   state.projectsById.set("project-1", {
     id: "project-1",
@@ -297,6 +297,8 @@ function createChatSnapshotHarness() {
   const router = createWsRouter({
     store: {
       state,
+      getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
+      getMessages: () => transcript,
       getRecentChatHistory: (_chatId: string, recentLimit: number) => ({
         messages: transcript,
         history: { hasOlder: false, olderCursor: null, recentLimit },
@@ -306,6 +308,7 @@ function createChatSnapshotHarness() {
       getActiveStatuses: () => new Map(),
       getDrainingChatIds: () => new Set(),
       getStreamingAssistantTexts: () => new Map(),
+      getPendingTool: () => pendingTool,
     } as never,
     terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
     keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
@@ -319,6 +322,40 @@ function createChatSnapshotHarness() {
 
   return { router, transcript, ws }
 }
+
+describe("chat.getPreview", () => {
+  test("uses the coordinator's pending tool id to preview the question being asked", async () => {
+    const { router, transcript, ws } = createChatSnapshotHarness({ toolUseId: "question", toolKind: "ask_user_question" })
+    transcript.push(
+      { _id: "reply", createdAt: 1, kind: "assistant_text", text: "Let me check." },
+      { _id: "question", createdAt: 2, kind: "tool_call", tool: { kind: "tool", toolKind: "ask_user_question", toolName: "AskUserQuestion", toolId: "question", input: { questions: [{ question: "**Which** branch?" }] } } },
+    )
+    await router.handleMessage(ws as never, JSON.stringify({ v: PROTOCOL_VERSION, type: "command", id: "question-preview", command: { type: "chat.getPreview", chatId: "chat-1" } }))
+    expect(ws.sent.at(-1)).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: "question-preview", result: { lastAgentMessagePreview: "Which branch?" } })
+  })
+
+  test("returns a bounded visible reply through the command router", async () => {
+    const { router, transcript, ws } = createChatSnapshotHarness()
+    transcript.push(
+      { _id: "old", createdAt: 1, kind: "assistant_text", text: "Old answer" },
+      { _id: "reply", createdAt: 2, kind: "assistant_text", text: "## Done\n**Fixed** " + "the router ".repeat(30) },
+      { _id: "memory", createdAt: 3, kind: "memory_trace", summary: "PRIVATE", labels: [] },
+      { _id: "hidden", createdAt: 4, kind: "assistant_text", text: "HIDDEN", hidden: true },
+    )
+    await router.handleMessage(ws as never, JSON.stringify({ v: PROTOCOL_VERSION, type: "command", id: "preview", command: { type: "chat.getPreview", chatId: "chat-1" } }))
+    const plain = "Done Fixed " + "the router ".repeat(30).trim()
+    expect(ws.sent.at(-1)).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: "preview", result: { lastAgentMessagePreview: `${plain.slice(0, 139)}…` } })
+  })
+
+  test("returns null for unknown chats and chats with no visible assistant text", async () => {
+    const { router, transcript, ws } = createChatSnapshotHarness()
+    transcript.push({ _id: "hidden", createdAt: 1, kind: "assistant_text", text: "HIDDEN", hidden: true })
+    for (const chatId of ["missing", "chat-1"]) {
+      await router.handleMessage(ws as never, JSON.stringify({ v: PROTOCOL_VERSION, type: "command", id: chatId, command: { type: "chat.getPreview", chatId } }))
+      expect(ws.sent.at(-1)).toEqual({ v: PROTOCOL_VERSION, type: "ack", id: chatId, result: null })
+    }
+  })
+})
 
 async function subscribeChatHarness({
   router,

@@ -1,9 +1,46 @@
 import { describe, expect, test } from "bun:test"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
+import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import { createEmptyState } from "./events"
 import type { TranscriptEntry } from "../shared/types"
 
 describe("read models", () => {
+  test("notification preview selects the latest visible assistant reply, excluding memory and tool noise", () => {
+    const entries: TranscriptEntry[] = [
+      { _id: "old", createdAt: 1, kind: "assistant_text", text: "Old reply" },
+      { _id: "latest", createdAt: 2, kind: "assistant_text", text: "## Done\n\n- **Fixed** `retry_count_ms` in [the router](https://example.com).\n- [x] Tests passed." },
+      { _id: "memory", createdAt: 3, kind: "memory_preview", previewId: "p", task: "PRIVATE TASK", memories: [{ id: "M-1", content: "PRIVATE MEMORY", scope: "project" }] },
+      { _id: "trace", createdAt: 4, kind: "memory_trace", summary: "PRIVATE TRACE", labels: [] },
+      { _id: "hidden", createdAt: 5, kind: "assistant_text", text: "PRIVATE HIDDEN", hidden: true },
+      { _id: "tool", createdAt: 6, kind: "tool_call", tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t", input: { command: "PRIVATE COMMAND" } } },
+      { _id: "result", createdAt: 7, kind: "tool_result", toolId: "t", content: "PRIVATE RESULT" },
+      { _id: "status", createdAt: 8, kind: "status", status: "PRIVATE STATUS" },
+      { _id: "user", createdAt: 9, kind: "user_prompt", content: "USER PROMPT" },
+    ]
+    expect(deriveChatPreview(entries)).toEqual({ lastAgentMessagePreview: "Done Fixed retry_count_ms in the router. Tests passed." })
+    expect(deriveChatPreview(entries.filter((entry) => entry.kind !== "assistant_text"))).toBeNull()
+    expect(deriveChatPreview([entries[4]!])).toBeNull()
+    expect(deriveChatPreview([])).toBeNull()
+  })
+
+  test("notification preview strips markdown before collapsing whitespace and truncating to 140 characters", () => {
+    const text = "## Result\n\n> **Done**\n```ts\nconst x = 1\n```\n" + "word ".repeat(40)
+    const plain = "Result Done const x = 1 " + "word ".repeat(40).trim()
+    expect(deriveChatPreview([{ _id: "a", createdAt: 1, kind: "assistant_text", text }])).toEqual({ lastAgentMessagePreview: `${plain.slice(0, 139)}…` })
+    expect(deriveChatPreview([{ _id: "a", createdAt: 1, kind: "assistant_text", text: "x".repeat(140) }])?.lastAgentMessagePreview).toBe("x".repeat(140))
+  })
+
+  test("notification preview includes only the current pending question or plan", () => {
+    const reply: TranscriptEntry = { _id: "a", createdAt: 1, kind: "assistant_text", text: "Previous reply" }
+    const question: TranscriptEntry = { _id: "q", createdAt: 2, kind: "tool_call", tool: { kind: "tool", toolKind: "ask_user_question", toolName: "AskUserQuestion", toolId: "question", input: { questions: [{ question: "**Which** branch?" }, { question: "Deploy\n now?" }] } } }
+    const plan: TranscriptEntry = { _id: "p", createdAt: 3, kind: "tool_call", tool: { kind: "tool", toolKind: "exit_plan_mode", toolName: "ExitPlanMode", toolId: "plan", input: { summary: "## Update the router", plan: "Longer plan" } } }
+    expect(deriveChatPreview([reply, question], "question")).toEqual({ lastAgentMessagePreview: "Which branch? Deploy now?" })
+    expect(deriveChatPreview([reply, question])).toEqual({ lastAgentMessagePreview: "Previous reply" })
+    expect(deriveChatPreview([reply, plan], "plan")).toEqual({ lastAgentMessagePreview: "Update the router" })
+    if (plan.kind === "tool_call" && plan.tool.toolKind === "exit_plan_mode") plan.tool.input.summary = " "
+    expect(deriveChatPreview([plan], "plan")).toEqual({ lastAgentMessagePreview: "Longer plan" })
+    expect(deriveChatPreview([{ ...question, hidden: true }], "question")).toBeNull()
+  })
+
   test("keeps a compact full-history transcript for the Memory Record", () => {
     const entries = [{
       _id: "prompt-1",

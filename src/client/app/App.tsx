@@ -12,7 +12,7 @@ import { useChatSoundPreferencesStore } from "../stores/chatSoundPreferencesStor
 import type { ChatSoundPreference } from "../stores/chatSoundPreferencesStore"
 import { shouldShowChatBrowserNotification, showChatBrowserNotification } from "../lib/chatBrowserNotifications"
 import { playChatNotificationSound, shouldPlayChatSound } from "../lib/chatSounds"
-import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
+import { getChatNotificationEvents, getChatSoundBurstCount, getNotificationTitleCount, showChatNotificationEvents } from "./chatNotifications"
 import { AppSidebar } from "./AppSidebar"
 import { ChatPage } from "./ChatPage"
 import { LocalProjectsPage } from "./LocalProjectsPage"
@@ -30,7 +30,7 @@ import {
 } from "./study/MemoryBoardLauncher"
 import { useConditionPolicyLoadFailed, useConditionPolicyResolved } from "../lib/conditionApi"
 import { WS_UNAUTHORIZED_EVENT } from "./socket"
-import type { AppSettingsSnapshot } from "../../shared/types"
+import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
 
 const VERSION_SEEN_STORAGE_KEY = "memosync:last-seen-version"
 const AUTH_STATUS_RETRY_DELAY_MS = 500
@@ -420,20 +420,22 @@ function AppLayout() {
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
 
-    if (state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference)) {
-      for (const event of events) {
+    void showChatNotificationEvents({
+      enabled: !!state.appSettings && shouldShowChatBrowserNotification(state.appSettings.chatBrowserNotificationPreference),
+      events,
+      loadPreview: (chatId) => state.socket.command<ChatPreview | null>({ type: "chat.getPreview", chatId }),
+      showNotification: (event) => {
         showChatBrowserNotification({
           ...event,
-          message: event.message ?? "New chat activity.",
           onClick: () => { window.focus(); navigate(`/chat/${event.chatId}`) },
         })
-      }
-    }
+      },
+    })
     if (burstCount <= 0) return
     if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady])
+  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady, state.socket])
 
   // Memory surfaces fail closed until the server's feature policy resolves.
   if (conditionPolicyForGuide === null) {

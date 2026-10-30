@@ -21,7 +21,7 @@ import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
 import type { StudyProjectAccess } from "./study-project-access"
 import type { StudyPreviewRuntimeController } from "./study-preview-runtime"
-import { deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
+import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, deriveMemoryRecordTranscript, deriveSidebarData } from "./read-models"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
@@ -1589,6 +1589,14 @@ export function createWsRouter({
           if (result.snapshotChanged) {
             void broadcastSnapshots()
           }
+          return
+        }
+        case "chat.getPreview": {
+          const chat = store.getChat(command.chatId)
+          const result = chat
+            ? deriveChatPreview(store.getMessages(chat.id), agent.getPendingTool(chat.id)?.toolUseId)
+            : null
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.getGitHubPublishInfo": {
