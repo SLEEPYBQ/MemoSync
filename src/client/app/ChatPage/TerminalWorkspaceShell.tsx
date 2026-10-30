@@ -1,4 +1,4 @@
-import { lazy, Suspense, memo } from "react"
+import { lazy, Suspense, memo, useEffect, useState } from "react"
 import { PanelLoading } from "../../components/ui/panel-loading"
 import { useTerminalLayoutStore } from "../../stores/terminalLayoutStore"
 import type { AppState } from "../useAppState"
@@ -40,6 +40,14 @@ export const TerminalWorkspaceShell = memo(function TerminalWorkspaceShell({
   onRemoveTerminal,
   onTerminalLayout,
 }: TerminalWorkspaceShellProps) {
+  const [hasOpened, setHasOpened] = useState(terminalLayout.isVisible)
+  useEffect(() => {
+    if (terminalLayout.isVisible) setHasOpened(true)
+  }, [terminalLayout.isVisible])
+
+  // Defer the bundle until first use, then keep terminal subscriptions/state alive.
+  if (!terminalLayout.isVisible && !hasOpened) return null
+
   return (
     <div style={fixedTerminalHeight > 0 ? { height: `${fixedTerminalHeight}px` } : undefined}>
       <Suspense fallback={<PanelLoading />}>
