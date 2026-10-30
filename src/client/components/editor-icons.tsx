@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { FolderOpen } from "lucide-react"
 import type { EditorPreset } from "../../shared/protocol"
 
@@ -5,7 +6,7 @@ export const EDITOR_OPTIONS: Array<{ value: EditorPreset; label: string }> = [
   { value: "cursor", label: "Cursor" },
   { value: "xcode", label: "Xcode" },
   { value: "windsurf", label: "Windsurf" },
-  { value: "custom", label: "Custom" },
+  { value: "custom", get label() { return t("chat:custom") } },
 ]
 
 const ICON_SRC: Record<"cursor" | "finder" | "preview" | "defaultApp" | "xcode" | "terminal" | "windsurf" | "custom", string> = {
@@ -20,10 +21,12 @@ const ICON_SRC: Record<"cursor" | "finder" | "preview" | "defaultApp" | "xcode" 
 }
 
 function AppIcon({ src, className }: { src: string; className?: string }) {
+  useI18n()
   return <img src={src} alt="" aria-hidden="true" draggable={false} className={className} />
 }
 
 export function EditorIcon({ preset, className }: { preset: EditorPreset; className?: string }) {
+  useI18n()
   switch (preset) {
     case "xcode":
       return <AppIcon src={ICON_SRC.xcode} className={className} />
@@ -39,21 +42,26 @@ export function EditorIcon({ preset, className }: { preset: EditorPreset; classN
 }
 
 export function FinderIcon({ className }: { className?: string }) {
+  useI18n()
   return <AppIcon src={ICON_SRC.finder} className={className} />
 }
 
 export function PreviewIcon({ className }: { className?: string }) {
+  useI18n()
   return <AppIcon src={ICON_SRC.preview} className={className} />
 }
 
 export function DefaultAppIcon({ className }: { className?: string }) {
+  useI18n()
   return <AppIcon src={ICON_SRC.defaultApp} className={className} />
 }
 
 export function FolderFallbackIcon({ className }: { className?: string }) {
+  useI18n()
   return <FolderOpen className={className} />
 }
 
 export function TerminalIcon({ className }: { className?: string }) {
+  useI18n()
   return <AppIcon src={ICON_SRC.terminal} className={className} />
 }

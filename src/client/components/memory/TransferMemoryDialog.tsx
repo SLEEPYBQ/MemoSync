@@ -1,3 +1,5 @@
+import { translateUiText, translateServerUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
 // Cross-context transfer instrument (DG3 / the title's "Across Context"):
 // moving a memory across a scope or project boundary goes through a judged,
@@ -34,9 +36,9 @@ import { defaultTransferScope, transferScopeDisabled } from "../../lib/transferT
 import { cn } from "../../lib/utils"
 
 const VERDICT_META: Record<TransferProposal["verdict"], { label: string; className: string }> = {
-  as_is: { label: "transfers as-is", className: "bg-success/10 text-success-foreground dark:text-success-foreground" },
-  rewrite: { label: "adapted for the target", className: "bg-cand-surface text-cand-fg dark:text-cand-fg" },
-  context_bound: { label: "context-bound — not recommended", className: "border-cand-border bg-cand-surface text-cand-fg" },
+  as_is: { get label() { return t("memory:transfersAsIs") }, className: "bg-success/10 text-success-foreground dark:text-success-foreground" },
+  rewrite: { get label() { return t("memory:adaptedForTheTarget") }, className: "bg-cand-surface text-cand-fg dark:text-cand-fg" },
+  context_bound: { get label() { return t("memory:contextBoundNotRecommended") }, className: "border-cand-border bg-cand-surface text-cand-fg" },
 }
 
 /**
@@ -97,6 +99,7 @@ export function TransferMemoryDialog({
   onDone,
   surface,
 }: TransferMemoryDialogProps) {
+  useI18n()
   const loadAll = useMemoryStore((s) => s.loadAll)
   const [projects, setProjects] = useState<Record<string, string>>({})
   const [targetScope, setTargetScope] = useState<"personal" | "project" | "session">(
@@ -181,7 +184,7 @@ export function TransferMemoryDialog({
         setContent(p.content)
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : "transfer preview failed")
+        if (!cancelled) setError(err instanceof Error ? err.message : t("memory:transferPreviewFailed"))
       })
       .finally(() => {
         if (!cancelled) setLoadingProposal(false)
@@ -218,7 +221,7 @@ export function TransferMemoryDialog({
       onDone?.(created)
       onOpenChange(false)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "transfer failed")
+      setError(err instanceof Error ? err.message : t("memory:transferFailed"))
     } finally {
       setSubmitting(false)
     }
@@ -230,20 +233,20 @@ export function TransferMemoryDialog({
         ? (projects[targetProjectId] ?? "project")
         : "project"
       : targetScope === "session"
-        ? (sessionLabel ?? "this session")
-        : "Personal"
+        ? (sessionLabel ?? t("memory:thisSession"))
+        : t("common:personal")
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="memory-ui @container max-w-lg rounded-xl">
         <DialogHeader>
           <DialogTitle className="flex flex-wrap items-center gap-2 text-sm font-semibold">
-            Transfer {item.id}
+            {t("memory:transfer2")}{item.id}
             <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
             {targetLabel}
           </DialogTitle>
           <DialogDescription>
-            Review how this memory should be adapted before creating it in {targetLabel}.
+            {t("memory:reviewHowThisMemoryShouldBeAdaptedBeforeCreatingIt")}{targetLabel}.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-3">
@@ -260,7 +263,7 @@ export function TransferMemoryDialog({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-xs text-muted-foreground">to</span>
+            <span className="text-xs text-muted-foreground">{t("memory:to")}</span>
             {targetScope === "session" ? (
               // The session is fixed by the drop — no picker, just name it.
               <MemoryBadge
@@ -296,7 +299,7 @@ export function TransferMemoryDialog({
                     onChange={(e) => setTargetProjectId(e.target.value || undefined)}
                     className="h-8 rounded-lg border border-border bg-background px-2 text-sm text-foreground"
                   >
-                    <option value="">choose project…</option>
+                    <option value="">{t("memory:chooseProject")}</option>
                     {projectOptions.map(([id, title]) => (
                       <option key={id} value={id}>
                         {title}
@@ -310,8 +313,7 @@ export function TransferMemoryDialog({
 
           {loadingProposal ? (
             <p className="flex items-center gap-2 py-1 text-sm text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Abstracting and re-instantiating…
-            </p>
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("memory:abstractingAndReInstantiating")}</p>
           ) : proposal && proposalTargetKey === targetKey ? (
             <div className="flex flex-col gap-2">
               <MemoryBadge
@@ -331,11 +333,11 @@ export function TransferMemoryDialog({
               {proposal.verdict !== "as_is" && proposal.portable !== proposal.content ? (
                 <div className="flex flex-col gap-1.5">
                   <div className="rounded-lg border border-dashed border-border bg-muted/20 px-2.5 py-1.5">
-                    <p className="text-[11px] font-medium text-muted-foreground">Abstract rule</p>
+                    <p className="text-[11px] font-medium text-muted-foreground">{t("memory:abstractRule")}</p>
                     <p className="text-sm text-muted-foreground">{proposal.portable}</p>
                     {proposal.applicability ? (
                       <p className="mt-0.5 text-[11px] text-muted-foreground/80">
-                        <span className="font-medium">Applies when:</span> {proposal.applicability}
+                        <span className="font-medium">{t("memory:appliesWhen")}</span> {proposal.applicability}
                       </p>
                     ) : null}
                   </div>
@@ -345,7 +347,7 @@ export function TransferMemoryDialog({
 
               <div className="flex flex-col gap-1">
                 <p className="text-[11px] font-medium text-muted-foreground">
-                  In {targetLabel}
+                  {t("memory:in")}{targetLabel}
                 </p>
                 <Textarea
                   value={content}
@@ -355,7 +357,7 @@ export function TransferMemoryDialog({
                   className={cn("text-sm", reinforcing && "opacity-50")}
                 />
               </div>
-              {proposal.note ? <p className="text-sm leading-relaxed text-muted-foreground">{proposal.note}</p> : null}
+              {proposal.note ? <p className="text-sm leading-relaxed text-muted-foreground">{translateServerUiText(proposal.noteUiText, proposal.note)}</p> : null}
 
               {/* Landing: how the instantiated form meets what already lives
                   in the target context (same vocabulary as capture). */}
@@ -363,28 +365,25 @@ export function TransferMemoryDialog({
                 <div className="flex items-start gap-2 py-1 text-sm">
                   <GitMerge className="mt-0.5 h-3.5 w-3.5 shrink-0 text-success-foreground dark:text-success-foreground" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
-                    {targetLabel} already knows this
-                    {landing.targetContent ? (
+                    {targetLabel} {t("memory:alreadyKnowsThis")}{landing.targetContent ? (
                       <> — <span className="text-foreground">“{landing.targetContent}”</span></>
                     ) : null}
-                    . Transferring will reinforce that memory instead of adding a duplicate.
-                  </p>
+                    {t("memory:transferringWillReinforceThatMemoryInsteadOfAddingADuplicate")}</p>
                 </div>
               ) : landing?.route === "conflicts" ? (
                 <div className="flex items-start gap-2 rounded-lg border border-cand-border bg-cand-surface px-2.5 py-2 text-sm">
                   <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cand-fg dark:text-cand-fg" />
                   <p className="min-w-0 flex-1 text-muted-foreground">
-                    This may conflict with an existing memory in {targetLabel}
+                    {t("memory:thisMayConflictWithAnExistingMemoryIn")}{targetLabel}
                     {landing.targetContent ? (
                       <> — <span className="text-foreground">“{landing.targetContent}”</span></>
                     ) : null}
-                    . Both are kept and flagged for you to resolve.
-                  </p>
+                    {t("memory:bothAreKeptAndFlaggedForYouToResolve")}</p>
                 </div>
               ) : null}
             </div>
           ) : targetScope === "project" && !targetProjectId ? (
-            <p className="py-1 text-sm text-muted-foreground">Pick a target project.</p>
+            <p className="py-1 text-sm text-muted-foreground">{t("memory:pickATargetProject")}</p>
           ) : null}
 
           {!reinforcing ? (
@@ -395,14 +394,14 @@ export function TransferMemoryDialog({
                 onChange={(e) => setArchiveOriginal(e.target.checked)}
                 className="h-3.5 w-3.5 accent-foreground"
               />
-              Archive the original in {item.scope === "project" ? (projects[item.projectId ?? ""] ?? "its project") : memoryScopeLabel(scope)}
+              {t("memory:archiveTheOriginalIn")}{item.scope === "project" ? (projects[item.projectId ?? ""] ?? t("memory:itsProject")) : memoryScopeLabel(scope)}
             </label>
           ) : null}
 
-          {error ? <p className="text-xs text-destructive">{error}</p> : null}
+          {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
         </DialogBody>
         <DialogFooter>
-          <DialogGhostButton onClick={() => onOpenChange(false)}>Cancel</DialogGhostButton>
+          <DialogGhostButton onClick={() => onOpenChange(false)}>{t("common:cancel")}</DialogGhostButton>
           <Button
             variant="default"
             size="sm"
@@ -419,10 +418,10 @@ export function TransferMemoryDialog({
           >
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
             {reinforcing
-              ? `Reinforce in ${targetLabel}`
+              ? t("memory:reinforceInValue0", { v0: targetLabel })
               : proposal?.verdict === "context_bound"
-                ? "Transfer anyway"
-                : `Create in ${targetLabel}`}
+                ? t("memory:transferAnyway")
+                : t("memory:createInValue0", { v0: targetLabel })}
           </Button>
         </DialogFooter>
       </DialogContent>

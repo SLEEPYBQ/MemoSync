@@ -33,6 +33,8 @@ const backendPort = getBackendPort()
 
 export default defineConfig({
   plugins: [react()],
+  // The export viewer build embeds optional imports that are not dev entries.
+  optimizeDeps: { entries: ["index.html"] },
   server: {
     host: "0.0.0.0",
     port: DEV_CLIENT_PORT,

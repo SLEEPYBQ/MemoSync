@@ -1,3 +1,4 @@
+import { applyLanguage } from "../i18n"
 import { create } from "zustand"
 import type { AppSettingsPatch, AppSettingsSnapshot } from "../../shared/types"
 
@@ -67,9 +68,21 @@ export const useAppSettingsStore = create<AppSettingsStoreState>()((set) => ({
   settings: null,
   hydrationStatus: "idle",
   setHydrationStatus: (hydrationStatus) => set({ hydrationStatus }),
-  setFromServer: (settings) => set({ settings, hydrationStatus: "ready" }),
-  applyOptimisticPatch: (patch) =>
+  setFromServer: (settings) => {
+    void applyLanguage(settings.language ?? "system")
+    set({ settings, hydrationStatus: "ready" })
+  },
+  applyOptimisticPatch: (patch) => {
+    if (patch.language) void applyLanguage(patch.language)
     set((state) => ({
       settings: state.settings ? mergeAppSettingsPatch(state.settings, patch) : state.settings,
-    })),
+    }))
+  },
 }))
+
+// A running app follows OS/browser changes only while System is selected.
+if (typeof window !== "undefined") {
+  window.addEventListener("languagechange", () => {
+    if (useAppSettingsStore.getState().settings?.language === "system") void applyLanguage("system")
+  })
+}

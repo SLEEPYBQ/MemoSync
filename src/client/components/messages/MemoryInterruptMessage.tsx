@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Recovery card: parked inline at the interruption point after a per-memory
 // interrupt. The user writes one turn-local correction; sending it is
@@ -17,12 +19,13 @@ interface Props {
 }
 
 function resolutionReceipt(resolution: NonNullable<MemoryInterruptHydratedMessage["resolution"]>): string {
-  if (resolution.action === "content_fixed") return "memory content corrected; resumed with the new version"
-  if (resolution.action === "removed_only") return "working memory adjusted; resumed"
-  return "correction sent; resumed"
+  if (resolution.action === "content_fixed") return t("memory:memoryContentCorrectedResumedWithTheNewVersion")
+  if (resolution.action === "removed_only") return t("memory:workingMemoryAdjustedResumed")
+  return t("memory:correctionSentResumed")
 }
 
 export function MemoryInterruptMessage({ message }: Props) {
+  useI18n()
   useEnsureMemoriesLoaded()
   const interruptApi = useTurnInterrupt()
 
@@ -53,7 +56,7 @@ export function MemoryInterruptMessage({ message }: Props) {
         enforce: enforce ? true : undefined,
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : "resume failed")
+      setError(err instanceof Error ? err.message : t("memory:resumeFailed"))
     } finally {
       setBusy(false)
     }
@@ -65,11 +68,11 @@ export function MemoryInterruptMessage({ message }: Props) {
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <span className="flex flex-wrap items-center gap-1.5">
           <CircleSlash className="h-3 w-3" />
-          <span className="shrink-0 font-semibold text-foreground">Interrupted over</span>
+          <span className="shrink-0 font-semibold text-foreground">{t("memory:interruptedOver")}</span>
           <MemoryCitationChip id={message.memoryId} />
           <span className="basis-full @lg:basis-auto">
             — {resolutionReceipt(message.resolution)}
-            {message.resolution.enforced ? "; one-run enforce applied" : ""}
+            {message.resolution.enforced ? t("memory:oneRunEnforceApplied") : ""}
           </span>
         </span>
       </div>
@@ -80,22 +83,20 @@ export function MemoryInterruptMessage({ message }: Props) {
     <section className={MEMORY_CARD}>
       <div className="flex flex-wrap items-baseline gap-2">
         <CircleSlash className="h-4 w-4 self-center text-muted-foreground" />
-        <span className="text-sm font-semibold text-foreground">You stopped this turn over</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:youStoppedThisTurnOver")}</span>
         <MemoryCitationChip id={message.memoryId} />
       </div>
       {message.quote ? (
         <p className="mt-2 leading-relaxed text-muted-foreground">
           <CornerDownRight className="mr-1 inline h-3 w-3" />
-          You stopped here: <span className="text-foreground/80">“{message.quote}”</span>
+          {t("memory:youStoppedHere")}<span className="text-foreground/80">“{message.quote}”</span>
         </p>
       ) : null}
 
       <label htmlFor={`memory-recovery-${message.interruptId}`} className="mt-3 block font-medium text-foreground">
-        Describe the problem or correction
-      </label>
+        {t("memory:describeTheProblemOrCorrection")}</label>
       <p className="mt-0.5 text-muted-foreground">
-        This instruction applies to the resumed run. Sending continues from where the assistant stopped.
-      </p>
+        {t("memory:thisInstructionAppliesToTheResumedRunSendingContinuesFrom")}</p>
       <form
         className="relative mt-2 rounded-lg border border-border/70 bg-background"
         onSubmit={(event) => {
@@ -114,7 +115,7 @@ export function MemoryInterruptMessage({ message }: Props) {
             if (correction.trim() && !busy) void resume()
           }}
           rows={2}
-          placeholder="What went wrong, or what should the assistant do differently?"
+          placeholder={t("memory:whatWentWrongOrWhatShouldTheAssistantDoDifferently")}
           className="block min-h-16 w-full resize-y bg-transparent px-3 py-2 pb-9 pr-11 text-sm text-foreground placeholder:text-muted-foreground/60 focus:outline-none"
         />
         <div className="absolute inset-x-2 bottom-2 flex items-center gap-2">
@@ -125,12 +126,12 @@ export function MemoryInterruptMessage({ message }: Props) {
               onChange={(event) => setEnforce(event.target.checked)}
               className="h-3.5 w-3.5 accent-current"
             />
-            <span>Enforce for this resumed run <span className="text-muted-foreground/70">· one run only</span></span>
+            <span>{t("memory:enforceForThisResumedRun")}<span className="text-muted-foreground/70">{t("memory:oneRunOnly")}</span></span>
           </label>
           <button
             type="submit"
-            aria-label="Send and resume"
-            title="Send and resume"
+            aria-label={t("memory:sendAndResume")}
+            title={t("memory:sendAndResume")}
             disabled={busy || !correction.trim()}
             className="ml-auto inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           >
@@ -140,8 +141,8 @@ export function MemoryInterruptMessage({ message }: Props) {
       </form>
 
       <div className="mt-4">
-        <p className="font-medium text-muted-foreground">Working Memory</p>
-        <p className="mt-0.5 text-muted-foreground/80">Adjust the context carried into the resumed run.</p>
+        <p className="font-medium text-muted-foreground">{t("common:workingMemory")}</p>
+        <p className="mt-0.5 text-muted-foreground/80">{t("memory:adjustTheContextCarriedIntoTheResumedRun")}</p>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {message.workingSet.map((item, index) => {
             const isFlagged = item.id === message.memoryId
@@ -152,13 +153,12 @@ export function MemoryInterruptMessage({ message }: Props) {
                 <MemoryCitationChip id={item.id} />
                 {item.cited ? (
                   <span className="text-[11px] text-muted-foreground/70">
-                    cited #{index + 1}
+                    {t("memory:cited")}{index + 1}
                   </span>
                 ) : null}
                 {isFlagged ? (
                   <span className="text-[11px] text-destructive">
-                    flagged
-                  </span>
+                    {t("memory:flagged")}</span>
                 ) : null}
                 <button
                   type="button"
@@ -172,8 +172,8 @@ export function MemoryInterruptMessage({ message }: Props) {
                       return next
                     })
                   }
-                  title={enforceLocked ? "Enforced for this resumed run" : removed ? "Put it back for the resume" : "Remove from the resumed turn"}
-                  aria-label={enforceLocked ? `Memory ${item.id} is enforced for this resumed run` : removed ? `Put ${item.id} back for the resume` : `Remove ${item.id} from the resumed turn`}
+                  title={enforceLocked ? t("memory:enforcedForThisResumedRun") : removed ? t("memory:putItBackForTheResume") : t("memory:removeFromTheResumedTurn")}
+                  aria-label={enforceLocked ? t("memory:memoryValue0IsEnforcedForThisResumedRun", { v0: item.id }) : removed ? t("memory:putValue0BackForTheResume", { v0: item.id }) : t("memory:removeValue0FromTheResumedTurn", { v0: item.id })}
                   className="ml-auto rounded p-0.5 text-destructive transition-colors hover:bg-muted hover:text-destructive disabled:cursor-not-allowed disabled:opacity-35"
                 >
                   <X className="h-3.5 w-3.5" />
@@ -183,7 +183,7 @@ export function MemoryInterruptMessage({ message }: Props) {
           })}
         </div>
       </div>
-      {error ? <p className="mt-2 text-destructive">{error}</p> : null}
+      {error ? <p className="mt-2 text-destructive">{translateUiText(error)}</p> : null}
     </section>
   )
 }

@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 // A legend for MemoSync's visual vocabulary: what the scope colors, per-card
 // status dot, and freshness marks mean. Rendered inline or in
 // a popover next to the surfaces that use those marks — the Board (§4.9) and
@@ -25,6 +26,7 @@ export type LegendSection = "scope" | "status" | "freshness"
 const ALL_SECTIONS: LegendSection[] = ["scope", "status", "freshness"]
 
 function Row({ swatch, meaning }: { swatch: ReactNode; meaning: string }) {
+  useI18n()
   return (
     <li className="flex items-start gap-2">
       <span className="mt-0.5 flex shrink-0 items-center">{swatch}</span>
@@ -34,6 +36,7 @@ function Row({ swatch, meaning }: { swatch: ReactNode; meaning: string }) {
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
+  useI18n()
   return (
     <div>
       <p className="mb-1.5 text-[11px] font-semibold text-muted-foreground/80">{title}</p>
@@ -50,17 +53,18 @@ export function MemoryLegend({
   sections?: LegendSection[]
   className?: string
 }) {
+  useI18n()
   return (
     <div className={cn("memory-ui space-y-3", className)}>
       {sections.includes("scope") ? (
-        <Section title="Scope — where it applies">
+        <Section title={t("memory:scopeWhereItApplies")}>
           {SCOPE_LEGEND.map(({ scope, meaning }) => (
             <Row key={scope} swatch={<ScopeBadge scope={scope} />} meaning={meaning} />
           ))}
         </Section>
       ) : null}
       {sections.includes("status") ? (
-        <Section title="Status dot — how the agent used it">
+        <Section title={t("memory:statusDotHowTheAgentUsedIt")}>
           {TRACE_DOT_LEGEND.map(({ verdict, label, meaning }) => (
             <Row
               key={verdict}
@@ -76,7 +80,7 @@ export function MemoryLegend({
         </Section>
       ) : null}
       {sections.includes("freshness") ? (
-        <Section title="Since your last visit here">
+        <Section title={t("memory:sinceYourLastVisitHere")}>
           {FRESHNESS_LEGEND.map(({ freshness, label, meaning }) => (
             <Row key={freshness} swatch={<Chip className={FRESHNESS_CLASSES[freshness]}>{label}</Chip>} meaning={meaning} />
           ))}
@@ -89,13 +93,14 @@ export function MemoryLegend({
 /** A quiet "Legend" trigger that opens {@link MemoryLegend} in a popover. */
 export function MemoryLegendButton({
   sections,
-  label = "Legend",
+  label = t("memory:legend"),
   align = "end",
 }: {
   sections?: LegendSection[]
   label?: string
   align?: "start" | "center" | "end"
 }) {
+  useI18n()
   return (
     <Popover>
       <PopoverTrigger asChild>
@@ -105,7 +110,7 @@ export function MemoryLegendButton({
         </Button>
       </PopoverTrigger>
       <PopoverContent align={align} className="w-80">
-        <p className="mb-2 text-sm font-medium text-foreground">What the colors &amp; dots mean</p>
+        <p className="mb-2 text-sm font-medium text-foreground">{t("memory:whatTheColorsDotsMean")}</p>
         <MemoryLegend sections={sections} />
       </PopoverContent>
     </Popover>

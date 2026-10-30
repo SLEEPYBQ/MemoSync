@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import {
   createContext,
   useCallback,
@@ -64,6 +66,7 @@ type DialogState =
 const AppDialogContext = createContext<AppDialogContextValue | null>(null)
 
 export function AppDialogProvider({ children }: { children: ReactNode }) {
+  useI18n()
   const [dialogState, setDialogState] = useState<DialogState | null>(null)
   const [inputValue, setInputValue] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
@@ -148,9 +151,9 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
           {dialogState ? (
             <>
               <DialogBody className="space-y-4">
-                <DialogTitle>{dialogState.options.title}</DialogTitle>
+                <DialogTitle>{translateUiText(dialogState.options.title)}</DialogTitle>
                 {dialogState.options.description ? (
-                  <DialogDescription>{dialogState.options.description}</DialogDescription>
+                  <DialogDescription>{translateUiText(dialogState.options.description)}</DialogDescription>
                 ) : null}
                 {dialogState.kind === "prompt" ? (
                   <Input
@@ -185,7 +188,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   onClick={resolveCancel}
                   className={dialogState.kind === "alert" ? "hidden" : undefined}
                 >
-                  {"cancelLabel" in dialogState.options ? (dialogState.options.cancelLabel ?? "Cancel") : "Cancel"}
+                  {"cancelLabel" in dialogState.options ? translateUiText(dialogState.options.cancelLabel ?? t("common:cancel")) : t("common:cancel")}
                 </Button>
                 <Button
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
@@ -194,10 +197,10 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   disabled={dialogState.kind === "prompt" && !dialogState.options.allowEmpty && !inputValue.trim()}
                 >
                   {dialogState.kind === "alert"
-                    ? (dialogState.options.closeLabel ?? "OK")
+                    ? (dialogState.options.closeLabel ?? t("common:ok"))
                     : "confirmLabel" in dialogState.options
-                      ? (dialogState.options.confirmLabel ?? "Confirm")
-                      : "Confirm"}
+                      ? (translateUiText(dialogState.options.confirmLabel) || t("common:confirm"))
+                      : t("common:confirm")}
                 </Button>
               </DialogFooter>
             </>
@@ -209,6 +212,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
 }
 
 export function useAppDialog() {
+  useI18n()
   const context = useContext(AppDialogContext)
   if (!context) {
     throw new Error("useAppDialog must be used within AppDialogProvider")

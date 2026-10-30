@@ -110,6 +110,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   chatSoundPreference: "always",
   chatSoundId: "funk",
     chatBrowserNotificationPreference: "never",
+    language: "system",
     submitWhileRunning: "queue",
   terminal: {
     scrollbackLines: 1_000,
@@ -1400,6 +1401,7 @@ describe("ws-router", () => {
         commitCount: 2,
         hasConflicts: false,
         message: "2 commits from feature/test will merge into main.",
+        uiTextFields: { message: { code: "mergePreview", params: { v0: "2", v1: "commits", v2: "feature/test", v3: "main" } } },
       },
     })
     expect(ws.sent[1]).toEqual({

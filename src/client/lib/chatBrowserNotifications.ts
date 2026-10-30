@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import type { ChatBrowserNotificationPreference } from "../../shared/types"
 import { isBrowserUnfocused } from "./chatSounds"
 
@@ -16,7 +17,7 @@ export function shouldShowChatBrowserNotification(
 
 export function truncateChatBrowserNotificationMessage(message: string) {
   const normalized = message.replace(/\s+/g, " ").trim()
-  if (!normalized) return "New chat activity."
+  if (!normalized) return t("settings:newChatActivity")
   if (normalized.length <= CHAT_BROWSER_NOTIFICATION_MESSAGE_MAX_LENGTH) return normalized
   return `${normalized.slice(0, CHAT_BROWSER_NOTIFICATION_MESSAGE_MAX_LENGTH - 3)}...`
 }
@@ -63,14 +64,6 @@ export function getChatBrowserNotificationPermission(): NotificationPermission |
 }
 
 export function getChatBrowserNotificationDescription(permission: NotificationPermission | "unsupported") {
-  const base = "Show a system notification when a chat starts waiting on you or turns unread."
-  if (permission === "denied")
-    return base + " Notifications are blocked. Allow notifications for this site in browser site settings."
-  if (permission === "unsupported")
-    return (
-      base +
-      " Notifications are unavailable in this browser or on this insecure connection. Use HTTPS and check browser site settings."
-    )
-  if (permission === "default") return base + " Choosing When Unfocused or Always asks for browser permission."
-  return base
+  const keys = { denied: "settings:notificationPermissionDenied", unsupported: "settings:notificationPermissionUnsupported", default: "settings:notificationPermissionDefault", granted: "settings:notificationPermissionGranted" } as const
+  return t(keys[permission])
 }

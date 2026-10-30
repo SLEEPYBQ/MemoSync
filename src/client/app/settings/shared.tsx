@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import type { ButtonHTMLAttributes, KeyboardEvent, ReactNode } from "react"
 import { Loader2 } from "lucide-react"
 import type { ChatBrowserNotificationPreference } from "../../../shared/types"
@@ -75,6 +77,7 @@ export function SettingsSelect({
   children: ReactNode
   "aria-label"?: string
 }) {
+  useI18n()
   return (
     <Select
       value={value}
@@ -106,6 +109,7 @@ export function SettingsActionButton({
   type = "button",
   ...props
 }: ButtonHTMLAttributes<HTMLButtonElement> & { icon?: ReactNode; prominent?: boolean }) {
+  useI18n()
   return (
     <button
       type={type}
@@ -147,7 +151,7 @@ export const SETTINGS_INLINE_ACTION_CLASS =
   "font-medium text-foreground underline underline-offset-2 transition-colors hover:text-foreground/70"
 
 export function getKeybindingsSubtitle(filePathDisplay: string) {
-  return `Edit global app shortcuts stored in ${filePathDisplay}.`
+  return t("settings:editGlobalAppShortcutsStoredInValue0", { v0: filePathDisplay })
 }
 
 export function shouldPreviewChatSoundChange(previousValue: string, nextValue: string) {
@@ -183,6 +187,7 @@ export function SettingsNotice({
   children: ReactNode
   className?: string
 }) {
+  useI18n()
   return (
     <div
       role={tone === "error" ? "alert" : undefined}
@@ -200,7 +205,8 @@ export function SettingsNotice({
 }
 
 export function SettingsErrorBanner({ message }: { message: string }) {
-  return <SettingsNotice className="mb-6">{message}</SettingsNotice>
+  useI18n()
+  return <SettingsNotice className="mb-6">{translateUiText(message)}</SettingsNotice>
 }
 
 /** Loading and empty states: the same card everywhere, with an optional spinner. */
@@ -213,6 +219,7 @@ export function SettingsPlaceholder({
   children: ReactNode
   className?: string
 }) {
+  useI18n()
   return (
     <div
       className={cn(
@@ -228,6 +235,7 @@ export function SettingsPlaceholder({
 
 /** Small pill for states and tags ("Current", "Prerelease", plan names). */
 export function SettingsBadge({ children, className }: { children: ReactNode; className?: string }) {
+  useI18n()
   return (
     <span
       className={cn(
@@ -246,6 +254,7 @@ export function SettingsBadge({ children, className }: { children: ReactNode; cl
  * ThreadSections): quiet chrome you scan past, not a second title.
  */
 export function SettingsGroupHeading({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
+  useI18n()
   return (
     <div className={cn("flex min-h-5 items-center justify-between gap-3 pb-1.5", SETTINGS_INSET_X_CLASS)}>
       <h3 className="text-sm text-muted-foreground">{children}</h3>
@@ -271,6 +280,7 @@ export function SettingsGroup({
   children: ReactNode
   className?: string
 }) {
+  useI18n()
   return (
     <section className={className}>
       {title ? <SettingsGroupHeading trailing={trailing}>{title}</SettingsGroupHeading> : null}
@@ -281,6 +291,7 @@ export function SettingsGroup({
 
 /** Stacks groups with one rhythm across every section. */
 export function SettingsGroups({ children }: { children: ReactNode }) {
+  useI18n()
   return <div className="space-y-8">{children}</div>
 }
 
@@ -292,6 +303,7 @@ export function SettingsGroups({ children }: { children: ReactNode }) {
  * its text.
  */
 export function SettingsField({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
+  useI18n()
   return (
     <div className="flex w-full min-w-0 flex-col items-stretch @2xl:w-auto @2xl:items-end">
       {children}
@@ -342,6 +354,7 @@ export function SettingsRow({
   wideControl = false,
   disabled = false,
 }: SettingsRowProps) {
+  useI18n()
   const resolvedDescription = description === undefined ? def?.description : description
   const hasDescription = Boolean(resolvedDescription)
   /*

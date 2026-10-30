@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 // Turn [M-NN] tokens in assistant text into clickable citation chips, reusing
 // the markdown renderer's existing custom-link-scheme pattern (like the app's
 // local-file links). Step 1: rewrite [M-07] -> a markdown link with a private
@@ -43,11 +44,11 @@ export function isMemoryScope(value: string): value is MemoryScope {
 export function memoryScopeLabel(scope: string): string {
   switch (scope) {
     case "personal":
-      return "Personal"
+      return t("common:personal")
     case "project":
-      return "Project"
+      return t("common:project")
     case "session":
-      return "Session"
+      return t("common:session")
     default:
       return scope
   }

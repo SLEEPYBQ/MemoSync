@@ -1,3 +1,4 @@
+import { formatNumber, getLocale } from "../i18n"
 import type { ContextWindowUsageSnapshot, TranscriptEntry } from "../../shared/types"
 
 export interface ContextWindowSnapshot extends ContextWindowUsageSnapshot {
@@ -89,17 +90,10 @@ export function overrideContextWindowMaxTokens(
 }
 
 export function formatContextWindowTokens(value: number | null | undefined): string {
-  if (value === null || value === undefined || !Number.isFinite(value)) {
-    return "0"
-  }
-  if (value < 1_000) {
-    return `${Math.round(value)}`
-  }
-  if (value < 10_000) {
-    return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`
-  }
-  if (value < 1_000_000) {
-    return `${Math.round(value / 1_000)}k`
-  }
-  return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}m`
+  if (value === null || value === undefined || !Number.isFinite(value)) return "0"
+  if (getLocale() === "zh-CN") return formatNumber(value, { notation: "compact", maximumFractionDigits: 1 })
+  if (value < 1_000) return formatNumber(Math.round(value), { useGrouping: false })
+  if (value < 10_000) return `${formatNumber(value / 1_000, { maximumFractionDigits: 1 })}k`
+  if (value < 1_000_000) return `${formatNumber(Math.round(value / 1_000))}k`
+  return `${formatNumber(value / 1_000_000, { maximumFractionDigits: 1 })}m`
 }

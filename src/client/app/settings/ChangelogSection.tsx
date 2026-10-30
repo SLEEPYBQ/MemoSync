@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "../../i18n"
 import { DownloadCloud } from "lucide-react"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
@@ -43,7 +44,7 @@ export async function fetchGithubReleases(fetchImpl: FetchReleases = fetch): Pro
     },
   })
   if (!response.ok) {
-    throw new Error(`GitHub releases request failed with status ${response.status}`)
+    throw new Error(t("settings:githubReleasesRequestFailedWithStatusValue0", { v0: response.status }))
   }
 
   const payload = await response.json() as GithubRelease[]
@@ -78,12 +79,12 @@ export async function loadChangelog(options?: { force?: boolean; fetchImpl?: Fet
 }
 
 export function formatPublishedDate(value: string | null) {
-  if (!value) return "Unpublished"
+  if (!value) return t("settings:unpublished")
 
   const parsed = new Date(value)
-  if (Number.isNaN(parsed.getTime())) return "Unknown date"
+  if (Number.isNaN(parsed.getTime())) return t("settings:unknownDate")
 
-  return new Intl.DateTimeFormat(undefined, {
+  return new Intl.DateTimeFormat(getLocale(), {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -91,6 +92,7 @@ export function formatPublishedDate(value: string | null) {
 }
 
 function GitHubIcon({ className }: { className?: string }) {
+  useI18n()
   return (
     <svg
       viewBox="0 0 24 24"
@@ -122,7 +124,8 @@ export function ChangelogSection({
   onInstallUpdate: () => void
   onCheckForUpdates: () => void
 }) {
-  const latestVersion = updateSnapshot?.latestVersion ?? releases[0]?.tag_name ?? "Unknown"
+  useI18n()
+  const latestVersion = updateSnapshot?.latestVersion ?? releases[0]?.tag_name ?? t("common:unknown")
   const currentVersionLabel = updateSnapshot?.currentVersion ?? currentVersion
   const isChecking = updateSnapshot?.status === "checking"
   const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
@@ -133,27 +136,26 @@ export function ChangelogSection({
   return (
     <div className="space-y-4">
       {status === "loading" || status === "idle" ? (
-        <SettingsPlaceholder loading>Loading release notes…</SettingsPlaceholder>
+        <SettingsPlaceholder loading>{t("settings:loadingReleaseNotes")}</SettingsPlaceholder>
       ) : null}
 
       {status === "error" ? (
         <SettingsNotice>
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <div className="font-medium">Could not load changelog</div>
+              <div className="font-medium">{t("settings:couldNotLoadChangelog")}</div>
               <div className="mt-0.5 text-muted-foreground">
-                {error ?? "Unable to load changelog."}
+                {error ?? t("settings:unableToLoadChangelog")}
               </div>
             </div>
-            <SettingsActionButton onClick={onRetry}>Retry</SettingsActionButton>
+            <SettingsActionButton onClick={onRetry}>{t("common:retry")}</SettingsActionButton>
           </div>
         </SettingsNotice>
       ) : null}
 
       {status === "success" && releases.length === 0 ? (
         <SettingsPlaceholder>
-          GitHub did not return any published releases for this repository.
-        </SettingsPlaceholder>
+          {t("settings:githubDidNotReturnAnyPublishedReleasesForThisRepository")}</SettingsPlaceholder>
       ) : null}
 
       {SELF_UPDATE_ENABLED && !canInstallUpdate && status === "success" ? (
@@ -162,7 +164,7 @@ export function ChangelogSection({
             onClick={onCheckForUpdates}
             disabled={isChecking || isUpdating}
           >
-            {isChecking ? "Checking…" : "Check for updates"}
+            {isChecking ? t("settings:checking") : t("settings:checkForUpdates")}
           </SettingsActionButton>
         </div>
       ) : null}
@@ -187,8 +189,8 @@ export function ChangelogSection({
                     {release.name?.trim() || release.tag_name}
                   </h3>
                   <span className="text-sm text-muted-foreground">{formatPublishedDate(release.published_at)}</span>
-                  {isCurrentRelease ? <SettingsBadge>Current</SettingsBadge> : null}
-                  {release.prerelease ? <SettingsBadge>Prerelease</SettingsBadge> : null}
+                  {isCurrentRelease ? <SettingsBadge>{t("settings:current")}</SettingsBadge> : null}
+                  {release.prerelease ? <SettingsBadge>{t("settings:prerelease")}</SettingsBadge> : null}
                 </div>
 
                 <div className="flex shrink-0 items-center gap-2">
@@ -196,7 +198,7 @@ export function ChangelogSection({
                     href={release.html_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    aria-label="View release on GitHub"
+                    aria-label={t("settings:viewReleaseOnGitHub")}
                     className="inline-flex h-8 w-8 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
                   >
                     <GitHubIcon className="h-4 w-4" />
@@ -209,7 +211,7 @@ export function ChangelogSection({
                       disabled={isUpdating}
                       icon={<DownloadCloud />}
                     >
-                      {isUpdating ? "Updating…" : "Update"}
+                      {isUpdating ? t("settings:updating") : t("common:update")}
                     </SettingsActionButton>
                   ) : null}
                 </div>
@@ -222,7 +224,7 @@ export function ChangelogSection({
                   </Markdown>
                 </div>
               ) : (
-                <div className="mt-4 text-sm text-muted-foreground">No release notes were provided.</div>
+                <div className="mt-4 text-sm text-muted-foreground">{t("settings:noReleaseNotesWereProvided")}</div>
               )}
             </article>
           )

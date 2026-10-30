@@ -1,3 +1,5 @@
+import { translateUiText } from "../i18n/uiText"
+import { t, useI18n, getLocale } from "../i18n"
 import { MemoryBadge } from "../components/memory/MemoryBadge"
 import { MEMORY_CARD, MemoryEmpty } from "../components/memory/MemorySurface"
 // Memory Board — the user's memories as operable objects (SPEC §4.9): a
@@ -113,6 +115,7 @@ export function deriveMemoryBoardModel(
 }
 
 export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode } = {}) {
+  useI18n()
   const items = useMemoryStore((s) => s.items)
   const status = useMemoryStore((s) => s.status)
   const error = useMemoryStore((s) => s.error)
@@ -386,7 +389,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     } catch (err) {
       // Surface the failure — the Board's direct actions used to swallow every
       // error, so a failed create/accept/dismiss just did nothing (BUG MEMUI-2).
-      setActionError(err instanceof Error ? err.message : "Couldn't create the memory.")
+      setActionError(err instanceof Error ? err.message : t("board:couldnTCreateTheMemory"))
     } finally {
       setBusy(false)
     }
@@ -402,7 +405,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       setActionError(null)
       overlay?.onChanged?.()
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Couldn't accept the memory.")
+      setActionError(err instanceof Error ? err.message : t("board:couldnTAcceptTheMemory"))
       throw err
     }
   }
@@ -413,7 +416,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       setActionError(null)
       overlay?.onChanged?.()
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Couldn't dismiss the memory.")
+      setActionError(err instanceof Error ? err.message : t("board:couldnTDismissTheMemory"))
       throw err
     }
   }
@@ -426,7 +429,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       setActionError(null)
       overlay?.onChanged?.()
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Couldn't archive the memory.")
+      setActionError(err instanceof Error ? err.message : t("board:couldnTArchiveTheMemory"))
       throw err
     }
   }
@@ -451,13 +454,13 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       else groups.set(key, [item])
     }
     return [...groups.entries()].map(([key, items]) => {
-      if (key === "unassigned") return { key, label: "unassigned", items }
+      if (key === "unassigned") return { key, label: t("board:unassigned"), items }
       if (scope === "project") return { key, label: originTitles.projects[key] ?? key, items }
       // Session groups carry their PROJECT of origin too — a chat title alone
       // doesn't say which project's context the memory belongs to.
       const chatTitle = originTitles.chats[key]
       const chatLabel = key === overlay?.chatId
-        ? (chatTitle ? `Current session · ${chatTitle}` : "Current session")
+        ? (chatTitle ? t("board:currentSessionValue0", { v0: chatTitle }) : t("board:currentSession"))
         : (chatTitle ?? key)
       const projectTitle = chatProjects[key] ? originTitles.projects[chatProjects[key]] : undefined
       return { key, label: projectTitle ? `${chatLabel} · ${projectTitle}` : chatLabel, items }
@@ -489,7 +492,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Archive memory"
+              aria-label={t("board:archiveMemory")}
               className="ml-auto text-destructive hover:text-destructive"
               onClick={() => void discard(item).catch(() => {})}
             >
@@ -510,11 +513,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
         onMouseEnter={() => recordBoardHover(item.id)}
       >
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold text-cand-fg">Proposed destination</span>
+          <span className="text-[11px] font-semibold text-cand-fg">{t("board:proposedDestination")}</span>
           <span className="font-mono text-[11px] text-muted-foreground">{item.id}</span>
         </div>
         <p className="mt-1.5 whitespace-pre-wrap text-sm text-foreground">{item.content}</p>
-        <p className="mt-2 text-[11px] text-muted-foreground">Review this proposal in Step 1 above.</p>
+        <p className="mt-2 text-[11px] text-muted-foreground">{t("board:reviewThisProposalInStep1Above")}</p>
       </div>
     )
   }
@@ -569,7 +572,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               <Button
                 variant="ghost"
                 size="sm"
-                aria-label="Back"
+                aria-label={t("common:back")}
                 className="h-8 w-8 shrink-0 px-0"
                 onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}
               >
@@ -579,25 +582,23 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             <BrainCircuit className="h-6 w-6 text-logo" />
             <div className="min-w-0 flex-1 basis-40">
               <h1 className="text-lg font-semibold text-foreground">
-                Memory Board
-              </h1>
+                {t("common:memoryBoard")}</h1>
               <p className="text-sm text-muted-foreground">
                 {hasFocusedReview
-                    ? "Review the live chat suggestions and the same canonical saved memories together. Working Memory remains separate."
-                    : "Review proposals and manage your persistent, user-controlled long-term memory. Working Memory remains separate."}
+                    ? t("board:reviewTheLiveChatSuggestionsAndTheSameCanonicalSaved")
+                    : t("board:reviewProposalsAndManageYourPersistentUserControlledLongTerm")}
               </p>
             </div>
             {sections.searchAndCreate ? <MemoryLegendButton /> : null}
             {sections.searchAndCreate ? (
               <Button variant="juicy" size="sm" onClick={() => setCreating((v) => !v)}>
-                <Plus className="h-4 w-4" /> New memory
-              </Button>
+                <Plus className="h-4 w-4" /> {t("board:newMemory")}</Button>
             ) : null}
             {overlay?.onClose ? (
               <Button
                 variant="ghost"
                 size="sm"
-                aria-label="Close"
+                aria-label={t("common:close")}
                 className="h-8 w-8 shrink-0 px-0"
                 onClick={overlay.onClose}
               >
@@ -607,13 +608,13 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           </header>
 
           {status === "loading" && items.length === 0 ? (
-            <p className="text-sm text-muted-foreground">Loading memories…</p>
+            <p className="text-sm text-muted-foreground">{t("board:loadingMemories")}</p>
           ) : null}
-          {status === "error" ? <p className="text-sm text-destructive">Failed to load memories: {error}</p> : null}
+          {status === "error" ? <p className="text-sm text-destructive">{t("board:failedToLoadMemories")}{translateUiText(error)}</p> : null}
           {actionError ? (
             <div className="mb-4 flex flex-wrap items-start justify-between gap-3 rounded-lg border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
               <span>{actionError}</span>
-              <button type="button" className="shrink-0 underline underline-offset-2" onClick={() => setActionError(null)}>Dismiss</button>
+              <button type="button" className="shrink-0 underline underline-offset-2" onClick={() => setActionError(null)}>{t("common:dismiss")}</button>
             </div>
           ) : null}
 
@@ -636,9 +637,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             ) : candidateReviewItems.length > 0 ? (
               <div className={MEMORY_CARD}>
                 <div className="mb-3 flex flex-wrap items-baseline gap-2">
-                  <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">Step 1</span>
-                  <h2 className="text-sm font-semibold text-foreground">Review New Memory Candidates</h2>
-                  <span className="ml-auto text-xs text-muted-foreground">{candidateReviewItems.length} in this review</span>
+                  <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">{t("board:step1")}</span>
+                  <h2 className="text-sm font-semibold text-foreground">{t("board:reviewNewMemoryCandidates")}</h2>
+                  <span className="ml-auto text-xs text-muted-foreground">{t("memory:inReview", { count: candidateReviewItems.length })}</span>
                 </div>
                 <MemoryCandidateReviewStation
                   candidates={candidateReviewItems}
@@ -651,8 +652,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             ) : (
               <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
                 <Inbox aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">Step 1 · Review New Memory Candidates</span>
-                <span className="ml-1">✓ No pending memory candidates.</span>
+                <span className="text-sm font-semibold text-foreground">{t("board:step1ReviewNewMemoryCandidates")}</span>
+                <span className="ml-1">{t("board:noPendingMemoryCandidates")}</span>
               </div>
             )}
           </section>
@@ -664,7 +665,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 <input
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search memories…"
+                  placeholder={t("board:searchMemories")}
                   className="h-9 w-full rounded-lg border border-border bg-background pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground"
                 />
               </div>
@@ -672,10 +673,10 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 <button
                   type="button"
                   onClick={() => setProjectFilter(null)}
-                  title="Showing personal memories plus this project's — click to see every project"
+                  title={t("board:showingPersonalMemoriesPlusThisProjectSClickToSee")}
                   className="flex h-9 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 text-sm text-foreground transition-colors hover:bg-muted"
                 >
-                  Project: {originTitles.projects[projectFilter] ?? projectFilter}
+                  {t("board:project")}{originTitles.projects[projectFilter] ?? projectFilter}
                   <X className="h-3.5 w-3.5 text-muted-foreground" />
                 </button>
               ) : null}
@@ -686,13 +687,13 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 <Textarea
                   value={draft.content}
                   onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
-                  placeholder="One concise, actionable memory…"
+                  placeholder={t("board:oneConciseActionableMemory")}
                   className="mb-3 min-h-20"
                 />
                 <Textarea
                   value={draft.detail}
                   onChange={(e) => setDraft((d) => ({ ...d, detail: e.target.value }))}
-                  placeholder="Detailed form (optional) — loaded on demand by the agent"
+                  placeholder={t("board:detailedFormOptionalLoadedOnDemandByTheAgent")}
                   className="mb-3 min-h-16"
                 />
                 <div className="flex flex-wrap items-center gap-3">
@@ -708,22 +709,21 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       onChange={(e) => setDraft((d) => ({ ...d, projectId: e.target.value }))}
                       className="h-8 rounded-lg border border-border bg-background px-2 text-sm text-foreground"
                     >
-                      <option value="">choose project…</option>
+                      <option value="">{t("board:chooseProject")}</option>
                       {Object.entries(originTitles.projects).map(([pid, title]) => (
                         <option key={pid} value={pid}>{title}</option>
                       ))}
                     </select>
                   ) : null}
                   <div className="ml-auto flex items-center gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>Cancel</Button>
+                    <Button variant="ghost" size="sm" onClick={() => setCreating(false)}>{t("common:cancel")}</Button>
                     <Button
                       variant="default"
                       size="sm"
                       disabled={busy || !draft.content.trim() || (draft.scope === "project" && !draft.projectId)}
                       onClick={() => void handleCreate()}
                     >
-                      Create
-                    </Button>
+                      {t("common:create")}</Button>
                   </div>
                 </div>
               </div>
@@ -756,8 +756,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     {groups.length === 0 ? (
                       <MemoryEmpty icon={Icon}>
                         {scope === "session"
-                          ? "Session memories are captured by the agent inside a chat and stay scoped to that conversation. None yet."
-                          : `No ${memoryScopeLabel(scope).toLowerCase()} memories yet.`}
+                          ? t("board:sessionMemoriesAreCapturedByTheAgentInsideAChat")
+                          : t("board:noValue0MemoriesYet", { v0: memoryScopeLabel(scope).toLowerCase() })}
                       </MemoryEmpty>
                     ) : groups.map((group) => {
                       const groupTarget: TransferInitialTarget | null =
@@ -785,8 +785,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                           ) : null}
                           {group.items.length === 0 && scope === "session" ? (
                             <MemoryEmpty icon={Icon}>
-                              Drop a memory here to keep it only for this session.
-                            </MemoryEmpty>
+                              {t("board:dropAMemoryHereToKeepItOnlyForThis")}</MemoryEmpty>
                           ) : group.items.map((item) => (
                             item.status === "candidate"
                               ? renderCandidatePlaceholder(item)
@@ -806,8 +805,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             {!overlay?.focusedReview ? (
               <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
                 <ArrowRightLeft aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">Step 2 · Transfer Suggestions</span>
-                <span className="ml-1">✓ No pending Transfer suggestions.</span>
+                <span className="text-sm font-semibold text-foreground">{t("board:step2TransferSuggestions")}</span>
+                <span className="ml-1">{t("board:noPendingTransferSuggestions")}</span>
               </div>
             ) : null}
           </section>
@@ -817,8 +816,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             {!overlay?.focusedReview ? (
               <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
                 <ListChecks aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">Step 3 · Review Suggested Changes to Existing Memories</span>
-                <span className="ml-1">✓ No pending suggested changes.</span>
+                <span className="text-sm font-semibold text-foreground">{t("board:step3ReviewSuggestedChangesToExistingMemories")}</span>
+                <span className="ml-1">{t("board:noPendingSuggestedChanges")}</span>
               </div>
             ) : null}
           </section>
@@ -827,7 +826,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             <section className="mb-6 rounded-xl border border-cand-border bg-cand-surface dark:bg-cand-surface p-3">
               <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
                 <AlertTriangle className="h-4 w-4 text-cand-fg dark:text-cand-fg" />
-                Needs attention · <span className="text-muted-foreground">{needsAttention.length} {needsAttention.length === 1 ? "conflict" : "conflicts"} to resolve</span>
+                {t("board:needsAttention")}<span className="text-muted-foreground">{t("board:unresolvedConflicts", { count: needsAttention.length })}</span>
               </h2>
               <div className="flex flex-col gap-3">
                 {needsAttention.map(({ memory: contested, supersededBy }) => (
@@ -837,11 +836,10 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                         {contested.content}
                       </button>
                       <Button variant="ghost" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={() => void archiveContested(contested).catch(() => {})}>
-                        <Trash2 className="h-4 w-4" /> Archive older memory
-                      </Button>
+                        <Trash2 className="h-4 w-4" /> {t("board:archiveOlderMemory")}</Button>
                     </div>
                     {supersededBy.map((next) => (
-                      <p key={next.id} className="mt-1 text-xs text-muted-foreground">superseded by: <span className="text-foreground">{next.content}</span></p>
+                      <p key={next.id} className="mt-1 text-xs text-muted-foreground">{t("board:supersededBy")}<span className="text-foreground">{next.content}</span></p>
                     ))}
                   </div>
                 ))}
@@ -857,8 +855,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
               >
                 <Archive className="h-4 w-4" />
-                Archived
-                <MemoryBadge>{archivedItems.length}</MemoryBadge>
+                {t("board:archived")}<MemoryBadge>{archivedItems.length}</MemoryBadge>
                 <ChevronRight className={cn("h-4 w-4 transition-transform", showArchived && "rotate-90")} />
               </button>
               {showArchived ? (
@@ -885,8 +882,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                         ) : (
                           <ArchiveRestore className="h-3.5 w-3.5" />
                         )}
-                        Restore
-                      </Button>
+                        {t("common:restore")}</Button>
                     </div>
                   ))}
                 </div>
@@ -901,19 +897,16 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
             >
               <X className="h-4 w-4" />
-              Muted proposals
-              {muted ? <MemoryBadge>{muted.length}</MemoryBadge> : null}
+              {t("board:mutedProposals")}{muted ? <MemoryBadge>{muted.length}</MemoryBadge> : null}
               <ChevronRight className={cn("h-4 w-4 transition-transform", showMuted && "rotate-90")} />
             </button>
             {showMuted ? (
               muted === null ? (
                 <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading…
-                </p>
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("common:loading")}</p>
               ) : muted.length === 0 ? (
                 <p className="mt-3 text-xs text-muted-foreground">
-                  Nothing muted. Dismissing a capture proposal mutes exact re-proposals of it; they'd show up here.
-                </p>
+                  {t("board:nothingMutedDismissingACaptureProposalMutesExactReProposals")}</p>
               ) : (
                 <div className="mt-3 flex flex-col gap-1.5">
                   {muted.map((m) => (
@@ -922,10 +915,10 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
                     >
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">
-                        {m.content ?? `(content no longer available — ${m.memoryId})`}
+                        {m.content ?? t("board:contentNoLongerAvailableValue0", { v0: m.memoryId })}
                       </span>
                       <span className="hidden shrink-0 text-[11px] text-muted-foreground/70 sm:inline">
-                        muted {new Date(m.dismissedAt).toLocaleDateString()}
+                        {t("board:muted")}{new Date(m.dismissedAt).toLocaleDateString(getLocale())}
                       </span>
                       {m.canUnmute ? (
                         <Button
@@ -936,15 +929,13 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                           onClick={() => void handleUnmute(m.memoryId)}
                         >
                           {unmutingId === m.memoryId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                          Unmute
-                        </Button>
+                          {t("board:unmute")}</Button>
                       ) : (
                         <span
                           className="shrink-0 text-[11px] font-medium text-muted-foreground"
-                          title="Sensitive content was erased and cannot be restored"
+                          title={t("board:sensitiveContentWasErasedAndCannotBeRestored")}
                         >
-                          Permanently removed
-                        </span>
+                          {t("board:permanentlyRemoved")}</span>
                       )}
                     </div>
                   ))}

@@ -1,3 +1,5 @@
+import { translateUiText } from "../i18n/uiText"
+import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
@@ -45,6 +47,7 @@ type AppAuthState =
   | { status: "locked"; error: string | null }
 
 function TelemetryBootstrap() {
+  useI18n()
   useLayoutEffect(() => {
     void initializeUsageTelemetryOutbox()
     return stopUsageTelemetryOutbox
@@ -71,6 +74,7 @@ function PasswordScreen({
   error: string | null
   onSubmit: (password: string) => Promise<void>
 }) {
+  useI18n()
   const [password, setPassword] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const brandName = useBrandName()
@@ -98,14 +102,13 @@ function PasswordScreen({
             </div>
           </div>
           <CardDescription className="leading-6">
-            Enter your password to continue.
-          </CardDescription>
+            {t("chat:enterYourPasswordToContinue")}</CardDescription>
         </CardHeader>
         <CardContent className="px-6 pb-6">
           <form className="space-y-4" onSubmit={(event) => void handleSubmit(event)}>
             {error ? (
               <div className="rounded-2xl border border-destructive/20 bg-destructive/10 px-4 py-3 text-sm text-foreground">
-                {error}
+                {translateUiText(error)}
               </div>
             ) : null}
             <Input
@@ -114,7 +117,7 @@ function PasswordScreen({
               autoComplete="current-password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="Password"
+              placeholder={t("chat:password")}
               disabled={submitting}
               className="h-11 rounded-2xl bg-background"
             />
@@ -123,7 +126,7 @@ function PasswordScreen({
               disabled={submitting || password.length === 0}
               className="h-11 w-full"
             >
-              {submitting ? "Unlocking..." : "Unlock"}
+              {submitting ? t("chat:unlocking") : t("chat:unlock")}
             </Button>
           </form>
         </CardContent>
@@ -133,6 +136,7 @@ function PasswordScreen({
 }
 
 function useAppAuthState() {
+  useI18n()
   const [state, setState] = useState<AppAuthState>({ status: "checking" })
   const retryTimeoutRef = useRef<number | null>(null)
 
@@ -200,12 +204,12 @@ function useAppAuthState() {
     })
 
     if (!response.ok) {
-      setState({ status: "locked", error: "Incorrect password. Try again." })
+      setState({ status: "locked", error: t("chat:incorrectPasswordTryAgain") })
       return
     }
 
     await refresh()
-  }, [refresh])
+  }, [refresh, getLocale()])
 
   return {
     state,
@@ -226,6 +230,7 @@ export function shouldPlayChatNotificationSound(
 }
 
 function AppLayout() {
+  useI18n()
   const location = useLocation()
   const navigate = useNavigate()
   const params = useParams()
@@ -450,13 +455,13 @@ function AppLayout() {
 }
 
 export function App() {
+  useI18n()
   const auth = useAppAuthState()
 
   if (auth.state.status === "checking") {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">
-        Checking session…
-      </div>
+        {t("chat:checkingSession")}</div>
     )
   }
 

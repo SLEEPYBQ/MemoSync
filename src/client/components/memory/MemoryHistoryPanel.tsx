@@ -1,3 +1,6 @@
+import { translateUiText } from "../../i18n/uiText"
+import { traceVerdictLabel } from "../../i18n/labels"
+import { t, useI18n, getLocale } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
 // Per-item version + usage timeline with rollback (SPEC §4.11, option 乙).
 // Fetches memoriesApi.history(id) and renders one row per event, oldest
@@ -15,22 +18,22 @@ type EventActor = MemoryEvent["actor"]
 type EventKind = MemoryEvent["kind"]
 
 const ACTOR_META: Record<EventActor, { label: string; className: string }> = {
-  user: { label: "user", className: "bg-muted/50 text-muted-foreground" },
-  agent: { label: "agent", className: "bg-muted/50 text-muted-foreground" },
-  system: { label: "system", className: "bg-muted text-muted-foreground" },
+  user: { get label() { return t("memory:user") }, className: "bg-muted/50 text-muted-foreground" },
+  agent: { get label() { return t("memory:agent") }, className: "bg-muted/50 text-muted-foreground" },
+  system: { get label() { return t("memory:system") }, className: "bg-muted text-muted-foreground" },
 }
 
 const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
-  create: { icon: Sparkles, label: "Created" },
-  edit: { icon: Pencil, label: "Edited" },
-  rescope: { icon: ArrowLeftRight, label: "Rescoped" },
-  promote: { icon: TrendingUp, label: "Promoted" },
-  status: { icon: Flag, label: "Status changed" },
-  revert: { icon: RotateCcw, label: "Rolled back" },
-  use: { icon: Eye, label: "Used" },
-  trace: { icon: Activity, label: "Trace verdict" },
-  reinforce: { icon: Plus, label: "Reinforced" },
-  renew: { icon: CalendarPlus, label: "Renewed (延期)" },
+  create: { icon: Sparkles, get label() { return t("memory:created") } },
+  edit: { icon: Pencil, get label() { return t("memory:edited") } },
+  rescope: { icon: ArrowLeftRight, get label() { return t("memory:rescoped") } },
+  promote: { icon: TrendingUp, get label() { return t("memory:promoted") } },
+  status: { icon: Flag, get label() { return t("memory:statusChanged") } },
+  revert: { icon: RotateCcw, get label() { return t("memory:rolledBack") } },
+  use: { icon: Eye, get label() { return t("memory:used2") } },
+  trace: { icon: Activity, get label() { return t("memory:traceVerdict") } },
+  reinforce: { icon: Plus, get label() { return t("memory:reinforced") } },
+  renew: { icon: CalendarPlus, get label() { return t("memory:renewed") } },
 }
 
 const TRACE_LABEL_CLASSES: Record<string, string> = {
@@ -41,15 +44,15 @@ const TRACE_LABEL_CLASSES: Record<string, string> = {
 }
 
 const FIELD_LABELS: Record<string, string> = {
-  content: "content",
-  detail: "detail",
-  scope: "scope",
-  type: "type",
-  status: "status",
-  topic: "topic",
-  abstractionLevel: "abstraction",
-  projectId: "project",
-  sessionId: "session",
+  get content() { return t("memory:content") },
+  get detail() { return t("memory:detail2") },
+  get scope() { return t("memory:fieldScope") },
+  get type() { return t("memory:fieldType") },
+  get status() { return t("memory:fieldStatus") },
+  get topic() { return t("memory:fieldTopic") },
+  get abstractionLevel() { return t("memory:fieldAbstraction") },
+  get projectId() { return t("memory:fieldProject") },
+  get sessionId() { return t("memory:fieldSession") },
 }
 
 function fieldLabel(key: string): string {
@@ -65,7 +68,7 @@ function truncateValue(value: unknown, max = 60): string {
 function formatEventTime(ts: string): string {
   const d = new Date(ts)
   if (Number.isNaN(d.getTime())) return ts
-  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
+  return d.toLocaleString(getLocale(), { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })
 }
 
 function formatSessionTurn(sessionId?: string, turn?: number): string | null {
@@ -77,6 +80,7 @@ function formatSessionTurn(sessionId?: string, turn?: number): string | null {
 }
 
 function ActorChip({ actor }: { actor: EventActor }) {
+  useI18n()
   const meta = ACTOR_META[actor]
   return (
     <MemoryBadge className={cn("inline-flex items-center rounded-md px-1.5 py-0.5 text-[11px] font-medium", meta.className)}>
@@ -113,6 +117,7 @@ function buildTimeline(events: MemoryEvent[]): TimelineRow[] {
 }
 
 function UseGroupRow({ events }: { events: MemoryEvent[] }) {
+  useI18n()
   const [open, setOpen] = useState(false)
   return (
     <div className="py-1 pl-6">
@@ -126,8 +131,8 @@ function UseGroupRow({ events }: { events: MemoryEvent[] }) {
           const uses = events.filter((e) => e.kind === "use").length
           const traces = events.length - uses
           const parts: string[] = []
-          if (uses) parts.push(`${uses} use${uses === 1 ? "" : "s"}`)
-          if (traces) parts.push(`${traces} trace verdict${traces === 1 ? "" : "s"}`)
+          if (uses) parts.push(t("memory:useCount", { count: uses }))
+          if (traces) parts.push(t("memory:traceCount", { count: traces }))
           return parts.join(" · ")
         })()}
       </button>
@@ -136,12 +141,12 @@ function UseGroupRow({ events }: { events: MemoryEvent[] }) {
           {events.map((event) => {
             const traceLabel = event.kind === "trace" && typeof event.meta?.label === "string" ? event.meta.label : null
             const label = traceLabel
-              ? traceLabel.replace(/_/g, " ")
+              ? traceVerdictLabel(traceLabel)
               : event.meta?.detailLoaded
-                ? "detail loaded"
+                ? t("memory:detailLoaded")
                 : typeof event.meta?.via === "string"
                   ? event.meta.via
-                  : "used"
+                  : t("memory:used")
             const sessionTurn = formatSessionTurn(event.sessionId, event.turn)
             return (
               <li
@@ -176,6 +181,7 @@ function VersionEventRow({
   busy: boolean
   onRollback: (seq: number) => void
 }) {
+  useI18n()
   const meta = KIND_META[event.kind]
   const Icon = meta.icon
   const [armed, setArmed] = useState(false)
@@ -215,11 +221,9 @@ function VersionEventRow({
               disabled={busy}
               onClick={() => onRollback(event.seq)}
             >
-              Confirm rollback
-            </Button>
+              {t("memory:confirmRollback")}</Button>
             <Button variant="ghost" size="sm" className="h-6 rounded-md px-2 text-[11px]" disabled={busy} onClick={() => setArmed(false)}>
-              Cancel
-            </Button>
+              {t("common:cancel")}</Button>
           </div>
         ) : (
           <Button
@@ -228,8 +232,7 @@ function VersionEventRow({
             className="mt-1.5 h-6 rounded-md px-2 text-[11px]"
             onClick={() => setArmed(true)}
           >
-            <RotateCcw className="h-3 w-3" /> Roll back to this version
-          </Button>
+            <RotateCcw className="h-3 w-3" /> {t("memory:rollBackToThisVersion")}</Button>
         )
       ) : null}
     </div>
@@ -244,6 +247,7 @@ interface MemoryHistoryPanelProps {
 }
 
 export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistoryPanelProps) {
+  useI18n()
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
   const [events, setEvents] = useState<MemoryEvent[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -257,10 +261,10 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
       setEvents(history.events)
       setStatus("ready")
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load history")
+      setError(err instanceof Error ? err.message : t("memory:failedToLoadHistory"))
       setStatus("error")
     }
-  }, [itemId])
+  }, [itemId, getLocale()])
 
   useEffect(() => {
     void load()
@@ -273,20 +277,20 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
       onReverted(reverted)
       await load()
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Rollback failed")
+      setError(err instanceof Error ? err.message : t("memory:rollbackFailed"))
     } finally {
       setBusySeq(null)
     }
   }
 
   if (status === "loading") {
-    return <p className="py-4 text-xs text-muted-foreground">Loading history…</p>
+    return <p className="py-4 text-xs text-muted-foreground">{t("memory:loadingHistory")}</p>
   }
   if (status === "error") {
-    return <p className="py-4 text-xs text-destructive">Failed to load history: {error}</p>
+    return <p className="py-4 text-xs text-destructive">{t("memory:failedToLoadHistory2")}{translateUiText(error)}</p>
   }
   if (events.length === 0) {
-    return <p className="py-4 text-xs text-muted-foreground">No history yet.</p>
+    return <p className="py-4 text-xs text-muted-foreground">{t("memory:noHistoryYet")}</p>
   }
 
   const versionSeqs = events.filter((e) => e.snapshot).map((e) => e.seq)
@@ -295,7 +299,7 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
 
   return (
     <div className="mt-2">
-      {error ? <p className="mb-2 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mb-2 text-xs text-destructive">{translateUiText(error)}</p> : null}
       {rows.map((row) =>
         row.type === "uses" ? (
           <UseGroupRow key={row.key} events={row.events} />

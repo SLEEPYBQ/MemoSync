@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 // Segmented scope selector for the in-chat memory review flow (SPEC §5 —
 // ported/re-skinned from v1's ScopeControl). Selected segment is tinted with
 // that scope's color; unselected segments look like ghost buttons.
@@ -8,17 +9,17 @@ import { MEMORY_SCOPE_SELECTED_CLASSES } from "../../lib/memoryCitations"
 import { cn } from "../../lib/utils"
 
 const SCOPE_OPTIONS: { value: MemoryScope; label: string; icon: LucideIcon }[] = [
-  { value: "session", label: "Session", icon: MessagesSquare },
-  { value: "project", label: "Project", icon: FolderGit2 },
-  { value: "personal", label: "Personal", icon: User },
+  { value: "session", get label() { return t("common:session") }, icon: MessagesSquare },
+  { value: "project", get label() { return t("common:project") }, icon: FolderGit2 },
+  { value: "personal", get label() { return t("common:personal") }, icon: User },
 ]
 
 // What the choice DOES — where the memory injects and how long it lives.
 // The picker's labels alone made first-time users guess (friction #6).
 export const SCOPE_CONSEQUENCES: Record<MemoryScope, string> = {
-  session: "Only this chat — gone when the session ends.",
-  project: "Injected in every chat of this project.",
-  personal: "Injected across all your projects.",
+  get session() { return t("memory:onlyThisChatGoneWhenTheSessionEnds") },
+  get project() { return t("memory:injectedInEveryChatOfThisProject") },
+  get personal() { return t("memory:injectedAcrossAllYourProjects") },
 }
 
 interface ScopeControlProps {
@@ -31,6 +32,7 @@ interface ScopeControlProps {
 }
 
 export function ScopeControl({ value, onValueChange, className, disabled, showConsequence }: ScopeControlProps) {
+  useI18n()
   const segments = (
     <div className={cn("memory-ui inline-flex max-w-full flex-wrap items-center gap-0.5 rounded-lg bg-muted/50 p-[3px]", !showConsequence && className)}>
       {SCOPE_OPTIONS.map(({ value: scope, label, icon: Icon }) => {

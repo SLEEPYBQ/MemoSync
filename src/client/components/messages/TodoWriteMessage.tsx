@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Check, Circle, ListChecks, Loader2 } from "lucide-react"
 import { cn } from "../../lib/utils"
 import type { ProcessedToolCall } from "./types"
@@ -13,6 +14,7 @@ interface Props {
 }
 
 export function TodoWriteMessage({ message }: Props) {
+  useI18n()
   const todos = message.input.todos
 
   if (!todos.length) return null
@@ -22,8 +24,7 @@ export function TodoWriteMessage({ message }: Props) {
       <div className="rounded-2xl border border-border overflow-hidden">
         <h3 className="font-medium text-foreground text-sm p-3 px-4 bg-card border-b border-border flex items-center gap-2">
           <ListChecks className="h-4 w-4 text-muted-foreground" />
-          Progress
-        </h3>
+          {t("chat:progress")}</h3>
         <div>
           {todos.map((todo, index) => {
             const isLast = index === todos.length - 1

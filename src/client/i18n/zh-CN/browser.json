@@ -1,0 +1,20 @@
+{
+  "quickActions": "快捷操作",
+  "addQuickAction": "添加快捷操作",
+  "noQuickActions": "暂无快捷操作。",
+  "runQuickAction": "运行快捷操作",
+  "refresh": "刷新",
+  "enterAURL": "输入 URL",
+  "openExternal": "在外部打开",
+  "zoomOut": "缩小",
+  "zoomIn": "放大",
+  "localServers": "本地服务器",
+  "noLocalHTTPServersFound": "未发现本地 HTTP 服务器。",
+  "serverActions": "服务器操作",
+  "openInNewTab": "在新标签页打开",
+  "killProcess": "终止进程",
+  "hideOtherProjects": "隐藏其他项目",
+  "browserPanel": "浏览器面板",
+  "otherProjectsValue0": "其他项目（{{v0}}）",
+  "home": "主页"
+}

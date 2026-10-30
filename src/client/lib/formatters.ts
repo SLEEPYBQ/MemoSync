@@ -1,3 +1,4 @@
+import { formatNumber, getLocale, formatRelativeTime } from "../i18n"
 export function toTitleCase(value: string): string {
   return value
     .split(/[\s_-]+/)
@@ -48,9 +49,9 @@ export function formatSidebarAgeLabel(lastMessageAt: number | undefined, nowMs: 
   const dayMs = SIDEBAR_RECENT_WINDOW_MS
   const weekMs = 7 * dayMs
 
-  if (deltaMs < minuteMs) return "now"
-  if (deltaMs < hourMs) return `${Math.floor(deltaMs / minuteMs)}m`
-  if (deltaMs < dayMs) return `${Math.floor(deltaMs / hourMs)}h`
-  if (deltaMs < weekMs) return `${Math.floor(deltaMs / dayMs)}d`
-  return `${Math.floor(deltaMs / weekMs)}w`
+  if (deltaMs < minuteMs) return getLocale() === "en" ? "now" : formatRelativeTime(0, "second")
+  if (deltaMs < hourMs) return getLocale() === "en" ? `${formatNumber(Math.floor(deltaMs / minuteMs))}m` : formatRelativeTime(-Math.floor(deltaMs / minuteMs), "minute")
+  if (deltaMs < dayMs) return getLocale() === "en" ? `${formatNumber(Math.floor(deltaMs / hourMs))}h` : formatRelativeTime(-Math.floor(deltaMs / hourMs), "hour")
+  if (deltaMs < weekMs) return getLocale() === "en" ? `${formatNumber(Math.floor(deltaMs / dayMs))}d` : formatRelativeTime(-Math.floor(deltaMs / dayMs), "day")
+  return getLocale() === "en" ? `${formatNumber(Math.floor(deltaMs / weekMs))}w` : formatRelativeTime(-Math.floor(deltaMs / weekMs), "week")
 }

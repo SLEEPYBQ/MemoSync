@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "../../i18n"
 import { Loader2, UserRound, X } from "lucide-react"
 import type { ProcessedToolCall } from "./types"
 import { MetaRow, MetaLabel, MetaCodeBlock, ExpandableRow, VerticalLineContainer, getToolIcon } from "./shared"
@@ -65,6 +66,7 @@ function extractReadImageBlocks(value: unknown): ReadImageBlock[] {
 }
 
 export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBlock> }) {
+  useI18n()
   return (
     <div className="flex flex-col gap-3">
       {images.map((image, index) => {
@@ -73,7 +75,7 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
           <div key={`${mimeType}:${index}`} className="overflow-hidden rounded-lg border border-border bg-muted/20">
             <img
               src={`data:${mimeType};base64,${image.data}`}
-              alt={`Read result ${index + 1}`}
+              alt={t("chat:readResultValue0", { v0: index + 1 })}
               className="max-h-[50vh] w-full object-contain bg-background"
             />
           </div>
@@ -84,6 +86,7 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
 }
 
 export function ToolCallMessage({ message, isLoading = false, localPath }: Props) {
+  useI18n()
   const hasResult = message.result !== undefined
   const showLoadingState = !hasResult && isLoading
 
@@ -92,45 +95,45 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       return message.input.skill
     }
     if (message.toolKind === "glob") {
-      return `Search files ${message.input.pattern === "**/*" ? "in all directories" : `matching ${message.input.pattern}`}`
+      return t("chat:searchFilesValue0", { v0: message.input.pattern === "**/*" ? t("chat:inAllDirectories") : `matching ${message.input.pattern}` })
     }
     if (message.toolKind === "grep") {
       const pattern = message.input.pattern
       const outputMode = message.input.outputMode
       if (outputMode === "count") {
-        return `Count \`${pattern}\` occurrences`
+        return t("chat:countValue0Occurrences", { v0: pattern })
       }
       if (outputMode === "content") {
-        return `Find \`${pattern}\` in text`
+        return t("chat:findValue0InText", { v0: pattern })
       }
-      return `Find \`${pattern}\` in files`
+      return t("chat:findValue0InFiles", { v0: pattern })
     }
     if (message.toolKind === "bash") {
       return message.input.description || (message.input.command ? formatBashCommandTitle(message.input.command) : "Bash")
     }
     if (message.toolKind === "web_search") {
-      return message.input.query || "Web Search"
+      return message.input.query || t("chat:webSearch2")
     }
     if (message.toolKind === "read_file") {
-      return `Read ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return t("chat:readValue0", { v0: stripWorkspacePath(message.input.filePath, localPath) })
     }
     if (message.toolKind === "write_file") {
-      return `Write ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return t("chat:writeValue0", { v0: stripWorkspacePath(message.input.filePath, localPath) })
     }
     if (message.toolKind === "edit_file") {
-      return `Edit ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return t("chat:editValue0", { v0: stripWorkspacePath(message.input.filePath, localPath) })
     }
     if (message.toolKind === "delete_file") {
-      return `Delete ${stripWorkspacePath(message.input.filePath, localPath)}`
+      return t("chat:deleteValue0", { v0: stripWorkspacePath(message.input.filePath, localPath) })
     }
     if (message.toolKind === "mcp_generic") {
-      return `${toTitleCase(message.input.tool)} from ${toTitleCase(message.input.server)}`
+      return t("chat:value0FromValue1", { v0: toTitleCase(message.input.tool), v1: toTitleCase(message.input.server) })
     }
     if (message.toolKind === "subagent_task") {
       return message.input.subagentType || message.toolName
     }
     return message.toolName
-  }, [message.input, message.toolName, localPath])
+  }, [message.input, message.toolName, localPath, getLocale()])
 
   const isAgent = useMemo(() => message.toolKind === "subagent_task", [message.toolKind])
   const description = useMemo(() => {
@@ -153,7 +156,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
       if (typeof content === "string") return content
     }
     return JSON.stringify(message.result, null, 2)
-  }, [message.result])
+  }, [message.result, getLocale()])
 
   const readImages = useMemo(() => {
     if (!isReadTool) {
@@ -207,15 +210,15 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
                 <MetaCodeBlock label={
                   isBashTool ? (
                     <span className="flex items-center gap-2 w-full">
-                      <span>Command</span>
+                      <span>{t("chat:command")}</span>
                       {!!message.input.timeoutMs && (
-                        <span className="text-muted-foreground">timeout: {String(message.input.timeoutMs)}ms</span>
+                        <span className="text-muted-foreground">{t("chat:timeout")}{String(message.input.timeoutMs)}{t("chat:ms")}</span>
                       )}
                       {!!message.input.runInBackground && (
-                        <span className="text-muted-foreground">background</span>
+                        <span className="text-muted-foreground">{t("chat:background")}</span>
                       )}
                     </span>
-                  ) : isWriteTool ? "Contents" : "Input"
+                  ) : isWriteTool ? t("chat:contents") : t("chat:input")
                 } copyText={inputText}>
                   {inputText}
                 </MetaCodeBlock>
@@ -223,7 +226,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
               {hasResult && isReadTool && !message.isError && (
                 readImages.length > 0 ? (
                   <div>
-                    <span className="font-medium text-muted-foreground">Image</span>
+                    <span className="font-medium text-muted-foreground">{t("chat:image")}</span>
                     <div className="mt-1">
                       <ReadResultImages images={readImages} />
                     </div>
@@ -240,7 +243,7 @@ export function ToolCallMessage({ message, isLoading = false, localPath }: Props
                 />
               )}
               {hasResult && !isReadTool && !(isWriteTool && !message.isError) && !(isEditTool && !message.isError) && !(isDeleteTool && !message.isError) && (
-                <MetaCodeBlock label={message.isError ? "Error" : "Result"} copyText={resultText}>
+                <MetaCodeBlock label={message.isError ? t("common:error") : t("chat:result")} copyText={resultText}>
                   {resultText}
                 </MetaCodeBlock>
               )}

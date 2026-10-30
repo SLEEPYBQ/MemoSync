@@ -1,3 +1,4 @@
+import { t } from "../i18n"
 import { create } from "zustand"
 import { persist } from "zustand/middleware"
 
@@ -56,7 +57,7 @@ function labelForTerminalIndex(index: number): string {
     suffix = String.fromCharCode(65 + (value % 26)) + suffix
     value = Math.floor(value / 26) - 1
   } while (value >= 0)
-  return `Terminal ${suffix}`
+  return t("chat:terminalValue0", { v0: suffix })
 }
 
 function scaleForAdditionalTerminal(terminals: TerminalPaneLayout[]): TerminalPaneLayout[] {

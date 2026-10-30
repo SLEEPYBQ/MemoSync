@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { type MouseEvent as ReactMouseEvent } from "react"
 import { BrainCircuit, FolderOpen, GitBranch, Globe, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
 import { BrandIcon } from "../BrandMark"
@@ -27,6 +28,7 @@ function NavbarOverflowMenu({
   showOnDesktop: boolean
   onToggleEmbeddedTerminal?: () => void
 }) {
+  useI18n()
   if (!onToggleEmbeddedTerminal) return null
 
   return (
@@ -36,7 +38,7 @@ function NavbarOverflowMenu({
           variant="ghost"
           size="none"
           onClick={openContextMenuFromButton}
-          title="More actions"
+          title={t("chat:moreActions")}
           className={cn(
             "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
             showOnDesktop ? "flex" : "flex md:hidden"
@@ -54,7 +56,7 @@ function NavbarOverflowMenu({
             }}
           >
             <Terminal strokeWidth={2} className="h-3.5 w-3.5" />
-            <span className="text-xs font-medium">Toggle Terminal</span>
+            <span className="text-xs font-medium">{t("chat:toggleTerminal")}</span>
           </ContextMenuItem>
         ) : null}
       </ContextMenuContent>
@@ -106,11 +108,12 @@ export function ChatNavbar({
   memoryChatId,
   memoryProjectId,
 }: Props) {
+  useI18n()
   const branchLabel = !hasGitRepo
-    ? "Setup Git"
+    ? t("chat:setupGit")
     : gitStatus === "unknown"
       ? null
-      : (branchName ?? "Detached HEAD")
+      : (branchName ?? t("chat:detachedHEAD"))
   const rightPanelVisible = rightPanel !== "hidden"
   const handleCloseRightPanel =
     rightPanel === "browser"
@@ -154,7 +157,7 @@ export function ChatNavbar({
                 size="icon"
                 className="hidden md:flex  hover:!border-border/0 hover:!bg-transparent"
                 onClick={onExpandSidebar}
-                title="Expand sidebar"
+                title={t("chat:expandSidebar")}
               >
                 <PanelLeft className="size-4" />
               </Button>
@@ -165,7 +168,7 @@ export function ChatNavbar({
             size="icon"
             className="hover:!border-border/0 hover:!bg-transparent"
             onClick={onNewChat}
-            title="Compose"
+            title={t("chat:compose")}
           >
             <SquarePen className="size-4" />
           </Button>
@@ -180,8 +183,8 @@ export function ChatNavbar({
                 variant="ghost"
                 size="none"
                 onClick={onToggleMemoryPanel}
-                title="Session memories"
-                aria-label="Session memories"
+                title={t("chat:sessionMemories")}
+                aria-label={t("chat:sessionMemories")}
                 className={cn(
                   "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
                   rightPanel === "memory" && "text-foreground",
@@ -203,8 +206,8 @@ export function ChatNavbar({
                       variant="ghost"
                       size="none"
                       onClick={onToggleEmbeddedTerminal}
-                      title="Toggle terminal"
-                      aria-label="Toggle terminal"
+                      title={t("chat:toggleTerminal2")}
+                      aria-label={t("chat:toggleTerminal2")}
                       aria-pressed={embeddedTerminalVisible}
                       className={cn(
                         rightPanelVisible ? "hidden" : "hidden md:flex",
@@ -223,8 +226,8 @@ export function ChatNavbar({
                     variant="ghost"
                     size="none"
                     onClick={onToggleBrowserPanel}
-                    title="Browser"
-                    aria-label="Browser"
+                    title={t("chat:browser")}
+                    aria-label={t("chat:browser")}
                     className={cn(
                       "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
                     )}
@@ -237,8 +240,8 @@ export function ChatNavbar({
                     variant="ghost"
                     size="none"
                     onClick={onToggleFilesPanel}
-                    title="Files"
-                    aria-label="Files"
+                    title={t("chat:files2")}
+                    aria-label={t("chat:files2")}
                     className={cn(
                       "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
                     )}
@@ -270,8 +273,8 @@ export function ChatNavbar({
                     variant="ghost"
                     size="none"
                     onClick={handleCloseRightPanel}
-                    title="Collapse sidebar"
-                    aria-label="Collapse sidebar"
+                    title={t("chat:collapseSidebar")}
+                    aria-label={t("chat:collapseSidebar")}
                     className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent text-foreground"
                   >
                     <PanelRight strokeWidth={2.25} className="h-4" />

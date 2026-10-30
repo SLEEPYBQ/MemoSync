@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { ExternalLink, Link2 } from "lucide-react"
 import Markdown from "react-markdown"
@@ -50,6 +51,7 @@ interface Props {
 }
 
 export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   const embeddedPreview = attachment && typeof window !== "undefined" && window.location.protocol === "file:"
     ? renderOptions.textAttachmentPreviews?.[attachment.contentUrl]
@@ -116,7 +118,7 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
       })
       .catch((error: unknown) => {
         if (cancelled) return
-        const message = error instanceof Error ? error.message : "Unable to load preview."
+        const message = error instanceof Error ? error.message : t("chat:unableToLoadPreview")
         setPreviewCache((current) => ({
           ...current,
           [attachment.id]: { status: "error", message },
@@ -167,12 +169,10 @@ export function AttachmentPreviewModal({ attachment, onOpenChange }: Props) {
               <div className="flex items-center gap-2">
                 <DialogGhostButton type="button" onClick={handleCopyLink}>
                   <Link2 className="mr-2 h-4 w-4" />
-                  Copy Link
-                </DialogGhostButton>
+                  {t("chat:copyLink2")}</DialogGhostButton>
                 <Button type="button" variant="outline" onClick={handleOpenInNewTab}>
                   <ExternalLink className="mr-2 h-4 w-4" />
-                  Open In New Tab
-                </Button>
+                  {t("chat:openInNewTab")}</Button>
               </div>
             </DialogFooter>
           </>
@@ -210,7 +210,7 @@ function renderAttachmentPreviewBody(
   }
 
   if (!previewState || previewState.status === "loading") {
-    return <div className="flex h-[50vh] items-center justify-center text-sm text-muted-foreground">Loading preview…</div>
+    return <div className="flex h-[50vh] items-center justify-center text-sm text-muted-foreground">{t("chat:loadingPreview")}</div>
   }
 
   if (previewState.status === "error") {
@@ -220,7 +220,7 @@ function renderAttachmentPreviewBody(
   if (previewState.kind === "markdown" && previewState.content !== undefined) {
     return (
       <div className="space-y-3">
-        {previewState.truncated ? <PreviewNotice message="Preview truncated to 1024 KB." /> : null}
+        {previewState.truncated ? <PreviewNotice message={t("chat:previewTruncatedTo1024KB")} /> : null}
         <div className="prose prose-sm max-w-none overflow-auto rounded-xl border border-border bg-background p-4 prose-invert">
           <Markdown remarkPlugins={[remarkGfm]} components={markdownComponentsWithLinks}>
             {previewState.content}
@@ -234,9 +234,9 @@ function renderAttachmentPreviewBody(
     const hasHeader = previewState.table.rows.length > 0
     const [header, ...bodyRows] = previewState.table.rows
     const notices = [
-      previewState.truncated ? "Preview truncated to 1024 KB." : null,
-      previewState.table.truncatedRows ? `Showing first ${previewState.table.rows.length} of ${previewState.table.rowCount} rows.` : null,
-      previewState.table.truncatedColumns ? `Showing first ${TABLE_PREVIEW_COLUMN_LIMIT} of ${previewState.table.columnCount} columns.` : null,
+      previewState.truncated ? t("chat:previewTruncatedTo1024KB") : null,
+      previewState.table.truncatedRows ? t("chat:showingFirstValue0OfValue1Rows", { v0: previewState.table.rows.length, v1: previewState.table.rowCount }) : null,
+      previewState.table.truncatedColumns ? t("chat:showingFirstValue0OfValue1Columns", { v0: TABLE_PREVIEW_COLUMN_LIMIT, v1: previewState.table.columnCount }) : null,
     ].filter(Boolean)
 
     return (
@@ -274,13 +274,14 @@ function renderAttachmentPreviewBody(
 
   return (
     <div className="space-y-3">
-      {previewState.truncated ? <PreviewNotice message="Preview truncated to 1024 KB." /> : null}
+      {previewState.truncated ? <PreviewNotice message={t("chat:previewTruncatedTo1024KB")} /> : null}
       <FileContentView content={previewState.content ?? ""} />
     </div>
   )
 }
 
 function PreviewNotice({ message }: { message: string }) {
+  useI18n()
   return (
     <div className="rounded-xl border border-border bg-background px-3 py-2 text-sm text-muted-foreground">
       {message}

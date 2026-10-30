@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { ChevronDown } from "lucide-react"
 import type { EditorOpenSettings, EditorPreset, OpenExternalAction } from "../../shared/protocol"
@@ -25,6 +26,7 @@ function OpenAppMenuItemContent({
   label: string
   isMac: boolean
 }) {
+  useI18n()
   return (
     <span className={OPEN_APP_MENU_ROW_CLASS_NAME}>
       <OpenAppIcon value={value} isMac={isMac} className={OPEN_APP_MENU_ICON_CLASS_NAME} />
@@ -43,16 +45,17 @@ export function getEditorSettings(preset: EditorPreset, customTemplate?: string)
 }
 
 export function getOpenAppLabel(value: OpenAppValue, isMac: boolean) {
-  if (value === "finder") return isMac ? "Finder" : "Folder"
-  if (value === "terminal") return "Terminal"
-  if (value === "preview") return "Preview"
-  if (value === "default") return "Default App"
+  if (value === "finder") return isMac ? "Finder" : t("chat:folder")
+  if (value === "terminal") return t("chat:terminal")
+  if (value === "preview") return t("common:preview")
+  if (value === "default") return t("chat:defaultApp")
   const preset = value.replace("editor:", "") as EditorPreset
   if (preset === "vscode") return "VS Code"
-  return EDITOR_OPTIONS.find((option) => option.value === preset)?.label ?? "Editor"
+  return EDITOR_OPTIONS.find((option) => option.value === preset)?.label ?? t("chat:editor")
 }
 
 export function OpenAppIcon({ value, isMac, className }: { value: OpenAppValue; isMac: boolean; className?: string }) {
+  useI18n()
   if (value === "finder") {
     return isMac ? <FinderIcon className={className} /> : <FolderFallbackIcon className={className} />
   }
@@ -102,7 +105,7 @@ export function getOpenAppItems({
     { value: "editor:cursor", label: "Cursor" },
     { value: "editor:xcode", label: "Xcode" },
     { value: "editor:windsurf", label: "Windsurf" },
-    ...(editorPreset === "custom" ? [{ value: "editor:custom" as OpenAppValue, label: "Custom" }] : []),
+    ...(editorPreset === "custom" ? [{ value: "editor:custom" as OpenAppValue, label: t("chat:custom") }] : []),
   ] : []
   const defaultEditorValue = `editor:${editorPreset}` as OpenAppValue
   const sortedEditorItems = [
@@ -112,17 +115,17 @@ export function getOpenAppItems({
   if (menuKind === "navbar") {
     return [
       ...sortedEditorItems.filter((item) => item.value === defaultEditorValue),
-      ...(includeFinder ? [{ value: "finder" as OpenAppValue, label: isMac ? "Finder" : "Folder" }] : []),
-      ...(includeTerminal ? [{ value: "terminal" as OpenAppValue, label: "Terminal" }] : []),
+      ...(includeFinder ? [{ value: "finder" as OpenAppValue, label: isMac ? "Finder" : t("chat:folder") }] : []),
+      ...(includeTerminal ? [{ value: "terminal" as OpenAppValue, label: t("chat:terminal") }] : []),
       ...sortedEditorItems.filter((item) => item.value !== defaultEditorValue),
     ]
   }
   return [
     ...sortedEditorItems,
-    ...(includePreview && isMac ? [{ value: "preview" as OpenAppValue, label: "Preview" }] : []),
-    ...(includeFinder ? [{ value: "finder" as OpenAppValue, label: isMac ? "Finder" : "Folder" }] : []),
-    ...(includeTerminal ? [{ value: "terminal" as OpenAppValue, label: "Terminal" }] : []),
-    ...(includeDefault ? [{ value: "default" as OpenAppValue, label: "Default App" }] : []),
+    ...(includePreview && isMac ? [{ value: "preview" as OpenAppValue, label: t("common:preview") }] : []),
+    ...(includeFinder ? [{ value: "finder" as OpenAppValue, label: isMac ? "Finder" : t("chat:folder") }] : []),
+    ...(includeTerminal ? [{ value: "terminal" as OpenAppValue, label: t("chat:terminal") }] : []),
+    ...(includeDefault ? [{ value: "default" as OpenAppValue, label: t("chat:defaultApp") }] : []),
   ]
 }
 
@@ -166,6 +169,7 @@ export function OpenExternalSelect({
   editorShortcut?: string[]
   onOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
 }) {
+  useI18n()
   const fallbackValue = `editor:${editorPreset}` as OpenAppValue
   const [lastValue, setLastValue] = useState<OpenAppValue>(fallbackValue)
 
@@ -195,7 +199,7 @@ export function OpenExternalSelect({
             variant="ghost"
             size="none"
             onClick={() => handleOpenValue(lastValue)}
-            title={`Open in ${getOpenAppLabel(lastValue, isMac)}`}
+            title={t("chat:openInValue0", { v0: getOpenAppLabel(lastValue, isMac) })}
             className="border-0 p-1 py-[3px] pr-0 hover:!border-border/0 hover:!bg-transparent"
           >
             <OpenAppIcon value={lastValue} isMac={isMac} className="size-5.5" />
@@ -208,7 +212,7 @@ export function OpenExternalSelect({
       </HotkeyTooltip>
       <Select value={undefined} onValueChange={(value) => handleOpenValue(value as OpenAppValue)}>
         <SelectTrigger
-          aria-label="Choose open destination"
+          aria-label={t("chat:chooseOpenDestination")}
           className="!h-auto !py-0 !pl-0.5 !pr-1 border-0 bg-transparent hover:bg-transparent focus:ring-0 focus:ring-offset-0 [&>svg]:hidden"
         >
           <div className="flex items-center justify-center size-5">
@@ -250,6 +254,7 @@ export function OpenExternalContextMenuContent({
   includeEditors?: boolean
   onOpenExternal: (action: OpenExternalAction, editor?: EditorOpenSettings) => void
 }) {
+  useI18n()
   const items = getOpenAppItems({
     editorPreset,
     isMac,

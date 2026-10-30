@@ -1,0 +1,6 @@
+{
+  "unableToLoadTranscript": "无法加载对话记录。",
+  "loadingTranscript": "正在加载对话记录…",
+  "content": "内容",
+  "transcriptRequestFailedWithStatusValue0": "对话记录请求失败，状态码{{v0}}"
+}

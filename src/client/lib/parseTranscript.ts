@@ -1,3 +1,4 @@
+import type { UiTextReference } from "../../shared/ui-copy"
 import { hydrateToolResult } from "../../shared/tools"
 import type { HydratedToolCall, HydratedTranscriptMessage, NormalizedToolCall, TranscriptEntry } from "../../shared/types"
 
@@ -48,7 +49,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   // append-only entries; fold each into its matching memory_preview message
   // so a preview renders as one card.
   const previewDecisions = new Map<string, { decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>["decision"]; auto?: boolean; selectedIds?: string[]; expectedUses?: Array<{ id: string; expectedUse: string }> }>()
-  const previewRelevance = new Map<string, { revision: number; relevant: Array<{ id: string; why: string }>; expectedUses?: Array<{ id: string; expectedUse: string }>; error?: string }>()
+  const previewRelevance = new Map<string, { revision: number; relevant: Array<{ id: string; why: string }>; expectedUses?: Array<{ id: string; expectedUse: string }>; error?: string; errorUiText?: UiTextReference }>()
   const previewUpdates = new Map<string, Extract<TranscriptEntry, { kind: "memory_preview_update" }>>()
   const previewRefreshing = new Set<string>()
   const previewRefreshVersions = new Map<string, number>()
@@ -77,7 +78,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
     if (entry.kind === "memory_preview_relevance") {
       const revision = entry.revision ?? 0
       if (revision >= (previewRelevance.get(entry.previewId)?.revision ?? -1)) {
-        previewRelevance.set(entry.previewId, { revision, relevant: entry.relevant, expectedUses: entry.expectedUses, error: entry.error })
+        previewRelevance.set(entry.previewId, { revision, relevant: entry.relevant, expectedUses: entry.expectedUses, error: entry.error, errorUiText: entry.errorUiText })
       }
     }
     if (entry.kind === "memory_preview_update") {
@@ -275,6 +276,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           relevant: relevance?.revision === refreshVersion ? relevance.relevant : undefined,
           expectedUses: relevance?.revision === refreshVersion ? relevance.expectedUses : undefined,
           selectionError: relevance?.revision === refreshVersion ? relevance.error : undefined,
+          selectionErrorUiText: relevance?.revision === refreshVersion ? relevance.errorUiText : undefined,
           relevancePending: update?.relevancePending ?? entry.relevancePending,
           attentionIds: update?.attentionIds ?? entry.attentionIds,
           refreshing: previewRefreshing.has(entry.previewId),

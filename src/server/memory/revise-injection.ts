@@ -1,3 +1,4 @@
+import type { UiTextReference } from "../../shared/ui-copy"
 // "Ask agent to revise" on the Step 2 gate (redesign 2026-08-07 §3): the
 // developer adjusts the injected set in natural language without leaving the
 // card. The pass gets the pool, the current selection, and the instruction;
@@ -18,6 +19,7 @@ export interface ReviseInjectionResult {
   /** The assistant's short reply: names the changes, or ANSWERS a question
    * about the pool ("[M-12] and [M-31] cover testing; added [M-12]"). */
   reply: string;
+  replyUiText?: UiTextReference;
 }
 
 export interface ReviseInjectionService {
@@ -53,6 +55,7 @@ export function createReviseInjectionService(opts: { callJson: LlmJsonCaller }):
     async revise(input: ReviseInjectionInput): Promise<ReviseInjectionResult> {
       const fallback: ReviseInjectionResult = {
         selectedIds: input.selectedIds,
+        replyUiText: { code: "reviseFailed" },
         reply: "Sorry — I couldn't process that; the selection is unchanged.",
       };
       if (!input.instruction.trim() || input.pool.length === 0) return fallback;
@@ -82,7 +85,7 @@ export function createReviseInjectionService(opts: { callJson: LlmJsonCaller }):
           : typeof raw.note === 'string' && raw.note.trim()
             ? raw.note
             : 'Selection updated.';
-        return { selectedIds, reply: rawReply.trim().slice(0, NOTE_MAX_LEN * 2) };
+        return { selectedIds, reply: rawReply.trim().slice(0, NOTE_MAX_LEN * 2), ...(!raw.reply && !raw.note ? { replyUiText: { code: "selectionUpdated" as const } } : {}) };
       } catch {
         return fallback;
       }

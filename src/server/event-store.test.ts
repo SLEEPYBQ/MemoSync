@@ -971,6 +971,27 @@ describe("EventStore", () => {
     expect(store.getMessages(forked.id)).toEqual(store.getMessages(source.id))
   })
 
+  test("fork titles keep server-generated names translatable and copy user titles verbatim", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/project")
+    const forkOf = async (title?: string) => {
+      const chat = await store.createChat(project.id)
+      if (title) await store.renameChat(chat.id, title)
+      await store.setChatProvider(chat.id, "claude")
+      await store.setSessionToken(chat.id, `session-${chat.id}`)
+      return store.forkChat(chat.id)
+    }
+
+    const untitled = await forkOf()
+    expect(untitled.titleUiText).toEqual({ code: "forkedNewChat" })
+    await store.setChatProvider(untitled.id, "claude")
+    await store.setSessionToken(untitled.id, "session-fork")
+    expect((await store.forkChat(untitled.id)).titleUiText).toEqual({ code: "forkedNewChat" })
+    expect((await forkOf("Fix the build")).titleUiText).toEqual({ code: "forkedChat", params: { v0: "Fix the build" } })
+  })
+
   test("reopening a removed project restores its existing chats", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)

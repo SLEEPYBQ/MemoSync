@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { AlertTriangle, Home, Loader2, RefreshCw } from "lucide-react"
 import { PREVIEW_PROXY_PATH_PREFIX } from "../../../shared/preview-proxy"
 import { Button } from "../ui/button"
@@ -103,6 +104,7 @@ export function inspectPreviewDocument(document: Document): PreviewInspection {
 }
 
 export function BrowserPreviewLoading() {
+  useI18n()
   return (
     <div
       role="status"
@@ -111,8 +113,7 @@ export function BrowserPreviewLoading() {
     >
       <span className="flex items-center gap-2 text-sm text-muted-foreground">
         <Loader2 className="h-4 w-4 animate-spin" />
-        Loading app preview…
-      </span>
+        {t("chat:loadingAppPreview")}</span>
     </div>
   )
 }
@@ -124,6 +125,7 @@ export function BrowserPreviewRecovery({
   onRefresh: () => void
   onHome: () => void
 }) {
+  useI18n()
   return (
     <div className="pointer-events-none absolute inset-x-3 bottom-3 z-20 flex justify-center">
       <div
@@ -135,18 +137,14 @@ export function BrowserPreviewRecovery({
         <div className="flex gap-2.5">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
           <div className="min-w-0 flex-1">
-            <p className="text-sm font-medium text-foreground">Preview looks blank</p>
+            <p className="text-sm font-medium text-foreground">{t("chat:previewLooksBlank")}</p>
             <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-              The page loaded, but the app did not show visible content. Press Refresh once. If it
-              stays blank, tell the assistant: “The Browser server card opens, but the page is blank.”
-            </p>
+              {t("chat:thePageLoadedButTheAppDidNotShowVisible")}</p>
             <div className="mt-2.5 flex flex-wrap gap-2">
               <Button type="button" variant="outline" size="xs" onClick={onRefresh}>
-                <RefreshCw className="h-3.5 w-3.5" /> Refresh
-              </Button>
+                <RefreshCw className="h-3.5 w-3.5" /> {t("chat:refresh")}</Button>
               <Button type="button" variant="ghost" size="xs" onClick={onHome}>
-                <Home className="h-3.5 w-3.5" /> Home
-              </Button>
+                <Home className="h-3.5 w-3.5" /> {t("browser:home")}</Button>
             </div>
           </div>
         </div>

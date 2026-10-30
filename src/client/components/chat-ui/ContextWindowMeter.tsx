@@ -1,3 +1,4 @@
+import { formatNumber, t, useI18n } from "../../i18n"
 import { cn } from "../../lib/utils"
 import { type ContextWindowSnapshot, formatContextWindowTokens } from "../../lib/contextWindow"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
@@ -7,12 +8,13 @@ function formatPercentage(value: number | null): string | null {
     return null
   }
   if (value < 10) {
-    return `${value.toFixed(1).replace(/\.0$/, "")}%`
+    return formatNumber(value / 100, { style: "percent", maximumFractionDigits: 1 })
   }
-  return `${Math.round(value)}%`
+  return formatNumber(value / 100, { style: "percent", maximumFractionDigits: 0 })
 }
 
 export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) {
+  useI18n()
   const usedPercentage = formatPercentage(usage.usedPercentage)
   const normalizedPercentage = Math.max(0, Math.min(100, usage.usedPercentage ?? 0))
   const radius = 9.75
@@ -27,8 +29,8 @@ export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) 
           className="group inline-flex items-center justify-center rounded-full transition-opacity hover:opacity-85"
           aria-label={
             usage.maxTokens !== undefined && usedPercentage
-              ? `Context window ${usedPercentage} used`
-              : `Context window ${formatContextWindowTokens(usage.usedTokens)} tokens used`
+              ? t("chat:contextWindowValue0Used", { v0: usedPercentage })
+              : t("chat:contextWindowValue0TokensUsed", { v0: formatContextWindowTokens(usage.usedTokens) })
           }
         >
           <span className="relative flex h-6 w-6 items-center justify-center">
@@ -80,12 +82,11 @@ export function ContextWindowMeter({ usage }: { usage: ContextWindowSnapshot }) 
               <span className="mx-1">·</span>
               <span>{formatContextWindowTokens(usage.usedTokens)}</span>
               <span>/</span>
-              <span>{formatContextWindowTokens(usage.maxTokens)} context used</span>
+              <span>{formatContextWindowTokens(usage.maxTokens)} {t("chat:contextUsed")}</span>
             </div>
           ) : (
             <div className="text-sm text-foreground">
-              {formatContextWindowTokens(usage.usedTokens)} tokens used so far
-            </div>
+              {formatContextWindowTokens(usage.usedTokens)} {t("chat:tokensUsedSoFar")}</div>
           )}
         </div>
       </TooltipContent>

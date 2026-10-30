@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../../i18n"
 import { memo, type MouseEvent as ReactMouseEvent, type ReactNode, useMemo, useSyncExternalStore } from "react"
 import { ChevronRight, Loader2, MoreHorizontal, SquarePen } from "lucide-react"
 import {
@@ -85,6 +86,7 @@ function getSidebarReorderMediaQuerySnapshot() {
 }
 
 function useSidebarReorderEnabled() {
+  useI18n()
   return useSyncExternalStore(
     subscribeToSidebarReorderMediaQuery,
     getSidebarReorderMediaQuerySnapshot,
@@ -124,13 +126,14 @@ function EmptyProjectChatButton({
   isConnected?: boolean
   startingLocalPath?: string | null
 }) {
+  useI18n()
   const disabled = !isConnected || startingLocalPath === localPath
 
   return (
     <button
       type="button"
       disabled={disabled}
-      title={!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
+      title={!isConnected ? t("sidebar:startValue0ToConnect", { v0: APP_NAME }) : t("sidebar:newChat")}
       className={cn(
         "group flex w-full items-center gap-2 pl-2.5 pr-0.5 py-0.5 rounded-lg text-left cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
         "border-border/0 dark:hover:border-border",
@@ -139,8 +142,7 @@ function EmptyProjectChatButton({
       onClick={() => onNewLocalChat(localPath)}
     >
       <span className="text-sm truncate flex-1 translate-y-[-0.5px] text-slate-500 dark:text-muted-foreground">
-        New Chat
-      </span>
+        {t("sidebar:newChat")}</span>
       <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
     </button>
   )
@@ -209,6 +211,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
   isConnected,
   startingLocalPath,
 }: SortableProjectGroupProps) {
+  useI18n()
   const { groupKey, localPath, title } = group
   const isExpanded = expandedGroups.has(groupKey)
   const isEmptyProject = group.chats.length === 0
@@ -280,8 +283,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right" sideOffset={4}>
-                More
-              </TooltipContent>
+                {t("sidebar:more")}</TooltipContent>
             </Tooltip>
           ) : null}
           {onNewLocalChat ? (
@@ -308,7 +310,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                 </Button>
               </TooltipTrigger>
               <TooltipContent side="right" sideOffset={4}>
-                {!isConnected ? `Start ${APP_NAME} to connect` : "New Chat"}
+                {!isConnected ? t("sidebar:startValue0ToConnect", { v0: APP_NAME }) : t("sidebar:newChat")}
               </TooltipContent>
             </Tooltip>
           ) : null}
@@ -356,8 +358,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                   onClick={() => onToggleExpandedGroup(groupKey)}
                   className="pl-2.5 py-1 text-xs text-muted-foreground/60 hover:text-foreground/60 transition-colors flex flex-row items-center gap-2 justify-center"
                 >
-                 Show less
-                </button>
+                 {t("common:showLess2")}</button>
               ) : null}
               {isExpanded ? group.olderChats.map(renderChatRow) : null}
               {hasMore && !isExpanded ? (
@@ -365,8 +366,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
                   onClick={() => onToggleExpandedGroup(groupKey)}
                   className="pl-2.5 py-1 text-xs text-muted-foreground/60 hover:text-foreground/60 transition-colors flex flex-row items-center gap-1 justify-center"
                 >
-                 Show more
-                </button>
+                 {t("common:showMore2")}</button>
               ) : null}
             </>
           )}
@@ -393,6 +393,7 @@ const LocalProjectsSectionImpl = function LocalProjectsSection({
   isConnected,
   startingLocalPath,
 }: Props) {
+  useI18n()
   const isReorderEnabled = useSidebarReorderEnabled()
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 2 } }),

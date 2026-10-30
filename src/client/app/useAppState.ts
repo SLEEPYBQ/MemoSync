@@ -1,3 +1,4 @@
+import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
@@ -462,6 +463,7 @@ function wsUrl() {
 }
 
 function useAppSocket() {
+  useI18n()
   const socketRef = useRef<AppSocket | null>(null)
   if (!socketRef.current) {
     socketRef.current = new AppSocket(wsUrl())
@@ -817,6 +819,7 @@ export interface AppState {
 }
 
 export function useAppState(activeChatId: string | null): AppState {
+  useI18n()
   const navigate = useNavigate()
   const socket = useAppSocket()
   const dialog = useAppDialog()
@@ -1252,7 +1255,7 @@ export function useAppState(activeChatId: string | null): AppState {
               }
               cursor = page.hasOlder ? page.olderCursor : null
             }
-            if (!foundAnchor) throw new Error("Chat history changed while loading. Reopen the chat to reload it.")
+            if (!foundAnchor) throw new Error(t("chat:chatHistoryChangedWhileLoadingReopenTheChatToReload"))
           }
           owner.recentMessages = snapshot.messages
           setOlderHistoryEntries((current) => mergeTranscriptEntries(
@@ -1261,7 +1264,7 @@ export function useAppState(activeChatId: string | null): AppState {
           ))
         }).catch((error) => {
           if (!isCurrent()) return
-          setCommandError(error instanceof Error ? error.message : "Failed to load intervening chat history")
+          setCommandError(error instanceof Error ? error.message : t("chat:failedToLoadInterveningChatHistory"))
         })
       }
       setChatReady(true)
@@ -1632,7 +1635,7 @@ export function useAppState(activeChatId: string | null): AppState {
     // clicks created two chats (BUG LAND-3). This source-level guard covers all
     // callers regardless of per-button UI plumbing.
     if (creatingChatRef.current) {
-      return { ok: false, error: "Another chat is already being created. Please wait and try again." }
+      return { ok: false, error: t("chat:anotherChatIsAlreadyBeingCreatedPleaseWaitAndTry") }
     }
     creatingChatRef.current = true
     try {
@@ -1653,7 +1656,7 @@ export function useAppState(activeChatId: string | null): AppState {
       creatingChatRef.current = false
       setStartingLocalPath(null)
     }
-  }, [createChatForProject, resolveProjectIdForStartChat])
+  }, [createChatForProject, resolveProjectIdForStartChat, getLocale()])
 
   const handleCreateChat = useCallback(async (projectId: string) => {
     return await startChatFromIntent({ kind: "project_id", projectId })
@@ -1704,9 +1707,9 @@ export function useAppState(activeChatId: string | null): AppState {
         clearUiUpdateRestartPhase()
         setCommandError(null)
         await dialog.alert({
-          title: result.userTitle ?? "Update failed",
-          description: result.userMessage ?? `${DISPLAY_NAME} could not install the update. Try again later.`,
-          closeLabel: "OK",
+          title: result.userTitle ?? t("chat:updateFailed"),
+          description: result.userMessage ?? t("chat:value0CouldNotInstallTheUpdateTryAgainLater", { v0: DISPLAY_NAME }),
+          closeLabel: t("common:ok"),
         })
         return
       }
@@ -1724,7 +1727,7 @@ export function useAppState(activeChatId: string | null): AppState {
       clearUiUpdateRestartPhase()
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, socket])
+  }, [dialog, socket, getLocale()])
 
   const handleSignOut = useCallback(async () => {
     try {
@@ -1736,7 +1739,7 @@ export function useAppState(activeChatId: string | null): AppState {
       })
 
       if (!response.ok) {
-        throw new Error(`Sign out failed with status ${response.status}`)
+        throw new Error(t("chat:signOutFailedWithStatusValue0", { v0: response.status }))
       }
 
       setCommandError(null)
@@ -1744,7 +1747,7 @@ export function useAppState(activeChatId: string | null): AppState {
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [])
+  }, [getLocale()])
 
   const handleSend = useCallback(async (
     content: string,
@@ -1827,7 +1830,7 @@ export function useAppState(activeChatId: string | null): AppState {
           fallbackLocalProjectPath,
         })
         if (!intent) {
-          throw new Error("Open a project first")
+          throw new Error(t("chat:openAProjectFirst"))
         }
         if (intent.kind === "local_path") {
           const project = await socket.command<{ projectId: string }>({
@@ -1891,7 +1894,7 @@ export function useAppState(activeChatId: string | null): AppState {
       setCommandError(error instanceof Error ? error.message : String(error))
       throw error
     }
-  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, pendingMemoryPreview, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket])
+  }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, pendingMemoryPreview, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket, getLocale()])
 
   const handleSteerQueuedMessage = useCallback(async (queuedMessageId: string) => {
     if (!activeChatId) return
@@ -1941,9 +1944,9 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleRenameChat = useCallback(async (chat: SidebarChatRow) => {
     const title = await dialog.prompt({
-      title: "Rename Chat",
+      title: t("chat:renameChat"),
       initialValue: chat.title,
-      confirmLabel: "Rename",
+      confirmLabel: t("chat:rename"),
     })
     if (!title || title === chat.title) return
     try {
@@ -1952,18 +1955,18 @@ export function useAppState(activeChatId: string | null): AppState {
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, socket])
+  }, [dialog, socket, getLocale()])
 
   const handleRenameProject = useCallback(async (projectId: string, sidebarTitle: string | undefined, realTitle: string) => {
     const title = await dialog.prompt({
-      title: "Rename Project",
-      description: "This only changes the sidebar name. The folder path on disk stays the same.",
+      title: t("chat:renameProject"),
+      description: t("chat:thisOnlyChangesTheSidebarNameTheFolderPathOn"),
       initialValue: sidebarTitle ?? "",
       placeholder: realTitle,
       allowEmpty: true,
       resetLabel: "Reset",
       resetValue: "",
-      confirmLabel: "Rename",
+      confirmLabel: t("chat:rename"),
     })
     if (title === null || title === (sidebarTitle ?? "")) return
     try {
@@ -1972,13 +1975,13 @@ export function useAppState(activeChatId: string | null): AppState {
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [dialog, socket])
+  }, [dialog, socket, getLocale()])
 
   const handleDeleteChat = useCallback(async (chat: SidebarChatRow) => {
     const confirmed = await dialog.confirm({
-      title: "Delete Chat",
-      description: `Delete "${chat.title}"? This cannot be undone.`,
-      confirmLabel: "Delete",
+      title: t("chat:deleteChat"),
+      description: t("chat:deleteValue0ThisCannotBeUndone", { v0: chat.title }),
+      confirmLabel: t("common:delete"),
       confirmVariant: "destructive",
     })
     if (!confirmed) return
@@ -1991,7 +1994,7 @@ export function useAppState(activeChatId: string | null): AppState {
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [activeChatId, dialog, navigate, sidebarProjectGroups, socket])
+  }, [activeChatId, dialog, navigate, sidebarProjectGroups, socket, getLocale()])
 
   const handleArchiveChat = useCallback(async (chat: SidebarChatRow) => {
     try {
@@ -2081,13 +2084,13 @@ export function useAppState(activeChatId: string | null): AppState {
   const handleCopyPath = useCallback(async (localPath: string) => {
     try {
       if (!await copyTextToClipboard(localPath)) {
-        throw new Error("Copy failed. Select the path and copy it manually.")
+        throw new Error(t("chat:copyFailedSelectThePathAndCopyItManually"))
       }
       setCommandError(null)
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
     }
-  }, [])
+  }, [getLocale()])
 
   const handleOpenLocalLink = useCallback(async (
     target: OpenLocalLinkTarget,
@@ -2147,10 +2150,10 @@ export function useAppState(activeChatId: string | null): AppState {
     }
 
     const confirmed = await dialog.confirm({
-      title: "Export this chat?",
-      description: "This writes a standalone web page containing the full chat history, tool calls, and all attachments into the project's exports folder. Nothing is uploaded.",
-      confirmLabel: "Export",
-      cancelLabel: "Cancel",
+      title: t("chat:exportThisChat"),
+      description: t("chat:thisWritesAStandaloneWebPageContainingTheFullChat"),
+      confirmLabel: t("chat:export"),
+      cancelLabel: t("common:cancel"),
     })
     if (!confirmed) {
       return
@@ -2162,7 +2165,7 @@ export function useAppState(activeChatId: string | null): AppState {
       setStandaloneShareUrl(result.outputDir)
       setStandaloneShareComplete(true)
     }
-  }, [activeChatId, dialog, handleExportStandalone, isExportingStandalone])
+  }, [activeChatId, dialog, handleExportStandalone, isExportingStandalone, getLocale()])
 
   const handleCloseStandaloneShareDialog = useCallback(() => {
     setStandaloneShareUrl(null)
@@ -2176,18 +2179,18 @@ export function useAppState(activeChatId: string | null): AppState {
 
     try {
       if (!await copyTextToClipboard(standaloneShareUrl)) {
-        throw new Error("Copy failed. Select the link and copy it manually.")
+        throw new Error(t("chat:copyFailedSelectTheLinkAndCopyItManually"))
       }
       return true
     } catch (error) {
       await dialog.alert({
-        title: "Copy failed",
+        title: t("chat:copyFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "Close",
+        closeLabel: t("common:close"),
       })
       return false
     }
-  }, [dialog, standaloneShareUrl])
+  }, [dialog, standaloneShareUrl, getLocale()])
 
   const handleOpenStandaloneShareLink = useCallback(() => {
     if (!standaloneShareUrl) {

@@ -1,3 +1,6 @@
+import { translateUiText } from "../../i18n/uiText"
+import { Trans } from "react-i18next"
+import { t, useI18n } from "../../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction } from "../../../shared/types"
 import { Input } from "../../components/ui/input"
@@ -38,6 +41,7 @@ function buildKeybindingPayload(source: Record<string, string>): Record<Keybindi
 }
 
 export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindings" | "socket"> }) {
+  useI18n()
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const [keybindingDrafts, setKeybindingDrafts] = useState<Record<string, string>>(() =>
     Object.fromEntries(
@@ -62,7 +66,7 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
         bindings: buildKeybindingPayload(keybindingDrafts),
       })
     } catch (error) {
-      setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
+      setKeybindingsError(error instanceof Error ? error.message : t("settings:unableToSaveKeybindings"))
     }
   }
 
@@ -80,16 +84,16 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
         bindings: buildKeybindingPayload(nextDrafts),
       })
     } catch (error) {
-      setKeybindingsError(error instanceof Error ? error.message : "Unable to save keybindings.")
+      setKeybindingsError(error instanceof Error ? error.message : t("settings:unableToSaveKeybindings"))
     }
   }
 
   return (
     <>
-      {keybindingsError ? <SettingsErrorBanner message={keybindingsError} /> : null}
+      {keybindingsError ? <SettingsErrorBanner message={translateUiText(keybindingsError)} /> : null}
       {resolvedKeybindings.warning ? (
         <SettingsNotice tone="warning" className="mb-6">
-          {resolvedKeybindings.warning}
+          {translateUiText(resolvedKeybindings.warning)}
         </SettingsNotice>
       ) : null}
       <SettingsGroup>
@@ -105,7 +109,7 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
               def={KEYBINDING_ROWS[action]}
               description={
                 <>
-                  <span>Comma-separated shortcuts.</span>
+                  <span>{t("settings:commaSeparatedShortcuts")}</span>
                   {showRestore ? (
                     <>
                       {" "}
@@ -116,7 +120,7 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
                         }}
                         className={SETTINGS_INLINE_ACTION_CLASS}
                       >
-                        Reset to {defaultValue}
+                        <Trans ns="settings" i18nKey="resetShortcut" values={{ shortcut: defaultValue }} components={{ code: <code className="font-mono" /> }} />
                       </button>
                     </>
                   ) : null}

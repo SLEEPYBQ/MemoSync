@@ -4,6 +4,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { LOG_PREFIX, getDataDir } from "../shared/branding"
 import type { AgentProvider, ChatHistoryPage, ChatHistorySnapshot, QueuedChatMessage, TranscriptEntry } from "../shared/types"
+import type { UiTextReference } from "../shared/ui-copy"
 import { STORE_VERSION } from "../shared/types"
 import {
   type ChatEvent,
@@ -174,6 +175,16 @@ function getForkedChatTitle(title: string) {
   const trimmed = title.trim()
   if (!trimmed) return "Fork: New Chat"
   return trimmed.startsWith("Fork: ") ? trimmed : `Fork: ${trimmed}`
+}
+
+// Server-generated titles stay references so the client can translate them;
+// user and generated titles are copied verbatim into the fork prefix.
+function getForkedChatTitleUiText(source: { title: string; titleUiText?: UiTextReference }): UiTextReference {
+  const code = source.titleUiText?.code
+  if (code === "forkedChat" || code === "forkedNewChat") return source.titleUiText!
+  const base = source.title.trim().replace(/^Fork: /, "")
+  if (code === "newChat" || !base) return { code: "forkedNewChat" }
+  return { code: "forkedChat", params: { v0: base } }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -678,6 +689,7 @@ export class EventStore {
           id: event.chatId,
           projectId: event.projectId,
           title: event.title,
+          ...(event.titleUiText ? { titleUiText: event.titleUiText } : {}),
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
           unread: false,
@@ -696,6 +708,7 @@ export class EventStore {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
         chat.title = event.title
+        delete chat.titleUiText
         chat.updatedAt = event.timestamp
         break
       }
@@ -1001,6 +1014,7 @@ export class EventStore {
       chatId,
       projectId,
       title: "New Chat",
+      titleUiText: { code: "newChat" },
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
@@ -1022,6 +1036,7 @@ export class EventStore {
       chatId,
       projectId: sourceChat.projectId,
       title: getForkedChatTitle(sourceChat.title),
+      titleUiText: getForkedChatTitleUiText(sourceChat),
     }
     await this.append(this.chatsLogPath, createEvent)
     await this.setChatProvider(chatId, sourceChat.provider)

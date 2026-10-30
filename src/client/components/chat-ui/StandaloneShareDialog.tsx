@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { Check, Copy, ExternalLink } from "lucide-react"
 import { useEffect, useState } from "react"
 import {
@@ -26,6 +27,7 @@ export function StandaloneShareDialog({
   onOpenLink,
   onCopyLink,
 }: Props) {
+  useI18n()
   const [copied, setCopied] = useState(false)
 
   useEffect(() => {
@@ -50,8 +52,8 @@ export function StandaloneShareDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="md">
         <DialogHeader>
-          <DialogTitle>Shared Link</DialogTitle>
-          <DialogDescription>Shared links are snapshots in time and contain all attachments, tool calls and history. Be mindful of sensitive info.</DialogDescription>
+          <DialogTitle>{t("chat:sharedLink")}</DialogTitle>
+          <DialogDescription>{t("chat:sharedLinksAreSnapshotsInTimeAndContainAllAttachments")}</DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-3">
           <div className="flex w-full items-center gap-2 rounded-2xl border border-border bg-muted/40 pl-4 px-3 py-2.5">
@@ -60,8 +62,8 @@ export function StandaloneShareDialog({
             <button
               type="button"
               onClick={() => void handleCopyLink()}
-              title={copied ? "Copied" : "Copy link"}
-              aria-label={copied ? "Copied" : "Copy link"}
+              title={copied ? t("chat:copied") : t("chat:copyLink")}
+              aria-label={copied ? t("chat:copied") : t("chat:copyLink")}
               className="flex flex-shrink-0 items-center justify-center rounded-lg text-logo hover:text-logo/60 transition-colors hover:bg-background hover:text-foreground"
             >
               {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
@@ -71,8 +73,7 @@ export function StandaloneShareDialog({
         <DialogFooter>
           <DialogPrimaryButton type="button" onClick={onOpenLink}>
             <ExternalLink className="mr-2 h-4 w-4" />
-            Open
-          </DialogPrimaryButton>
+            {t("common:open")}</DialogPrimaryButton>
         </DialogFooter>
       </DialogContent>
     </Dialog>

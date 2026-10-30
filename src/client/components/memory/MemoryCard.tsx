@@ -1,3 +1,5 @@
+import { traceVerdictLabel } from "../../i18n/labels"
+import { t, useI18n } from "../../i18n"
 // A single memory as an operable board card (SPEC §4.9): candidates get an
 // amber accent + sensitive badge, scoped (active) cards get a scope tint and
 // are natively draggable for drag-to-rescope. Clicking the card (outside its
@@ -30,6 +32,7 @@ interface MemoryCardProps {
 }
 
 export function MemoryCard({ item, variant, selected, draggable, onDragStart, onDragEnd, onClick, footer, originLabel, capturedIn, freshness }: MemoryCardProps) {
+  useI18n()
   const age = formatSidebarAgeLabel(Date.parse(item.createdAt) || undefined, Date.now())
   function handleFooterClick(e: MouseEvent<HTMLDivElement>) {
     // Footer buttons handle their own actions; don't also open the panel.
@@ -70,18 +73,17 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       {item.sensitive ? (
         <p className="mt-1.5 flex items-center gap-1 text-xs font-medium text-cand-fg">
           <ShieldAlert className="h-3.5 w-3.5 shrink-0" />
-          sensitive — needs your confirmation
-        </p>
+          {t("memory:sensitiveNeedsYourConfirmation")}</p>
       ) : null}
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {freshness ? <Chip className={FRESHNESS_CLASSES[freshness]}>{freshness}</Chip> : null}
         <Chip className="font-mono">{item.id}</Chip>
         <ScopeBadge scope={item.scope} />
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}
-        {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">used {item.usageCount}×</span> : null}
+        {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</span> : null}
         {item.lastTraceLabel ? (
           <span
-            title={`last trace: ${item.lastTraceLabel.replace(/_/g, " ")}`}
+            title={t("memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}
             className={cn("ml-auto h-2 w-2 shrink-0 rounded-full", TRACE_DOT_CLASSES[item.lastTraceLabel])}
           />
         ) : null}
@@ -89,7 +91,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       {age || capturedIn ? (
         <p className="mt-1.5 truncate text-[11px] text-muted-foreground/80">
           {age ?? ""}
-          {capturedIn ? `${age ? " · " : ""}from ${capturedIn}` : ""}
+          {capturedIn ? t("memory:capturedFrom", { v0: age ? " · " : "", v1: capturedIn }) : ""}
         </p>
       ) : null}
       {footer ? (

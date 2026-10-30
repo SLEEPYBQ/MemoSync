@@ -1,3 +1,4 @@
+import { uiJson } from "../../shared/ui-copy"
 // HTTP routes for the memory layer — ported from MemoSync's Express router
 // (apps/backend/src/routes/memory.ts) into Kanna's Bun.serve fetch-handler
 // style: a single `handleMemoryRequest(req, url, memory)` that returns a
@@ -83,9 +84,9 @@ function controlSurface(value: unknown): 'board' | 'chat_gate' | undefined {
   throw new RouteError(400, 'BAD_REQUEST', 'surface must be board or chat_gate');
 }
 
-const ok = <T>(data: T, status = 200): Response => Response.json({ data }, { status });
+const ok = <T>(data: T, status = 200): Response => uiJson({ data }, { status });
 const fail = (status: number, code: string, message: string): Response =>
-  Response.json({ error: { code, message } }, { status });
+  uiJson({ error: { code, message } }, { status });
 
 async function readBody(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -668,6 +669,7 @@ export async function handleMemoryRequest(
         content: source.content,
         detail: source.detail,
         abstractionLevel: source.abstractionLevel,
+        noteUiText: { code: 'transferFallback' },
         note: 'Transfer assistant unavailable — the memory would move verbatim; edit below if it needs adapting.',
         landing: { route: 'new' },
       };

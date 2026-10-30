@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { QueuedChatMessage } from "../../../shared/types"
@@ -12,6 +13,7 @@ interface QueuedUserMessageProps {
 }
 
 export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMessageProps) {
+  useI18n()
   return (
     <div className="flex justify-end py-2">
       <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
@@ -40,6 +42,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
                   variant="default"
                   size="none"
                   className="rounded-full size-[24px] bg-muted text-muted-foreground border border-primary/10 group-hover:!text-primary hover:bg-muted/60"
+                  aria-label={t("chat:steerNow")}
                   onClick={onSendNow}
                 >
                   {/* Send Now */}
@@ -53,6 +56,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
               variant="none"
               size="none"
               className="opacity-0 scale-[0.1] group-hover:scale-[1.0] group-hover:opacity-100 !p-0.5 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 left-0 bg-background -translate-x-[28%] -translate-y-[28%]"
+              aria-label={t("chat:removeQueuedMessage")}
               onClick={onRemove}
             >
               <X className="size-3"/>
@@ -63,7 +67,8 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
               variant="none"
               size="none"
               className="!p-1 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 right-0 bg-background translate-x-[30%] -translate-y-[30%]"
-              onClick={onSendNow}
+              aria-label={t("chat:steerNow")}
+                  onClick={onSendNow}
             >
               <ArrowUp className="size-3"/>
             </Button> */}

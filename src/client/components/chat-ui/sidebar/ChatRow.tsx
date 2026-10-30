@@ -1,3 +1,5 @@
+import { chatTitle } from "../../../i18n/uiText"
+import { t, useI18n } from "../../../i18n"
 import { MemoryOffRowIcon } from "../MemoryToggle"
 import { memo } from "react"
 import { Archive, Loader2, Split } from "lucide-react"
@@ -44,6 +46,7 @@ function ChatRowImpl({
   onArchiveChat,
   onDeleteChat,
 }: Props) {
+  useI18n()
   const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
   const trailingLabel = showShortcutHint && shortcutHint ? shortcutHint : ageLabel
   const showShortcutKeycap = showShortcutHint && Boolean(shortcutHint)
@@ -82,14 +85,15 @@ function ChatRowImpl({
             animate={chat.status === "running"}
             shimmerWidth={Math.max(20, chat.title.length * 3)}
           >
-            {chat.title}
+            {chatTitle(chat)}
           </AnimatedShinyText>
         ) :
-          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chat.title}</span> : <span className="text-slate-500 dark:text-muted-foreground">{chat.title}</span>
+          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chatTitle(chat)}</span> : <span className="text-slate-500 dark:text-muted-foreground">{chatTitle(chat)}</span>
         }
       </span>
       {chat.memoryDisabled ? <MemoryOffRowIcon /> : null}
-      <div className={cn("relative h-7 mr-[2px] shrink-0", showFork && chat.canFork ? "w-12" : "w-6")}>
+      <div className={cn("relative h-7 mr-[2px] shrink-0", showFork && chat.canFork ? "min-w-12" : "min-w-6")}>
+        {trailingLabel ? <span aria-hidden className="invisible hidden whitespace-nowrap px-2 text-[11px] md:block">{trailingLabel}</span> : null}
         {trailingLabel ? (
           showShortcutKeycap ? (
             <span className="hidden md:flex absolute inset-0 items-center justify-end pr-0.5 text-[11px] text-foreground transition-opacity group-hover:opacity-0">
@@ -98,7 +102,7 @@ function ChatRowImpl({
               </Kbd>
             </span>
           ) : (
-            <span className="hidden md:flex absolute inset-0 items-center justify-end pr-2 text-[11px] text-muted-foreground opacity-60 transition-opacity group-hover:opacity-0">
+            <span className="hidden md:flex absolute inset-0 items-center justify-end pr-2 whitespace-nowrap text-[11px] text-muted-foreground opacity-60 transition-opacity group-hover:opacity-0">
               {trailingLabel}
             </span>
           )
@@ -120,7 +124,7 @@ function ChatRowImpl({
                 event.stopPropagation()
                 onForkChat(chat.chatId)
               }}
-              title="Fork chat"
+              title={t("sidebar:forkChat")}
             >
               <Split className="size-3.5" />
             </Button>
@@ -133,7 +137,7 @@ function ChatRowImpl({
               event.stopPropagation()
               onArchiveChat(chat.chatId)
             }}
-            title="Archive chat"
+            title={t("sidebar:archiveChat")}
           >
             <Archive className="size-3.5" />
           </Button>

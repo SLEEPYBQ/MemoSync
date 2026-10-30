@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 // The right-sidebar Memory Record (redesign 2026-08-10): the monitoring
 // column of the memory loop re-presented along time. The old Controls tab is
 // gone — its exclusion toggles duplicated the injection gate, and the record
@@ -28,6 +29,7 @@ interface Props {
 }
 
 export function SessionMemoriesPanel({ chatId, projectId, messages, streamingText, isTurnActive, exposureInitiator, onClose }: Props) {
+  useI18n()
   useSurfaceExposure({
     active: true,
     surface: "memory_record",
@@ -45,7 +47,7 @@ export function SessionMemoriesPanel({ chatId, projectId, messages, streamingTex
         <div className="flex items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
             <BrainCircuit className="size-4 shrink-0 text-muted-foreground" />
-            <span className="text-sm font-medium text-foreground">Memory Record</span>
+            <span className="text-sm font-medium text-foreground">{t("common:memoryRecord")}</span>
           </div>
           <div className="flex items-center gap-1">
             <Button
@@ -58,10 +60,9 @@ export function SessionMemoriesPanel({ chatId, projectId, messages, streamingTex
               data-memory-board-source="memory_record"
             >
               <LibraryBig className="size-3.5" />
-              Go to Memory Board
-            </Button>
+              {t("memory:goToMemoryBoard")}</Button>
             {onClose ? (
-              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onClose} title="Close">
+              <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0" onClick={onClose} title={t("common:close")}>
                 <X className="size-4" />
               </Button>
             ) : null}

@@ -1,3 +1,4 @@
+import type { UiTextReference } from "../shared/ui-copy"
 import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
@@ -9,6 +10,7 @@ export interface ChatRecord {
   id: string
   projectId: string
   title: string
+  titleUiText?: UiTextReference
   createdAt: number
   updatedAt: number
   deletedAt?: number
@@ -70,6 +72,7 @@ export type ChatEvent =
       chatId: string
       projectId: string
       title: string
+      titleUiText?: UiTextReference
     }
   | {
       v: 2

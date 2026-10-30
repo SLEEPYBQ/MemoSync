@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import type { AppSettingsPatch } from "../../../shared/types"
@@ -22,16 +24,17 @@ export function MemorySettingsGroups({
   save: (patch: AppSettingsPatch) => void
   setMode: (mode: "ask" | "auto") => void
 }) {
+  useI18n()
   const enabled = settings?.memory.enabled !== false
   const learn = settings?.memory.learn !== false
-  const memoryReason = " Turn on Use Memory to change this."
+  const memoryReason = t("settings:turnOnUseMemoryToChangeThis")
   const changesDisabled = !enabled || !learn || mode === undefined
   const changesReason = !enabled
     ? memoryReason
     : !learn
-      ? " Turn on Learn From Chats to change this."
+      ? t("settings:turnOnLearnFromChatsToChangeThis")
       : mode === undefined
-        ? " Loading memory changes preference…"
+        ? t("settings:loadingMemoryChangesPreference")
         : ""
 
   return (
@@ -41,7 +44,7 @@ export function MemorySettingsGroups({
           <SettingsGroup>
             <SettingsRow def={SETTINGS_ROWS.memoryEnabled}>
               <Switch
-                aria-label="Use Memory"
+                aria-label={t("settings:useMemory")}
                 checked={enabled}
                 onCheckedChange={(checked) => save({ memory: { enabled: checked } })}
               />
@@ -52,7 +55,7 @@ export function MemorySettingsGroups({
               description={SETTINGS_ROWS.memoryLearn.description + (!enabled ? memoryReason : "")}
             >
               <Switch
-                aria-label="Learn From Chats"
+                aria-label={t("settings:learnFromChats")}
                 checked={learn}
                 disabled={!enabled}
                 onCheckedChange={(checked) => save({ memory: { learn: checked } })}
@@ -61,14 +64,14 @@ export function MemorySettingsGroups({
           </SettingsGroup>
         )}
         {(
-          <SettingsGroup title="Before Each Turn">
+          <SettingsGroup title={t("settings:beforeEachTurn")}>
             <SettingsRow
               def={SETTINGS_ROWS.memoryPreview}
               disabled={!enabled}
               description={SETTINGS_ROWS.memoryPreview.description + (!enabled ? memoryReason : "")}
             >
               <Switch
-                aria-label="Memory Preview"
+                aria-label={t("settings:memoryPreview")}
                 checked={settings?.memoryPreview.enabled !== false}
                 disabled={!enabled}
                 onCheckedChange={(checked) => save({ memoryPreview: { enabled: checked } })}
@@ -80,7 +83,7 @@ export function MemorySettingsGroups({
               description={SETTINGS_ROWS.memoryAutoProceed.description + (!enabled ? memoryReason : "")}
             >
               <Switch
-                aria-label="Auto-proceed When No Memory Applies"
+                aria-label={t("settings:autoProceedWhenNoMemoryApplies")}
                 checked={settings?.memoryPreview.autoProceedWhenEmpty !== false}
                 disabled={!enabled}
                 onCheckedChange={(checked) => save({ memoryPreview: { autoProceedWhenEmpty: checked } })}
@@ -88,7 +91,7 @@ export function MemorySettingsGroups({
             </SettingsRow>
           </SettingsGroup>
         )}
-        <SettingsGroup title="Changes">
+        <SettingsGroup title={t("settings:changes")}>
           <SettingsRow
             def={SETTINGS_ROWS.memoryChanges}
             disabled={changesDisabled}
@@ -96,13 +99,13 @@ export function MemorySettingsGroups({
             wideControl
           >
             <SettingsSelect
-              aria-label="Memory Changes"
+              aria-label={t("settings:memoryChanges")}
               value={mode ?? "ask"}
               disabled={changesDisabled}
               onValueChange={(value) => setMode(value as "ask" | "auto")}
             >
-              <SelectItem value="ask">Ask First</SelectItem>
-              <SelectItem value="auto">Apply Automatically</SelectItem>
+              <SelectItem value="ask">{t("settings:askFirst")}</SelectItem>
+              <SelectItem value="auto">{t("settings:applyAutomatically")}</SelectItem>
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
@@ -113,8 +116,7 @@ export function MemorySettingsGroups({
             className="inline-flex min-h-9 items-center text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:underline"
             to="/memory"
           >
-            Open Memory Board
-          </Link>
+            {t("settings:openMemoryBoard")}</Link>
         </div>
       )}
     </>
@@ -122,6 +124,7 @@ export function MemorySettingsGroups({
 }
 
 export function MemorySection({ state }: { state: MemoryState }) {
+  useI18n()
   const [mode, setMode] = useState<"ask" | "auto" | undefined>()
   const [error, setError] = useState<string | null>(null)
 
@@ -133,7 +136,7 @@ export function MemorySection({ state }: { state: MemoryState }) {
         if (!cancelled) setMode(result.mode)
       })
       .catch((error) => {
-        if (!cancelled) setError(error instanceof Error ? error.message : "Unable to load memory changes preference.")
+        if (!cancelled) setError(error instanceof Error ? error.message : t("settings:unableToLoadMemoryChangesPreference"))
       })
 
     return () => {
@@ -146,7 +149,7 @@ export function MemorySection({ state }: { state: MemoryState }) {
       setError(null)
       await state.handleWriteAppSettings(patch)
     } catch (error) {
-      setError(error instanceof Error ? error.message : "Unable to save memory settings.")
+      setError(error instanceof Error ? error.message : t("settings:unableToSaveMemorySettings"))
     }
   }
 
@@ -159,13 +162,13 @@ export function MemorySection({ state }: { state: MemoryState }) {
       await memoriesApi.setEvolutionPolicy(next)
     } catch (error) {
       setMode(previous)
-      setError(error instanceof Error ? error.message : "Unable to save memory changes preference.")
+      setError(error instanceof Error ? error.message : t("settings:unableToSaveMemoryChangesPreference"))
     }
   }
 
   return (
     <>
-      {error ? <SettingsErrorBanner message={error} /> : null}
+      {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       <MemorySettingsGroups
         settings={state.appSettings}
 

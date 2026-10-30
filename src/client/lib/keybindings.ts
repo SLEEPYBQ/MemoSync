@@ -1,14 +1,15 @@
+import { t } from "../i18n"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../../shared/types"
 
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
-  toggleEmbeddedTerminal: "Toggle Embedded Terminal",
-  toggleRightSidebar: "Toggle Right Sidebar",
-  openInFinder: "Open In Finder",
-  openInEditor: "Open In Editor",
-  addSplitTerminal: "Add Split Terminal",
-  jumpToSidebarChat: "Jump To Sidebar Chat",
-  createChatInCurrentProject: "New Chat In Current Project",
-  openAddProject: "Open Add Project",
+  get toggleEmbeddedTerminal() { return t("settings:toggleEmbeddedTerminal") },
+  get toggleRightSidebar() { return t("settings:toggleRightSidebar") },
+  get openInFinder() { return t("settings:openInFinder") },
+  get openInEditor() { return t("settings:openInEditor") },
+  get addSplitTerminal() { return t("settings:addSplitTerminal") },
+  get jumpToSidebarChat() { return t("settings:jumpToSidebarChat") },
+  get createChatInCurrentProject() { return t("settings:newChatInCurrentProject") },
+  get openAddProject() { return t("settings:openAddProject") },
 }
 
 export function formatKeybindingInput(bindings: string[] | undefined) {

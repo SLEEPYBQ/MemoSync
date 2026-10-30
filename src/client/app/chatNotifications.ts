@@ -1,3 +1,5 @@
+import { chatTitle } from "../i18n/uiText"
+import { t } from "../i18n"
 import type { ChatPreview, SidebarData } from "../../shared/types"
 
 export function getNotificationTitleCount(sidebarData: SidebarData) {
@@ -54,7 +56,7 @@ export interface ChatNotificationEvent {
    * Immediate waiting-for-response copy when the chat starts waiting.
    * `null` for a chat that only turned unread: the sidebar carries no message
    * previews, so showChatNotificationEvents fetches one via chat.getPreview,
-   * falling back to "New chat activity." if unavailable.
+   * falling back to t("chat:newChatActivity") if unavailable.
    */
   message: string | null
 }
@@ -72,9 +74,9 @@ export async function showChatNotificationEvents(args: {
     if (message === null) {
       try {
         const preview = await args.loadPreview(event.chatId)
-        message = preview?.lastAgentMessagePreview || "New chat activity."
+        message = preview?.lastAgentMessagePreview || t("chat:newChatActivity")
       } catch {
-        message = "New chat activity."
+        message = t("chat:newChatActivity")
       }
     }
     args.showNotification({ ...event, message })
@@ -111,8 +113,8 @@ export function getChatNotificationEvents(previous: SidebarData | null, next: Si
       events.push({
         chatId: chat.chatId,
         projectTitle: group.title?.trim() || group.localPath,
-        chatTitle: chat.title.trim() || "Untitled chat",
-        message: becameWaiting ? "Waiting for your response." : null,
+        chatTitle: chatTitle(chat).trim() || t("chat:untitledChat"),
+        message: becameWaiting ? t("chat:waitingForYourResponse") : null,
       })
     }
   }

@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 // Memory Record — the sidebar re-presentation of the monitoring column over
 // time (redesign discussion 2026-08-10). Each turn mirrors the transcript
 // stations one-to-one as two-line stage rows: a Title-Case stage name (the
@@ -54,6 +55,7 @@ const PULSE_CLASSES: Record<ReturnType<typeof turnPulse>, string> = {
 const CITATION_RE = /\[(M-\d+)\]/g
 
 function CurrentTurnOnly({ enabled, children }: { enabled: boolean; children: React.ReactNode }) {
+  useI18n()
   return enabled
     ? <CurrentTurnMemoryCitationProvider>{children}</CurrentTurnMemoryCitationProvider>
     : children
@@ -65,6 +67,7 @@ function truncate(s: string, n: number): string {
 
 /** The audit recap with its [M-NN] citations as live chips. */
 function SummaryLine({ text }: { text: string }) {
+  useI18n()
   const parts = text.split(CITATION_RE)
   return (
     <p className="text-xs leading-relaxed text-foreground">
@@ -107,6 +110,7 @@ function StageRow({
   detail?: React.ReactNode
   children: React.ReactNode
 }) {
+  useI18n()
   const row = (
     <div
       className={cn(
@@ -139,31 +143,34 @@ function StageRow({
 /** A proposed candidate: content lives in the memory store, not the
  *  transcript (ids alone persist) — resolve live, fall back to the snapshot. */
 function CandidateLine({ id, fallback }: { id: string; fallback?: string }) {
+  useI18n()
   const memory = useMemoryStore((s) => s.items.find((m) => m.id === id))
   const content = memory?.content ?? fallback
   return (
     <p className="text-[11px] leading-relaxed text-foreground">
       <MemoryCitationChip id={id} />
       <span className={cn("ml-1", content ? "text-muted-foreground" : "italic text-muted-foreground/60")}>
-        {content ? truncate(content, 100) : "no longer available"}
+        {content ? truncate(content, 100) : t("memory:noLongerAvailable")}
       </span>
     </p>
   )
 }
 
 function DecisionWord({ decision }: { decision?: string }) {
+  useI18n()
   const WORDS: Record<string, string> = {
-    reviewed: "reviewed",
-    handled: "handled",
-    skipped: "skipped for now",
-    cancelled: "cancelled",
-    expired: "expired",
+    reviewed: t("memory:reviewed"),
+    handled: t("memory:handled"),
+    skipped: t("memory:skippedForNow"),
+    cancelled: t("memory:cancelled"),
+    expired: t("memory:expired"),
   }
   if (!decision || !WORDS[decision]) return null
   return <> · {WORDS[decision]}</>
 }
 
 function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStage }) {
+  useI18n()
   const jumpToQuote = async (label: RecordAuditStage["labels"][number]) => {
     recordUiMonitor("timeline_quote_jump", { sessionId: chatId, interaction: "click" })
     const block = label.toolId
@@ -175,15 +182,14 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
   return (
     <div className="flex flex-col gap-2">
       <p className="text-[11px] text-muted-foreground/70">
-        Memory Use Audit — this turn's output checked against each working-memory item
-      </p>
+        {t("memory:memoryUseAuditThisTurnSOutputCheckedAgainstEach")}</p>
       {audit.labels.map((label) => (
         <div key={label.id} className="flex items-baseline gap-1.5 text-[11px]">
           <MemoryCitationChip id={label.id} />
           <span className="min-w-0">
             {label.label === "violated" ? (
               <>
-                <span className="font-medium text-destructive">violated</span>
+                <span className="font-medium text-destructive">{t("memory:violated")}</span>
                 <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
                   {label.quote ? <span className="text-foreground/80">“{truncate(label.quote, 110)}”</span> : null}
                   {label.note ? <span className="block">{label.note}</span> : null}
@@ -196,22 +202,20 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
                       }}
                       className="mt-0.5 block underline underline-offset-2 hover:text-foreground"
                     >
-                      show in transcript
-                    </button>
+                      {t("memory:showInTranscript")}</button>
                   ) : null}
                 </span>
               </>
             ) : label.label === "operational" ? (
-              <span className="text-foreground/80">shaped this turn</span>
+              <span className="text-foreground/80">{t("memory:shapedThisTurn")}</span>
             ) : label.label === "not_applicable" ? (
               // Slate + the named missing object: "never entered play" must not
               // blur into "played, changed nothing" (mentor 2026-08-15).
               <span className="text-muted-foreground">
-                not applicable
-                {label.missing ? <span className="text-muted-foreground"> — {label.missing}</span> : null}
+                {t("memory:notApplicable")}{label.missing ? <span className="text-muted-foreground"> — {label.missing}</span> : null}
               </span>
             ) : (
-              <span className="text-muted-foreground">no visible effect</span>
+              <span className="text-muted-foreground">{t("memory:noVisibleEffect")}</span>
             )}
           </span>
         </div>
@@ -221,6 +225,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
 }
 
 function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: MemoryRecordTurn; isLast: boolean; isLive: boolean }) {
+  useI18n()
   const pulse = turnPulse(turn)
   const expired = turn.decision === "expired"
   const noMemory = turn.decision === "dismiss" || turn.decision === "without_memory"
@@ -257,10 +262,10 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
           <span className="font-mono text-[11px] font-semibold leading-relaxed text-muted-icon">t{turn.turn}</span>
           <div className="min-w-0 flex-1">
             {expired ? (
-              <p className="text-[11px] italic text-muted-foreground">cancelled before running (server restart)</p>
+              <p className="text-[11px] italic text-muted-foreground">{t("memory:cancelledBeforeRunningServerRestart")}</p>
             ) : noMemory ? (
               <p className="text-[11px] italic text-muted-foreground">
-                ran without memory{turn.decision === "dismiss" ? " (gate dismissed)" : ""}
+                {t("memory:ranWithoutMemory")}{turn.decision === "dismiss" ? t("memory:gateDismissed") : ""}
               </p>
             ) : turn.summary ? (
               <SummaryLine text={turn.summary} />
@@ -269,15 +274,15 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
               // (2026-08-19 evening revision: no eternal "running…").
               <p className="text-[11px] italic text-muted-foreground">
                 {turn.audit.status === "empty"
-                  ? "no memory was in play this turn"
+                  ? t("memory:noMemoryWasInPlayThisTurn")
                   : turn.audit.status === "discarded"
-                    ? "audit discarded (memory changed mid-pass)"
+                    ? t("memory:auditDiscardedMemoryChangedMidPass")
                     : turn.audit.status === "failed"
-                      ? "audit unavailable for this turn"
-                      : "audit complete"}
+                      ? t("memory:auditUnavailableForThisTurn")
+                      : t("memory:auditComplete")}
               </p>
             ) : isLast ? (
-              <p className="text-[11px] italic text-muted-foreground">running…</p>
+              <p className="text-[11px] italic text-muted-foreground">{t("memory:running")}</p>
             ) : null}
           </div>
         </div>
@@ -287,7 +292,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             {turn.candidates ? (
               <StageRow
                 icon={Inbox}
-                label="Memory Candidates"
+                label={t("memory:memoryCandidates")}
                 dim={!turn.candidates.pending && turn.candidates.items.length === 0}
                 onJump={() => jumpToEntry(chatId, turn.candidates!.entryId)}
                 detail={turn.candidates.items.length > 0 ? (
@@ -299,11 +304,11 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                 ) : undefined}
               >
                 {turn.candidates.pending ? (
-                  <AnimatedShinyText animate shimmerWidth={60}>checking this prompt…</AnimatedShinyText>
+                  <AnimatedShinyText animate shimmerWidth={60}>{t("memory:checkingThisPrompt")}</AnimatedShinyText>
                 ) : turn.candidates.items.length === 0 ? (
-                  "none proposed"
+                  t("memory:noneProposed")
                 ) : (
-                  <>{turn.candidates.items.length} proposed<DecisionWord decision={turn.candidates.decision} /></>
+                  <>{t("memory:proposedCount", { count: turn.candidates.items.length })}<DecisionWord decision={turn.candidates.decision} /></>
                 )}
               </StageRow>
             ) : null}
@@ -311,7 +316,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             {turn.transfers ? (
               <StageRow
                 icon={ArrowRightLeft}
-                label="Transfer Suggestions"
+                label={t("memory:transferSuggestions")}
                 dim={!turn.transfers.pending && turn.transfers.items.length === 0}
                 onJump={() => jumpToEntry(chatId, turn.transfers!.entryId)}
                 detail={turn.transfers.items.length > 0 ? (
@@ -319,18 +324,18 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                     {turn.transfers.items.map((item, i) => (
                       <p key={i} className="text-[11px] leading-relaxed text-foreground">
                         {truncate(item.content, 100)}
-                        <span className="text-muted-foreground"> · from {item.sourceLabel}</span>
+                        <span className="text-muted-foreground"> {t("memory:from")}{item.sourceLabel}</span>
                       </p>
                     ))}
                   </div>
                 ) : undefined}
               >
                 {turn.transfers.pending ? (
-                  <AnimatedShinyText animate shimmerWidth={60}>searching your other projects…</AnimatedShinyText>
+                  <AnimatedShinyText animate shimmerWidth={60}>{t("memory:searchingYourOtherProjects")}</AnimatedShinyText>
                 ) : turn.transfers.items.length === 0 ? (
-                  "nothing worth bringing in"
+                  t("memory:nothingWorthBringingIn")
                 ) : (
-                  <>{turn.transfers.items.length} suggested<DecisionWord decision={turn.transfers.decision} /></>
+                  <>{t("memory:suggestedCount", { count: turn.transfers.items.length })}<DecisionWord decision={turn.transfers.decision} /></>
                 )}
               </StageRow>
             ) : null}
@@ -338,7 +343,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             {turn.checkup ? (
               <StageRow
                 icon={ListChecks}
-                label="Saved Memory Changes"
+                label={t("memory:savedMemoryChanges")}
                 dim={!turn.checkup.pending && turn.checkup.items.length === 0 && !turn.checkup.failedKinds?.length}
                 onJump={() => jumpToEntry(chatId, turn.checkup!.entryId)}
                 detail={turn.checkup.items.length > 0 ? (
@@ -354,18 +359,17 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                 ) : undefined}
               >
                 {turn.checkup.pending ? (
-                  <AnimatedShinyText animate shimmerWidth={60}>checking saved memories…</AnimatedShinyText>
+                  <AnimatedShinyText animate shimmerWidth={60}>{t("memory:checkingSavedMemories")}</AnimatedShinyText>
                 ) : turn.checkup.failedKinds?.length ? (
                   <>
-                    {turn.checkup.items.length > 0 ? `${turn.checkup.items.length} suggestion${turn.checkup.items.length > 1 ? "s" : ""} · ` : ""}
-                    checkup incomplete · {turn.checkup.failedKinds.join(", ")} unchecked
-                    <DecisionWord decision={turn.checkup.decision} />
+                    {turn.checkup.items.length > 0 ? t("memory:suggestionCount", { count: turn.checkup.items.length }) + " · " : ""}
+                    {t("memory:checkupIncomplete")}{turn.checkup.failedKinds.join(", ")} {t("memory:unchecked")}<DecisionWord decision={turn.checkup.decision} />
                   </>
                 ) : turn.checkup.items.length === 0 ? (
-                  "nothing needs attention"
+                  t("memory:nothingNeedsAttention")
                 ) : (
                   <>
-                    {turn.checkup.items.length} suggestion{turn.checkup.items.length > 1 ? "s" : ""}
+                    {t("memory:suggestionCount", { count: turn.checkup.items.length })}
                     <DecisionWord decision={turn.checkup.decision} />
                   </>
                 )}
@@ -376,7 +380,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
               <CurrentTurnOnly enabled={isLive}>
                 <StageRow
                   icon={LibraryBig}
-                  label="Working Memory"
+                  label={t("common:workingMemory")}
                   onJump={() => jumpToEntry(chatId, turn.injected!.entryId)}
                   detail={turn.injected.items.length > 0 ? (
                     <div className="flex flex-col gap-1.5">
@@ -390,11 +394,10 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                   ) : undefined}
                 >
                   {turn.injected.items.length === 0 ? (
-                    "started with nothing injected"
+                    t("memory:startedWithNothingInjected")
                   ) : (
                     <span className="inline-flex flex-wrap items-baseline gap-x-1 gap-y-0.5">
-                      {turn.injected.items.length} injected ·
-                      {turn.injected.items.map((item) => (
+                      {turn.injected.items.length} {t("memory:injected")}{turn.injected.items.map((item) => (
                         <MemoryCitationChip key={item.id} id={item.id} />
                       ))}
                     </span>
@@ -404,7 +407,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             ) : null}
 
             {reported.length > 0 ? (
-              <StageRow icon={TextQuote} label="Reported Memory Use">
+              <StageRow icon={TextQuote} label={t("memory:reportedMemoryUse")}>
                 <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
                   {reported.map(([id, count]) => (
                     <span key={id} className="inline-flex items-baseline gap-0.5">
@@ -419,9 +422,9 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             ) : null}
 
             {turn.interrupted ? (
-              <StageRow icon={CircleSlash} label="Interrupted">
+              <StageRow icon={CircleSlash} label={t("memory:interrupted")}>
                 <span className="inline-flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 text-destructive">
-                  stopped by you over <MemoryCitationChip id={turn.interrupted.memoryId} />
+                  {t("memory:stoppedByYouOver")}<MemoryCitationChip id={turn.interrupted.memoryId} />
                 </span>
               </StageRow>
             ) : null}
@@ -429,27 +432,27 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             {audit ? (
               <StageRow
                 icon={ClipboardCheck}
-                label="Memory Use Audit"
+                label={t("memory:memoryUseAudit")}
                 dim={audit.labels.length === 0}
                 onJump={() => jumpToEntry(chatId, audit.entryId)}
                 detail={audit.labels.length > 0 ? <AuditDetail chatId={chatId} audit={audit} /> : undefined}
               >
                 {audit.status === "failed" ? (
-                  "audit failed"
+                  t("memory:auditFailed")
                 ) : audit.labels.length === 0 ? (
-                  "nothing to audit"
+                  t("memory:nothingToAudit")
                 ) : (
                   <>
                     {[
-                      auditCounts.shaped > 0 ? `${auditCounts.shaped} shaped` : null,
-                      auditCounts.noEffect > 0 ? `${auditCounts.noEffect} no visible effect` : null,
+                      auditCounts.shaped > 0 ? t("memory:value0Shaped", { v0: auditCounts.shaped }) : null,
+                      auditCounts.noEffect > 0 ? t("memory:value0NoVisibleEffect", { v0: auditCounts.noEffect }) : null,
                     ]
                       .filter(Boolean)
                       .join(" · ")}
                     {auditCounts.violated > 0 ? (
                       <>
                         {auditCounts.shaped > 0 || auditCounts.noEffect > 0 ? " · " : ""}
-                        <span className="font-medium text-destructive">{auditCounts.violated} violated</span>
+                        <span className="font-medium text-destructive">{t("memory:violatedCount", { count: auditCounts.violated })}</span>
                       </>
                     ) : null}
                   </>
@@ -541,6 +544,7 @@ function hasDemoFlag(): boolean {
 }
 
 export function MemoryRecordRail({ chatId, messages, streamingText = null, isTurnActive = false }: Props) {
+  useI18n()
   const demo = hasDemoFlag()
   const record = useMemo(
     () => (demo ? DEMO_RECORD : buildMemoryRecord(messages, streamingText)),
@@ -558,9 +562,7 @@ export function MemoryRecordRail({ chatId, messages, streamingText = null, isTur
         className="px-3 py-6 text-sm text-muted-foreground"
         onClick={() => recordInteraction("click")}
       >
-        No memory activity yet. Once the agent runs a turn with memories in play, each turn
-        collects here — what was proposed, injected, reported, and how the audit ruled.
-      </div>
+        {t("memory:noMemoryActivityYetOnceTheAgentRunsATurn")}</div>
     )
   }
 

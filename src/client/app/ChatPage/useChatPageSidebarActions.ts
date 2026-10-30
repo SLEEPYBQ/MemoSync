@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n, getLocale } from "../../i18n"
 import { useCallback, useEffect, useRef, useState } from "react"
 import type {
   BranchActionFailure,
@@ -37,6 +39,7 @@ export function useChatPageSidebarActions({
   projectId,
   showRightSidebar,
 }: UseChatPageSidebarActionsArgs) {
+  useI18n()
   const dialog = useAppDialog()
   const [diffRenderMode, setDiffRenderMode] = useState<"unified" | "split">("unified")
   const [wrapDiffLines, setWrapDiffLines] = useState(false)
@@ -94,7 +97,7 @@ export function useChatPageSidebarActions({
 
   const handleLoadDiffPatch = useCallback(async (filePath: string) => {
     if (!projectId) {
-      throw new Error("Project not found")
+      throw new Error(t("sidebar:projectNotFound"))
     }
     const result = await state.socket.command<{ patch: string }>({
       type: "project.readDiffPatch",
@@ -102,7 +105,7 @@ export function useChatPageSidebarActions({
       path: filePath,
     })
     return result.patch
-  }, [projectId, state.socket])
+  }, [projectId, state.socket, getLocale()])
 
   const handleDiscardDiffFile = useCallback((filePath: string) => {
     const chatId = activeChatIdRef.current
@@ -110,9 +113,9 @@ export function useChatPageSidebarActions({
 
     void (async () => {
       const confirmed = await dialog.confirm({
-        title: "Discard Changes",
-        description: `Discard changes for "${filePath}"? This cannot be undone.`,
-        confirmLabel: "Discard",
+        title: t("sidebar:discardChanges"),
+        description: t("sidebar:discardChangesForValue0ThisCannotBeUndone", { v0: filePath }),
+        confirmLabel: t("sidebar:discard"),
         confirmVariant: "destructive",
       })
       if (!confirmed) return
@@ -125,13 +128,13 @@ export function useChatPageSidebarActions({
         })
       } catch (error) {
         await dialog.alert({
-          title: "Discard failed",
+          title: t("sidebar:discardFailed"),
           description: error instanceof Error ? error.message : String(error),
-          closeLabel: "OK",
+          closeLabel: t("common:ok"),
         })
       }
     })()
-  }, [dialog, state.socket])
+  }, [dialog, state.socket, getLocale()])
 
   const handleIgnoreDiffFile = useCallback((filePath: string) => {
     const chatId = activeChatIdRef.current
@@ -139,9 +142,9 @@ export function useChatPageSidebarActions({
 
     void (async () => {
       const confirmed = await dialog.confirm({
-        title: "Ignore File",
-        description: `Add "${filePath}" to .gitignore?`,
-        confirmLabel: "Ignore",
+        title: t("sidebar:ignoreFile"),
+        description: t("sidebar:addValue0ToGitignore", { v0: filePath }),
+        confirmLabel: t("sidebar:ignore"),
         confirmVariant: "destructive",
       })
       if (!confirmed) return
@@ -154,13 +157,13 @@ export function useChatPageSidebarActions({
         })
       } catch (error) {
         await dialog.alert({
-          title: "Ignore failed",
+          title: t("sidebar:ignoreFailed"),
           description: error instanceof Error ? error.message : String(error),
-          closeLabel: "OK",
+          closeLabel: t("common:ok"),
         })
       }
     })()
-  }, [dialog, state.socket])
+  }, [dialog, state.socket, getLocale()])
 
   const handleIgnoreDiffFolder = useCallback((filePath: string) => {
     const chatId = activeChatIdRef.current
@@ -171,10 +174,10 @@ export function useChatPageSidebarActions({
 
     void (async () => {
       const ignorePath = await dialog.prompt({
-        title: "Ignore Folder",
-        description: "Edit the folder pattern to add to .gitignore.",
+        title: t("sidebar:ignoreFolder"),
+        description: t("sidebar:editTheFolderPatternToAddToGitignore"),
         initialValue,
-        confirmLabel: "Ignore",
+        confirmLabel: t("sidebar:ignore"),
       })
       if (!ignorePath) return
 
@@ -186,13 +189,13 @@ export function useChatPageSidebarActions({
         })
       } catch (error) {
         await dialog.alert({
-          title: "Ignore failed",
+          title: t("sidebar:ignoreFailed"),
           description: error instanceof Error ? error.message : String(error),
-          closeLabel: "OK",
+          closeLabel: t("common:ok"),
         })
       }
     })()
-  }, [dialog, state.socket])
+  }, [dialog, state.socket, getLocale()])
 
   const handleOpenDiffInFinder = useCallback((filePath: string) => {
     void state.handleOpenExternalPath("open_finder", filePath)
@@ -217,23 +220,23 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
+          title: translateUiText(result.title),
           description: result.localCommitCreated
-            ? `${result.message}\n\nA local commit was created, but the push did not complete.${result.detail ? `\n\n${result.detail}` : ""}`
-            : `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+            ? `${translateUiText(result.message)}\n\n${translateUiText("A local commit was created, but the push did not complete.")}${result.detail ? `\n\n${result.detail}` : ""}`
+            : `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
       return result
     } catch (error) {
       await dialog.alert({
-        title: "Commit failed",
+        title: t("sidebar:commitFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshDiffs, state.socket])
+  }, [dialog, refreshDiffs, state.socket, getLocale()])
 
   const handleSyncBranch = useCallback(async (action: "fetch" | "pull" | "push" | "publish") => {
     const chatId = activeChatIdRef.current
@@ -252,21 +255,21 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
       return result
     } catch (error) {
       await dialog.alert({
-        title: "Git sync failed",
+        title: t("sidebar:gitSyncFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshDiffs, state.socket])
+  }, [dialog, refreshDiffs, state.socket, getLocale()])
 
   const handleGenerateCommitMessage = useCallback(async (args: { paths: string[] }) => {
     const chatId = activeChatIdRef.current
@@ -290,13 +293,13 @@ export function useChatPageSidebarActions({
       // silently swallowed them, leaving the user with an empty box and no clue
       // (BUG PANEL-5). Especially likely on the DeepSeek deployment (AGENT-6).
       await dialog.alert({
-        title: "Couldn't generate a commit message",
+        title: t("sidebar:couldnTGenerateACommitMessage"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return { subject: "", body: "" }
     }
-  }, [dialog, state.socket])
+  }, [dialog, state.socket, getLocale()])
 
   const handleInitializeGit = useCallback(async () => {
     const chatId = activeChatIdRef.current
@@ -314,21 +317,21 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
       return result
     } catch (error) {
       await dialog.alert({
-        title: "Initialize git failed",
+        title: t("sidebar:initializeGitFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshProjectGitSnapshot, state.socket])
+  }, [dialog, refreshProjectGitSnapshot, state.socket, getLocale()])
 
   const handleGetGitHubPublishInfo = useCallback(async () => {
     const chatId = activeChatIdRef.current
@@ -352,7 +355,7 @@ export function useChatPageSidebarActions({
     if (!chatId) {
       return {
         available: false,
-        message: "No active chat.",
+        message: t("sidebar:noActiveChat"),
       } satisfies GitHubRepoAvailabilityResult
     }
 
@@ -362,7 +365,7 @@ export function useChatPageSidebarActions({
       owner: args.owner,
       name: args.name,
     })
-  }, [state.socket])
+  }, [state.socket, getLocale()])
 
   const handleSetupGitHub = useCallback(async (args: {
     owner: string
@@ -389,21 +392,21 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
       return result
     } catch (error) {
       await dialog.alert({
-        title: "Publish failed",
+        title: t("sidebar:publishFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshProjectGitSnapshot, state.socket])
+  }, [dialog, refreshProjectGitSnapshot, state.socket, getLocale()])
 
   const handleListBranches = useCallback(async () => {
     const chatId = activeChatIdRef.current
@@ -432,10 +435,10 @@ export function useChatPageSidebarActions({
     let bringChanges = false
     if ((state.chatDiffSnapshot?.files.length ?? 0) > 0) {
       const confirmed = await dialog.confirm({
-        title: "Bring Changes?",
-        description: `You have uncommitted changes. Bring them to ${branch.name}?`,
-        confirmLabel: "Bring Changes",
-        cancelLabel: "Stay Here",
+        title: t("sidebar:bringChanges"),
+        description: t("sidebar:youHaveUncommittedChangesBringThemToValue0", { v0: branch.name }),
+        confirmLabel: t("sidebar:bringChanges2"),
+        cancelLabel: t("sidebar:stayHere"),
       })
       if (!confirmed) {
         return
@@ -456,19 +459,19 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok && !result.cancelled) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
     } catch (error) {
       await dialog.alert({
-        title: "Checkout failed",
+        title: t("sidebar:checkoutFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
     }
-  }, [dialog, refreshDiffs, state.chatDiffSnapshot?.files.length, state.socket])
+  }, [dialog, refreshDiffs, state.chatDiffSnapshot?.files.length, state.socket, getLocale()])
 
   const handlePreviewMergeBranch = useCallback(async (branch: ChatBranchListEntry) => {
     const chatId = activeChatIdRef.current
@@ -480,7 +483,7 @@ export function useChatPageSidebarActions({
         status: "error",
         commitCount: 0,
         hasConflicts: false,
-        message: "Merge preview unavailable.",
+        message: t("sidebar:mergePreviewUnavailable"),
       } satisfies ChatMergePreviewResult
     }
 
@@ -489,7 +492,7 @@ export function useChatPageSidebarActions({
       chatId,
       branch: serializeBranchSelection(branch),
     })
-  }, [state.socket])
+  }, [state.socket, getLocale()])
 
   const handleMergeBranch = useCallback(async (branch: ChatBranchListEntry) => {
     const chatId = activeChatIdRef.current
@@ -509,21 +512,21 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
       return result
     } catch (error) {
       await dialog.alert({
-        title: "Merge failed",
+        title: t("sidebar:mergeFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshDiffs, state.socket])
+  }, [dialog, refreshDiffs, state.socket, getLocale()])
 
   const handleCreateBranch = useCallback(async () => {
     const chatId = activeChatIdRef.current
@@ -532,10 +535,10 @@ export function useChatPageSidebarActions({
     }
 
     const name = await dialog.prompt({
-      title: "New Branch",
-      description: "Enter a branch name.",
+      title: t("sidebar:newBranch"),
+      description: t("sidebar:enterABranchName"),
       placeholder: "feature/my-branch",
-      confirmLabel: "Create",
+      confirmLabel: t("common:create"),
     })
     if (!name) {
       return
@@ -548,10 +551,10 @@ export function useChatPageSidebarActions({
     let baseBranchName = defaultBranchName
     if (defaultBranchName && currentBranchName && defaultBranchName !== currentBranchName) {
       const createFromCurrent = await dialog.confirm({
-        title: "Branch Base",
-        description: `Create "${name}" from ${currentBranchName} instead of ${defaultBranchName}?`,
-        confirmLabel: `From ${currentBranchName}`,
-        cancelLabel: `From ${defaultBranchName}`,
+        title: t("sidebar:branchBase"),
+        description: t("sidebar:createValue0FromValue1InsteadOfValue2", { v0: name, v1: currentBranchName, v2: defaultBranchName }),
+        confirmLabel: t("sidebar:fromValue0", { v0: currentBranchName }),
+        cancelLabel: t("sidebar:fromValue0", { v0: defaultBranchName }),
       })
       baseBranchName = createFromCurrent ? currentBranchName : defaultBranchName
     }
@@ -569,19 +572,19 @@ export function useChatPageSidebarActions({
       }
       if (!result.ok) {
         await dialog.alert({
-          title: result.title,
-          description: `${result.message}${result.detail ? `\n\n${result.detail}` : ""}`,
-          closeLabel: "OK",
+          title: translateUiText(result.title),
+          description: `${translateUiText(result.message)}${result.detail ? `\n\n${result.detail}` : ""}`,
+          closeLabel: t("common:ok"),
         })
       }
     } catch (error) {
       await dialog.alert({
-        title: "Create branch failed",
+        title: t("sidebar:createBranchFailed"),
         description: error instanceof Error ? error.message : String(error),
-        closeLabel: "OK",
+        closeLabel: t("common:ok"),
       })
     }
-  }, [dialog, handleListBranches, refreshDiffs, state.socket])
+  }, [dialog, handleListBranches, refreshDiffs, state.socket, getLocale()])
 
   useEffect(() => {
     if (!projectId || !showRightSidebar) {

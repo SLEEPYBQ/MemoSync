@@ -1,3 +1,4 @@
+import { t, useI18n } from "../i18n"
 import { useCallback, useState, useEffect, useRef } from "react"
 import { ArrowUp, Folder, Loader2 } from "lucide-react"
 import { DEFAULT_NEW_PROJECT_ROOT } from "../../shared/branding"
@@ -33,6 +34,7 @@ function toKebab(str: string): string {
 }
 
 export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
+  useI18n()
   const [tab, setTab] = useState<Tab>("new")
   const [name, setName] = useState("")
   const [existingPath, setExistingPath] = useState("")
@@ -105,14 +107,14 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="sm">
         <DialogBody className="space-y-4">
-          <DialogTitle>Add Project</DialogTitle>
+          <DialogTitle>{t("chat:addProject2")}</DialogTitle>
 
           <SegmentedControl
             value={tab}
             onValueChange={setTab}
             options={[
-              { value: "new" as Tab, label: "New Folder" },
-              { value: "existing" as Tab, label: "Existing Path" },
+              { value: "new" as Tab, label: t("chat:newFolder") },
+              { value: "existing" as Tab, label: t("chat:existingPath") },
             ]}
             className="w-full mb-2"
             optionClassName="flex-1 justify-center"
@@ -132,7 +134,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
                   if (e.key === "Enter") handleSubmit()
                   if (e.key === "Escape") onOpenChange(false)
                 }}
-                placeholder="Project name"
+                placeholder={t("chat:projectName")}
               />
               {newPath && (
                 <p className="text-xs text-muted-foreground font-mono">
@@ -184,29 +186,25 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
                     </button>
                   ))}
                   {dirs && dirs.dirs.length === 0 && !dirs.parent ? (
-                    <p className="px-2.5 py-1.5 text-xs text-muted-foreground">No folders here yet.</p>
+                    <p className="px-2.5 py-1.5 text-xs text-muted-foreground">{t("chat:noFoldersHereYet")}</p>
                   ) : null}
                 </div>
               </div>
               <p className="text-xs text-muted-foreground">
-                You are browsing the <strong>workspace machine</strong> (the remote environment where
-                the agent runs) — not this computer. The folder will be created if it doesn't exist.
-              </p>
+                {t("chat:youAreBrowsingThe")}<strong>{t("chat:workspaceMachine")}</strong> {t("chat:theRemoteEnvironmentWhereTheAgentRunsNotThisComputer")}</p>
             </div>
           )}
         </DialogBody>
         <DialogFooter>
           <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
+            {t("common:cancel")}</Button>
           <Button
             variant="secondary"
             size="sm"
             onClick={handleSubmit}
             disabled={!canSubmit}
           >
-            Create
-          </Button>
+            {t("common:create")}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

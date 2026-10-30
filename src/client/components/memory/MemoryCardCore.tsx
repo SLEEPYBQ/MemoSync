@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { ScopeBadge } from "./ScopeBadge"
 // The canonical READ-ONLY face of a memory item (redesign 2026-08-07 §4:
 // shared operable representation). Body = short content + usage count + scope
@@ -15,10 +16,11 @@ export type MemoryCardCoreItem = Pick<MemoryItem, "id" | "content" | "scope" | "
   Partial<Pick<MemoryItem, "detail" | "version" | "provenanceSessionId" | "provenanceTurn">>
 
 export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; className?: string }) {
+  useI18n()
   const [detailOpen, setDetailOpen] = useState(false)
   const scope = isMemoryScope(item.scope) ? item.scope : "session"
   const provenanceParts: string[] = []
-  if (item.provenanceSessionId) provenanceParts.push(`from session ${item.provenanceSessionId.slice(0, 8)}`)
+  if (item.provenanceSessionId) provenanceParts.push(t("memory:fromSessionValue0", { v0: item.provenanceSessionId.slice(0, 8) }))
   if (item.provenanceTurn !== undefined) provenanceParts.push(`t${item.provenanceTurn}`)
 
   return (
@@ -30,7 +32,7 @@ export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; 
         </span>
         <span>·</span>
         <ScopeBadge scope={scope} />
-        <span className="ml-auto font-sans">used {item.usageCount ?? 0}×</span>
+        <span className="ml-auto font-sans">{t("memory:usedTimes", { count: item.usageCount ?? 0 })}</span>
       </div>
       <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{item.content}</p>
       {item.detail ? (
@@ -41,8 +43,7 @@ export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; 
             className="inline-flex items-center gap-0.5 text-[11px] text-muted-foreground hover:text-foreground"
           >
             <ChevronRight className={cn("h-3 w-3 transition-transform", detailOpen && "rotate-90")} />
-            Detail
-          </button>
+            {t("memory:detail")}</button>
           {detailOpen ? (
             <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
               {item.detail}

@@ -1,3 +1,6 @@
+import { translateUiText } from "../../i18n/uiText"
+import { memoryStatusLabel } from "../../i18n/labels"
+import { t, useI18n } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
 // Right-side detail panel for a selected memory (SPEC §4.9, §4.11). Two tabs:
 // "Details" (editable fields + scope move + provenance/usage/sensitive) and
@@ -65,6 +68,7 @@ export function buildReviewedSensitiveCandidatePatch(
 }
 
 export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, onAccept, onArchive, surface }: MemoryDetailPanelProps) {
+  useI18n()
   const [tab, setTab] = useState<"details" | "history">("details")
   const [draft, setDraft] = useState({ content: item.content, detail: item.detail ?? "" })
   const [archiveArmed, setArchiveArmed] = useState(false)
@@ -110,7 +114,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       const updated = await memoriesApi.update(item.id, dirtyPatch, { surface })
       onUpdated(updated)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to save")
+      setError(err instanceof Error ? err.message : t("memory:failedToSave"))
     } finally {
       setBusy(null)
     }
@@ -127,7 +131,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
         // (e.g. the first one in the list) would land the memory somewhere
         // the user never chose. Transfer… has the explicit project picker.
         if (!item.projectId) {
-          setError("Use Transfer… to move this into a specific project.")
+          setError(t("memory:useTransferToMoveThisIntoASpecificProject"))
           return
         }
         patch.projectId = item.projectId
@@ -135,7 +139,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       const updated = await memoriesApi.update(item.id, patch, { surface })
       onUpdated(updated)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to move")
+      setError(err instanceof Error ? err.message : t("memory:failedToMove"))
     } finally {
       setBusy(null)
     }
@@ -152,7 +156,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       const updated = await memoriesApi.update(item.id, patch, { surface })
       onUpdated(updated)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update")
+      setError(err instanceof Error ? err.message : t("memory:failedToUpdate"))
     } finally {
       setBusy(null)
     }
@@ -164,7 +168,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     try {
       if (sensitiveCandidate) {
         if (!reviewedSensitivePatch) {
-          setError("Edit or prepare a sanitized version before accepting.")
+          setError(t("memory:editOrPrepareASanitizedVersionBeforeAccepting"))
           return
         }
         await onAccept(item, reviewedSensitivePatch)
@@ -172,7 +176,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
         await onAccept(item)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to accept")
+      setError(err instanceof Error ? err.message : t("memory:failedToAccept"))
     } finally {
       setBusy(null)
     }
@@ -186,7 +190,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       setDraft({ content: proposal.content, detail: proposal.detail ?? "" })
       setSanitized(proposal.redactions)
     } catch (err) {
-      setError(err instanceof Error ? `Redaction unavailable — edit manually (${err.message})` : "Redaction unavailable — edit manually")
+      setError(err instanceof Error ? t("memory:redactionUnavailableEditManuallyValue0", { v0: err.message }) : t("memory:redactionUnavailableEditManually"))
     } finally {
       setBusy(null)
     }
@@ -198,14 +202,14 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     try {
       await onArchive(item)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed")
+      setError(err instanceof Error ? err.message : t("memory:failed"))
       setBusy(null)
     }
   }
 
   const busyState = busy !== null
   const provenance = item.provenanceSessionId || item.provenanceTurn !== undefined
-    ? `from ${item.provenanceSessionId ? item.provenanceSessionId.slice(0, 8) : "unknown session"}${item.provenanceTurn !== undefined ? ` · turn ${item.provenanceTurn}` : ""}`
+    ? `from ${item.provenanceSessionId ? item.provenanceSessionId.slice(0, 8) : t("memory:unknownSession")}${item.provenanceTurn !== undefined ? t("memory:turnValue0", { v0: item.provenanceTurn }) : ""}`
     : null
 
   return (
@@ -213,9 +217,9 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-4 py-3">
         <Chip className="font-mono">{item.id}</Chip>
         <Chip className={item.status === "candidate" ? "border-cand-border bg-cand-surface text-cand-fg" : undefined}>
-          {item.status}
+          {memoryStatusLabel(item.status)}
         </Chip>
-        <Button variant="ghost" size="icon-sm" aria-label="Close" className="ml-auto" onClick={onClose}>
+        <Button variant="ghost" size="icon-sm" aria-label={t("common:close")} className="ml-auto" onClick={onClose}>
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
@@ -228,8 +232,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
           value={tab}
           onValueChange={setTab}
           options={[
-            { value: "details", label: "Details", icon: SlidersHorizontal },
-            { value: "history", label: "History", icon: HistoryIcon },
+            { value: "details", label: t("common:details"), icon: SlidersHorizontal },
+            { value: "history", label: t("memory:history"), icon: HistoryIcon },
           ]}
         />
       </div>
@@ -241,34 +245,28 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               sensitiveCandidate ? (
                 <div className="rounded-lg border border-cand-border bg-cand-surface/60 p-3">
                   <p className="text-xs text-cand-fg">
-                    Review this sensitive draft here. Prepare a redacted proposal or edit it manually; the original text cannot be accepted unchanged.
-                  </p>
+                    {t("memory:reviewThisSensitiveDraftHerePrepareARedactedProposalOr")}</p>
                   <div className="mt-2 flex flex-wrap items-center justify-end gap-2">
                     <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleSanitize()}>
                       {busy === "sanitize" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}
-                      Prepare sanitized
-                    </Button>
+                      {t("memory:prepareSanitized")}</Button>
                     <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleArchive()}>
-                      <X className="h-3.5 w-3.5" /> Dismiss
-                    </Button>
+                      <X className="h-3.5 w-3.5" /> {t("common:dismiss")}</Button>
                     <Button
                       variant="default"
                       size="sm"
                       disabled={busyState || !reviewedSensitivePatch}
                       onClick={() => void handleAccept()}
                     >
-                      <Check className="h-3.5 w-3.5" /> Accept reviewed
-                    </Button>
+                      <Check className="h-3.5 w-3.5" /> {t("memory:acceptReviewed")}</Button>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center justify-end gap-2">
                   <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => void handleArchive()}>
-                    <X className="h-3.5 w-3.5" /> Dismiss
-                  </Button>
+                    <X className="h-3.5 w-3.5" /> {t("common:dismiss")}</Button>
                   <Button variant="default" size="sm" disabled={busyState} onClick={() => void handleAccept()}>
-                    <Check className="h-3.5 w-3.5" /> Accept
-                  </Button>
+                    <Check className="h-3.5 w-3.5" /> {t("common:accept")}</Button>
                 </div>
               )
             ) : null}
@@ -276,8 +274,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {sanitized ? (
               <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
                 <ShieldCheck className="h-3.5 w-3.5 text-success-foreground dark:text-success-foreground" />
-                Redaction proposal staged for your review
-                {sanitized.map((redaction) => (
+                {t("memory:redactionProposalStagedForYourReview")}{sanitized.map((redaction) => (
                   <MemoryBadge key={redaction.placeholder} className="rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px]">
                     {redaction.placeholder} {redaction.kind}
                   </MemoryBadge>
@@ -286,7 +283,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             ) : null}
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">content</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:content")}</label>
               <Textarea
                 value={draft.content}
                 onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
@@ -295,11 +292,11 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground">detailed form</label>
+              <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:detailedForm")}</label>
               <Textarea
                 value={draft.detail}
                 onChange={(e) => setDraft((d) => ({ ...d, detail: e.target.value }))}
-                placeholder="Loaded on demand by the agent — optional"
+                placeholder={t("memory:loadedOnDemandByTheAgentOptional")}
                 className="min-h-20 text-sm"
               />
             </div>
@@ -307,14 +304,13 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {sensitiveCandidate ? null : (
               <div className="flex justify-end">
                 <Button variant={item.status === "candidate" ? "outline" : "default"} size="sm" disabled={busyState || !isDirty || !draft.content.trim()} onClick={() => void handleSave()}>
-                  Save
-                </Button>
+                  {t("common:save")}</Button>
               </div>
             )}
 
             <div className="border-t border-border pt-3">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                {item.scope === "session" ? "session-scoped — move to widen reach" : "scope"}
+                {item.scope === "session" ? t("memory:sessionScopedMoveToWidenReach") : t("memory:scopeLabel")}
               </label>
               <div className="inline-flex max-w-full flex-wrap items-center rounded-lg border border-border p-[3px]">
                 {MOVE_SCOPES.map((scope) => {
@@ -337,7 +333,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                       )}
                     >
                       <Icon className="h-3.5 w-3.5" />
-                      {scope === "personal" ? "Personal" : "Project"}
+                      {scope === "personal" ? t("common:personal") : t("common:project")}
                     </button>
                   )
                 })}
@@ -345,12 +341,11 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             </div>
 
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
-            <p className="text-xs text-muted-foreground">used {item.usageCount}×</p>
+            <p className="text-xs text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</p>
 
             {sensitiveCandidate ? (
               <MemoryBadge className="inline-flex items-center gap-1.5 rounded-md border border-cand-border bg-cand-surface px-1.5 py-1 text-[11px] font-medium text-cand-fg">
-                <ShieldAlert className="h-3.5 w-3.5" /> Sensitive
-              </MemoryBadge>
+                <ShieldAlert className="h-3.5 w-3.5" /> {t("memory:sensitive")}</MemoryBadge>
             ) : (
               <button
                 type="button"
@@ -362,28 +357,24 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                 )}
               >
                 {item.sensitive ? <ShieldAlert className="h-3.5 w-3.5" /> : <ShieldOff className="h-3.5 w-3.5" />}
-                {item.sensitive ? "Sensitive" : "Not sensitive"}
+                {item.sensitive ? t("memory:sensitive") : t("memory:notSensitive")}
               </button>
             )}
 
             {item.status !== "candidate" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
-                  <ArrowRightLeft className="h-3.5 w-3.5" /> Transfer…
-                </Button>
+                  <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>
                 {archiveArmed ? (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button variant="ghost" className="text-destructive hover:text-destructive" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
-                      Confirm archive
-                    </Button>
+                      {t("memory:confirmArchive")}</Button>
                     <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setArchiveArmed(false)}>
-                      Cancel
-                    </Button>
+                      {t("common:cancel")}</Button>
                   </div>
                 ) : (
                   <Button variant="ghost" size="sm" className="text-destructive hover:text-destructive" disabled={busyState} onClick={() => setArchiveArmed(true)}>
-                    Archive
-                  </Button>
+                    {t("common:archive")}</Button>
                 )}
               </div>
             ) : null}
@@ -397,7 +388,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               />
             ) : null}
 
-            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+            {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         ) : (
           <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} />

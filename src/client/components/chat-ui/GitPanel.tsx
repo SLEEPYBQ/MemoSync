@@ -1,3 +1,5 @@
+import { translateServerUiText, translateUiText } from "../../i18n/uiText"
+import { formatRelativeTime as relativeTime, t, useI18n } from "../../i18n"
 import { PatchDiff } from "@pierre/diffs/react"
 import { AlertTriangle, ArrowUp, Ban, Check, ChevronDown, ChevronUp, Columns2, Copy, Download, Ellipsis, FolderOpen, GitBranch, GitBranchPlus, GitMerge, GitPullRequest, LoaderCircle, Minus, PenLine, RefreshCw, Rows3, Search, Sparkles, Trash2, Upload, WrapText } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react"
@@ -120,17 +122,17 @@ export function getPrimaryCommitActionPrefix(args: {
   if (args.hasSummary) {
     if (args.isCommitting) {
       if (args.isGeneratedCommitInFlight) {
-        return args.commitModeInFlight === "commit_only" ? "Committing..." : "Pushing..."
+        return args.commitModeInFlight === "commit_only" ? t("git:committing") : t("git:pushing")
       }
-      return args.commitModeInFlight === "commit_only" ? "Committing..." : "Committing & Pushing..."
+      return args.commitModeInFlight === "commit_only" ? t("git:committing") : t("git:committingAndPushing")
     }
-    return args.primaryCommitMode === "commit_only" ? "Commit to" : "Commit & push to"
+    return args.primaryCommitMode === "commit_only" ? t("git:commitTo") : t("git:commitPushTo")
   }
 
   if (args.isGenerating) {
-    return "Generating..."
+    return t("git:generating")
   }
-  return args.primaryCommitMode === "commit_only" ? "Generate & commit to" : "Generate & push to"
+  return args.primaryCommitMode === "commit_only" ? t("git:generateCommitTo") : t("git:generatePushTo")
 }
 
 function IconButton(props: {
@@ -139,6 +141,7 @@ function IconButton(props: {
   onClick: () => void
   children: ReactNode
 }) {
+  useI18n()
   return (
     <Tooltip delayDuration={0}>
       <TooltipTrigger asChild>
@@ -173,10 +176,11 @@ function StageCheckbox({
   className?: string
   onClick: () => void
 }) {
+  useI18n()
   return (
     <button
       type="button"
-      aria-label={label ?? (checked ? "Exclude file from commit" : "Include file in commit")}
+      aria-label={label ?? (checked ? t("git:excludeFileFromCommit") : t("git:includeFileInCommit"))}
       aria-checked={mixed ? "mixed" : checked}
       aria-pressed={mixed ? "mixed" : checked}
       onClick={(event) => {
@@ -202,47 +206,23 @@ function StageCheckbox({
 
 function formatRelativeTime(isoTimestamp: string) {
   const timestamp = Date.parse(isoTimestamp)
-  if (!Number.isFinite(timestamp)) {
-    return ""
+  if (!Number.isFinite(timestamp)) return ""
+  const seconds = (timestamp - Date.now()) / 1000
+  for (const [unit, divisor] of [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]] as const) {
+    if (Math.abs(seconds) >= divisor) return relativeTime(Math.round(seconds / divisor), unit)
   }
-
-  const diffMs = Date.now() - timestamp
-  const minute = 60_000
-  const hour = 60 * minute
-  const day = 24 * hour
-  const week = 7 * day
-  const month = 30 * day
-  const year = 365 * day
-
-  if (diffMs < minute) {
-    return "just now"
-  }
-  if (diffMs < hour) {
-    return `${Math.round(diffMs / minute)}m ago`
-  }
-  if (diffMs < day) {
-    return `${Math.round(diffMs / hour)}hr ago`
-  }
-  if (diffMs < week) {
-    return `${Math.round(diffMs / day)}d ago`
-  }
-  if (diffMs < month) {
-    return `${Math.round(diffMs / week)}wk ago`
-  }
-  if (diffMs < year) {
-    return `${Math.round(diffMs / month)}mo ago`
-  }
-  return `${Math.round(diffMs / year)}yr ago`
+  return relativeTime(0, "second")
 }
 
 function formatFetchTooltip(isoTimestamp?: string) {
   if (!isoTimestamp) {
-    return "No local fetch recorded"
+    return t("git:noLocalFetchRecorded")
   }
-  return `Last fetched ${formatRelativeTime(isoTimestamp)}`
+  return t("git:lastFetchedValue0", { v0: formatRelativeTime(isoTimestamp) })
 }
 
 function CommitHistoryRow({ entry, isPendingPush = false }: { entry: ChatBranchHistoryEntry; isPendingPush?: boolean }) {
+  useI18n()
   const relativeTime = formatRelativeTime(entry.authoredAt)
   const isClickable = Boolean(entry.githubUrl)
   return (
@@ -369,6 +349,7 @@ function BranchSearchInput({
   disabled?: boolean
   trailingAction?: ReactNode
 }) {
+  useI18n()
   return (
     <div className="relative">
       <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
@@ -401,6 +382,7 @@ function BranchListSection({
   stickyTitle?: boolean
   onSelect: (entry: ChatBranchListEntry) => void
 }) {
+  useI18n()
   if (entries.length === 0 && !emptyLabel) {
     return null
   }
@@ -457,6 +439,32 @@ function BranchListSection({
   )
 }
 
+export function MergePreviewSummary({ preview }: { preview: ChatMergePreviewResult }) {
+  useI18n()
+  // Keep the server reference authoritative when a stored preview changes locale.
+  // Older servers/direct callbacks still get the legacy UI-copy fallback.
+  const message = translateServerUiText(preview.uiTextFields?.message, translateUiText(preview.message))
+  return (
+    <div className="flex items-start gap-2">
+      {preview.status === "up_to_date" ? (
+        <Check className="mt-1 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      ) : preview.status === "conflicts" ? (
+        <AlertTriangle className="mt-1 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
+      ) : preview.status === "mergeable" ? (
+        <GitBranchPlus className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
+      ) : (
+        <AlertTriangle className="mt-1 size-3.5 shrink-0 text-destructive" />
+      )}
+      <div className="min-w-0 space-y-1">
+        <div className="text-sm font-medium text-foreground">{message}</div>
+        {preview.detail ? (
+          <div className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{preview.detail}</div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
+
 function MergeBranchModal({
   open,
   onOpenChange,
@@ -472,6 +480,7 @@ function MergeBranchModal({
   onPreviewMergeBranch: (branch: ChatBranchListEntry) => Promise<ChatMergePreviewResult>
   onMergeBranch: (branch: ChatBranchListEntry) => Promise<ChatMergeBranchResult | null>
 }) {
+  useI18n()
   const [query, setQuery] = useState("")
   const [selectedName, setSelectedName] = useState<string | null>(null)
   const [preview, setPreview] = useState<ChatMergePreviewResult | null>(null)
@@ -573,35 +582,34 @@ function MergeBranchModal({
       <DialogContent size="sm" className="max-w-[min(92vw,475px)]">
         <DialogBody className="flex min-h-0 flex-col gap-3 px-4 pb-4 pt-4">
           <div className="space-y-1">
-            <DialogTitle>Merge into {currentBranchName ?? "current branch"}</DialogTitle>
+            <DialogTitle>{t("git:mergeInto")}{currentBranchName ?? t("git:currentBranch")}</DialogTitle>
             <DialogDescription>
-              Choose a branch to continue.
-            </DialogDescription>
+              {t("git:chooseABranchToContinue")}</DialogDescription>
           </div>
           <BranchSearchInput
             value={query}
             onChange={setQuery}
-            placeholder="Search branches"
+            placeholder={t("git:searchBranches")}
           />
           <div className="max-h-[375px] space-y-3 overflow-y-auto pr-1">
             <BranchListSection
-              title="Default Branch"
+              title={t("git:defaultBranch")}
               entries={visibleDefaultBranch ? [visibleDefaultBranch] : []}
-              emptyLabel="No default branch available."
+              emptyLabel={t("git:noDefaultBranch")}
               selectedName={selectedName}
               onSelect={(entry) => setSelectedName(entry.name)}
             />
             <BranchListSection
-              title="Recent Branches"
+              title={t("git:recentBranches")}
               entries={visibleRecent}
-              emptyLabel="No recent branches."
+              emptyLabel={t("git:noRecentBranches")}
               selectedName={selectedName}
               onSelect={(entry) => setSelectedName(entry.name)}
             />
             <BranchListSection
-              title="Other Branches"
+              title={t("git:otherBranches")}
               entries={visibleOther}
-              emptyLabel="No other branches match this search."
+              emptyLabel={t("git:noOtherBranches")}
               selectedName={selectedName}
               onSelect={(entry) => setSelectedName(entry.name)}
             />
@@ -609,55 +617,35 @@ function MergeBranchModal({
           <div className="px-2">
             {!selectedEntry ? (
               <div className="text-sm text-muted-foreground">
-                Select a branch to preview the merge.
-              </div>
+                {t("git:selectABranchToPreviewTheMerge")}</div>
             ) : isPreviewLoading ? (
               <div className="flex items-center gap-2 text-sm text-muted-foreground">
                 <LoaderCircle className="size-3.5 animate-spin" />
-                <span>Checking merge preview…</span>
+                <span>{t("git:checkingMergePreview")}</span>
               </div>
             ) : previewError ? (
               <div className="text-sm text-destructive">
-                {previewError}
+                {translateUiText(previewError)}
               </div>
             ) : preview ? (
-              <div className="flex items-start gap-2">
-                {preview.status === "up_to_date" ? (
-                  <Check className="mt-1 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                ) : preview.status === "conflicts" ? (
-                  <AlertTriangle className="mt-1 size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
-                ) : preview.status === "mergeable" ? (
-                  <GitBranchPlus className="mt-1 size-3.5 shrink-0 text-muted-foreground" />
-                ) : (
-                  <AlertTriangle className="mt-1 size-3.5 shrink-0 text-destructive" />
-                )}
-                <div className="min-w-0 space-y-1">
-                  <div className="text-sm font-medium text-foreground">{preview.message}</div>
-                  {preview.detail ? (
-                    <div className="line-clamp-2 whitespace-pre-wrap text-xs text-muted-foreground">{preview.detail}</div>
-                  ) : null}
-                </div>
-              </div>
+              <MergePreviewSummary preview={preview} />
             ) : (
               <div className="text-sm text-muted-foreground">
-                Preview unavailable.
-              </div>
+                {t("git:previewUnavailable")}</div>
             )}
           </div>
         </DialogBody>
         <DialogFooter>
           <div className="flex min-w-0 w-full items-center justify-end gap-2">
             <Button variant="ghost" size="sm" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
+              {t("common:cancel")}</Button>
             <Button className="max-w-full min-w-0" size="sm" disabled={mergeDisabled} onClick={() => void handleMerge()}>
               {isMerging ? (
                 <>
                   <LoaderCircle className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                  Merging…
-                </>
+                  {t("git:merging")}</>
               ) : (
-                <span className="block max-w-full truncate">Merge</span>
+                <span className="block max-w-full truncate">{t("git:merge")}</span>
               )}
             </Button>
           </div>
@@ -682,6 +670,7 @@ function BranchSwitcher({
   onCheckoutBranch: (branch: ChatBranchListEntry) => Promise<void>
   onCreateBranch: () => Promise<void>
 }) {
+  useI18n()
   const [open, setOpen] = useState(false)
   const [mergeModalOpen, setMergeModalOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
@@ -760,10 +749,10 @@ function BranchSwitcher({
         <button
           type="button"
           className="flex min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 py-1 text-sm transition-colors hover:bg-accent hover:text-foreground"
-          aria-label="Open branch switcher"
+          aria-label={t("git:openBranchSwitcher")}
         >
           <GitBranch className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{currentBranchName ?? "Detached HEAD"}</span>
+          <span className="truncate">{currentBranchName ?? t("git:detachedHEAD")}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         </button>
       </PopoverTrigger>
@@ -772,7 +761,7 @@ function BranchSwitcher({
           <BranchSearchInput
             value={query}
             onChange={setQuery}
-            placeholder={entryView === "pull_requests" ? "Search pull requests" : "Search branches"}
+            placeholder={entryView === "pull_requests" ? t("git:searchPullRequests") : t("git:searchBranches")}
             disabled={isLoading || isMutating}
             trailingAction={(
               <Button
@@ -782,8 +771,7 @@ function BranchSwitcher({
                 disabled={isLoading || isMutating}
                 className="h-7 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
               >
-                + New
-              </Button>
+                {t("git:new")}</Button>
             )}
           />
           {(
@@ -794,8 +782,8 @@ function BranchSwitcher({
               className="w-full"
               optionClassName="flex-1 justify-center"
               options={[
-                { value: "branches", label: "Branches" },
-                { value: "pull_requests", label: `Open PRs ${totalPullRequestCount}` },
+                { value: "branches", label: t("git:branches") },
+                { value: "pull_requests", label: t("git:openPRsValue0", { v0: totalPullRequestCount }) },
               ]}
             />
           )}
@@ -803,20 +791,20 @@ function BranchSwitcher({
             {isLoading ? (
               <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
                 <LoaderCircle className="h-4 w-4 animate-spin" />
-                <span>Loading branches…</span>
+                <span>{t("git:loadingBranches")}</span>
               </div>
             ) : error ? (
-              <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{error}</div>
+              <div className="rounded-lg border border-border px-3 py-2 text-sm text-muted-foreground">{translateUiText(error)}</div>
             ) : entryView === "pull_requests" ? (
               <BranchListSection
-                title="Open PRs"
+                title={t("git:openPRs")}
                 entries={pullRequests}
                 emptyLabel={
                   branchList?.pullRequestsStatus === "error"
-                    ? branchList.pullRequestsError ?? "Could not load pull requests."
+                    ? branchList.pullRequestsError ?? t("git:couldNotLoadPullRequests")
                     : branchList?.pullRequestsStatus === "unavailable"
-                      ? "Pull requests unavailable for this repository."
-                      : "No open pull requests."
+                      ? t("git:pullRequestsUnavailableForThisRepository")
+                      : t("git:noOpenPullRequests")
                 }
                 disabled={isMutating}
                 stickyTitle
@@ -827,9 +815,9 @@ function BranchSwitcher({
             ) : (
               <div className="space-y-3">
                 <BranchListSection
-                  title="Recent"
+                  title={t("git:recent")}
                   entries={recent}
-                  emptyLabel="No recent branches."
+                  emptyLabel={t("git:noRecentBranches")}
                   disabled={isMutating}
                   stickyTitle
                   onSelect={(entry) => {
@@ -837,9 +825,9 @@ function BranchSwitcher({
                   }}
                 />
                 <BranchListSection
-                  title="Local"
+                  title={t("git:local")}
                   entries={local}
-                  emptyLabel="No local branches."
+                  emptyLabel={t("git:noLocalBranches")}
                   disabled={isMutating}
                   stickyTitle
                   onSelect={(entry) => {
@@ -847,9 +835,9 @@ function BranchSwitcher({
                   }}
                 />
                 <BranchListSection
-                  title="Remote"
+                  title={t("git:remote")}
                   entries={remote}
-                  emptyLabel="No remote branches."
+                  emptyLabel={t("git:noRemoteBranches")}
                   disabled={isMutating}
                   stickyTitle
                   onSelect={(entry) => {
@@ -869,7 +857,7 @@ function BranchSwitcher({
             >
               <span className="block max-w-full truncate">
                 <GitMerge className="mr-1.5 inline h-3.5 w-3.5 shrink-0" />
-                Merge branch into {currentName}...
+                {t("git:mergeBranchInto")}{currentName}...
               </span>
             </Button>
           ) : null}
@@ -918,6 +906,7 @@ function DiffFileCard({
   isPatchLoading: boolean
   onLoadPatch: (path: string) => Promise<string>
 }) {
+  useI18n()
   const { resolvedTheme } = useTheme()
   const canIgnore = canIgnoreDiffFile(file)
   const canIgnoreFolder = canIgnoreDiffFolder(file)
@@ -1052,7 +1041,7 @@ function DiffFileCard({
               </span>
               <button
                 type="button"
-                aria-label={`Open actions for ${file.path}`}
+                aria-label={t("git:openActionsForValue0", { v0: file.path })}
                 onClick={openContextMenuFromButton}
                 className="flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
               >
@@ -1087,8 +1076,7 @@ function DiffFileCard({
                 isPatchLoading ? (
                   <div className="flex items-center justify-center px-3 py-8 text-sm text-muted-foreground">
                     <LoaderCircle className="mr-2 h-4 w-4 animate-spin" />
-                    Loading diff...
-                  </div>
+                    {t("git:loadingDiff")}</div>
                 ) : patchError ? (
                   <div className="px-3 py-4 text-sm text-destructive">{patchError}</div>
                 ) : patch !== undefined ? (
@@ -1105,7 +1093,7 @@ function DiffFileCard({
                     }}
                   />
                 ) : (
-                  <div className="px-3 py-4 text-sm text-muted-foreground">Diff unavailable.</div>
+                  <div className="px-3 py-4 text-sm text-muted-foreground">{t("git:diffUnavailable")}</div>
                 )
               )}
             </div>
@@ -1124,7 +1112,7 @@ function DiffFileCard({
           }}
         >
           <FolderOpen className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Open in Finder</span>
+          <span className="text-xs font-medium">{t("git:openInFinder")}</span>
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={(event) => {
@@ -1134,7 +1122,7 @@ function DiffFileCard({
           className="text-destructive dark:text-red-400 hover:bg-destructive/10 focus:bg-destructive/10 dark:hover:bg-red-500/20 dark:focus:bg-red-500/20"
         >
           <Trash2 className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Discard Changes</span>
+          <span className="text-xs font-medium">{t("git:discardChanges")}</span>
         </ContextMenuItem>
         <ContextMenuItem
           disabled={!canIgnore}
@@ -1145,7 +1133,7 @@ function DiffFileCard({
           }}
         >
           <Ban className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Ignore File</span>
+          <span className="text-xs font-medium">{t("git:ignoreFile")}</span>
         </ContextMenuItem>
         <ContextMenuItem
           disabled={!canIgnoreFolder}
@@ -1156,7 +1144,7 @@ function DiffFileCard({
           }}
         >
           <Ban className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Ignore folder...</span>
+          <span className="text-xs font-medium">{t("git:ignoreFolder")}</span>
         </ContextMenuItem>
         <ContextMenuSeparator />
         <ContextMenuItem
@@ -1166,7 +1154,7 @@ function DiffFileCard({
           }}
         >
           <Copy className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Copy File Path</span>
+          <span className="text-xs font-medium">{t("git:copyFilePath")}</span>
         </ContextMenuItem>
         <ContextMenuItem
           onSelect={(event) => {
@@ -1175,7 +1163,7 @@ function DiffFileCard({
           }}
         >
           <Copy className="h-3.5 w-3.5" />
-          <span className="text-xs font-medium">Copy Relative Path</span>
+          <span className="text-xs font-medium">{t("git:copyRelativePath")}</span>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>
@@ -1207,6 +1195,7 @@ function GitPanelImpl({
   onWrapLinesChange,
   onClose,
 }: GitPanelProps) {
+  useI18n()
   const fileActions: DiffFileActions = useMemo(() => ({
     onOpenInFinder,
     onDiscardFile,
@@ -1316,7 +1305,7 @@ function GitPanelImpl({
     && hasSummary
     && !isBusy
   const primaryCommitMode: DiffCommitMode = hasRemoteOrigin ? "commit_and_push" : "commit_only"
-  const resolvedBranchName = diffs.branchName ?? "current branch"
+  const resolvedBranchName = diffs.branchName ?? t("git:currentBranch")
   const primaryCommitActionPrefix = getPrimaryCommitActionPrefix({
     hasSummary,
     isGenerating,
@@ -1483,7 +1472,7 @@ function GitPanelImpl({
                 className="h-7 gap-1.5 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
               >
                 {isSyncing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                <span>Publish Branch</span>
+                <span>{t("git:publishBranch")}</span>
               </Button>
             ) : (
               <div className="flex items-center gap-1">
@@ -1498,7 +1487,7 @@ function GitPanelImpl({
                         className="h-7 gap-1.5 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
                       >
                         {isSyncing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
-                        <span>Fetch</span>
+                        <span>{t("git:fetch")}</span>
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>{formatFetchTooltip(diffs.lastFetchedAt)}</TooltipContent>
@@ -1512,7 +1501,7 @@ function GitPanelImpl({
                     className="h-7 gap-1.5 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
                   >
                     {isSyncing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                    <span>Pull</span>
+                    <span>{t("git:pull")}</span>
                     <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] text-muted-foreground">
                       {behindCount}
                     </span>
@@ -1527,7 +1516,7 @@ function GitPanelImpl({
                     className="h-7 gap-1.5 px-2 text-xs"
                   >
                     {isSyncing ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
-                    <span>Push</span>
+                    <span>{t("git:push")}</span>
                     <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-primary-foreground/15 px-1 text-[10px] text-primary-foreground">
                       {aheadCount}
                     </span>
@@ -1544,7 +1533,7 @@ function GitPanelImpl({
                     className="h-7 gap-1.5 px-2 text-xs hover:!bg-transparent hover:!border-border/0"
                   >
                     <GitPullRequest className="h-3.5 w-3.5" />
-                    <span>PR</span>
+                    <span>{t("git:pr")}</span>
                   </Button>
                 ) : null}
               </div>
@@ -1562,17 +1551,17 @@ function GitPanelImpl({
                       mixed={someSelected}
                       label={
                         someSelected
-                          ? "Select all files for commit"
+                          ? t("git:selectAllFilesForCommit")
                           : allSelected
-                            ? "Unselect all files from commit"
-                            : "Select all files for commit"
+                            ? t("git:unselectAllFilesFromCommit")
+                            : t("git:selectAllFilesForCommit")
                       }
                       onClick={() => {
                         if (!projectId || diffs.files.length === 0) return
                         setAllCheckedPaths(projectId, filePaths, someSelected ? true : !allSelected)
                       }}
                     />
-                    <span>{selectedCount} files</span>
+                    <span>{selectedCount} {t("git:files")}</span>
                   </div>
                 ) : <div />}
                 <div className="pointer-events-none absolute left-1/2 -translate-x-1/2 top-1/2 -translate-y-1/2">
@@ -1586,8 +1575,8 @@ function GitPanelImpl({
                       size="sm"
                       optionClassName="flex-1 justify-center"
                       options={[
-                        { value: "changes", label: "Changes"},
-                        { value: "history", label: "History" },
+                        { value: "changes", label: t("git:changes")},
+                        { value: "history", label: t("git:history") },
                       ]}
                     />
                   </div>
@@ -1595,21 +1584,21 @@ function GitPanelImpl({
                 {viewMode === "changes" ? (
                   <div className="flex items-center gap-1">
                     <IconButton
-                      label="Unified diff"
+                      label={t("git:unifiedDiff")}
                       active={diffRenderMode === "unified"}
                       onClick={() => onDiffRenderModeChange("unified")}
                     >
                       <Rows3 className="h-4 w-4" />
                     </IconButton>
                     <IconButton
-                      label="Side-by-side diff"
+                      label={t("git:sideBySideDiff")}
                       active={diffRenderMode === "split"}
                       onClick={() => onDiffRenderModeChange("split")}
                     >
                       <Columns2 className="h-4 w-4" />
                     </IconButton>
                     <IconButton
-                      label={wrapLines ? "Disable word wrap" : "Enable word wrap"}
+                      label={wrapLines ? t("git:disableWordWrap") : t("git:enableWordWrap")}
                       active={wrapLines}
                       onClick={() => onWrapLinesChange(!wrapLines)}
                     >
@@ -1624,16 +1613,15 @@ function GitPanelImpl({
             {diffs.status === "no_repo" ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
                 <div className="flex max-w-[280px] flex-col items-center gap-3">
-                  <p className="text-sm text-muted-foreground">Initialize git here to start tracking branches, diffs, and history.</p>
+                  <p className="text-sm text-muted-foreground">{t("git:initializeGitHereToStartTrackingBranchesDiffsAndHistory")}</p>
                   <Button size="sm" onClick={() => void onInitializeGit()}>
-                    Init Git
-                  </Button>
+                    {t("git:initGit")}</Button>
                 </div>
               </div>
             ) : viewMode === "history" ? (
               branchHistory.length === 0 ? (
                 <div className="flex h-full items-center justify-center px-6 py-3 text-center">
-                  <p className="text-sm text-muted-foreground">No recent commits on {diffs.branchName ?? "this branch"}.</p>
+                  <p className="text-sm text-muted-foreground">{t("git:noRecentCommitsOn")}{diffs.branchName ?? t("git:thisBranch")}.</p>
                 </div>
               ) : (
                 <div className="space-y-1.5 p-1.5">
@@ -1642,7 +1630,7 @@ function GitPanelImpl({
               )
             ) : diffs.files.length === 0 ? (
               <div className="flex h-full items-center justify-center px-6 py-3 text-center">
-                <p className="text-sm text-muted-foreground">No file changes.</p>
+                <p className="text-sm text-muted-foreground">{t("git:noFileChanges")}</p>
               </div>
             ) : (
               <div className="space-y-1.5 p-1.5 pb-10">
@@ -1693,7 +1681,7 @@ function GitPanelImpl({
                             })
                           }}
                           onKeyDown={handleCommitKeyDown}
-                          placeholder="Commit message"
+                          placeholder={t("git:commitMessage")}
                           className="rounded-t-xl rounded-b-none px-3 pr-10"
                           disabled={isBusy || diffs.status !== "ready"}
                         />
@@ -1701,7 +1689,7 @@ function GitPanelImpl({
                           <TooltipTrigger asChild>
                             <button
                               type="button"
-                              aria-label="Generate commit message"
+                              aria-label={t("git:generateCommitMessage")}
                               className="absolute right-1.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
                               disabled={!canGenerate}
                               onClick={() => void handleGenerate()}
@@ -1713,7 +1701,7 @@ function GitPanelImpl({
                               )}
                             </button>
                           </TooltipTrigger>
-                          <TooltipContent>Generate commit message</TooltipContent>
+                          <TooltipContent>{t("git:generateCommitMessage")}</TooltipContent>
                         </Tooltip>
                       </div>
                       <Textarea
@@ -1726,7 +1714,7 @@ function GitPanelImpl({
                           })
                         }}
                         onKeyDown={handleCommitKeyDown}
-                        placeholder="Description"
+                        placeholder={t("git:description")}
                         rows={5}
                         className="-mt-px rounded-t-none rounded-b-xl px-3 outline-none focus:outline-none focus-visible:outline-none focus:ring-0 focus-visible:ring-0 focus-visible:border-border mb-2"
                         disabled={isBusy || diffs.status !== "ready"}
@@ -1779,8 +1767,7 @@ function GitPanelImpl({
                                 void handleCommit("commit_only")
                               }}
                             >
-                              Commit Only
-                            </ContextMenuItem>
+                              {t("git:commitOnly")}</ContextMenuItem>
                           </ContextMenuContent>
                         ) : null}
                       </ContextMenu>

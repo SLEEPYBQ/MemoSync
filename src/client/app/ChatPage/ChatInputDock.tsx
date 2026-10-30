@@ -1,3 +1,4 @@
+import { t, useI18n } from "../../i18n"
 import { memo, type RefObject } from "react"
 import { OctagonX, X } from "lucide-react"
 import { ChatInput, type ChatInputHandle } from "../../components/chat-ui/ChatInput"
@@ -52,6 +53,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   showStopBanner,
   onDismissStopBanner,
 }: ChatInputDockProps) {
+  useI18n()
   return (
     <div className="absolute bottom-0 left-0 right-0 z-20 pointer-events-none">
       <div className="bg-gradient-to-t from-background via-background pointer-events-auto" ref={inputRef}>
@@ -59,12 +61,10 @@ export const ChatInputDock = memo(function ChatInputDock({
           <div className="mx-auto mb-1.5 flex max-w-[840px] items-center gap-2 rounded-xl border border-red-500/35 bg-red-500/10 px-3 py-1.5 text-xs text-red-700 dark:text-red-300">
             <OctagonX className="h-3.5 w-3.5 shrink-0" />
             <span className="min-w-0 flex-1">
-              Stopped. What went wrong? Your next message corrects the agent — anything worth remembering is
-              caught at Step 1.
-            </span>
+              {t("chat:stoppedWhatWentWrongYourNextMessageCorrectsTheAgent")}</span>
             <button
               type="button"
-              aria-label="Dismiss"
+              aria-label={t("common:dismiss")}
               onClick={onDismissStopBanner}
               className="shrink-0 rounded p-0.5 transition-colors hover:bg-red-500/15"
             >

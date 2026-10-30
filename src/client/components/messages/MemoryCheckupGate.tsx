@@ -1,3 +1,5 @@
+import { translateUiText } from "../../i18n/uiText"
+import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 // Step 2 (redesign 2026-08-07 §3): suggested changes to saved memories. Three
 // parallel library checks (conflicts / redundancy / staleness) surface here,
@@ -41,28 +43,28 @@ interface Props {
   onSuggestionResolved?: (memoryId: string, outcome: string) => void
 }
 
-const STATUS_WORDS = ["checking conflicts…", "checking redundancy…", "checking staleness…"]
+const STATUS_WORDS = () => [t("memory:checkingConflicts"), t("memory:checkingRedundancy"), t("memory:checkingStaleness")]
 
 const GROUPS: Array<{ kind: MemoryCheckupSuggestionSnapshot["kind"]; title: string; icon: typeof AlertTriangle }> = [
-  { kind: "conflict", title: "Conflicts", icon: AlertTriangle },
-  { kind: "redundancy", title: "Redundancy", icon: Copy },
-  { kind: "staleness", title: "Staleness", icon: Clock3 },
-  { kind: "promotion", title: "Retired suggestions", icon: CheckCheck },
+  { kind: "conflict", get title() { return t("memory:conflicts") }, icon: AlertTriangle },
+  { kind: "redundancy", get title() { return t("memory:redundancy") }, icon: Copy },
+  { kind: "staleness", get title() { return t("memory:staleness") }, icon: Clock3 },
+  { kind: "promotion", get title() { return t("memory:retiredSuggestions") }, icon: CheckCheck },
 ]
 
 const DECISION_LABELS: Record<NonNullable<MemoryCheckupHydratedMessage["decision"]>, string> = {
-  handled: "handled",
-  skipped: "skipped for now",
-  cancelled: "cancelled with the turn",
-  expired: "expired (server restarted)",
-  empty: "nothing needed attention",
-  failed: "checkup incomplete",
+  get handled() { return t("memory:handled") },
+  get skipped() { return t("memory:skippedForNow") },
+  get cancelled() { return t("memory:cancelledWithTheTurn") },
+  get expired() { return t("memory:expiredServerRestarted") },
+  get empty() { return t("memory:nothingNeededAttention") },
+  get failed() { return t("memory:checkupIncomplete4") },
 }
 
 const FAILED_KIND_LABELS: Record<MemoryCheckupKind, string> = {
-  conflict: "Conflicts",
-  redundancy: "Redundancy",
-  staleness: "Staleness",
+  get conflict() { return t("memory:conflicts") },
+  get redundancy() { return t("memory:redundancy") },
+  get staleness() { return t("memory:staleness") },
 }
 
 function failedKindsLabel(kinds: MemoryCheckupKind[]): string {
@@ -81,6 +83,7 @@ export function MemoryCheckupGate({
   resolvedRows,
   onSuggestionResolved,
 }: Props) {
+  useI18n()
   const renderOptions = useTranscriptRenderOptions()
   useEnsureMemoriesLoaded()
   const suggestions = useMemo(() => message.suggestions ?? [], [message.suggestions])
@@ -101,8 +104,7 @@ export function MemoryCheckupGate({
     if (!suggestions.length && !failedKinds.length) return null
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        Step {stepNumber} · Review Suggested Changes to Existing Memories — {suggestions.length} omitted from this export.
-        {failedKinds.length ? ` Incomplete checks: ${failedKindsLabel(failedKinds)}.` : ""}
+        {t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories")}{suggestions.length} {t("memory:omittedFromThisExport")}{failedKinds.length ? t("memory:incompleteChecks", { v0: failedKindsLabel(failedKinds) }) : ""}
       </div>
     )
   }
@@ -115,8 +117,8 @@ export function MemoryCheckupGate({
   if (message.waiting) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="text-sm font-semibold text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
-        <span className="ml-1">Waiting for the earlier steps. This review will regenerate when you continue.</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
+        <span className="ml-1">{t("memory:waitingForTheEarlierStepsThisReviewWillRegenerateWhen")}</span>
       </div>
     )
   }
@@ -126,8 +128,8 @@ export function MemoryCheckupGate({
       <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-sm text-info-foreground">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
-          <span className="font-medium">Step {stepNumber} · Checkup incomplete</span>
-          <span className="ml-1">{failedKindsLabel(failedKinds)} could not finish. No clear verdict was recorded; these checks will retry next turn.</span>
+          <span className="font-medium">{t("memory:stepNumber", { step: stepNumber })} {t("memory:checkupIncomplete2")}</span>
+          <span className="ml-1">{failedKindsLabel(failedKinds)} {t("memory:couldNotFinishNoClearVerdictWasRecordedTheseChecks")}</span>
         </div>
       </div>
     )
@@ -137,8 +139,8 @@ export function MemoryCheckupGate({
     return (
       <div className="flex flex-wrap items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <CheckCheck className="h-4 w-4 shrink-0 text-success-foreground dark:text-success-foreground" />
-        <span className="text-sm font-semibold text-foreground">Step {stepNumber} · Review Suggested Changes to Existing Memories</span>
-        <span className="basis-full @lg:basis-auto">✓ Nothing needs attention.</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
+        <span className="basis-full @lg:basis-auto">{t("memory:nothingNeedsAttention2")}</span>
       </div>
     )
   }
@@ -147,14 +149,14 @@ export function MemoryCheckupGate({
     const mayReopen = canReopen && onReopen && (message.decision === "handled" || message.decision === "skipped")
     return (
       <MemoryReviewStepSummary
-        title={`Step ${stepNumber} · Review Suggested Changes to Existing Memories`}
+        title={t("memory:stepValue0ReviewSuggestedChangesToExistingMemories", { v0: stepNumber })}
         outcome={
           <>
-            ✓ {suggestions.length} {suggestions.length === 1 ? "suggestion" : "suggestions"}, {DECISION_LABELS[message.decision]}.
-            {failedKinds.length ? <> Checkup incomplete: {failedKindsLabel(failedKinds)} unchecked; these checks will retry next turn.</> : null}
+            ✓ {t("memory:suggestionReceipt", { count: suggestions.length, decision: DECISION_LABELS[message.decision] })}
+            {failedKinds.length ? <> {t("memory:checkupIncomplete3")}{failedKindsLabel(failedKinds)} {t("memory:uncheckedTheseChecksWillRetryNextTurn")}</> : null}
           </>
         }
-        consequence="Review again rechecks the current saved state. Previous saved actions remain. Any new changes regenerate Working Memory."
+        consequence={t("memory:reviewAgainCheckup")}
         reopening={reopening}
         onReopen={mayReopen ? async () => {
           setReopening(true)
@@ -184,33 +186,30 @@ export function MemoryCheckupGate({
   return (
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-4 w-4" /> Step {stepNumber}</span>
-        <span className="text-sm font-semibold text-foreground">Review Suggested Changes to Existing Memories</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })}</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:reviewSuggestedChangesToExistingMemories3")}</span>
         <HoverCard>
           <HoverCardTrigger asChild>
             <button
               type="button"
-              aria-label="About the library checkup"
+              aria-label={t("memory:aboutTheLibraryCheckup")}
               className="text-muted-foreground/60 transition-colors hover:text-muted-foreground"
             >
               <Info className="h-3.5 w-3.5" />
             </button>
           </HoverCardTrigger>
           <HoverCardContent className="text-xs leading-5 text-muted-foreground">
-            Possible fixes to memories already in your library — conflicts, near-duplicates, things that may
-            have expired. Review each reason, or skip and they will wait.
-          </HoverCardContent>
+            {t("memory:possibleFixesToMemoriesAlreadyInYourLibraryConflictsNear")}</HoverCardContent>
         </HoverCard>
         <span className="ml-auto text-xs text-muted-foreground">
-          {suggestions.length - pendingCount} of {suggestions.length} handled
-        </span>
+          {t("memory:handledProgress", { handled: suggestions.length - pendingCount, total: suggestions.length })}</span>
       </div>
 
       <div className="mt-3 flex flex-col gap-3">
         {failedKinds.length ? (
           <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-sm text-info-foreground">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-            <span>Some checks did not finish: {failedKindsLabel(failedKinds)}. The completed suggestions below remain reviewable; failed checks will retry next turn.</span>
+            <span>{t("memory:someChecksDidNotFinish")}{failedKindsLabel(failedKinds)}{t("memory:theCompletedSuggestionsBelowRemainReviewableFailedChecksWillRetry")}</span>
           </div>
         ) : null}
         {GROUPS.map(({ kind, title, icon: Icon }) => {
@@ -249,7 +248,7 @@ export function MemoryCheckupGate({
 
       <div className="mt-3 flex flex-wrap items-center justify-end">
         {stale ? (
-          <p className="text-xs text-muted-foreground">This gate belongs to an earlier turn and is no longer active.</p>
+          <p className="text-xs text-muted-foreground">{t("memory:thisGateBelongsToAnEarlierTurnAndIsNo")}</p>
         ) : (
           <Button
             variant="default"
@@ -259,10 +258,10 @@ export function MemoryCheckupGate({
           >
             {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ArrowRight className="h-3.5 w-3.5" />}
             {pendingCount === 0
-              ? "Continue"
+              ? t("common:continue")
               : requireAllRows
-                ? `Review ${pendingCount} remaining`
-                : `Skip ${pendingCount} remaining & continue`}
+                ? t("memory:reviewValue0Remaining", { v0: pendingCount })
+                : t("memory:skipValue0RemainingContinue", { v0: pendingCount })}
           </Button>
         )}
       </div>
@@ -271,20 +270,21 @@ export function MemoryCheckupGate({
 }
 
 function CheckupSkeleton({ stepNumber = 2 }: { stepNumber?: number }) {
+  useI18n()
   const [wordIndex, setWordIndex] = useState(0)
   useEffect(() => {
-    const timer = setInterval(() => setWordIndex((i) => (i + 1) % STATUS_WORDS.length), 1400)
+    const timer = setInterval(() => setWordIndex((i) => (i + 1) % STATUS_WORDS().length), 1400)
     return () => clearInterval(timer)
   }, [])
   return (
     <div className={MEMORY_CARD}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-4 w-4" /> Step {stepNumber} · Reviewing saved memories</span>
+        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewingSavedMemories")}</span>
       </div>
       <div className="mt-3">
         <MemoryReviewSkeleton
-          label="Reviewing suggested changes to saved memories"
-          status={STATUS_WORDS[wordIndex]!}
+          label={t("memory:reviewingSuggestedChangesToSavedMemories")}
+          status={STATUS_WORDS()[wordIndex]!}
         />
       </div>
     </div>
@@ -307,6 +307,7 @@ function CheckupSuggestionRow({
   onResolved: (outcome: string) => void
   surface: MemoryControlSurface
 }) {
+  useI18n()
   const { chatId } = useTranscriptChatContext()
   const loadAll = useMemoryStore((s) => s.loadAll)
   const [busy, setBusy] = useState<string | null>(null)
@@ -320,7 +321,7 @@ function CheckupSuggestionRow({
       await loadAll()
       onResolved(doneText)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "action failed")
+      setError(err instanceof Error ? err.message : t("memory:actionFailed"))
     } finally {
       setBusy(null)
     }
@@ -331,15 +332,14 @@ function CheckupSuggestionRow({
   if (suggestion.kind === "promotion") {
     return (
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-        <MemoryCitationChip id={id} /> — Automatic scope-widening flow is retired; no further action is available in this card.
-      </div>
+        <MemoryCitationChip id={id} /> {t("memory:automaticScopeWideningFlowIsRetiredNoFurtherActionIs")}</div>
     )
   }
 
   if (resolvedOutcome) {
     return (
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-        <MemoryCitationChip id={id} /> — {resolvedOutcome}
+        <MemoryCitationChip id={id} /> — {translateUiText(resolvedOutcome)}
       </div>
     )
   }
@@ -356,10 +356,10 @@ function CheckupSuggestionRow({
     case "conflict":
       actions = other ? (
         <>
-          {actionButton(`Keep ${id}`, `kept ${id}, archived ${other}`, () =>
+          {actionButton(t("memory:keepValue0", { v0: id }), t("memory:keptValue0ArchivedValue1", { v0: id, v1: other }), () =>
             memoriesApi.resolveAttention("conflict", other, "archive", chatId, id, surface),
           )}
-          {actionButton(`Keep ${other}`, `kept ${other}, archived ${id}`, () =>
+          {actionButton(t("memory:keepValue0", { v0: other }), t("memory:keptValue0ArchivedValue1", { v0: other, v1: id }), () =>
             memoriesApi.resolveAttention("conflict", id, "archive", chatId, other, surface),
           )}
         </>
@@ -368,10 +368,10 @@ function CheckupSuggestionRow({
     case "redundancy":
       actions = other ? (
         <>
-          {actionButton("Merge", "merge proposal drafted — review it in Step 1 next turn", () =>
+          {actionButton(t("memory:merge"), t("memory:mergeProposalDraftedReviewItInStep1NextTurn"), () =>
             memoriesApi.resolveAttention("redundant", id, "merge", chatId, other, surface),
           )}
-          {actionButton("Keep both", "kept both, won't be flagged again", () =>
+          {actionButton(t("memory:keepBoth"), t("memory:keptBothWonTBeFlaggedAgain"), () =>
             memoriesApi.resolveAttention("redundant", id, "keep", chatId, other, surface),
           )}
         </>
@@ -380,8 +380,8 @@ function CheckupSuggestionRow({
     case "staleness":
       actions = (
         <>
-          {actionButton("Archive", "archived", () => memoriesApi.resolveAttention("stale", id, "archive", chatId, undefined, surface))}
-          {actionButton("Keep", "kept — expiry clock reset", () => memoriesApi.resolveAttention("stale", id, "keep", chatId, undefined, surface))}
+          {actionButton(t("common:archive"), "archived", () => memoriesApi.resolveAttention("stale", id, "archive", chatId, undefined, surface))}
+          {actionButton(t("memory:keep"), t("memory:keptExpiryClockReset"), () => memoriesApi.resolveAttention("stale", id, "keep", chatId, undefined, surface))}
         </>
       )
       break
@@ -400,7 +400,7 @@ function CheckupSuggestionRow({
       </div>
       <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{suggestion.reason}</p>
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1.5">{actions}</div>
-      {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      {error ? <p className="mt-1 text-xs text-destructive">{translateUiText(error)}</p> : null}
     </div>
   )
 }

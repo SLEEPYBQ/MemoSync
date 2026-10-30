@@ -1,3 +1,5 @@
+import { translateUiText, httpUiError, type HttpUiError } from "../../i18n/uiText"
+import { t, useI18n, getLocale } from "../../i18n"
 // Files workbench panel: Codex-style code viewing and editing. Open-file tabs
 // on top, breadcrumb row beneath, CodeMirror editor with syntax highlighting
 // in the main area, and a filterable lazy-loaded file tree on the right.
@@ -86,6 +88,7 @@ function SortableFileTab({
   onSelect: () => void
   onClose: () => void
 }) {
+  useI18n()
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: path })
   return (
     <div
@@ -114,7 +117,7 @@ function SortableFileTab({
           dirty ? "text-foreground" : "text-muted-foreground opacity-0 group-hover:opacity-100",
           isActive && "opacity-100",
         )}
-        title={dirty ? "Unsaved changes — close" : "Close"}
+        title={dirty ? t("files:unsavedChangesClose") : t("common:close")}
       >
         {dirty ? <span className="block size-1.5 rounded-full bg-current" /> : <X className="size-3" />}
       </button>
@@ -142,6 +145,7 @@ function TreeEditInput({
   onCommit: (name: string) => void
   onCancel: () => void
 }) {
+  useI18n()
   const [value, setValue] = useState(initial)
   return (
     <div className="flex items-center py-0.5 pr-2" style={{ paddingLeft: indentPx }}>
@@ -178,13 +182,14 @@ function contentUrl(projectId: string, relPath: string): string {
 
 function fetchFailMessage(err: unknown, fallback: string): string {
   return err instanceof TypeError
-    ? "server unreachable — check your connection, then retry"
+    ? t("files:serverUnreachableCheckYourConnectionThenRetry")
     : err instanceof Error
       ? err.message
       : fallback
 }
 
 export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
+  useI18n()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [tabs, setTabs] = useState<string[]>([])
@@ -237,30 +242,30 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       setDirs((prev) => ({ ...prev, [rel]: { status: "loading" } }))
       try {
         const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files?dir=${encodeURIComponent(rel)}`)
-        if (!res.ok) throw new Error(`listing failed (${res.status})`)
+        if (!res.ok) throw new Error(t("files:listingFailedValue0", { v0: res.status }))
         const { data } = (await res.json()) as { data: { dir: string; entries: FileEntry[] } }
         setDirs((prev) => ({ ...prev, [rel]: { status: "ready", entries: data.entries } }))
       } catch (err) {
         setDirs((prev) => ({
           ...prev,
-          [rel]: { status: "error", message: fetchFailMessage(err, "failed to list directory") },
+          [rel]: { status: "error", message: fetchFailMessage(err, t("files:failedToListDirectory")) },
         }))
       }
     },
-    [projectId],
+    [projectId, getLocale()],
   )
 
   const loadIndex = useCallback(async () => {
     setIndexError(null)
     try {
       const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/files/index`)
-      if (!res.ok) throw new Error(`index failed (${res.status})`)
+      if (!res.ok) throw new Error(t("files:indexFailedValue0", { v0: res.status }))
       const { data } = (await res.json()) as { data: FileIndex }
       setIndex(data)
     } catch (err) {
-      setIndexError(fetchFailMessage(err, "failed to index files"))
+      setIndexError(fetchFailMessage(err, t("files:failedToIndexFiles")))
     }
-  }, [projectId])
+  }, [projectId, getLocale()])
 
   useEffect(() => {
     void loadDir("")
@@ -368,20 +373,20 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
     for (const [path] of pending) {
       fetch(contentUrl(projectId, path))
         .then(async (res) => {
-          if (!res.ok) throw new Error(`load failed (${res.status})`)
+          if (!res.ok) throw new Error(t("files:loadFailedValue0", { v0: res.status }))
           const length = Number(res.headers.get("content-length"))
           if (Number.isFinite(length) && length > MAX_INLINE_TEXT_BYTES) {
-            throw new Error("file too large to open in the editor")
+            throw new Error(t("files:fileTooLargeToOpenInTheEditor"))
           }
           const text = await res.text()
-          if (text.length > MAX_INLINE_TEXT_BYTES) throw new Error("file too large to open in the editor")
+          if (text.length > MAX_INLINE_TEXT_BYTES) throw new Error(t("files:fileTooLargeToOpenInTheEditor"))
           return text
         })
         .then((text) => {
           if (!cancelled) updateBuffer(path, { status: "ready", original: text, current: text })
         })
         .catch((err) => {
-          if (!cancelled) updateBuffer(path, { status: "error", error: fetchFailMessage(err, "failed to load file") })
+          if (!cancelled) updateBuffer(path, { status: "error", error: fetchFailMessage(err, t("files:failedToLoadFile")) })
         })
     }
     return () => {
@@ -393,7 +398,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
     (path: string) => {
       const buffer = buffers.get(path)
       if (buffer && buffer.status === "ready" && buffer.current !== buffer.original) {
-        if (!window.confirm(`Discard unsaved changes in ${baseName(path)}?`)) return
+        if (!window.confirm(t("files:discardUnsavedChangesInValue0", { v0: baseName(path) }))) return
       }
       setActive((current) => nextActiveTab(tabs, path, current))
       setTabs((prev) => prev.filter((t) => t !== path))
@@ -403,7 +408,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
         return next
       })
     },
-    [buffers, tabs],
+    [buffers, tabs, getLocale()],
   )
 
   const saveFile = useCallback(
@@ -421,8 +426,8 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           body: content,
         })
         if (!res.ok) {
-          const body = (await res.json().catch(() => null)) as { error?: string } | null
-          throw new Error(body?.error ?? `save failed (${res.status})`)
+          const body = (await res.json().catch(() => null)) as HttpUiError | null
+          throw new Error(httpUiError(body, t("files:saveFailedValue0", { v0: res.status })))
         }
         updateBuffer(path, {
           saving: false,
@@ -431,10 +436,10 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
         })
         window.setTimeout(() => updateBuffer(path, { justSaved: false }), 1500)
       } catch (err) {
-        updateBuffer(path, { saving: false, saveError: fetchFailMessage(err, "failed to save file") })
+        updateBuffer(path, { saving: false, saveError: fetchFailMessage(err, t("files:failedToSaveFile")) })
       }
     },
-    [buffers, projectId, updateBuffer],
+    [buffers, projectId, updateBuffer, getLocale()],
   )
 
   const refresh = useCallback(() => {
@@ -459,7 +464,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
     const timer = window.setTimeout(() => {
       fetch(`/api/projects/${encodeURIComponent(projectId)}/files/search?q=${encodeURIComponent(q)}`)
         .then(async (res) => {
-          if (!res.ok) throw new Error(`search failed (${res.status})`)
+          if (!res.ok) throw new Error(t("files:searchFailedValue0", { v0: res.status }))
           return (await res.json()) as { data: { results: ContentMatch[]; truncated: boolean } }
         })
         .then((body) => {
@@ -468,7 +473,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           setContentError(null)
         })
         .catch((err) => {
-          if (!cancelled) setContentError(fetchFailMessage(err, "search failed"))
+          if (!cancelled) setContentError(fetchFailMessage(err, t("files:searchFailed")))
         })
         .finally(() => {
           if (!cancelled) setContentSearching(false)
@@ -500,16 +505,16 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           body: JSON.stringify(body),
         })
         if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as { error?: { message?: string } } | null
-          throw new Error(payload?.error?.message ?? `${body.op} failed (${res.status})`)
+          const payload = (await res.json().catch(() => null)) as HttpUiError | null
+          throw new Error(httpUiError(payload, t("files:value0FailedValue1", { v0: body.op, v1: res.status })))
         }
         return true
       } catch (err) {
-        setOpError(fetchFailMessage(err, `${body.op} failed`))
+        setOpError(fetchFailMessage(err, t("files:value0Failed", { v0: body.op })))
         return false
       }
     },
-    [projectId],
+    [projectId, getLocale()],
   )
 
   const startTreeEdit = useCallback(
@@ -669,8 +674,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
     if (!state || state.status === "loading") {
       return (
         <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground" style={{ paddingLeft: depth * 12 + 8 }}>
-          <Loader2 className="size-3 animate-spin" /> loading…
-        </div>
+          <Loader2 className="size-3 animate-spin" /> {t("files:loading")}</div>
       )
     }
     if (state.status === "error") {
@@ -678,8 +682,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
         <div className="flex items-center gap-2 px-2 py-1 text-xs text-destructive" style={{ paddingLeft: depth * 12 + 8 }}>
           <span className="truncate">{state.message}</span>
           <button type="button" className="shrink-0 underline hover:text-foreground" onClick={() => void loadDir(rel)}>
-            retry
-          </button>
+            {t("files:retry")}</button>
         </div>
       )
     }
@@ -698,8 +701,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       return (
         createRow ?? (
           <div className="px-2 py-1 text-xs text-muted-foreground" style={{ paddingLeft: depth * 12 + 8 }}>
-            empty
-          </div>
+            {t("files:empty")}</div>
         )
       )
     }
@@ -715,22 +717,20 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           >
             <Trash2 className="size-3.5 shrink-0 text-destructive" />
             <span className="min-w-0 flex-1 truncate text-foreground">
-              {confirmDelete.kind === "dir" ? `Delete “${entry.name}” and contents?` : `Delete “${entry.name}”?`}
+              {confirmDelete.kind === "dir" ? t("files:deleteValue0AndContents", { v0: entry.name }) : t("files:deleteValue0", { v0: entry.name })}
             </span>
             <button
               type="button"
               onClick={() => void deleteEntry(path)}
               className="shrink-0 rounded bg-destructive px-1.5 py-0.5 text-[11px] font-medium text-white hover:opacity-90"
             >
-              Delete
-            </button>
+              {t("common:delete")}</button>
             <button
               type="button"
               onClick={() => setConfirmDelete(null)}
               className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[11px] text-foreground hover:bg-muted"
             >
-              Cancel
-            </button>
+              {t("common:cancel")}</button>
           </div>
         )
       }
@@ -764,18 +764,14 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               </ContextMenuTrigger>
               <ContextMenuContent onCloseAutoFocus={suppressMenuCloseFocus}>
                 <ContextMenuItem onSelect={() => startTreeEditAfterMenu({ mode: "create-file", dir: path })}>
-                  <FilePlus className="size-3.5" /> New file
-                </ContextMenuItem>
+                  <FilePlus className="size-3.5" /> {t("files:newFile")}</ContextMenuItem>
                 <ContextMenuItem onSelect={() => startTreeEditAfterMenu({ mode: "create-dir", dir: path })}>
-                  <FolderPlus className="size-3.5" /> New folder
-                </ContextMenuItem>
+                  <FolderPlus className="size-3.5" /> {t("files:newFolder")}</ContextMenuItem>
                 <ContextMenuSeparator />
                 <ContextMenuItem onSelect={() => startTreeEditAfterMenu({ mode: "rename", path })}>
-                  <Pencil className="size-3.5" /> Rename
-                </ContextMenuItem>
+                  <Pencil className="size-3.5" /> {t("files:rename")}</ContextMenuItem>
                 <ContextMenuItem className="text-destructive hover:text-destructive focus:text-destructive" onSelect={() => setConfirmDelete({ path, kind: "dir" })}>
-                  <Trash2 className="size-3.5" /> Delete
-                </ContextMenuItem>
+                  <Trash2 className="size-3.5" /> {t("common:delete")}</ContextMenuItem>
               </ContextMenuContent>
             </ContextMenu>
             {isOpen ? renderDirEntries(path, depth + 1) : null}
@@ -800,11 +796,9 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           </ContextMenuTrigger>
           <ContextMenuContent onCloseAutoFocus={suppressMenuCloseFocus}>
             <ContextMenuItem onSelect={() => startTreeEditAfterMenu({ mode: "rename", path })}>
-              <Pencil className="size-3.5" /> Rename
-            </ContextMenuItem>
+              <Pencil className="size-3.5" /> {t("files:rename")}</ContextMenuItem>
             <ContextMenuItem className="text-destructive hover:text-destructive focus:text-destructive" onSelect={() => setConfirmDelete({ path, kind: "file" })}>
-              <Trash2 className="size-3.5" /> Delete
-            </ContextMenuItem>
+              <Trash2 className="size-3.5" /> {t("common:delete")}</ContextMenuItem>
           </ContextMenuContent>
         </ContextMenu>
       )
@@ -836,7 +830,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
                 }
               }
             }}
-            placeholder={searchMode === "files" ? "Filter files…" : "Search in files…"}
+            placeholder={searchMode === "files" ? t("files:filterFiles") : t("files:searchInFiles")}
             className="h-7 w-full rounded-md border border-border bg-muted/40 pl-7 pr-6 text-xs text-foreground outline-none placeholder:text-muted-foreground focus:border-ring"
           />
           {filter ? (
@@ -844,7 +838,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               type="button"
               onClick={() => setFilter("")}
               className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-              title="Clear filter"
+              title={t("files:clearFilter")}
             >
               <X className="size-3.5" />
             </button>
@@ -855,7 +849,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           size="icon"
           className={cn("h-7 w-7 shrink-0", searchMode === "content" && "bg-muted text-foreground")}
           onClick={() => setSearchMode((m) => (m === "files" ? "content" : "files"))}
-          title={searchMode === "files" ? "Search file contents" : "Back to file filter"}
+          title={searchMode === "files" ? t("files:searchFileContents") : t("files:backToFileFilter")}
         >
           <TextSearch className="size-3.5" />
         </Button>
@@ -866,7 +860,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           size="icon"
           className="h-6 w-6"
           onClick={() => startTreeEdit({ mode: "create-file", dir: "" })}
-          title="New file"
+          title={t("files:newFile")}
         >
           <FilePlus className="size-3.5" />
         </Button>
@@ -875,11 +869,11 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           size="icon"
           className="h-6 w-6"
           onClick={() => startTreeEdit({ mode: "create-dir", dir: "" })}
-          title="New folder"
+          title={t("files:newFolder")}
         >
           <FolderPlus className="size-3.5" />
         </Button>
-        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={refresh} title="Refresh">
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={refresh} title={t("files:refresh")}>
           <RefreshCw className="size-3.5" />
         </Button>
         {opError ? (
@@ -887,24 +881,23 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
             type="button"
             className="ml-1 min-w-0 flex-1 truncate text-left text-[11px] text-destructive hover:underline"
             onClick={() => setOpError(null)}
-            title={`${opError} (click to dismiss)`}
+            title={t("files:value0ClickToDismiss", { v0: opError })}
           >
-            {opError}
+            {translateUiText(opError)}
           </button>
         ) : null}
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
         {searchMode === "content" ? (
           filter.trim().length < 2 ? (
-            <p className="px-2 py-1 text-xs text-muted-foreground">Type at least 2 characters to search file contents.</p>
+            <p className="px-2 py-1 text-xs text-muted-foreground">{t("files:typeAtLeast2CharactersToSearchFileContents")}</p>
           ) : contentError ? (
-            <p className="px-2 py-1 text-xs text-destructive">{contentError}</p>
+            <p className="px-2 py-1 text-xs text-destructive">{translateUiText(contentError)}</p>
           ) : contentSearching && !contentResults ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" /> searching…
-            </div>
+              <Loader2 className="size-3 animate-spin" /> {t("files:searching")}</div>
           ) : !contentResults || contentResults.results.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-muted-foreground">No matches.</p>
+            <p className="px-2 py-1 text-xs text-muted-foreground">{t("files:noMatches")}</p>
           ) : (
             <>
               {contentResults.results.map((match, i) => {
@@ -933,24 +926,22 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
                 )
               })}
               {contentResults.truncated ? (
-                <p className="px-2 py-1 text-[11px] text-muted-foreground">More matches exist — narrow the search.</p>
+                <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("files:moreMatchesExistNarrowTheSearch")}</p>
               ) : null}
             </>
           )
         ) : filter ? (
           indexError ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-destructive">
-              <span className="truncate">{indexError}</span>
+              <span className="truncate">{translateUiText(indexError)}</span>
               <button type="button" className="shrink-0 underline hover:text-foreground" onClick={() => void loadIndex()}>
-                retry
-              </button>
+                {t("files:retry")}</button>
             </div>
           ) : filterResults === null ? (
             <div className="flex items-center gap-2 px-2 py-1 text-xs text-muted-foreground">
-              <Loader2 className="size-3 animate-spin" /> indexing…
-            </div>
+              <Loader2 className="size-3 animate-spin" /> {t("files:indexing")}</div>
           ) : filterResults.length === 0 ? (
-            <p className="px-2 py-1 text-xs text-muted-foreground">No matches.</p>
+            <p className="px-2 py-1 text-xs text-muted-foreground">{t("files:noMatches")}</p>
           ) : (
             <>
               {filterResults.map((path) => (
@@ -973,7 +964,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
                 </button>
               ))}
               {index?.truncated ? (
-                <p className="px-2 py-1 text-[11px] text-muted-foreground">Index truncated — narrow the filter.</p>
+                <p className="px-2 py-1 text-[11px] text-muted-foreground">{t("files:indexTruncatedNarrowTheFilter")}</p>
               ) : null}
             </>
           )
@@ -991,8 +982,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       {active && activeBuffer ? (
         activeBuffer.status === "loading" ? (
           <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" /> Loading…
-          </div>
+            <Loader2 className="size-4 animate-spin" /> {t("common:loading")}</div>
         ) : activeBuffer.status === "error" ? (
           <div className="flex flex-col items-start gap-2 p-4">
             <p className="text-sm text-muted-foreground">{activeBuffer.error}</p>
@@ -1001,8 +991,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               onClick={() => updateBuffer(active, { status: "loading", error: undefined })}
               className="rounded-md border border-border px-2 py-1 text-xs text-foreground hover:bg-muted"
             >
-              Retry
-            </button>
+              {t("common:retry")}</button>
           </div>
         ) : activeBuffer.kind === "markdown" && activeBuffer.mdMode === "preview" ? (
           <div className="min-h-0 flex-1 overflow-y-auto">
@@ -1039,25 +1028,23 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           </div>
         ) : (
           <p className="p-4 text-sm text-muted-foreground">
-            No inline preview for this file type — use “open in new tab” above.
-          </p>
+            {t("files:noInlinePreviewForThisFileTypeUseOpenIn")}</p>
         )
       ) : (
         <div className="flex flex-1 flex-col items-center justify-center gap-2 text-muted-foreground">
           <FolderTree className="size-6" />
-          <p className="text-sm">Select a file to view</p>
+          <p className="text-sm">{t("files:selectAFileToView")}</p>
         </div>
       )}
       {activeBuffer?.saveError ? (
         <div className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-background/95 px-3 py-1.5 text-xs text-destructive shadow-sm">
-          <span className="truncate">{activeBuffer.saveError}</span>
+          <span className="truncate">{translateUiText(activeBuffer.saveError)}</span>
           <button
             type="button"
             className="shrink-0 underline hover:text-foreground"
             onClick={() => active && updateBuffer(active, { saveError: null })}
           >
-            dismiss
-          </button>
+            {t("files:dismiss")}</button>
         </div>
       ) : null}
     </div>
@@ -1096,7 +1083,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       {/* Breadcrumb + actions */}
       <div className="flex h-9 items-center justify-between gap-2 border-b border-border px-2">
         <div className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground">
-          <span className="shrink-0 truncate">{projectTitle ?? "Project"}</span>
+          <span className="shrink-0 truncate">{projectTitle ?? t("common:project")}</span>
           {active
             ? active.split("/").map((part, i, parts) => (
                 <span key={`${part}-${i}`} className="flex min-w-0 items-center gap-1">
@@ -1113,7 +1100,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               size="icon"
               className="h-7 w-7"
               onClick={() => active && updateBuffer(active, { mdMode: activeBuffer.mdMode === "preview" ? "source" : "preview" })}
-              title={activeBuffer.mdMode === "preview" ? "Edit source" : "Preview"}
+              title={activeBuffer.mdMode === "preview" ? t("files:editSource") : t("common:preview")}
             >
               {activeBuffer.mdMode === "preview" ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
             </Button>
@@ -1125,7 +1112,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               className="h-7 w-7"
               disabled={!!activeBuffer?.saving || !activeIsDirty}
               onClick={() => active && void saveFile(active)}
-              title="Save (⌘S)"
+              title={t("files:saveS")}
             >
               {activeBuffer?.saving ? (
                 <Loader2 className="size-3.5 animate-spin" />
@@ -1138,14 +1125,14 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           ) : null}
           {active ? (
             <>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyActivePath} title="Copy path">
+              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyActivePath} title={t("common:copyPath")}>
                 {copied ? <Check className="size-3.5 text-green-600 dark:text-green-400" /> : <Copy className="size-3.5" />}
               </Button>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-7 w-7"
-                title="Open in new tab"
+                title={t("files:openInNewTab")}
                 // Absolute URL via window.open — a relative target=_blank anchor
                 // opens a blank popup in PWA standalone (QA_TEST_CHAIN_2 E16).
                 onClick={() =>
@@ -1165,12 +1152,12 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
             size="icon"
             className={cn("h-7 w-7", showTree && "bg-muted")}
             onClick={() => (isNarrow ? setNarrowShowTree((v) => !v) : setWideShowTree((v) => !v))}
-            title={showTree ? "Hide file tree" : "Show file tree"}
+            title={showTree ? t("files:hideFileTree") : t("files:showFileTree")}
           >
             <FolderTree className="size-3.5" />
           </Button>
           {onClose ? (
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} title="Close">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose} title={t("common:close")}>
               <X className="size-4" />
             </Button>
           ) : null}
