@@ -123,6 +123,14 @@ for (const target of ["anthropic", "responses"] as const) {
       messages: [{ role: "system", content: "Help" }, { role: "user", content: "weather?" }, { role: "assistant", content: "", reasoning_content: "Check", tool_calls: [{ id: "c1", type: "function", function: { name: "weather", arguments: '{"city":"SF"}' } }] }, { role: "tool", tool_call_id: "c1", content: "Sunny" }],
     })
   })
+  if (target === "anthropic") test("anthropic: a failed tool result stays marked as an error", () => {
+    const results = [false, true].map(isError => encodeChat(parseRequest("anthropic", {
+      model: "m", max_tokens: 10,
+      messages: [{ role: "user", content: [{ type: "tool_result", tool_use_id: "c1", is_error: isError, content: "File not found" }] }],
+    })).messages)
+    expect(results[0]).toEqual([{ role: "tool", tool_call_id: "c1", content: "File not found" }])
+    expect(results[1]).toEqual([{ role: "tool", tool_call_id: "c1", content: "Tool error: File not found" }])
+  })
   test(`${target}: length and content-filter stops`, () => {
     for (const reason of ["length", "content_filter"]) {
       const { result, events } = translated(target, [chunk({ content: "partial" }, reason)])

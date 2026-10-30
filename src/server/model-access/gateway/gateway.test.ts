@@ -72,8 +72,9 @@ for (const target of ["anthropic", "responses"] as const) {
     else expect(value.error.code).toBe(value.error.type)
     expect(JSON.stringify(value)).not.toContain("upstream-secret")
   })
-  for (const stream of [true, false]) test(`${target}: early EOF is failure (stream=${stream})`, async () => {
-    const f = await fixture(() => sse([chunk({ content: "partial" })], false))
+  // A bare [DONE] after partial output is no more complete than EOF: only a finish reason ends an answer.
+  for (const stream of [true, false]) for (const done of [false, true]) test(`${target}: ${done ? "[DONE] without a finish reason" : "early EOF"} is failure (stream=${stream})`, async () => {
+    const f = await fixture(() => sse([chunk({ content: "partial" })], done))
     const res = await post(gatewayEndpoint(f.service, f.connection.id, target), target, body(target, stream))
     if (stream) {
       expect(res.status).toBe(200)

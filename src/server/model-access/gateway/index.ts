@@ -62,7 +62,8 @@ async function handle(req: Request): Promise<Response> {
           yield* encoder.drain()
           if (decoder.done) break
         }
-        if (!decoder.finished && !decoder.done) throw new GatewayError("Chat Completions upstream disconnected before completing the response", 502)
+        // [DONE] alone doesn't mean the answer is complete; only a finish reason does.
+        if (!decoder.finished) throw new GatewayError("Chat Completions upstream disconnected before completing the response", 502)
         encoder.finish()
         yield* encoder.drain()
       } catch (error) {

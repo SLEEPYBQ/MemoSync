@@ -28,7 +28,7 @@ function text(value: unknown, types: string[]): string {
     return str(p.text)
   }).join("")
 }
-export interface Part { kind: "text" | "thinking" | "call" | "result"; text?: string; id?: string; name?: string; args?: string }
+export interface Part { kind: "text" | "thinking" | "call" | "result"; text?: string; id?: string; name?: string; args?: string; isError?: boolean }
 export interface TranslationRequest {
   model: string
   stream: boolean
@@ -68,7 +68,7 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
             return { kind: "call", id: str(p.id), name: str(p.name), args: JSON.stringify(object(p.input)) }
           case "tool_result":
             if (m.role !== "user") throw new GatewayError("tool_result requires a user message")
-            return { kind: "result", id: str(p.tool_use_id), text: text(p.content ?? "", ["text"]) }
+            return { kind: "result", id: str(p.tool_use_id), text: text(p.content ?? "", ["text"]), isError: p.is_error === true }
           default: throw new GatewayError(`Cannot translate content type: ${p.type}; use a native endpoint`)
         }
       })
@@ -192,7 +192,8 @@ export function encodeChat(r: TranslationRequest): Wire {
       let content = ""
       const flush = () => { if (content) messages.push({ role: m.role, content }); content = "" }
       for (const p of m.parts) {
-        if (p.kind === "result") { flush(); messages.push({ role: "tool", tool_call_id: p.id, content: p.text }) }
+        // Chat has no error flag on tool messages; say it in the content.
+        if (p.kind === "result") { flush(); messages.push({ role: "tool", tool_call_id: p.id, content: p.isError ? `Tool error: ${p.text}` : p.text }) }
         else content += p.text ?? ""
       }
       flush()
