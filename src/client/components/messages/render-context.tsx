@@ -25,7 +25,7 @@ export interface PreviewDemoOptions {
   exchanges?: Array<{ q: string; a: string }>
   /** Canned ask-box reply; its presence switches the card into demo mode. */
   reviseReply: string
-  /** Guide-local decision sink. It never points at the participant API. */
+  /** Guide-local decision sink; demo choices stay within the guide. */
   onDecision?: (decision: PreviewDemoDecision) => void
 }
 

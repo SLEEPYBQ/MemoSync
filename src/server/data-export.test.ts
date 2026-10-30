@@ -20,7 +20,8 @@ describe("data export privacy", () => {
       "install-id": "synthetic-install",
       "memory.sqlite": "MEMORY_LIBRARY",
       "experiments/events.jsonl": '{"event":"memory.opened"}\n',
-      "experiments/study.sqlite": "PRIVATE_PARTICIPANT_PROMPT",
+      // Preserve the database path written by older versions.
+      "experiments/study.sqlite": "PRIVATE_USER_PROMPT",
       "experiments/workspace-snapshots/source/private.ts": "PRIVATE_WORKSPACE_CODE",
       "experiments/unrecognized-future-file.json": "PRIVATE_FUTURE_DATA",
       "transcripts/chat.jsonl": "PRIVATE_TRANSCRIPT",

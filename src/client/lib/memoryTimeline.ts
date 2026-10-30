@@ -63,7 +63,7 @@ export interface MemoryRecordTurn {
   injected?: RecordInjectedStage
   reported?: RecordReportedStage
   audit?: RecordAuditStage
-  /** Per-memory interrupt (2026-08-19 C3): the participant stopped this turn over one memory. */
+  /** Per-memory interrupt (2026-08-19 C3): the user stopped this turn over one memory. */
   interrupted?: { memoryId: string }
 }
 
@@ -75,7 +75,7 @@ export interface MemoryRecord {
 const CITATION_RE = /\[(M-\d+)\]/g
 
 export function turnPulse(turn: MemoryRecordTurn): "violated" | "shaped" | "quiet" {
-  // A participant interrupt IS a human violated verdict (2026-08-19 C3).
+  // A user interrupt IS a human violated verdict (2026-08-19 C3).
   if (turn.interrupted) return "violated"
   let shaped = false
   for (const label of turn.audit?.labels ?? []) {

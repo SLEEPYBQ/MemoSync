@@ -383,8 +383,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   const hasViolation = counts.violated > 0
 
   return (
-    // A formal card, same family as the step gates (redesign 2026-08-07 §3):
-    // the audit is a station of the cycle, not a footnote under the reply.
+    // Give the audit its own card, matching the pre-turn review cards.
     <div className="rounded-xl border border-border/70 bg-card p-4 text-xs" ref={setRootRef}>
       <button type="button" onClick={toggleExpanded} className="group flex w-full flex-wrap items-baseline gap-2 text-left">
         <ChevronRight className={cn("h-3 w-3 self-center text-muted-foreground transition-transform", expanded && "rotate-90")} />

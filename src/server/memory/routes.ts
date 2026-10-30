@@ -153,9 +153,9 @@ export async function handleMemoryRequest(
     }
 
     // POST /api/memories/working-memory-selection — semantic evidence for a
-    // participant-observed Add/Remove toggle. Selection remains client-local
+    // user-observed Add/Remove toggle. Selection remains client-local
     // until Start; this route records the control act without creating a
-    // second treatment-state store.
+    // second selection store.
     if (pathname === '/api/memories/working-memory-selection') {
       if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
       const b = await readBody(req);
@@ -1050,7 +1050,7 @@ export async function handleMemoryRequest(
 
     // POST /api/memories/ui-monitor — monitoring-act telemetry (board visits,
     // trace expansions, citation hovers…). Pure logging: exempt from the
-    // mutation lock so every arm records whatever surfaces it has.
+    // mutation lock so read-only inspections can still be recorded.
     if (pathname === '/api/memories/ui-monitor' && req.method === 'POST') {
       const b = await readBody(req);
       if (typeof b.surface !== 'string' || !b.surface) {

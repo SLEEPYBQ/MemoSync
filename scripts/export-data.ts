@@ -1,5 +1,5 @@
 // Local data export. The default archive contains the usage log and memory
-// library, not raw historical study databases, workspace copies, or chats.
+// library, not raw databases written by older versions, workspace copies, or chats.
 //
 //   bun run export-data              → telemetry + memory library (default)
 //   bun run export-data --full       → also raw historical data and chat logs

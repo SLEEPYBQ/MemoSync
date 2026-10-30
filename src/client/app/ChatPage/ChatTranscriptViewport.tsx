@@ -144,8 +144,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     [canCancel, messages],
   )
   // One label for the whole working phase: the activity status ("Running…").
-  // SDK statuses like "requesting" are hidden entirely (user decision
-  // 2026-08-11) — participants should never have to interpret them.
+  // SDK statuses like "requesting" are hidden so users see one activity label.
   const footerStatus = runtimeStatus ?? undefined
 
   // Violated trace verdicts folded onto their replies (drift at the sentence

@@ -431,7 +431,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
   // Project/Session columns read best grouped by what they bind to — a flat
   // mixed list hides "whose memory is this" exactly when several projects
-  // (T4) or chats coexist. Personal stays flat (one owner).
+  // or chats coexist. Personal stays flat (one owner).
   function groupCardsByOrigin(
     scope: MemoryScope,
     list: MemoryItem[],
@@ -439,7 +439,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     if (scope === "personal") return list.length > 0 ? [{ key: "personal", label: null, items: list }] : []
     const groups = new Map<string, MemoryItem[]>()
     // A newly created chat is already a valid Session binding even before it
-    // owns any Session memory. Keep that empty target visible so a participant
+    // owns any Session memory. Keep that empty target visible so a user
     // can move a Project memory into the current session from the chat-bound Board.
     if (scope === "session" && overlay?.chatId) groups.set(overlay.chatId, [])
     for (const item of list) {
@@ -561,8 +561,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
         <div className="mx-auto max-w-5xl">
           <MemorySettingsBanner />
           <header className="mb-4 flex items-center gap-3">
-            {/* The board is a full-page detour with no other exit affordance
-                (pilot feedback 2026-08-11): give it an explicit way back.
+            {/* The full-page board needs an explicit way back.
                 Overlay mode has no route to go back to. */}
             {overlay ? null : (
               <Button

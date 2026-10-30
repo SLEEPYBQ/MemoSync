@@ -1,5 +1,5 @@
 // Mutations for findings produced by the in-chat Memory Checkup. Detection is
-// owned by checkup.ts; this module only applies the participant's reviewed
+// owned by checkup.ts; this module only applies the user's reviewed
 // actions with live-state validation, persistence, and telemetry.
 import { validateCandidate } from './capture';
 import type { LlmJsonCaller } from './deepseek';
@@ -101,7 +101,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
 
     /**
      * Draft one item covering both originals. The draft lands as a Candidate
-     * revising both, so nothing is archived until the participant accepts it.
+     * revising both, so nothing is archived until the user accepts it.
      */
     async merge(memoryId: string, otherMemoryId: string, meta: MaintenanceActorMeta) {
       if (!callJson) throw new Error('Merge drafting is not available (no LLM caller configured)');

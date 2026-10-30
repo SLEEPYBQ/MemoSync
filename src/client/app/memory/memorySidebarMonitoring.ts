@@ -7,7 +7,7 @@ export interface MemorySidebarOpenMonitoring {
 }
 
 /**
- * Raw Monitoring counts only an explicit participant inspection. System
+ * Raw Monitoring counts only an explicit user inspection. System
  * defaults and restored layouts are represented by surface exposure instead.
  */
 export function memorySidebarOpenMonitoring(

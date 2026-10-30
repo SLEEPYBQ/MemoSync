@@ -463,7 +463,7 @@ export function resolveClaudeContextWindowTokens(contextWindow: ClaudeContextWin
 export type ChatActivityStatus =
   | "idle"
   | "starting"
-  /** The pre-turn memory-preview LLM pass is in flight (memosync arm). */
+  /** The pre-turn memory-preview LLM pass is in flight. */
   | "previewing_memory"
   | "running"
   | "waiting_for_user"
@@ -797,7 +797,8 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
-  /** Exact participant-authored text when `content` carries a provider wrapper. */
+  /** Exact user-authored text when `content` carries a provider wrapper.
+   * The field name is retained for transcripts written by older versions. */
   participantContent?: string
   attachments?: ChatAttachment[]
   steered?: boolean
@@ -1188,7 +1189,7 @@ export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
 }
 
 /**
- * Per-memory interrupt (2026-08-19 C1/C2): the participant stopped the turn
+ * Per-memory interrupt (2026-08-19 C1/C2): the user stopped the turn
  * because they identified a problem involving one working-memory item. Appended right after the
  * cancellation; the client renders it as the inline recovery card. Pending
  * until a matching MemoryInterruptResolutionEntry is appended.
@@ -1196,9 +1197,9 @@ export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
 export interface MemoryInterruptEntry extends TranscriptEntryBase {
   kind: "memory_interrupt"
   interruptId: string
-  /** The memory the participant flagged by clicking its citation chip. */
+  /** The memory the user flagged by clicking its citation chip. */
   memoryId: string
-  /** The streamed sentence the participant stopped at — the recovery card's anchor quote. */
+  /** The streamed sentence the user stopped at — the recovery card's anchor quote. */
   quote?: string
   /** The interrupted turn's original user prompt; resume re-dispatches it. */
   prompt: string
@@ -1207,11 +1208,11 @@ export interface MemoryInterruptEntry extends TranscriptEntryBase {
   turn?: number
 }
 
-/** The participant's recovery decision for one interrupt. */
+/** The user's recovery decision for one interrupt. */
 export interface MemoryInterruptResolutionEntry extends TranscriptEntryBase {
   kind: "memory_interrupt_resolution"
   interruptId: string
-  /** Participant-authored, turn-local correction sent with the resumed run. */
+  /** User-authored, turn-local correction sent with the resumed run. */
   correction?: string
   /** Read compatibility for transcripts written before recovery used one composer. */
   action?: "content_fixed" | "usage_correction" | "removed_only"
