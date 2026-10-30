@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelAccessService } from "./service"
@@ -16,6 +16,88 @@ function fixture(env: Record<string, string> = {}) {
 }
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 const input = { name: "Private", endpoints: [{ protocol: "anthropic-messages" as const, baseUrl: "https://example.test" }], models: [{ id: "large", contextWindow: 1_000_000 }] }
+
+for (const engine of ["claude", "codex", "pi"] as const) {
+  for (const models of [[{ id: "remaining" }], []]) {
+    test(`${engine} runtime ignores a removed default model (${models.length} remaining)`, async () => {
+      const original = await fixture().initialize()
+      const endpoints = [
+        { protocol: "anthropic-messages" as const, baseUrl: "http://localhost:1234" },
+        { protocol: "openai-responses" as const, baseUrl: "http://localhost:1234/v1" },
+      ]
+      const c = await original.saveConnection({ name: "Local", endpoints, models: [{ id: "removed" }, ...models] })
+      await original.setEngine(engine, { access: { mode: "connection", connectionId: c.id, defaultModel: "removed" } })
+      // Simulate stale persisted settings independently of saveConnection reconciliation.
+      const path = join(original.dataDir, "model-access.json")
+      const data = JSON.parse(readFileSync(path, "utf8"))
+      data.connections[0].models = models
+      writeFileSync(path, JSON.stringify(data))
+      const service = await new ModelAccessService({ dataDir: original.dataDir, env: original.env, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
+      if (models.length) expect((await resolveEngineRuntime({ engine, service })).model).toBe("remaining")
+      else await expect(resolveEngineRuntime({ engine, service })).rejects.toThrow("model-unavailable")
+    })
+  }
+}
+
+test("legacy read-only Pi registry still accepts a default outside its local model list", async () => {
+  const parent = fixture()
+  writeFileSync(join(parent.dataDir, "model-access.json"), JSON.stringify({ version: 1, connections: [], engines: { pi: { access: { mode: "connection", connectionId: "env-llm-provider", defaultModel: "cold-catalog-model" } } } }))
+  const service = await new ModelAccessService({ dataDir: parent.dataDir, env: parent.env, resolveExecutable: fakeExecutableResolver, readLegacyPi: async () => ({ provider: "custom", apiKey: "file-secret", baseUrl: "https://pi.test", resolvedBaseUrl: "https://pi.test", model: "file-model", enabled: true, warning: null, filePathDisplay: "legacy.json" }) }).initialize()
+  expect((await resolveEngineRuntime({ engine: "pi", service })).model).toBe("cold-catalog-model")
+})
+
+test("saving connection models drops removed defaults for all referencing engines and persists the reconciliation", async () => {
+  const service = await fixture().initialize()
+  const endpoints = [
+    { protocol: "anthropic-messages" as const, baseUrl: "http://localhost:1234" },
+    { protocol: "openai-responses" as const, baseUrl: "http://localhost:1234/v1" },
+  ]
+  const c = await service.saveConnection({ name: "Shared", endpoints, models: [{ id: "removed" }, { id: "kept" }] })
+  const other = await service.saveConnection({ name: "Other", endpoints, models: [{ id: "removed" }] })
+  await service.setEngine("claude", { executablePath: process.execPath, access: { mode: "connection", connectionId: c.id, defaultModel: "removed" } })
+  await service.setEngine("codex", { access: { mode: "connection", connectionId: c.id, defaultModel: "kept" } })
+  await service.setEngine("pi", { access: { mode: "connection", connectionId: other.id, defaultModel: "removed" } })
+  await service.saveConnection({ ...c, models: [{ id: "kept" }] })
+  const reopened = await new ModelAccessService({ dataDir: service.dataDir, env: service.env, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
+  for (const current of [service, reopened]) {
+    expect(current.setup("claude")).toEqual({ executablePath: process.execPath, access: { mode: "connection", connectionId: c.id } })
+    expect(current.setup("codex").access).toEqual({ mode: "connection", connectionId: c.id, defaultModel: "kept" })
+    expect(current.setup("pi").access).toEqual({ mode: "connection", connectionId: other.id, defaultModel: "removed" })
+  }
+  // Empty model lists clear all engines referencing this connection as well.
+  for (const engine of ["claude", "codex", "pi"] as const) await service.setEngine(engine, { access: { mode: "connection", connectionId: c.id, defaultModel: "kept" } })
+  await service.saveConnection({ ...c, models: [] })
+  for (const engine of ["claude", "codex", "pi"] as const) expect(service.setup(engine).access).toEqual({ mode: "connection", connectionId: c.id })
+})
+
+for (const failureAt of [-1, 0, 1, 2]) {
+  test(`multi-protocol connection tests every endpoint and returns the first failure or success (${failureAt})`, async () => {
+    const service = await fixture().initialize()
+    const paths: string[] = []
+    const suffixes = ["/v1/messages", "/responses", "/chat/completions"]
+    const server = Bun.serve({ port: 0, fetch: req => {
+      const path = new URL(req.url).pathname
+      paths.push(path)
+      return new Response("", { status: failureAt >= 0 && suffixes.indexOf(path) >= failureAt ? 422 : 200 })
+    } })
+    try {
+      const protocols = ["anthropic-messages", "openai-responses", "openai-chat"] as const
+      const connection = { name: "Multi", endpoints: protocols.map(protocol => ({ protocol, baseUrl: `http://127.0.0.1:${server.port}` })), models: [{ id: "tiny" }] }
+      const saved = await service.saveConnection(connection)
+      for (const target of [connection, { connectionId: saved.id }]) {
+        paths.length = 0
+        const result = await service.testConnection(target)
+        expect([...paths].sort()).toEqual([...suffixes].sort())
+        expect(result).toMatchObject({ ok: failureAt === -1, protocol: protocols[Math.max(0, failureAt)] })
+        expect(result.latencyMs).toBeNumber()
+        if (failureAt !== -1) expect(result.errorCode).toBe("model-unavailable")
+        paths.length = 0
+        await service.testConnection(target, "codex")
+        expect(paths).toEqual(["/responses"])
+      }
+    } finally { server.stop(true) }
+  })
+}
 
 test("snapshots and runtime use the same injected resolver, including fresh failures", async () => {
   const parent = fixture()

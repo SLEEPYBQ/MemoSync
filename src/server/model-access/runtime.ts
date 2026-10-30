@@ -113,7 +113,8 @@ export async function resolveEngineRuntime(input: {
   const translated = connectionSupport(input.engine, connection) === "translated"
   if (translated) ({ endpoint, key } = gatewayEndpoint(service, connection.id, input.engine === "claude" ? "anthropic" : "responses"))
   const requested = input.model?.replace(/\[1m\]$/, "")
-  const selected = requested && (input.engine === "pi" || connection.models.some(m => m.id === requested)) ? requested : access.defaultModel || connection.models[0]?.id || requested
+  const defaultModel = access.defaultModel && ((input.engine === "pi" && connection.readOnly) || connection.models.some(m => m.id === access.defaultModel)) ? access.defaultModel : undefined
+  const selected = requested && (input.engine === "pi" || connection.models.some(m => m.id === requested)) ? requested : defaultModel || connection.models[0]?.id || requested
   if (!selected) throw new Error("model-unavailable")
   // Legacy Pi registry accepts arbitrary model ids, including a cold remote catalog.
   if (input.connectionId && requested && !(input.engine === "pi" && connection.readOnly) && connection.models.length && !connection.models.some(m => m.id === requested)) throw new Error("model-unavailable")
