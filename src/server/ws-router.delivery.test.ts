@@ -53,6 +53,59 @@ test("streaming retains sidebar derivation while memory waiting and recency inva
   } finally { router.dispose(); await rm(dir, { recursive: true, force: true }) }
 })
 
+test("one chat derivation and serialization per recentLimit preserves complete memory records for three subscribers", async () => {
+  const dir = await mkdtemp("/tmp/memosync-shared-")
+  const store = new EventStore(dir)
+  await store.initialize()
+  const project = await store.openProject(dir)
+  const chat = await store.createChat(project.id)
+  const memoryEntries: TranscriptEntry[] = [
+    { _id: "preview", kind: "memory_preview", createdAt: 1, previewId: "preview", relevancePending: true, memories: [] },
+    { _id: "candidates", kind: "memory_candidates", createdAt: 1, candidates: [{ id: "M-01" }] },
+    { _id: "transfer", kind: "memory_transfer", createdAt: 1, transferId: "transfer", pending: true, suggestions: [] },
+    { _id: "checkup", kind: "memory_checkup", createdAt: 1, checkupId: "checkup", pending: true },
+  ]
+  for (const entry of memoryEntries) await store.appendMessage(chat.id, entry)
+  for (let i = 0; i < 4; i++) await store.appendMessage(chat.id, { _id: `text-${i}`, kind: "assistant_text", text: "content", createdAt: i + 2 })
+  let stream = "a", reads = 0, serializations = 0, terminalReads = 0, diffVersion = 0
+  const getRecent = store.getRecentChatHistory.bind(store)
+  store.getRecentChatHistory = (id, limit) => { reads++; return getRecent(id, limit) }
+  const router = createWsRouter({ store, agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getStreamingAssistantTexts: () => new Map([[chat.id, stream]]) } as never, terminals: { onEvent: () => () => {}, getSnapshot: () => { terminalReads++; return { version: terminalReads } } } as never, keybindings: { onChange: () => () => {} } as never, refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "test", updateManager: null, diffStore: { getProjectSnapshot: () => ({ version: diffVersion }), refreshSnapshot: async () => { diffVersion++; return true } } as never })
+  const sockets = [1, 1, 2].map(limit => ({ limit, sent: [] as any[], data: { subscriptions: new Map(), snapshotSignatures: new Map() }, send(raw: string) { this.sent.push(JSON.parse(raw)); return raw.length } }))
+  const stringify = JSON.stringify
+  try {
+    for (const [i, ws] of sockets.entries()) {
+      router.handleOpen(ws as never)
+      for (const [id, topic] of Object.entries({ chat: { type: "chat", chatId: chat.id, recentLimit: ws.limit }, git: { type: "project-git", projectId: project.id }, terminal: { type: "terminal", terminalId: "terminal" } })) {
+        await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "subscribe", id: `${id}-${i}`, topic }))
+      }
+    }
+    reads = 0
+    JSON.stringify = ((value: any, ...args: any[]) => { if (value?.type === "chat" && "data" in value) serializations++; return (stringify as any)(value, ...args) }) as typeof JSON.stringify
+    stream = "changed"
+    await router.broadcastChatStateImmediately(chat.id)
+    expect(reads).toBe(2)
+    expect(serializations).toBe(2)
+    for (const [i, ws] of sockets.entries()) {
+      const data = ws.sent.filter(message => message.id === `chat-${i}`).at(-1)!.snapshot.data
+      expect(data.messages.length).toBe(ws.limit)
+      expect(data.history.recentLimit).toBe(ws.limit)
+      expect(data.history.hasOlder).toBe(true)
+      expect(data.memoryRecordMessages).toEqual(memoryEntries)
+    }
+    // A Git refresh must not inspect/rebroadcast unrelated chat or terminal state.
+    const terminalBaseline = terminalReads, readsBaseline = reads
+    await router.handleMessage(sockets[0] as never, JSON.stringify({ v: 1, type: "command", id: "git-command", command: { type: "chat.refreshDiffs", chatId: chat.id } }))
+    expect(terminalReads).toBe(terminalBaseline)
+    expect(reads).toBe(readsBaseline)
+    const pending = router.broadcastSnapshots()
+    router.dispose()
+    await pending
+    expect(reads).toBe(readsBaseline)
+    expect(sockets[0]!.data.subscriptions.size).toBe(0)
+  } finally { JSON.stringify = stringify; router.dispose(); await rm(dir, { recursive: true, force: true }) }
+})
+
 test("an unchanged sidebar after a version bump keeps its revision, so the next change is a row patch", async () => {
   const dir = await mkdtemp("/tmp/memosync-delivery-")
   const store = new EventStore(dir)
