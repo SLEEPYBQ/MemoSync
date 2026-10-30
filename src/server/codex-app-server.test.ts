@@ -503,7 +503,7 @@ describe("CodexAppServerManager", () => {
       const turn = await manager.startTurn({ chatId: "memory", model: "picker-model", content, planMode: false, outputSchema: schema, onToolRequest: async () => ({}) })
       await collectStream(turn.stream)
     }
-    expect(spawnEnv).toBe(env)
+    expect(spawnEnv).toEqual({}) // Ambient engine settings are resolved before spawn.
     expect(process.messages.filter((message: any) => message.method === "thread/fork")).toHaveLength(1)
     expect((process.messages.find((message: any) => message.method === "thread/fork") as any).params).toMatchObject({ sandbox: "read-only", approvalPolicy: "never", model: "isolated-model" })
     const turns = process.messages.filter((message: any) => message.method === "turn/start") as any[]
@@ -539,6 +539,7 @@ describe("CodexAppServerManager", () => {
     const process = new FakeCodexProcess()
     const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
     const starting = manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null })
+    while (!process.messages.length) await new Promise(resolve => setTimeout(resolve, 0))
     manager.stopSession("memory")
     await expect(starting).rejects.toThrow("session stopped")
     expect(process.killed).toBe(true)

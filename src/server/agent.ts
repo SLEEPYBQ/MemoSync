@@ -1,5 +1,6 @@
+import { getModelAccessService } from "./model-access/service"
+import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
-import { homedir } from "node:os"
 import type { ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
 import type {
@@ -70,7 +71,7 @@ import {
   normalizeServerModel,
   type ClaudeSdkModelInfo,
 } from "./provider-catalog"
-import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, isCliIsolationEnabled, resolveOfficialClaudeEnv } from "./provider-runtime"
+import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, resolveOfficialClaudeEnv } from "./provider-runtime"
 import {
   recordDeliveredStoreFocus,
 } from "./usage/focus"
@@ -97,6 +98,8 @@ export function buildClaudeSdkRuntimeOptions(args: {
   configuredModel?: string
   env: Readonly<Record<string, string | undefined>>
 }): { model: string; settings: { autoMemoryEnabled: boolean; autoDreamEnabled: boolean }; env: Record<string, string | undefined> } {
+  const inherited = runtimeForEnv(args.env)
+  if (inherited) return { model: inherited.model, env: inherited.env, settings: { autoMemoryEnabled: false, autoDreamEnabled: false } }
   const official = args.requestedModel === "sonnet" || args.requestedModel === "opus" || args.requestedModel.startsWith("claude-")
   const configuredModel = args.configuredModel ?? (args.env.MEMOSYNC_USE_OWN_ANTHROPIC === "1" ? args.env.ANTHROPIC_MODEL : "")
   const rawModel = official ? args.requestedModel : resolveClaudeSessionModel(args.requestedModel, configuredModel ?? "")
@@ -177,6 +180,8 @@ export function buildClaudeSubprocessEnv(args: {
   localPath: string
   baseEnv?: Readonly<Record<string, string | undefined>>
 }): Record<string, string | undefined> {
+  const inherited = runtimeForEnv(args.baseEnv)
+  if (inherited) return inherited.env
   const rawEnv = args.baseEnv ?? process.env
   const baseEnv: Record<string, string | undefined> = buildIsolatedClaudeEnv(rawEnv)
   for (const key of Object.keys(baseEnv)) {
@@ -292,6 +297,8 @@ export function resolveTurnMemoryState(
 }
 
 interface StartTurnArgs {
+  connectionId?: string
+  engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
   chatId: string
   provider: AgentProvider
@@ -482,7 +489,7 @@ interface AgentCoordinatorArgs {
 
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
-  claudeSessionFileExists?: (localPath: string, sessionToken: string) => boolean
+  claudeSessionFileExists?: typeof claudeSessionFileExists
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
   claudeRetireTimeoutMs?: number
   startClaudeSession?: (args: {
@@ -498,6 +505,7 @@ interface AgentCoordinatorArgs {
     capture?: CaptureService | null
     projectId?: string
     chatId?: string
+    engineRuntime?: EngineRuntime
     subprocessEnv?: Record<string, string | undefined>
     /** Precomputed once for this turn so boot, prompt, and measurement share exact text. */
     memoryPlan?: MemoryInjectionPlan | null
@@ -512,6 +520,7 @@ interface SendToStartingProfile {
 }
 
 interface PostTurnMemoryPassArgs {
+  engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
   chatId: string
   projectId?: string
@@ -1305,6 +1314,7 @@ export async function startClaudeSession(args: {
   projectId?: string
   chatId?: string
   /** Exact environment inherited by Claude Code and its Bash/tool children. */
+  engineRuntime?: EngineRuntime
   subprocessEnv?: Record<string, string | undefined>
   /** Precomputed once by the coordinator; tests/direct callers may omit it. */
   memoryPlan?: MemoryInjectionPlan | null
@@ -1413,13 +1423,8 @@ export async function startClaudeSession(args: {
 
   const promptQueue = new AsyncMessageQueue<SDKUserMessage>()
 
-  const baseSubprocessEnv = args.subprocessEnv ?? buildClaudeSubprocessEnv({
-    localPath: args.localPath,
-  })
-  const sdkRuntime = buildClaudeSdkRuntimeOptions({
-    requestedModel: args.model,
-    env: baseSubprocessEnv,
-  })
+  const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model, env: args.subprocessEnv })
+  const sdkRuntime = { ...engineRuntime, settings: { autoMemoryEnabled: false, autoDreamEnabled: false } }
 
   const q = query({
     prompt: promptQueue,
@@ -1444,13 +1449,13 @@ export async function startClaudeSession(args: {
             memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
           }
         : undefined,
-      settingSources: isCliIsolationEnabled(sdkRuntime.env) ? [] : ["user", "project", "local"],
+      settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
       // MemoSync IS the memory system. The harness's own auto-memory
       // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
       // read+write channel — observed live: the model wrote MEMORY.md there
       // on a "记住…" request. Flag-level settings outrank user settings.
       settings: sdkRuntime.settings,
-      pathToClaudeCodeExecutable: process.env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
+      pathToClaudeCodeExecutable: engineRuntime.executable.path,
       env: sdkRuntime.env,
     },
   })
@@ -1497,10 +1502,8 @@ export async function startClaudeSession(args: {
       outboundOrigins.discardHumanTurnReservations(promptSeqs)
     ),
     setModel: async (model: string) => {
-      await q.setModel(buildClaudeSdkRuntimeOptions({
-        requestedModel: model,
-        env: baseSubprocessEnv,
-      }).model)
+      const bare = model.replace(/\[1m\]$/, "")
+      await q.setModel(sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare)
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
@@ -1549,6 +1552,7 @@ export class AgentCoordinator {
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
   private readonly piManager: PiAgentManager
+  private readonly hasCustomPiConnection: boolean
   private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
   private readonly generateTitle: (messageContent: string, cwd: string) => Promise<GenerateChatTitleResult>
   private readonly startClaudeSessionFn: NonNullable<AgentCoordinatorArgs["startClaudeSession"]>
@@ -1578,7 +1582,7 @@ export class AgentCoordinator {
   private readonly memoryTransferDetect: TransferDetectService | null
   private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
-  private readonly claudeSessionFileExists: (localPath: string, sessionToken: string) => boolean
+  private readonly claudeSessionFileExists: typeof claudeSessionFileExists
   private readonly claudeRetireTimeoutMs: number
   private reportBackgroundError: ((message: string) => void) | null = null
   /** A response owns the parked preview from before its first await until its
@@ -1682,6 +1686,7 @@ export class AgentCoordinator {
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.piManager = args.piManager ?? new PiAgentManager()
+    this.hasCustomPiConnection = Boolean(args.resolvePiConnection)
     this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
     this.generateTitle = args.generateTitle ?? generateTitleForChatDetailed
     this.startClaudeSessionFn = args.startClaudeSession ?? startClaudeSession
@@ -1706,14 +1711,11 @@ export class AgentCoordinator {
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
 
-  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier">, purpose: string, parent?: string | null) {
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null) {
     const chat = this.store.requireChat(args.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("Memory branch project is unavailable")
-    const runtime = args.provider === "claude" ? buildClaudeSdkRuntimeOptions({
-      requestedModel: args.model,
-      env: buildClaudeSubprocessEnv({ localPath: project.localPath }),
-    }) : null
+    const runtime = args.engineRuntime ?? this.sessionRuntimes.get(args.chatId)
     const branch = this.createMemoryBranchFn({
       provider: args.provider,
       parentSessionToken: parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent,
@@ -1722,6 +1724,7 @@ export class AgentCoordinator {
       effort: args.effort,
       serviceTier: args.serviceTier,
       subprocessEnv: runtime?.env,
+      runtime,
       purpose,
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
@@ -1737,10 +1740,14 @@ export class AgentCoordinator {
     })]))
   }
 
+  private readonly runtimeSelections = new Map<string, string>()
+  private readonly sessionRuntimes = new Map<string, EngineRuntime>()
+
   memoryRuntimeChoice(chatId: string) {
     const current = this.activeTurns.get(chatId) ?? this.branchPreparations.get(chatId)?.args
-    if (current) return { provider: current.provider, model: current.model, effort: current.effort, serviceTier: current.serviceTier }
-    return undefined
+    if (current) return { provider: current.provider, model: current.model, effort: current.effort, serviceTier: current.serviceTier, runtime: this.sessionRuntimes.get(chatId) ?? (current as StartTurnArgs).engineRuntime }
+    const runtime = this.sessionRuntimes.get(chatId)
+    return runtime ? { provider: runtime.engine, model: runtime.model, runtime } : undefined
   }
 
   private startMemoryBranches(args: StartTurnArgs, ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number }) {
@@ -2458,6 +2465,7 @@ export class AgentCoordinator {
   }
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
+    args.engineRuntime ??= this.sessionRuntimes.get(args.chatId)
     if (args.memoryState?.memoryActive === false) return
     const active = this.activeTurns.get(args.chatId)
     if (this.memoryBranches && active) {
@@ -2524,6 +2532,7 @@ export class AgentCoordinator {
           process.env.MEMOSYNC_CAPTURE_FORK !== "0"
         ) {
           const raw = await this.forkCaptureFn({
+            runtime: args.engineRuntime ?? this.sessionRuntimes.get(args.chatId),
             sessionToken: args.claudeSessionToken,
             localPath: args.localPath,
           })
@@ -2597,7 +2606,7 @@ export class AgentCoordinator {
             const chat = this.store.requireChat(args.chatId)
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
-            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
             const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
@@ -2623,6 +2632,7 @@ export class AgentCoordinator {
             process.env.MEMOSYNC_TRACE_FORK !== "0"
           ) {
             const raw = await this.forkTraceFn({
+              runtime: args.engineRuntime ?? this.sessionRuntimes.get(args.chatId),
               sessionToken: args.claudeSessionToken,
               localPath: args.localPath,
               usedMemories,
@@ -2868,6 +2878,7 @@ export class AgentCoordinator {
               const request = this.memoryCheckup.buildForkPrompt(checkupCtx)
               if (request) {
                 const raw = await this.forkQueryFn({
+            runtime: args.engineRuntime ?? this.sessionRuntimes.get(args.chatId),
                   sessionToken: args.claudeSessionToken,
                   localPath: args.localPath,
                   prompt: request.prompt,
@@ -3112,6 +3123,8 @@ export class AgentCoordinator {
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
+    this.sessionRuntimes.delete(chatId)
+    this.runtimeSelections.delete(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
       await this.retireClaudeSession(claudeSession, "chat_closed")
@@ -3137,6 +3150,8 @@ export class AgentCoordinator {
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     this.piManager.dispose()
+    this.sessionRuntimes.clear()
+    this.runtimeSelections.clear()
     await Promise.all(
       [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
     )
@@ -3210,9 +3225,10 @@ export class AgentCoordinator {
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
     if (provider === "claude") {
-      const model = normalizeServerModel(provider, options.model)
+      const model = options.modelOptions?.claude?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model)
       const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)
       return {
+        connectionId: modelOptions.connectionId,
         model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
         effort: modelOptions.reasoningEffort,
         serviceTier: undefined,
@@ -3223,7 +3239,8 @@ export class AgentCoordinator {
     if (provider === "pi") {
       const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
       return {
-        model: normalizeServerModel(provider, options.model),
+        connectionId: piModelOptions.connectionId,
+        model: options.modelOptions?.pi?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
         effort: piModelOptions.reasoningEffort,
         serviceTier: undefined,
         planMode: false,
@@ -3232,7 +3249,8 @@ export class AgentCoordinator {
 
     const modelOptions = normalizeCodexModelOptions(options.modelOptions, options.effort)
     return {
-      model: normalizeServerModel(provider, options.model),
+      connectionId: modelOptions.connectionId,
+      model: options.modelOptions?.codex?.connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
       effort: modelOptions.reasoningEffort,
       serviceTier: codexServiceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
@@ -3298,6 +3316,7 @@ export class AgentCoordinator {
       // Memory passes see the user's real words, never the steering wrapper (BUG AGENT-4).
       memoryUserText: options?.steered ? queuedMessage.content : undefined,
       attachments: queuedMessage.attachments,
+      connectionId: settings.connectionId,
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
@@ -3373,6 +3392,13 @@ export class AgentCoordinator {
     this.turnMemoryRestriction.delete(args.chatId)
     let reservationHandedOff = false
     try {
+    if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
+      const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
+      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
+      args.engineRuntime ??= await resolveEngineRuntime({ engine: args.provider, model: args.model, connectionId: args.connectionId })
+      this.runtimeSelections.set(args.chatId, selection)
+    }
+    if (startupCancelled()) return
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
       if (startupCancelled()) return
@@ -4104,6 +4130,7 @@ export class AgentCoordinator {
       ) {
         try {
           const raw = await this.forkQueryFn({
+            runtime: args.engineRuntime ?? this.sessionRuntimes.get(args.chatId),
             sessionToken: transferForkSessionToken,
             localPath: ctx.project.localPath,
             prompt: forkPrompt,
@@ -5469,6 +5496,7 @@ export class AgentCoordinator {
     let turn: HarnessTurn
     try {
     this.disposeMemoryBranches(args.chatId)
+    if (args.engineRuntime) this.sessionRuntimes.set(args.chatId, args.engineRuntime)
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
@@ -5516,6 +5544,7 @@ export class AgentCoordinator {
         model: args.model,
       })
       const claudeTurn = await this.startClaudeTurn({
+        engineRuntime: args.engineRuntime,
         chatId: args.chatId,
         localPath: project.localPath,
         model: args.model,
@@ -5609,7 +5638,7 @@ export class AgentCoordinator {
             })
           }
         : undefined
-      const connection = await this.resolvePiConnectionFn()
+      const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
       const piPrompt = buildPromptText(args.content, providerAttachments)
       turn = await this.piManager.startTurn({
@@ -5617,7 +5646,7 @@ export class AgentCoordinator {
         chatId: args.chatId,
         cwd: project.localPath,
         content: piMemoryBlock ? `${piMemoryBlock}\n\n${piPrompt}` : piPrompt,
-        model: args.model,
+        model: args.engineRuntime?.model ?? args.model,
         effort: normalizePiModelOptions(undefined, args.effort).reasoningEffort,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
@@ -5721,6 +5750,7 @@ export class AgentCoordinator {
           }
         : undefined
       const sessionToken = await this.codexManager.startSession({
+        runtime: args.engineRuntime,
         signal: startController.signal,
         chatId: args.chatId,
         cwd: project.localPath,
@@ -6061,6 +6091,7 @@ export class AgentCoordinator {
   }
 
   private async startClaudeTurn(args: {
+    engineRuntime?: EngineRuntime
     chatId: string
     localPath: string
     model: string
@@ -6083,16 +6114,16 @@ export class AgentCoordinator {
     if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
-    const subprocessEnv = buildClaudeSubprocessEnv({
-      localPath: args.localPath,
-    })
-    const runtimeEnv: Record<string, string | undefined> = buildClaudeSdkRuntimeOptions({ requestedModel: args.model, env: subprocessEnv }).env
+    const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model })
+    const subprocessEnv = engineRuntime.env
+    const runtimeEnv = engineRuntime.env
     // Endpoint, credentials and profile belong to the subprocess. setModel()
     // cannot migrate any of them when the user switches vendors.
     const providerRuntimeKey = String(Bun.hash(JSON.stringify([
       runtimeEnv.ANTHROPIC_BASE_URL ?? "official",
       runtimeEnv.ANTHROPIC_API_KEY, runtimeEnv.ANTHROPIC_AUTH_TOKEN,
-      runtimeEnv.CLAUDE_CONFIG_DIR,
+      runtimeEnv.CLAUDE_CONFIG_DIR, engineRuntime.executable.path, engineRuntime.connectionId,
+      engineRuntime.isolated ? engineRuntime.model : undefined, runtimeEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
     ])))
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
@@ -6127,7 +6158,7 @@ export class AgentCoordinator {
       // file, resume fails as a misleading "native binary failed to launch",
       // and the chat is permanently stuck. Validate and fall back to a fresh
       // session (context lost, chat alive).
-      if (resumeToken && !this.claudeSessionFileExists(args.localPath, resumeToken)) {
+      if (resumeToken && !this.claudeSessionFileExists(args.localPath, resumeToken, undefined, engineRuntime.env)) {
         console.warn(
           `[claude] resume token for chat ${args.chatId} has no session file (recreated container?) — starting fresh`,
         )
@@ -6153,6 +6184,7 @@ export class AgentCoordinator {
         projectId: args.projectId,
         chatId: args.chatId,
         subprocessEnv,
+        engineRuntime,
         memoryPlan: turnPlan,
         restrictMemoryIds: args.restrictMemoryIds,
         // Redesign 2026-08-07 §3: agent-channel proposals park in the store
@@ -6300,6 +6332,7 @@ export class AgentCoordinator {
       provider,
       content: command.content,
       attachments: command.attachments ?? [],
+      connectionId: settings.connectionId,
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
@@ -6311,6 +6344,7 @@ export class AgentCoordinator {
     logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
       chatId,
       provider,
+      connectionId: settings.connectionId,
       model: settings.model,
     })
 
@@ -6912,6 +6946,7 @@ export class AgentCoordinator {
       provider,
       content: entry.prompt,
       attachments: [],
+      connectionId: settings.connectionId,
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,

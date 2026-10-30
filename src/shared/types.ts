@@ -123,6 +123,7 @@ export interface InternalUserAttachmentsData {
 }
 
 export interface ProviderModelOption {
+  connectionId?: string
   id: string
   label: string
   supportsEffort: boolean
@@ -177,16 +178,19 @@ export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
 
 export interface ClaudeModelOptions {
+  connectionId?: string
   reasoningEffort: ClaudeReasoningEffort
   contextWindow: ClaudeContextWindow
 }
 
 export interface CodexModelOptions {
+  connectionId?: string
   reasoningEffort: CodexReasoningEffort
   fastMode: boolean
 }
 
 export interface PiModelOptions {
+  connectionId?: string
   reasoningEffort: PiReasoningEffort
 }
 
@@ -251,6 +255,7 @@ export function normalizePiReasoningEffort(effort?: unknown): PiReasoningEffort 
 
 export function normalizePiModelOptions(options?: Partial<PiModelOptions> | null): PiModelOptions {
   return {
+    ...(options?.connectionId ? { connectionId: options.connectionId } : {}),
     reasoningEffort: normalizePiReasoningEffort(options?.reasoningEffort),
   }
 }

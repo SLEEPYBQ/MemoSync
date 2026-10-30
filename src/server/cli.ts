@@ -8,7 +8,6 @@ import {
 } from "./cli-runtime"
 import { CLI_STARTUP_UPDATE_RESTART_EXIT_CODE, CLI_UI_UPDATE_RESTART_EXIT_CODE } from "./restart"
 import { startMemoSyncServer } from "./server"
-import { applyDeepSeekEngineEnvDefaults } from "./deepseek-engine-env"
 
 // Read version from package.json at the package root
 const pkg = await Bun.file(new URL("../../package.json", import.meta.url)).json()
@@ -18,10 +17,6 @@ const VERSION: string = pkg.version ?? "0.0.0"
 process.on("unhandledRejection", (reason) => {
   console.error(`${LOG_PREFIX} unhandled rejection:`, reason)
 })
-
-// One credential runs everything: derive the Claude Code engine's ANTHROPIC_*
-// bundle from DEEPSEEK_API_KEY (unless explicitly overridden).
-applyDeepSeekEngineEnvDefaults()
 
 const argv = process.argv.slice(2)
 let resolveExitAction: ((action: "ui_restart" | "exit") => void) | null = null

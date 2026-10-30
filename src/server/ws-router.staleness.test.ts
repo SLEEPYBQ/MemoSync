@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test"
+import { ModelAccessService, setModelAccessService } from "./model-access/service"
+import type { ModelAccessRouterService } from "./ws-router"
+import { describe, expect, test, spyOn } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -50,6 +52,7 @@ class FakeWebSocket {
 }
 
 const TOPIC_IDS = {
+  modelAccess: "topic-model-access",
   sidebar: "topic-sidebar",
   localProjects: "topic-local-projects",
   chat1: "topic-chat-1",
@@ -63,6 +66,7 @@ const TOPIC_IDS = {
 type TopicId = (typeof TOPIC_IDS)[keyof typeof TOPIC_IDS]
 
 const ALL_TOPICS: Array<[TopicId, SubscriptionTopic]> = [
+  [TOPIC_IDS.modelAccess, { type: "model-access" }],
   [TOPIC_IDS.sidebar, { type: "sidebar" }],
   [TOPIC_IDS.localProjects, { type: "local-projects" }],
   [TOPIC_IDS.chat1, { type: "chat", chatId: "chat-1" }],
@@ -83,7 +87,7 @@ interface World {
   seedQueuedMessage: (chatId: string) => void
 }
 
-function createWorld() {
+function createWorld(modelAccess?: ModelAccessRouterService) {
   const state = createEmptyState()
   const nowMs = Date.now()
 
@@ -339,6 +343,7 @@ function createWorld() {
   }
 
   const router = createWsRouter({
+    modelAccess,
     store: store as never,
     diffStore: diffStore as never,
     agent: agent as never,
@@ -583,4 +588,48 @@ describe("ws-router broadcast staleness invariant", () => {
       }
     })
   }
+})
+
+test("model access commands and external edits leave model-access and composer subscribers fresh without secrets", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "ma-router-"))
+  const service = await new ModelAccessService({ dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
+  setModelAccessService(service)
+  const { router } = createWorld(service)
+  const actor = new FakeWebSocket(), observer = new FakeWebSocket()
+  const logs: unknown[] = []
+  const logger = spyOn(console, "error").mockImplementation((...args) => { logs.push(args) })
+  router.handleOpen(actor as never); router.handleOpen(observer as never)
+  try {
+    await subscribeToAllTopics(router, observer)
+    const initial = observer.lastSnapshot(TOPIC_IDS.modelAccess)
+    const command = async (id: string, command: unknown) => {
+      await router.handleMessage(actor as never, JSON.stringify({ v: 1, type: "command", id, command }))
+      const response = actor.sent.find(m => m.id === id) as { type: string; result?: { id?: string; ok?: boolean } }
+      expect(response?.type).toBe("ack")
+      const fresh = new FakeWebSocket(); router.handleOpen(fresh as never)
+      await subscribeToAllTopics(router, fresh)
+      for (const [topic] of ALL_TOPICS) expect(observer.lastSnapshot(topic)).toEqual(fresh.lastSnapshot(topic))
+      router.handleClose(fresh as never)
+      return response.result
+    }
+    const input = { name: "Test vendor", apiKey: "router-secret", endpoints: [{ protocol: "anthropic-messages", baseUrl: "https://example.test" }], models: [{ id: "test-model" }] }
+    const result = await command("save", { type: "modelAccess.saveConnection", connection: input })
+    expect(result?.id).toBeString()
+    expect(observer.lastSnapshot(TOPIC_IDS.modelAccess)).not.toEqual(initial)
+    await command("set", { type: "modelAccess.setEngine", engine: "claude", setup: { access: { mode: "connection", connectionId: result!.id } } })
+    await command("refresh", { type: "modelAccess.refreshExecutables" })
+    // Non-router edits also broadcast through the service listener.
+    await service.saveConnection({ ...input, id: result!.id, name: "Renamed externally" } as never)
+    await settle()
+    expect(JSON.stringify(observer.lastSnapshot(TOPIC_IDS.modelAccess))).toContain("Renamed externally")
+    const fake = Bun.serve({ port: 0, fetch: () => new Response("", { status: 200 }) })
+    try {
+      const probe = await command("probe", { type: "modelAccess.testConnection", connection: { ...input, endpoints: [{ protocol: "openai-chat", baseUrl: `http://127.0.0.1:${fake.port}` }] } })
+      expect(probe?.ok).toBe(true)
+    } finally { fake.stop(true) }
+    await router.handleMessage(actor as never, JSON.stringify({ v: 1, type: "command", id: "bad", command: { type: "modelAccess.saveConnection", connection: { ...input, endpoints: [{ protocol: "anthropic-messages", baseUrl: "https://user:router-secret@example.test" }] } } }))
+    expect(actor.sent.find(m => m.id === "bad")?.type).toBe("error")
+    await command("delete", { type: "modelAccess.deleteConnection", connectionId: result!.id })
+    expect(JSON.stringify({ sent: actor.sent, observed: observer.sent, logs })).not.toContain("router-secret")
+  } finally { logger.mockRestore(); router.dispose(); setModelAccessService(undefined); await rm(directory, { recursive: true, force: true }) }
 })

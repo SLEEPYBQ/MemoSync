@@ -1,15 +1,15 @@
+import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "../model-access/runtime"
 import { query, type Options, type Query } from "@anthropic-ai/claude-agent-sdk"
 import Ajv, { type ValidateFunction } from "ajv"
 import { randomUUID } from "node:crypto"
-import { homedir } from "node:os"
 import type { AgentProvider, CodexReasoningEffort, ServiceTier } from "../../shared/types"
 import { normalizePiReasoningEffort } from "../../shared/types"
 import { CodexAppServerManager } from "../codex-app-server"
 import type { HarnessTurn } from "../harness-types"
 import { MISSING_PI_CONNECTION_MESSAGE, PiAgentManager, resolvePiConnection, type PiConnection } from "../pi-agent"
-import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv } from "../provider-runtime"
 
 export interface MemoryBranchInput {
+  runtime?: EngineRuntime
   provider: AgentProvider
   /** Null only before the main conversation has a persisted first turn. */
   parentSessionToken: string | null
@@ -183,6 +183,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   const codex = dependencies.codexManager ?? new CodexAppServerManager()
   const pi = dependencies.piManager ?? new PiAgentManager()
   const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
+  let runtime = input.runtime ?? runtimeForEnv(input.subprocessEnv)
+  let piConnection = runtime?.piConnection
   let sessionToken: string | null = null
   let disposed = false
   let sessionUnavailable = false
@@ -212,8 +214,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   async function askClaude(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
     // Supplied environments were already isolated and routed by the main
     // coordinator. Re-sanitizing here would erase the selected provider key.
-    const env = input.subprocessEnv ? { ...input.subprocessEnv } : buildIsolatedClaudeEnv()
-    assertIsolatedClaudeCredentials(env)
+    runtime ??= await resolveEngineRuntime({ engine: "claude", model: input.model, env: input.subprocessEnv })
+    const env = { ...runtime.env }
     // A developer's global ripgrep helper must not escape the Bash gate.
     env.RIPGREP_CONFIG_PATH = ""
     delete env.CLAUDECODE
@@ -233,7 +235,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       prompt,
       options: {
         cwd: input.localPath,
-        model: input.model,
+        model: runtime.model,
         effort: input.effort as Options["effort"],
         resume: sessionToken ?? input.parentSessionToken ?? undefined,
         forkSession: !sessionToken && Boolean(input.parentSessionToken),
@@ -256,7 +258,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
           ].join("\n"),
         },
         outputFormat: { type: "json_schema", schema: options.schema ?? { type: "object", additionalProperties: true } },
-        pathToClaudeCodeExecutable: env.CLAUDE_EXECUTABLE?.replace(/^~(?=\/|$)/, homedir()) || undefined,
+        pathToClaudeCodeExecutable: runtime.executable.path,
         env,
       },
     })
@@ -299,7 +301,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   }
 
   async function askPi(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
-    const connection = await resolveConnection()
+    piConnection ??= await resolveConnection() ?? undefined
+    const connection = piConnection
     controller.signal.throwIfAborted()
     if (!connection) throw new Error(MISSING_PI_CONNECTION_MESSAGE)
     activeTurn = await pi.startTurn({
@@ -386,6 +389,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
           signal: controller.signal,
           sandbox: "read-only",
           subprocessEnv: input.subprocessEnv,
+          runtime,
           // Inherited memory mutation tools are never callable in review branches.
           dynamicTools: [],
       }) ?? null

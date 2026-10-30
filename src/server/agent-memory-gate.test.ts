@@ -1414,6 +1414,8 @@ describe("memory preview gate (coordinator)", () => {
 
   test("switching Claude vendors rebuilds the subprocess instead of retaining its old endpoint", async () => {
     const h = createHarness({ preview: false })
+    const oldD = process.env.DEEPSEEK_API_KEY, oldG = process.env.GLM_API_KEY
+    process.env.DEEPSEEK_API_KEY = "fake-deepseek"; process.env.GLM_API_KEY = "fake-glm"
     try {
       await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "deepseek-v4-flash", content: "first vendor" })
       await waitFor(() => h.prompts.length === 1)
@@ -1427,7 +1429,11 @@ describe("memory preview gate (coordinator)", () => {
       await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", model: "opus", content: "official vendor" })
       await waitFor(() => h.prompts.length === 3)
       expect(h.sessionStarts).toHaveLength(3)
-    } finally { h.cleanup() }
+    } finally {
+      if (oldD === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = oldD
+      if (oldG === undefined) delete process.env.GLM_API_KEY; else process.env.GLM_API_KEY = oldG
+      h.cleanup()
+    }
   })
 
   test("a stale trace verdict is discarded while its terminal state remains auditable (CAS)", async () => {

@@ -182,8 +182,28 @@ const templateCopies = [en, zhCN].flatMap((resources) =>
   })),
 ).sort((a, b) => b.specificity - a.specificity)
 
+const modelAccessErrorKeys = {
+  "connection-invalid": "errors:modelAccess_connection-invalid",
+  "connection-missing": "errors:modelAccess_connection-missing",
+  "connection-read-only": "errors:modelAccess_connection-read-only",
+  "connection-key-missing": "errors:modelAccess_connection-key-missing",
+  "connection-protocol-unsupported": "errors:modelAccess_connection-protocol-unsupported",
+  "engine-setup-invalid": "errors:modelAccess_engine-setup-invalid",
+  "model-unavailable": "errors:modelAccess_model-unavailable",
+  "account-signed-out": "errors:modelAccess_account-signed-out",
+  "executable-missing": "errors:modelAccess_executable-missing",
+  "executable-broken": "errors:modelAccess_executable-broken",
+  "executable-incompatible": "errors:modelAccess_executable-incompatible",
+  "model-access-unavailable": "errors:modelAccess_model-access-unavailable",
+  "model-access-storage-unreadable": "errors:modelAccess_model-access-storage-unreadable",
+  "model-access-storage-write-failed": "errors:modelAccess_model-access-storage-write-failed",
+  "model-access-operation-failed": "errors:modelAccess_model-access-operation-failed",
+  "engine-runtime-mismatch": "errors:modelAccess_engine-runtime-mismatch"
+} as const
+
 export function translateUiText(value: string | null | undefined): string {
   if (value == null) return ""
+  if (value in modelAccessErrorKeys) return t(modelAccessErrorKeys[value as keyof typeof modelAccessErrorKeys])
   const reference = describeServerUiText(value)
   if (reference) return translateServerUiText(reference, value)
   const key = fixedCopies.get(value)
