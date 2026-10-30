@@ -66,6 +66,7 @@ export function SettingsSelect({
   open,
   onOpenChange,
   "aria-label": ariaLabel,
+  className,
 }: {
   value: string
   onValueChange: (value: string) => void
@@ -76,6 +77,7 @@ export function SettingsSelect({
   /** The SelectItems. */
   children: ReactNode
   "aria-label"?: string
+  className?: string
 }) {
   useI18n()
   return (
@@ -86,7 +88,7 @@ export function SettingsSelect({
       open={open}
       onOpenChange={onOpenChange}
     >
-      <SelectTrigger aria-label={ariaLabel} className={SETTINGS_SELECT_TRIGGER_CLASS}>
+      <SelectTrigger aria-label={ariaLabel} className={cn(SETTINGS_SELECT_TRIGGER_CLASS, className)}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent align="end">
@@ -183,7 +185,7 @@ export function SettingsNotice({
   children,
   className,
 }: {
-  tone?: "error" | "warning"
+  tone?: "error" | "warning" | "info" | "success"
   children: ReactNode
   className?: string
 }) {
@@ -195,7 +197,11 @@ export function SettingsNotice({
         "whitespace-pre-wrap break-words rounded-lg border px-4 py-3 text-sm",
         tone === "error"
           ? "border-destructive/20 bg-destructive/5 text-destructive"
-          : "border-border bg-card/40 text-muted-foreground",
+          : tone === "info"
+            ? "border-info/25 bg-info/8 text-info-foreground"
+            : tone === "success"
+              ? "border-success/20 bg-success/5 text-success-foreground"
+              : "border-border bg-card/40 text-muted-foreground",
         className,
       )}
     >

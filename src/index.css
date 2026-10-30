@@ -710,6 +710,15 @@
   overflow-wrap: anywhere;
 }
 
+/* Model access settings and their portalled controls retain keyboard focus
+   outlines despite the app-wide button shadow reset above. */
+@layer base {
+  .model-access-ui :is(button, a, input, summary, [tabindex]):focus-visible {
+    outline: 2px solid var(--color-ring) !important;
+    outline-offset: 2px;
+  }
+}
+
 /* A gate may host candidate cards. Their detail/reference text stays flat so
    the gate, row, and reference never become three nested boxes. */
 .memory-card .memory-card {

@@ -1,3 +1,4 @@
+import { subscribeModelAccess, type AccessModelOptions } from "../model-access/modelAccess"
 import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
@@ -535,13 +536,14 @@ function logSendToStartingTrace(
 function composerStateFromSendOptions(options?: {
   provider?: AgentProvider
   model?: string
-  modelOptions?: ModelOptions
+  modelOptions?: AccessModelOptions
   planMode?: boolean
 }): ComposerState | null {
   if (options?.provider === "claude" && options.model && options.modelOptions?.claude) {
     return {
       provider: "claude",
       model: options.model,
+      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
       modelOptions: {
         reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
         contextWindow: normalizeClaudeContextWindow(options.model, options.modelOptions.claude.contextWindow),
@@ -554,6 +556,7 @@ function composerStateFromSendOptions(options?: {
     return {
       provider: "codex",
       model: options.model,
+      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
       modelOptions: {
         reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "high",
         fastMode: options.modelOptions.codex.fastMode ?? false,
@@ -566,6 +569,7 @@ function composerStateFromSendOptions(options?: {
     return {
       provider: "pi",
       model: options.model,
+      ...(options.modelOptions.connectionId ? { connectionId: options.modelOptions.connectionId } : {}),
       modelOptions: {
         reasoningEffort: isPiReasoningEffort(options.modelOptions.pi.reasoningEffort)
           ? options.modelOptions.pi.reasoningEffort
@@ -901,6 +905,8 @@ export function useAppState(activeChatId: string | null): AppState {
   )
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
+
+  useEffect(() => subscribeModelAccess(socket), [socket])
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar" }, (snapshot) => {
