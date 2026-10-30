@@ -65,7 +65,7 @@ describe('planMemoryInjection', () => {
     })).toEqual(['M-01', 'M-02', currentSession.id]);
   });
 
-  test('memosync arm: skills block with versioned ids + tools registered', () => {
+  test('MemoSync skills block with versioned ids + tools registered', () => {
     const plan = planMemoryInjection({
       memory,
       projectId: 'proj-1',
@@ -176,11 +176,9 @@ describe('computeMemoryTurnDelta', () => {
   });
 });
 
-// Cross-project condition (study T4): personal-scope memory must follow the
-// participant into a NEW project, while the previous project's project-scope
-// memory must NOT leak in (scope discipline). Pinned here because the whole
-// cross-project measurement rests on this being correct per arm.
-describe('cross-project condition policies (T4)', () => {
+// Personal-scope memory follows the user into a new project; memories scoped
+// to the previous project must not leak into it.
+describe('cross-project memory scope', () => {
   test('MemoSync preserves personal memory without leaking another project', () => {
     const memosync = planMemoryInjection({
       memory,

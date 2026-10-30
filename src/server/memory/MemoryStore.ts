@@ -472,7 +472,7 @@ export class MemoryStore {
   }
 
   /**
-   * Apply the participant's Dismiss decision using store-owned privacy
+   * Apply the user's Dismiss decision using store-owned privacy
    * authority. Mutable Candidate fields are not sufficient for this choice:
    * a legacy row may have been relabelled after an earlier sensitive
    * dismissal, while its durable tombstone still requires secure erasure.

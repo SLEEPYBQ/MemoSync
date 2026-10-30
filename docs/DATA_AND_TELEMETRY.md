@@ -38,7 +38,7 @@ The log can contain memory content, expected-use text, revision instructions
 (`memory.revise_injection.instruction`), and quoted interruption evidence. It
 is not a transcript copy and must not be treated as text-free or anonymized.
 Chat transcripts are stored separately and included by the data exporter only
-with `--full`. Historical log lines may contain additional research fields.
+with `--full`. Log lines from older versions may contain additional fields.
 
 Set `MEMOSYNC_USAGE_LOG=0` to disable future local usage logging. The old
 `EXPERIMENT_LOG=0` remains a compatibility alias when the new variable is unset.
@@ -58,8 +58,8 @@ DATA_DIR=/path bun run export-data   # export a non-default data directory
 
 The default bundle contains only `experiments/events.jsonl`, `install-id`,
 `memory.sqlite`, `memories/`, and `settings.json`. Other files under
-`experiments/` are excluded by default, including historical study databases
-(which can contain raw prompts) and workspace snapshots (which can contain
+`experiments/` are excluded by default, including databases left by older
+versions (which can contain raw prompts) and workspace snapshots (which can contain
 source code). `--full` explicitly includes that entire directory, the JSONL
 logs, `snapshot.json`, and `transcripts/`.
 
@@ -93,16 +93,16 @@ in `attachments/`. Attachment contents may contain private information.
 bun run scripts/analyze-experiment.ts ~/.memosync/data/experiments/events.jsonl --csv out.csv
 ```
 
-Historical data from retired study deployments is left in place. The product
-does not open or migrate `experiments/study.sqlite`, replay opening prompts or
-capture receipts, or read study settings and environment variables. Existing
-projects, chats, memory versions, exclusions, and evolution preferences remain
+Data written by older MemoSync versions is left in place. Files they kept
+under `experiments/` (such as `study.sqlite`) are neither opened nor migrated,
+and their settings and environment variables are not read. Existing projects,
+chats, memory versions, exclusions, and evolution preferences remain
 available. Unknown transcript entries render as read-only JSON; recognized
-legacy gates use the ordinary transcript and stale-gate handling. Old browser
-study outboxes are ignored; product retries use `memosync:usage-outbox:v1`.
+older gates use the ordinary transcript and stale-gate handling. Older browser
+outboxes are ignored; retries use `memosync:usage-outbox:v1`.
 
 The analyzer ignores retired/unknown event types, reports chats by their
-original session ids, and preserves historical condition, participant, task
-and allocation labels only in `legacyMetadata`. It does not merge chats into
-research task windows or assign product labels to historical events. CSV
+original session ids, and keeps labels recorded by older versions only in
+`legacyMetadata`. It does not group chats into task windows or relabel older
+events. CSV
 exports include this metadata; `--include-internal-qa` is retired.

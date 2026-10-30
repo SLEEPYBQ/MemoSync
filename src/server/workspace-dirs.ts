@@ -3,10 +3,8 @@ import { homedir } from "node:os"
 import path from "node:path"
 
 /**
- * Directory listing for the Add Project path picker. The app runs in a
- * container ("the workspace machine"), so a bare text field reads like a
- * local-computer path and confuses participants (pilot feedback 2026-08-11)
- * — the picker browses the REMOTE filesystem instead.
+ * Directory listing for the Add Project path picker. The picker browses the
+ * workspace machine where the agent runs, which may be remote or containerized.
  *
  * Containment: requests never escape `root` (the workspace home). Hidden
  * directories and node_modules are noise for project selection and are

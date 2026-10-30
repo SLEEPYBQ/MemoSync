@@ -35,7 +35,7 @@ const MOVE_SCOPES: MemoryScope[] = ["personal", "project"]
 interface MemoryDetailPanelProps {
   item: MemoryItem
   allItems: MemoryItem[]
-  /** The active transcript chat that owns this participant Monitoring act. */
+  /** The active transcript chat that owns this user Monitoring act. */
   chatId?: string
   onClose: () => void
   onUpdated: (item: MemoryItem) => void

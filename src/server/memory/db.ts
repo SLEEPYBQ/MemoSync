@@ -41,17 +41,15 @@ CREATE TABLE IF NOT EXISTS memory_relations (
 );
 
 -- Small key-value side table for memory-layer state that is not an item:
--- currently the capture policy memo (self-evolution M2) and its refresh
--- watermark. Values are JSON.
+-- includes policy values written by older versions. Values are JSON.
 CREATE TABLE IF NOT EXISTS memory_kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
 
--- Auto baseline cross-project initialization. The target project receives one
--- exact snapshot and then evolves independently; a durable receipt makes an
--- empty source and a process retry distinguishable from "not copied yet".
+-- Copy receipts written by older versions. Keep the table and column names
+-- so opening an existing database preserves its stored data.
 CREATE TABLE IF NOT EXISTS auto_project_copy_receipts (
   transition_key TEXT PRIMARY KEY,
   source_task_id TEXT NOT NULL,
@@ -63,9 +61,8 @@ CREATE TABLE IF NOT EXISTS auto_project_copy_receipts (
   copied_at TEXT NOT NULL
 );
 
--- Clone provenance is deliberately separate from the rendered representation:
--- copied items get new questionnaire identities/version histories, while this
--- table retains the exact source identity/version/content hash for audit.
+-- Copy lineage written by older versions. Keep the exact source identity,
+-- version and content hash, together with the original table and column names.
 CREATE TABLE IF NOT EXISTS auto_project_copy_lineage (
   transition_key TEXT NOT NULL,
   ordinal INTEGER NOT NULL,

@@ -359,7 +359,7 @@ describe("createClaudeHarnessStream", () => {
         type: "user",
         origin: { kind: "human" },
         parent_tool_use_id: null,
-        message: { role: "user", content: "participant prompt" },
+        message: { role: "user", content: "user prompt" },
       }
       yield {
         type: "result",
@@ -389,7 +389,7 @@ describe("createClaudeHarnessStream", () => {
         session_id: "s-lineage",
         origin: { kind: "human" },
         parent_tool_use_id: null,
-        message: { role: "user", content: "participant prompt" },
+        message: { role: "user", content: "user prompt" },
       }
       yield {
         type: "stream_event",
@@ -433,7 +433,7 @@ describe("createClaudeHarnessStream", () => {
     expect(await human).toBe("human")
   })
 
-  test("does not let a late task child borrow the next participant root after its lineage is cleared", async () => {
+  test("does not let a late task child borrow the next user root after its lineage is cleared", async () => {
     const outbound = new ClaudeOutboundOriginTracker()
     async function* sdkMessages() {
       yield {
@@ -455,7 +455,7 @@ describe("createClaudeHarnessStream", () => {
         result: "background done",
       }
 
-      // The next participant prompt has been queued, but the SDK has not
+      // The next user prompt has been queued, but the SDK has not
       // echoed its user frame when the old background child speaks again.
       outbound.beginHumanTurn()
       yield {
@@ -489,14 +489,14 @@ describe("createClaudeHarnessStream", () => {
     expect(outbound.current()).toBe("unknown")
   })
 
-  test("a background result does not erase a still-live participant parent lineage", async () => {
+  test("a background result does not erase a still-live user parent lineage", async () => {
     const outbound = new ClaudeOutboundOriginTracker()
     async function* sdkMessages() {
       yield {
         type: "user",
         origin: { kind: "human" },
         parent_tool_use_id: null,
-        message: { role: "user", content: "participant prompt" },
+        message: { role: "user", content: "user prompt" },
       }
       yield {
         type: "stream_event",
@@ -565,7 +565,7 @@ describe("createClaudeHarnessStream", () => {
         type: "user",
         origin: { kind: "human" },
         parent_tool_use_id: null,
-        message: { role: "user", content: "participant prompt" },
+        message: { role: "user", content: "user prompt" },
       }
       yield {
         type: "assistant",
@@ -663,7 +663,7 @@ describe("createClaudeHarnessStream", () => {
     expect(outbound.current()).toBe("unknown")
   })
 
-  test("does not promote an originless synthetic SDK user frame to a participant turn", async () => {
+  test("does not promote an originless synthetic SDK user frame to a user turn", async () => {
     async function* sdkMessages() {
       yield {
         type: "user",
@@ -712,7 +712,7 @@ describe("createClaudeHarnessStream", () => {
         type: "assistant",
         message: { content: [{ type: "tool_use", id: "queued-human-tool", name: "Edit", input: {} }] },
       }
-      yield { type: "result", subtype: "success", is_error: false, result: "participant done" }
+      yield { type: "result", subtype: "success", is_error: false, result: "user done" }
     }
 
     const outbound = new ClaudeOutboundOriginTracker()
@@ -735,7 +735,7 @@ describe("createClaudeHarnessStream", () => {
   })
 })
 
-test("Board invalidation wakes only the exact coordinator-owned gate without a participant decision", () => {
+test("Board invalidation wakes only the exact coordinator-owned gate without a user decision", () => {
   const coordinator = new AgentCoordinator({
     store: createFakeStore() as never,
     onStateChange: () => {},
@@ -744,13 +744,13 @@ test("Board invalidation wakes only the exact coordinator-owned gate without a p
   coordinator.pendingTransferGates.set("chat-1", {
     transferId: "transfer-1",
     published: true,
-    respond: (decision) => wakes.push(`participant:${decision}`),
+    respond: (decision) => wakes.push(`user:${decision}`),
     invalidate: () => wakes.push("transfer:invalidated"),
   })
   coordinator.pendingCheckupGates.set("chat-2", {
     checkupId: "checkup-1",
     published: true,
-    respond: (decision) => wakes.push(`participant:${decision}`),
+    respond: (decision) => wakes.push(`user:${decision}`),
     invalidate: () => wakes.push("checkup:invalidated"),
   })
 
@@ -760,7 +760,7 @@ test("Board invalidation wakes only the exact coordinator-owned gate without a p
   coordinator.invalidateMemoryGate({ kind: "checkup", chatId: "chat-2", gateId: "checkup-1" })
 
   expect(wakes).toEqual(["transfer:invalidated", "checkup:invalidated"])
-  expect(wakes.some((wake) => wake.startsWith("participant:"))).toBe(false)
+  expect(wakes.some((wake) => wake.startsWith("user:"))).toBe(false)
 })
 
 describe("normalizeClaudeStreamMessage", () => {
@@ -944,7 +944,7 @@ describe("AgentCoordinator codex integration", () => {
     expect(stopped).toEqual(["chat-1"])
   })
 
-  test("stops idle Codex sessions during server shutdown outside study mode", async () => {
+  test("stops idle Codex sessions during server shutdown", async () => {
     let stopped = false
     const coordinator = new AgentCoordinator({
       store: createFakeStore() as never,
@@ -2712,7 +2712,7 @@ describe("AgentCoordinator claude integration", () => {
     events.close()
   })
 
-  test("task-notification results do not consume the participant FIFO or finish its turn", async () => {
+  test("task-notification results do not consume the user FIFO or finish its turn", async () => {
     const events = new AsyncEventQueue<any>()
     const store = createFakeStore()
     const diagnostics: string[] = []
@@ -2737,7 +2737,7 @@ describe("AgentCoordinator claude integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "claude",
-      content: "participant work",
+      content: "user work",
       model: "claude-opus-4-1",
     })
 
@@ -2754,7 +2754,7 @@ describe("AgentCoordinator claude integration", () => {
     events.push({
       type: "transcript",
       origin: "human",
-      entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 20, result: "participant done" }),
+      entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 20, result: "user done" }),
     })
     await waitFor(() => store.turnFinishedCount === 1)
     expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
@@ -2810,7 +2810,7 @@ describe("AgentCoordinator claude integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "claude",
-      content: "first participant prompt",
+      content: "first user prompt",
       model: "claude-opus-4-1",
     })
     await waitFor(() => store.messages.filter((entry) => entry.kind === "system_init").length === 1)
@@ -2820,7 +2820,7 @@ describe("AgentCoordinator claude integration", () => {
       type: "chat.send",
       chatId: "chat-1",
       provider: "claude",
-      content: "second participant prompt",
+      content: "second user prompt",
       model: "claude-opus-4-1",
     })
     await waitFor(() => discardedSeqs.length === 1)
@@ -2840,7 +2840,7 @@ describe("AgentCoordinator claude integration", () => {
     await waitFor(() => store.turnFinishedCount === 1)
     await waitFor(() => outboundOrigins.current() === "unknown")
 
-    // With both exact participant reservations settled, a later originless
+    // With both exact user reservations settled, a later originless
     // synthetic root cannot borrow human authority for its tool call.
     const controller = new AbortController()
     const syntheticToolOrigin = toolOrigins.take("post-stop-synthetic-tool", controller.signal, 1_000)

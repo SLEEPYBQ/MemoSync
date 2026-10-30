@@ -37,7 +37,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
   const [name, setName] = useState("")
   const [existingPath, setExistingPath] = useState("")
   // The picker browses the WORKSPACE machine (where the agent runs) — a bare
-  // path field reads like the user's own computer (pilot feedback 2026-08-11).
+  // path field can be mistaken for a path on the user's own computer.
   const [dirs, setDirs] = useState<WorkspaceDirsSnapshot | null>(null)
   const [dirsLoading, setDirsLoading] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)

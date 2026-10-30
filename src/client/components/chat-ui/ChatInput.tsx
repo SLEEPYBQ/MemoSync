@@ -619,7 +619,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
     // Sending may wait for server-side preparation.
     // Keep both local and persisted drafts intact until the *real* send is
-    // accepted, so reload/back/send failure cannot erase participant input.
+    // accepted, so reload/back/send failure cannot erase user input.
     await runRetainedDraftSubmission({
       submit: () => onSubmit(nextValue, submitOptions),
       onAccepted: () => {

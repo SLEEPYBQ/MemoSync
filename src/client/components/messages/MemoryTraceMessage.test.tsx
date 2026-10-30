@@ -22,8 +22,7 @@ describe("MemoryTraceMessage", () => {
     expect(html).toContain("reply or tool evidence")
   })
   test("expands all four verdict groups on initial render", () => {
-    // Study-owner decision 2026-08-20: no verdict hides behind a collapsed
-    // header on first render — the participant sees every group's rows at once.
+    // Every verdict group starts expanded so the user sees all rows at once.
     const html = renderToStaticMarkup(
       createElement(MemoryTraceMessage, {
         message: msg([
@@ -56,7 +55,7 @@ describe("MemoryTraceMessage", () => {
     expect(html).toContain("shaped this turn")
     expect(html).toContain("M-01")
     // The no-effect group keeps its counted header, and its row is now
-    // expanded on initial render too (study-owner decision 2026-08-20).
+    // expanded on initial render too.
     expect(html).toContain("1 no visible effect")
     expect(html).toContain("M-02")
   })

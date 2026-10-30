@@ -298,7 +298,7 @@ interface StartTurnArgs {
   content: string
   attachments: ChatAttachment[]
   /** Immutable private copies used only at the provider boundary. The
-   * participant transcript continues to own `attachments`. */
+   * user transcript continues to own `attachments`. */
   providerAttachments?: ChatAttachment[]
   model: string
   effort?: string
@@ -954,7 +954,7 @@ export async function* createClaudeHarnessStream(
         if (typeof item.tool_use_id !== "string") return "unknown"
         const inherited = lineageOrigins.get(item.tool_use_id)
         // A missing id, or a batched frame that joins different lineages,
-        // must not borrow the currently active participant root.
+        // must not borrow the currently active user root.
         if (inherited === undefined) return "unknown"
         if (inheritedOrigin !== undefined && inheritedOrigin !== inherited) return "unknown"
         inheritedOrigin = inherited
@@ -1087,9 +1087,9 @@ export async function* createClaudeHarnessStream(
       rootOrigin = "unknown"
       outboundOrigins?.finishResult(origin)
       rootOrigin = outboundOrigins?.current() ?? "unknown"
-      // Results from background and participant roots may interleave. Retire
+      // Results from background and user roots may interleave. Retire
       // only the lineage that actually completed: clearing the whole table on
-      // a task result would erase a still-live participant parent, while
+      // a task result would erase a still-live user parent, while
       // retaining a completed human lineage would authorize its late child.
       for (const [toolUseId, lineageOrigin] of lineageOrigins) {
         if (lineageOrigin !== origin) continue
@@ -1156,7 +1156,7 @@ export class ClaudeToolOriginResolver {
 }
 
 /**
- * Outbound participant prompts are authoritative even when Claude Code does
+ * Outbound user prompts are authoritative even when Claude Code does
  * not echo their SDKUserMessage. A nonhuman continuation may finish first;
  * pending human turns remain reserved and resume as the root fallback.
  */
@@ -1188,7 +1188,7 @@ export class ClaudeOutboundOriginTracker {
   /**
    * A later `system_init` proves that these older FIFO prompts can no longer
    * emit a result. Release their exact provenance reservations without
-   * touching the current participant turn or any non-human lineage.
+   * touching the current user turn or any non-human lineage.
    */
   discardHumanTurnReservations(promptSeqs: readonly number[]): number {
     const discarded = new Set(promptSeqs)
@@ -1354,9 +1354,8 @@ export async function startClaudeSession(args: {
         })
       : []
   const memoryBlock = plan?.block ?? ""
-  // Environment guidance appended to the system prompt in EVERY arm (it names
-  // no memory system, so it is blinding-safe): the agent otherwise has no way
-  // to know that a dev server it starts becomes visible to the user, or how.
+  // Append environment guidance so the agent knows how a dev server it
+  // starts becomes visible to the user.
   const systemAppend = buildClaudeSystemAppend(memoryBlock)
   const canUseTool: CanUseTool = async (toolName, input, options) => {
 
@@ -2227,8 +2226,7 @@ export class AgentCoordinator {
     const pending = this.pendingTransferGates.get(command.chatId)
     if (!pending || pending.transferId !== command.transferId) {
       // A duplicate or late click on an already-settled card is a no-op, not
-      // an error banner (pilot report 2026-08-11: the red "No matching
-      // pending memory transfer card" surfaced while the flow had moved on).
+      // an error banner: the flow has already moved on.
       if (this.isMemoryGateDecided(command.chatId, "memory_transfer_decision", "transferId", command.transferId)) return
       if (await this.expireOrphanedTransfer(command.chatId, command.transferId)) return
       throw new Error("No matching pending memory transfer card")
@@ -3287,7 +3285,7 @@ export class AgentCoordinator {
       // An external queue action can remove the observed head between the
       // scheduler's read and this durable dequeue. Re-read and let the caller
       // continue with the new head instead of treating that race as a failed
-      // participant send.
+      // user send.
       if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
       throw error
     }
@@ -3429,6 +3427,7 @@ export class AgentCoordinator {
           {
             kind: "user_prompt",
             content: args.content,
+            // Retain the stored field name for compatibility with older transcripts.
             participantContent: args.memoryUserText ?? args.content,
             attachments: args.attachments,
             steered: args.steered,
@@ -5252,7 +5251,7 @@ export class AgentCoordinator {
             return
           }
           // No memory in play this turn: record an automatic go_on (the
-          // preview entry above keeps the research log complete) and boot
+          // preview entry above records the empty selection) and boot
           // without parking — the friction is only spent when memory matters.
           await this.store.appendMessage(
             args.chatId,
@@ -5645,7 +5644,7 @@ export class AgentCoordinator {
         model: args.model,
       })
       // MemoSync memory for Codex: declare the memory tools as dynamic tools
-      // (when the arm has tools at all), inject the arm's block as
+      // when enabled, inject the memory block as
       // developer_instructions, and dispatch item/tool/call to the memory
       // handler. Codex injection is per-turn, so file-mode contents are
       // naturally fresh each turn.
@@ -6405,9 +6404,9 @@ export class AgentCoordinator {
           )
           continue
         }
-        const participantOrigin = event.origin === "human"
+        const userOrigin = event.origin === "human"
           || ((event.origin === undefined || event.origin === "unknown"))
-        if (!participantOrigin) {
+        if (!userOrigin) {
           this.reportBackgroundError?.(
             `[claude-background-event] dropped ${event.entry?.kind ?? event.type} with origin ${event.origin} for chat ${session.chatId}`,
           )
@@ -6783,11 +6782,11 @@ export class AgentCoordinator {
   }
 
   /**
-   * Per-memory interrupt (2026-08-19 C1/C3): the participant stopped the turn
+   * Per-memory interrupt (2026-08-19 C1/C3): the user stopped the turn
    * because they identified a problem involving one working-memory item. Cancels exactly like
    * Stop, then adds the attribution a plain Stop lacks: the flagged memory,
    * the anchor quote, the turn's working set — plus the measurement side
-   * effects: a participant-issued violated verdict in the memory event log
+   * effects: a user-issued violated verdict in the memory event log
    * (never an audit card), and a memory.interrupt event. The recovery card
    * parks at the interruption point as a memory_interrupt entry.
    */
@@ -6858,7 +6857,7 @@ export class AgentCoordinator {
    * Resume after a per-memory interrupt (2026-08-19 C2): re-dispatch the
    * interrupted prompt as a NEW turn that skips the pre-turn gates and the
    * working-memory confirmation — the recovery card already confirmed the
-   * set — and rides a continuation instruction plus the participant's
+   * set — and rides a continuation instruction plus the user's
    * correction. Continuation is real: the engine session keeps the partial
    * trajectory, so the reminder tells it to keep completed work.
    */

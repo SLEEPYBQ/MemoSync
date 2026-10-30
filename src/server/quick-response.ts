@@ -122,12 +122,10 @@ export function getClaudeStructuredQueryOptions(
   assertIsolatedClaudeCredentials(runtimeEnv)
   return {
     cwd: args.cwd,
-    // Honor ANTHROPIC_MODEL (the pilot points the Claude engine at a DeepSeek-
-    // compatible endpoint via ANTHROPIC_BASE_URL/ANTHROPIC_MODEL — see
-    // agent.ts). A hardcoded Anthropic-only id got rejected there, so title /
-    // commit-message generation silently fell back to crude heuristics with no
-    // user-visible reason (BUG AGENT-6). The literal id stays as the default
-    // for a real Anthropic deployment.
+    // Honor ANTHROPIC_MODEL for compatible endpoints configured through
+    // ANTHROPIC_BASE_URL. A hardcoded Anthropic-only id can be rejected by
+    // those endpoints, causing title / commit-message generation to fall back
+    // to heuristics. Use the default model when no override is configured.
     model,
     tools: [],
     systemPrompt: "",

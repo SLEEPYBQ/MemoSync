@@ -10,7 +10,7 @@
 //
 // This is engine plumbing, not memory logic; it lives here beside deepseek.ts
 // because it shares the "DeepSeek runtime" concern. Revisit when DeepSeek
-// ships a Responses endpoint or the Codex arm moves to an OpenAI key.
+// ships a Responses endpoint or the Codex engine uses an OpenAI key.
 
 export interface DeepSeekChatShimOptions {
   /** 0 = pick an ephemeral port (tests). */

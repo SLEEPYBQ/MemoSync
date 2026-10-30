@@ -8,7 +8,7 @@ import { EventStore } from "./event-store"
 import { MemoryService } from "./memory"
 import { startMemoSyncServer } from "./server"
 
-test("starts with legacy study data without replaying pending prompts or opening its database", async () => {
+test("starts with data written by older versions without replaying pending prompts or opening its database", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "memosync-legacy-"))
   let server: Awaited<ReturnType<typeof startMemoSyncServer>> | undefined
   try {
@@ -20,6 +20,7 @@ test("starts with legacy study data without replaying pending prompts or opening
     const chat = await seed.createChat(project.id)
     await seed.appendMessage(chat.id, { _id: "old-prompt", createdAt: 1, kind: "user_prompt", content: "Existing conversation" })
     await seed.compact()
+    // Keep the stored event types, settings keys and entry IDs written by older versions.
     await writeFile(join(dataDir, "chats.jsonl"), JSON.stringify({ v: 2, type: "study.task_frozen", timestamp: 2, chatId: chat.id }) + "\n")
     await writeFile(join(dataDir, "settings.json"), JSON.stringify({ theme: "dark", memory: { enabled: false, learn: false }, memoryPreview: { enabled: true, autoProceedWhenEmpty: false }, studyMode: true, participantId: "legacy" }))
     const transcriptPath = join(dataDir, "transcripts", `${chat.id}.jsonl`)
@@ -37,6 +38,7 @@ test("starts with legacy study data without replaying pending prompts or opening
     memory.store.setKv("evolution_policy", { mode: "auto" })
     memory.close()
     await mkdir(join(dataDir, "experiments"))
+    // Preserve the database filename and log event type written by older versions.
     const legacyDatabase = "Legacy database must remain untouched, even when invalid SQLite"
     await writeFile(join(dataDir, "experiments", "study.sqlite"), legacyDatabase)
     await writeFile(join(dataDir, "experiments", "events.jsonl"), '{"type":"study.unknown","taskId":"old"}\n')

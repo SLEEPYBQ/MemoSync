@@ -370,7 +370,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
   function respond(decision: MemoryPreviewDecision, memoryIds?: string[], expectedUses?: ExpectedMemoryUse[]) {
     // Demo card: the production controls report into the Guide's local turn
-    // controller. No participant command or transcript endpoint is involved.
+    // controller. No user command or transcript endpoint is involved.
     if (dispatchPreviewDemoDecision(previewDemo, {
       previewId: message.previewId,
       decision,

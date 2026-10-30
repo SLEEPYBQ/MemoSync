@@ -384,8 +384,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   const hasViolation = counts.violated > 0
 
   return (
-    // A formal card, same family as the step gates (redesign 2026-08-07 §3):
-    // the audit is a station of the cycle, not a footnote under the reply.
+    // Give the audit its own card, matching the pre-turn review cards.
     <div className={MEMORY_CARD} ref={setRootRef}>
       <button type="button" onClick={toggleExpanded} className="group flex w-full flex-wrap items-baseline gap-2 text-left">
         <ShieldCheck aria-hidden className="h-4 w-4 text-muted-foreground" />
