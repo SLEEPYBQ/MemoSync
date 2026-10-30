@@ -20,7 +20,6 @@ import {
 import { resolveLocalPath } from "./paths"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
-const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
 // Bound both retained objects and serialized payload size; oversized transcripts
 // remain readable without flushing the smaller chats the user is switching among.
 const TRANSCRIPT_CACHE_CHAT_LIMIT = 8
@@ -362,7 +361,6 @@ export class EventStore {
   private readonly transcriptCache = new Map<string, { entries: TranscriptEntry[]; bytes: number }>()
   private transcriptCacheBytes = 0
   private transcriptCacheEntries = 0
-  private readonly chatsWithRecencyStamp = new Set<string>()
 
   constructor(dataDir = getDataDir(homedir())) {
     this.dataDir = dataDir
@@ -499,7 +497,6 @@ export class EventStore {
     this.sidebarProjectOrder = []
     this.legacySidebarProjectOrder = []
     this.clearTranscriptCache()
-    this.chatsWithRecencyStamp.clear()
   }
 
   private clearLegacyTranscriptState() {
@@ -780,7 +777,6 @@ export class EventStore {
       case "chat_last_message_at_set": {
         const chat = this.state.chatsById.get(event.chatId)
         if (!chat) break
-        this.chatsWithRecencyStamp.add(event.chatId)
         chat.lastMessageAt = Math.max(chat.lastMessageAt ?? event.at, event.at)
         chat.hasMessages = true
         chat.updatedAt = Math.max(chat.updatedAt, event.at)
@@ -882,21 +878,20 @@ export class EventStore {
   }
 
   /**
-   * Restore metadata without retaining transcripts in the hot cache. New logs
-   * carry prompt stamps, so a bounded tail is enough. For unstamped old chats
-   * whose prompt is buried, scan the full file to recover the exact prompt time
-   * rather than substituting a later tool/assistant timestamp. Output-only old
-   * transcripts fall back to their newest entry; genuinely empty chats stay undated.
+   * Restore metadata without retaining transcripts in the hot cache. A stamp
+   * may predate a later durable prompt whose stamp failed, and prompt timestamps
+   * need not be ordered. Stream every row to recover the maximum prompt time;
+   * neither a historical stamp nor a tail prompt proves the rest is covered.
+   * Output-only old transcripts fall back to their newest entry; genuinely
+   * empty chats stay undated.
    */
   private async hydrateChatMetadataFromTranscripts() {
     for (const chat of this.state.chatsById.values()) {
       if (chat.deletedAt) continue
       let newestEntryAt: number | undefined
-      let hasPrompt = false
       const consumeEntry = (entry: unknown) => {
         if (!isValidTranscriptEntry(entry)) return
         this.applyMessageMetadata(chat.id, entry)
-        if (entry.kind === "user_prompt") hasPrompt = true
         newestEntryAt = Math.max(newestEntryAt ?? entry.createdAt, entry.createdAt)
       }
       const consumeText = (text: string) => {
@@ -915,21 +910,7 @@ export class EventStore {
         try {
           const file = await open(this.transcriptPath(chat.id), "r")
           try {
-            const { size } = await file.stat()
-            const start = Math.max(0, size - TRANSCRIPT_METADATA_TAIL_BYTES)
-            const bytes = Buffer.alloc(size - start)
-            const { bytesRead } = await file.read(bytes, 0, bytes.length, start)
-            let text = bytes.subarray(0, bytesRead).toString("utf8")
-            if (start > 0) {
-              const newline = text.indexOf("\n")
-              text = newline === -1 ? "" : text.slice(newline + 1)
-            }
-            consumeText(text)
-            // A snapshot's date alone can be stale: older builds appended
-            // transcripts without logging recency after their last compaction.
-            if (!hasPrompt && !this.chatsWithRecencyStamp.has(chat.id) && start > 0) {
-              consumeText(await readFile(this.transcriptPath(chat.id), "utf8"))
-            }
+            for await (const line of file.readLines({ autoClose: false })) consumeText(line)
           } finally { await file.close() }
         } catch {
           // Missing/unreadable files must not prevent snapshot/log recovery.
@@ -1160,7 +1141,15 @@ export class EventStore {
           chat.updatedAt = Math.max(chat.updatedAt, createdAt)
         }
         this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries), Buffer.byteLength(payload) + 1)
-        await this.recordLastMessageAt(chatId, sourceEntries.at(-1)?.createdAt)
+        // Match ordinary chats: latest user activity, with a legacy fallback
+        // only when the inherited transcript contains no prompts.
+        let promptAt: number | undefined
+        let newestEntryAt: number | undefined
+        for (const entry of sourceEntries) {
+          if (entry.kind === "user_prompt") promptAt = Math.max(promptAt ?? entry.createdAt, entry.createdAt)
+          newestEntryAt = Math.max(newestEntryAt ?? entry.createdAt, entry.createdAt)
+        }
+        await this.recordLastMessageAt(chatId, promptAt ?? newestEntryAt)
       })
     }
 

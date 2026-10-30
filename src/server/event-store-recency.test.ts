@@ -112,20 +112,39 @@ describe("durable chat recency", () => {
     expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(4000)
   })
 
-  test("forks persist inherited conversation recency across restart and compaction", async () => {
-    const { dir, store, chat } = await setup()
+  test("forks inherit prompt recency and sidebar order across restart and compaction", async () => {
+    const { dir, store, project, chat } = await setup()
     await store.setChatProvider(chat.id, "claude")
     await store.setSessionToken(chat.id, "session-1")
     await store.setMemoryDisabled(chat.id, true)
     await store.appendMessage(chat.id, prompt(1000))
     await store.appendMessage(chat.id, output(2000))
+    const other = await store.createChat(project.id)
+    await store.appendMessage(other.id, prompt(1500))
     const fork = await store.forkChat(chat.id)
-    expect(fork.lastMessageAt).toBe(2000)
+    expect(fork.lastMessageAt).toBe(1000)
+    expect(store.listChatsByProject(project.id)[0]?.id).toBe(other.id)
     const recovered = await reload(dir)
-    expect(recovered.getChat(fork.id)?.lastMessageAt).toBe(2000)
+    expect(recovered.getChat(fork.id)?.lastMessageAt).toBe(1000)
+    expect(recovered.listChatsByProject(project.id)[0]?.id).toBe(other.id)
     expect(recovered.getChat(fork.id)?.memoryDisabled).toBe(true)
     await recovered.compact()
-    expect((await reload(dir)).getChat(fork.id)?.lastMessageAt).toBe(2000)
+    expect((await reload(dir)).getChat(fork.id)?.lastMessageAt).toBe(1000)
+  })
+
+  test.each([
+    { name: "zero prompt time", entries: [prompt(0), output(1000)], at: 0 },
+    { name: "out-of-order prompts", entries: [prompt(2000), prompt(1000), output(3000)], at: 2000 },
+    { name: "output-only legacy chat", entries: [output(2000), output(1000)], at: 2000 },
+    { name: "empty chat", entries: [], at: undefined },
+  ])("fork recency handles $name consistently with startup recovery", async ({ entries, at }) => {
+    const { dir, store, chat } = await setup()
+    await store.setChatProvider(chat.id, "claude")
+    await store.setSessionToken(chat.id, "session-1")
+    for (const entry of entries) await store.appendMessage(chat.id, entry)
+    const fork = await store.forkChat(chat.id)
+    expect(fork.lastMessageAt).toBe(at)
+    expect((await reload(dir)).getChat(fork.id)?.lastMessageAt).toBe(at)
   })
 
   test("conditional append stamps only accepted prompts using the serialized caller payload", async () => {
@@ -173,6 +192,32 @@ describe("durable chat recency", () => {
     expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(1000)
     await store.appendMessage(chat.id, prompt(2000))
     expect((await stamps(dir)).map(e => e.at)).toEqual([2000])
+  })
+
+  test.each([
+    { name: "output-only tail", olderTailPrompt: false },
+    { name: "older prompt in the tail", olderTailPrompt: true },
+  ])("recovers a buried prompt after a failed stamp despite an older durable stamp: $name", async ({ olderTailPrompt }) => {
+    const { dir, store, project, chat } = await setup()
+    const other = await store.createChat(project.id)
+    await store.appendMessage(other.id, prompt(1500))
+    await store.appendMessage(chat.id, prompt(1000))
+    const append = fs.appendFile
+    const failure = spyOn(fs, "appendFile").mockImplementation(async (...args) => {
+      if (String(args[0]).endsWith("/chats.jsonl")) throw new Error("stamp unavailable")
+      return append(...args)
+    })
+    try { await expect(store.appendMessage(chat.id, prompt(2000))).rejects.toThrow("stamp unavailable") }
+    finally { failure.mockRestore() }
+    await store.appendMessage(chat.id, output(3000, 300 * 1024))
+    await store.appendMessage(chat.id, output(4000))
+    if (olderTailPrompt) await store.appendMessage(chat.id, prompt(500))
+    expect((await stamps(dir)).filter(e => e.chatId === chat.id).map(e => e.at)).toEqual([1000])
+    const recovered = await reload(dir)
+    expect(recovered.getChat(chat.id)?.lastMessageAt).toBe(2000)
+    expect(recovered.listChatsByProject(project.id)[0]?.id).toBe(chat.id)
+    await recovered.compact()
+    expect((await reload(dir)).getChat(chat.id)?.lastMessageAt).toBe(2000)
   })
 
   test("reads during an in-flight stamp never duplicate the durable transcript row", async () => {
