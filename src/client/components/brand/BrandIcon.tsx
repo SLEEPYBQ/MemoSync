@@ -17,12 +17,16 @@ export function BrandMark({ brand, className }: { brand: BrandId; className?: st
   )
 }
 
-/** Pi has no vendor mark: a typeset π in the same tile. */
+/** Pi's own pixel mark (earendil-works/pi, pi-logo.ts): a 4×4 grid in coral, blue and yellow. */
 function PiMark({ className }: { className?: string }) {
   return (
-    <span aria-hidden="true" className={cn("inline-flex size-4 items-center justify-center font-serif text-[15px] italic leading-none", className)}>
-      π
-    </span>
+    <svg aria-hidden="true" viewBox="0 0 4 4" shapeRendering="crispEdges" className={cn("size-4 shrink-0", className)}>
+      <rect x="0" y="0" width="3" height="1" fill="#e48a7a" />
+      <rect x="2" y="1" width="1" height="1" fill="#e48a7a" />
+      <rect x="0" y="1" width="1" height="3" fill="#4f8eb3" />
+      <rect x="1" y="2" width="1" height="1" fill="#4f8eb3" />
+      <rect x="3" y="2" width="1" height="2" fill="#eab65d" />
+    </svg>
   )
 }
 

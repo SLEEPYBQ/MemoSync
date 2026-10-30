@@ -1,0 +1,55 @@
+# Builds the project website in site/ and publishes it to GitHub Pages.
+name: site
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", "src/client/components/brand/brand-svgs.ts", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", "src/client/components/brand/brand-svgs.ts", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Pull requests only build, each in its own group; deployments queue in one
+# group and are never cancelled half-way.
+concurrency:
+  group: site-${{ github.event_name == 'pull_request' && github.ref || 'pages' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - name: Install
+        working-directory: site
+        run: bun install --frozen-lockfile
+      - name: Build
+        working-directory: site
+        env:
+          SITE_BASE: /MemoSync/
+        run: bun run build
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: site/dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
