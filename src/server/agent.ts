@@ -1100,7 +1100,7 @@ export async function* createClaudeHarnessStream(
     }
     if (sdkMessage?.type === "result") {
       rootOrigin = "unknown"
-      outboundOrigins?.finishResult(origin, promptIds, sdkMessage.is_error === true)
+      outboundOrigins?.finishResult(origin, promptIds, sdkMessage.is_error === true || sdkMessage.subtype === "cancelled")
       rootOrigin = outboundOrigins?.current() ?? "unknown"
       // Results from background and user roots may interleave. Retire
       // only the lineage that actually completed: clearing the whole table on

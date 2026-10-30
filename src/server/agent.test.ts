@@ -3607,3 +3607,17 @@ test("UUID Stop revokes human authority even when the cancelled prompt never ret
     expect(store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(0)
   } finally { sdk.close() }
 })
+
+test("UUID origin reservations settle id-less cancelled SDK results before the next error", async () => {
+  const tracker = new ClaudeOutboundOriginTracker(true)
+  tracker.beginHumanTurn(1, "cancelled")
+  tracker.revokeHumanTurn(1)
+  tracker.beginHumanTurn(2, "next")
+  async function* sdk() {
+    yield { type: "result", subtype: "cancelled" }
+    yield { type: "result", subtype: "error_during_execution", is_error: true }
+  }
+  for await (const _event of createClaudeHarnessStream(sdk() as never, undefined, undefined, tracker)) { /* drain both results */ }
+  expect(tracker.current()).toBe("unknown")
+  expect(tracker.discardHumanTurnReservations([1, 2])).toBe(0)
+})
