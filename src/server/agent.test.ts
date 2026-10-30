@@ -3415,3 +3415,126 @@ test("Claude streaming deltas and unstamped entries never serialize raw SDK mess
     for (const entry of entries) expect(entry).not.toHaveProperty("debugRaw")
   }
 })
+
+describe("Claude prompt UUID lifecycle", () => {
+  function harness() {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    const prompts: Array<{ promptId: string; promptSeq: number }> = []
+    const passes: any[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {}, claudeSessionFileExists: () => true,
+      startClaudeSession: async () => ({
+        provider: "claude", echoesPromptIds: true, stream: events,
+        close: () => events.close(), interrupt: async () => {},
+        setModel: async () => {}, setPermissionMode: async () => {},
+        sendPrompt: async (_content: string, context: any) => { prompts.push(context) },
+      }),
+    })
+    ;(coordinator as any).launchPostTurnMemoryPasses = (args: any) => passes.push(args)
+    const send = (content: string) => coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content })
+    const init = () => events.push({ type: "transcript", entry: timestamped({ kind: "system_init", provider: "claude", model: "test", tools: [], agents: [], slashCommands: [], mcpServers: [] }) })
+    const result = (promptIds?: string[], text = "done") => events.push({ type: "transcript", promptIds, entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: text }) })
+    const flush = async () => {
+      const marker = timestamped({ kind: "assistant_text", text: "barrier" })
+      events.push({ type: "transcript", entry: marker })
+      await waitFor(() => store.messages.some(m => m._id === marker._id))
+    }
+    return { events, store, prompts, passes, coordinator, send, init, result, flush }
+  }
+
+  test("UUID result cannot finish a different prompt or launch its memory passes", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init()
+      await h.flush()
+      h.passes.splice(0)
+      const second = h.coordinator.activeTurns.get("chat-1")!
+      h.result([h.prompts[0]!.promptId], "late first result")
+      await h.flush()
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(second)
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.passes).toHaveLength(0)
+      h.result([h.prompts[1]!.promptId])
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      expect(h.passes).toHaveLength(1)
+      expect(h.passes[0]).toMatchObject({ userText: "second", turnId: second.turnId, turnNumber: second.turnNumber })
+      expect(h.prompts[0]!.promptId).toMatch(/^[0-9a-f-]{36}$/)
+      expect(h.prompts[1]!.promptId).not.toBe(h.prompts[0]!.promptId)
+    } finally { h.events.close() }
+  })
+
+  test("unrelated and id-less success results leave an UUID turn and queued drain pending", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      await h.send("queued")
+      h.result(["unrelated"])
+      h.result()
+      await h.flush()
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.prompts).toHaveLength(1)
+      h.result([h.prompts[0]!.promptId])
+      await waitFor(() => h.prompts.length === 2)
+      h.result([h.prompts[1]!.promptId])
+      await waitFor(() => h.store.turnFinishedCount === 2)
+    } finally { h.events.close() }
+  })
+
+  test("batched UUID results finish the steered prompt even if its predecessor never returned", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      const queued = await h.coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "steered" })
+      await h.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: queued.queuedMessageId })
+      h.result(h.prompts.map(p => p.promptId))
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
+    } finally { h.events.close() }
+  })
+
+  test("result UUID metadata survives normalization and releases only matching origin reservations", async () => {
+    const tracker = new ClaudeOutboundOriginTracker()
+    ;(tracker.beginHumanTurn as any)(1, "first")
+    ;(tracker.beginHumanTurn as any)(2, "second")
+    async function* sdk() {
+      yield { type: "result", subtype: "success", is_error: false, user_message_uuids: ["second"], result: "second" }
+      yield { type: "result", subtype: "success", is_error: false, user_message_uuid: "second", result: "duplicate" }
+    }
+    const results = []
+    for await (const event of createClaudeHarnessStream(sdk() as never, undefined, undefined, tracker)) {
+      if (event.entry?.kind === "result") results.push(event as any)
+    }
+    expect(results.map(event => event.promptIds)).toEqual([["second"], ["second"]])
+    expect(tracker.current()).toBe("human")
+    expect(tracker.discardHumanTurnReservations([1])).toBe(1)
+    expect(tracker.current()).toBe("unknown")
+  })
+
+  test("a replaced Claude stream throwing cannot fail or clear the successor", async () => {
+    const h = harness()
+    let rejectStream!: (error: Error) => void
+    try {
+      await h.send("successor")
+      const active = h.coordinator.activeTurns.get("chat-1")
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      let failures = 0
+      ;(h.store as any).recordTurnFailed = async () => { failures++ }
+      async function* obsoleteStream() { await new Promise((_, reject) => { rejectStream = reject }); yield {} }
+      const obsolete = { ...session, id: "obsolete", session: { ...session.session, stream: obsoleteStream(), close: () => {} } }
+      const pump = (h.coordinator as any).runClaudeSession(obsolete)
+      rejectStream(new Error("old transport failed"))
+      await pump
+      expect(failures).toBe(0)
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(active)
+      expect(h.coordinator.claudeSessions.get("chat-1")).toBe(session)
+    } finally { h.events.close() }
+  })
+})

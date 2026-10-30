@@ -360,9 +360,8 @@ interface ActiveTurn {
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
    * that point keeps the persistent Query (the provider acknowledges the
-   * cancelled prompt, and the next turn's `system_init` realigns the FIFO);
-   * a Stop before it retires the Query because a positional FIFO cannot tell
-   * this turn's late frames from the next turn's.
+   * cancelled prompt). Before it, retire the Query: UUIDs identify results,
+   * but untagged late assistant/tool frames still cannot be safely attributed.
    */
   providerTurnStarted: boolean
   clientTraceId?: string
@@ -398,8 +397,10 @@ interface ClaudeSessionHandle {
   close: () => void
   sendPrompt: (
     content: string,
-    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
+    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
   ) => Promise<void>
+  /** Known for the bundled SDK; override wrappers are detected on their first tagged result. */
+  echoesPromptIds?: boolean
   /** Release only the cancelled prompt reservations whose FIFO entries were
    * proven orphaned when a later provider turn started. */
   discardHumanTurnReservations?: (promptSeqs: readonly number[]) => number
@@ -423,7 +424,8 @@ interface ClaudeSessionState {
   sessionToken: string | null
   accountInfoLoaded: boolean
   nextPromptSeq: number
-  pendingPromptSeqs: number[]
+  pendingPrompts: Array<{ seq: number; id: string }>
+  echoesPromptIds: boolean
   /** Retired sessions may still have SDK messages queued while Query.close() settles. */
   retired: boolean
   retireReason: string | null
@@ -878,6 +880,15 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
   return []
 }
 
+function claudeResultPromptIds(message: any): string[] | undefined {
+  const ids = Array.isArray(message.user_message_uuids)
+    ? message.user_message_uuids.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+    : []
+  if (ids.length) return ids
+  return typeof message.user_message_uuid === "string" && message.user_message_uuid
+    ? [message.user_message_uuid] : undefined
+}
+
 export async function* createClaudeHarnessStream(
   q: Query,
   onTurnOriginChange?: (origin: HarnessEvent["origin"]) => void,
@@ -904,6 +915,7 @@ export async function* createClaudeHarnessStream(
   const lineageOrigins = new Map<string, HarnessEvent["origin"]>()
 
   for await (const sdkMessage of q as AsyncIterable<any>) {
+    const promptIds = sdkMessage?.type === "result" ? claudeResultPromptIds(sdkMessage) : undefined
     const explicitOrigin = (() => {
       const kind = sdkMessage?.origin?.kind
       return kind === "human"
@@ -1001,7 +1013,7 @@ export async function* createClaudeHarnessStream(
     }
     const sessionToken = typeof sdkMessage.session_id === "string" ? sdkMessage.session_id : null
     if (sessionToken) {
-      yield { type: "session_token", sessionToken, origin }
+      yield { type: "session_token", sessionToken, origin, promptIds }
     }
 
     // includePartialMessages: raw Anthropic stream events. Only the top-level
@@ -1033,6 +1045,7 @@ export async function* createClaudeHarnessStream(
         yield {
           type: "transcript",
           origin,
+          promptIds,
           entry: timestamped({
             kind: "context_window_updated",
             usage: usageSnapshot,
@@ -1067,6 +1080,7 @@ export async function* createClaudeHarnessStream(
         yield {
           type: "transcript",
           origin,
+          promptIds,
           entry: timestamped({
             kind: "context_window_updated",
             usage: finalUsage,
@@ -1079,11 +1093,11 @@ export async function* createClaudeHarnessStream(
     }
 
     for (const entry of normalizeClaudeStreamMessage(sdkMessage)) {
-      yield { type: "transcript", entry, origin }
+      yield { type: "transcript", entry, origin, promptIds }
     }
     if (sdkMessage?.type === "result") {
       rootOrigin = "unknown"
-      outboundOrigins?.finishResult(origin)
+      outboundOrigins?.finishResult(origin, promptIds, sdkMessage.is_error === true)
       rootOrigin = outboundOrigins?.current() ?? "unknown"
       // Results from background and user roots may interleave. Retire
       // only the lineage that actually completed: clearing the whole table on
@@ -1163,15 +1177,19 @@ export class ClaudeOutboundOriginTracker {
    * compatibility reservations; production Claude prompts use their exact
    * positive coordinator FIFO sequence. */
   private readonly pendingHumanTurns: number[] = []
+  private readonly promptIds = new Map<number, string>()
+  private echoesPromptIds: boolean
+  constructor(echoesPromptIds = false) { this.echoesPromptIds = echoesPromptIds }
   private nextAnonymousReservation = 0
   private root: HarnessEvent["origin"] = "unknown"
 
-  beginHumanTurn(promptSeq?: number) {
+  beginHumanTurn(promptSeq?: number, promptId?: string) {
     const reservation = promptSeq ?? -(this.nextAnonymousReservation += 1)
     if (this.pendingHumanTurns.includes(reservation)) {
       throw new Error(`Duplicate Claude human-turn reservation: ${reservation}`)
     }
     this.pendingHumanTurns.push(reservation)
+    if (promptId) this.promptIds.set(reservation, promptId)
     if (this.root === "unknown") this.root = "human"
   }
 
@@ -1179,7 +1197,10 @@ export class ClaudeOutboundOriginTracker {
     const index = promptSeq === undefined
       ? this.pendingHumanTurns.length - 1
       : this.pendingHumanTurns.indexOf(promptSeq)
-    if (index >= 0) this.pendingHumanTurns.splice(index, 1)
+    if (index >= 0) {
+      this.promptIds.delete(this.pendingHumanTurns[index]!)
+      this.pendingHumanTurns.splice(index, 1)
+    }
     if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
   }
 
@@ -1192,7 +1213,10 @@ export class ClaudeOutboundOriginTracker {
     const discarded = new Set(promptSeqs)
     const before = this.pendingHumanTurns.length
     for (let index = this.pendingHumanTurns.length - 1; index >= 0; index -= 1) {
-      if (discarded.has(this.pendingHumanTurns[index]!)) this.pendingHumanTurns.splice(index, 1)
+      if (discarded.has(this.pendingHumanTurns[index]!)) {
+        this.promptIds.delete(this.pendingHumanTurns[index]!)
+        this.pendingHumanTurns.splice(index, 1)
+      }
     }
     if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
     return before - this.pendingHumanTurns.length
@@ -1202,8 +1226,14 @@ export class ClaudeOutboundOriginTracker {
     this.root = origin ?? "unknown"
   }
 
-  finishResult(origin: HarnessEvent["origin"]) {
-    if (origin === "human") this.pendingHumanTurns.shift()
+  finishResult(origin: HarnessEvent["origin"], promptIds?: string[], endedEarly = false) {
+    if (promptIds?.length) {
+      this.echoesPromptIds = true
+      this.discardHumanTurnReservations(this.pendingHumanTurns.filter(seq => promptIds.includes(this.promptIds.get(seq) ?? "")))
+    } else if (origin === "human" && (!this.echoesPromptIds || endedEarly)) {
+      const seq = this.pendingHumanTurns[0]
+      if (seq !== undefined) this.cancelHumanTurn(seq)
+    }
     this.root = this.pendingHumanTurns.length > 0 ? "human" : "unknown"
   }
 
@@ -1213,6 +1243,7 @@ export class ClaudeOutboundOriginTracker {
 
   clear() {
     this.pendingHumanTurns.splice(0, this.pendingHumanTurns.length)
+    this.promptIds.clear()
     this.root = "unknown"
   }
 }
@@ -1315,7 +1346,8 @@ export async function startClaudeSession(args: {
   onMemoryProposal?: (created: MemoryItem[]) => void
 }): Promise<ClaudeSessionHandle> {
   const toolOriginResolver = new ClaudeToolOriginResolver()
-  const outboundOrigins = new ClaudeOutboundOriginTracker()
+  const echoesPromptIds = !process.env.CLAUDE_EXECUTABLE
+  const outboundOrigins = new ClaudeOutboundOriginTracker(echoesPromptIds)
   const plan: MemoryInjectionPlan | null = args.memoryPlan !== undefined
     ? args.memoryPlan
     : args.memory
@@ -1457,6 +1489,7 @@ export async function startClaudeSession(args: {
 
   return {
     provider: "claude",
+    echoesPromptIds,
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
 
     }, outboundOrigins),
@@ -1472,12 +1505,12 @@ export async function startClaudeSession(args: {
     },
     sendPrompt: async (
       content: string,
-      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
+      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
     ) => {
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
-      outboundOrigins.beginHumanTurn(context?.promptSeq)
+      outboundOrigins.beginHumanTurn(context?.promptSeq, context?.promptId)
       try {
         promptQueue.push({
           type: "user",
@@ -1487,6 +1520,7 @@ export async function startClaudeSession(args: {
           },
           parent_tool_use_id: null,
           session_id: args.sessionToken ?? "",
+          ...(context?.promptId ? { uuid: context.promptId as SDKUserMessage["uuid"] } : {}),
         })
       } catch (error) {
         outboundOrigins.cancelHumanTurn(context?.promptSeq)
@@ -5988,7 +6022,8 @@ export class AgentCoordinator {
       }
       const promptSeq = session.nextPromptSeq + 1
       session.nextPromptSeq = promptSeq
-      session.pendingPromptSeqs.push(promptSeq)
+      const promptId = crypto.randomUUID()
+      session.pendingPrompts.push({ seq: promptSeq, id: promptId })
       active.claudePromptSeq = promptSeq
       logClaudeSteer("claude_prompt_sent", {
         chatId: args.chatId,
@@ -5996,7 +6031,7 @@ export class AgentCoordinator {
         promptSeq,
         activeStatus: active.status,
         contentPreview: args.content.slice(0, 160),
-        pendingPromptSeqs: [...session.pendingPromptSeqs],
+        pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
       })
       try {
         await session.session.sendPrompt(promptText, {
@@ -6004,6 +6039,7 @@ export class AgentCoordinator {
           turn: active.turnNumber ?? turnNumber,
           engine: "claude",
           promptSeq,
+          promptId,
         })
       } catch (error) {
         // A rejected prompt cannot leave this turn or provider session active.
@@ -6203,7 +6239,8 @@ export class AgentCoordinator {
         sessionToken: resumeToken,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
-        pendingPromptSeqs: [],
+        pendingPrompts: [],
+        echoesPromptIds: started.echoesPromptIds ?? false,
         retired: false,
         retireReason: null,
         pump: null,
@@ -6394,15 +6431,32 @@ export class AgentCoordinator {
     return { chatId: forked.id }
   }
 
+  private takeAnsweredClaudePrompts(session: ClaudeSessionState, event: HarnessEvent): number[] {
+    if (event.promptIds?.length) {
+      session.echoesPromptIds = true
+      const answered = session.pendingPrompts.filter(prompt => event.promptIds!.includes(prompt.id))
+      session.pendingPrompts = session.pendingPrompts.filter(prompt => !event.promptIds!.includes(prompt.id))
+      return answered.map(prompt => prompt.seq)
+    }
+    const endedEarly = event.entry?.kind === "interrupted" || (event.entry?.kind === "result" && event.entry.isError)
+    if (session.echoesPromptIds && !endedEarly) return []
+    const head = session.pendingPrompts.shift()
+    return head ? [head.seq] : []
+  }
+
   private async runClaudeSession(session: ClaudeSessionState) {
     try {
       for await (const event of session.session.stream) {
-        if (session.retired) {
+        if (session.retired || this.claudeSessions.get(session.chatId) !== session) {
           this.reportBackgroundError?.(
             `[claude-retired-event] dropped ${event.entry?.kind ?? event.type} for chat ${session.chatId} after ${session.retireReason ?? "retirement"}`,
           )
           continue
         }
+        // Tagged stale results (including their token/usage metadata) cannot
+        // mutate a later turn. Unidentified successful background results also
+        // cannot consume a prompt on a UUID-capable session.
+        if (event.promptIds?.length && !session.pendingPrompts.some(prompt => event.promptIds!.includes(prompt.id))) continue
         const userOrigin = event.origin === "human"
           || ((event.origin === undefined || event.origin === "unknown"))
         if (!userOrigin) {
@@ -6424,6 +6478,9 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
+        const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
+          ? this.takeAnsweredClaudePrompts(session, event) : []
+        if ((event.entry.kind === "result" || event.entry.kind === "interrupted") && completedPromptSeqs.length === 0) continue
         if (event.entry.kind === "assistant_text" || event.entry.kind === "result" || event.entry.kind === "interrupted") {
           // Final text replaces the streaming preview in the same broadcast;
           // result/interrupted also sweep it in case no final text arrived.
@@ -6451,21 +6508,16 @@ export class AgentCoordinator {
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
           active.providerTurnStarted = true
-          // The CLI runs turns strictly in order, so once this turn has
-          // started no acknowledgement for an earlier prompt can still arrive.
-          // Drop orphaned sequences (a Stop the provider never acknowledged)
-          // so this turn's own result is matched to this turn.
-          if (active.claudePromptSeq !== undefined) {
+          // Compatibility for wrappers that never echo UUIDs: retain their
+          // historical init/FIFO resync. UUID sessions keep older prompts so a
+          // late result can be attributed even after this turn starts.
+          if (!session.echoesPromptIds && active.claudePromptSeq !== undefined) {
             const activeSeq = active.claudePromptSeq
-            const orphaned = session.pendingPromptSeqs.filter((seq) => seq < activeSeq)
+            const orphaned = session.pendingPrompts.filter(prompt => prompt.seq < activeSeq).map(prompt => prompt.seq)
             if (orphaned.length > 0) {
               const releasedOriginReservations = session.session
                 .discardHumanTurnReservations?.(orphaned) ?? 0
-              session.pendingPromptSeqs.splice(
-                0,
-                session.pendingPromptSeqs.length,
-                ...session.pendingPromptSeqs.filter((seq) => seq >= activeSeq),
-              )
+              session.pendingPrompts = session.pendingPrompts.filter(prompt => prompt.seq >= activeSeq)
               logClaudeSteer("claude_prompt_fifo_resync", {
                 chatId: session.chatId,
                 sessionId: session.id,
@@ -6487,13 +6539,9 @@ export class AgentCoordinator {
             chatId: session.chatId,
             sessionId: session.id,
             activePromptSeq: active.claudePromptSeq ?? null,
-            pendingPromptSeqs: [...session.pendingPromptSeqs],
+            pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
           })
         }
-
-        const completedClaudePromptSeq = event.entry.kind === "result" || event.entry.kind === "interrupted"
-          ? (session.pendingPromptSeqs.shift() ?? null)
-          : null
 
         logClaudeSteer("claude_event", {
           chatId: session.chatId,
@@ -6501,12 +6549,12 @@ export class AgentCoordinator {
           entryKind: event.entry.kind,
           eventOrigin: event.origin ?? "human",
           activePromptSeq: active?.claudePromptSeq ?? null,
-          completedPromptSeq: completedClaudePromptSeq,
+          completedPromptSeqs,
           activeStatus: active?.status ?? null,
-          pendingPromptSeqs: [...session.pendingPromptSeqs],
+          pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
         })
 
-        if (event.entry.kind === "result" && active && completedClaudePromptSeq === (active.claudePromptSeq ?? null)) {
+        if (event.entry.kind === "result" && active && active.claudePromptSeq !== undefined && completedPromptSeqs.includes(active.claudePromptSeq)) {
           active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
@@ -6554,7 +6602,7 @@ export class AgentCoordinator {
       }
     } catch (error) {
       const active = this.activeTurns.get(session.chatId)
-      if (active && !active.cancelRequested) {
+      if (!session.retired && this.claudeSessions.get(session.chatId) === session && active && !active.cancelRequested) {
         const message = error instanceof Error ? error.message : String(error)
         await this.store.appendMessage(
           session.chatId,
@@ -7159,13 +7207,9 @@ export class AgentCoordinator {
       activePromptSeq: active.claudePromptSeq ?? null,
     })
 
-    // A Stop keeps the persistent Claude Query once the provider has started
-    // the turn: the CLI acknowledges the cancelled prompt, and if it ever does
-    // not, the next turn's `system_init` drops the orphaned FIFO entry. Only a
-    // Stop that arrives before any provider frame is ambiguous — a positional
-    // FIFO could not tell this turn's late init/result from the next turn's —
-    // so that case retires the Query fail-closed; the persisted session token
-    // resumes context on the next send.
+    // Keep the before-start guard: result UUIDs do not identify late assistant
+    // or tool frames. Retiring the Query prevents those from contaminating the
+    // next turn's transcript, memory citations, and capture/trace inputs.
     if (active.provider === "claude" && !active.providerTurnStarted) {
       const session = this.claudeSessions.get(chatId)
       if (session) {
