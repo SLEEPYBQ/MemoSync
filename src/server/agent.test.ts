@@ -2555,7 +2555,7 @@ describe("AgentCoordinator claude integration", () => {
         stream: events,
         getAccountInfo: async () => null,
         interrupt: async () => {},
-        close: () => {},
+        close: () => events.close(),
         setModel: async () => {},
         setPermissionMode: async () => {},
         sendPrompt: async () => {
@@ -2864,6 +2864,148 @@ describe("AgentCoordinator claude integration", () => {
     sdkEvents.close()
   })
 
+  function createStopHarness(opts: { emitInitForFirstPrompt: boolean }) {
+    const order: string[] = []
+    const sessions: AsyncEventQueue<any>[] = []
+    const startTokens: Array<string | null> = []
+    const prompts: string[] = []
+    const store = createFakeStore()
+    const init = (events: AsyncEventQueue<any>) => events.push({
+      type: "transcript" as const,
+      origin: "human",
+      entry: timestamped({
+        kind: "system_init",
+        provider: "claude",
+        model: "claude-opus-4-1",
+        tools: [],
+        agents: [],
+        slashCommands: [],
+        mcpServers: [],
+      }),
+    })
+    const coordinator = new AgentCoordinator({
+      claudeSessionFileExists: () => true,
+      store: store as never,
+      onStateChange: () => {},
+      startClaudeSession: async (args) => {
+        const sessionNumber = sessions.length + 1
+        startTokens.push(args.sessionToken)
+        const events = new AsyncEventQueue<any>()
+        sessions.push(events)
+        async function* stream() {
+          try {
+            yield* events
+          } finally {
+            order.push(`pump-ended:${sessionNumber}`)
+          }
+        }
+        let closed = false
+        return {
+          provider: "claude",
+          stream: stream(),
+          getAccountInfo: async () => null,
+          // Deliberately emit no result/interrupted acknowledgement for a
+          // cancelled prompt: the CLI normally acknowledges within 100 ms, but
+          // the coordinator must stay correct when it does not.
+          interrupt: async () => {},
+          close: () => {
+            if (closed) return
+            closed = true
+            order.push(`query-close:${sessionNumber}`)
+            events.close()
+          },
+          setModel: async () => {},
+          setPermissionMode: async () => {},
+          sendPrompt: async (content: string) => {
+            prompts.push(content)
+            if (prompts.length === 1) {
+              events.push({ type: "session_token" as const, sessionToken: "resume-after-stop", origin: "human" })
+              if (opts.emitInitForFirstPrompt) init(events)
+              return
+            }
+            init(events)
+            events.push({
+              type: "transcript" as const,
+              origin: "human",
+              entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: "second turn done" }),
+            })
+          },
+        }
+      },
+    })
+    return { order, sessions, startTokens, prompts, store, coordinator }
+  }
+
+  test("Stop on a started Claude turn keeps the Claude Query; an unacknowledged cancel is realigned at the next prompt's system_init", async () => {
+    const h = createStopHarness({ emitInitForFirstPrompt: true })
+
+    await h.coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => h.store.chat.sessionToken === "resume-after-stop")
+    await waitFor(() => h.store.messages.some((entry) => entry.kind === "system_init"))
+
+    await h.coordinator.cancel("chat-1")
+
+    // The provider had started the turn, so the persistent Query survives Stop.
+    expect(h.coordinator.claudeSessions.has("chat-1")).toBe(true)
+    expect(h.order).toEqual([])
+
+    await h.coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "second prompt",
+      model: "claude-opus-4-1",
+    })
+    // The cancelled prompt was never acknowledged; the next turn's system_init
+    // drops that orphaned FIFO entry so this result finishes the right turn.
+    await waitFor(() => h.store.turnFinishedCount === 1)
+
+    expect(h.sessions).toHaveLength(1)
+    expect(h.startTokens).toEqual([null])
+    expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    h.sessions[0]!.close()
+  })
+
+
+  test("Stop before Claude started the turn retires the Claude Query and resumes the saved session", async () => {
+    const h = createStopHarness({ emitInitForFirstPrompt: false })
+
+    await h.coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "first prompt",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => h.store.chat.sessionToken === "resume-after-stop")
+
+    await h.coordinator.cancel("chat-1")
+
+    // No system_init: a positional FIFO cannot tell this turn's late frames
+    // from the next turn's, so the Query is retired fail-closed.
+    expect(h.order.indexOf("query-close:1")).toBeLessThan(h.order.indexOf("pump-ended:1"))
+    expect(h.coordinator.claudeSessions.has("chat-1")).toBe(false)
+
+    await h.coordinator.send({
+      type: "chat.send",
+      chatId: "chat-1",
+      provider: "claude",
+      content: "second prompt",
+      model: "claude-opus-4-1",
+    })
+    await waitFor(() => h.store.turnFinishedCount === 1)
+
+    expect(h.startTokens).toEqual([null, "resume-after-stop"])
+    expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toHaveLength(1)
+    h.sessions[1]!.close()
+  })
+
   test("Claude steer interrupts the active run and immediately sends the steered message", async () => {
     const events = new AsyncEventQueue<any>()
     const prompts: string[] = []
@@ -2892,6 +3034,10 @@ describe("AgentCoordinator claude integration", () => {
         setPermissionMode: async () => {},
         sendPrompt: async (content: string) => {
           prompts.push(content)
+          // The run being steered has started (system_init seen).
+          if (prompts.length === 1) {
+            events.push({ type: "transcript" as const, entry: timestamped({ kind: "system_init", provider: "claude", model: "claude-opus-4-1", tools: [], agents: [], slashCommands: [], mcpServers: [] }) })
+          }
         },
       }),
     })
