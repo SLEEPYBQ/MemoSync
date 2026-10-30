@@ -142,5 +142,21 @@
   "serverPartialPush": "A local commit was created, but the push did not complete.",
   "serverSettingsReset": "Some settings were reset to defaults: {{v0}}",
   "serverReviseFailed": "Sorry — I couldn't process that; the selection is unchanged.",
-  "serverSelectionUpdated": "Selection updated."
+  "serverSelectionUpdated": "Selection updated.",
+  "modelAccess_connection-invalid": "Connection settings are invalid.",
+  "modelAccess_connection-missing": "The selected connection is unavailable.",
+  "modelAccess_connection-read-only": "Environment connections are read-only.",
+  "modelAccess_connection-key-missing": "Add an API key for this connection.",
+  "modelAccess_connection-protocol-unsupported": "This connection does not support the selected engine.",
+  "modelAccess_engine-setup-invalid": "Engine settings are invalid.",
+  "modelAccess_model-unavailable": "The selected model is unavailable.",
+  "modelAccess_account-signed-out": "Sign in to the CLI, or select an API connection. Isolated profiles require a connection.",
+  "modelAccess_executable-missing": "The engine executable was not found.",
+  "modelAccess_executable-broken": "The engine executable could not run.",
+  "modelAccess_executable-incompatible": "The engine executable is incompatible.",
+  "modelAccess_model-access-unavailable": "Model access settings are unavailable.",
+  "modelAccess_model-access-storage-unreadable": "Model access settings could not be read.",
+  "modelAccess_model-access-storage-write-failed": "Model access settings could not be saved.",
+  "modelAccess_model-access-operation-failed": "The model access operation failed.",
+  "modelAccess_engine-runtime-mismatch": "The inherited engine runtime does not match."
 }

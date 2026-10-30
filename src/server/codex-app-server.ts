@@ -1,3 +1,4 @@
+import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
@@ -71,7 +72,7 @@ interface CodexAppServerProcess {
   once(event: "error", listener: (error: Error) => void): this
 }
 
-type SpawnCodexAppServer = (cwd: string, env?: Record<string, string | undefined>) => CodexAppServerProcess
+type SpawnCodexAppServer = (cwd: string, env?: Record<string, string | undefined>, runtime?: EngineRuntime) => CodexAppServerProcess
 
 interface PendingRequest<TResult> {
   method: string
@@ -130,6 +131,8 @@ interface SessionContext {
 }
 
 export interface StartCodexSessionArgs {
+  runtime?: EngineRuntime
+  connectionId?: string
   signal?: AbortSignal
   chatId: string
   cwd: string
@@ -190,7 +193,7 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
  * for the Claude engine (agent.ts).
  */
 function resolveCodexModel(model: string, env?: Record<string, string | undefined>): string {
-  return resolveCodexRuntimeModel(model, env)
+  return runtimeForEnv(env)?.model ?? resolveCodexRuntimeModel(model, env)
 }
 
 /**
@@ -804,14 +807,17 @@ export async function serializeCodexRuntimeStart<T>(profile: string, start: () =
 
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
+  private readonly pendingRuntimeStarts = new Map<string, { cancelled: boolean }>()
   private readonly spawnProcess: SpawnCodexAppServer
   private readonly serializeStarts: boolean
 
   constructor(args: { spawnProcess?: SpawnCodexAppServer; serializeStarts?: boolean } = {}) {
     this.serializeStarts = args.serializeStarts ?? !args.spawnProcess
-    this.spawnProcess = args.spawnProcess ?? ((cwd, env) => {
-      const runtime = prepareCodexRuntime(env)
-      return spawn("codex", runtime.args, {
+    this.spawnProcess = args.spawnProcess ?? ((cwd, _env, runtime) => {
+      if (!runtime) throw new Error("engine-runtime-missing")
+      const prepared = prepareCodexRuntime(runtime.env)
+      const command = runtime.launcher?.command ?? runtime.executable.path ?? "codex"
+      return spawn(command, [...(runtime.launcher?.args ?? []), ...prepared.args], {
         cwd,
         stdio: ["pipe", "pipe", "pipe"],
         env: runtime.env,
@@ -820,17 +826,31 @@ export class CodexAppServerManager {
   }
 
   async startSession(args: StartCodexSessionArgs) {
-    if (!this.serializeStarts) return this.startSessionUnlocked(args)
-    const env = args.subprocessEnv ?? process.env
-    const profile = env.MEMOSYNC_CLI_PROFILE_DIR || env.CODEX_HOME || join(homedir(), ".codex")
-    return serializeCodexRuntimeStart(profile, () => this.startSessionUnlocked(args))
+    args.signal?.throwIfAborted()
+    const pending = { cancelled: false }
+    this.pendingRuntimeStarts.set(args.chatId, pending)
+    try {
+      const runtime = args.runtime ?? await resolveEngineRuntime({ engine: "codex", model: args.model, connectionId: args.connectionId, env: args.subprocessEnv })
+      if (pending.cancelled) throw new Error("Codex session stopped")
+      args.signal?.throwIfAborted()
+      args = { ...args, runtime, subprocessEnv: runtime.env }
+      if (!this.serializeStarts) return await this.startSessionUnlocked(args)
+      const profile = runtime.env.CODEX_HOME || join(homedir(), ".codex")
+      return await serializeCodexRuntimeStart(profile, () => {
+        if (pending.cancelled) throw new Error("Codex session stopped")
+        return this.startSessionUnlocked(args)
+      })
+    } finally {
+      if (this.pendingRuntimeStarts.get(args.chatId) === pending) this.pendingRuntimeStarts.delete(args.chatId)
+    }
   }
 
   private async startSessionUnlocked(args: StartCodexSessionArgs) {
     args.signal?.throwIfAborted()
     const existing = this.sessions.get(args.chatId)
     if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
-      && (!args.disableExternalTools || existing.externalToolsDisabled)) {
+      && (!args.disableExternalTools || existing.externalToolsDisabled)
+      && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
       return existing.sessionToken
     }
 
@@ -838,7 +858,7 @@ export class CodexAppServerManager {
       this.stopSession(args.chatId)
     }
 
-    const child = this.spawnProcess(args.cwd, args.subprocessEnv)
+    const child = this.spawnProcess(args.cwd, args.subprocessEnv, args.runtime)
     const context: SessionContext = {
       chatId: args.chatId,
       cwd: args.cwd,
@@ -1127,6 +1147,8 @@ export class CodexAppServerManager {
   }
 
   stopSession(chatId: string) {
+    const pending = this.pendingRuntimeStarts.get(chatId)
+    if (pending) pending.cancelled = true
     const context = this.sessions.get(chatId)
     if (!context) return
     context.closed = true
@@ -1144,6 +1166,7 @@ export class CodexAppServerManager {
   }
 
   stopAll() {
+    for (const pending of this.pendingRuntimeStarts.values()) pending.cancelled = true
     for (const chatId of this.sessions.keys()) {
       this.stopSession(chatId)
     }

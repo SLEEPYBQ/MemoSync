@@ -1,3 +1,4 @@
+import { resolveEngineRuntime, type EngineRuntime } from "../model-access/runtime"
 // Shared fork-query runner: fork a just-finished Claude session (forkSession)
 // and ask ONE out-of-band question on top of the trajectory the server
 // already paid for. Measured in-container: a forked resume's API leg runs
@@ -12,6 +13,7 @@
 import { query } from "@anthropic-ai/claude-agent-sdk"
 
 export interface ForkQueryInput {
+  runtime?: EngineRuntime
   /** The just-finished Claude session's resume token. */
   sessionToken: string
   /** The project workspace the session ran in (resume needs the same cwd). */
@@ -34,6 +36,7 @@ export async function runForkQuery(input: ForkQueryInput): Promise<Record<string
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), input.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   try {
+    const runtime = input.runtime ?? await resolveEngineRuntime({ engine: "claude" })
     let text = ""
     const q = query({
       prompt: input.prompt,
@@ -44,10 +47,10 @@ export async function runForkQuery(input: ForkQueryInput): Promise<Record<string
         maxTurns: 1,
         allowedTools: [],
         abortController: controller,
-        env: (() => {
-          const { CLAUDECODE: _c, ...env } = process.env
-          return env
-        })(),
+        env: runtime.env,
+        model: runtime.model,
+        pathToClaudeCodeExecutable: runtime.executable.path,
+        settingSources: runtime.isolated ? [] : ["user", "project", "local"],
       },
     })
     for await (const m of q) {

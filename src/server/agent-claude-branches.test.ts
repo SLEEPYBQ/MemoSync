@@ -133,6 +133,14 @@ async function fixture(provider: AgentProvider, failCandidate = false) {
 describe("coordinator provider branches", () => {
   test("switching Claude vendors rebuilds the query with the same conversation token", async () => {
     const directory = mkdtempSync(join(tmpdir(), "memosync-vendor-switch-"))
+    const previousDeepseek = process.env.DEEPSEEK_API_KEY
+    const previousGlm = process.env.GLM_API_KEY
+    process.env.DEEPSEEK_API_KEY = "fake-deepseek"
+    process.env.GLM_API_KEY = "fake-glm"
+    cleanups.push(async () => {
+      if (previousDeepseek === undefined) delete process.env.DEEPSEEK_API_KEY; else process.env.DEEPSEEK_API_KEY = previousDeepseek
+      if (previousGlm === undefined) delete process.env.GLM_API_KEY; else process.env.GLM_API_KEY = previousGlm
+    })
     const store = new EventStore(join(directory, "events"))
     await store.initialize()
     const project = await store.openProject(directory)
@@ -217,4 +225,37 @@ describe("coordinator provider branches", () => {
     expect(h.mainPrompts).toHaveLength(0)
     expect(h.sidecarCalls()).toBe(0)
   })
+})
+
+test("per-chat connectionId routes identical model names to different credentials and rebuilds the main session", async () => {
+  const { ModelAccessService, setModelAccessService } = await import("./model-access/service")
+  const directory = mkdtempSync(join(tmpdir(), "memosync-chat-connection-"))
+  const { fakeExecutableResolver } = await import("./model-access/test-fixtures")
+  const service = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
+  const connections = await Promise.all(["A", "B"].map(name => service.saveConnection({ name, apiKey: `fake-key-${name}`, endpoints: [{ protocol: "anthropic-messages", baseUrl: `https://${name.toLowerCase()}.test` }], models: [{ id: "same-model" }] })))
+  setModelAccessService(service)
+  const store = new EventStore(join(directory, "events")); await store.initialize()
+  const project = await store.openProject(directory), chat = await store.createChat(project.id)
+  const environments: Array<Record<string, string | undefined>> = []
+  let results = 0
+  const coordinator = new AgentCoordinator({
+    store, onStateChange: () => {}, claudeSessionFileExists: () => true,
+    generateTitle: async () => ({ title: "Connection routing", usedFallback: true, failureMessage: null }),
+    startClaudeSession: async options => {
+      environments.push(options.subprocessEnv!)
+      const queue = new Queue()
+      return { provider: "claude", stream: queue, interrupt: async () => {}, close: () => queue.close(), setModel: async () => {}, setPermissionMode: async () => {}, sendPrompt: async () => {
+        queue.push({ type: "session_token", sessionToken: "conversation" })
+        queue.push({ type: "transcript", origin: "human", entry: { _id: crypto.randomUUID(), createdAt: Date.now(), kind: "result", subtype: "success", isError: false, durationMs: 1, result: "Ready" } }); results++
+      } }
+    },
+  })
+  try {
+    for (const [index, c] of connections.entries()) {
+      await coordinator.send({ type: "chat.send", chatId: chat.id, provider: "claude", model: "same-model", modelOptions: { claude: { connectionId: c.id } }, content: "Ready" })
+      await until(() => results === index + 1 && !coordinator.activeTurns.has(chat.id))
+    }
+    expect(environments.map(env => env.ANTHROPIC_AUTH_TOKEN)).toEqual(["fake-key-A", "fake-key-B"])
+    expect(environments.map(env => env.ANTHROPIC_BASE_URL)).toEqual(["https://a.test", "https://b.test"])
+  } finally { await coordinator.shutdownRuntime(); setModelAccessService(undefined); rmSync(directory, { recursive: true, force: true }) }
 })

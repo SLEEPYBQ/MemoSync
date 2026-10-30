@@ -1,0 +1,4 @@
+@import "../../../index.css";
+/* The mounted suite runs from src/client/model-access, not the repo root.
+   Scan the client explicitly so Tailwind generates the production utilities. */
+@source "../../";

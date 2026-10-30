@@ -1,3 +1,4 @@
+import { subscribeModelAccess, type AccessModelOptions } from "../model-access/modelAccess"
 import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom"
@@ -532,42 +533,46 @@ function logSendToStartingTrace(
   })
 }
 
-function composerStateFromSendOptions(options?: {
+export function composerStateFromSendOptions(options?: {
   provider?: AgentProvider
   model?: string
-  modelOptions?: ModelOptions
+  modelOptions?: AccessModelOptions
   planMode?: boolean
 }): ComposerState | null {
-  if (options?.provider === "claude" && options.model && options.modelOptions?.claude) {
+  const connectionId = options?.modelOptions?.connectionId ?? (options?.provider ? options.modelOptions?.[options.provider]?.connectionId : undefined)
+  if (options?.provider === "claude" && options.model && (options.modelOptions?.claude || connectionId)) {
     return {
       provider: "claude",
       model: options.model,
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: options.modelOptions.claude.reasoningEffort ?? "high",
-        contextWindow: normalizeClaudeContextWindow(options.model, options.modelOptions.claude.contextWindow),
+        reasoningEffort: options.modelOptions?.claude?.reasoningEffort ?? "high",
+        contextWindow: normalizeClaudeContextWindow(options.model, options.modelOptions?.claude?.contextWindow),
       },
       planMode: Boolean(options.planMode),
     }
   }
 
-  if (options?.provider === "codex" && options.model && options.modelOptions?.codex) {
+  if (options?.provider === "codex" && options.model && (options.modelOptions?.codex || connectionId)) {
     return {
       provider: "codex",
       model: options.model,
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: options.modelOptions.codex.reasoningEffort ?? "high",
-        fastMode: options.modelOptions.codex.fastMode ?? false,
+        reasoningEffort: options.modelOptions?.codex?.reasoningEffort ?? "high",
+        fastMode: options.modelOptions?.codex?.fastMode ?? false,
       },
       planMode: Boolean(options.planMode),
     }
   }
 
-  if (options?.provider === "pi" && options.model && options.modelOptions?.pi) {
+  if (options?.provider === "pi" && options.model && (options.modelOptions?.pi || connectionId)) {
     return {
       provider: "pi",
       model: options.model,
+      ...(connectionId ? { connectionId } : {}),
       modelOptions: {
-        reasoningEffort: isPiReasoningEffort(options.modelOptions.pi.reasoningEffort)
+        reasoningEffort: isPiReasoningEffort(options.modelOptions?.pi?.reasoningEffort)
           ? options.modelOptions.pi.reasoningEffort
           : "medium",
       },
@@ -901,6 +906,8 @@ export function useAppState(activeChatId: string | null): AppState {
   )
 
   useEffect(() => socket.onStatus(setConnectionStatus), [socket])
+
+  useEffect(() => subscribeModelAccess(socket), [socket])
 
   useEffect(() => {
     return socket.subscribe<SidebarData>({ type: "sidebar", patches: true }, (snapshot) => {

@@ -208,7 +208,7 @@ function normalizeClaudePreference(value?: {
   modelOptions?: Partial<Record<keyof ClaudeModelOptions, unknown>>
   planMode?: unknown
 }): ProviderPreference<ClaudeModelOptions> {
-  const model = normalizeClaudeModelId(typeof value?.model === "string" ? value.model : undefined)
+  const model = value?.modelOptions?.connectionId && typeof value.model === "string" ? value.model : normalizeClaudeModelId(typeof value?.model === "string" ? value.model : undefined)
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   const normalizedEffort = isClaudeReasoningEffort(reasoningEffort)
     ? reasoningEffort
@@ -219,6 +219,7 @@ function normalizeClaudePreference(value?: {
   return {
     model,
     modelOptions: {
+      ...(typeof value?.modelOptions?.connectionId === "string" ? { connectionId: value.modelOptions.connectionId } : {}),
       reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
       contextWindow: normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow),
     },
@@ -234,8 +235,9 @@ function normalizeCodexPreference(value?: {
 }): ProviderPreference<CodexModelOptions> {
   const reasoningEffort = value?.modelOptions?.reasoningEffort
   return {
-    model: normalizeCodexModelId(typeof value?.model === "string" ? value.model : undefined),
+    model: value?.modelOptions?.connectionId && typeof value.model === "string" ? value.model : normalizeCodexModelId(typeof value?.model === "string" ? value.model : undefined),
     modelOptions: {
+      ...(typeof value?.modelOptions?.connectionId === "string" ? { connectionId: value.modelOptions.connectionId } : {}),
       reasoningEffort: isCodexReasoningEffort(reasoningEffort)
         ? reasoningEffort
         : isCodexReasoningEffort(value?.effort)
@@ -259,6 +261,7 @@ function normalizePiPreference(value?: {
   return {
     model: normalizePiModelId(typeof value?.model === "string" ? value.model : undefined),
     modelOptions: {
+      ...(typeof value?.modelOptions?.connectionId === "string" ? { connectionId: value.modelOptions.connectionId } : {}),
       reasoningEffort: isPiReasoningEffort(reasoningEffort)
         ? reasoningEffort
         : isPiReasoningEffort(value?.effort)

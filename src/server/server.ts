@@ -1,3 +1,5 @@
+import { getModelAccessService, ModelAccessService, setModelAccessService } from "./model-access/service"
+import { resolveEngineRuntime } from "./model-access/runtime"
 import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { uiJson } from "../shared/ui-copy"
 import { stat } from "node:fs/promises"
@@ -15,7 +17,7 @@ import {
 } from "../shared/preview-proxy"
 import type { ShareMode } from "../shared/share"
 import type { AgentProvider, ChatAttachment } from "../shared/types"
-import { AgentCoordinator, buildClaudeSdkRuntimeOptions, buildClaudeSubprocessEnv } from "./agent"
+import { AgentCoordinator } from "./agent"
 import { AppSettingsManager } from "./app-settings"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
@@ -269,6 +271,13 @@ async function startLockedMemoSyncServer(
     .map((origin) => origin.trim())
     .filter(Boolean)
   const store = new EventStore(options.dataDir)
+  // initialize() resolves executables and creates the first Settings snapshot.
+  // Gate both that work and the HTTP/WebSocket server on the imported PATH.
+  await shellPathReady
+  const modelAccess = await new ModelAccessService({ dataDir: store.dataDir }).initialize()
+  setModelAccessService(modelAccess)
+  const disposeModelAccess = () => { if (getModelAccessService() === modelAccess) setModelAccessService(undefined) }
+  onStartupCleanup(disposeModelAccess)
   const diffStore = new DiffStore(store.dataDir)
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
@@ -327,7 +336,7 @@ async function startLockedMemoSyncServer(
       })
     : null
   // Post-turn memory passes run on the selected CLI runtime when available.
-  const branchMemory = createBranchJsonCaller({ resolve: context => {
+  const branchMemory = createBranchJsonCaller({ resolve: async context => {
     const chat = context.sessionId ? store.getChat(context.sessionId) : undefined
     const project = store.getProject(context.projectId ?? chat?.projectId ?? "")
     const current = context.sessionId ? agent?.memoryRuntimeChoice(context.sessionId) : undefined
@@ -337,11 +346,8 @@ async function startLockedMemoSyncServer(
     const model = current?.model ?? lastInit?.model ?? appSettings.getSnapshot().providerDefaults[provider].model
       ?? getServerProviderCatalog(provider).defaultModel
     const localPath = project?.localPath ?? process.cwd()
-    const runtime = provider === "claude" ? buildClaudeSdkRuntimeOptions({
-      requestedModel: model,
-      env: buildClaudeSubprocessEnv({ localPath }),
-    }) : null
-    return { provider, localPath, model: runtime?.model ?? model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime?.env }
+    const runtime = current?.runtime ?? await resolveEngineRuntime({ engine: provider, model })
+    return { provider, localPath, model: runtime.model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime.env, runtime }
   } })
   const memoryLlm = branchMemory.callJson
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
@@ -450,6 +456,7 @@ async function startLockedMemoSyncServer(
   agent = activeAgent
   onStartupCleanup(() => activeAgent.shutdownRuntime())
   router = createWsRouter({
+    modelAccess,
     store,
     diffStore,
     agent: activeAgent,
@@ -713,10 +720,11 @@ async function startLockedMemoSyncServer(
     }
   }
 
+  const stopServer = server!.stop.bind(server!)
+  server!.stop = (closeActiveConnections?: boolean) => { disposeModelAccess(); return stopServer(closeActiveConnections) }
   onStartupCleanup(() => server.stop(true))
   // Do not launch writers until startup can no longer fail to bind, and not
   // before agents can find their CLIs on the login shell's PATH.
-  await shellPathReady
   const staleEmptyChatPruneInterval = setInterval(() => {
     void router.pruneStaleEmptyChats()
       .then(() => router.broadcastSnapshots())

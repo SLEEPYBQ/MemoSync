@@ -1,3 +1,5 @@
+import { getModelAccessService } from "./model-access/service"
+import { endpointForEngine } from "../shared/model-access"
 import type {
   AgentProvider,
   ClaudeContextWindow,
@@ -54,6 +56,24 @@ function createServerProviders(): ProviderCatalogEntry[] {
 export const SERVER_PROVIDERS: ProviderCatalogEntry[] = createServerProviders()
 
 export function deployedProviders(env: Readonly<Record<string, string | undefined>> = process.env): ProviderCatalogEntry[] {
+  const access = getModelAccessService()
+  if (access) return SERVER_PROVIDERS.map(provider => {
+    const setup = access.setup(provider.id)
+    const connections = access.connections().filter(c => endpointForEngine(provider.id, c))
+    const models: ProviderModelOption[] = connections.flatMap(c => c.models.map(m => ({
+      id: m.id, label: m.label || m.id, supportsEffort: m.supportsReasoning ?? true,
+      connectionId: c.id, vendor: c.name,
+      ...(provider.id === "claude" && (m.contextWindow ?? 0) >= 1_000_000 ? { contextWindowOptions: [{ id: "1m" as const, label: "1M" }] } : {}),
+    })))
+    if (setup.access.mode === "account") {
+      if (provider.id === "claude") models.unshift(...["sonnet", "opus", "haiku"].map(id => ({ id, label: id, supportsEffort: true })))
+      if (provider.id === "codex") models.unshift(...HARD_CODED_CODEX_MODELS)
+    }
+    const connectionId = setup.access.mode === "connection" ? setup.access.connectionId : undefined
+    const selected = connections.find(c => c.id === connectionId)
+    const defaultModel = setup.access.mode === "connection" ? setup.access.defaultModel || selected?.models[0]?.id || "" : provider.id === "claude" ? "sonnet" : provider.defaultModel
+    return { ...provider, models, defaultModel }
+  })
   return SERVER_PROVIDERS.map((provider) => {
     if (provider.id !== "codex" || !isCliIsolationEnabled(env)) return provider
     try {
@@ -151,6 +171,7 @@ export function normalizeClaudeModelOptions(
 ): ClaudeModelOptions {
   const reasoningEffort = modelOptions?.claude?.reasoningEffort
   return {
+    ...(modelOptions?.claude?.connectionId ? { connectionId: modelOptions.claude.connectionId } : {}),
     reasoningEffort: isClaudeReasoningEffort(reasoningEffort)
       ? reasoningEffort
       : isClaudeReasoningEffort(legacyEffort)
@@ -163,6 +184,7 @@ export function normalizeClaudeModelOptions(
 export function normalizeCodexModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): CodexModelOptions {
   const reasoningEffort = modelOptions?.codex?.reasoningEffort
   return {
+    ...(modelOptions?.codex?.connectionId ? { connectionId: modelOptions.codex.connectionId } : {}),
     reasoningEffort: isCodexReasoningEffort(reasoningEffort)
       ? reasoningEffort
       : isCodexReasoningEffort(legacyEffort)
@@ -181,6 +203,7 @@ export function codexServiceTierFromModelOptions(modelOptions: CodexModelOptions
 export function normalizePiModelOptions(modelOptions?: ModelOptions, legacyEffort?: string): PiModelOptions {
   const reasoningEffort = modelOptions?.pi?.reasoningEffort
   return {
+    ...(modelOptions?.pi?.connectionId ? { connectionId: modelOptions.pi.connectionId } : {}),
     reasoningEffort: isPiReasoningEffort(reasoningEffort)
       ? reasoningEffort
       : isPiReasoningEffort(legacyEffort)

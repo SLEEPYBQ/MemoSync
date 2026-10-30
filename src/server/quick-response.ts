@@ -1,3 +1,4 @@
+import { resolveEngineRuntime } from "./model-access/runtime"
 import { query } from "@anthropic-ai/claude-agent-sdk"
 import { homedir } from "node:os"
 import OpenAI from "openai"
@@ -144,9 +145,16 @@ export function getClaudeStructuredQueryOptions(
 }
 
 export async function runClaudeStructured(args: Omit<StructuredQuickResponseArgs<unknown>, "parse">): Promise<unknown | null> {
+  const runtime = await resolveEngineRuntime({ engine: "claude" })
   const q = query({
     prompt: args.prompt,
-    options: getClaudeStructuredQueryOptions(args),
+    options: {
+      cwd: args.cwd, model: runtime.model, tools: [], systemPrompt: "", effort: "low",
+      permissionMode: "bypassPermissions", persistSession: false,
+      outputFormat: { type: "json_schema", schema: args.schema },
+      env: runtime.env, pathToClaudeCodeExecutable: runtime.executable.path,
+      ...(runtime.isolated ? { settingSources: [] } : {}),
+    },
   })
 
   try {

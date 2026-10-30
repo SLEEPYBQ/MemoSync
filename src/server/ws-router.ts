@@ -1,10 +1,12 @@
 import { diffSidebarIndex, indexSidebarData, type SidebarIndex } from "../shared/sidebar-patch"
+import type { ModelAccessService } from "./model-access/service"
 import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
 import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
+import type { ModelAccessSnapshot } from "../shared/model-access"
 import { isClientEnvelope } from "../shared/protocol"
 import type {
   AppSettingsPatch,
@@ -118,7 +120,21 @@ export interface ClientState {
   protectedDraftChatIds?: Set<string>
 }
 
+/** Model access service (src/server/model-access/). Optional so tests can omit it. */
+export type ModelAccessRouterService = Pick<ModelAccessService, "getSnapshot"> & Partial<Pick<ModelAccessService, "saveConnection" | "deleteConnection" | "setEngine" | "testConnection" | "refreshExecutables" | "onChange">>
+
+const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
+  connections: [],
+  presets: [],
+  engines: {
+    claude: { engine: "claude", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    codex: { engine: "codex", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    pi: { engine: "pi", setup: { access: { mode: "account" } }, executable: { state: "not-needed" }, ready: false, problem: "connection-missing" },
+  },
+}
+
 interface CreateWsRouterArgs {
+  modelAccess?: ModelAccessRouterService
   store: EventStore
   diffStore?: Pick<DiffStore, "getProjectSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
   agent: AgentCoordinator
@@ -431,6 +447,7 @@ export function createWsRouter({
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
+  modelAccess,
   getSelfPort,
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
@@ -855,6 +872,15 @@ export function createWsRouter({
       }
     }
 
+    if (topic.type === "model-access") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: { type: "model-access", data: modelAccess?.getSnapshot() ?? EMPTY_MODEL_ACCESS_SNAPSHOT },
+      }
+    }
+
     if (topic.type === "project-git") {
       return {
         v: PROTOCOL_VERSION,
@@ -1238,6 +1264,8 @@ export function createWsRouter({
     }
   })
 
+  const disposeModelAccessEvents = modelAccess?.onChange?.(() => { void broadcastSnapshots() })
+
   const disposeAppSettingsEvents = resolvedAppSettings.onChange(() => {
     for (const ws of sockets) {
       const snapshotSignatures = ensureSnapshotSignatures(ws)
@@ -1282,6 +1310,24 @@ export function createWsRouter({
     const { command, id } = message
     try {
       switch (command.type) {
+        case "modelAccess.saveConnection":
+        case "modelAccess.deleteConnection":
+        case "modelAccess.setEngine":
+        case "modelAccess.testConnection":
+        case "modelAccess.refreshExecutables": {
+          if (!modelAccess) throw new Error("model-access-unavailable")
+          let result: unknown
+          if (command.type === "modelAccess.saveConnection" && modelAccess.saveConnection) result = await modelAccess.saveConnection(command.connection)
+          else if (command.type === "modelAccess.deleteConnection" && modelAccess.deleteConnection) await modelAccess.deleteConnection(command.connectionId)
+          else if (command.type === "modelAccess.setEngine" && modelAccess.setEngine) await modelAccess.setEngine(command.engine, command.setup)
+          else if (command.type === "modelAccess.testConnection" && modelAccess.testConnection) result = await modelAccess.testConnection(command.connection, command.engine, command.model)
+          else if (command.type === "modelAccess.refreshExecutables" && modelAccess.refreshExecutables) result = await modelAccess.refreshExecutables()
+          else throw new Error("model-access-unavailable")
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          await broadcastSnapshots()
+          return
+        }
+
         case "system.ping": {
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await retryDirtySnapshots(ws)
@@ -1887,7 +1933,10 @@ export function createWsRouter({
 
       await broadcastSnapshots()
     } catch (error) {
-      const messageText = error instanceof Error ? error.message : String(error)
+      const rawMessage = error instanceof Error ? error.message : String(error)
+      const messageText = command.type.startsWith("modelAccess.")
+        ? /^(connection-(invalid|missing|read-only|key-missing|protocol-unsupported)|engine-setup-invalid|model-unavailable|model-access-(unavailable|storage-unreadable|storage-write-failed))$/.test(rawMessage) ? rawMessage : "model-access-operation-failed"
+        : rawMessage
       console.error("[ws-router] command failed", {
         id,
         type: command.type,
@@ -1979,6 +2028,7 @@ export function createWsRouter({
       disposeTerminalEvents()
       disposeKeybindingEvents()
       disposeAppSettingsEvents()
+      disposeModelAccessEvents?.()
       disposeUpdateEvents()
     },
   }

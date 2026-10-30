@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ChatAttachment, TranscriptEntry } from "../shared/types"
+import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
 import {
   AgentCoordinator,
   ClaudeOutboundOriginTracker,
@@ -21,6 +21,51 @@ import {
 } from "./agent"
 import type { HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
+import { ModelAccessService, setModelAccessService } from "./model-access/service"
+import { fakeExecutableResolver } from "./model-access/test-fixtures"
+import type { EngineRuntime } from "./model-access/runtime"
+
+for (const engine of ["claude", "codex", "pi"] as const) {
+  for (const payload of ["top-level", "legacy", "both"] as const) {
+    test(`${engine} chat selection resolves connection B over default A (${payload})`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "chat-connection-"))
+      const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir }, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
+      const endpoints = [
+        { protocol: "anthropic-messages" as const, baseUrl: "http://127.0.0.1:1234" },
+        { protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" },
+      ]
+      let bootModel: string | undefined
+      let bootRuntime: EngineRuntime | undefined
+      let piBaseUrl: string | undefined
+      const bootError = new Error("test-provider-boot")
+      const coordinator = new AgentCoordinator({
+        store: createFakeStore() as never,
+        onStateChange: () => {},
+        startClaudeSession: async args => { bootModel = args.model; bootRuntime = args.engineRuntime; throw bootError },
+        codexManager: { startSession: async (args: { model: string; runtime: EngineRuntime }) => { bootModel = args.model; bootRuntime = args.runtime; throw bootError } } as never,
+        piManager: { startTurn: async (args: { model: string; connection: { baseUrl: string } }) => { bootModel = args.model; piBaseUrl = args.connection.baseUrl; throw bootError } } as never,
+      })
+      try {
+        const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
+        const b = await service.saveConnection({ name: "B", endpoints: endpoints.map(e => ({ ...e, baseUrl: e.baseUrl.replace("1234", "5678") })), models: [{ id: "model-b" }] })
+        await service.setEngine(engine, { access: { mode: "connection", connectionId: a.id, defaultModel: "model-a" } })
+        setModelAccessService(service)
+        const modelOptions = {
+          ...(payload !== "legacy" ? { connectionId: b.id } : {}),
+          ...(payload !== "top-level" ? { [engine]: { connectionId: payload === "both" ? a.id : b.id } } : {}),
+        } as ModelOptions
+        // Stop at the provider boot boundary: exercise send + runtime resolution without starting a real agent.
+        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model: "model-b", modelOptions, content: "hello" })).rejects.toThrow(bootError.message)
+        expect(bootModel?.replace(/\[1m\]$/, "")).toBe("model-b")
+        if (engine === "pi") expect(piBaseUrl).toBe("http://127.0.0.1:5678/v1")
+        else expect(bootRuntime).toMatchObject({ connectionId: b.id, model: "model-b" })
+      } finally {
+        setModelAccessService(undefined)
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  }
+}
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(entry: T): TranscriptEntry {
   return {

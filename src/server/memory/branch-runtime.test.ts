@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import type { query, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from "../codex-app-server"
+import { ModelAccessService } from "../model-access/service"
+import { resolveEngineRuntime } from "../model-access/runtime"
+import { fakeExecutableResolver } from "../model-access/test-fixtures"
 import type { HarnessEvent } from "../harness-types"
 import { MISSING_PI_CONNECTION_MESSAGE, type StartPiTurnArgs } from "../pi-agent"
 import {
@@ -126,7 +129,7 @@ describe("persistent memory branches", () => {
     }]])
     const schema = { type: "object", properties: { selected: { type: "array" } } }
     const env = { ANTHROPIC_MODEL: "model[1m]", CLAUDECODE: "nested" }
-    const branch = createMemoryBranch({ ...base, subprocessEnv: env }, fake)
+    const branch = createMemoryBranch({ ...base, subprocessEnv: env, runtime: { engine: "claude", executable: { state: "ready", path: "/test/claude" }, env, model: "model[1m]", args: [], isolated: true } }, fake)
     expect(await branch.ask("Select working memory", { schema })).toEqual({ selected: [] })
     expect(fake.calls[0].options?.outputFormat).toEqual({ type: "json_schema", schema })
     expect(fake.calls[0].options?.env?.ANTHROPIC_MODEL).toBe("model[1m]")
@@ -247,7 +250,8 @@ describe("persistent memory branches", () => {
     const claudeQuery: typeof query = () => Object.assign((async function* () {
       await new Promise<void>((resolve) => { release = resolve })
     })(), { close() { closed = true; release?.() } }) as unknown as Query
-    const branch = createMemoryBranch({ ...base, timeoutMs: 5 }, { claudeQuery })
+    const runtime = await resolveEngineRuntime({ engine: "claude", service: new ModelAccessService({ env: {}, resolveExecutable: fakeExecutableResolver }) })
+    const branch = createMemoryBranch({ ...base, runtime, timeoutMs: 5 }, { claudeQuery })
     const first = branch.ask("Prepare changes")
     const next = branch.ask("Follow up")
     await expect(first).rejects.toThrow("timed out")
@@ -269,7 +273,8 @@ describe("persistent memory branches", () => {
         else yield { type: "result", subtype: "success", is_error: false, session_id: "saved-child", result: '{"selected":[]}' } as SDKMessage
       })(), { close() { release?.() } }) as unknown as Query
     }
-    const branch = createMemoryBranch({ ...base, timeoutMs: 5 }, { claudeQuery })
+    const runtime = await resolveEngineRuntime({ engine: "claude", service: new ModelAccessService({ env: {}, resolveExecutable: fakeExecutableResolver }) })
+    const branch = createMemoryBranch({ ...base, runtime, timeoutMs: 5 }, { claudeQuery })
     await expect(branch.ask("Select working memory")).rejects.toThrow("timed out")
     expect(branch.sessionToken).toBe("saved-child")
     expect(await branch.ask("Retry the selection using your saved analysis")).toEqual({ selected: [] })

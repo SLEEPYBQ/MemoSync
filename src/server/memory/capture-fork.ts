@@ -1,3 +1,4 @@
+import type { EngineRuntime } from "../model-access/runtime"
 // Fork-based capture extraction (user decision 2026-08-08, option A). The
 // sidecar capture pass only ever saw the user message + the assistant's final
 // prose — the one pass whose job is "extract what this work taught us" was
@@ -10,6 +11,7 @@ import { runForkQuery } from "./fork-query"
 import { CANDIDATE_FIELD_SPEC } from "./capture"
 
 export interface ForkCaptureInput {
+  runtime?: EngineRuntime
   sessionToken: string
   localPath: string
   timeoutMs?: number
@@ -32,6 +34,7 @@ export function buildForkCapturePrompt(): string {
 
 export async function runForkCapture(input: ForkCaptureInput): Promise<Record<string, unknown> | null> {
   return await runForkQuery({
+    runtime: input.runtime,
     sessionToken: input.sessionToken,
     localPath: input.localPath,
     prompt: buildForkCapturePrompt(),
