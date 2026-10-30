@@ -1,3 +1,4 @@
+import { resolveEngineRuntime } from "./model-access/runtime"
 import { existsSync } from "node:fs"
 import type { BashSpawnContext } from "@mariozechner/pi-coding-agent"
 import { homedir } from "node:os"
@@ -22,7 +23,7 @@ import type {
 import { getDataRootDir } from "../shared/branding"
 import { normalizeToolCall } from "../shared/tools"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
-import { OPENROUTER_BASE_URL, readLlmProviderSnapshot } from "./llm-provider"
+import { OPENROUTER_BASE_URL } from "./llm-provider"
 import type { MemoryToolResult, MemoryToolSpec } from "./memory/tools"
 import { toPiToolDefinitions } from "./memory/pi-adapter"
 
@@ -283,6 +284,9 @@ export function normalizePiUsage(usage: unknown, contextWindow?: number): Contex
 
 /** The Model Registry connection pi runs against. */
 export interface PiConnection {
+  protocol?: "openai-chat" | "openai-responses"
+  contextWindow?: number
+  maxOutputTokens?: number
   provider: LlmProviderKind
   baseUrl: string
   apiKey: string
@@ -293,22 +297,25 @@ export interface PiConnection {
  * base URL. The configured provider card controls reasoning, context and cost. Without
  * capability metadata, omit reasoning rather than inventing supported levels.
  */
-export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions"> {
+export function buildRegistryModel(connection: PiConnection & { protocol: "openai-responses" }, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-responses">
+export function buildRegistryModel(connection: PiConnection & { protocol?: "openai-chat" }, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions">
+export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses">
+export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses"> {
   const isOpenRouter = new URL(connection.baseUrl).hostname === "openrouter.ai"
   return {
     id: modelId,
     name: modelId,
-    api: "openai-completions",
+    api: connection.protocol === "openai-responses" ? "openai-responses" : "openai-completions",
     provider: connection.provider,
     baseUrl: connection.baseUrl,
     reasoning: card?.reasoningEfforts.some(e => e !== "off") ?? true,
     thinkingLevelMap: registryThinkingMap(card, effort),
     input: card?.inputModalities !== undefined ? card.inputModalities.filter((m): m is "text" | "image" => m === "text" || m === "image") : ["text", "image"],
     cost: { input: card?.cost?.input ?? 0, output: card?.cost?.output ?? 0, cacheRead: card?.cost?.cacheRead ?? 0, cacheWrite: card?.cost?.cacheWrite ?? 0 },
-    contextWindow: card?.contextWindow ?? 200_000,
+    contextWindow: connection.contextWindow ?? card?.contextWindow ?? 200_000,
     // Pi treats zero as an unspecified output limit. A cold/partial catalog
     // must not send a guessed 32K limit to a model that only accepts 8K.
-    maxTokens: card?.maxTokens ? Math.min(card.maxTokens, 32_000) : 0,
+    maxTokens: connection.maxOutputTokens ?? (card?.maxTokens ? Math.min(card.maxTokens, 32_000) : 0),
     compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
 }
@@ -329,24 +336,13 @@ export function registryThinkingMap(card?: RegistryModelCard, effort?: PiReasoni
  * Resolve pi's connection from the Model Registry settings; falls back to an
  * OpenRouter connection built from the OPENROUTER_API_KEY environment variable.
  */
-export async function resolvePiConnection(): Promise<PiConnection | null> {
+export async function resolvePiConnection(options: { connectionId?: string; model?: string } = {}): Promise<PiConnection | null> {
   try {
-    const snapshot = await readLlmProviderSnapshot()
-    if (snapshot.apiKey && snapshot.resolvedBaseUrl) {
-      return {
-        provider: snapshot.provider,
-        baseUrl: snapshot.resolvedBaseUrl,
-        apiKey: snapshot.apiKey,
-      }
-    }
-  } catch {
-    // fall through to the environment variable
+    return (await resolveEngineRuntime({ engine: "pi", ...options })).piConnection ?? null
+  } catch (error) {
+    if (error instanceof Error && error.message === "connection-missing") return null
+    throw error
   }
-  const envKey = process.env.OPENROUTER_API_KEY?.trim()
-  if (envKey) {
-    return { provider: "openrouter", baseUrl: OPENROUTER_BASE_URL, apiKey: envKey }
-  }
-  return null
 }
 
 export const MISSING_PI_CONNECTION_MESSAGE =
@@ -393,6 +389,7 @@ interface PiChatSession {
   effort: PiReasoningEffort
   connectionProvider: LlmProviderKind
   connectionBaseUrl: string
+  connectionProtocol?: PiConnection["protocol"]
   /** Sorted memory-tool names baked into the session at creation. */
   toolNamesKey: string
   modelCardKey: string
@@ -464,8 +461,8 @@ export class PiAgentManager {
   }
 
   private resolveModel(registry: ModelRegistry, connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<any> {
-    const official = (connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === OPENROUTER_BASE_URL)
-      || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")
+    const official = !connection.protocol && ((connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === OPENROUTER_BASE_URL)
+      || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1"))
     const known = official ? registry.find(connection.provider, modelId) : undefined
     if (known) {
       // A cold cache means provider defaults, even if the SDK knows the model.
@@ -493,6 +490,7 @@ export class PiAgentManager {
     const connectionUnchanged = existing
       && existing.connectionProvider === args.connection.provider
       && existing.connectionBaseUrl === args.connection.baseUrl
+      && existing.connectionProtocol === args.connection.protocol
     if (existing && connectionUnchanged && existing.cwd === args.cwd
       && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
       existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
@@ -610,6 +608,7 @@ export class PiAgentManager {
       effort: args.effort,
       connectionProvider: args.connection.provider,
       connectionBaseUrl: args.connection.baseUrl,
+      connectionProtocol: args.connection.protocol,
       toolNamesKey,
       modelCardKey,
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,

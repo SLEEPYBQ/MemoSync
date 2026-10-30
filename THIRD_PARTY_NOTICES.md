@@ -2,8 +2,13 @@
 
 ## Magpie
 
-Installation-directory data in `src/server/model-access/discovery-paths.ts` is adapted from
-[Magpie](https://github.com/yetone/magpie), `internal/proc/path_other.go`.
+Parts of model access are adapted from [Magpie](https://github.com/yetone/magpie):
+
+- `src/server/model-access/discovery-paths.ts` — installation directories (`internal/proc/path_other.go`)
+- `src/server/model-access/presets.ts` — provider presets and model data (`internal/provider/presets.go`, catalog test data)
+- `src/server/model-access/runtime.ts` — Claude Code and Codex provider mapping (`internal/agent/claude.go`, `codex.go`)
+- `src/server/model-access/test-connection.ts` — connection test requests (`internal/provider/test.go`)
+
 No embedded prompts are included.
 
 MIT License

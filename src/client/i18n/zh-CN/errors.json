@@ -142,5 +142,21 @@
   "serverPartialPush": "本地提交已创建，但推送未完成。",
   "serverSettingsReset": "部分设置已重置为默认值：{{v0}}",
   "serverReviseFailed": "无法处理此请求，所选记忆保持不变。",
-  "serverSelectionUpdated": "所选记忆已更新。"
+  "serverSelectionUpdated": "所选记忆已更新。",
+  "modelAccess_connection-invalid": "连接设置无效。",
+  "modelAccess_connection-missing": "所选连接不可用。",
+  "modelAccess_connection-read-only": "环境变量连接为只读。",
+  "modelAccess_connection-key-missing": "请为此连接添加 API 密钥。",
+  "modelAccess_connection-protocol-unsupported": "此连接不支持所选引擎。",
+  "modelAccess_engine-setup-invalid": "引擎设置无效。",
+  "modelAccess_model-unavailable": "所选模型不可用。",
+  "modelAccess_account-signed-out": "请登录 CLI 或选择 API 连接。隔离配置必须使用 API 连接。",
+  "modelAccess_executable-missing": "未找到引擎可执行文件。",
+  "modelAccess_executable-broken": "引擎可执行文件无法运行。",
+  "modelAccess_executable-incompatible": "引擎可执行文件不兼容。",
+  "modelAccess_model-access-unavailable": "模型访问设置不可用。",
+  "modelAccess_model-access-storage-unreadable": "无法读取模型访问设置。",
+  "modelAccess_model-access-storage-write-failed": "无法保存模型访问设置。",
+  "modelAccess_model-access-operation-failed": "模型访问操作失败。",
+  "modelAccess_engine-runtime-mismatch": "继承的引擎运行配置不匹配。"
 }

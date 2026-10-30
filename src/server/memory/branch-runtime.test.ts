@@ -126,7 +126,7 @@ describe("persistent memory branches", () => {
     }]])
     const schema = { type: "object", properties: { selected: { type: "array" } } }
     const env = { ANTHROPIC_MODEL: "model[1m]", CLAUDECODE: "nested" }
-    const branch = createMemoryBranch({ ...base, subprocessEnv: env }, fake)
+    const branch = createMemoryBranch({ ...base, subprocessEnv: env, runtime: { engine: "claude", executable: { state: "ready", path: "/test/claude" }, env, model: "model[1m]", args: [], isolated: true } }, fake)
     expect(await branch.ask("Select working memory", { schema })).toEqual({ selected: [] })
     expect(fake.calls[0].options?.outputFormat).toEqual({ type: "json_schema", schema })
     expect(fake.calls[0].options?.env?.ANTHROPIC_MODEL).toBe("model[1m]")

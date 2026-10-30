@@ -1,3 +1,4 @@
+import { runtimeForEnv } from "./model-access/runtime"
 import { existsSync, mkdirSync, realpathSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
@@ -15,6 +16,7 @@ export function isCliIsolationEnabled(env: RuntimeEnv = process.env): boolean {
 
 /** Read-only path lookup, also used when checking whether a fork can resume. */
 export function resolveClaudeConfigDir(env: RuntimeEnv = process.env, homeDir = homedir()): string {
+  if (runtimeForEnv(env)?.engine === "claude" && env.CLAUDE_CONFIG_DIR) return env.CLAUDE_CONFIG_DIR
   if (isCliIsolationEnabled(env)) {
     return join(resolve(env.MEMOSYNC_CLI_PROFILE_DIR?.trim() || join(getDataRootDir(homeDir, env), "cli-profiles")), "claude")
   }
@@ -46,7 +48,7 @@ function contains(parent: string, child: string): boolean {
 }
 
 /** Stable across the main session and its forks; never reuse a host CLI home. */
-function prepareProfileDir(engine: "claude" | "codex", env: RuntimeEnv): string {
+export function prepareProfileDir(engine: "claude" | "codex", env: RuntimeEnv): string {
   const root = resolve(env.MEMOSYNC_CLI_PROFILE_DIR?.trim() || join(getDataRootDir(homedir(), env), "cli-profiles"))
   const target = canonicalPath(join(root, engine))
   const protectedPaths = [join(homedir(), ".claude"), join(homedir(), ".codex")]
@@ -139,6 +141,8 @@ export function prepareCodexRuntime(baseEnv: RuntimeEnv = process.env): {
   args: string[]
   model?: string
 } {
+  const resolved = runtimeForEnv(baseEnv)
+  if (resolved?.engine === "codex") return { env: resolved.env, args: resolved.args, model: resolved.model }
   if (!isCliIsolationEnabled(baseEnv)) return { env: { ...baseEnv }, args: ["app-server"] }
   const provider = isolatedCodexProvider(baseEnv)
   const env = { ...baseEnv }

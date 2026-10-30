@@ -8,13 +8,13 @@ export interface MemoryReasoningContext { sessionId?: string; projectId?: string
  * Async-local scope prevents simultaneous chats from borrowing each other's
  * parent session. This adapter performs no direct provider HTTP requests. */
 export function createBranchJsonCaller(input: {
-  resolve: (context: MemoryReasoningContext) => MemoryBranchInput;
+  resolve: (context: MemoryReasoningContext) => MemoryBranchInput | Promise<MemoryBranchInput>;
   createBranch?: typeof createMemoryBranch;
 }) {
   const contexts = new AsyncLocalStorage<MemoryReasoningContext>();
   const callJson: LlmJsonCaller = async request => {
     const branch = (input.createBranch ?? createMemoryBranch)({
-      ...input.resolve(contexts.getStore() ?? {}),
+      ...await input.resolve(contexts.getStore() ?? {}),
       purpose: 'memory-board',
       timeoutMs: request.timeoutMs,
     });

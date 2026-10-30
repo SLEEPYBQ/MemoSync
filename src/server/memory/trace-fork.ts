@@ -1,3 +1,4 @@
+import type { EngineRuntime } from "../model-access/runtime"
 // Fork-based trace (user design 2026-08-05): instead of a sidecar LLM call
 // that rebuilds the turn as a fresh prompt (whose prefix never hits any
 // cache), fork the just-finished engine session and ask the audit question on
@@ -7,6 +8,7 @@ import { runForkQuery } from "./fork-query"
 import type { MemoryItem } from "./types"
 
 export interface ForkTraceInput {
+  runtime?: EngineRuntime
   /** The just-finished Claude session's resume token. */
   sessionToken: string
   /** The project workspace the session ran in (resume needs the same cwd). */
@@ -43,6 +45,7 @@ export async function runForkTrace(input: ForkTraceInput): Promise<Record<string
   ].join("\n")
 
   return await runForkQuery({
+    runtime: input.runtime,
     sessionToken: input.sessionToken,
     localPath: input.localPath,
     prompt,
