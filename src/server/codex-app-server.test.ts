@@ -791,15 +791,24 @@ describe("CodexAppServerManager", () => {
       spawnProcess: () => process as never,
     })
 
-    const result = await manager.generateStructured({
-      cwd: "/tmp/project",
-      prompt: "Return JSON",
-    })
+    // Keep the fake transport's model deterministic under the isolated test runner.
+    const previousModel = globalThis.process.env.MEMOSYNC_CODEX_MODEL
+    globalThis.process.env.MEMOSYNC_CODEX_MODEL = "gpt-5.5"
+    try {
+      const result = await manager.generateStructured({
+        cwd: "/tmp/project",
+        prompt: "Return JSON",
+      })
 
-    expect(result).toBe("{\"title\":\"Codex title\"}")
-    expect(process.killed).toBe(true)
-    expect((process.messages.find((message: any) => message.method === "thread/start") as any)?.params.model).toBe("gpt-5.5")
-    expect((process.messages.find((message: any) => message.method === "turn/start") as any)?.params.model).toBe("gpt-5.5")
+      expect(result).toBe("{\"title\":\"Codex title\"}")
+      expect(process.killed).toBe(true)
+      expect((process.messages.find((message: any) => message.method === "thread/start") as any)?.params.model).toBe("gpt-5.5")
+      expect((process.messages.find((message: any) => message.method === "turn/start") as any)?.params.model).toBe("gpt-5.5")
+    } finally {
+      if (previousModel === undefined) delete globalThis.process.env.MEMOSYNC_CODEX_MODEL
+      else globalThis.process.env.MEMOSYNC_CODEX_MODEL = previousModel
+      manager.stopAll()
+    }
   })
 
   test("maps command execution and agent output into the shared transcript stream", async () => {

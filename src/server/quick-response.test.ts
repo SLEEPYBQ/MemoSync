@@ -64,6 +64,7 @@ describe("QuickResponseAdapter", () => {
 
   test("returns the SDK structured result when configured and it validates", async () => {
     const adapter = new QuickResponseAdapter({
+      env: {}, // Exercise saved-provider routing with fake transports, independent of CLI isolation.
       readLlmProvider: async () => ({
         provider: "openai",
         apiKey: "test-key",
@@ -460,6 +461,7 @@ describe("generateTitleForChat", () => {
       "hello there",
       "/tmp/project",
       new QuickResponseAdapter({
+      env: {}, // Exercise saved-provider routing with fake transports, independent of CLI isolation.
         readLlmProvider: async () => ({
           provider: "openai",
           apiKey: "test-key",
