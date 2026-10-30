@@ -14,6 +14,11 @@ import { applyDeepSeekEngineEnvDefaults } from "./deepseek-engine-env"
 const pkg = await Bun.file(new URL("../../package.json", import.meta.url)).json()
 const VERSION: string = pkg.version ?? "0.0.0"
 
+// Log escaped async failures while preserving the existing uncaught-exception behavior.
+process.on("unhandledRejection", (reason) => {
+  console.error(`${LOG_PREFIX} unhandled rejection:`, reason)
+})
+
 // One credential runs everything: derive the Claude Code engine's ANTHROPIC_*
 // bundle from DEEPSEEK_API_KEY (unless explicitly overridden).
 applyDeepSeekEngineEnvDefaults()

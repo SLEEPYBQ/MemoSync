@@ -11,6 +11,7 @@
   "serverInvalidJson": "Invalid JSON",
   "serverInvalidEnvelope": "Invalid envelope",
   "serverUnauthorized": "Unauthorized",
+  "serverInternalServerError": "Internal server error",
   "serverUpdateUnavailable": "Update manager unavailable.",
   "serverMergeUnavailable": "Merge unavailable.",
   "serverMergePreviewUnavailable": "Merge preview unavailable.",

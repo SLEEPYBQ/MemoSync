@@ -11,6 +11,7 @@
   "serverInvalidJson": "JSON 格式无效",
   "serverInvalidEnvelope": "消息格式无效",
   "serverUnauthorized": "未授权",
+  "serverInternalServerError": "服务器内部错误",
   "serverUpdateUnavailable": "更新管理器不可用。",
   "serverMergeUnavailable": "合并不可用。",
   "serverMergePreviewUnavailable": "合并预览不可用。",

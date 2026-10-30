@@ -3,7 +3,7 @@ import { uiJson } from "../shared/ui-copy"
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { APP_NAME, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, LOG_PREFIX, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
 import {
   isolatedPreviewTarget,
   isPreviewHostForm,
@@ -482,6 +482,11 @@ async function startLockedMemoSyncServer(
       server = Bun.serve<ClientState>({
         port: actualPort,
         hostname,
+        idleTimeout: 60,
+        error(err) {
+          console.error(`${LOG_PREFIX} http handler error:`, err)
+          return uiJson({ error: "Internal server error" }, { status: 500 })
+        },
         maxRequestBodySize: MAX_REQUEST_BODY_SIZE_BYTES,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
