@@ -6,6 +6,7 @@ import type { TranscriptEntry } from "../shared/types"
 describe("read models", () => {
   test("notification preview selects the latest visible assistant reply, excluding memory and tool noise", () => {
     const entries: TranscriptEntry[] = [
+      { _id: "user", createdAt: 0, kind: "user_prompt", content: "USER PROMPT" },
       { _id: "old", createdAt: 1, kind: "assistant_text", text: "Old reply" },
       { _id: "latest", createdAt: 2, kind: "assistant_text", text: "## Done\n\n- **Fixed** `retry_count_ms` in [the router](https://example.com).\n- [x] Tests passed." },
       { _id: "memory", createdAt: 3, kind: "memory_preview", previewId: "p", task: "PRIVATE TASK", memories: [{ id: "M-1", content: "PRIVATE MEMORY", scope: "project" }] },
@@ -14,12 +15,22 @@ describe("read models", () => {
       { _id: "tool", createdAt: 6, kind: "tool_call", tool: { kind: "tool", toolKind: "bash", toolName: "Bash", toolId: "t", input: { command: "PRIVATE COMMAND" } } },
       { _id: "result", createdAt: 7, kind: "tool_result", toolId: "t", content: "PRIVATE RESULT" },
       { _id: "status", createdAt: 8, kind: "status", status: "PRIVATE STATUS" },
-      { _id: "user", createdAt: 9, kind: "user_prompt", content: "USER PROMPT" },
     ]
     expect(deriveChatPreview(entries)).toEqual({ lastAgentMessagePreview: "Done Fixed retry_count_ms in the router. Tests passed." })
     expect(deriveChatPreview(entries.filter((entry) => entry.kind !== "assistant_text"))).toBeNull()
-    expect(deriveChatPreview([entries[4]!])).toBeNull()
+    expect(deriveChatPreview([entries[5]!])).toBeNull()
     expect(deriveChatPreview([])).toBeNull()
+  })
+
+  test("notification preview never reaches back past the latest prompt, so a failed turn has none", () => {
+    const entries: TranscriptEntry[] = [
+      { _id: "u1", createdAt: 1, kind: "user_prompt", content: "Deploy it" },
+      { _id: "a1", createdAt: 2, kind: "assistant_text", text: "Deployment succeeded." },
+      { _id: "u2", createdAt: 3, kind: "user_prompt", content: "Now roll back" },
+      { _id: "r2", createdAt: 4, kind: "result", subtype: "error", isError: true, durationMs: 1, result: "provider error" },
+    ]
+    expect(deriveChatPreview(entries)).toBeNull()
+    expect(deriveChatPreview([...entries, { _id: "a2", createdAt: 5, kind: "assistant_text", text: "Rolled back." }])).toEqual({ lastAgentMessagePreview: "Rolled back." })
   })
 
   test("notification preview strips markdown before collapsing whitespace and truncating to 140 characters", () => {
