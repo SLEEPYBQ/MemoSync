@@ -33,6 +33,8 @@ Coding agents keep memory: `CLAUDE.md` files, notes they extract, lessons from e
 - While the agent works, its replies cite the memories they use.
 - After the turn, a separate check reports what was followed and what was ignored.
 
+When a turn doesn't need that much attention, switch to [Automatic](#automatic) and the agent handles memory on its own.
+
 <p align="center">
   <img src="docs/figures/metamemory-loop.png" alt="Monitoring and control of memory, shared between developer and agent" width="820" />
 </p>
@@ -95,6 +97,13 @@ The audit is a model judgment and can be wrong.
 
 **The Memory Record**, on the right of every chat, logs each turn: what was proposed, selected, cited, stopped and audited. It survives context compaction, so you and the agent can still refer back to it.
 
+### Automatic
+
+Reviewing every turn pays off when memory matters, and is too much for a quick question. Set **Settings → Memory → Control** to **Automatic**:
+- No cards before the turn. The agent reads the memory index and loads the items it needs.
+- After the turn it learns in the background. Safe changes apply on their own, each with Revert; sensitive ones wait on the Memory Board, which shows a count in the sidebar.
+- The audit still runs, but speaks up in the chat only when a memory was violated. Every verdict stays in the Memory Record.
+
 ## Quick start
 
 You need [Bun](https://bun.sh) 1.3.5 or newer, plus one of:
@@ -154,8 +163,11 @@ MemoSync finds `claude` and `codex` on your `PATH` and in the usual install fold
 | --- | --- |
 | **Use Memory** | Turn memory off everywhere. Your library stays on the Memory Board. |
 | **Learn From Chats** | Keep using memory, but stop proposing new items. |
+| **Control** | **Review each turn** runs the four steps above. **Automatic** works without asking; see [Automatic](#automatic). |
 | **Memory Changes** | **Ask First** holds every proposal for review. **Apply Automatically** applies non-sensitive ones right away, each with a one-click Revert. Sensitive proposals always ask. |
 | **Memory Preview** | Show the working memory card before each turn, or skip it when nothing applies. |
+
+Memory Changes and Memory Preview apply under Review each turn.
 
 **Elsewhere in Settings:**
 - **Appearance:** language (English or 简体中文) and theme.
