@@ -3,7 +3,9 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { OpenLocalLinkProvider } from "../components/messages/shared"
 import { ViolatedCitationsMapProvider } from "../components/messages/render-context"
-import type { HydratedTranscriptMessage } from "../../shared/types"
+import type { HydratedTranscriptMessage, TranscriptEntry } from "../../shared/types"
+import { processTranscriptMessages } from "../lib/parseTranscript"
+import { buildMemoryRecord } from "../lib/memoryTimeline"
 import { MemoryBoardLauncherProvider } from "./memory/MemoryBoardLauncher"
 import {
   areChatTranscriptRowPropsEqual,
@@ -66,6 +68,26 @@ function createToolMessage(id: string, toolId = id): HydratedTranscriptMessage {
 }
 
 describe("ChatTranscript", () => {
+  test("quiet automatic audits survive hydration and the Memory Record without creating chat rows", () => {
+    const entries: TranscriptEntry[] = [{
+      _id: "audit-pending", createdAt: 1, kind: "memory_trace", turn: 1,
+      status: "pending", labels: [], hidden: true,
+    }, {
+      _id: "audit-ok", createdAt: 2, kind: "memory_trace", turn: 1,
+      status: "ok", labels: [{ id: "M-01", label: "operational", note: "Used bun" }], hidden: true,
+    }]
+    const messages = processTranscriptMessages(entries)
+    expect(messages).toHaveLength(1)
+    expect(messages[0]).toMatchObject({ hidden: true, labels: [{ id: "M-01", label: "operational" }] })
+    expect(renderTranscript(messages)).toBe("")
+    expect(buildMemoryRecord(messages).turns[0]?.audit).toMatchObject({ entryId: "audit-ok", status: "ok", labels: [{ id: "M-01", label: "operational", note: "Used bun" }] })
+
+    const violated = processTranscriptMessages([{ ...entries[1]!, _id: "audit-violation", hidden: false, labels: [{ id: "M-01", label: "violated" }] } as TranscriptEntry])
+    const rows = buildResolvedTranscriptRows(violated, { isLoading: false, latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null } })
+    expect(rows).toHaveLength(1)
+    expect(buildMemoryRecord(violated).turns[0]?.audit?.labels[0]?.label).toBe("violated")
+  })
+
   test("keeps persisted assistant segments interruptible until the active turn settles", () => {
     const messages = [{
       id: "prompt-1",

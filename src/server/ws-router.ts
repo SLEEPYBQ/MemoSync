@@ -565,6 +565,7 @@ export function createWsRouter({
       },
     },
     memory: {
+      control: "review",
       enabled: true,
       learn: true,
     },

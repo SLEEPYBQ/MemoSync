@@ -100,9 +100,10 @@ export function buildMemoryRecord(
   liveStreamingText: string | null = null,
 ): MemoryRecord {
   const turnsByNumber = new Map<number, MemoryRecordTurn>()
-  // Assistant text carries no turn number; attribute citations to the latest
-  // turn any memory entry has named so far (the entries bracket the reply).
-  let currentTurn: number | null = null
+  // Match AgentCoordinator: each dispatched user_prompt advances the turn.
+  // Queued rows are not transcript prompts until dispatched. Memory stages
+  // can arrive late and must never change this assistant-text cursor.
+  let currentTurn = 0
 
   const turnOf = (turn: number): MemoryRecordTurn => {
     let t = turnsByNumber.get(turn)
@@ -110,21 +111,24 @@ export function buildMemoryRecord(
       t = { turn }
       turnsByNumber.set(turn, t)
     }
-    currentTurn = turn
     return t
   }
 
-  const recordReportedCitations = (turn: MemoryRecordTurn, text: string) => {
+  const recordReportedCitations = (turnNumber: number, text: string) => {
     for (const match of text.matchAll(CITATION_RE)) {
       const id = match[1]
       if (!id) continue
+      const turn = turnOf(turnNumber)
       if (!turn.reported) turn.reported = { counts: new Map() }
       turn.reported.counts.set(id, (turn.reported.counts.get(id) ?? 0) + 1)
     }
   }
 
   for (const message of messages) {
-    if (message.hidden) continue
+    if (message.kind === "user_prompt") currentTurn += 1
+    // Automatic control hides quiet audits in chat only. Their verdicts must
+    // still populate the Memory Record, including pending/empty/error states.
+    if (message.hidden && message.kind !== "memory_trace") continue
     switch (message.kind) {
       case "memory_proposals": {
         if (message.turn === undefined) break
@@ -188,10 +192,8 @@ export function buildMemoryRecord(
         break
       }
       case "assistant_text": {
-        if (currentTurn === null) break
-        const t = turnsByNumber.get(currentTurn)
-        if (!t) break
-        recordReportedCitations(t, message.text)
+        if (currentTurn === 0) break
+        recordReportedCitations(currentTurn, message.text)
         break
       }
       case "memory_interrupt": {
@@ -220,9 +222,8 @@ export function buildMemoryRecord(
   }
 
 
-  if (currentTurn !== null && liveStreamingText) {
-    const current = turnsByNumber.get(currentTurn)
-    if (current) recordReportedCitations(current, liveStreamingText)
+  if (currentTurn > 0 && liveStreamingText) {
+    recordReportedCitations(currentTurn, liveStreamingText)
   }
 
   return { turns: [...turnsByNumber.values()].sort((a, b) => a.turn - b.turn) }

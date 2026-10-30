@@ -1,3 +1,4 @@
+import type { ParentLaunch, ClaudeParentLaunch } from './memory/parent-launch'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -283,17 +284,18 @@ interface ResumeInterruptedTurn {
 }
 
 export interface TurnMemoryState {
+  readonly control: "review" | "auto"
   readonly memoryActive: boolean
   readonly learnActive: boolean
 }
 
 /** Snapshot the user settings and chat switch once when a turn starts. */
 export function resolveTurnMemoryState(
-  settings: { enabled: boolean; learn: boolean },
+  settings: { enabled: boolean; learn: boolean; control?: "review" | "auto" },
   memoryDisabled = false,
 ): TurnMemoryState {
   const memoryActive = (settings.enabled && !memoryDisabled)
-  return { memoryActive, learnActive: memoryActive && (settings.learn) }
+  return { control: settings.control ?? "review", memoryActive, learnActive: memoryActive && (settings.learn) }
 }
 
 interface StartTurnArgs {
@@ -397,6 +399,7 @@ interface ActiveTurn {
 }
 
 interface ClaudeSessionHandle {
+  parentLaunch?: ClaudeParentLaunch
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
   getAccountInfo?: () => Promise<any>
@@ -492,7 +495,7 @@ interface AgentCoordinatorArgs {
   /** Transfer detection over out-of-context memories (Transfer design 2026-08-08); null disables. */
   memoryTransferDetect?: TransferDetectService | null
   /** User switches, sampled only when a new turn begins. */
-  getMemorySettings?: () => { enabled: boolean; learn: boolean }
+  getMemorySettings?: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
 
   getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
@@ -527,6 +530,8 @@ interface SendToStartingProfile {
 }
 
 interface PostTurnMemoryPassArgs {
+  /** Launch of the completed turn; detached passes must never use the next turn. */
+  parentLaunch?: ParentLaunch
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
   chatId: string
@@ -1476,43 +1481,51 @@ export async function startClaudeSession(args: {
   const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model, env: args.subprocessEnv })
   const sdkRuntime = { ...engineRuntime, settings: { autoMemoryEnabled: false, autoDreamEnabled: false } }
 
-  const q = query({
-    prompt: promptQueue,
+  const launchOptions = {
+    cwd: args.localPath,
+    model: sdkRuntime.model,
+    effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
+    resume: args.sessionToken ?? undefined,
+    forkSession: args.forkSession,
+    permissionMode: args.planMode ? "plan" : "acceptEdits",
+    canUseTool,
+    // Body text streams into ChatRuntime.streamingText as it is written —
+    // without this the reply pops in whole at turn end (the DeepSeek
+    // Anthropic-compatible endpoint streams SSE like the real one).
+    includePartialMessages: true,
+    tools: [...CLAUDE_TOOLSET],
+    systemPrompt: systemAppend
+      ? { type: "preset", preset: "claude_code", append: systemAppend }
+      : undefined,
+    mcpServers: memorySpecs.length
+      ? {
+          memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
+        }
+      : undefined,
+    settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
+    // MemoSync IS the memory system. The harness's own auto-memory
+    // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
+    // read+write channel — observed live: the model wrote MEMORY.md there
+    // on a "记住…" request. Flag-level settings outrank user settings.
+    settings: sdkRuntime.settings,
+    pathToClaudeCodeExecutable: engineRuntime.executable.path,
+    env: sdkRuntime.env,
+  } satisfies import("@anthropic-ai/claude-agent-sdk").Options
+  const parentLaunch: ClaudeParentLaunch = {
+    provider: "claude", memorySpecs,
     options: {
-      cwd: args.localPath,
-      model: sdkRuntime.model,
-      effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
-      resume: args.sessionToken ?? undefined,
-      forkSession: args.forkSession,
-      permissionMode: args.planMode ? "plan" : "acceptEdits",
-      canUseTool,
-      // Body text streams into ChatRuntime.streamingText as it is written —
-      // without this the reply pops in whole at turn end (the DeepSeek
-      // Anthropic-compatible endpoint streams SSE like the real one).
-      includePartialMessages: true,
-      tools: [...CLAUDE_TOOLSET],
-      systemPrompt: systemAppend
-        ? { type: "preset", preset: "claude_code", append: systemAppend }
-        : undefined,
-      mcpServers: memorySpecs.length
-        ? {
-            memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
-          }
-        : undefined,
-      settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
-      // MemoSync IS the memory system. The harness's own auto-memory
-      // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
-      // read+write channel — observed live: the model wrote MEMORY.md there
-      // on a "记住…" request. Flag-level settings outrank user settings.
-      settings: sdkRuntime.settings,
-      pathToClaudeCodeExecutable: engineRuntime.executable.path,
-      env: sdkRuntime.env,
+      model: launchOptions.model, effort: launchOptions.effort, tools: launchOptions.tools,
+      systemPrompt: launchOptions.systemPrompt, settingSources: launchOptions.settingSources,
+      settings: launchOptions.settings, permissionMode: launchOptions.permissionMode,
+      env: launchOptions.env, pathToClaudeCodeExecutable: launchOptions.pathToClaudeCodeExecutable,
     },
-  })
+  }
+  const q = query({ prompt: promptQueue, options: launchOptions })
 
   return {
     provider: "claude",
     echoesPromptIds,
+    parentLaunch,
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
 
     }, outboundOrigins),
@@ -1556,10 +1569,13 @@ export async function startClaudeSession(args: {
     ),
     setModel: async (model: string) => {
       const bare = model.replace(/\[1m\]$/, "")
-      await q.setModel(sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare)
+      const selected = sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare
+      await q.setModel(selected)
+      parentLaunch.options.model = selected
     },
     setPermissionMode: async (planMode: boolean) => {
       await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
+      parentLaunch.options.permissionMode = planMode ? "plan" : "acceptEdits"
     },
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
@@ -1625,6 +1641,13 @@ export class AgentCoordinator {
     snapshots: { transfer: Map<string, string>; changes: Map<string, string> }
   }>()
   private readonly workingBranches = new Map<string, MemoryBranch>()
+  /** Detached from turn/preparation ownership: one running C and one latest
+   * completed turn per chat. Sending/Stopping the next turn never waits on C. */
+  private readonly automaticCaptures = new Map<string, {
+    controller: AbortController
+    branch?: MemoryBranch
+    pending?: PostTurnMemoryPassArgs
+  }>()
   private readonly memoryRelevance: RelevanceService | null
   private readonly memoryUsePlan: UsePlanService | null
   /** Exact per-memory instructions shown in the preview and injected into Claude. */
@@ -1635,7 +1658,7 @@ export class AgentCoordinator {
   private readonly memoryPreview: boolean
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
-  private readonly getMemorySettings: () => { enabled: boolean; learn: boolean }
+  private readonly getMemorySettings: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
   private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
   private readonly claudeSessionFileExists: typeof claudeSessionFileExists
   private readonly claudeRetireTimeoutMs: number
@@ -1768,14 +1791,15 @@ export class AgentCoordinator {
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
 
-  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null) {
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null, parentLaunch?: ParentLaunch) {
     const chat = this.store.requireChat(args.chatId)
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("Memory branch project is unavailable")
     const runtime = args.engineRuntime ?? this.sessionRuntimes.get(args.chatId)
+    const parentSessionToken = parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent
     const branch = this.createMemoryBranchFn({
       provider: args.provider,
-      parentSessionToken: parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent,
+      parentSessionToken,
       localPath: project.localPath,
       model: runtime?.model ?? args.model,
       effort: args.effort,
@@ -1783,6 +1807,8 @@ export class AgentCoordinator {
       subprocessEnv: runtime?.env,
       runtime,
       purpose,
+      // A completion snapshot also disambiguates successive models on one token.
+      parentLaunch: parentLaunch ?? this.sessionLaunches.get(`${args.provider}:${parentSessionToken}`) ?? this.parentLaunches.get(args.chatId),
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
     return {
@@ -1805,6 +1831,8 @@ export class AgentCoordinator {
 
   private readonly runtimeSelections = new Map<string, string>()
   private readonly sessionRuntimes = new Map<string, EngineRuntime>()
+  private readonly parentLaunches = new Map<string, ParentLaunch>()
+  private readonly sessionLaunches = new Map<string, ParentLaunch>()
 
   memoryRuntimeChoice(chatId: string) {
     const current = this.activeTurns.get(chatId) ?? this.branchPreparations.get(chatId)?.args
@@ -2446,9 +2474,11 @@ export class AgentCoordinator {
     args: { chatId: string; turnNumber?: number; memoryState?: TurnMemoryState },
   ): Set<string> {
     const applied = new Set<string>()
-    if (!this.memory || args.memoryState?.learnActive === false || false) return applied
+    if (!this.memory) return applied
+    const memoryState = args.memoryState ?? resolveTurnMemoryState(this.getMemorySettings(), this.store.requireChat(args.chatId).memoryDisabled)
+    if (!memoryState.learnActive) return applied
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
-    if (mode !== "auto") return applied
+    if (memoryState.control !== "auto" && mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
     for (const proposal of proposals) {
       if (proposal.sensitive) continue
@@ -2529,6 +2559,7 @@ export class AgentCoordinator {
 
   private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
     args.engineRuntime ??= this.sessionRuntimes.get(args.chatId)
+    args.parentLaunch ??= this.parentLaunches.get(args.chatId)
     if (args.memoryState?.memoryActive === false) return
     const active = this.activeTurns.get(args.chatId)
     if (this.memoryBranches && active) {
@@ -2556,6 +2587,99 @@ export class AgentCoordinator {
     })
   }
 
+  private cancelAutomaticCapture(chatId: string): void {
+    const run = this.automaticCaptures.get(chatId)
+    if (!run) return
+    run.pending = undefined
+    run.controller.abort(new Error("Automatic memory capture cancelled"))
+    run.branch?.dispose()
+    this.automaticCaptures.delete(chatId)
+  }
+
+  private launchAutomaticCapture(args: PostTurnMemoryPassArgs): void {
+    if (!this.memory || !this.capture?.buildBranchPrompt || !this.capture.captureFromBranch
+      || args.memoryState?.control !== "auto" || !args.memoryState.memoryActive
+      || !args.memoryState.learnActive || args.memoryDisabled || this.isEngineStartBlocked(args.chatId)) return
+    const existing = this.automaticCaptures.get(args.chatId)
+    if (existing) {
+      existing.pending = args
+      return
+    }
+    const run: {
+      controller: AbortController
+      branch?: MemoryBranch
+      pending?: PostTurnMemoryPassArgs
+    } = { controller: new AbortController(), pending: args }
+    this.automaticCaptures.set(args.chatId, run)
+    const signal = run.controller.signal
+    const task = async () => {
+      try {
+        while (run.pending && !signal.aborted) {
+          const finished = run.pending
+          run.pending = undefined
+          try {
+            const input = {
+              projectId: finished.projectId, sessionId: finished.chatId,
+              turn: finished.turnNumber, engine: finished.engine, userText: finished.userText, signal,
+            }
+            const request = this.capture!.buildBranchPrompt!(input)
+            const provider = finished.engine as AgentProvider
+            const settings = { ...this.getProviderSettings(provider, { model: finished.model, effort: finished.effort }), serviceTier: finished.serviceTier }
+            // Snapshot taken at completion, never the current chat/session: a
+            // coalesced run may start after another main turn has already begun.
+            const branch = this.newMemoryBranch({ chatId: finished.chatId, provider, ...settings, engineRuntime: finished.engineRuntime }, "candidate", finished.sessionToken ?? finished.claudeSessionToken ?? null, finished.parentLaunch)
+            run.branch = branch
+            let rejectAbort!: () => void
+            const cancelled = new Promise<never>((_, reject) => {
+              rejectAbort = () => reject(signal.reason)
+              signal.addEventListener("abort", rejectAbort, { once: true })
+            })
+            let raw: Record<string, unknown>
+            try {
+              raw = await Promise.race([branch.ask(request.prompt, { schema: memoryStageSchema("candidate"), signal }), cancelled])
+            } finally {
+              signal.removeEventListener("abort", rejectAbort)
+              // cancelAutomaticCapture already disposes an aborted branch.
+              if (!signal.aborted) branch.dispose()
+              run.branch = undefined
+            }
+            signal.throwIfAborted()
+            // Same validation, snapshot guard, dismissal dedup and routing as C
+            // at the review gate. Passing the signal also guards late persistence.
+            const outcome = await this.capture!.captureFromBranch!(raw, input, request.dependencyKey)
+            signal.throwIfAborted()
+            await this.publishCapturedProposals(outcome, finished)
+          } catch (error) {
+            if (!signal.aborted) this.reportBackgroundError?.(
+              `[memory-auto-capture] chat ${finished.chatId} turn ${finished.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`,
+            )
+          }
+        }
+      } finally {
+        // Clear ownership in the same microtask as the final pending check;
+        // a completion arriving afterwards must launch its own worker.
+        if (this.automaticCaptures.get(args.chatId) === run) this.automaticCaptures.delete(args.chatId)
+      }
+    }
+    void task()
+  }
+
+  private async publishCapturedProposals(outcome: CaptureOutcome, args: PostTurnMemoryPassArgs): Promise<void> {
+    if (!outcome.created.length) return
+    const autoIds = this.autoApplyProposals(outcome.created, args)
+    // Pending (including sensitive) proposals live on the Memory Board. Only
+    // applied items get the existing auto card and one-click Revert.
+    const autoApplied = outcome.created.filter(({ id }) => autoIds.has(id))
+    if (autoApplied.length) {
+      await this.store.appendMessage(args.chatId, timestamped({
+        kind: "memory_candidates", turn: args.turnNumber,
+        // Keep content out of the append-only transcript, including drafts.
+        candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
+      }))
+    }
+    this.emitStateChange(args.chatId)
+  }
+
   private async runPostTurnMemoryPasses(
     args: PostTurnMemoryPassArgs,
   ) {
@@ -2569,9 +2693,12 @@ export class AgentCoordinator {
     // during the turn and never wait on either). Each pass keeps its own
     // error containment.
     const capturePass = async (): Promise<void> => {
-      // C reviews the completed trajectory with the next prompt. It already
-      // includes extraction and routing in a single forked conversation.
-      if (this.memoryBranches) return
+      // Review C stays pre-turn. Automatic C learns from this finished turn
+      // independently of both the next turn and the concurrent audit.
+      if (this.memoryBranches) {
+        this.launchAutomaticCapture(args)
+        return
+      }
       if (!this.capture || args.memoryState?.learnActive === false) return
       try {
         const captureInput = {
@@ -2608,30 +2735,7 @@ export class AgentCoordinator {
           }
         }
         if (!outcome) outcome = await this.capture.capture(captureInput)
-        if (outcome.created.length) {
-          const autoIds = this.autoApplyProposals(outcome.created, args)
-          // Redesign 2026-08-07 §3: pending proposals no longer card at the
-          // turn's end — they park in the store and surface in the NEXT
-          // turn's step-one gate. Only auto-applied ones (delegating policy)
-          // still card here: they took effect without asking, and the auto
-          // badge + Revert is their monitoring surface.
-          const autoApplied = outcome.created.filter(({ id }) => autoIds.has(id))
-          if (autoApplied.length) {
-            await this.store.appendMessage(
-              args.chatId,
-              timestamped({
-                kind: "memory_candidates",
-                turn: args.turnNumber,
-                // The memory DB is the live source for card content. Persisting
-                // raw candidate text here would duplicate sensitive drafts into
-                // the append-only transcript even after the user dismissed or
-                // sanitized them.
-                candidates: autoApplied.map(({ id }) => ({ id, auto: true })),
-              })
-            )
-          }
-          this.emitStateChange(args.chatId)
-        }
+        await this.publishCapturedProposals(outcome, args)
         return
       } catch (error) {
         this.reportBackgroundError?.(
@@ -2643,6 +2747,9 @@ export class AgentCoordinator {
 
     const tracePass = async (): Promise<void> => {
       if ((!this.memoryTrace && !this.memoryBranches) || args.memoryDisabled) return
+      // Hidden entries still hydrate and feed the Memory Record. Even the
+      // pending skeleton stays quiet until a terminal verdict finds a violation.
+      const automatic = args.memoryState?.control === "auto"
       try {
         // "Used" = everything in play this turn: the BOOT-TIME injected
         // snapshot plus any extra memories the model cited (e.g. pulled in via
@@ -2657,7 +2764,7 @@ export class AgentCoordinator {
           // final entry for the same turn supersedes it at hydration.
           await this.store.appendMessage(
             args.chatId,
-            timestamped({ kind: "memory_trace", turn: args.turnNumber, status: "pending", labels: [] })
+            timestamped({ kind: "memory_trace", hidden: automatic, turn: args.turnNumber, status: "pending", labels: [] })
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
@@ -2669,7 +2776,7 @@ export class AgentCoordinator {
             const chat = this.store.requireChat(args.chatId)
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
-            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken)
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken, args.parentLaunch)
             const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
@@ -2739,6 +2846,7 @@ export class AgentCoordinator {
               args.chatId,
               timestamped({
                 kind: "memory_trace",
+                hidden: automatic && !labelsWithSource.some(({ label }) => label === "violated"),
                 turn: args.turnNumber,
                 status: "ok",
                 labels: labelsWithSource,
@@ -2812,6 +2920,7 @@ export class AgentCoordinator {
               args.chatId,
               timestamped({
                 kind: "memory_trace",
+                hidden: automatic,
                 turn: args.turnNumber,
                 status: "discarded",
                 labels: [],
@@ -2835,6 +2944,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "discarded",
               labels: [],
@@ -2861,6 +2971,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "empty",
               labels: [],
@@ -2884,6 +2995,7 @@ export class AgentCoordinator {
             args.chatId,
             timestamped({
               kind: "memory_trace",
+              hidden: automatic,
               turn: args.turnNumber,
               status: "failed",
               labels: [],
@@ -3243,6 +3355,7 @@ export class AgentCoordinator {
   async closeChat(chatId: string) {
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
+    this.cancelAutomaticCapture(chatId)
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
     if (reservation) {
@@ -3256,6 +3369,7 @@ export class AgentCoordinator {
     this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
+    this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
@@ -3280,6 +3394,7 @@ export class AgentCoordinator {
   async shutdownRuntime() {
     this.runtimeStopping = true
     for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
+    for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId)
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
@@ -3525,6 +3640,9 @@ export class AgentCoordinator {
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
     this.turnMemoryRestriction.delete(args.chatId)
+    // A review planner's task-specific guidance belongs to its own turn. Auto
+    // starts from the index; interrupt recovery retains its existing context.
+    if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
     try {
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
@@ -3626,7 +3744,7 @@ export class AgentCoordinator {
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
     // working memory (2026-08-19 C2).
-    if (args.memoryState.memoryActive && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
+    if (args.memoryState.memoryActive && args.memoryState.control !== "auto" && this.memoryPreview && this.memory && args.appendUserPrompt && previewSettings.enabled && !args.resume) {
       // The plan (not the raw item store) defines what the model will see.
       const plan = planMemoryInjection({
         memory: this.memory,
@@ -5776,7 +5894,7 @@ export class AgentCoordinator {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
       const piPrompt = buildPromptText(args.content, providerAttachments)
-      turn = await this.piManager.startTurn({
+      const piLaunch: import("./pi-agent").StartPiTurnArgs = {
         signal: startController.signal,
         chatId: args.chatId,
         cwd: project.localPath,
@@ -5788,7 +5906,10 @@ export class AgentCoordinator {
         connection,
         memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
         memoryDispatch: piMemoryDispatch,
-      })
+        onLaunch: (launch) => this.parentLaunches.set(args.chatId, launch),
+      }
+      this.parentLaunches.set(args.chatId, { provider: "pi", options: { model: piLaunch.model, effort: piLaunch.effort, connection, memorySpecs: piLaunch.memorySpecs, toolNames: piLaunch.toolNames } })
+      turn = await this.piManager.startTurn(piLaunch)
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         turn.close()
         return
@@ -5884,7 +6005,7 @@ export class AgentCoordinator {
             return { text: r.text, isError: r.isError }
           }
         : undefined
-      const sessionToken = await this.codexManager.startSession({
+      const codexLaunch: import("./codex-app-server").StartCodexSessionArgs = {
         runtime: args.engineRuntime,
         signal: startController.signal,
         chatId: args.chatId,
@@ -5894,7 +6015,11 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
-      })
+      }
+      this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
+      const sessionToken = await this.codexManager.startSession(codexLaunch)
+      const launch = this.parentLaunches.get(args.chatId)
+      if (sessionToken && launch) this.sessionLaunches.set(`codex:${sessionToken}`, launch)
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         return
       }
@@ -5948,7 +6073,7 @@ export class AgentCoordinator {
     }
 
     const active: ActiveTurn = {
-      memoryState: args.memoryState ?? { memoryActive: true, learnActive: true },
+      memoryState: args.memoryState ?? { control: "review", memoryActive: true, learnActive: true },
       chatId: args.chatId,
       provider: args.provider,
       turn,
@@ -6330,7 +6455,7 @@ export class AgentCoordinator {
         // immediately — they took effect without asking.
         onMemoryProposal: (created) => {
           if (!memoryEnabled || args.learnEnabled === false) return
-          const autoIds = this.autoApplyProposals(created, { chatId: args.chatId })
+          const autoIds = this.autoApplyProposals(created, { chatId: args.chatId, memoryState: this.activeTurns.get(args.chatId)?.memoryState })
           const autoApplied = created.filter(({ id }) => autoIds.has(id))
           if (!autoApplied.length) return
           void this.store
@@ -6345,6 +6470,7 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
+      if (started.parentLaunch) this.parentLaunches.set(args.chatId, started.parentLaunch)
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
         try {
           started.close()
@@ -6614,6 +6740,8 @@ export class AgentCoordinator {
             ? Math.max(...matchingPrompts.map(prompt => prompt.seq)) : session.nextPromptSeq
           if (promptSeq < session.sessionTokenPromptSeq) continue
           session.sessionTokenPromptSeq = promptSeq
+          const launch = this.parentLaunches.get(session.chatId)
+          if (launch) this.sessionLaunches.set(`claude:${event.sessionToken}`, launch)
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
@@ -6829,6 +6957,8 @@ export class AgentCoordinator {
         if (active.cancelRequested) break
 
         if (event.type === "session_token" && event.sessionToken) {
+          const launch = this.parentLaunches.get(active.chatId)
+          if (launch) this.sessionLaunches.set(`${active.provider}:${event.sessionToken}`, launch)
           await this.store.setSessionToken(active.chatId, event.sessionToken)
           const chat = this.store.getChat(active.chatId)
           if (

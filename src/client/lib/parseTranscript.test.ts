@@ -12,6 +12,26 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("keeps late automatic memory cards with their producing turns after hydration", () => {
+    const entries = [
+      entry({ kind: "user_prompt", content: "First task" }),
+      entry({ kind: "assistant_text", text: "First answer" }),
+      entry({ kind: "user_prompt", content: "Second task" }),
+      entry({ kind: "assistant_text", text: "Second answer" }),
+      entry({ kind: "user_prompt", content: "Third task" }),
+      entry({ kind: "memory_candidates", turn: 2, candidates: [{ id: "M-2", auto: true }] }),
+      entry({ kind: "memory_candidates", turn: 1, candidates: [{ id: "M-1", auto: true }] }),
+    ]
+    const originalIds = entries.map(e => e._id)
+    const hydrated = processTranscriptMessages(entries)
+    expect(hydrated.map(message => message.kind === "user_prompt" ? message.content
+      : message.kind === "assistant_text" ? message.text
+      : message.kind === "memory_candidates" ? message.candidates[0]!.id : message.kind))
+      .toEqual(["First task", "First answer", "M-1", "Second task", "Second answer", "M-2", "Third task"])
+    expect(entries.map(e => e._id)).toEqual(originalIds)
+    expect(processTranscriptMessages(entries)).toEqual(hydrated)
+  })
+
   test("folds legacy duplicate tool starts while preserving later reuse after completion", () => {
     const call = () => entry({ kind: "tool_call", tool: { kind: "tool", toolKind: "unknown_tool", toolName: "propose_memory", toolId: "call-1", input: {} } })
     const result = () => entry({ kind: "tool_result", toolId: "call-1", content: "ok", isError: false })

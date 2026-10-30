@@ -71,7 +71,7 @@ function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
   useI18n()
   const app = useOutletContext<AppState | null>()
   const navigate = useNavigate()
-  const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { enabled: true, learn: true }
+  const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { control: "review" as const, enabled: true, learn: true }
   const draftDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
   const [pending, setPending] = useState(false)

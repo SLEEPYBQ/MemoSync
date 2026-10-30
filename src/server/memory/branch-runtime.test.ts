@@ -1,4 +1,7 @@
-import { describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterAll, describe, expect, test } from "bun:test"
 import type { query, Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from "../codex-app-server"
 import { ModelAccessService } from "../model-access/service"
@@ -15,10 +18,13 @@ import {
   type MemoryBranchInput,
 } from "./branch-runtime"
 
+const projectPath = mkdtempSync(join(tmpdir(), 'memosync-branch-unit-'))
+afterAll(() => rmSync(projectPath, { recursive: true, force: true }))
+
 const base: MemoryBranchInput = {
   provider: "claude",
   parentSessionToken: "main-session",
-  localPath: "/tmp/memosync-branch-unit",
+  localPath: projectPath,
   model: "test-model",
   subprocessEnv: {},
 }
@@ -131,7 +137,8 @@ describe("persistent memory branches", () => {
     const env = { ANTHROPIC_MODEL: "model[1m]", CLAUDECODE: "nested" }
     const branch = createMemoryBranch({ ...base, subprocessEnv: env, runtime: { engine: "claude", executable: { state: "ready", path: "/test/claude" }, env, model: "model[1m]", args: [], isolated: true } }, fake)
     expect(await branch.ask("Select working memory", { schema })).toEqual({ selected: [] })
-    expect(fake.calls[0].options?.outputFormat).toEqual({ type: "json_schema", schema })
+    expect(fake.calls[0].options?.outputFormat).toBeUndefined()
+    expect(fake.calls[0].prompt).toContain(JSON.stringify(schema))
     expect(fake.calls[0].options?.env?.ANTHROPIC_MODEL).toBe("model[1m]")
     expect(fake.calls[0].options?.env?.CLAUDECODE).toBeUndefined()
     expect(env.CLAUDECODE).toBe("nested")
@@ -174,8 +181,8 @@ describe("persistent memory branches", () => {
     expect(fake.sessions).toHaveLength(1)
     expect(fake.sessions[0]).toMatchObject({ pendingForkSessionToken: "main-session", sandbox: "read-only", dynamicTools: [], disableExternalTools: true })
     expect(fake.turns.map((turn) => turn.chatId)).toEqual([branch.id, branch.id])
-    expect(fake.turns[0].outputSchema).toBe(schema)
-    expect(fake.turns[0].content).toContain("return every required field; use null only where allowed")
+    expect(fake.turns[0].outputSchema).toBeUndefined()
+    expect(fake.turns[0].content).toContain("Required response JSON Schema")
     expect(fake.turns[0].content).toContain(JSON.stringify(schema))
     expect(await fake.turns[0].onApprovalRequest?.({} as never)).toBe("decline")
     expect((await fake.turns[0].onDynamicToolCall?.("propose_memory", {}))?.isError).toBe(true)
@@ -183,7 +190,7 @@ describe("persistent memory branches", () => {
     expect(fake.stopped).toEqual([branch.id])
   })
 
-  test("Pi forks once on read-only tools and resumes the same branch session", async () => {
+  test("Pi forks once with a tool-call permission gate and resumes the same branch session", async () => {
     const fake = fakePi()
     const branch = createMemoryBranch({ ...base, provider: "pi" }, {
       claudeQuery: claudeMustNotRun(),
@@ -199,7 +206,7 @@ describe("persistent memory branches", () => {
       chatId: branch.id,
       sessionToken: "main-session",
       forkSession: true,
-      toolNames: ["read", "grep", "find", "ls"],
+
     })
     expect(fake.turns[1]).toMatchObject({ sessionToken: "pi-child", forkSession: false })
     expect(fake.turns[0].content).toContain("memory-analysis branch")
@@ -323,15 +330,15 @@ describe("persistent memory branches", () => {
 describe("per-request branch budgets", () => {
   const permissionContext = (id: string) => ({ signal: new AbortController().signal, toolUseID: id, requestId: `permission-${id}` })
 
-  test("Claude default allows four parallel reads, denies the fifth, and always allows structured output", async () => {
+  test("Claude default allows four parallel reads, denies the fifth, and returns JSON without a synthetic tool", async () => {
     const fake = fakeClaude([claudeSuccess({})])
     const branch = createMemoryBranch(base, fake)
     await branch.ask("Inspect the project")
     const options = fake.calls[0].options!
     const results = await Promise.all(Array.from({ length: 5 }, (_, index) => options.canUseTool!("Read", { file_path: `file-${index}` }, permissionContext(`read-${index}`))))
     expect(results.map(result => result?.behavior)).toEqual(["allow", "allow", "allow", "allow", "deny"])
-    expect(results[4]).toMatchObject({ message: expect.stringContaining("StructuredOutput now") })
-    expect((await options.canUseTool!("StructuredOutput", {}, permissionContext("json")))?.behavior).toBe("allow")
+    expect(results[4]).toMatchObject({ message: expect.stringContaining("return JSON now") })
+    expect((await options.canUseTool!("StructuredOutput", {}, permissionContext("json")))?.behavior).toBe("deny")
     expect(options.maxTurns).toBe(6)
     expect(fake.calls[0].prompt).toContain("6 model turns and 4 actual read/tool calls")
     branch.dispose()
@@ -353,14 +360,14 @@ describe("per-request branch budgets", () => {
     branch.dispose()
   })
 
-  test("Claude schema repair with zero reads can still use StructuredOutput within two SDK turns", async () => {
+  test("Claude schema repair with zero reads uses text JSON within two SDK turns", async () => {
     const fake = fakeClaude([claudeSuccess({})])
     const branch = createMemoryBranch(base, fake)
     await branch.ask("Repair schema", { budget: { maxTurns: 2, maxToolCalls: 0 } })
     const options = fake.calls[0].options!
     expect(options.maxTurns).toBe(2)
     expect((await options.canUseTool!("Read", {}, permissionContext("read")))?.behavior).toBe("deny")
-    expect((await options.canUseTool!("StructuredOutput", {}, permissionContext("json")))?.behavior).toBe("allow")
+    expect((await options.canUseTool!("StructuredOutput", {}, permissionContext("json")))?.behavior).toBe("deny")
     branch.dispose()
   })
 
@@ -464,12 +471,12 @@ describe("branch output recovery", () => {
     const schema = { type: "object", properties: { selected: { type: "array" } }, required: ["selected"], additionalProperties: false }
     expect(await branch.ask("Select", { schema })).toEqual({ selected: [] })
     expect(fake.turns).toHaveLength(2)
-    expect(fake.turns[0].outputSchema).toBe(schema)
+    expect(fake.turns[0].outputSchema).toBeUndefined()
     expect(fake.turns[1]).toMatchObject({ sessionToken: "pi-child", forkSession: false })
     expect(fake.turns[1].content).toContain("at most 2 visible steps and 0 actual read/tool calls")
     expect(fake.turns[1].content).toContain("NO READS REMAIN")
     expect(fake.turns[1].content).toContain("Do not estimate remaining turns")
-    expect(fake.turns[1].content).toContain("call it DIRECTLY")
+    expect(fake.turns[1].content).toContain("Return the JSON object directly")
     branch.dispose()
   })
 
@@ -480,6 +487,61 @@ describe("branch output recovery", () => {
     expect(fake.calls).toHaveLength(2)
     expect(fake.calls[1].options?.resume).toBe("child-session")
     expect(fake.calls[1].options?.maxTurns).toBe(2)
+    branch.dispose()
+  })
+})
+
+describe('parent launch snapshots', () => {
+  test('Claude retains parent prefix options and denies every mutation before settings permissions', async () => {
+    const fake = fakeClaude([claudeSuccess({})])
+    const options = { model: 'parent-model', effort: 'high' as const, tools: ['Read', 'Bash', 'Write', 'WebFetch'],
+      systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: 'parent memory block' },
+      settingSources: ['user', 'project', 'local'] as ('user' | 'project' | 'local')[],
+      permissionMode: 'acceptEdits' as const, settings: { permissions: { allow: ['Write', 'Bash', 'mcp__memory__*'] } } }
+    const branch = createMemoryBranch({ ...base, parentLaunch: { provider: 'claude', options, memorySpecs: [] } }, fake)
+    await branch.ask('Inspect', { schema: { type: 'object' } })
+    const launched = fake.calls[0].options!
+    for (const key of ['model', 'effort', 'tools', 'systemPrompt', 'settingSources', 'permissionMode'] as const) expect(launched[key]).toEqual(options[key])
+    expect(launched.outputFormat).toBeUndefined()
+    expect(launched.settings).toMatchObject({ disableAllHooks: true, permissions: options.settings.permissions })
+    expect(fake.calls[0].prompt).toStartWith('You are an isolated MemoSync')
+    const gate = launched.hooks!.PreToolUse![0].hooks[0]
+    for (const [name, input] of [['Write', {}], ['Edit', {}], ['Bash', { command: 'touch forbidden' }], ['mcp__memory__propose_memory', {}], ['WebFetch', {}], ['Task', {}]] as const) {
+      const result = await gate({ hook_event_name: 'PreToolUse', session_id: 'child', transcript_path: '', cwd: base.localPath,
+        tool_name: name, tool_input: input, tool_use_id: name }, name, { signal: new AbortController().signal })
+      expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } })
+    }
+    const result = await gate({ hook_event_name: 'PreToolUse', session_id: 'child', transcript_path: '', cwd: base.localPath,
+      tool_name: 'Bash', tool_input: { command: 'pwd' }, tool_use_id: 'read' }, 'read', { signal: new AbortController().signal })
+    expect(result).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } })
+    branch.dispose()
+  })
+
+  test('Codex retains parent model, effort, developer instructions and dynamic schemas; overrides only safety configuration', async () => {
+    const fake = fakeCodex()
+    const session = { model: 'parent-model', serviceTier: undefined, sandbox: 'danger-full-access' as const,
+      dynamicTools: [{ type: 'function' as const, name: 'propose_memory', description: 'remember', inputSchema: { type: 'object' } }] }
+    const turn = { model: 'parent-model', effort: 'high' as const, planMode: false, developerInstructions: 'memory context' }
+    const branch = createMemoryBranch({ ...base, provider: 'codex', parentLaunch: { provider: 'codex', session, turn } }, fake)
+    await branch.ask('Inspect')
+    expect(fake.sessions[0]).toMatchObject({ model: session.model, dynamicTools: session.dynamicTools, sandbox: 'read-only', disableExternalTools: true })
+    expect(fake.turns[0]).toMatchObject(turn)
+    expect(fake.turns[0].outputSchema).toBeUndefined()
+    expect(await fake.turns[0].onDynamicToolCall!('propose_memory', {})).toMatchObject({ isError: true })
+    branch.dispose()
+  })
+
+  test('Pi retains full tools and memory definitions but gates execution and repairs with no reads', async () => {
+    const fake = fakePi()
+    const options = { model: 'parent-model', effort: 'high' as const, connection: await fake.resolvePiConnection!(),
+      toolNames: ['read', 'write', 'edit', 'bash', 'grep', 'ls', 'find'], memorySpecs: [] }
+    const branch = createMemoryBranch({ ...base, provider: 'pi', parentLaunch: { provider: 'pi', options } }, fake)
+    await branch.ask('Inspect')
+    expect(fake.turns[0]).toMatchObject(options)
+    for (const name of ['write', 'edit', 'bash', 'propose_memory', 'web']) expect(await fake.turns[0].beforeToolCall!(name, {})).toMatchObject({ block: true })
+    expect(await fake.turns[0].beforeToolCall!('read', {})).toBeUndefined()
+    await branch.ask('Correct JSON', { budget: { maxToolCalls: 0 } })
+    expect(await fake.turns[1].beforeToolCall!('read', {})).toMatchObject({ block: true })
     branch.dispose()
   })
 })

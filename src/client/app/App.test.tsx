@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test"
+import { renderToStaticMarkup } from "react-dom/server"
 import type { AppSettingsSnapshot, SidebarChatRow } from "../../shared/types"
 import { isBrowserUnfocused, shouldPlayChatSound } from "../lib/chatSounds"
 import { getAppAuthStateFromStatus, shouldPlayChatNotificationSound, shouldRedirectToChangelog, shouldRetryAuthStatusRequest } from "./App"
-import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth } from "./AppSidebar"
+import { DEFAULT_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH, MIN_SIDEBAR_WIDTH, clampSidebarWidth, MemoryPendingBadge } from "./AppSidebar"
 import { getChatNotificationSnapshot, getChatSoundBurstCount, getNotificationTitleCount } from "./chatNotifications"
 
 function createProjectGroup(chats: SidebarChatRow[]) {
@@ -17,6 +18,16 @@ function createProjectGroup(chats: SidebarChatRow[]) {
     defaultCollapsed: false,
   }
 }
+
+test("automatic Memory Board badge shows a quiet sensitive count and hides zero", () => {
+  const html = renderToStaticMarkup(<MemoryPendingBadge count={3} automatic />)
+  expect(html).toContain('title="3 sensitive proposals waiting on the Memory Board"')
+  expect(html).toContain('text-muted-foreground')
+  expect(html).toContain('>3</span>')
+  expect(html).not.toContain('text-cand-fg')
+  expect(renderToStaticMarkup(<MemoryPendingBadge count={0} automatic />)).toBe("")
+  expect(renderToStaticMarkup(<MemoryPendingBadge count={4} automatic={false} />)).toContain('title="4 proposed memories waiting for your review"')
+})
 
 describe("shouldRedirectToChangelog", () => {
   test("does not redirect when self-update is disabled", () => {

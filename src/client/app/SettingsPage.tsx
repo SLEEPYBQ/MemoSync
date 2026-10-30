@@ -1,13 +1,15 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
-import { Info, Loader2, LogOut, Menu } from "lucide-react"
+import { Info, Loader2, LogOut, Menu, Search, X } from "lucide-react"
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { getResolvedKeybindings } from "../lib/keybindings"
 import { cn } from "../lib/utils"
+import { useAppSettingsStore } from "../stores/appSettingsStore"
+import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import type { AppState } from "./useAppState"
-import { SETTINGS_SECTIONS as sidebarItems, resolveSettingsSectionId } from "./settings/registry"
+import { ALL_SETTINGS_ROWS, SETTINGS_NAV_GROUPS, SETTINGS_ROWS, SETTINGS_SECTIONS as sidebarItems, getSettingsRowHref, resolveSettingsSectionId } from "./settings/registry"
 import { GeneralSection } from "./settings/GeneralSection"
 import { MemorySection } from "./settings/MemorySection"
 import { ProvidersSection } from "./settings/ProvidersSection"
@@ -20,7 +22,7 @@ import {
   type ChangelogStatus,
   type GithubRelease,
 } from "./settings/ChangelogSection"
-import { getKeybindingsSubtitle, SettingsActionButton } from "./settings/shared"
+import { getKeybindingsSubtitle, SettingsActionButton, SettingsGroup, SettingsGroups, SettingsRow } from "./settings/shared"
 import { useSettingsRowHashScroll } from "./settings/useSettingsRowHashScroll"
 
 export { resolveSettingsSectionId } from "./settings/registry"
@@ -36,8 +38,25 @@ export {
 export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
+const REVIEW_ONLY_MEMORY_ROWS: string[] = [SETTINGS_ROWS.memoryPreview.id, SETTINGS_ROWS.memoryAutoProceed.id, SETTINGS_ROWS.memoryChanges.id]
+
+/**
+ * Some rows exist only in one mode: the command template only for the custom
+ * editor, the per-turn review rows only under Review each turn. A search hit
+ * on a hidden row goes to the control that brings it back.
+ */
+function searchTarget(row: (typeof ALL_SETTINGS_ROWS)[number]) {
+  if (row.id === SETTINGS_ROWS.editorCommandTemplate.id && useTerminalPreferencesStore.getState().editorPreset !== "custom") {
+    return SETTINGS_ROWS.defaultEditor
+  }
+  if (REVIEW_ONLY_MEMORY_ROWS.includes(row.id) && useAppSettingsStore.getState().settings?.memory.control === "auto") {
+    return SETTINGS_ROWS.memoryControl
+  }
+  return row
+}
+
 export function SettingsPage() {
-  useI18n()
+  const activeLanguage = useI18n()
   const navigate = useNavigate()
   const location = useLocation()
   const { sectionId } = useParams<{ sectionId: string }>()
@@ -47,6 +66,7 @@ export function SettingsPage() {
   const [authEnabled, setAuthEnabled] = useState(false)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
+  const [query, setQuery] = useState("")
   const selectedPage = resolveSettingsSectionId(sectionId) ?? "general"
   const isConnecting = state.connectionStatus === "connecting" || !state.localProjectsReady
   const machineName = state.localProjects?.machine.displayName ?? t("common:unavailable")
@@ -133,7 +153,14 @@ export function SettingsPage() {
   const selectedSection = sidebarItems.find((item) => item.id === selectedPage) ?? sidebarItems[0]
   const selectedSectionSubtitle =
     selectedPage === "keybindings" ? getKeybindingsSubtitle(keybindingsFilePathDisplay) : selectedSection.subtitle
-  const showFooter = !isConnecting
+  const searchResults = useMemo(() => {
+    const needle = query.trim().toLowerCase()
+    if (!needle) return []
+    return ALL_SETTINGS_ROWS.filter((row) =>
+      [row.title, row.description, ...(row.keywords ?? [])].some((text) => text.toLowerCase().includes(needle)),
+    ).slice(0, 12)
+    // Labels are getters over the active language; recompute when it changes.
+  }, [query, activeLanguage])
 
   async function handleSidebarSignOut() {
     if (signingOut) return
@@ -145,45 +172,99 @@ export function SettingsPage() {
     }
   }
 
+  const navItemClass = (active: boolean) => cn(
+    "flex h-8 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-left text-[13.5px] transition-colors [&_svg]:size-[15px] [&_svg]:shrink-0",
+    active
+      ? "bg-black/[0.06] font-medium text-foreground dark:bg-white/[0.08]"
+      : "text-muted-foreground hover:bg-black/[0.04] hover:text-foreground dark:hover:bg-white/[0.05]",
+  )
+
   return (
     <div className="relative flex h-full flex-1 min-w-0 bg-background">
       <div className="flex min-w-0 flex-1">
-        <aside className={`hidden w-[200px] shrink-0 md:block ${showFooter ? "pb-[89px]" : ""}`}>
-          <div className="flex flex-col gap-1 px-4 py-6">
-            <div className="px-3 pb-5 text-[22px] font-extrabold tracking-[-0.5px] text-foreground">{t("common:settings")}</div>
-            {sidebarItems.map((item) => (
-              <button
-                key={item.label}
-                type="button"
-                onClick={() => navigate(`/settings/${item.id}`)}
-                className={`cursor-pointer rounded-lg px-3 py-2 text-sm ${
-                  item.id === selectedPage
-                    ? "bg-muted font-medium text-foreground"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  <item.icon className="h-4 w-4 shrink-0" />
-                  <span>{item.label}</span>
-                </div>
-              </button>
-            ))}
-            {authEnabled ? (
-              <button
-                type="button"
-                onClick={() => {
-                  void handleSidebarSignOut()
-                }}
-                disabled={signingOut}
-                className="cursor-pointer rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <div className="flex items-center gap-2.5">
-                  <LogOut className="h-4 w-4 shrink-0" />
-                  <span>{signingOut ? t("settings:signingOut") : t("settings:signOut")}</span>
-                </div>
-              </button>
-            ) : null}
+        {/* Settings navigation: its own column against a hairline, so the
+            space between it and the centred content reads as layout, not a gap. */}
+        <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border/60 md:flex">
+          <div className="px-3 pb-2 pt-3">
+            <div className="px-2.5 pb-3 text-[15px] font-semibold tracking-[-0.01em] text-foreground">{t("common:settings")}</div>
+            <label className="flex h-8 items-center gap-2 rounded-lg bg-black/[0.045] px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-focus/40 dark:bg-white/[0.07]">
+              <Search className="size-3.5 shrink-0" />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Escape") setQuery("") }}
+                placeholder={t("settings:searchSettings")}
+                aria-label={t("settings:searchSettings")}
+                className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
+              />
+              {query ? (
+                <button type="button" aria-label={t("common:close")} onClick={() => setQuery("")} className="cursor-pointer text-muted-foreground hover:text-foreground">
+                  <X className="size-3.5" />
+                </button>
+              ) : null}
+            </label>
           </div>
+          <nav className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+            {query.trim() ? (
+              searchResults.length ? (
+                <div className="space-y-0.5 pt-2">
+                  {searchResults.map((row) => {
+                    const section = sidebarItems.find((item) => item.id === row.sectionId)
+                    return (
+                      <button
+                        key={row.id}
+                        type="button"
+                        onClick={() => { setQuery(""); navigate(getSettingsRowHref(searchTarget(row))) }}
+                        className="flex w-full cursor-pointer flex-col items-start rounded-lg px-2.5 py-1.5 text-left hover:bg-black/[0.04] dark:hover:bg-white/[0.05]"
+                      >
+                        <span className="text-[13px] text-foreground">{row.title}</span>
+                        <span className="text-[11.5px] text-muted-foreground">{section?.label}</span>
+                      </button>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="px-2.5 pt-3 text-[12.5px] text-muted-foreground">{t("settings:noSettingsMatch", { query: query.trim() })}</div>
+              )
+            ) : (
+              SETTINGS_NAV_GROUPS.map((group) => {
+                const items = sidebarItems.filter((item) => item.group === group.id)
+                if (!items.length) return null
+                return (
+                  <div key={group.id} className="pt-4 first:pt-2">
+                    <div className="px-2.5 pb-1 text-[11.5px] font-medium text-muted-foreground/75">{group.label}</div>
+                    <div className="space-y-px">
+                      {items.map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          aria-current={item.id === selectedPage ? "page" : undefined}
+                          onClick={() => navigate(`/settings/${item.id}`)}
+                          className={navItemClass(item.id === selectedPage)}
+                        >
+                          <item.icon />
+                          <span className="truncate">{item.label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })
+            )}
+          </nav>
+          {authEnabled ? (
+            <div className="border-t border-border/60 px-3 py-3">
+              <button
+                type="button"
+                onClick={() => { void handleSidebarSignOut() }}
+                disabled={signingOut}
+                className={cn(navItemClass(false), "disabled:cursor-not-allowed disabled:opacity-50")}
+              >
+                <LogOut />
+                <span>{signingOut ? t("settings:signingOut") : t("settings:signOut")}</span>
+              </button>
+            </div>
+          ) : null}
         </aside>
 
         <div className="min-w-0 flex-1 overflow-y-auto">
@@ -238,7 +319,7 @@ export function SettingsPage() {
             </div>
           </div>
 
-          <div className="w-full px-4 pb-32 pt-8 md:px-6 md:pt-16">
+          <div className="w-full px-5 pb-24 pt-8 md:px-10 md:pt-14">
             {isConnecting ? (
               <div
                 className="flex min-h-[240px] items-center justify-center rounded-2xl border border-border bg-card/40 px-4 py-6 text-sm text-muted-foreground"
@@ -249,26 +330,48 @@ export function SettingsPage() {
                 </div>
               </div>
             ) : (
-              <div className="@container mx-auto max-w-4xl">
-                <div className="px-[17px] pb-8">
-                  <div className="flex items-center justify-between gap-4 min-h-[34px]">
-                    <div className="text-lg font-semibold tracking-[-0.2px] text-foreground">
+              <div className="@container mx-auto max-w-[760px]">
+                <div className="px-1 pb-8">
+                  <div className="flex min-h-[34px] items-center justify-between gap-4">
+                    <h1 className="text-[22px] font-semibold tracking-[-0.015em] text-foreground">
                       {selectedSection.label}
-                    </div>
+                    </h1>
                     {selectedPage === "general" && SELF_UPDATE_ENABLED ? (
                       <SettingsActionButton onClick={() => navigate("/settings/changelog")}>
                         {t("settings:checkForUpdates")}</SettingsActionButton>
                     ) : null}
                   </div>
-                  <div className="mt-1 text-sm text-muted-foreground">{selectedSectionSubtitle}</div>
+                  <p className="mt-1 text-[13px] text-muted-foreground">{selectedSectionSubtitle}</p>
                 </div>
 
-                {selectedPage === "general" ? (
-                  <GeneralSection state={state} appVersion={appVersion} />
+                {selectedPage === "general" || selectedPage === "appearance" || selectedPage === "notifications" ? (
+                  <GeneralSection state={state} appVersion={appVersion} part={selectedPage} />
+                ) : selectedPage === "about" ? (
+                  <SettingsGroups>
+                    {SELF_UPDATE_ENABLED ? <GeneralSection state={state} appVersion={appVersion} part="about" /> : null}
+                    <SettingsGroup>
+                      <SettingsRow title={t("settings:aboutVersion")} description={null}>
+                        <span className="font-mono text-[13px] tabular-nums text-muted-foreground">{appVersion}</span>
+                      </SettingsRow>
+                      <SettingsRow title={t("settings:aboutMachine")} description={null}>
+                        <span className="text-[13px] text-muted-foreground">{machineName}</span>
+                      </SettingsRow>
+                      <SettingsRow title={t("settings:aboutServer")} description={null}>
+                        <span className="inline-flex items-center gap-1.5 text-[13px] text-muted-foreground">
+                          <span className={cn("size-1.5 rounded-full", state.connectionStatus === "connected" ? "bg-success" : state.connectionStatus === "connecting" ? "bg-cand-dot" : "bg-destructive")} />
+                          {t(({ connecting: "settings:connectingLabel", connected: "settings:connectedLabel", disconnected: "settings:disconnectedLabel" } as const)[state.connectionStatus])}
+                        </span>
+                      </SettingsRow>
+                      <SettingsRow title={t("settings:aboutProjects")} description={null}>
+                        <span className="text-[13px] tabular-nums text-muted-foreground">{projectCount}</span>
+                      </SettingsRow>
+                    </SettingsGroup>
+                    <p className="px-1 text-[12.5px] text-muted-foreground">{t("settings:aboutLicense")}</p>
+                  </SettingsGroups>
                 ) : selectedPage === "memory" ? (
                   <MemorySection state={state} />
                 ) : selectedPage === "providers" ? (
-                  <ProvidersSection state={state} />
+                  <ProvidersSection state={state} hash={location.hash} />
                 ) : selectedPage === "keybindings" ? (
                   <KeybindingsSection state={state} />
                 ) : selectedPage === "skills" ? (
@@ -304,33 +407,6 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {showFooter ? (
-        <div
-          className="absolute bottom-0 left-0 right-0 border-t border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80"
-        >
-          <div className="px-6 py-[14.25px]">
-            <div className="grid gap-3 text-xs text-muted-foreground grid-cols-2 lg:grid-cols-4">
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:machine")}</div>
-                <div className="text-foreground/80">{machineName}</div>
-              </div>
-              <div className="hidden md:block">
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:connection")}</div>
-                <div className="text-foreground/80">{t(({ connecting: "settings:connectingLabel", connected: "settings:connectedLabel", disconnected: "settings:disconnectedLabel" } as const)[state.connectionStatus])}</div>
-              </div>
-              <div className="hidden md:block">
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">
-                  {t("settings:projectsIndexed")}</div>
-                <div className="text-foreground/80">{projectCount}</div>
-              </div>
-              <div>
-                <div className="mb-1 uppercase tracking-wide text-[11px] text-muted-foreground/80">{t("settings:appVersion")}</div>
-                <div className="text-foreground/80">{appVersion}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   )
 }

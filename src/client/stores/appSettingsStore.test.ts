@@ -8,6 +8,16 @@ afterEach(() => {
   void i18n.changeLanguage("en")
 })
 
+test("memory control survives nested optimistic patches and server rollback", async () => {
+  const settings = await readAppSettingsSnapshot(`/tmp/memory-control-settings-absent-${crypto.randomUUID()}`)
+  useAppSettingsStore.getState().setFromServer(settings)
+  useAppSettingsStore.getState().applyOptimisticPatch({ memory: { control: "auto" } })
+  useAppSettingsStore.getState().applyOptimisticPatch({ memory: { learn: false }, memoryPreview: { enabled: false } })
+  expect(useAppSettingsStore.getState().settings?.memory).toEqual({ control: "auto", enabled: true, learn: false })
+  useAppSettingsStore.getState().setFromServer(settings)
+  expect(useAppSettingsStore.getState().settings?.memory.control).toBe("review")
+})
+
 test("language survives nested client settings merges", async () => {
   const settings = await readAppSettingsSnapshot(`/tmp/i18n-settings-absent-${crypto.randomUUID()}`)
   const chinese = mergeAppSettingsPatch(settings, { language: "zh-CN" })

@@ -26,7 +26,7 @@ export function Switch({ checked, onCheckedChange, disabled, className, ...props
         // Opacity too, so a switch disabled by another setting dims as its knob
         // slides off rather than before.
         "transition-[background-color,opacity] duration-300 ease-out",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60 focus-visible:ring-offset-1 focus-visible:ring-offset-background",
         "disabled:cursor-not-allowed disabled:opacity-50",
         checked ? "bg-primary" : "bg-muted-foreground/30",
         className,
