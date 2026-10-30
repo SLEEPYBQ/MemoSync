@@ -16,20 +16,19 @@ import { MemoryBadge } from "../memory/MemoryBadge"
 // explained here.
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
-import Markdown, { defaultUrlTransform } from "react-markdown"
-import remarkGfm from "remark-gfm"
+import { CachedMarkdown } from "./CachedMarkdown"
 import { ArrowUp, LibraryBig, Loader2, Plus, X } from "lucide-react"
 import { MemoSyncIcon } from "../MemoSyncIcon"
 import type { ExpectedMemoryUse, HydratedTranscriptMessage, MemoryPreviewDecision } from "../../../shared/types"
 import { memoriesApi, recordUiMonitor, recordWorkingMemorySelection } from "../../lib/memoriesApi"
-import { linkifyMemoryCitations, MEMORY_CITATION_SCHEME } from "../../lib/memoryCitations"
+import { linkifyMemoryCitations } from "../../lib/memoryCitations"
 import { previewGateKeyAction } from "../../lib/previewGateKeys"
 import { PREVIEW_GATE_PENDING_ATTRIBUTE } from "../../app/chatFocusPolicy"
 import { dispatchPreviewDemoDecision, useTranscriptRenderOptions } from "./render-context"
 import { cn } from "../../lib/utils"
 import { RiseIn } from "../ui/motion-primitives"
 import { Button } from "../ui/button"
-import { markdownComponentsWithLinks, MemoryCitationChip } from "./shared"
+import { MemoryCitationChip } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryReviewSkeleton } from "./MemoryReviewSkeleton"
 
@@ -75,10 +74,6 @@ export function WorkingMemorySelectionError({ error, onRetry, disabled = false }
   </div>
 }
 
-function replyUrlTransform(url: string): string {
-  return url.startsWith(MEMORY_CITATION_SCHEME) ? url : defaultUrlTransform(url)
-}
-
 /** Render the embedded assistant with the same Markdown and live memory
  * citations as the main conversation, while keeping its typography compact. */
 export function ReplyMarkdown({ text, className }: { text: string; className?: string }) {
@@ -90,13 +85,9 @@ export function ReplyMarkdown({ text, className }: { text: string; className?: s
         className,
       )}
     >
-      <Markdown
-        remarkPlugins={[remarkGfm]}
-        urlTransform={replyUrlTransform}
-        components={markdownComponentsWithLinks}
-      >
+      <CachedMarkdown memoryLinks>
         {linkifyMemoryCitations(text)}
-      </Markdown>
+      </CachedMarkdown>
     </div>
   )
 }

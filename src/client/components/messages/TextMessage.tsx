@@ -1,20 +1,14 @@
-import Markdown, { defaultUrlTransform } from "react-markdown"
-import remarkGfm from "remark-gfm"
+import { CachedMarkdown } from "./CachedMarkdown"
 import type { ProcessedTextMessage } from "./types"
-import { CurrentTurnMemoryCitationProvider, markdownComponentsWithLinks } from "./shared"
+import { CurrentTurnMemoryCitationProvider } from "./shared"
 import { MessageViolatedCitationsProvider, useViolatedCitationsMap } from "./render-context"
-import { linkifyMemoryCitations, MEMORY_CITATION_SCHEME } from "../../lib/memoryCitations"
+import { linkifyMemoryCitations } from "../../lib/memoryCitations"
+
+export { urlTransform } from "./CachedMarkdown"
 
 interface Props {
   message: ProcessedTextMessage
   isCurrentTurn?: boolean
-}
-
-// react-markdown's default urlTransform strips unknown URL schemes (href
-// becomes "") — the private memosync-memory: scheme must survive so the `a`
-// component can render the scope-colored citation chip instead of a dead link.
-export function urlTransform(url: string): string {
-  return url.startsWith(MEMORY_CITATION_SCHEME) ? url : defaultUrlTransform(url)
 }
 
 export function TextMessage({ message, isCurrentTurn = false }: Props) {
@@ -23,7 +17,7 @@ export function TextMessage({ message, isCurrentTurn = false }: Props) {
   const violated = useViolatedCitationsMap()?.get(message.id) ?? null
   const markdown = (
     <div className="text-pretty prose prose-sm dark:prose-invert px-0.5 w-full max-w-full space-y-4">
-      <Markdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={markdownComponentsWithLinks}>{linkifyMemoryCitations(message.text)}</Markdown>
+      <CachedMarkdown memoryLinks>{linkifyMemoryCitations(message.text)}</CachedMarkdown>
     </div>
   )
   const body = isCurrentTurn

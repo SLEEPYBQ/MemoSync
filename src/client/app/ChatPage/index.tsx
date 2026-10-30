@@ -1,14 +1,13 @@
 import { t, useI18n, getLocale } from "../../i18n"
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
+import { lazy, Suspense, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type CSSProperties, type DragEvent, type ReactNode, type RefObject } from "react"
 import { type LegendListRef } from "@legendapp/list/react"
 import type { GroupImperativeHandle } from "react-resizable-panels"
 import { useOutletContext } from "react-router-dom"
 import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
 import { BrowserPanel } from "../../components/chat-ui/BrowserPanel"
-import { FilesPanel } from "../../components/chat-ui/FilesPanel"
+import { PanelLoading } from "../../components/ui/panel-loading"
 import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
-import { GitPanel } from "../../components/chat-ui/GitPanel"
 import { SessionMemoriesPanel } from "../../components/memory-chat/SessionMemoriesPanel"
 import { TurnInterruptContext, type TurnInterruptApi } from "../../components/messages/shared"
 import { useAppDialog } from "../../components/ui/app-dialog"
@@ -42,6 +41,9 @@ import {
   hasFileDragTypes,
   sameContextWindowSnapshot,
 } from "./utils"
+
+const FilesPanel = lazy(() => import("../../components/chat-ui/FilesPanel").then(module => ({ default: module.FilesPanel })))
+const GitPanel = lazy(() => import("../../components/chat-ui/GitPanel").then(module => ({ default: module.GitPanel })))
 
 export {
   getIgnoreFolderEntryFromDiffPath,
@@ -291,10 +293,9 @@ type ChatSidebarContentProps = ComponentProps<typeof GitPanel>
 const ChatSidebarContent = memo(function ChatSidebarContent(props: ChatSidebarContentProps) {
   useI18n()
   return (
-    <GitPanel
-      {...props}
-      diffs={props.diffs ?? EMPTY_DIFF_SNAPSHOT}
-    />
+    <Suspense fallback={<PanelLoading />}>
+      <GitPanel {...props} diffs={props.diffs ?? EMPTY_DIFF_SNAPSHOT} />
+    </Suspense>
   )
 })
 
@@ -1197,7 +1198,7 @@ export function ChatPage() {
     : activeRightPanel === "memory" && projectId && state.activeChatId
       ? memoryPanelContent
       : activeRightPanel === "files" && projectId
-        ? <FilesPanel key={projectId} projectId={projectId} chatId={state.activeChatId ?? undefined} onClose={handleCloseRightSidebar} />
+        ? <Suspense fallback={<PanelLoading />}><FilesPanel key={projectId} projectId={projectId} chatId={state.activeChatId ?? undefined} onClose={handleCloseRightSidebar} /></Suspense>
         : gitPanelContentProps
           ? <ChatSidebarContent {...gitPanelContentProps} />
           : null

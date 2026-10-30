@@ -1,8 +1,6 @@
 import { memo } from "react"
-import Markdown from "react-markdown"
-import remarkGfm from "remark-gfm"
-import { CurrentTurnMemoryCitationProvider, markdownComponentsWithLinks } from "./shared"
-import { urlTransform } from "./TextMessage"
+import { CachedMarkdown } from "./CachedMarkdown"
+import { CurrentTurnMemoryCitationProvider } from "./shared"
 import { useThrottledValue } from "../../hooks/useThrottledValue"
 import { linkifyMemoryCitations } from "../../lib/memoryCitations"
 
@@ -22,7 +20,7 @@ export const StreamingAssistantText = memo(function StreamingAssistantText({ tex
     <div className="pb-5">
       <div className="text-pretty prose prose-sm dark:prose-invert px-0.5 w-full max-w-full space-y-4">
         <CurrentTurnMemoryCitationProvider>
-          <Markdown remarkPlugins={[remarkGfm]} urlTransform={urlTransform} components={markdownComponentsWithLinks}>{linkifyMemoryCitations(throttledText)}</Markdown>
+          <CachedMarkdown memoryLinks>{linkifyMemoryCitations(throttledText)}</CachedMarkdown>
         </CurrentTurnMemoryCitationProvider>
       </div>
     </div>
