@@ -146,6 +146,7 @@
   "uninstallValue0": "Uninstall {{v0}}",
   "editGlobalAppShortcutsStoredInValue0": "Edit global app shortcuts stored in {{v0}}.",
   "toggleEmbeddedTerminal": "Toggle Embedded Terminal",
+  "toggleLeftSidebar": "Toggle Left Sidebar",
   "toggleRightSidebar": "Toggle Right Sidebar",
   "openInFinder": "Open In Finder",
   "openInEditor": "Open In Editor",

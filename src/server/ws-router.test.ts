@@ -92,6 +92,7 @@ class FakeWebSocket {
 const DEFAULT_KEYBINDINGS_SNAPSHOT: KeybindingsSnapshot = {
   bindings: {
     toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
+    toggleLeftSidebar: ["cmd+b"],
     toggleRightSidebar: ["ctrl+b"],
     openInFinder: ["cmd+alt+f"],
     openInEditor: ["cmd+shift+o"],
@@ -2140,6 +2141,7 @@ describe("ws-router", () => {
           type: "settings.writeKeybindings",
           bindings: {
             toggleEmbeddedTerminal: ["cmd+k"],
+            toggleLeftSidebar: ["cmd+b"],
             toggleRightSidebar: ["ctrl+shift+b"],
             openInFinder: ["cmd+shift+g"],
             openInEditor: ["cmd+shift+p"],
@@ -2160,6 +2162,7 @@ describe("ws-router", () => {
       result: {
         bindings: {
           toggleEmbeddedTerminal: ["cmd+k"],
+          toggleLeftSidebar: ["cmd+b"],
           toggleRightSidebar: ["ctrl+shift+b"],
           openInFinder: ["cmd+shift+g"],
           openInEditor: ["cmd+shift+p"],

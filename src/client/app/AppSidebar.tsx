@@ -10,9 +10,10 @@ import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProject
 import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
 import { Button } from "../components/ui/button"
 import { Dialog, DialogBody, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "../components/ui/dialog"
+import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../components/ui/tooltip"
 import { getLastBoardVisit } from "../lib/boardVisit"
 import { formatSidebarAgeLabel } from "../lib/formatters"
-import { getResolvedKeybindings } from "../lib/keybindings"
+import { actionMatchesEvent, getResolvedKeybindings } from "../lib/keybindings"
 import { memoriesApi } from "../lib/memoriesApi"
 import { getSidebarChatTimestamp } from "../lib/sidebarChats"
 import { cn } from "../lib/utils"
@@ -122,6 +123,10 @@ function AppSidebarImpl({
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  // Collapsed on desktop: resting the pointer on the left edge slides the
+  // sidebar out over the page; leaving it slides it back.
+  const [peeking, setPeeking] = useState(false)
+  const peekTimerRef = useRef<number | null>(null)
   const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const visibleChats = useMemo(
@@ -202,6 +207,34 @@ function AppSidebarImpl({
     })
   }, [])
 
+  const clearPeekTimer = useCallback(() => {
+    if (peekTimerRef.current !== null) window.clearTimeout(peekTimerRef.current)
+    peekTimerRef.current = null
+  }, [])
+
+  const schedulePeek = useCallback((next: boolean, delayMs: number) => {
+    clearPeekTimer()
+    peekTimerRef.current = window.setTimeout(() => {
+      peekTimerRef.current = null
+      // A row's menu renders in a portal outside the sidebar; keep the
+      // sidebar out while it is open so the menu isn't pulled away.
+      if (!next && document.querySelector("[data-radix-popper-content-wrapper] [role='menu']")) {
+        schedulePeek(false, 300)
+        return
+      }
+      setPeeking(next)
+    }, delayMs)
+  }, [clearPeekTimer])
+
+  useEffect(() => {
+    if (!collapsed) {
+      clearPeekTimer()
+      setPeeking(false)
+    }
+  }, [clearPeekTimer, collapsed])
+
+  useEffect(() => clearPeekTimer, [clearPeekTimer])
+
   const renderChatRow = useCallback((chat: SidebarChatRow) => {
     const visibleIndex = visibleIndexByChatId.get(chat.chatId)
 
@@ -239,6 +272,20 @@ function AppSidebarImpl({
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
       setShowNumberJumpHints(shouldShowSidebarNumberJumpHints(resolvedKeybindings, event))
+
+      // An older keybindings file may still give the right sidebar the same
+      // keys; the right sidebar keeps them then.
+      if (
+        actionMatchesEvent(resolvedKeybindings, "toggleLeftSidebar", event) &&
+        !actionMatchesEvent(resolvedKeybindings, "toggleRightSidebar", event)
+      ) {
+        event.preventDefault()
+        clearPeekTimer()
+        setPeeking(false)
+        if (collapsed) onExpand()
+        else onCollapse()
+        return
+      }
 
       if (isSidebarModifierShortcut(resolvedKeybindings, "createChatInCurrentProject", event)) {
         if (!currentProjectId) {
@@ -290,7 +337,7 @@ function AppSidebarImpl({
       window.removeEventListener("keyup", handleKeyUp)
       window.removeEventListener("blur", clearHints)
     }
-  }, [currentProjectId, navigate, onClose, onCreateChat, onOpenAddProjectModal, true, true, resolvedKeybindings])
+  }, [clearPeekTimer, collapsed, currentProjectId, navigate, onClose, onCollapse, onCreateChat, onExpand, onOpenAddProjectModal, resolvedKeybindings])
 
   useEffect(() => {
     if (!activeChatId || !scrollContainerRef.current) return
@@ -426,15 +473,44 @@ function AppSidebarImpl({
         </div>
       )}
 
+      {collapsed ? (
+        <div
+          aria-hidden="true"
+          data-sidebar-peek-zone
+          className="fixed inset-y-0 left-0 z-40 hidden w-2 md:block"
+          onPointerEnter={(event) => {
+            if (event.pointerType === "mouse") schedulePeek(true, 120)
+          }}
+          onPointerLeave={() => {
+            if (!peeking) clearPeekTimer()
+          }}
+        />
+      ) : null}
+
       <div
         data-sidebar="open"
+        data-peeking={collapsed && peeking ? "true" : undefined}
+        inert={collapsed && !peeking && !open ? true : undefined}
         className={cn(
           "fixed inset-0 z-50 bg-sidebar flex flex-col h-[100dvh] select-none",
-          "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
-          open ? "flex" : "hidden md:flex",
-          collapsed && "md:hidden"
+          collapsed
+            ? cn(
+                "md:inset-y-0 md:left-0 md:right-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
+                "md:transition-[translate,box-shadow] md:duration-200 md:ease-out",
+                peeking
+                  ? "md:translate-x-0 md:shadow-[0_12px_40px_rgba(0,0,0,0.14)] dark:md:shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+                  : "md:-translate-x-full"
+              )
+            : "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
+          open ? "flex" : "hidden md:flex"
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
+        onPointerEnter={() => {
+          if (collapsed) clearPeekTimer()
+        }}
+        onPointerLeave={(event) => {
+          if (collapsed && peeking && event.pointerType === "mouse" && !isResizingSidebar) schedulePeek(false, 280)
+        }}
       >
         <div className="px-[5px] h-[47px] border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:h-12 md:border-b-0 md:pl-4 md:pr-2 md:flex md:justify-between">
           <div className="md:hidden">
@@ -449,16 +525,7 @@ function AppSidebarImpl({
             </Button>
           </div>
           <div className="flex items-center justify-self-center gap-2 md:justify-self-auto">
-            <button
-              type="button"
-              onClick={onCollapse}
-              title={t("sidebar:collapseSidebar")}
-              className="hidden md:flex group/sidebar-collapse relative items-center justify-center h-5 w-5 sm:h-6 sm:w-6"
-            >
-              <BrandIcon animated="none" className="absolute inset-0.5 h-4 w-4 sm:h-5 sm:w-5 transition-all duration-200 ease-out opacity-100 scale-100 group-hover/sidebar-collapse:opacity-0 group-hover/sidebar-collapse:scale-0" />
-              <PanelLeft className="absolute inset-0 h-4 w-4 sm:h-6 sm:w-6 text-slate-500 dark:text-muted-foreground transition-all duration-200 ease-out opacity-0 scale-0 group-hover/sidebar-collapse:opacity-100 group-hover/sidebar-collapse:scale-80 hover:opacity-50" />
-            </button>
-            <BrandIcon className="h-5 w-5 sm:h-6 sm:w-6 md:hidden" />
+            <BrandIcon animated="none" className="h-5 w-5 sm:h-6 sm:w-6 md:h-5 md:w-5" />
             <span className="font-logo text-base uppercase sm:text-md text-section-title">{brandName}</span>
           </div>
           <div className="flex items-center justify-self-end md:justify-self-auto">
@@ -504,6 +571,27 @@ function AppSidebarImpl({
             >
               <Plus className="size-4" />
             </Button>}
+            <HotkeyTooltip>
+              <HotkeyTooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => {
+                    clearPeekTimer()
+                    setPeeking(false)
+                    if (collapsed) onExpand()
+                    else onCollapse()
+                  }}
+                  aria-label={collapsed ? t("sidebar:pinSidebar") : t("sidebar:collapseSidebar")}
+                  className="hidden md:inline-flex size-8 rounded-lg border-0 text-muted-foreground hover:border-0 hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
+                >
+                  <PanelLeft className="size-4" />
+                </Button>
+              </HotkeyTooltipTrigger>
+              <HotkeyTooltipContent side="bottom" shortcut={resolvedKeybindings.bindings.toggleLeftSidebar}>
+                {collapsed ? t("sidebar:pinSidebar") : t("sidebar:collapseSidebar")}
+              </HotkeyTooltipContent>
+            </HotkeyTooltip>
           </div>
         </div>
 
@@ -635,8 +723,10 @@ function AppSidebarImpl({
           tabIndex={0}
           title={t("sidebar:resizeSidebar")}
           className={cn(
-            "hidden md:block absolute -right-1 top-3 bottom-3 z-20 w-2 cursor-col-resize rounded-full",
-            "focus-visible:outline-none"
+            "hidden md:block absolute -right-1 inset-y-0 z-20 w-2 cursor-col-resize",
+            "after:absolute after:inset-y-0 after:left-1/2 after:w-[2px] after:-translate-x-1/2 after:bg-transparent after:transition-colors after:duration-150",
+            "hover:after:bg-focus/50 hover:after:delay-150 focus-visible:outline-none focus-visible:after:bg-focus/60",
+            isResizingSidebar && "after:bg-focus/60"
           )}
           onPointerDown={(event) => {
             event.preventDefault()

@@ -5,6 +5,7 @@
   "expandSidebar": "Expand sidebar",
   "closeSidebar": "Close sidebar",
   "collapseSidebar": "Collapse sidebar",
+  "pinSidebar": "Keep sidebar open",
   "newProject": "New project",
   "developmentBuild": "Development build",
   "dev": "DEV",

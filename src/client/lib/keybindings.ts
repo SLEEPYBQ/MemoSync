@@ -3,6 +3,7 @@ import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } 
 
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
   get toggleEmbeddedTerminal() { return t("settings:toggleEmbeddedTerminal") },
+  get toggleLeftSidebar() { return t("settings:toggleLeftSidebar") },
   get toggleRightSidebar() { return t("settings:toggleRightSidebar") },
   get openInFinder() { return t("settings:openInFinder") },
   get openInEditor() { return t("settings:openInEditor") },
@@ -83,6 +84,7 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   return {
     bindings: {
       toggleEmbeddedTerminal: snapshot?.bindings.toggleEmbeddedTerminal ?? DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal,
+      toggleLeftSidebar: snapshot?.bindings.toggleLeftSidebar ?? DEFAULT_KEYBINDINGS.toggleLeftSidebar,
       toggleRightSidebar: snapshot?.bindings.toggleRightSidebar ?? DEFAULT_KEYBINDINGS.toggleRightSidebar,
       openInFinder: snapshot?.bindings.openInFinder ?? DEFAULT_KEYBINDINGS.openInFinder,
       openInEditor: snapshot?.bindings.openInEditor ?? DEFAULT_KEYBINDINGS.openInEditor,

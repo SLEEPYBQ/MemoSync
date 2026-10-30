@@ -146,6 +146,7 @@
   "uninstallValue0": "卸载{{v0}}",
   "editGlobalAppShortcutsStoredInValue0": "编辑保存在 {{v0}} 中的全局快捷键。",
   "toggleEmbeddedTerminal": "切换内嵌终端",
+  "toggleLeftSidebar": "切换左侧栏",
   "toggleRightSidebar": "切换右侧栏",
   "openInFinder": "在 Finder 中打开",
   "openInEditor": "在编辑器中打开",

@@ -652,6 +652,7 @@ export interface UpdateInstallResult {
 
 export type KeybindingAction =
   | "toggleEmbeddedTerminal"
+  | "toggleLeftSidebar"
   | "toggleRightSidebar"
   | "openInFinder"
   | "openInEditor"
@@ -662,7 +663,8 @@ export type KeybindingAction =
 
 export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   toggleEmbeddedTerminal: ["cmd+j", "ctrl+`"],
-  toggleRightSidebar: ["cmd+b", "ctrl+b"],
+  toggleLeftSidebar: ["cmd+b", "ctrl+b"],
+  toggleRightSidebar: ["cmd+alt+b", "ctrl+alt+b"],
   openInFinder: ["cmd+alt+f", "ctrl+alt+f"],
   openInEditor: ["cmd+shift+o", "ctrl+shift+o"],
   addSplitTerminal: ["cmd+/", "ctrl+/"],

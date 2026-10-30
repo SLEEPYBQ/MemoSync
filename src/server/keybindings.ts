@@ -116,9 +116,16 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
     return createDefaultSnapshot(filePath, "Keybindings file must contain a JSON object. Using defaults.")
   }
 
+  // Files written before the left sidebar had a shortcut still hold the old
+  // default, ⌘B on the right sidebar. Left untouched, that moves to the new
+  // default so ⌘B can toggle the left sidebar; a customised binding is kept.
+  const migrated: KeybindingsFile = source.toggleLeftSidebar === undefined && isLegacyRightSidebarDefault(source.toggleRightSidebar)
+    ? { ...source, toggleRightSidebar: undefined }
+    : source
+
   const bindings = {} as Record<KeybindingAction, string[]>
   for (const action of KEYBINDING_ACTIONS) {
-    const rawValue = source[action]
+    const rawValue = migrated[action]
     if (!Array.isArray(rawValue)) {
       bindings[action] = [...DEFAULT_KEYBINDINGS[action]]
       if (rawValue !== undefined) {
@@ -151,10 +158,19 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
   }
 }
 
+const LEGACY_RIGHT_SIDEBAR_DEFAULT = ["cmd+b", "ctrl+b"]
+
+function isLegacyRightSidebarDefault(value: unknown) {
+  return Array.isArray(value)
+    && value.length === LEGACY_RIGHT_SIDEBAR_DEFAULT.length
+    && value.every((entry, index) => typeof entry === "string" && entry.trim().toLowerCase() === LEGACY_RIGHT_SIDEBAR_DEFAULT[index])
+}
+
 function createDefaultSnapshot(filePath: string, warning: string | null = null): KeybindingsSnapshot {
   return {
     bindings: {
       toggleEmbeddedTerminal: [...DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal],
+      toggleLeftSidebar: [...DEFAULT_KEYBINDINGS.toggleLeftSidebar],
       toggleRightSidebar: [...DEFAULT_KEYBINDINGS.toggleRightSidebar],
       openInFinder: [...DEFAULT_KEYBINDINGS.openInFinder],
       openInEditor: [...DEFAULT_KEYBINDINGS.openInEditor],
