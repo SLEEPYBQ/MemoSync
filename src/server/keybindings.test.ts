@@ -31,9 +31,24 @@ describe("normalizeKeybindings", () => {
     expect(snapshot.warning).toContain("toggleRightSidebar")
   })
 
+  test("moves an untouched old right-sidebar default off cmd+b", () => {
+    const snapshot = normalizeKeybindings({ toggleRightSidebar: ["cmd+b", "ctrl+b"] }, TEST_FILE_PATH)
+
+    expect(snapshot.bindings.toggleLeftSidebar).toEqual(["cmd+b", "ctrl+b"])
+    expect(snapshot.bindings.toggleRightSidebar).toEqual(["cmd+alt+b", "ctrl+alt+b"])
+    expect(snapshot.warning).toBeNull()
+  })
+
+  test("keeps a customised right-sidebar binding", () => {
+    const snapshot = normalizeKeybindings({ toggleRightSidebar: ["cmd+b"] }, TEST_FILE_PATH)
+
+    expect(snapshot.bindings.toggleRightSidebar).toEqual(["cmd+b"])
+  })
+
   test("keeps valid shortcut arrays", () => {
     const snapshot = normalizeKeybindings({
       toggleEmbeddedTerminal: [" Cmd+K ", "Ctrl+`"],
+      toggleLeftSidebar: ["Cmd+B"],
       toggleRightSidebar: ["Ctrl+Shift+B"],
       openInFinder: ["Cmd+Alt+F"],
       openInEditor: ["Cmd+Shift+O"],
@@ -46,6 +61,7 @@ describe("normalizeKeybindings", () => {
     expect(snapshot).toEqual({
       bindings: {
         toggleEmbeddedTerminal: ["cmd+k", "ctrl+`"],
+        toggleLeftSidebar: ["cmd+b"],
         toggleRightSidebar: ["ctrl+shift+b"],
         openInFinder: ["cmd+alt+f"],
         openInEditor: ["cmd+shift+o"],
@@ -99,6 +115,7 @@ describe("KeybindingsManager", () => {
     await manager.initialize()
     const snapshot = await manager.write({
       toggleEmbeddedTerminal: ["Cmd+K"],
+      toggleLeftSidebar: ["Cmd+B"],
       toggleRightSidebar: ["Ctrl+Shift+B"],
       openInFinder: ["Cmd+Alt+F"],
       openInEditor: ["Cmd+Shift+O"],
@@ -111,6 +128,7 @@ describe("KeybindingsManager", () => {
     expect(snapshot).toEqual({
       bindings: {
         toggleEmbeddedTerminal: ["cmd+k"],
+        toggleLeftSidebar: ["cmd+b"],
         toggleRightSidebar: ["ctrl+shift+b"],
         openInFinder: ["cmd+alt+f"],
         openInEditor: ["cmd+shift+o"],

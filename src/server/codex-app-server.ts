@@ -1,3 +1,5 @@
+import { fileURLToPath } from 'node:url'
+import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { spawn } from "node:child_process"
 import { randomUUID } from "node:crypto"
@@ -923,7 +925,26 @@ export class CodexAppServerManager {
       if (!config) throw new Error("Cannot establish read-only memory branch: invalid Codex configuration response")
       const servers = config.mcp_servers === undefined ? {} : asRecord(config.mcp_servers)
       if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
-      branchConfig = { "features.multi_agent": false, web_search: "disabled" }
+      const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
+      const guard = fileURLToPath(new URL("./memory/codex-branch-guard.ts", import.meta.url))
+      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)} ${quote(args.cwd)}`
+      // Codex normalizes hook identity to sorted JSON before hashing. Session
+      // flags are not implicitly trusted; keep trust local to this declaration.
+      // scripts/smoke-branch-prefix.ts proves the hook denies on the installed CLI.
+      const identity = JSON.stringify({ event_name: "pre_tool_use", hooks: [{ async: false, command, timeout: 10, type: "command" }] })
+      const hash = `sha256:${createHash("sha256").update(identity).digest("hex")}`
+      branchConfig = {
+        "hooks.state": { "/<session-flags>/config.toml:pre_tool_use:0:0": { enabled: true, trusted_hash: hash } },
+        // Web search stays as the parent has it: it is a server-side, read-only
+        // tool the hook cannot gate, and removing it would change the tool list
+        // and lose the parent's prompt cache. The branch contract forbids using it.
+        // Codex picks the mode per turn from the permission profile: the
+        // parent's full access upgrades anything but disabled/indexed to live,
+        // while this read-only branch would keep cached. Pin the parent's.
+        ...(config.web_search === "disabled" || config.web_search === "indexed" ? {} : { web_search: "live" }),
+        "features.multi_agent": false,
+        "hooks.PreToolUse": [{ hooks: [{ type: "command", command, timeout: 10 }] }],
+      }
       for (const name of Object.keys(servers)) {
         // Config overrides use dotted paths. Ambiguous names must not disable
         // the wrong server and silently leave the intended one available.

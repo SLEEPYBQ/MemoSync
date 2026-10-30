@@ -301,7 +301,7 @@ function createWorld(modelAccess?: ModelAccessRouterService) {
 
   const appSettingsListeners = new Set<(snapshot: unknown) => void>()
   let appSettingsSnapshot: Record<string, unknown> = {
-    memory: { enabled: true, learn: true },
+    memory: { control: "review", enabled: true, learn: true },
     theme: "system",
     boardAutoReturn: false,
   }

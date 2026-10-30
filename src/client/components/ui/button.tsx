@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority"
 import { cn } from "../../lib/utils"
 
 const buttonVariants = cva(
-  "touch-manipulation inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer rounded-md text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none",
+  "touch-manipulation inline-flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer rounded-md text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60 focus-visible:ring-offset-1 disabled:pointer-events-none",
   {
     variants: {
       variant: {

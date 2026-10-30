@@ -3,8 +3,8 @@ import { t, useI18n } from "../../i18n"
 import { EngineCard } from "./EngineCard"
 import { ConnectionDialog, ConnectionsSection } from "./ConnectionsSection"
 import { useModelAccessStore } from "../../model-access/modelAccess"
-import { useState } from "react"
-import type { ApiProtocol } from "../../../shared/model-access"
+import { useEffect, useState } from "react"
+import type { ApiProtocol, EngineId } from "../../../shared/model-access"
 import type {
   AgentProvider,
   AppSettingsPatch,
@@ -23,7 +23,6 @@ import {
   SettingsGroup,
   SettingsRow,
   SettingsSelect,
-  SettingsGroupHeading,
 } from "./shared"
 
 const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
@@ -53,10 +52,24 @@ function modelOptionsPatch(
   }
 }
 
+/** A deep link (/settings/providers#claudeDefaults) opens the engine that holds its row. */
+function engineFromHash(rawHash = typeof window === "undefined" ? "" : window.location.hash): EngineId[] {
+  const hash = rawHash.replace(/^#/, "")
+  return (Object.entries(DEFAULTS_ROWS) as [EngineId, SettingsRowDef][])
+    .filter(([, row]) => row.id === hash)
+    .map(([engine]) => engine)
+}
+
 export function ProvidersSection({
   state,
+  defaultExpanded,
+  hash,
 }: {
   state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket">>
+  /** Engines open on first render (tests); otherwise only the one a deep link targets. */
+  defaultExpanded?: readonly EngineId[]
+  /** The page's current location hash, so search jumps open the target engine. */
+  hash?: string
 }) {
   useI18n()
   const preferences = useChatPreferencesStore()
@@ -64,6 +77,17 @@ export function ProvidersSection({
   const providers = state.availableProviders
   const snapshot = useModelAccessStore((s) => s.snapshot)
   const [adding, setAdding] = useState<{ protocol?: ApiProtocol } | null>(null)
+  const [expandedEngines, setExpandedEngines] = useState<ReadonlySet<EngineId>>(() => new Set(defaultExpanded ?? engineFromHash(hash)))
+  useEffect(() => {
+    const targets = engineFromHash(hash)
+    if (targets.length) setExpandedEngines((current) => new Set([...current, ...targets]))
+  }, [hash])
+  const toggleEngine = (engine: EngineId) => setExpandedEngines((current) => {
+    const next = new Set(current)
+    if (next.has(engine)) next.delete(engine)
+    else next.add(engine)
+    return next
+  })
 
   async function save(patch: AppSettingsPatch) {
     try {
@@ -146,7 +170,7 @@ export function ProvidersSection({
     <div className="model-access-ui @container">
       {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
       <SettingsGroups>
-        <SettingsGroup title={t("settings:defaultProvider")}>
+        <SettingsGroup>
           <SettingsRow def={SETTINGS_ROWS.defaultProvider}>
             <SettingsSelect
               aria-label={t("settings:defaultProvider")}
@@ -165,22 +189,25 @@ export function ProvidersSection({
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
-        <section id={SETTINGS_ROWS.modelEngines.id} className="space-y-3">
-          <SettingsGroupHeading>{t("modelAccess:engines")}</SettingsGroupHeading>
-          {(["claude", "codex", "pi"] as const).map((engine) => (
-            <EngineCard
-              key={engine}
-              engine={engine}
-              status={snapshot?.engines[engine]}
-              connections={snapshot?.connections ?? []}
-              socket={state.socket}
-              onAddConnection={(protocol) => setAdding({ protocol })}
-            >
-              {renderDefaults(engine)}
-            </EngineCard>
-          ))}
+        <section id={SETTINGS_ROWS.modelEngines.id} data-settings-row className="scroll-mt-6 rounded-xl">
+          <SettingsGroup title={t("modelAccess:engines")}>
+            {(["claude", "codex", "pi"] as const).map((engine) => (
+              <EngineCard
+                key={engine}
+                engine={engine}
+                status={snapshot?.engines[engine]}
+                connections={snapshot?.connections ?? []}
+                socket={state.socket}
+                onAddConnection={(protocol) => setAdding({ protocol })}
+                expanded={expandedEngines.has(engine)}
+                onToggle={() => toggleEngine(engine)}
+              >
+                {renderDefaults(engine)}
+              </EngineCard>
+            ))}
+          </SettingsGroup>
         </section>
-        <div id={SETTINGS_ROWS.apiConnections.id}>
+        <div id={SETTINGS_ROWS.apiConnections.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <ConnectionsSection
             connections={snapshot?.connections ?? []}
             presets={snapshot?.presets ?? []}

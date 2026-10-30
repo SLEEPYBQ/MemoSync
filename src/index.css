@@ -1,35 +1,6 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-regular-italic.woff2") format("woff2");
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-medium.woff2") format("woff2");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-semibold.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -51,6 +22,10 @@
     --border: 214 20% 90%;
     --input: 240 5.9% 90%;
     --ring: 240 5.9% 10%;
+    /* Keyboard focus: a soft accent ring that hugs the control (Codex / macOS). */
+    --focus: 211 92% 52%;
+    /* App sidebar: one quiet step off the page, like Codex's. */
+    --sidebar: 220 14% 97.6%;
     --radius: 0.5rem;
     --muted-icon: 240 2% 79%;
     --chart-1: 24.6 95% 53.1%;
@@ -105,6 +80,8 @@
     --border: 30 3% 23%;
     --input: 30 3% 20%;
     --ring: 34 6% 80%;
+    --focus: 211 88% 64%;
+    --sidebar: 30 4% 10.5%;
     --muted-icon: 32 4% 48%;
     --color-slate-50: oklch(98.5% 0.001 60);
     --color-slate-100: oklch(96.7% 0.0013 60);
@@ -147,6 +124,8 @@
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
+  --color-focus: hsl(var(--focus));
+  --color-sidebar: hsl(var(--sidebar));
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
   --color-primary: hsl(var(--primary));
@@ -206,8 +185,10 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-    font-family: "Body", sans-serif;
-    /* font-weight: ; */
+    /* The platform UI font: SF Pro + PingFang on macOS, Segoe UI + Microsoft YaHei on
+       Windows. One family per script keeps Latin and Chinese on matching metrics. */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Roboto, "Helvetica Neue", Arial, sans-serif;
     margin: 0;
     min-height: 100dvh;
     -webkit-font-smoothing: antialiased;
@@ -673,7 +654,7 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border outline-focus/60;
   }
 
   body {
@@ -697,8 +678,8 @@
 @layer base {
   .memory-ui:focus-visible,
   .memory-ui :is(button, a, input, textarea, select, summary, [role="button"], [role="tab"]):focus-visible {
-    outline: 2px solid var(--color-ring) !important;
-    outline-offset: 3px;
+    outline: 2px solid hsl(var(--focus) / 0.6) !important;
+    outline-offset: 1px;
   }
 }
 
@@ -714,8 +695,8 @@
    outlines despite the app-wide button shadow reset above. */
 @layer base {
   .model-access-ui :is(button, a, input, summary, [tabindex]):focus-visible {
-    outline: 2px solid var(--color-ring) !important;
-    outline-offset: 2px;
+    outline: 2px solid hsl(var(--focus) / 0.6) !important;
+    outline-offset: 1px;
   }
 }
 

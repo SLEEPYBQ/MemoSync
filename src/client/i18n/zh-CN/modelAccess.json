@@ -140,5 +140,6 @@
   "rawDetail": "服务商返回的详情",
   "defaults": "默认设置",
   "keyMissingFix": "在下面编辑这个连接，填上密钥。",
-  "protocolFix": "在下面换一个兼容的连接。"
+  "protocolFix": "在下面换一个兼容的连接。",
+  "signedOutShort": "还没有登录"
 }

@@ -10,6 +10,7 @@ import { Kbd } from "../../ui/kbd"
 import { formatSidebarAgeLabel } from "../../../lib/formatters"
 import { getSidebarChatTimestamp } from "../../../lib/sidebarChats"
 import { cn, normalizeChatId } from "../../../lib/utils"
+import { SIDEBAR_ROW_ACTIVE_CLASS, SIDEBAR_ROW_CLASS } from "./rowStyles"
 import { ChatRowMenu } from "./Menus"
 
 const loadingStatuses = new Set(["starting", "previewing_memory", "running"])
@@ -57,8 +58,9 @@ function ChatRowImpl({
       key={chat._id}
       data-chat-id={normalizedChatId}
       className={cn(
-        "group flex items-center gap-2 pl-[9px] pr-0.5 py-0.5 rounded-lg cursor-pointer border-border/0 hover:border-border hover:bg-muted/20 active:scale-[0.985] border transition-all",
-        activeChatId === normalizedChatId ? "bg-muted hover:bg-muted border-border" : "border-border/0 dark:hover:border-border "
+        SIDEBAR_ROW_CLASS,
+        "group gap-2 pl-7 pr-0.5 cursor-pointer",
+        activeChatId === normalizedChatId && SIDEBAR_ROW_ACTIVE_CLASS
       )}
       onClick={() => onSelectChat(chat.chatId)}
     >
@@ -79,7 +81,7 @@ function ChatRowImpl({
           </div>
         </div>
       ) : null}
-      <span className="text-sm truncate flex-1 translate-y-[-0.5px]">
+      <span className="text-[13px] truncate flex-1">
         {chat.status !== "idle" && chat.status !== "waiting_for_user" ? (
           <AnimatedShinyText
             animate={chat.status === "running"}
@@ -88,7 +90,7 @@ function ChatRowImpl({
             {chatTitle(chat)}
           </AnimatedShinyText>
         ) :
-          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chatTitle(chat)}</span> : <span className="text-slate-500 dark:text-muted-foreground">{chatTitle(chat)}</span>
+          chat.status !== 'idle' || activeChatId === normalizedChatId || chat.unread ? <span className="">{chatTitle(chat)}</span> : <span className="text-foreground/70">{chatTitle(chat)}</span>
         }
       </span>
       {chat.memoryDisabled ? <MemoryOffRowIcon /> : null}

@@ -78,6 +78,10 @@ function text(id: string, body: string): HydratedTranscriptMessage {
   return { ...base, id, kind: "assistant_text", text: body } as HydratedTranscriptMessage
 }
 
+function prompt(id: string, steered = false): HydratedTranscriptMessage {
+  return { ...base, id, kind: "user_prompt", content: "Task", steered }
+}
+
 function trace(
   turn: number,
   labels: Array<{ id: string; label: string; note?: string; quote?: string; toolId?: string }>,
@@ -87,12 +91,37 @@ function trace(
 }
 
 describe("buildMemoryRecord", () => {
+  it("keeps turn 2 citations after a late hidden turn 1 audit, without a preview", () => {
+    const messages = [
+      prompt("u-1"), text("a-1", "First reply"), prompt("u-2"),
+      { ...trace(1, []), hidden: true }, text("a-2", "Following [M-07]."),
+    ]
+    const record = buildMemoryRecord(messages)
+    expect(record.turns.find(t => t.turn === 1)?.reported).toBeUndefined()
+    expect(record.turns.find(t => t.turn === 2)?.reported?.counts.get("M-07")).toBe(1)
+    const live = buildMemoryRecord(messages.slice(0, -1), "Following [M-07].")
+    expect(live.turns.find(t => t.turn === 2)?.reported?.counts.get("M-07")).toBe(1)
+  })
+
+  it("counts dispatched user prompts like the server, including a dispatched steer", () => {
+    const record = buildMemoryRecord([
+      prompt("u-1"), text("a-1", "Following [M-01]."),
+      prompt("steer-2", true), text("a-2", "Following [M-02]."),
+      prompt("dequeued-3"), text("a-3", "Following [M-03]."),
+    ])
+    expect(record.turns.map(t => [t.turn, [...t.reported!.counts.keys()]])).toEqual([
+      [1, ["M-01"]], [2, ["M-02"]], [3, ["M-03"]],
+    ])
+    expect(buildMemoryRecord([prompt("no-memory"), text("a", "No citations")]).turns).toEqual([])
+  })
+
   it("keeps validated tool evidence anchors available in the Memory Record", () => {
     const record = buildMemoryRecord([trace(1, [{ id: "M-31", label: "violated", quote: "currency = 12.5", toolId: "tool-evidence" }])])
     expect(record.turns[0].audit?.labels[0].toolId).toBe("tool-evidence")
   })
   it("mirrors each transcript station into its stage, in turn order", () => {
     const record = buildMemoryRecord([
+      prompt("u-1"),
       proposals(1, ["Always deploy previews"], "reviewed"),
       transfer(1, [{ sourceId: "M-9", sourceLabel: "flip-demo", sourceContent: "src", content: "localized" }], "handled"),
       checkup(1, [{ kind: "redundancy", memoryId: "M-43", otherMemoryId: "M-49", reason: "same rule" }], "skipped"),
@@ -143,9 +172,11 @@ describe("buildMemoryRecord", () => {
 
   it("attributes assistant citations to the latest turn seen and falls back to shaped/quiet pulses", () => {
     const record = buildMemoryRecord([
+      prompt("u-1"),
       preview(1, [{ id: "M-01", content: "a", scope: "personal" }], "go_on"),
       text("a-1", "Following [M-01]."),
       trace(1, [{ id: "M-01", label: "operational" }]),
+      prompt("u-2"),
       preview(2, [{ id: "M-01", content: "a", scope: "personal" }], "go_on"),
       text("a-2", "No citations here."),
       trace(2, [{ id: "M-01", label: "injected_without_effect" }]),
@@ -159,6 +190,7 @@ describe("buildMemoryRecord", () => {
 
   it("adds in-flight citations to the current turn in first-seen order without changing settled history", () => {
     const messages = [
+      prompt("u-1"),
       preview(1, [
         { id: "M-01", content: "a", scope: "project" },
         { id: "M-02", content: "b", scope: "project" },
@@ -205,11 +237,11 @@ describe("buildMemoryRecord", () => {
     })
   })
 
-  it("skips hidden messages and entries without turns; empty transcript → empty record", () => {
-    const hiddenTrace = { ...trace(9, [{ id: "M-09", label: "operational" }]), hidden: true } as HydratedTranscriptMessage
+  it("skips hidden conversation messages and entries without turns; empty transcript → empty record", () => {
+    const hiddenReply = { ...text("hidden", "Hidden [M-09]"), hidden: true } as HydratedTranscriptMessage
     const noTurn = { ...trace(0, [{ id: "M-08", label: "operational" }]), turn: undefined } as HydratedTranscriptMessage
     const orphanText = text("a-9", "Citations [M-11] before any turn exists.")
-    const record = buildMemoryRecord([orphanText, hiddenTrace, noTurn])
+    const record = buildMemoryRecord([orphanText, hiddenReply, noTurn])
     expect(record.turns).toEqual([])
   })
 })

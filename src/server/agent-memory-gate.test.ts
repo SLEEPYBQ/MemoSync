@@ -179,6 +179,7 @@ interface Harness {
   memory: MemoryService
   workspaceDir: string
   sessionStarts: Array<{ memory: MemoryService | null; sessionToken: string | null; memoryPlan?: import('./memory/injection').MemoryInjectionPlan | null; capture?: CaptureService | null }>
+  sessionProposalCallbacks: Array<(created: import("./memory/types").MemoryItem[]) => void>
   claudeSessionCloses: number[]
   prompts: string[]
   promptContexts: Array<ClaudePromptContext | undefined>
@@ -198,7 +199,7 @@ function createHarness(
   opts: {
     /** Enable the preview gate (the injection receipt). */
     preview?: boolean
-    getMemorySettings?: () => { enabled: boolean; learn: boolean }
+    getMemorySettings?: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
     codexManager?: import("./codex-app-server").CodexAppServerManager
     piManager?: unknown
     traceInputs?: TraceInput[]
@@ -257,6 +258,7 @@ function createHarness(
   )
   const sessionStarts: Harness["sessionStarts"] = []
   const claudeSessionCloses: number[] = []
+  const sessionProposalCallbacks: Harness["sessionProposalCallbacks"] = []
   const prompts: string[] = []
   const promptContexts: Harness["promptContexts"] = []
   let interrupts = 0
@@ -305,6 +307,7 @@ function createHarness(
         sessionToken: args.sessionToken,
         capture: args.capture,
       })
+      if (args.onMemoryProposal) sessionProposalCallbacks.push(args.onMemoryProposal)
       await opts.beforeClaudeSessionStart?.()
       if (opts.failClaudeSessionStartAttempts?.includes(attempt)) {
         throw new Error(`provider boot failed on attempt ${attempt}`)
@@ -340,6 +343,7 @@ function createHarness(
     memory,
     workspaceDir,
     sessionStarts,
+    sessionProposalCallbacks,
     claudeSessionCloses,
     prompts,
     promptContexts,
@@ -5178,7 +5182,7 @@ describe("memory on/off turn controls", () => {
   test("effective state follows settings and the per-chat switch", () => {
     for (const enabled of [false, true]) for (const learn of [false, true]) for (const disabled of [false, true]) {
       expect(resolveTurnMemoryState({ enabled, learn }, disabled)).toEqual({
-        memoryActive: enabled && !disabled, learnActive: enabled && !disabled && learn,
+        control: "review", memoryActive: enabled && !disabled, learnActive: enabled && !disabled && learn,
       })
     }
   })
@@ -5382,5 +5386,179 @@ describe("memory on/off turn controls", () => {
       await new Promise((resolve) => setTimeout(resolve, 30))
       expect(s.calls.capture).toBe(mode === "on" ? 1 : 0)
     } finally { events.close(); h.cleanup() }
+  })
+})
+
+describe("automatic memory control", () => {
+  const send = { type: "chat.send" as const, chatId: "chat-1", provider: "claude" as const, content: "update the project" }
+  const autoSettings = () => ({ enabled: true, learn: true, control: "auto" as const })
+  const seed = (h: Harness) => h.memory.store.create({ content: "Use bun", detail: "Run the project tests with bun test.", scope: "personal", type: "preference" }, { actor: "system" })
+  async function finish(h: Harness, turn: number) {
+    h.finishTurn()
+    await waitFor(() => h.store.turnFinishedCount === turn)
+    await waitFor(() => h.coordinator.getActiveStatuses().size === 0)
+  }
+
+  test("boots directly with the index and detail tool, skipping every pre-turn service and gate", async () => {
+    const calls: string[] = []
+    const h = createHarness({
+      preview: true,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: false },
+      getMemorySettings: autoSettings,
+      relevance: { assess: async () => { calls.push("relevance"); return [] } } as unknown as RelevanceService,
+      usePlan: { plan: async () => { calls.push("selection"); return [] } },
+      capture: { captureFromPrompt: async () => { calls.push("candidates"); throw new Error("unexpected pre-turn capture") } } as unknown as CaptureService,
+      checkup: { run: async () => { calls.push("checkup"); throw new Error("unexpected checkup") } } as unknown as CheckupService,
+      transferDetect: { detect: async () => { calls.push("transfer"); throw new Error("unexpected transfer") } } as unknown as TransferDetectService,
+    })
+    try {
+      const item = seed(h)
+      h.memory.store.create({ content: "Sensitive draft", scope: "session", sessionId: "chat-1", type: "fact", status: "candidate", sensitive: true }, { actor: "system" })
+      await h.coordinator.send({ ...send, content: "Remember this preference" })
+      expect(h.prompts).toHaveLength(1)
+      expect(h.coordinator.pendingPreviews.size).toBe(0)
+      expect(h.store.messages.map((m) => m.kind)).toEqual(["user_prompt"])
+      expect(calls).toEqual([])
+      expect(h.sessionStarts[0]?.memoryPlan).toMatchObject({ registerTools: true, injectedMemories: [{ id: item.id }] })
+      expect(h.sessionStarts[0]?.memoryPlan?.block).toContain(item.content)
+      expect(h.sessionStarts[0]?.memoryPlan?.block).toContain("load_memory_detail")
+      expect(h.sessionStarts[0]?.memoryPlan?.block).not.toContain(item.detail!)
+    } finally { h.cleanup() }
+  })
+
+  test("safe post-turn proposals auto-apply under stored ask; sensitive proposals stay on the Board across turns", async () => {
+    const created: import("./memory/types").MemoryItem[] = []
+    const capture: CaptureService = {
+      capture: async () => ({ created, proposed: created.length, surfaced: created.length, dropped: 0, conflicts: 0, reinforced: 0, reinforcedIds: [], revisions: 0, pending: [] }),
+      captureFromPrompt: async () => { throw new Error("auto must skip prompt capture") },
+      routeProposal: async () => null,
+    }
+    const h = createHarness({ preview: true, capture, getMemorySettings: autoSettings })
+    try {
+      h.memory.store.setKv("evolution_policy", { mode: "ask" })
+      seed(h)
+      await h.coordinator.send(send)
+      for (const sensitive of [false, true]) created.push(h.memory.store.create({ content: sensitive ? "Sensitive draft" : "Use concise explanations", scope: "session", sessionId: "chat-1", type: "preference", status: "candidate", sensitive }, { actor: "agent" }))
+      await finish(h, 1)
+      await waitFor(() => h.store.messages.some((m) => m.kind === "memory_candidates"))
+      expect(h.memory.store.getById(created[0]!.id)?.status).toBe("active")
+      expect(h.memory.store.getById(created[1]!.id)?.status).toBe("candidate")
+      expect(h.memory.store.getKv<{ mode: string }>("evolution_policy")).toEqual({ mode: "ask" })
+      expect(h.store.messages.find((m) => m.kind === "memory_candidates")).toMatchObject({ candidates: [{ id: created[0]!.id, auto: true }] })
+      created.length = 0
+      await h.coordinator.send(send)
+      expect(h.prompts).toHaveLength(2)
+      expect(h.store.messages.some((m) => ["memory_proposals", "memory_transfer", "memory_checkup", "memory_preview"].includes(m.kind))).toBe(false)
+      await finish(h, 2)
+      expect(h.memory.store.list({ status: "candidate" })).toHaveLength(1)
+    } finally { h.cleanup() }
+  })
+
+  test("a reused session's tool-proposal callback uses the current turn's control snapshot", async () => {
+    let control: "review" | "auto" = "review"
+    const h = createHarness({ getMemorySettings: () => ({ enabled: true, learn: true, control }) })
+    try {
+      h.memory.store.setKv("evolution_policy", { mode: "ask" })
+      for (const [i, next] of (["review", "auto", "review"] as const).entries()) {
+        control = next
+        await h.coordinator.send(send)
+        expect(h.sessionStarts).toHaveLength(1)
+        const proposal = h.memory.store.create({ content: `Proposal ${i}`, scope: "personal", type: "fact", status: "candidate" }, { actor: "agent" })
+        // Changes during a running turn take effect with the next turn only.
+        control = next === "auto" ? "review" : "auto"
+        h.sessionProposalCallbacks[0]!([proposal])
+        expect(h.memory.store.getById(proposal.id)?.status).toBe(next === "auto" ? "active" : "candidate")
+        expect(h.memory.store.getKv<{ mode: string }>("evolution_policy")).toEqual({ mode: "ask" })
+        await finish(h, i + 1)
+      }
+    } finally { h.cleanup() }
+  })
+
+  for (const label of ["operational", "injected_without_effect", "not_applicable", "violated"] as const) {
+    test(`audit persists ${label} and shows the chat card only for violations`, async () => {
+      let release!: () => void
+      let started = false
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const events: Array<Record<string, unknown>> = []
+      const h = createHarness({
+        getMemorySettings: autoSettings,
+        experimentEvents: events,
+        trace: { trace: async ({ usedMemories }) => {
+          started = true
+          await gate
+          return { labels: usedMemories.map(({ id }) => ({ id, label, note: "Recorded evidence" })) }
+        } },
+      })
+      try {
+        const item = seed(h)
+        await h.coordinator.send(send)
+        await finish(h, 1)
+        await waitFor(() => started)
+        expect(h.store.messages.find((m) => m.kind === "memory_trace")).toMatchObject({ status: "pending", hidden: true })
+        release()
+        await waitFor(() => h.store.messages.some((m) => m.kind === "memory_trace" && m.status === "ok"))
+        expect(h.store.messages.filter((m) => m.kind === "memory_trace").at(-1)).toMatchObject({ status: "ok", hidden: label !== "violated", labels: [{ id: item.id, label, note: "Recorded evidence" }] })
+        expect(events.find((e) => e.type === "memory.trace")).toMatchObject({ status: "ok", labels: [{ id: item.id, label }] })
+        expect(h.memory.store.getEvents(item.id).some((e) => e.kind === "trace")).toBe(true)
+      } finally { release(); h.cleanup() }
+    })
+  }
+
+  for (const empty of [false, true]) test(`non-verdict audit terminal stays recorded and hidden (empty: ${empty})`, async () => {
+    const h = createHarness({ getMemorySettings: autoSettings, trace: { trace: async () => { throw new TypeError("offline failure") } } })
+    try {
+      if (!empty) seed(h)
+      await h.coordinator.send(send)
+      await finish(h, 1)
+      await waitFor(() => h.store.messages.some((m) => m.kind === "memory_trace" && m.status !== "pending"))
+      expect(h.store.messages.filter((m) => m.kind === "memory_trace").at(-1)).toMatchObject({ status: empty ? "empty" : "failed", hidden: true, labels: [] })
+    } finally { h.cleanup() }
+  })
+
+  test("review → auto → review retains the boot block and engine session; working-set changes ride deltas", async () => {
+    let control: "review" | "auto" = "review"
+    const h = createHarness({ preview: true, getMemorySettings: () => ({ enabled: true, learn: true, control }) })
+    try {
+      const item = seed(h)
+      const excluded = h.memory.store.create({ content: "Use stable APIs", scope: "personal", type: "constraint" }, { actor: "system" })
+      await h.coordinator.send(send)
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: h.coordinator.pendingPreviews.get("chat-1")!.previewId, decision: "go_on", memoryIds: [item.id] })
+      await waitFor(() => h.prompts.length === 1)
+      const boot = h.sessionStarts[0]!.memoryPlan!
+      const block = boot.block, hash = boot.hash, rebuildKey = boot.sessionRebuildKey
+      expect(block).not.toContain(excluded.content)
+      await finish(h, 1)
+
+      control = "auto"
+      await h.coordinator.send(send)
+      expect(h.prompts).toHaveLength(2)
+      expect(h.prompts[1]).toContain("Memory changes")
+      expect(h.prompts[1]).toContain(excluded.content)
+      expect(h.promptContexts[1]?.allowedMemoryIds).toEqual([item.id, excluded.id])
+      expect(h.sessionStarts).toHaveLength(1)
+      expect(boot).toMatchObject({ block, hash, sessionRebuildKey: rebuildKey })
+      expect(h.claudeSessionCloses).toEqual([0])
+      await finish(h, 2)
+
+      h.memory.store.update(item.id, { content: "Use pnpm" }, { actor: "user" })
+      await h.coordinator.send(send)
+      expect(h.prompts[2]).toContain("Memory changes")
+      expect(h.prompts[2]).toContain("Use pnpm")
+      expect(h.sessionStarts).toHaveLength(1)
+      expect(boot).toMatchObject({ block, hash, sessionRebuildKey: rebuildKey })
+      await finish(h, 3)
+
+      control = "review"
+      await h.coordinator.send(send)
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      await h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: h.coordinator.pendingPreviews.get("chat-1")!.previewId, decision: "go_on", memoryIds: [item.id] })
+      await waitFor(() => h.prompts.length === 4)
+      expect(h.promptContexts[3]?.allowedMemoryIds).toEqual([item.id])
+      expect(h.sessionStarts).toHaveLength(1)
+      expect(h.claudeSessionCloses).toEqual([0])
+      expect(boot).toMatchObject({ block, hash, sessionRebuildKey: rebuildKey })
+      await finish(h, 4)
+    } finally { h.cleanup() }
   })
 })

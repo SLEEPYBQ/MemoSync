@@ -1,3 +1,4 @@
+import type { PiParentLaunch } from './memory/parent-launch'
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { existsSync } from "node:fs"
 import type { BashSpawnContext } from "@mariozechner/pi-coding-agent"
@@ -357,6 +358,10 @@ export interface StartPiTurnArgs {
   /** Model id on the registry endpoint — any non-empty registry id is valid. */
   model: string
   effort: PiReasoningEffort
+  /** Effective parent metadata/prompt, pinned for cache-compatible memory forks. */
+  modelCard?: RegistryModelCard
+  systemPrompt?: string
+  onLaunch?: (launch: PiParentLaunch) => void
   /** Previous pi session file path to resume, if any. */
   sessionToken: string | null
   forkSession: boolean
@@ -366,9 +371,10 @@ export interface StartPiTurnArgs {
   memorySpecs?: MemoryToolSpec[]
   /**
    * Built-in tools to expose (defaults to all read/write pi tools). Memory
-   * analysis branches pass a read-only subset; the list is part of the
-   * session-reuse key, so a differing set rebuilds the session.
+   * branches retain the parent list and gate execution via beforeToolCall.
+   * The list is part of the session-reuse key.
    */
+  beforeToolCall?: (name: string, args: Record<string, unknown>) => Promise<{ block?: boolean; reason?: string } | undefined>
   outputSchema?: Record<string, unknown>
   toolNames?: readonly string[]
   /**
@@ -395,6 +401,7 @@ interface PiChatSession {
   modelCardKey: string
   outputSchema?: Record<string, unknown>
   supportsStructuredOutput?: boolean
+  beforeToolCall?: StartPiTurnArgs["beforeToolCall"]
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
   memoryInvoke: ((name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>) | null
 }
@@ -495,6 +502,7 @@ export class PiAgentManager {
       && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
       existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
       existing.memoryInvoke = args.memoryDispatch ?? null
+      existing.beforeToolCall = args.beforeToolCall
       if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
         await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model, args.modelCard, args.effort))
         args.signal?.throwIfAborted()
@@ -613,8 +621,19 @@ export class PiAgentManager {
       modelCardKey,
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
       memoryInvoke: args.memoryDispatch ?? null,
+      beforeToolCall: args.beforeToolCall,
     }
     if (session.agent) {
+      if (args.systemPrompt !== undefined) {
+        const originalStream = session.agent.streamFn
+        session.agent.streamFn = (model, context, options) => originalStream(model, { ...context, systemPrompt: args.systemPrompt }, options)
+      }
+      const previousToolHook = session.agent.beforeToolCall
+      session.agent.beforeToolCall = async (context, signal) => {
+        const denied = await chatSession.beforeToolCall?.(context.toolCall.name, context.args as Record<string, unknown>)
+        if (denied?.block) return denied
+        return previousToolHook?.(context, signal)
+      }
       const previousPayloadHook = session.agent.onPayload
       session.agent.onPayload = async (payload, model) => {
         const prepared = await previousPayloadHook?.(payload, model) ?? payload
@@ -671,10 +690,16 @@ export class PiAgentManager {
       args.signal?.throwIfAborted()
       // The picker preloads metadata. Chat turns never wait on a registry or
       // models.dev request: use its last snapshot, refreshing for later turns.
-      const modelCard = this.loadModels.peek?.(args.connection, args.model)
-      void Promise.resolve().then(() => this.loadModels(args.connection!, args.model)).catch(() => {})
+      const recorded = Object.hasOwn(args, "modelCard")
+      const modelCard = recorded ? args.modelCard : this.loadModels.peek?.(args.connection, args.model)
+      if (!recorded) void Promise.resolve().then(() => this.loadModels(args.connection!, args.model)).catch(() => {})
       args = { ...args, effort: resolvePiEffort(modelCard, args.effort) }
       chatSession = await this.openSession({ ...args, connection: args.connection!, modelCard })
+      args.onLaunch?.({ provider: "pi", options: {
+        model: args.model, effort: args.effort, connection: args.connection,
+        toolNames: args.toolNames ?? PI_TOOL_NAMES, memorySpecs: args.memorySpecs,
+        modelCard, systemPrompt: chatSession.session.systemPrompt,
+      } })
     } catch (error) {
       args.signal?.throwIfAborted()
       return failedPiTurn(error instanceof Error ? error.message : String(error))

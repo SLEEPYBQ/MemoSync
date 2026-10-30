@@ -1,45 +1,80 @@
 import { t } from "../../i18n"
-import { BookText, Brain, Command, MessageSquareQuote, ScrollText, Settings2 } from "lucide-react"
+import { Bell, BookText, Boxes, Brain, Command, Info, Palette, ScrollText, Settings2 } from "lucide-react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { KEYBINDING_ACTION_LABELS } from "../../lib/keybindings"
 import type { KeybindingAction } from "../../../shared/types"
 
 /** Navigation and stable row anchors; a future command palette can consume these directly. */
+export type SettingsNavGroup = "preferences" | "agents" | "other"
+
+export const SETTINGS_NAV_GROUPS: readonly { id: SettingsNavGroup; readonly label: string }[] = [
+  { id: "preferences", get label() { return t("settings:navPreferences") } },
+  { id: "agents", get label() { return t("settings:navAgents") } },
+  { id: "other", get label() { return t("settings:navOther") } },
+]
+
 export const SETTINGS_SECTIONS = [
   {
     id: "general",
+    group: "preferences",
     get label() { return t("settings:general") },
     icon: Settings2,
-    get subtitle() { return t("settings:appearanceNotificationsChatsEditorAndTerminal") },
+    get subtitle() { return t("settings:generalSubtitle") },
+  },
+  {
+    id: "appearance",
+    group: "preferences",
+    get label() { return t("settings:appearance") },
+    icon: Palette,
+    get subtitle() { return t("settings:appearanceSubtitle") },
+  },
+  {
+    id: "notifications",
+    group: "preferences",
+    get label() { return t("settings:notifications") },
+    icon: Bell,
+    get subtitle() { return t("settings:notificationsSubtitle") },
+  },
+  {
+    id: "providers",
+    group: "agents",
+    get label() { return t("settings:models") },
+    icon: Boxes,
+    get subtitle() { return t("settings:modelsSubtitle") },
   },
   {
     id: "memory",
+    group: "agents",
     get label() { return t("common:memory") },
     icon: Brain,
     get subtitle() { return t("settings:chooseWhetherTheAgentUsesAndLearnsMemoriesAndHow") },
   },
   {
-    id: "providers",
-    get label() { return t("settings:providers") },
-    icon: MessageSquareQuote,
-    get subtitle() { return t("settings:theDefaultProviderAndSavedModelDefaultsForEachHarness") },
-  },
-  {
     id: "skills",
+    group: "agents",
     get label() { return t("settings:skills") },
     icon: BookText,
     get subtitle() { return t("settings:manageGloballyInstalledAgentSkillsFromTheActiveSkillLock") },
   },
   {
     id: "keybindings",
+    group: "other",
     get label() { return t("settings:keybindings") },
     icon: Command,
     get subtitle() { return t("settings:editGlobalAppShortcutsStoredInTheActiveKeybindingsFile") },
+  },
+  {
+    id: "about",
+    group: "other",
+    get label() { return t("settings:about") },
+    icon: Info,
+    get subtitle() { return t("settings:aboutSubtitle") },
   },
   ...(SELF_UPDATE_ENABLED
     ? [
         {
           id: "changelog",
+          group: "other",
           get label() { return t("settings:changelog") },
           icon: ScrollText,
           get subtitle() { return t("settings:releaseNotesPulledFromThePublicGitHubReleasesFeed") },
@@ -72,34 +107,34 @@ export function resolveSettingsSectionId(sectionId: string | undefined): Setting
 
 export const SETTINGS_ROWS = defineRows({
   applicationUpdate: {
-    sectionId: "general",
+    sectionId: "about",
     get title() { return t("settings:applicationUpdate") },
     get description() { return t("settings:currentVersionAndUpdateStatus") },
   },
   language: {
-    sectionId: "general",
+    sectionId: "appearance",
     get title() { return t("settings:language") },
     get description() { return t("settings:chooseTheInterfaceLanguageChangesApplyImmediately") },
     get keywords() { return t("settings:searchKeywords0").split(",") },
   },
   theme: {
-    sectionId: "general",
+    sectionId: "appearance",
     get title() { return t("settings:theme") },
     get description() { return t("settings:lightDarkOrMatchTheSystemAppearance") },
     get keywords() { return t("settings:searchKeywords1").split(",") },
   },
   chatSounds: {
-    sectionId: "general",
+    sectionId: "notifications",
     get title() { return t("settings:chatSounds") },
     get description() { return t("settings:playASoundWhenAChatStartsWaitingOnYou") },
   },
   chatSound: {
-    sectionId: "general",
+    sectionId: "notifications",
     get title() { return t("settings:soundEffect") },
     get description() { return t("settings:theSoundChatNotificationsPlayPickingOnePlaysAPreview") },
   },
   chatBrowserNotifications: {
-    sectionId: "general",
+    sectionId: "notifications",
     get title() { return t("settings:systemNotifications") },
     get description() { return t("settings:showASystemNotificationWhenAChatStartsWaitingOn") },
     get keywords() { return t("settings:searchKeywords2").split(",") },
@@ -125,6 +160,12 @@ export const SETTINGS_ROWS = defineRows({
     sectionId: "general",
     get title() { return t("settings:terminalMinColumnWidth") },
     get description() { return t("settings:minimumWidthForEachTerminalPane") },
+  },
+  memoryControl: {
+    sectionId: "memory",
+    get title() { return t("settings:memoryControl") },
+    get description() { return t("settings:memoryControlDescription") },
+    keywords: ["control", "automatic", "review each turn", "控制方式", "自动", "每轮确认"],
   },
   memoryEnabled: {
     sectionId: "memory",
