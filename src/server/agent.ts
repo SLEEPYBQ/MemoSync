@@ -5562,9 +5562,9 @@ export class AgentCoordinator {
       const piMemorySpecs =
         this.memory
           ? buildMemoryToolSpecs(this.memory, {
-              capture: this.capture,
+              capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
-                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId })
+                const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId, memoryState: args.memoryState })
                 const autoApplied = created.filter(({ id }) => autoIds.has(id))
                 if (!autoApplied.length) return
                 void this.store
