@@ -16,7 +16,7 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
   useI18n()
   return (
     <div className="flex justify-end py-2">
-      <div className="flex max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
+      <div className="flex min-w-0 max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
         {message.attachments.length > 0 ? (
           <div className="flex flex-wrap justify-end gap-2">
             {message.attachments.map((attachment) => (
@@ -30,51 +30,37 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
             ))}
           </div>
         ) : null}
-        {message.content ? (
-          <div className="relative group">
-
-              <div className="grid grid-cols-[1fr_auto] items-end gap-2.5 rounded-[20px] border border-dashed border-border bg-transparent pl-3.5 pr-1.5 py-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
-                <div>
+        <div className="relative group min-w-0 max-w-full">
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2.5 rounded-[20px] border border-dashed border-border bg-transparent pl-3.5 pr-1.5 py-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
+            <div className="min-w-0 [overflow-wrap:anywhere]">
+              {message.content ? (
                 <Markdown remarkPlugins={[remarkGfm]} components={markdownComponentsWithLinks}>{escapeAngleBracketsOutsideCode(message.content)}</Markdown>
-                </div>
-                  <Button
-                  type="button"
-                  variant="default"
-                  size="none"
-                  className="rounded-full size-[24px] bg-muted text-muted-foreground border border-primary/10 group-hover:!text-primary hover:bg-muted/60"
-                  aria-label={t("chat:steerNow")}
-                  onClick={onSendNow}
-                >
-                  {/* Send Now */}
-                  <ArrowUp className="size-3.5"/>
-                </Button>
-
-              
+              ) : (
+                <p className="text-muted-foreground">{t("chat:queued")}</p>
+              )}
             </div>
             <Button
               type="button"
-              variant="none"
+              variant="default"
               size="none"
-              className="opacity-0 scale-[0.1] group-hover:scale-[1.0] group-hover:opacity-100 !p-0.5 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 left-0 bg-background -translate-x-[28%] -translate-y-[28%]"
-              aria-label={t("chat:removeQueuedMessage")}
-              onClick={onRemove}
-            >
-              <X className="size-3"/>
-            </Button>
-
-            {/* <Button
-              type="button"
-              variant="none"
-              size="none"
-              className="!p-1 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 right-0 bg-background translate-x-[30%] -translate-y-[30%]"
+              className="shrink-0 rounded-full size-[24px] bg-muted text-muted-foreground border border-primary/10 group-hover:!text-primary hover:bg-muted/60"
               aria-label={t("chat:steerNow")}
-                  onClick={onSendNow}
+              onClick={onSendNow}
             >
-              <ArrowUp className="size-3"/>
-            </Button> */}
+              <ArrowUp className="size-3.5"/>
+            </Button>
           </div>
-          
-        ) : null}
+          <Button
+            type="button"
+            variant="none"
+            size="none"
+            className="opacity-0 scale-[0.1] group-hover:scale-[1.0] group-hover:opacity-100 !p-0.5 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 left-0 bg-background -translate-x-[28%] -translate-y-[28%]"
+            aria-label={t("chat:removeQueuedMessage")}
+            onClick={onRemove}
+          >
+            <X className="size-3"/>
+          </Button>
+        </div>
 
       </div>
     </div>

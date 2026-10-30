@@ -1,5 +1,6 @@
-import { afterEach, describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
+import * as fsPromises from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { appendGitIgnoreEntry, DiffStore, extractGitHubRepoSlug, fetchGitHubPullRequests, getGhAuthInfo } from "./diff-store"
@@ -230,6 +231,39 @@ describe("DiffStore", () => {
       })
     }
   }
+
+  test("reads the committed symlink blob when the working link is deleted", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await symlink("missing/target", path.join(repoRoot, "shortcut.png"))
+    await run(["git", "add", "shortcut.png"], repoRoot)
+    await run(["git", "commit", "-m", "add dangling link"], repoRoot)
+    await rm(path.join(repoRoot, "shortcut.png"))
+    const store = new DiffStore(repoRoot)
+    await store.initialize()
+    await store.refreshSnapshot("project-1", repoRoot)
+    expect(store.getProjectSnapshot("project-1").files[0]).toMatchObject({ path: "shortcut.png", additions: 0, deletions: 1 })
+    const { patch } = await store.readPatch({ projectPath: repoRoot, path: "shortcut.png" })
+    expect(patch).toContain("-missing/target")
+  })
+
+  test("drops a symlink that vanishes between lstat and readlink without throwing", async () => {
+    const repoRoot = await createRepo()
+    tempDirs.push(repoRoot)
+    await symlink("missing", path.join(repoRoot, "vanishing"))
+    const originalReadlink = fsPromises.readlink
+    const readlink = spyOn(fsPromises, "readlink").mockImplementation(((target: string, ...args: unknown[]) => {
+      if (path.basename(String(target)) === "vanishing") return rm(String(target), { force: true }).then(() => { throw Object.assign(new Error("gone"), { code: "ENOENT" }) })
+      return (originalReadlink as any)(target, ...args)
+    }) as typeof fsPromises.readlink)
+    try {
+      const store = new DiffStore(repoRoot)
+      await store.initialize()
+      await store.refreshSnapshot("project-1", repoRoot)
+      expect(readlink).toHaveBeenCalled()
+      expect(store.getProjectSnapshot("project-1").files).toEqual([])
+    } finally { readlink.mockRestore() }
+  })
 
   test("retains a file-to-symbolic-link type change with identical text", async () => {
     const repoRoot = await createRepo()
@@ -947,5 +981,36 @@ describe("DiffStore", () => {
     })
     expect((await run(["git", "branch", "--show-current"], repoRoot)).trim()).toBe("main")
     expect((await run(["git", "log", "--format=%s", "-1"], repoRoot)).trim()).toBe("feature")
+  })
+})
+
+
+describe("credentialed GitHub remotes", () => {
+  test("extracts only owner/repo and rejects host spoofing", () => {
+    for (const url of ["https://user@github.com/acme/repo", "https://user:fake-token@github.com/acme/repo.git", "https://fake-token@github.com/acme/repo.git"]) {
+      expect(extractGitHubRepoSlug(url)).toBe("acme/repo")
+    }
+    for (const url of ["https://github.com@evil.example/acme/repo.git", "https://user:fake-token@github.com.evil.example/acme/repo.git"]) {
+      expect(extractGitHubRepoSlug(url)).toBeNull()
+    }
+  })
+
+  test("snapshots and generated commit URLs never include remote credentials", async () => {
+    const repoRoot = await createRepo()
+    try {
+      await writeFile(path.join(repoRoot, "app.txt"), "base\n")
+      await run(["git", "add", "app.txt"], repoRoot)
+      await run(["git", "commit", "-m", "init"], repoRoot)
+      await run(["git", "remote", "add", "origin", "https://qa-user:qa-secret@github.com/acme/repo.git"], repoRoot)
+      const store = new DiffStore(repoRoot)
+      await store.initialize()
+      await store.refreshSnapshot("project-1", repoRoot)
+      const snapshot = store.getProjectSnapshot("project-1")
+      expect(snapshot.originRepoSlug).toBe("acme/repo")
+      expect(snapshot.branchHistory?.entries[0]?.githubUrl).toMatch(/^https:\/\/github.com\/acme\/repo\/commit\//)
+      const serialized = JSON.stringify(snapshot)
+      expect(serialized).not.toContain("qa-user")
+      expect(serialized).not.toContain("qa-secret")
+    } finally { await rm(repoRoot, { recursive: true, force: true }) }
   })
 })

@@ -1235,7 +1235,8 @@ export class EventStore {
       const afterAppendAt = performance.now()
       this.applyMessageMetadata(chatId, entry)
       if (this.cachedTranscript?.chatId === chatId) {
-        this.cachedTranscript.entries.push({ ...entry })
+        // Clone the serialized disk payload so nested caller mutations cannot alter the cache.
+        this.cachedTranscript.entries.push(JSON.parse(payload) as TranscriptEntry)
       }
       logSendToStartingProfile("event_store.append_message", {
         chatId,

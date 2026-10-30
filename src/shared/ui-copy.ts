@@ -10,6 +10,7 @@ export const SERVER_UI_COPY = {
   "invalidJson": "Invalid JSON",
   "invalidEnvelope": "Invalid envelope",
   "unauthorized": "Unauthorized",
+  "internalServerError": "Internal server error",
   "updateUnavailable": "Update manager unavailable.",
   "mergeUnavailable": "Merge unavailable.",
   "mergePreviewUnavailable": "Merge preview unavailable.",

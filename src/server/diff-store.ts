@@ -537,7 +537,8 @@ export function extractGitHubRepoSlug(remoteUrl: string | null | undefined) {
     return `${sshProtocolMatch.groups.owner}/${sshProtocolMatch.groups.repo}`
   }
 
-  const httpsMatch = /^https?:\/\/github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
+  // Ignore transport credentials; only the verified GitHub host and path enter snapshots or links.
+  const httpsMatch = /^https?:\/\/(?:[^/@]+@)?github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+?)(?:\.git)?$/u.exec(remoteUrl)
   if (httpsMatch?.groups?.owner && httpsMatch.groups.repo) {
     return `${httpsMatch.groups.owner}/${httpsMatch.groups.repo}`
   }
@@ -871,7 +872,7 @@ async function readWorktreeFile(repoRoot: string, relativePath: string): Promise
   const absolutePath = path.join(repoRoot, relativePath)
   const fileInfo = await lstat(absolutePath).catch(() => null)
   if (fileInfo?.isSymbolicLink()) {
-    return await readlink(absolutePath)
+    return await readlink(absolutePath).catch(() => null)
   }
   if (!fileInfo?.isFile()) {
     return null

@@ -12,6 +12,7 @@ const serverKeys = {
   "invalidJson": "errors:serverInvalidJson",
   "invalidEnvelope": "errors:serverInvalidEnvelope",
   "unauthorized": "errors:serverUnauthorized",
+  "internalServerError": "errors:serverInternalServerError",
   "updateUnavailable": "errors:serverUpdateUnavailable",
   "mergeUnavailable": "errors:serverMergeUnavailable",
   "mergePreviewUnavailable": "errors:serverMergePreviewUnavailable",
