@@ -1579,6 +1579,8 @@ type TransferGateDecision = "handled" | "skipped" | "cancelled"
 type CheckupGateDecision = TransferGateDecision | "reopen_proposals" | "reopen_transfer"
 type InternalGateWake<T extends string> = T | "invalidated"
 
+export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
+
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
@@ -1698,6 +1700,8 @@ export class AgentCoordinator {
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
   private runtimeStopping = false
+  private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly memoryWork = new Map<string, number>()
   // Chats where the user hit Stop while the preview gate was still being set
   // up (before pendingPreviews exists). The detached runPreviewGateThenBoot
   // observes this and unwinds instead of parking a gate / booting (BUG AGENT-2).
@@ -1760,7 +1764,13 @@ export class AgentCoordinator {
       purpose,
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
-    return branch
+    return {
+      get id() { return branch.id },
+      get mode() { return branch.mode },
+      get sessionToken() { return branch.sessionToken },
+      ask: (prompt, options) => this.trackMemoryWork(args.chatId, () => branch.ask(prompt, options)),
+      dispose: () => branch.dispose(),
+    } satisfies MemoryBranch
   }
 
   private memoryBranchSnapshot(): Map<string, string> {
@@ -2515,7 +2525,7 @@ export class AgentCoordinator {
       args.sessionToken = chat?.sessionToken
       args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
     }
-    void this.runPostTurnMemoryPasses(args).catch((error) => {
+    void this.trackMemoryWork(args.chatId, () => this.runPostTurnMemoryPasses(args)).catch((error) => {
       this.reportBackgroundError?.(`[memory-post-turn] chat ${args.chatId}: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -3001,7 +3011,74 @@ export class AgentCoordinator {
     this.streamingAssistantTexts.delete(chatId)
   }
 
+  private cancelIdleClose(chatId: string) {
+    const timer = this.idleCloseTimers.get(chatId)
+    if (timer) clearTimeout(timer)
+    this.idleCloseTimers.delete(chatId)
+  }
+
+  private hasIdleSession(chatId: string) {
+    const claude = this.claudeSessions.get(chatId)
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId))
+  }
+
+  private idleCloseBlocked(chatId: string) {
+    return this.activeTurns.has(chatId) || this.startingChats.has(chatId)
+      || this.startupReservations.has(chatId) || this.engineStartAbortControllers.has(chatId)
+      || this.drainingStreams.has(chatId)
+      || this.pendingPreviews.has(chatId) || this.pendingProposalGates.has(chatId)
+      || this.pendingTransferGates.has(chatId) || this.pendingCheckupGates.has(chatId)
+      || this.activePreparations.has(chatId) || this.inFlightCheckups.has(chatId)
+      || this.claimedPreviewResponses.has(chatId) || (this.memoryWork.get(chatId) ?? 0) > 0
+      || this.store.getQueuedMessages(chatId).length > 0
+      || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
+        !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
+      || Boolean(this.codexManager.hasPendingWork?.(chatId))
+  }
+
+  /** All work must be settled for a full 30 minutes, including detached memory passes. */
+  private updateIdleClose(chatId: string) {
+    if (this.runtimeStopping || this.closedChats.has(chatId) || !this.hasIdleSession(chatId) || this.idleCloseBlocked(chatId)) {
+      this.cancelIdleClose(chatId)
+      return
+    }
+    if (this.idleCloseTimers.has(chatId)) return
+    const timer = setTimeout(() => {
+      if (this.idleCloseTimers.get(chatId) !== timer) return
+      this.idleCloseTimers.delete(chatId)
+      void this.closeIdleSession(chatId).catch(error => {
+        this.reportBackgroundError?.(`[idle-session] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }, IDLE_SESSION_TIMEOUT_MS)
+    timer.unref?.()
+    this.idleCloseTimers.set(chatId, timer)
+  }
+
+  private async closeIdleSession(chatId: string) {
+    if (this.runtimeStopping || this.closedChats.has(chatId) || this.idleCloseBlocked(chatId)) return
+    // No await between checking and retiring: a concurrent send either owns
+    // the startup reservation or sees a retired Query and waits for its pump.
+    this.codexManager.stopSession(chatId)
+    const session = this.claudeSessions.get(chatId)
+    if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
+  }
+
+  /** Count underlying work, not the cancellation race that may finish before it. */
+  private async trackMemoryWork<T>(chatId: string, work: () => Promise<T>): Promise<T> {
+    this.memoryWork.set(chatId, (this.memoryWork.get(chatId) ?? 0) + 1)
+    this.cancelIdleClose(chatId)
+    try {
+      return await work()
+    } finally {
+      const remaining = (this.memoryWork.get(chatId) ?? 1) - 1
+      if (remaining) this.memoryWork.set(chatId, remaining)
+      else this.memoryWork.delete(chatId)
+      this.updateIdleClose(chatId)
+    }
+  }
+
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
+    if (chatId) this.updateIdleClose(chatId)
     this.onStateChange(chatId, options)
   }
 
@@ -3044,6 +3121,7 @@ export class AgentCoordinator {
   }
 
   private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
+    this.cancelIdleClose(args.chatId)
     const reservation = args.startupReservation ?? { cancelled: false }
     const previous = this.startupReservations.get(args.chatId)
     if (previous && previous !== reservation) previous.superseded = true
@@ -3071,6 +3149,7 @@ export class AgentCoordinator {
       || this.activePreparations.get(chatId)?.args.startupReservation === reservation
     ) return
     this.startupReservations.delete(chatId)
+    this.updateIdleClose(chatId)
     if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
       && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
       void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
@@ -3133,6 +3212,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
@@ -3168,6 +3248,7 @@ export class AgentCoordinator {
   /** Close every old-project query before the preview process group changes. */
   async shutdownRuntime() {
     this.runtimeStopping = true
+    for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
@@ -3582,7 +3663,7 @@ export class AgentCoordinator {
         signal: prep?.cancellation.signal,
       }
       const branches = this.branchPreparations.get(args.chatId)
-      const captureTask = (branches
+      const captureTask = this.trackMemoryWork(args.chatId, () => branches
         ? branches.pipeline.result("candidate").then(result => this.capture!.captureFromBranch!(result.raw, captureInput, result.dependencyKey))
         : this.capture!.captureFromPrompt(captureInput)).then(
         () => ({ kind: "done" as const }),
@@ -4159,7 +4240,7 @@ export class AgentCoordinator {
     }
 
     let result: TransferTaskResult | null = null
-    const taskRun = computeTask().then(
+    const taskRun = this.trackMemoryWork(args.chatId, computeTask).then(
       (value) => ({ kind: "result" as const, value }),
       (error: unknown) => ({ kind: "error" as const, error }),
     )
@@ -4216,13 +4297,13 @@ export class AgentCoordinator {
             | { kind: "result"; value: TransferTaskResult }
             | { kind: "error"; error: unknown }
             | { kind: "cancelled" } = await Promise.race([
-            (this.memoryBranches ? (async () => {
+            this.trackMemoryWork(args.chatId, () => this.memoryBranches ? (async () => {
               const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
               const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey)
               const fresh = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
               if (!fresh) throw new Error("Memory transfer dependencies changed")
               return fresh
-            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress })).then(
+            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result!, { onProgress })).then(
               (value) => ({ kind: "result" as const, value }),
               (error: unknown) => ({ kind: "error" as const, error }),
             ),
@@ -4399,7 +4480,7 @@ export class AgentCoordinator {
         if (!checked) throw new Error("Memory change dependencies changed during analysis")
         result = checked
       } else {
-        result = await this.memoryCheckup!.run(checkupCtx)
+        result = await this.trackMemoryWork(args.chatId, () => this.memoryCheckup!.run(checkupCtx))
       }
     } catch (error) {
       this.reportBackgroundError?.(
@@ -4952,11 +5033,11 @@ export class AgentCoordinator {
         )
         this.emitStateChange(args.chatId)
       }
-      void this.assessWorkingMemory(args, ctx.injected, attentionIds)
+      void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
         .then(settle)
         .catch(() => this.memoryBranches
           ? this.reportWorkingMemoryFailure(args.chatId, previewId, revision)
-          : settle([]).catch(() => {}))
+          : settle([]).catch(() => {})))
     }
   }
 
@@ -5271,11 +5352,11 @@ export class AgentCoordinator {
             )
             this.emitStateChange(args.chatId)
           }
-          void this.assessWorkingMemory(args, ctx.injected, attentionIds)
+          void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
             .then(settle)
             .catch(() => this.memoryBranches
               ? this.reportWorkingMemoryFailure(args.chatId, previewId, 0)
-              : settle([]).catch(() => {}))
+              : settle([]).catch(() => {})))
         }
         if (autoProceed) {
           // Stop can land during the preview-entry append here too — an
@@ -6415,6 +6496,7 @@ export class AgentCoordinator {
     }
 
     await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+    this.emitStateChange(command.chatId)
   }
 
   async forkChat(chatId: string) {
@@ -6459,6 +6541,8 @@ export class AgentCoordinator {
         // mutate a later turn. Unidentified successful background results also
         // cannot consume a prompt on a UUID-capable session.
         if (event.promptIds?.length && !session.pendingPrompts.some(prompt => event.promptIds!.includes(prompt.id))) continue
+        this.cancelIdleClose(session.chatId)
+        this.updateIdleClose(session.chatId)
         const userOrigin = event.origin === "human"
           || ((event.origin === undefined || event.origin === "unknown"))
         if (!userOrigin) {

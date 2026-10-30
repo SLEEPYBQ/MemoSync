@@ -192,7 +192,7 @@ interface Harness {
   cleanup: () => void
 }
 
-type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number }
+type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string }
 
 function createHarness(
   opts: {
@@ -1404,8 +1404,8 @@ describe("memory preview gate (coordinator)", () => {
 
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.promptContexts).toEqual([
-        { turn: 1, engine: "claude", promptSeq: 1, allowedMemoryIds: ["M-01"] },
-        { turn: 2, engine: "claude", promptSeq: 2, allowedMemoryIds: ["M-01"] },
+        { turn: 1, engine: "claude", promptSeq: 1, promptId: expect.any(String), allowedMemoryIds: ["M-01"] },
+        { turn: 2, engine: "claude", promptSeq: 2, promptId: expect.any(String), allowedMemoryIds: ["M-01"] },
       ])
     } finally {
       h.cleanup()
