@@ -8,6 +8,13 @@ Parts of model access are adapted from [Magpie](https://github.com/yetone/magpie
 - `src/server/model-access/presets.ts` — provider presets and model data (`internal/provider/presets.go`, catalog test data)
 - `src/server/model-access/runtime.ts` — Claude Code and Codex provider mapping (`internal/agent/claude.go`, `codex.go`)
 - `src/server/model-access/test-connection.ts` — connection test requests (`internal/provider/test.go`)
+- `src/server/model-access/gateway/index.ts` — translation routing/orchestration (`internal/gateway/gateway.go`)
+- `src/server/model-access/gateway/request.ts` — shared request shape, Messages/Responses parsing and Chat encoding (`internal/gateway/ir.go`, `anthropic.go`, `responses.go`, `chat.go`)
+- `src/server/model-access/gateway/stream.ts` — SSE reader, Chat decoding and client event encoding (`internal/gateway/sse.go`, `chat.go`, `anthropic.go`, `responses.go`)
+- `src/server/model-access/gateway/custom-tool.ts` — custom tool schema and streamed input decoding (`internal/gateway/responses.go`, `custom_tool.go`)
+- `src/server/model-access/gateway/translation.test.ts`, `gateway.test.ts`, `custom-tool.test.ts`, and `fixtures/magpie-streams.json` — adapted tests and original fixture data (`internal/gateway/translate_stream_test.go`, `translate_severed_test.go`, `call_args_stream_test.go`)
+
+The gateway subset was ported from Magpie commit `cc81ad4ea1ee6a4ceb2e2d4b93f4402332cb7100`.
 
 No embedded prompts are included.
 

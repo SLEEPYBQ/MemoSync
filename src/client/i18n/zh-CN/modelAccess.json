@@ -1,4 +1,5 @@
 {
+  "viaTranslation": "经协议转换",
   "engines": "引擎",
   "enginesDescription": "每个引擎用哪个程序运行、怎么连接模型、默认用什么模型。",
   "connections": "API 连接",

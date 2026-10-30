@@ -1,7 +1,8 @@
 // Adapted from Magpie (https://github.com/yetone/magpie), MIT License, Copyright (c) 2026 yetone
 // internal/agent/claude.go and codex.go: native provider mapping, child env/argv only.
 import type { ApiConnection, ConnectionEndpoint, ConnectionModel, EngineId, ExecutableStatus } from "../../shared/model-access"
-import { endpointForEngine } from "../../shared/model-access"
+import { compatibleEndpointForEngine, connectionSupport } from "../../shared/model-access"
+import { gatewayEndpoint } from "./gateway"
 import type { PiConnection } from "../pi-agent"
 import { isCliIsolationEnabled, prepareProfileDir } from "../provider-runtime"
 import { executableLauncher } from "./executables"
@@ -105,10 +106,12 @@ export async function resolveEngineRuntime(input: {
   const connection: ApiConnection | undefined = service.connection(access.connectionId)
   if (!connection) throw new Error("connection-missing")
   validateConnection(connection)
-  const endpoint = endpointForEngine(input.engine, connection)
+  let endpoint = compatibleEndpointForEngine(input.engine, connection)
   if (!endpoint) throw new Error("connection-protocol-unsupported")
-  const key = await service.getKey(connection.id)
+  let key = await service.getKey(connection.id)
   if (!key && connectionNeedsKey(connection)) throw new Error("connection-key-missing")
+  const translated = connectionSupport(input.engine, connection) === "translated"
+  if (translated) ({ endpoint, key } = gatewayEndpoint(service, connection.id, input.engine === "claude" ? "anthropic" : "responses"))
   const requested = input.model?.replace(/\[1m\]$/, "")
   const defaultModel = access.defaultModel && ((input.engine === "pi" && connection.readOnly) || connection.models.some(m => m.id === access.defaultModel)) ? access.defaultModel : undefined
   const selected = requested && (input.engine === "pi" || connection.models.some(m => m.id === requested)) ? requested : defaultModel || connection.models[0]?.id || requested
@@ -117,9 +120,12 @@ export async function resolveEngineRuntime(input: {
   if (input.connectionId && requested && !(input.engine === "pi" && connection.readOnly) && connection.models.length && !connection.models.some(m => m.id === requested)) throw new Error("model-unavailable")
   const model: ConnectionModel = connection.models.find(m => m.id === selected) ?? { id: selected }
   const runtime: EngineRuntime = { engine: input.engine, executable, env: cleanConnectionEnv(base), args: [], model: model.id, isolated: true, connectionId: connection.id }
+  const childBase = { ...base }
+  if (translated && connection.envKeyName) delete childBase[connection.envKeyName]
+  if (translated && connection.envKeyName) delete runtime.env[connection.envKeyName]
   const profileEnv = { ...base, MEMOSYNC_CLI_PROFILE_DIR: base.MEMOSYNC_CLI_PROFILE_DIR || `${service.dataDir}/cli-profiles` }
   if (input.engine === "claude") {
-    const mapped = claudeConnectionEnv(base, endpoint, key, model, connection.id)
+    const mapped = claudeConnectionEnv(childBase, endpoint, key, model, connection.id)
     runtime.env = mapped.env; runtime.model = mapped.model
     runtime.env.CLAUDE_CONFIG_DIR = prepareProfileDir("claude", profileEnv)
   } else if (input.engine === "codex") {

@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { getDataDir, getLlmProviderFilePath } from "../../shared/branding"
-import { endpointForEngine, ENGINE_PROTOCOLS, type ApiConnection, type ApiConnectionInput, type EngineId, type EngineSetup, type EngineStatus, type ModelAccessSnapshot } from "../../shared/model-access"
+import { connectionSupport, compatibleEndpointForEngine, ENGINE_PROTOCOLS, type ApiConnection, type ApiConnectionInput, type EngineId, type EngineSetup, type EngineStatus, type ModelAccessSnapshot } from "../../shared/model-access"
 import type { LlmProviderSnapshot } from "../../shared/types"
 import { normalizeLlmProviderSnapshot } from "../llm-provider"
 import { resolveEngineExecutable } from "./executables"
@@ -142,7 +142,7 @@ export class ModelAccessService {
     if (access.mode === "connection") {
       const c = this.connection(access.connectionId)
       if (!c) throw new Error("connection-missing")
-      if (!endpointForEngine(engine, c)) throw new Error("connection-protocol-unsupported")
+      if (!compatibleEndpointForEngine(engine, c)) throw new Error("connection-protocol-unsupported")
       if (access.defaultModel && !c.models.some(m => m.id === access.defaultModel)) throw new Error("model-unavailable")
     }
     this.persist({ ...this.data, engines: { ...this.data.engines, [engine]: { access, ...(setup.executablePath !== undefined ? { executablePath: setup.executablePath } : {}) } } })
@@ -153,16 +153,18 @@ export class ModelAccessService {
     const entries = await Promise.all(engines.map(async engine => {
       const setup = this.setup(engine)
       const executable = await this.resolveExecutable(engine, setup, executableEnvironment(this.env))
+      const connection = setup.access.mode === "connection" ? this.connection(setup.access.connectionId) : undefined
+      const translated = connection && connectionSupport(engine, connection) === "translated"
       let problem: EngineStatus["problem"]
       if (["missing", "broken", "incompatible"].includes(executable.state)) problem = `executable-${executable.state}` as EngineStatus["problem"]
       else if (setup.access.mode === "connection") {
         const c = this.connection(setup.access.connectionId)
         if (!c) problem = "connection-missing"
-        else if (!endpointForEngine(engine, c)) problem = "connection-protocol-unsupported"
+        else if (!compatibleEndpointForEngine(engine, c)) problem = "connection-protocol-unsupported"
         else if (connectionNeedsKey(c) && !(await this.getKey(c.id))) problem = "connection-key-missing"
       } else if (engine === "pi") problem = "connection-missing"
       else if (this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR || !accountSignedIn(engine, this.env)) problem = "account-signed-out"
-      return [engine, { engine, setup, executable, ready: !problem, ...(problem ? { problem } : {}) }] as const
+      return [engine, { engine, setup, executable, ready: !problem, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}) }] as const
     }))
     this.statuses = Object.fromEntries(entries) as Record<EngineId, EngineStatus>
     this.changed()
@@ -171,7 +173,7 @@ export class ModelAccessService {
   async testConnection(input: ApiConnectionInput | { connectionId: string }, engine?: EngineId, model?: string) {
     const c = "connectionId" in input ? this.connection(input.connectionId) : validateConnection(input)
     if (!c) throw new Error("connection-missing")
-    const endpoint = engine ? endpointForEngine(engine, c) : undefined
+    const endpoint = engine ? compatibleEndpointForEngine(engine, c) : undefined
     const endpoints = engine ? (endpoint ? [endpoint] : []) : c.endpoints
     if (!endpoints.length) throw new Error("connection-protocol-unsupported")
     const key = "connectionId" in input ? await this.getKey(input.connectionId) : input.apiKey === undefined && input.id ? await this.getKey(input.id) : input.apiKey ?? undefined

@@ -1,4 +1,5 @@
 import { getModelAccessService, ModelAccessService, setModelAccessService } from "./model-access/service"
+import { stopGateway } from "./model-access/gateway"
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { uiJson } from "../shared/ui-copy"
@@ -748,6 +749,7 @@ async function startLockedMemoSyncServer(
     }
     await attempt(() => activeAgent.shutdownRuntime())
     await attempt(() => activeAgent.forceStopAllTurns())
+    await attempt(() => stopGateway())
     await attempt(() => router.dispose())
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())

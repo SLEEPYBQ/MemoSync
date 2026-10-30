@@ -1,7 +1,7 @@
 import type { AppSocket } from "../app/socket"
 import { create } from "zustand"
 import type { ApiConnection, ApiConnectionInput, ConnectionTestResult, EngineId, EngineStatus, ModelAccessSnapshot } from "../../shared/model-access"
-import { endpointForEngine } from "../../shared/model-access"
+import { compatibleEndpointForEngine } from "../../shared/model-access"
 import type { ModelOptions } from "../../shared/types"
 import { t } from "../i18n"
 
@@ -14,7 +14,7 @@ export const useModelAccessStore = create<{ snapshot: ModelAccessSnapshot | null
 }))
 
 export function connectionGroups(engine: EngineId, connections: ApiConnection[]) {
-  return connections.filter(connection => endpointForEngine(engine, connection)).map(connection => ({ connection, models: connection.models }))
+  return connections.filter(connection => compatibleEndpointForEngine(engine, connection)).map(connection => ({ connection, models: connection.models }))
 }
 
 export function incompatibleConnectionMessage(engine: EngineId) {

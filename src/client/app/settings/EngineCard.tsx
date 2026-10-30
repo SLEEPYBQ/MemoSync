@@ -3,7 +3,7 @@ import { Check, ChevronRight, Copy, MoreHorizontal, RefreshCw } from "lucide-rea
 import {
   ENGINE_PROTOCOLS,
   ENGINES_WITH_ACCOUNT_MODE,
-  endpointForEngine,
+  compatibleEndpointForEngine,
   type ApiConnection,
   type ApiProtocol,
   type EngineId,
@@ -308,13 +308,13 @@ export function EngineCard({
                 onValueChange={(mode) => {
                   if (!setup) return
                   if (mode === "account") setSetup({ ...setup, access: { mode: "account" } })
-                  else chooseConnection(connections.find((c) => endpointForEngine(engine, c))?.id ?? "")
+                  else chooseConnection(connections.find((c) => compatibleEndpointForEngine(engine, c))?.id ?? "")
                 }}
               />
             ) : null}
           </SettingsRow>
           {access?.mode === "connection" || engine === "pi" ? (
-            <SettingsRow title={t("modelAccess:connectionRow")}>
+            <SettingsRow title={t("modelAccess:connectionRow")} description={status?.translated ? t("modelAccess:viaTranslation") : undefined}>
               <SettingsSelect
                 aria-label={t("modelAccess:connection")}
                 value={access?.mode === "connection" ? access.connectionId || "__empty__" : "__empty__"}
@@ -329,7 +329,7 @@ export function EngineCard({
                   </SelectItem>
                 ) : null}
                 {connections.map((connection) => {
-                  const compatible = Boolean(endpointForEngine(engine, connection))
+                  const compatible = Boolean(compatibleEndpointForEngine(engine, connection))
                   return (
                     <SelectItem key={connection.id} value={connection.id} disabled={!compatible}>
                       {connection.name}

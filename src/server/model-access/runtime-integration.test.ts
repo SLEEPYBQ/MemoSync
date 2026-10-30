@@ -99,7 +99,7 @@ test("catalog keeps duplicate model ids distinct by connection and Pi uses the c
   const models = deployedProviders().find(p => p.id === "claude")!.models
   expect(models.filter(m => m.id === "same-model").map(m => [m.connectionId, m.vendor])).toEqual([[a.id, "A"], [b.id, "B"]])
   expect(models.some(m => m.id === "sonnet")).toBe(true)
-  expect(deployedProviders().find(p => p.id === "codex")!.models.some(m => m.connectionId)).toBe(false)
+  expect(deployedProviders().find(p => p.id === "codex")!.models.filter(m => m.connectionId).map(m => [m.connectionId, m.vendor])).toEqual([[a.id, "A"], [b.id, "B"]])
   const runtime = await resolveEngineRuntime({ engine: "pi", connectionId: a.id, service })
   expect(buildRegistryModel(runtime.piConnection!, runtime.model).api).toBe("openai-completions")
   expect(buildRegistryModel({ ...runtime.piConnection!, protocol: "openai-responses" }, runtime.model).api).toBe("openai-responses")

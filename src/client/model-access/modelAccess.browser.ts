@@ -565,3 +565,35 @@ test("empty connections, long names, middle-truncated paths and provider error d
   await form.getByText("Provider details", { exact: true }).click()
   expect(await form.getByText("Raw provider diagnostics", { exact: true }).isVisible()).toBe(true)
 })
+
+test("Chat fallback is selectable for Claude and Codex and translation status is localized", async () => {
+  await open()
+  for (const engine of ["claude", "codex"] as const) {
+    const card = page.locator(`[data-engine="${engine}"]`)
+    await card.getByRole("radio", { name: "API connection", exact: true }).click()
+    await card.getByLabel("API connection", { exact: true }).click()
+    const chat = page.getByRole("option", { name: "Local Chat", exact: true })
+    expect(await chat.getAttribute("data-disabled")).toBeNull()
+    await chat.click()
+    expect(await lastCommand()).toMatchObject({ type: "modelAccess.setEngine", engine, setup: { access: { mode: "connection", connectionId: "connection-2" } } })
+    await page.evaluate(engine => {
+      const snapshot = window.modelAccessFixture.snapshot()
+      snapshot.engines[engine].translated = true
+      window.modelAccessFixture.publish(snapshot)
+    }, engine)
+    await card.getByText("via translation", { exact: true }).waitFor()
+  }
+  const output = join(import.meta.dir, "../../../output/playwright/protocol-gateway")
+  await mkdir(output, { recursive: true })
+  await page.screenshot({ path: join(output, "translation-en.png"), fullPage: true, animations: "disabled" })
+  await page.evaluate(() => window.modelAccessFixture.language("zh-CN"))
+  for (const engine of ["claude", "codex"] as const) await page.locator(`[data-engine="${engine}"]`).getByText("经协议转换", { exact: true }).waitFor()
+  await page.screenshot({ path: join(output, "translation-zh.png"), fullPage: true, animations: "disabled" })
+  await page.evaluate(() => {
+    const snapshot = window.modelAccessFixture.snapshot()
+    snapshot.engines.claude.translated = undefined
+    snapshot.engines.claude.setup.access = { mode: "connection", connectionId: "connection-0" }
+    window.modelAccessFixture.publish(snapshot)
+  })
+  expect(await page.locator('[data-engine="claude"]').getByText("经协议转换", { exact: true }).count()).toBe(0)
+}, 15000)
