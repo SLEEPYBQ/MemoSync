@@ -858,7 +858,7 @@ export function createWsRouter({
 
   async function pushSnapshots(
     ws: ServerWebSocket<ClientState>,
-    options?: { skipPrune?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache; retryDropped?: boolean }
+    options?: { skipPrune?: boolean; skipTerminals?: boolean; filter?: SnapshotBroadcastFilter; cache?: SnapshotComputationCache; retryDropped?: boolean }
   ) {
     const pushStartedAt = performance.now()
     if (!options?.skipPrune) {
@@ -868,6 +868,7 @@ export function createWsRouter({
     let sentCount = 0
     let skippedCount = 0
     for (const [id, topic] of ws.data.subscriptions.entries()) {
+      if (options?.skipTerminals && topic.type === "terminal") continue
       if (!shouldIncludeTopic(topic, options?.filter)) {
         continue
       }
@@ -954,7 +955,11 @@ export function createWsRouter({
       socketCount += 1
       // One socket's failure must never starve the rest of the batch (BUG WS-2).
       try {
-        await pushSnapshots(ws, { skipPrune: true, cache })
+        // Terminal output already streams as events. Rebuilding from the
+        // subscription's original cursor here repeats growing tails on every
+        // unrelated change; subscriptions and dropped-snapshot retries still
+        // include terminals for catch-up.
+        await pushSnapshots(ws, { skipPrune: true, skipTerminals: true, cache })
       } catch (error) {
         console.error("[ws-router] broadcastSnapshots: skipped a socket after error", error)
       }

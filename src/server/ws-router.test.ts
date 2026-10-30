@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import type { TerminalEvent } from "../shared/protocol"
 import type { AppSettingsSnapshot, KeybindingsSnapshot, LlmProviderSnapshot, PendingToolSnapshot, TranscriptEntry, UpdateSnapshot } from "../shared/types"
 import { PROTOCOL_VERSION } from "../shared/types"
 import { createEmptyState } from "./events"
@@ -921,6 +922,64 @@ describe("ws-router", () => {
       expect(ws.sent).toContainEqual({ v: 1, type: "snapshot", id: "new", snapshot: { type: "terminal", data: tail } })
       expect(ws.sent).toContainEqual({ v: 1, type: "ack", id: "repair", result: tail })
       expect(requests).toEqual([["a", 3, "epoch"], ["a", 3, "epoch"]])
+    } finally { router.dispose() }
+  })
+
+  test.each(["legacy", "versioned"])("unrelated broadcasts skip terminal reads while events and reconnect catch-up work (%s)", async (mode) => {
+    const versioned = mode === "versioned"
+    const state = createEmptyState()
+    const reads: unknown[] = []
+    let output = "abcdef"
+    let emit!: (event: TerminalEvent) => void
+    const router = createWsRouter({
+      store: { state } as never,
+      agent: { getActiveStatuses: () => new Map(), getDrainingChatIds: () => new Set(), getStreamingAssistantTexts: () => new Map() } as never,
+      terminals: {
+        getSnapshot: (terminalId: string) => {
+          reads.push([terminalId])
+          return { terminalId, sessionId: "epoch", serializedState: output, outputVersion: output.length }
+        },
+        getTail: (terminalId: string, sinceVersion: number, sessionId: string) => {
+          reads.push([terminalId, sinceVersion, sessionId])
+          return { terminalId, sessionId, tail: { data: output.slice(sinceVersion), version: output.length }, snapshot: null, status: "running", exitCode: null }
+        },
+        onEvent: (listener: (event: TerminalEvent) => void) => { emit = listener; return () => {} },
+      } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Local Machine", updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    ws.data.subscriptions.set("sidebar", { type: "sidebar" })
+    const subscribe = (socket: FakeWebSocket, sinceVersion: number) => router.handleMessage(socket as never, JSON.stringify({
+      v: 1, type: "subscribe", id: "terminal", topic: { type: "terminal", terminalId: "a", ...(versioned ? { sinceVersion, sessionId: "epoch" } : {}) },
+    }))
+    try {
+      await subscribe(ws, 3)
+      expect(reads).toEqual(versioned ? [["a", 3, "epoch"]] : [["a"]])
+      ws.sent.length = 0
+
+      output += "ghi"
+      const event: TerminalEvent = { type: "terminal.output", terminalId: "a", data: "ghi", version: 9, sessionId: "epoch" }
+      emit(event)
+      expect(ws.sent).toEqual([{ v: 1, type: "event", id: "terminal", event }])
+      ws.sent.length = 0
+      state.projectsById.set("project-1", { id: "project-1", localPath: "/tmp/project", title: "Project", createdAt: 1, updatedAt: 1 })
+      await router.broadcastSnapshots()
+      await router.broadcastSnapshots()
+      expect(reads).toHaveLength(1)
+      expect(ws.sent).toEqual([expect.objectContaining({ type: "snapshot", id: "sidebar" })])
+
+      router.handleClose(ws as never)
+      const reconnected = new FakeWebSocket()
+      router.handleOpen(reconnected as never)
+      await subscribe(reconnected, 6)
+      expect(reads).toEqual(versioned ? [["a", 3, "epoch"], ["a", 6, "epoch"]] : [["a"], ["a"]])
+      expect(reconnected.sent).toEqual([{
+        v: 1, type: "snapshot", id: "terminal", snapshot: { type: "terminal", data: versioned
+          ? { terminalId: "a", sessionId: "epoch", tail: { data: "ghi", version: 9 }, snapshot: null, status: "running", exitCode: null }
+          : { terminalId: "a", sessionId: "epoch", serializedState: output, outputVersion: 9 } },
+      }])
     } finally { router.dispose() }
   })
 
