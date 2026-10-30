@@ -395,6 +395,9 @@ function AppLayout() {
   }, [brandName, state.sidebarData])
 
   useEffect(() => {
+    // The empty placeholder before the first sidebar snapshot is not a baseline:
+    // diffing against it would announce every already-unread or waiting chat on reload.
+    if (!state.sidebarReady) return
     const events = getChatNotificationEvents(previousSidebarDataRef.current, state.sidebarData)
     const burstCount = getChatSoundBurstCount(previousSidebarDataRef.current, state.sidebarData)
     previousSidebarDataRef.current = state.sidebarData
@@ -412,7 +415,7 @@ function AppLayout() {
     if (!shouldPlayChatNotificationSound(state.appSettings, chatSoundPreference)) return
 
     void playChatNotificationSound(chatSoundId, burstCount).catch(() => undefined)
-  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData])
+  }, [chatSoundId, chatSoundPreference, navigate, state.appSettings, state.sidebarData, state.sidebarReady])
 
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>
