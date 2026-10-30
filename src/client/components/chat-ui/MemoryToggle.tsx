@@ -28,22 +28,15 @@ export function deriveMemoryToggleState(
   }
 }
 
-// Draft-only state follows the composer's draft key; existing chats use the server snapshot.
-const useMemoryDrafts = create<{
-  disabled: Record<string, boolean>
-  setDisabled: (key: string, disabled: boolean) => void
+// One choice for the next new chat, shared by every new-chat composer (landing
+// and project pages); existing chats use the server snapshot.
+export const useDraftMemoryDisabled = create<{
+  disabled: boolean
+  setDisabled: (disabled: boolean) => void
 }>((set) => ({
-  disabled: {},
-  setDisabled: (key, disabled) => set((state) => ({ disabled: { ...state.disabled, [key]: disabled } })),
+  disabled: false,
+  setDisabled: (disabled) => set({ disabled }),
 }))
-
-export function useDraftMemoryDisabled(draftKey?: string | null): [boolean, (disabled: boolean) => void] {
-  useI18n()
-  const key = draftKey ?? "new-chat"
-  const disabled = useMemoryDrafts((s) => s.disabled[key] ?? false)
-  const setDisabled = useMemoryDrafts((s) => s.setDisabled)
-  return [disabled, (value) => setDisabled(key, value)]
-}
 
 export function MemoryIcon({ off = false }: { off?: boolean }) {
   useI18n()
@@ -64,7 +57,7 @@ export function MemoryOffRowIcon() {
   )
 }
 
-type MemoryToggleProps = { chatId?: string | null; draftKey?: string | null }
+type MemoryToggleProps = { chatId?: string | null }
 
 export function MemoryToggle(props: MemoryToggleProps) {
   useI18n()
@@ -74,12 +67,13 @@ export function MemoryToggle(props: MemoryToggleProps) {
   return useInRouterContext() ? <RoutedMemoryToggle {...props} /> : null
 }
 
-function RoutedMemoryToggle({ chatId, draftKey }: MemoryToggleProps) {
+function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
   useI18n()
   const app = useOutletContext<AppState | null>()
   const navigate = useNavigate()
   const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { enabled: true, learn: true }
-  const [draftDisabled, setDraftDisabled] = useDraftMemoryDisabled(draftKey)
+  const draftDisabled = useDraftMemoryDisabled((s) => s.disabled)
+  const setDraftDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const runtime = app?.runtime && app.runtime.chatId === chatId ? app.runtime : null
