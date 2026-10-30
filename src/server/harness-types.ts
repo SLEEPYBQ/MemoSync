@@ -3,6 +3,8 @@ import type { AccountInfo, AgentProvider, NormalizedToolCall, TranscriptEntry } 
 export interface HarnessEvent {
   type: "transcript" | "session_token" | "assistant_delta"
   entry?: TranscriptEntry
+  /** Claude result: outbound prompt UUIDs answered by this event. */
+  promptIds?: string[]
   sessionToken?: string
 
   origin?: "human" | "task-notification" | "auto-continuation" | "channel" | "peer" | "coordinator" | "unknown"

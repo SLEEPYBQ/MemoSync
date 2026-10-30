@@ -3415,3 +3415,320 @@ test("Claude streaming deltas and unstamped entries never serialize raw SDK mess
     for (const entry of entries) expect(entry).not.toHaveProperty("debugRaw")
   }
 })
+
+describe("Claude prompt UUID lifecycle", () => {
+  function harness(sdkStream = false) {
+    const events = new AsyncEventQueue<any>()
+    const store = createFakeStore()
+    const prompts: Array<{ promptId: string; promptSeq: number }> = []
+    const passes: any[] = []
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange: () => {}, claudeSessionFileExists: () => true,
+      startClaudeSession: async () => ({
+        provider: "claude", echoesPromptIds: true,
+        stream: sdkStream ? createClaudeHarnessStream(events as never) : events,
+        close: () => events.close(), interrupt: async () => {},
+        setModel: async () => {}, setPermissionMode: async () => {},
+        sendPrompt: async (_content: string, context: any) => { prompts.push(context) },
+      }),
+    })
+    ;(coordinator as any).launchPostTurnMemoryPasses = (args: any) => passes.push(args)
+    const send = (content: string) => coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content })
+    const init = (sessionToken?: string) => {
+      if (sdkStream) {
+        events.push({ type: "system", subtype: "init", session_id: sessionToken, model: "test", tools: [], slash_commands: [], mcp_servers: [] })
+      } else {
+        events.push({ type: "transcript", entry: timestamped({ kind: "system_init", provider: "claude", model: "test", tools: [], agents: [], slashCommands: [], mcpServers: [] }) })
+      }
+    }
+    const result = (promptIds?: string[], text = "done") => events.push({ type: "transcript", promptIds, entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: text }) })
+    const flush = async () => {
+      const marker = timestamped({ kind: "assistant_text", text: "barrier" })
+      if (sdkStream) {
+        events.push({ type: "assistant", uuid: marker._id, message: { content: [{ type: "text", text: "barrier" }] } })
+      } else {
+        events.push({ type: "transcript", entry: marker })
+      }
+      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker._id : m._id === marker._id))
+    }
+    return { events, store, prompts, passes, coordinator, send, init, result, flush }
+  }
+
+  test("cancelled SDK result cannot overwrite a newer turn's session token", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init("first-token")
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init("second-token")
+      await h.flush()
+      h.passes.splice(0)
+      const second = h.coordinator.activeTurns.get("chat-1")
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuid: h.prompts[0]!.promptId, session_id: "late-first-token", result: "late first" })
+      await h.flush()
+      expect(h.store.chat.sessionToken).toBe("second-token")
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      expect(session.sessionToken).toBe("second-token")
+      expect(session.pendingPrompts.map(p => p.id)).toEqual([h.prompts[1]!.promptId])
+      expect(session.cancelledPromptSeqs.size).toBe(0)
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(second)
+      expect(h.store.messages.filter(m => m.kind === "result")).toHaveLength(0)
+      expect(h.passes).toHaveLength(0)
+    } finally { h.events.close() }
+  })
+
+  test("cancelled SDK result cannot overwrite the current turn's context usage", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init()
+      h.events.push({ type: "assistant", message: { id: "second-usage", content: [], usage: { input_tokens: 80, output_tokens: 20 } } })
+      await h.flush()
+      const usage = h.store.messages.filter(m => m.kind === "context_window_updated")
+      expect(usage).toHaveLength(1)
+      h.passes.splice(0)
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuids: [h.prompts[0]!.promptId], usage: { input_tokens: 10, output_tokens: 1 },
+        modelUsage: { test: { contextWindow: 12345 } }, result: "late first" })
+      await h.flush()
+      expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toEqual(usage)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.passes).toHaveLength(0)
+    } finally { h.events.close() }
+  })
+
+  for (const startNext of [false, true]) {
+    test(`cancelled SDK result preserves the newest session token (next prompt: ${startNext})`, async () => {
+      const h = harness(true)
+      try {
+        await h.send("first")
+        h.init("initial-token")
+        await h.flush()
+        await h.coordinator.cancel("chat-1")
+        if (startNext) await h.send("second")
+        h.events.push({ type: "result", subtype: "success", is_error: false,
+          user_message_uuid: h.prompts[0]!.promptId, session_id: "newest-token",
+          usage: { input_tokens: 10, output_tokens: 1 }, result: "cancelled first" })
+        await h.flush()
+        expect(h.store.chat.sessionToken).toBe("newest-token")
+        expect(h.coordinator.claudeSessions.get("chat-1")!.sessionToken).toBe("newest-token")
+        expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toHaveLength(0)
+        expect(h.store.messages.filter(m => m.kind === "result")).toHaveLength(0)
+        expect(h.store.turnFinishedCount).toBe(0)
+      } finally { h.events.close() }
+    })
+  }
+
+  test("mixed cancelled and active SDK result keeps the active prompt's metadata", async () => {
+    const h = harness(true)
+    try {
+      await h.send("first")
+      h.init("first-token")
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init("second-token")
+      await h.flush()
+      h.passes.splice(0)
+      h.events.push({ type: "result", subtype: "success", is_error: false,
+        user_message_uuids: h.prompts.map(p => p.promptId), session_id: "batched-token",
+        usage: { input_tokens: 80, output_tokens: 20 }, result: "second done" })
+      await h.flush()
+      expect(h.store.chat.sessionToken).toBe("batched-token")
+      expect(h.store.messages.filter(m => m.kind === "context_window_updated")).toMatchObject([
+        { usage: { usedTokens: 100 } },
+      ])
+      expect(h.store.turnFinishedCount).toBe(1)
+      expect(h.passes).toHaveLength(1)
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      expect(session.pendingPrompts).toHaveLength(0)
+      expect(session.cancelledPromptSeqs.size).toBe(0)
+    } finally { h.events.close() }
+  })
+
+  test("UUID result cannot finish a different prompt or launch its memory passes", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      await h.coordinator.cancel("chat-1")
+      await h.send("second")
+      h.init()
+      await h.flush()
+      h.passes.splice(0)
+      const second = h.coordinator.activeTurns.get("chat-1")!
+      h.result([h.prompts[0]!.promptId], "late first result")
+      await h.flush()
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(second)
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.passes).toHaveLength(0)
+      h.result([h.prompts[1]!.promptId])
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      expect(h.passes).toHaveLength(1)
+      expect(h.passes[0]).toMatchObject({ userText: "second", turnId: second.turnId, turnNumber: second.turnNumber })
+      expect(h.prompts[0]!.promptId).toMatch(/^[0-9a-f-]{36}$/)
+      expect(h.prompts[1]!.promptId).not.toBe(h.prompts[0]!.promptId)
+    } finally { h.events.close() }
+  })
+
+  test("unrelated and id-less success results leave an UUID turn and queued drain pending", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      await h.send("queued")
+      h.result(["unrelated"])
+      h.result()
+      await h.flush()
+      expect(h.store.turnFinishedCount).toBe(0)
+      expect(h.prompts).toHaveLength(1)
+      h.result([h.prompts[0]!.promptId])
+      await waitFor(() => h.prompts.length === 2)
+      h.result([h.prompts[1]!.promptId])
+      await waitFor(() => h.store.turnFinishedCount === 2)
+    } finally { h.events.close() }
+  })
+
+  test("batched UUID results finish the steered prompt even if its predecessor never returned", async () => {
+    const h = harness()
+    try {
+      await h.send("first")
+      h.init()
+      await h.flush()
+      const queued = await h.coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "steered" })
+      await h.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: queued.queuedMessageId })
+      h.result(h.prompts.map(p => p.promptId))
+      await waitFor(() => h.store.turnFinishedCount === 1)
+      expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
+    } finally { h.events.close() }
+  })
+
+  test("result UUID metadata survives normalization and releases only matching origin reservations", async () => {
+    const tracker = new ClaudeOutboundOriginTracker()
+    ;(tracker.beginHumanTurn as any)(1, "first")
+    ;(tracker.beginHumanTurn as any)(2, "second")
+    async function* sdk() {
+      yield { type: "result", subtype: "success", is_error: false, user_message_uuids: ["second"], result: "second" }
+      yield { type: "result", subtype: "success", is_error: false, user_message_uuid: "second", result: "duplicate" }
+    }
+    const results = []
+    for await (const event of createClaudeHarnessStream(sdk() as never, undefined, undefined, tracker)) {
+      if (event.entry?.kind === "result") results.push(event as any)
+    }
+    expect(results.map(event => event.promptIds)).toEqual([["second"], ["second"]])
+    expect(tracker.current()).toBe("human")
+    expect(tracker.discardHumanTurnReservations([1])).toBe(1)
+    expect(tracker.current()).toBe("unknown")
+  })
+
+  for (const ids of ["single", "missing", "mixed"] as const) {
+    test(`cancel interrupt errors are attributed without hiding the next real error (${ids})`, async () => {
+      const h = harness()
+      let failures = 0
+      ;(h.store as any).recordTurnFailed = async () => { failures++ }
+      try {
+        await h.send("cancel me")
+        h.init()
+        await h.flush()
+        await h.coordinator.cancel("chat-1")
+        await h.send("next turn")
+        const cancelledIds = ids === "missing" ? undefined : [h.prompts[0]!.promptId]
+        h.events.push({ type: "transcript", promptIds: cancelledIds,
+          entry: timestamped({ kind: "result", subtype: "error_during_execution", isError: true, durationMs: 1, result: "interrupt error" }) })
+        await h.flush()
+        expect(h.store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(0)
+        expect(h.store.messages.filter(m => m.kind === "interrupted")).toHaveLength(1)
+        expect(failures).toBe(0)
+        expect(h.coordinator.activeTurns.has("chat-1")).toBe(true)
+        h.events.push({ type: "transcript", promptIds: ids === "mixed" ? h.prompts.map(p => p.promptId) : [h.prompts[1]!.promptId],
+          entry: timestamped({ kind: "result", subtype: "error_during_execution", isError: true, durationMs: 1, result: "real later failure" }) })
+        await waitFor(() => failures === 1)
+        expect(h.store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(1)
+        expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
+      } finally { h.events.close() }
+    })
+  }
+
+  test("a replaced Claude stream throwing cannot fail or clear the successor", async () => {
+    const h = harness()
+    let rejectStream!: (error: Error) => void
+    try {
+      await h.send("successor")
+      const active = h.coordinator.activeTurns.get("chat-1")
+      const session = h.coordinator.claudeSessions.get("chat-1")!
+      let failures = 0
+      ;(h.store as any).recordTurnFailed = async () => { failures++ }
+      async function* obsoleteStream() { await new Promise((_, reject) => { rejectStream = reject }); yield {} }
+      const obsolete = { ...session, id: "obsolete", session: { ...session.session, stream: obsoleteStream(), close: () => {} } }
+      const pump = (h.coordinator as any).runClaudeSession(obsolete)
+      rejectStream(new Error("old transport failed"))
+      await pump
+      expect(failures).toBe(0)
+      expect(h.coordinator.activeTurns.get("chat-1")).toBe(active)
+      expect(h.coordinator.claudeSessions.get("chat-1")).toBe(session)
+    } finally { h.events.close() }
+  })
+})
+
+test("UUID Stop revokes human authority even when the cancelled prompt never returns a result", async () => {
+  const sdk = new AsyncEventQueue<any>()
+  const tracker = new ClaudeOutboundOriginTracker(true)
+  const store = createFakeStore()
+  const prompts: Array<{ promptId: string; promptSeq: number }> = []
+  const toolOrigins: unknown[] = []
+  const coordinator = new AgentCoordinator({
+    store: store as never, onStateChange() {}, claudeSessionFileExists: () => true,
+    startClaudeSession: async () => ({
+      provider: "claude", echoesPromptIds: true,
+      stream: createClaudeHarnessStream(sdk as never, undefined, (_id, origin) => toolOrigins.push(origin), tracker),
+      close: () => sdk.close(), interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {},
+      revokeHumanTurnReservation: (seq: number) => (tracker as any).revokeHumanTurn?.(seq),
+      sendPrompt: async (_content: string, context: any) => {
+        prompts.push(context)
+        tracker.beginHumanTurn(context.promptSeq, context.promptId)
+        sdk.push({ type: "system", subtype: "init", tools: [], slash_commands: [], mcp_servers: [], model: "test" })
+      },
+    }),
+  })
+  try {
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "first", provider: "claude" })
+    await waitFor(() => store.messages.some(m => m.kind === "system_init"))
+    await coordinator.cancel("chat-1")
+    expect(tracker.current()).toBe("unknown")
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "second", provider: "claude" })
+    sdk.push({ type: "result", subtype: "success", is_error: false, result: "second done", user_message_uuid: prompts[1]!.promptId })
+    await waitFor(() => store.turnFinishedCount === 1)
+    await Bun.sleep(10)
+    expect(tracker.current()).toBe("unknown")
+    // The old prompt remains an attribution tombstone, never authority for tools.
+    sdk.push({ type: "assistant", message: { content: [{ type: "tool_use", id: "late-tool", name: "Edit", input: {} }] } })
+    await waitFor(() => toolOrigins.length === 1)
+    expect(toolOrigins).toEqual(["unknown"])
+    sdk.push({ type: "result", subtype: "error_during_execution", is_error: true, user_message_uuid: prompts[0]!.promptId })
+    await Bun.sleep(10)
+    expect(store.turnFinishedCount).toBe(1)
+    expect(store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(0)
+  } finally { sdk.close() }
+})
+
+test("UUID origin reservations settle id-less cancelled SDK results before the next error", async () => {
+  const tracker = new ClaudeOutboundOriginTracker(true)
+  tracker.beginHumanTurn(1, "cancelled")
+  tracker.revokeHumanTurn(1)
+  tracker.beginHumanTurn(2, "next")
+  async function* sdk() {
+    yield { type: "result", subtype: "cancelled" }
+    yield { type: "result", subtype: "error_during_execution", is_error: true }
+  }
+  for await (const _event of createClaudeHarnessStream(sdk() as never, undefined, undefined, tracker)) { /* drain both results */ }
+  expect(tracker.current()).toBe("unknown")
+  expect(tracker.discardHumanTurnReservations([1, 2])).toBe(0)
+})

@@ -1116,6 +1116,16 @@ export class CodexAppServerManager {
     }
   }
 
+  hasSession(chatId: string): boolean {
+    const context = this.sessions.get(chatId)
+    return Boolean(context && !context.closed)
+  }
+
+  hasPendingWork(chatId: string): boolean {
+    const context = this.sessions.get(chatId)
+    return Boolean(context && (context.pendingTurn || context.pendingRequests.size > 0))
+  }
+
   stopSession(chatId: string) {
     const context = this.sessions.get(chatId)
     if (!context) return

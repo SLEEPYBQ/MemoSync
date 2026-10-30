@@ -360,9 +360,8 @@ interface ActiveTurn {
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
    * that point keeps the persistent Query (the provider acknowledges the
-   * cancelled prompt, and the next turn's `system_init` realigns the FIFO);
-   * a Stop before it retires the Query because a positional FIFO cannot tell
-   * this turn's late frames from the next turn's.
+   * cancelled prompt). Before it, retire the Query: UUIDs identify results,
+   * but untagged late assistant/tool frames still cannot be safely attributed.
    */
   providerTurnStarted: boolean
   clientTraceId?: string
@@ -398,8 +397,12 @@ interface ClaudeSessionHandle {
   close: () => void
   sendPrompt: (
     content: string,
-    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
+    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
   ) => Promise<void>
+  /** Known for the bundled SDK; override wrappers are detected on their first tagged result. */
+  echoesPromptIds?: boolean
+  /** Revoke tool authority while retaining the prompt as a late-result tombstone. */
+  revokeHumanTurnReservation?: (promptSeq: number) => void
   /** Release only the cancelled prompt reservations whose FIFO entries were
    * proven orphaned when a later provider turn started. */
   discardHumanTurnReservations?: (promptSeqs: readonly number[]) => number
@@ -421,9 +424,13 @@ interface ClaudeSessionState {
   effort?: string
   planMode: boolean
   sessionToken: string | null
+  /** Latest prompt whose token was saved, including untagged current-turn frames. */
+  sessionTokenPromptSeq: number
   accountInfoLoaded: boolean
   nextPromptSeq: number
-  pendingPromptSeqs: number[]
+  cancelledPromptSeqs: Set<number>
+  pendingPrompts: Array<{ seq: number; id: string }>
+  echoesPromptIds: boolean
   /** Retired sessions may still have SDK messages queued while Query.close() settles. */
   retired: boolean
   retireReason: string | null
@@ -878,6 +885,15 @@ export function normalizeClaudeStreamMessage(message: any): TranscriptEntry[] {
   return []
 }
 
+function claudeResultPromptIds(message: any): string[] | undefined {
+  const ids = Array.isArray(message.user_message_uuids)
+    ? message.user_message_uuids.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+    : []
+  if (ids.length) return ids
+  return typeof message.user_message_uuid === "string" && message.user_message_uuid
+    ? [message.user_message_uuid] : undefined
+}
+
 export async function* createClaudeHarnessStream(
   q: Query,
   onTurnOriginChange?: (origin: HarnessEvent["origin"]) => void,
@@ -904,6 +920,7 @@ export async function* createClaudeHarnessStream(
   const lineageOrigins = new Map<string, HarnessEvent["origin"]>()
 
   for await (const sdkMessage of q as AsyncIterable<any>) {
+    const promptIds = sdkMessage?.type === "result" ? claudeResultPromptIds(sdkMessage) : undefined
     const explicitOrigin = (() => {
       const kind = sdkMessage?.origin?.kind
       return kind === "human"
@@ -1001,7 +1018,7 @@ export async function* createClaudeHarnessStream(
     }
     const sessionToken = typeof sdkMessage.session_id === "string" ? sdkMessage.session_id : null
     if (sessionToken) {
-      yield { type: "session_token", sessionToken, origin }
+      yield { type: "session_token", sessionToken, origin, promptIds }
     }
 
     // includePartialMessages: raw Anthropic stream events. Only the top-level
@@ -1033,6 +1050,7 @@ export async function* createClaudeHarnessStream(
         yield {
           type: "transcript",
           origin,
+          promptIds,
           entry: timestamped({
             kind: "context_window_updated",
             usage: usageSnapshot,
@@ -1067,6 +1085,7 @@ export async function* createClaudeHarnessStream(
         yield {
           type: "transcript",
           origin,
+          promptIds,
           entry: timestamped({
             kind: "context_window_updated",
             usage: finalUsage,
@@ -1079,11 +1098,11 @@ export async function* createClaudeHarnessStream(
     }
 
     for (const entry of normalizeClaudeStreamMessage(sdkMessage)) {
-      yield { type: "transcript", entry, origin }
+      yield { type: "transcript", entry, origin, promptIds }
     }
     if (sdkMessage?.type === "result") {
       rootOrigin = "unknown"
-      outboundOrigins?.finishResult(origin)
+      outboundOrigins?.finishResult(origin, promptIds, sdkMessage.is_error === true || sdkMessage.subtype === "cancelled")
       rootOrigin = outboundOrigins?.current() ?? "unknown"
       // Results from background and user roots may interleave. Retire
       // only the lineage that actually completed: clearing the whole table on
@@ -1163,15 +1182,20 @@ export class ClaudeOutboundOriginTracker {
    * compatibility reservations; production Claude prompts use their exact
    * positive coordinator FIFO sequence. */
   private readonly pendingHumanTurns: number[] = []
+  private readonly promptIds = new Map<number, string>()
+  private readonly revokedHumanTurns = new Set<number>()
+  private echoesPromptIds: boolean
+  constructor(echoesPromptIds = false) { this.echoesPromptIds = echoesPromptIds }
   private nextAnonymousReservation = 0
   private root: HarnessEvent["origin"] = "unknown"
 
-  beginHumanTurn(promptSeq?: number) {
+  beginHumanTurn(promptSeq?: number, promptId?: string) {
     const reservation = promptSeq ?? -(this.nextAnonymousReservation += 1)
     if (this.pendingHumanTurns.includes(reservation)) {
       throw new Error(`Duplicate Claude human-turn reservation: ${reservation}`)
     }
     this.pendingHumanTurns.push(reservation)
+    if (promptId) this.promptIds.set(reservation, promptId)
     if (this.root === "unknown") this.root = "human"
   }
 
@@ -1179,8 +1203,21 @@ export class ClaudeOutboundOriginTracker {
     const index = promptSeq === undefined
       ? this.pendingHumanTurns.length - 1
       : this.pendingHumanTurns.indexOf(promptSeq)
-    if (index >= 0) this.pendingHumanTurns.splice(index, 1)
-    if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
+    if (index >= 0) {
+      this.revokedHumanTurns.delete(this.pendingHumanTurns[index]!)
+      this.promptIds.delete(this.pendingHumanTurns[index]!)
+      this.pendingHumanTurns.splice(index, 1)
+    }
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
+  }
+
+  private hasHumanAuthority() {
+    return this.pendingHumanTurns.some(seq => !this.revokedHumanTurns.has(seq))
+  }
+
+  revokeHumanTurn(promptSeq: number) {
+    if (this.pendingHumanTurns.includes(promptSeq)) this.revokedHumanTurns.add(promptSeq)
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
   }
 
   /**
@@ -1192,9 +1229,13 @@ export class ClaudeOutboundOriginTracker {
     const discarded = new Set(promptSeqs)
     const before = this.pendingHumanTurns.length
     for (let index = this.pendingHumanTurns.length - 1; index >= 0; index -= 1) {
-      if (discarded.has(this.pendingHumanTurns[index]!)) this.pendingHumanTurns.splice(index, 1)
+      if (discarded.has(this.pendingHumanTurns[index]!)) {
+        this.revokedHumanTurns.delete(this.pendingHumanTurns[index]!)
+        this.promptIds.delete(this.pendingHumanTurns[index]!)
+        this.pendingHumanTurns.splice(index, 1)
+      }
     }
-    if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
     return before - this.pendingHumanTurns.length
   }
 
@@ -1202,9 +1243,15 @@ export class ClaudeOutboundOriginTracker {
     this.root = origin ?? "unknown"
   }
 
-  finishResult(origin: HarnessEvent["origin"]) {
-    if (origin === "human") this.pendingHumanTurns.shift()
-    this.root = this.pendingHumanTurns.length > 0 ? "human" : "unknown"
+  finishResult(origin: HarnessEvent["origin"], promptIds?: string[], endedEarly = false) {
+    if (promptIds?.length) {
+      this.echoesPromptIds = true
+      this.discardHumanTurnReservations(this.pendingHumanTurns.filter(seq => promptIds.includes(this.promptIds.get(seq) ?? "")))
+    } else if (origin === "human" && (!this.echoesPromptIds || endedEarly)) {
+      const seq = this.pendingHumanTurns[0]
+      if (seq !== undefined) this.cancelHumanTurn(seq)
+    }
+    this.root = this.hasHumanAuthority() ? "human" : "unknown"
   }
 
   current(): HarnessEvent["origin"] {
@@ -1213,6 +1260,8 @@ export class ClaudeOutboundOriginTracker {
 
   clear() {
     this.pendingHumanTurns.splice(0, this.pendingHumanTurns.length)
+    this.promptIds.clear()
+    this.revokedHumanTurns.clear()
     this.root = "unknown"
   }
 }
@@ -1315,7 +1364,8 @@ export async function startClaudeSession(args: {
   onMemoryProposal?: (created: MemoryItem[]) => void
 }): Promise<ClaudeSessionHandle> {
   const toolOriginResolver = new ClaudeToolOriginResolver()
-  const outboundOrigins = new ClaudeOutboundOriginTracker()
+  const echoesPromptIds = !process.env.CLAUDE_EXECUTABLE
+  const outboundOrigins = new ClaudeOutboundOriginTracker(echoesPromptIds)
   const plan: MemoryInjectionPlan | null = args.memoryPlan !== undefined
     ? args.memoryPlan
     : args.memory
@@ -1457,6 +1507,7 @@ export async function startClaudeSession(args: {
 
   return {
     provider: "claude",
+    echoesPromptIds,
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
 
     }, outboundOrigins),
@@ -1472,12 +1523,12 @@ export async function startClaudeSession(args: {
     },
     sendPrompt: async (
       content: string,
-      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number },
+      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
     ) => {
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
-      outboundOrigins.beginHumanTurn(context?.promptSeq)
+      outboundOrigins.beginHumanTurn(context?.promptSeq, context?.promptId)
       try {
         promptQueue.push({
           type: "user",
@@ -1487,12 +1538,14 @@ export async function startClaudeSession(args: {
           },
           parent_tool_use_id: null,
           session_id: args.sessionToken ?? "",
+          ...(context?.promptId ? { uuid: context.promptId as SDKUserMessage["uuid"] } : {}),
         })
       } catch (error) {
         outboundOrigins.cancelHumanTurn(context?.promptSeq)
         throw error
       }
     },
+    revokeHumanTurnReservation: (promptSeq) => outboundOrigins.revokeHumanTurn(promptSeq),
     discardHumanTurnReservations: (promptSeqs) => (
       outboundOrigins.discardHumanTurnReservations(promptSeqs)
     ),
@@ -1543,6 +1596,8 @@ interface PendingMemoryPreview {
 type TransferGateDecision = "handled" | "skipped" | "cancelled"
 type CheckupGateDecision = TransferGateDecision | "reopen_proposals" | "reopen_transfer"
 type InternalGateWake<T extends string> = T | "invalidated"
+
+export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 
 export class AgentCoordinator {
   private readonly store: EventStore
@@ -1663,6 +1718,8 @@ export class AgentCoordinator {
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
   private runtimeStopping = false
+  private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly memoryWork = new Map<string, number>()
   // Chats where the user hit Stop while the preview gate was still being set
   // up (before pendingPreviews exists). The detached runPreviewGateThenBoot
   // observes this and unwinds instead of parking a gate / booting (BUG AGENT-2).
@@ -1725,7 +1782,13 @@ export class AgentCoordinator {
       purpose,
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
-    return branch
+    return {
+      get id() { return branch.id },
+      get mode() { return branch.mode },
+      get sessionToken() { return branch.sessionToken },
+      ask: (prompt, options) => this.trackMemoryWork(args.chatId, () => branch.ask(prompt, options)),
+      dispose: () => branch.dispose(),
+    } satisfies MemoryBranch
   }
 
   private memoryBranchSnapshot(): Map<string, string> {
@@ -2480,7 +2543,7 @@ export class AgentCoordinator {
       args.sessionToken = chat?.sessionToken
       args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
     }
-    void this.runPostTurnMemoryPasses(args).catch((error) => {
+    void this.trackMemoryWork(args.chatId, () => this.runPostTurnMemoryPasses(args)).catch((error) => {
       this.reportBackgroundError?.(`[memory-post-turn] chat ${args.chatId}: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
@@ -2966,7 +3029,74 @@ export class AgentCoordinator {
     this.streamingAssistantTexts.delete(chatId)
   }
 
+  private cancelIdleClose(chatId: string) {
+    const timer = this.idleCloseTimers.get(chatId)
+    if (timer) clearTimeout(timer)
+    this.idleCloseTimers.delete(chatId)
+  }
+
+  private hasIdleSession(chatId: string) {
+    const claude = this.claudeSessions.get(chatId)
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId))
+  }
+
+  private idleCloseBlocked(chatId: string) {
+    return this.activeTurns.has(chatId) || this.startingChats.has(chatId)
+      || this.startupReservations.has(chatId) || this.engineStartAbortControllers.has(chatId)
+      || this.drainingStreams.has(chatId)
+      || this.pendingPreviews.has(chatId) || this.pendingProposalGates.has(chatId)
+      || this.pendingTransferGates.has(chatId) || this.pendingCheckupGates.has(chatId)
+      || this.activePreparations.has(chatId) || this.inFlightCheckups.has(chatId)
+      || this.claimedPreviewResponses.has(chatId) || (this.memoryWork.get(chatId) ?? 0) > 0
+      || this.store.getQueuedMessages(chatId).length > 0
+      || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
+        !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
+      || Boolean(this.codexManager.hasPendingWork?.(chatId))
+  }
+
+  /** All work must be settled for a full 30 minutes, including detached memory passes. */
+  private updateIdleClose(chatId: string) {
+    if (this.runtimeStopping || this.closedChats.has(chatId) || !this.hasIdleSession(chatId) || this.idleCloseBlocked(chatId)) {
+      this.cancelIdleClose(chatId)
+      return
+    }
+    if (this.idleCloseTimers.has(chatId)) return
+    const timer = setTimeout(() => {
+      if (this.idleCloseTimers.get(chatId) !== timer) return
+      this.idleCloseTimers.delete(chatId)
+      void this.closeIdleSession(chatId).catch(error => {
+        this.reportBackgroundError?.(`[idle-session] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`)
+      })
+    }, IDLE_SESSION_TIMEOUT_MS)
+    timer.unref?.()
+    this.idleCloseTimers.set(chatId, timer)
+  }
+
+  private async closeIdleSession(chatId: string) {
+    if (this.runtimeStopping || this.closedChats.has(chatId) || this.idleCloseBlocked(chatId)) return
+    // No await between checking and retiring: a concurrent send either owns
+    // the startup reservation or sees a retired Query and waits for its pump.
+    this.codexManager.stopSession(chatId)
+    const session = this.claudeSessions.get(chatId)
+    if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
+  }
+
+  /** Count underlying work, not the cancellation race that may finish before it. */
+  private async trackMemoryWork<T>(chatId: string, work: () => Promise<T>): Promise<T> {
+    this.memoryWork.set(chatId, (this.memoryWork.get(chatId) ?? 0) + 1)
+    this.cancelIdleClose(chatId)
+    try {
+      return await work()
+    } finally {
+      const remaining = (this.memoryWork.get(chatId) ?? 1) - 1
+      if (remaining) this.memoryWork.set(chatId, remaining)
+      else this.memoryWork.delete(chatId)
+      this.updateIdleClose(chatId)
+    }
+  }
+
   private emitStateChange(chatId?: string, options?: { immediate?: boolean }) {
+    if (chatId) this.updateIdleClose(chatId)
     this.onStateChange(chatId, options)
   }
 
@@ -3009,6 +3139,7 @@ export class AgentCoordinator {
   }
 
   private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
+    this.cancelIdleClose(args.chatId)
     const reservation = args.startupReservation ?? { cancelled: false }
     const previous = this.startupReservations.get(args.chatId)
     if (previous && previous !== reservation) previous.superseded = true
@@ -3036,6 +3167,7 @@ export class AgentCoordinator {
       || this.activePreparations.get(chatId)?.args.startupReservation === reservation
     ) return
     this.startupReservations.delete(chatId)
+    this.updateIdleClose(chatId)
     if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
       && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
       void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
@@ -3098,6 +3230,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
@@ -3133,6 +3266,7 @@ export class AgentCoordinator {
   /** Close every old-project query before the preview process group changes. */
   async shutdownRuntime() {
     this.runtimeStopping = true
+    for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
@@ -3547,7 +3681,7 @@ export class AgentCoordinator {
         signal: prep?.cancellation.signal,
       }
       const branches = this.branchPreparations.get(args.chatId)
-      const captureTask = (branches
+      const captureTask = this.trackMemoryWork(args.chatId, () => branches
         ? branches.pipeline.result("candidate").then(result => this.capture!.captureFromBranch!(result.raw, captureInput, result.dependencyKey))
         : this.capture!.captureFromPrompt(captureInput)).then(
         () => ({ kind: "done" as const }),
@@ -4124,7 +4258,7 @@ export class AgentCoordinator {
     }
 
     let result: TransferTaskResult | null = null
-    const taskRun = computeTask().then(
+    const taskRun = this.trackMemoryWork(args.chatId, computeTask).then(
       (value) => ({ kind: "result" as const, value }),
       (error: unknown) => ({ kind: "error" as const, error }),
     )
@@ -4181,13 +4315,13 @@ export class AgentCoordinator {
             | { kind: "result"; value: TransferTaskResult }
             | { kind: "error"; error: unknown }
             | { kind: "cancelled" } = await Promise.race([
-            (this.memoryBranches ? (async () => {
+            this.trackMemoryWork(args.chatId, () => this.memoryBranches ? (async () => {
               const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
               const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey)
               const fresh = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
               if (!fresh) throw new Error("Memory transfer dependencies changed")
               return fresh
-            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result, { onProgress })).then(
+            })() : this.memoryTransferDetect!.refreshLandingsIfTargetChanged(taskCtx, result!, { onProgress })).then(
               (value) => ({ kind: "result" as const, value }),
               (error: unknown) => ({ kind: "error" as const, error }),
             ),
@@ -4364,7 +4498,7 @@ export class AgentCoordinator {
         if (!checked) throw new Error("Memory change dependencies changed during analysis")
         result = checked
       } else {
-        result = await this.memoryCheckup!.run(checkupCtx)
+        result = await this.trackMemoryWork(args.chatId, () => this.memoryCheckup!.run(checkupCtx))
       }
     } catch (error) {
       this.reportBackgroundError?.(
@@ -4917,11 +5051,11 @@ export class AgentCoordinator {
         )
         this.emitStateChange(args.chatId)
       }
-      void this.assessWorkingMemory(args, ctx.injected, attentionIds)
+      void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
         .then(settle)
         .catch(() => this.memoryBranches
           ? this.reportWorkingMemoryFailure(args.chatId, previewId, revision)
-          : settle([]).catch(() => {}))
+          : settle([]).catch(() => {})))
     }
   }
 
@@ -5236,11 +5370,11 @@ export class AgentCoordinator {
             )
             this.emitStateChange(args.chatId)
           }
-          void this.assessWorkingMemory(args, ctx.injected, attentionIds)
+          void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
             .then(settle)
             .catch(() => this.memoryBranches
               ? this.reportWorkingMemoryFailure(args.chatId, previewId, 0)
-              : settle([]).catch(() => {}))
+              : settle([]).catch(() => {})))
         }
         if (autoProceed) {
           // Stop can land during the preview-entry append here too — an
@@ -5988,7 +6122,8 @@ export class AgentCoordinator {
       }
       const promptSeq = session.nextPromptSeq + 1
       session.nextPromptSeq = promptSeq
-      session.pendingPromptSeqs.push(promptSeq)
+      const promptId = crypto.randomUUID()
+      session.pendingPrompts.push({ seq: promptSeq, id: promptId })
       active.claudePromptSeq = promptSeq
       logClaudeSteer("claude_prompt_sent", {
         chatId: args.chatId,
@@ -5996,7 +6131,7 @@ export class AgentCoordinator {
         promptSeq,
         activeStatus: active.status,
         contentPreview: args.content.slice(0, 160),
-        pendingPromptSeqs: [...session.pendingPromptSeqs],
+        pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
       })
       try {
         await session.session.sendPrompt(promptText, {
@@ -6004,6 +6139,7 @@ export class AgentCoordinator {
           turn: active.turnNumber ?? turnNumber,
           engine: "claude",
           promptSeq,
+          promptId,
         })
       } catch (error) {
         // A rejected prompt cannot leave this turn or provider session active.
@@ -6201,9 +6337,12 @@ export class AgentCoordinator {
         effort: args.effort,
         planMode: args.planMode,
         sessionToken: resumeToken,
+        sessionTokenPromptSeq: 0,
         accountInfoLoaded: false,
         nextPromptSeq: 0,
-        pendingPromptSeqs: [],
+        pendingPrompts: [],
+        cancelledPromptSeqs: new Set(),
+        echoesPromptIds: started.echoesPromptIds ?? false,
         retired: false,
         retireReason: null,
         pump: null,
@@ -6376,6 +6515,7 @@ export class AgentCoordinator {
     }
 
     await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+    this.emitStateChange(command.chatId)
   }
 
   async forkChat(chatId: string) {
@@ -6394,15 +6534,36 @@ export class AgentCoordinator {
     return { chatId: forked.id }
   }
 
+  private takeAnsweredClaudePrompts(session: ClaudeSessionState, event: HarnessEvent): number[] {
+    if (event.promptIds?.length) {
+      session.echoesPromptIds = true
+      const answered = session.pendingPrompts.filter(prompt => event.promptIds!.includes(prompt.id))
+      session.pendingPrompts = session.pendingPrompts.filter(prompt => !event.promptIds!.includes(prompt.id))
+      return answered.map(prompt => prompt.seq)
+    }
+    const endedEarly = event.entry?.kind === "interrupted" || (event.entry?.kind === "result" && event.entry.isError)
+    if (session.echoesPromptIds && !endedEarly) return []
+    const head = session.pendingPrompts.shift()
+    return head ? [head.seq] : []
+  }
+
   private async runClaudeSession(session: ClaudeSessionState) {
     try {
       for await (const event of session.session.stream) {
-        if (session.retired) {
+        if (session.retired || this.claudeSessions.get(session.chatId) !== session) {
           this.reportBackgroundError?.(
             `[claude-retired-event] dropped ${event.entry?.kind ?? event.type} for chat ${session.chatId} after ${session.retireReason ?? "retirement"}`,
           )
           continue
         }
+        // Tagged stale results (including their token/usage metadata) cannot
+        // mutate a later turn. Unidentified successful background results also
+        // cannot consume a prompt on a UUID-capable session.
+        const matchingPrompts = event.promptIds?.length
+          ? session.pendingPrompts.filter(prompt => event.promptIds!.includes(prompt.id)) : []
+        if (event.promptIds?.length && matchingPrompts.length === 0) continue
+        this.cancelIdleClose(session.chatId)
+        this.updateIdleClose(session.chatId)
         const userOrigin = event.origin === "human"
           || ((event.origin === undefined || event.origin === "unknown"))
         if (!userOrigin) {
@@ -6412,6 +6573,12 @@ export class AgentCoordinator {
           continue
         }
         if (event.type === "session_token" && event.sessionToken) {
+          // A cancelled prompt may still supply the newest resume token. Keep
+          // it unless a later prompt has already supplied a token of its own.
+          const promptSeq = matchingPrompts.length > 0
+            ? Math.max(...matchingPrompts.map(prompt => prompt.seq)) : session.nextPromptSeq
+          if (promptSeq < session.sessionTokenPromptSeq) continue
+          session.sessionTokenPromptSeq = promptSeq
           session.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
@@ -6424,6 +6591,19 @@ export class AgentCoordinator {
         }
 
         if (!event.entry) continue
+        // Result-derived usage arrives before the result itself. Suppress it
+        // without consuming the reservations needed to attribute that result.
+        if (event.entry.kind === "context_window_updated" && matchingPrompts.length > 0
+          && matchingPrompts.every(prompt => session.cancelledPromptSeqs.has(prompt.seq))) continue
+        const completedPromptSeqs = event.entry.kind === "result" || event.entry.kind === "interrupted"
+          ? this.takeAnsweredClaudePrompts(session, event) : []
+        if ((event.entry.kind === "result" || event.entry.kind === "interrupted") && completedPromptSeqs.length === 0) continue
+        // Stop already persisted the interruption. A late SDK result belongs
+        // to the cancelled prompts, even if steer has started a new turn.
+        const cancelledResult = completedPromptSeqs.length > 0
+          && completedPromptSeqs.every(seq => session.cancelledPromptSeqs.has(seq))
+        for (const seq of completedPromptSeqs) session.cancelledPromptSeqs.delete(seq)
+        if (cancelledResult && event.entry.kind === "result") continue
         if (event.entry.kind === "assistant_text" || event.entry.kind === "result" || event.entry.kind === "interrupted") {
           // Final text replaces the streaming preview in the same broadcast;
           // result/interrupted also sweep it in case no final text arrived.
@@ -6451,21 +6631,17 @@ export class AgentCoordinator {
         if (event.entry.kind === "system_init" && active) {
           active.status = "running"
           active.providerTurnStarted = true
-          // The CLI runs turns strictly in order, so once this turn has
-          // started no acknowledgement for an earlier prompt can still arrive.
-          // Drop orphaned sequences (a Stop the provider never acknowledged)
-          // so this turn's own result is matched to this turn.
-          if (active.claudePromptSeq !== undefined) {
+          // Compatibility for wrappers that never echo UUIDs: retain their
+          // historical init/FIFO resync. UUID sessions keep older prompts so a
+          // late result can be attributed even after this turn starts.
+          if (!session.echoesPromptIds && active.claudePromptSeq !== undefined) {
             const activeSeq = active.claudePromptSeq
-            const orphaned = session.pendingPromptSeqs.filter((seq) => seq < activeSeq)
+            const orphaned = session.pendingPrompts.filter(prompt => prompt.seq < activeSeq).map(prompt => prompt.seq)
             if (orphaned.length > 0) {
               const releasedOriginReservations = session.session
                 .discardHumanTurnReservations?.(orphaned) ?? 0
-              session.pendingPromptSeqs.splice(
-                0,
-                session.pendingPromptSeqs.length,
-                ...session.pendingPromptSeqs.filter((seq) => seq >= activeSeq),
-              )
+              session.pendingPrompts = session.pendingPrompts.filter(prompt => prompt.seq >= activeSeq)
+              for (const seq of orphaned) session.cancelledPromptSeqs.delete(seq)
               logClaudeSteer("claude_prompt_fifo_resync", {
                 chatId: session.chatId,
                 sessionId: session.id,
@@ -6487,13 +6663,9 @@ export class AgentCoordinator {
             chatId: session.chatId,
             sessionId: session.id,
             activePromptSeq: active.claudePromptSeq ?? null,
-            pendingPromptSeqs: [...session.pendingPromptSeqs],
+            pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
           })
         }
-
-        const completedClaudePromptSeq = event.entry.kind === "result" || event.entry.kind === "interrupted"
-          ? (session.pendingPromptSeqs.shift() ?? null)
-          : null
 
         logClaudeSteer("claude_event", {
           chatId: session.chatId,
@@ -6501,12 +6673,12 @@ export class AgentCoordinator {
           entryKind: event.entry.kind,
           eventOrigin: event.origin ?? "human",
           activePromptSeq: active?.claudePromptSeq ?? null,
-          completedPromptSeq: completedClaudePromptSeq,
+          completedPromptSeqs,
           activeStatus: active?.status ?? null,
-          pendingPromptSeqs: [...session.pendingPromptSeqs],
+          pendingPromptSeqs: session.pendingPrompts.map(prompt => prompt.seq),
         })
 
-        if (event.entry.kind === "result" && active && completedClaudePromptSeq === (active.claudePromptSeq ?? null)) {
+        if (event.entry.kind === "result" && active && active.claudePromptSeq !== undefined && completedPromptSeqs.includes(active.claudePromptSeq)) {
           active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
@@ -6554,7 +6726,7 @@ export class AgentCoordinator {
       }
     } catch (error) {
       const active = this.activeTurns.get(session.chatId)
-      if (active && !active.cancelRequested) {
+      if (!session.retired && this.claudeSessions.get(session.chatId) === session && active && !active.cancelRequested) {
         const message = error instanceof Error ? error.message : String(error)
         await this.store.appendMessage(
           session.chatId,
@@ -7097,6 +7269,11 @@ export class AgentCoordinator {
     // Guard against concurrent cancel() calls — only the first one does work.
     if (active.cancelRequested) return
     active.cancelRequested = true
+    if (active.provider === "claude" && active.claudePromptSeq !== undefined) {
+      const session = this.claudeSessions.get(chatId)
+      session?.cancelledPromptSeqs.add(active.claudePromptSeq)
+      session?.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
+    }
     if (active.startupReservation) {
       this.cancelStartupReservation(chatId, active.startupReservation)
     }
@@ -7159,13 +7336,9 @@ export class AgentCoordinator {
       activePromptSeq: active.claudePromptSeq ?? null,
     })
 
-    // A Stop keeps the persistent Claude Query once the provider has started
-    // the turn: the CLI acknowledges the cancelled prompt, and if it ever does
-    // not, the next turn's `system_init` drops the orphaned FIFO entry. Only a
-    // Stop that arrives before any provider frame is ambiguous — a positional
-    // FIFO could not tell this turn's late init/result from the next turn's —
-    // so that case retires the Query fail-closed; the persisted session token
-    // resumes context on the next send.
+    // Keep the before-start guard: result UUIDs do not identify late assistant
+    // or tool frames. Retiring the Query prevents those from contaminating the
+    // next turn's transcript, memory citations, and capture/trace inputs.
     if (active.provider === "claude" && !active.providerTurnStarted) {
       const session = this.claudeSessions.get(chatId)
       if (session) {
