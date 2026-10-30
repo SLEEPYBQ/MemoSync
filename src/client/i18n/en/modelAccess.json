@@ -139,5 +139,6 @@
   "rawDetail": "Provider details",
   "defaults": "Defaults",
   "keyMissingFix": "Edit this connection below to add a key.",
-  "protocolFix": "Choose a compatible connection below."
+  "protocolFix": "Choose a compatible connection below.",
+  "signedOutShort": "Not signed in"
 }

@@ -17,7 +17,8 @@ const memoryHtml = (overrides: { enabled?: boolean; learn?: boolean } = {}) => r
 
 describe("settings registry and section rendering", () => {
   test("stable unique ids, section order and deep links", () => {
-    expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "memory", "providers", "skills", "keybindings", ...(SELF_UPDATE_ENABLED ? ["changelog" as const] : [])])
+    expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "notifications", "providers", "memory", "skills", "keybindings", "about", ...(SELF_UPDATE_ENABLED ? ["changelog" as const] : [])])
+    expect(SETTINGS_SECTIONS.map((section) => section.group)).toEqual(["preferences", "preferences", "preferences", "agents", "agents", "agents", "other", "other", ...(SELF_UPDATE_ENABLED ? ["other" as const] : [])])
     expect(new Set(ALL_SETTINGS_ROWS.map((row) => row.id)).size).toBe(ALL_SETTINGS_ROWS.length)
     expect(resolveSettingsSectionId("memory")).toBe("memory")
     for (const row of ALL_SETTINGS_ROWS) {
@@ -30,10 +31,14 @@ describe("settings registry and section rendering", () => {
     const initial = useTerminalPreferencesStore.getInitialState()
     const previousPreset = initial.editorPreset
     initial.editorPreset = "custom"
+    const generalState = { appSettings: settings, handleWriteAppSettings: async () => {}, updateSnapshot: null, handleCheckForUpdates: async () => {}, handleInstallUpdate: async () => {} }
     const htmlBySection = {
-      general: renderToStaticMarkup(<GeneralSection state={{ appSettings: settings, handleWriteAppSettings: async () => {}, updateSnapshot: null, handleCheckForUpdates: async () => {}, handleInstallUpdate: async () => {} }} appVersion="1.0.0" />),
+      general: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" />),
+      appearance: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" part="appearance" />),
+      notifications: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" part="notifications" />),
+      about: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" part="about" />),
       memory: memoryHtml(),
-      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} />),
+      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} defaultExpanded={["claude", "codex", "pi"]} />),
       skills: renderToStaticMarkup(<SkillsSection state={{ connectionStatus: "connected", socket: { command: async () => ({ skills: [] }) } as never }} />),
       keybindings: renderToStaticMarkup(<KeybindingsSection state={{ keybindings: null, socket: { command: async () => ({}) } as never }} />),
       changelog: "",
@@ -48,6 +53,16 @@ describe("settings registry and section rendering", () => {
     }
     expect(htmlBySection.general).not.toContain("Memory Preview")
     expect(htmlBySection.providers).toContain('data-engine="codex"')
+  })
+  test("engines start collapsed; a deep link opens only the engine holding its row", () => {
+    const render = (hash?: string) => renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} hash={hash} />)
+    const collapsed = render()
+    for (const id of ["claudeDefaults", "codexDefaults", "piDefaults"]) expect(collapsed).not.toContain(`id="${id}"`)
+    expect(collapsed.match(/aria-expanded="false" aria-controls="engine-details-/g)?.length).toBe(3)
+    const linked = render("#codexDefaults")
+    expect(linked).toContain('id="codexDefaults"')
+    expect(linked).not.toContain('id="claudeDefaults"')
+    expect(linked).toContain('aria-expanded="true" aria-controls="engine-details-codex"')
   })
   test("memory-off dims and disables dependents with actionable reasons", () => {
     const html = memoryHtml({ enabled: false })

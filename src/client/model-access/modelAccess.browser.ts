@@ -53,6 +53,7 @@ async function open() {
   })
   await page.goto(url)
   await page.locator('[data-engine="pi"]').getByText("Ready", { exact: true }).waitFor()
+  await expandEngines()
   expect(await page.title()).toBe("Model access UI fixture")
   expect(page.url()).toBe(url + "/")
   expect(await page.locator("vite-error-overlay").count()).toBe(0)
@@ -98,6 +99,13 @@ async function editor(name = "Anthropic Direct") {
   await row.getByRole("button", { name: "Edit", exact: true }).click()
   return page.getByRole("form", { name: "API connection", exact: true })
 }
+/** Engines list as collapsed overview rows; open each one the way a user would. */
+async function expandEngines() {
+  for (const engine of ["claude", "codex", "pi"]) {
+    const toggle = page.locator(`[data-engine="${engine}"] button[aria-controls="engine-details-${engine}"]`)
+    if ((await toggle.getAttribute("aria-expanded")) === "false") await toggle.click()
+  }
+}
 async function lastCommand() {
   return page.evaluate(() => window.modelAccessFixture.commands().at(-1))
 }
@@ -119,7 +127,7 @@ test("each engine renders ready/missing/incompatible/broken across account and c
       for (const engine of ["claude", "codex", "pi"]) {
         const card = page.locator(`[data-engine="${engine}"]`)
         expect(await card.textContent()).toContain(expected)
-        expect(await card.getByRole("button", { name: "Your sign-in", exact: true }).count()).toBe(
+        expect(await card.getByRole("radio", { name: "Your sign-in", exact: true }).count()).toBe(
           engine === "pi" ? 0 : 1,
         )
         expect(await card.getByLabel("API connection", { exact: true }).count()).toBe(
@@ -149,7 +157,7 @@ test("engine paths, access, model and refresh send contract commands, with retry
     engine: "claude",
     setup: { executablePath: "/fixture/custom/claude", access: { mode: "account" } },
   })
-  await card.getByRole("button", { name: "API connection", exact: true }).click()
+  await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByRole("button", { name: "Shared model", exact: true }).click()
   await page.getByRole("dialog").getByRole("button", { name: "custom-model", exact: true }).click()
   expect(await lastCommand()).toMatchObject({
@@ -447,6 +455,7 @@ test("every engine uses its configured connection default and retains effort and
     })
   }
   await page.getByRole("link", { name: "Providers", exact: true }).click()
+  await expandEngines()
   const pi = page.locator('[data-engine="pi"]')
   await pi.getByRole("button", { name: "Medium", exact: true }).click()
   await page.getByRole("dialog").getByRole("button", { name: "High", exact: true }).click()
@@ -469,7 +478,7 @@ test("path reset, engine-specific add, selected-connection models and keyboard f
   expect(await pathDialog.getByLabel("Executable path override").inputValue()).toBe("")
   await pathDialog.getByRole("button", { name: "Save", exact: true }).click()
   expect(await lastCommand()).toMatchObject({ type: "modelAccess.setEngine", setup: { executablePath: null } })
-  await card.getByRole("button", { name: "API connection", exact: true }).click()
+  await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByLabel("API connection", { exact: true }).click()
   await shots("connection-select", async () => {
     if (!(await page.getByRole("option", { name: "Add connection…", exact: true }).count()))
@@ -498,11 +507,13 @@ test("path reset, engine-specific add, selected-connection models and keyboard f
   const actions = card.getByRole("button", { name: "Claude Code actions" })
   await actions.focus()
   await page.keyboard.press("Tab")
+  // The next stop after the actions menu is the first control in the open
+  // engine's details (its program path); keyboard focus must stay visible there.
   const focused = await page.evaluate(() => ({
-    tag: document.activeElement?.tagName,
+    insideClaude: Boolean(document.activeElement?.closest('[data-engine="claude"]')),
     outline: getComputedStyle(document.activeElement!).outlineStyle,
   }))
-  expect(focused.tag).toBe("BUTTON")
+  expect(focused.insideClaude).toBe(true)
   expect(focused.outline).toBe("solid")
   await shots("keyboard-focus")
 })

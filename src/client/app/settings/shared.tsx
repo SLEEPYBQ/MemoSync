@@ -10,47 +10,41 @@ import type { SettingsRowDef } from "./registry"
 /** Shared row layout + tiny helpers for the settings sections. */
 
 /*
- * Every control in a row is an accessory, the way iOS Settings draws them:
- * plain text on the row, with no border, fill or corner of its own. Boxed
- * controls brought their own radii and heights (pill buttons, rounded-lg
- * selects, a framed segmented control) that never agreed with each other or
- * with the card around them. Text has nothing to disagree about, and it fits
- * a phone-width column as well as a wide one.
- *
- * Values sit in muted text and brighten on hover, focus and while open;
- * actions are foreground text. With no box to ring, keyboard focus underlines.
- * The fixed h-9 is invisible: it keeps a finger-sized target and matches the
- * height of the two-line text beside it, so rows don't change height with
- * their control.
+ * Controls are visible objects, the way Codex and macOS settings draw them: a
+ * quiet filled surface (no border) that sits on the card, one height (h-8),
+ * one radius (rounded-lg) and one text size for every select, field, button
+ * and segmented control. Plain-text accessories read as loose words on the
+ * row's edge; a filled control anchors it.
  */
-const SETTINGS_ACCESSORY_FOCUS_CLASS =
-  "outline-none focus-visible:underline focus-visible:decoration-muted-foreground/50 focus-visible:underline-offset-4"
+const SETTINGS_FOCUS_CLASS =
+  "outline-none focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
 
-/** A picker's trigger: "Value ⌄", right-aligned against the row's edge. */
+/** The fill every control shares, tuned to sit one step above the card in both themes. */
+export const SETTINGS_CONTROL_FILL_CLASS =
+  "bg-black/[0.045] hover:bg-black/[0.07] dark:bg-white/[0.07] dark:hover:bg-white/[0.10]"
+
 const SETTINGS_SELECT_TRIGGER_CLASS = cn(
-  "h-9 w-auto max-w-full justify-end gap-1 rounded-none border-0 bg-transparent p-0 text-muted-foreground",
-  "hover:text-foreground focus-visible:text-foreground data-[state=open]:text-foreground",
-  "focus:ring-0 focus:ring-offset-0 [&>svg]:h-3.5 [&>svg]:w-3.5",
-  SETTINGS_ACCESSORY_FOCUS_CLASS,
+  "h-8 w-auto min-w-[8.5rem] max-w-full justify-between gap-2 rounded-lg border-0 px-2.5 text-[13px] text-foreground shadow-none",
+  "data-[state=open]:bg-black/[0.08] dark:data-[state=open]:bg-white/[0.13]",
+  "focus:ring-0 focus:ring-offset-0 [&>svg]:h-3.5 [&>svg]:w-3.5 [&>svg]:opacity-60",
+  SETTINGS_CONTROL_FILL_CLASS,
+  SETTINGS_FOCUS_CLASS,
 )
 
 /**
- * Text fields. They sit right-aligned beside the row text once the column is
- * wide and drop under it, left-aligned, when it isn't. The caret and the
- * brighter text are what say "editing" now that there is no frame.
- *
- * Breakpoints here are container queries (`@2xl:`) against the settings
- * column, not the viewport: with the app sidebar open the column can be
- * phone-narrow on a wide window.
+ * Text fields. They sit beside the row text once the column is wide and drop
+ * under it when it isn't (container queries against the settings column, not
+ * the viewport: with the app sidebar open the column can be narrow).
  */
 const SETTINGS_INPUT_BASE_CLASS = cn(
-  "h-9 rounded-none border-0 bg-transparent px-0 py-0 text-muted-foreground placeholder:text-muted-foreground/50",
-  "hover:text-foreground focus:text-foreground",
+  "h-8 rounded-lg border-0 px-2.5 py-0 text-[13px] text-foreground shadow-none placeholder:text-muted-foreground/60",
+  SETTINGS_CONTROL_FILL_CLASS,
+  SETTINGS_FOCUS_CLASS,
 )
-export const SETTINGS_CONTROL_CLASS = cn(SETTINGS_INPUT_BASE_CLASS, "w-full @2xl:w-60 @2xl:text-right")
+export const SETTINGS_CONTROL_CLASS = cn(SETTINGS_INPUT_BASE_CLASS, "w-full @2xl:w-64")
 export const SETTINGS_NUMBER_INPUT_CLASS = cn(
   SETTINGS_INPUT_BASE_CLASS,
-  "hide-number-steppers w-24 text-left font-mono tabular-nums @2xl:text-right",
+  "hide-number-steppers w-24 text-right font-mono tabular-nums",
 )
 
 /**
@@ -99,9 +93,9 @@ export function SettingsSelect({
 }
 
 /**
- * A row's action ("Check for updates", "Edit models"). `prominent` is for the
- * one action a row is asking you to take, like installing an available
- * update: it takes the brand colour, as a tinted text button does on iOS.
+ * A row's action ("Check for updates", "Edit models"): a small filled button.
+ * `prominent` is for the one action a row is asking you to take, like
+ * installing an available update.
  */
 export function SettingsActionButton({
   children,
@@ -116,11 +110,11 @@ export function SettingsActionButton({
     <button
       type={type}
       className={cn(
-        "inline-flex h-9 min-w-0 max-w-full cursor-pointer items-center gap-1.5 whitespace-nowrap text-sm font-medium",
-        "touch-manipulation transition-[color,opacity,scale] duration-150 ease-out active:scale-[0.97]",
-        "disabled:cursor-default disabled:opacity-50 disabled:active:scale-100 [&_svg]:size-4 [&_svg]:shrink-0",
-        prominent ? "text-primary hover:text-primary/80" : "text-foreground hover:text-foreground/70",
-        SETTINGS_ACCESSORY_FOCUS_CLASS,
+        "inline-flex h-8 min-w-0 max-w-full cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[13px] font-medium",
+        "touch-manipulation transition-[background-color,color,opacity,scale] duration-150 ease-out active:scale-[0.98]",
+        "disabled:cursor-default disabled:opacity-50 disabled:active:scale-100 [&_svg]:size-3.5 [&_svg]:shrink-0",
+        prominent ? "bg-primary text-primary-foreground hover:bg-primary/90" : cn("text-foreground", SETTINGS_CONTROL_FILL_CLASS),
+        SETTINGS_FOCUS_CLASS,
         className,
       )}
       {...props}
@@ -133,20 +127,15 @@ export function SettingsActionButton({
   )
 }
 
-/**
- * Left/right inset for text that sits on the page above a card (group
- * headings, the section title): 1px card border + the rows' 16px padding, so
- * it lines up with the text inside the cards, the way iOS grouped lists do.
- * Anything that sits under a heading keeps px-4 so this one offset fits all.
- */
-export const SETTINGS_INSET_X_CLASS = "px-[17px]"
+/** Inset for text that sits on the page above a card (group headings): aligned with the card's edge. */
+export const SETTINGS_INSET_X_CLASS = "px-1"
 
 /**
  * The card rows sit in, with a hairline between rows. overflow-hidden keeps
  * the palette's jump highlight inside the corners.
  */
 export const SETTINGS_LIST_CARD_CLASS =
-  "divide-y divide-border overflow-hidden rounded-2xl border border-border bg-card/40"
+  "divide-y divide-border/60 overflow-hidden rounded-xl border border-border/70 bg-muted/40 dark:bg-card"
 
 /** Inline text actions inside a row description ("View tracked events", "Reset to …"). */
 export const SETTINGS_INLINE_ACTION_CLASS =
@@ -194,7 +183,7 @@ export function SettingsNotice({
     <div
       role={tone === "error" ? "alert" : undefined}
       className={cn(
-        "whitespace-pre-wrap break-words rounded-lg border px-4 py-3 text-sm",
+        "whitespace-pre-wrap break-words rounded-lg border px-3.5 py-2.5 text-[13px] leading-5",
         tone === "error"
           ? "border-destructive/20 bg-destructive/5 text-destructive"
           : tone === "info"
@@ -229,7 +218,7 @@ export function SettingsPlaceholder({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-2xl border border-border bg-card/40 px-4 py-6 text-sm text-muted-foreground",
+        "flex items-center gap-3 rounded-xl border border-border/70 bg-muted/40 px-4 py-6 text-[13px] text-muted-foreground dark:bg-card",
         className,
       )}
     >
@@ -245,7 +234,7 @@ export function SettingsBadge({ children, className }: { children: ReactNode; cl
   return (
     <span
       className={cn(
-        "inline-flex shrink-0 items-center rounded-full border border-border px-2 py-0.5 text-[11px] font-medium text-muted-foreground",
+        "inline-flex shrink-0 items-center rounded-md bg-black/[0.05] px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground dark:bg-white/[0.08]",
         className,
       )}
     >
@@ -262,8 +251,8 @@ export function SettingsBadge({ children, className }: { children: ReactNode; cl
 export function SettingsGroupHeading({ children, trailing }: { children: ReactNode; trailing?: ReactNode }) {
   useI18n()
   return (
-    <div className={cn("flex min-h-5 items-center justify-between gap-3 pb-1.5", SETTINGS_INSET_X_CLASS)}>
-      <h3 className="text-sm text-muted-foreground">{children}</h3>
+    <div className={cn("flex min-h-8 items-end justify-between gap-3 pb-2", SETTINGS_INSET_X_CLASS)}>
+      <h3 className="text-[13px] font-medium text-muted-foreground">{children}</h3>
       {trailing}
     </div>
   )
@@ -298,7 +287,7 @@ export function SettingsGroup({
 /** Stacks groups with one rhythm across every section. */
 export function SettingsGroups({ children }: { children: ReactNode }) {
   useI18n()
-  return <div className="space-y-8">{children}</div>
+  return <div className="space-y-7">{children}</div>
 }
 
 /**
@@ -389,15 +378,15 @@ export function SettingsRow({
       aria-disabled={disabled || undefined}
       className={cn("scroll-mt-4 px-4", disabled && "opacity-50")}
     >
-      <div className={cn("grid grid-cols-[minmax(0,1fr)_auto] gap-x-4 py-2.5 @2xl:gap-x-8", nested && "pl-6")}>
+      <div className={cn("grid min-h-[52px] grid-cols-[minmax(0,1fr)_auto] content-center gap-x-4 py-3 @2xl:gap-x-10", nested && "pl-6")}>
         <div
-          className="col-[1] row-[1] flex min-w-0 items-center gap-3 self-center text-sm font-medium text-foreground @2xl:max-w-xl"
+          className="col-[1] row-[1] flex min-w-0 items-center gap-3 self-center text-[13.5px] font-medium leading-5 text-foreground @2xl:max-w-xl"
         >
           {icon}
           <span className="min-w-0">{title ?? def?.title}</span>
         </div>
         {hasDescription ? (
-          <div className="col-[1/-1] row-[2] mt-0.5 text-[13px] leading-5 text-muted-foreground @2xl:col-[1] @2xl:max-w-xl">
+          <div className="col-[1/-1] row-[2] mt-0.5 text-[12.5px] leading-[18px] text-muted-foreground @2xl:col-[1] @2xl:max-w-xl">
             {resolvedDescription}
           </div>
         ) : null}
@@ -406,10 +395,10 @@ export function SettingsRow({
             "flex min-w-0 items-center self-center",
             wideControl
               ? "col-[1/-1] row-[3] mt-2 justify-start @2xl:col-[2] @2xl:mt-0 @2xl:justify-end"
-              // The control is h-9 but the title line is h-5: the negative
+              // The control is h-8 but the title line is h-5: the negative
               // margin lets it centre on the title without pushing the
               // description down.
-              : "col-[2] row-[1] -my-2 max-w-[50cqw] justify-end @2xl:my-0",
+              : "col-[2] row-[1] -my-1.5 max-w-[50cqw] justify-end @2xl:my-0",
             hasDescription ? "@2xl:row-[1/3]" : "@2xl:row-[1]",
             alignStart && "@2xl:self-start",
           )}
@@ -417,6 +406,70 @@ export function SettingsRow({
           {children}
         </div>
       </div>
+    </div>
+  )
+}
+
+export interface SettingsSegmentOption<T extends string> {
+  value: T
+  label: ReactNode
+  icon?: ReactNode
+}
+
+/**
+ * Two to four mutually exclusive choices shown at once (theme, Enter while
+ * running). Same fill, height and radius as the other controls; the chosen
+ * segment lifts onto the background like a macOS segmented control.
+ */
+export function SettingsSegmented<T extends string>({
+  value,
+  onValueChange,
+  options,
+  disabled,
+  "aria-label": ariaLabel,
+}: {
+  value: T
+  onValueChange: (value: T) => void
+  options: readonly SettingsSegmentOption<T>[]
+  disabled?: boolean
+  "aria-label"?: string
+}) {
+  useI18n()
+  return (
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-disabled={disabled || undefined}
+      className={cn(
+        "inline-flex h-8 shrink-0 items-center gap-0.5 rounded-lg p-0.5",
+        "bg-black/[0.045] dark:bg-white/[0.07]",
+        disabled && "pointer-events-none opacity-50",
+      )}
+    >
+      {options.map((option) => {
+        const active = option.value === value
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={active}
+            disabled={disabled}
+            onClick={() => { if (!active) onValueChange(option.value) }}
+            className={cn(
+              "inline-flex h-7 cursor-pointer items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-[13px] transition-colors",
+              "[&_svg]:size-3.5 [&_svg]:shrink-0",
+              active
+                ? "bg-background font-medium text-foreground shadow-[0_1px_2px_rgba(0,0,0,0.08)] dark:bg-white/[0.14] dark:shadow-none"
+                : "text-muted-foreground hover:text-foreground",
+              SETTINGS_FOCUS_CLASS,
+            )}
+          >
+            {option.icon}
+            {option.label}
+          </button>
+        )
+      })}
     </div>
   )
 }

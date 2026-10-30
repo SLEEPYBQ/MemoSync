@@ -1,35 +1,6 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-regular.woff2") format("woff2");
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-regular-italic.woff2") format("woff2");
-  font-weight: 400;
-  font-style: italic;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-medium.woff2") format("woff2");
-  font-weight: 500;
-  font-style: normal;
-  font-display: swap;
-}
-@font-face {
-  font-family: "Body";
-  src: url("/fonts/body-semibold.woff2") format("woff2");
-  font-weight: 600;
-  font-style: normal;
-  font-display: swap;
-}
-
 @layer base {
   :root {
     --background: 0 0% 100%;
@@ -206,8 +177,10 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
-    font-family: "Body", sans-serif;
-    /* font-weight: ; */
+    /* The platform UI font: SF Pro + PingFang on macOS, Segoe UI + Microsoft YaHei on
+       Windows. One family per script keeps Latin and Chinese on matching metrics. */
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", Roboto, "Helvetica Neue", Arial, sans-serif;
     margin: 0;
     min-height: 100dvh;
     -webkit-font-smoothing: antialiased;

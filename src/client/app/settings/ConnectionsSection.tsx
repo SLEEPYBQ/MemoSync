@@ -1,5 +1,5 @@
 import { useState } from "react"
-import { ArrowLeft, CheckCircle2, LockKeyhole, Pencil, Plus, Search, Plug, Trash2 } from "lucide-react"
+import { ArrowLeft, CheckCircle2, LockKeyhole, Pencil, Plus, Search, Trash2 } from "lucide-react"
 import type { ApiConnection, ApiProtocol, ConnectionPreset } from "../../../shared/model-access"
 import type { AppSocket } from "../socket"
 import { t, useI18n } from "../../i18n"
@@ -21,7 +21,8 @@ import {
   MODEL_ACCESS_FOCUS_CLASS,
   protocolLabel,
 } from "./modelAccessUi"
-import { SettingsBadge, SettingsGroup, SettingsNotice } from "./shared"
+import { SettingsActionButton, SettingsBadge, SettingsGroup, SettingsNotice } from "./shared"
+import { BrandTile, brandForConnection } from "../../components/brand/BrandIcon"
 
 export function ConnectionDialog({
   connection,
@@ -122,28 +123,24 @@ export function ConnectionDialog({
                       {group.map((preset) => (
                         <button
                           type="button"
-                          className={`min-w-0 rounded-xl border border-border bg-card/40 p-3 text-left transition-colors hover:border-foreground/30 hover:bg-accent ${MODEL_ACCESS_FOCUS_CLASS}`}
+                          className={`flex min-w-0 items-start gap-3 rounded-xl border border-border/70 bg-muted/40 p-3 text-left transition-colors hover:border-border hover:bg-black/[0.03] dark:bg-card dark:hover:bg-white/[0.04] ${MODEL_ACCESS_FOCUS_CLASS}`}
                           key={preset.id}
                           aria-label={preset.name}
                           onClick={() => setEditor({ preset })}
                         >
+                          <BrandTile brand={brandForConnection(preset)} />
+                          <span className="min-w-0 flex-1">
                           <span className="flex items-center justify-between gap-2">
-                            <span className="truncate text-sm font-medium">{preset.name}</span>
-                            <span className="text-[11px] text-muted-foreground">{t(`modelAccess:${kind}Kind`)}</span>
+                            <span className="truncate text-[13.5px] font-medium">{preset.name}</span>
                           </span>
-                          <span className="my-2 flex flex-wrap gap-1">
+                          <span className="mt-1.5 flex flex-wrap gap-1">
                             {preset.endpoints.map((endpoint) => (
                               <SettingsBadge key={endpoint.protocol}>{protocolLabel(endpoint.protocol)}</SettingsBadge>
                             ))}
                           </span>
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {t(
-                              preset.noKey
-                                ? "modelAccess:localPresetNote"
-                                : kind === "relay"
-                                  ? "modelAccess:relayPresetNote"
-                                  : "modelAccess:vendorPresetNote",
-                            )}
+                          {preset.noKey ? (
+                            <span className="block truncate text-xs text-muted-foreground">{t("modelAccess:localPresetNote")}</span>
+                          ) : null}
                           </span>
                         </button>
                       ))}
@@ -216,30 +213,29 @@ export function ConnectionsSection({
       <SettingsGroup
         title={t("modelAccess:connections")}
         trailing={
-          <Button type="button" variant="outline" size="sm" disabled={!socket} onClick={onAddConnection}>
-            <Plus className="size-4" />
+          <SettingsActionButton disabled={!socket} onClick={onAddConnection} icon={<Plus />}>
             {t("modelAccess:addConnection")}
-          </Button>
+          </SettingsActionButton>
         }
       >
         {!connections.length ? (
-          <p className="p-4 text-sm text-muted-foreground">{t("modelAccess:emptyConnections")}</p>
+          <p className="px-4 py-5 text-[13px] text-muted-foreground">{t("modelAccess:emptyConnections")}</p>
         ) : null}
         {connections.map((connection) => {
           const locked = connection.readOnly || connection.keySource === "env"
           return (
-            <div key={connection.id} data-connection={connection.id} className="flex min-w-0 items-start gap-3 p-4">
-              <Plug className="mt-1 size-4 shrink-0 text-muted-foreground" />
-              <div className="min-w-0 flex-1 space-y-1.5">
+            <div key={connection.id} data-connection={connection.id} className="group/connection flex min-h-[60px] min-w-0 items-center gap-3 px-4 py-3">
+              <BrandTile brand={brandForConnection(connection)} />
+              <div className="min-w-0 flex-1 space-y-0.5">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <p className="break-words text-sm font-medium">{connection.name}</p>
+                  <p className="break-words text-[13.5px] font-medium leading-5">{connection.name}</p>
                   {connection.endpoints.map((e) => (
                     <SettingsBadge key={e.protocol}>{protocolLabel(e.protocol)}</SettingsBadge>
                   ))}
                 </div>
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <span
-                    className="min-w-0 truncate text-xs text-muted-foreground"
+                    className="min-w-0 truncate text-[12.5px] text-muted-foreground"
                     title={connection.endpoints.map((e) => e.baseUrl).join(" · ")}
                   >
                     {[...new Set(connection.endpoints.map((e) => endpointHost(e.baseUrl)))].join(" · ")}
@@ -247,7 +243,7 @@ export function ConnectionsSection({
                   <SettingsBadge
                     className={
                       connection.keySource === "stored"
-                        ? "gap-1 border-success/20 bg-success/5 text-success-foreground"
+                        ? "gap-1 bg-success/10 text-success-foreground dark:bg-success/15"
                         : "max-w-full"
                     }
                   >

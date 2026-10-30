@@ -1,6 +1,7 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useState } from "react"
+import { Monitor, Moon, Sun } from "lucide-react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import type {
   AppSettingsPatch,
@@ -42,6 +43,7 @@ import {
   SettingsGroup,
   SettingsGroups,
   SettingsRow,
+  SettingsSegmented,
   SettingsSelect,
   handleSettingsInputKeyDown,
   resolveChatBrowserNotificationPreferenceAfterPermission,
@@ -59,7 +61,10 @@ type GeneralState = Pick<
   "appSettings" | "handleWriteAppSettings" | "updateSnapshot" | "handleCheckForUpdates" | "handleInstallUpdate"
 >
 
-export function GeneralSection({ state, appVersion }: { state: GeneralState; appVersion: string }) {
+/** One component serves the General, Appearance, Notifications and About pages so they share state and drafts. */
+export type GeneralSectionPart = "general" | "appearance" | "notifications" | "about"
+
+export function GeneralSection({ state, appVersion, part = "general" }: { state: GeneralState; appVersion: string; part?: GeneralSectionPart }) {
   useI18n()
   const terminal = useTerminalPreferencesStore()
   const sounds = useChatSoundPreferencesStore()
@@ -157,7 +162,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
         <div className="mb-6 px-[17px] text-sm text-muted-foreground">{translateUiText(state.appSettings.warning)}</div>
       ) : null}
       <SettingsGroups>
-        {SELF_UPDATE_ENABLED ? (
+        {part === "about" && SELF_UPDATE_ENABLED ? (
           <SettingsGroup>
             <SettingsRow
               def={SETTINGS_ROWS.applicationUpdate}
@@ -177,8 +182,8 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsRow>
           </SettingsGroup>
         ) : null}
-        {(
-          <SettingsGroup title={t("settings:appearance")}>
+        {part === "appearance" ? (
+          <SettingsGroup>
             <SettingsRow def={SETTINGS_ROWS.language}>
               <SettingsSelect
                 aria-label={t("settings:language")}
@@ -191,21 +196,21 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
               </SettingsSelect>
             </SettingsRow>
             <SettingsRow def={SETTINGS_ROWS.theme}>
-              <SettingsSelect
+              <SettingsSegmented<AppThemePreference>
                 aria-label={t("settings:theme")}
                 value={state.appSettings?.theme ?? "system"}
-                onValueChange={(value) => {
-                  void save({ theme: value as AppThemePreference })
-                }}
-              >
-                <SelectItem value="system">{t("settings:system")}</SelectItem>
-                <SelectItem value="light">{t("settings:light")}</SelectItem>
-                <SelectItem value="dark">{t("settings:dark")}</SelectItem>
-              </SettingsSelect>
+                onValueChange={(value) => { void save({ theme: value }) }}
+                options={[
+                  { value: "system", label: t("settings:system"), icon: <Monitor /> },
+                  { value: "light", label: t("settings:light"), icon: <Sun /> },
+                  { value: "dark", label: t("settings:dark"), icon: <Moon /> },
+                ]}
+              />
             </SettingsRow>
           </SettingsGroup>
-        )}
-        <SettingsGroup title={t("settings:notifications")}>
+        ) : null}
+        {part === "notifications" ? (
+        <SettingsGroup>
           <SettingsRow def={SETTINGS_ROWS.chatSounds}>
             <SettingsSelect
               aria-label={t("settings:chatSounds")}
@@ -251,18 +256,19 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsSelect>
           </SettingsRow>
         </SettingsGroup>
+        ) : null}
+        {part === "general" ? (<>
         <SettingsGroup title={t("settings:chats")}>
           <SettingsRow def={SETTINGS_ROWS.submitWhileRunning}>
-            <SettingsSelect
+            <SettingsSegmented<SubmitWhileRunning>
               aria-label={t("settings:enterWhileRunning")}
               value={state.appSettings?.submitWhileRunning ?? "queue"}
-              onValueChange={(value) => {
-                void save({ submitWhileRunning: value as SubmitWhileRunning })
-              }}
-            >
-              <SelectItem value="queue">{t("settings:queue")}</SelectItem>
-              <SelectItem value="steer">{t("settings:steer")}</SelectItem>
-            </SettingsSelect>
+              onValueChange={(value) => { void save({ submitWhileRunning: value }) }}
+              options={[
+                { value: "queue", label: t("settings:queue") },
+                { value: "steer", label: t("settings:steer") },
+              ]}
+            />
           </SettingsRow>
         </SettingsGroup>
         <SettingsGroup title={t("settings:editor")}>
@@ -361,6 +367,7 @@ export function GeneralSection({ state, appVersion }: { state: GeneralState; app
             </SettingsField>
           </SettingsRow>
         </SettingsGroup>
+        </>) : null}
       </SettingsGroups>
     </>
   )

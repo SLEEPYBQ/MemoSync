@@ -96,7 +96,7 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
           {translateUiText(resolvedKeybindings.warning)}
         </SettingsNotice>
       ) : null}
-      <SettingsGroup>
+      <SettingsGroup title={t("settings:commaSeparatedShortcuts")}>
         {KEYBINDING_ACTIONS.map((action) => {
           const defaultValue = formatKeybindingInput(DEFAULT_KEYBINDINGS[action])
           const currentValue = keybindingDrafts[action] ?? ""
@@ -108,23 +108,17 @@ export function KeybindingsSection({ state }: { state: Pick<AppState, "keybindin
               wideControl
               def={KEYBINDING_ROWS[action]}
               description={
-                <>
-                  <span>{t("settings:commaSeparatedShortcuts")}</span>
-                  {showRestore ? (
-                    <>
-                      {" "}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void restoreDefaultKeybinding(action)
-                        }}
-                        className={SETTINGS_INLINE_ACTION_CLASS}
-                      >
-                        <Trans ns="settings" i18nKey="resetShortcut" values={{ shortcut: defaultValue }} components={{ code: <code className="font-mono" /> }} />
-                      </button>
-                    </>
-                  ) : null}
-                </>
+                showRestore ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void restoreDefaultKeybinding(action)
+                    }}
+                    className={SETTINGS_INLINE_ACTION_CLASS}
+                  >
+                    <Trans ns="settings" i18nKey="resetShortcut" values={{ shortcut: defaultValue }} components={{ code: <code className="font-mono" /> }} />
+                  </button>
+                ) : null
               }
             >
               <Input

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react"
-import { Check, Copy, MoreHorizontal, RefreshCw, Terminal } from "lucide-react"
+import { Check, ChevronRight, Copy, MoreHorizontal, RefreshCw } from "lucide-react"
 import {
   ENGINE_PROTOCOLS,
   ENGINES_WITH_ACCOUNT_MODE,
@@ -13,7 +13,6 @@ import {
 import type { AppSocket } from "../socket"
 import { t, useI18n } from "../../i18n"
 import { engineProblemMessage, incompatibleConnectionMessage } from "../../model-access/modelAccess"
-import { SegmentedControl } from "../../components/ui/segmented-control"
 import { Button } from "../../components/ui/button"
 import {
   Dialog,
@@ -28,12 +27,13 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../components/ui/pop
 import { SelectItem } from "../../components/ui/select"
 import {
   SettingsActionButton,
-  SettingsBadge,
-  SettingsGroup,
   SettingsNotice,
   SettingsRow,
+  SettingsSegmented,
   SettingsSelect,
 } from "./shared"
+import { BrandTile, ENGINE_BRANDS } from "../../components/brand/BrandIcon"
+import { cn } from "../../lib/utils"
 import { CONNECTION_FIELD_CLASS, Hint, MODEL_ACCESS_FOCUS_CLASS } from "./modelAccessUi"
 
 const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi" }
@@ -43,6 +43,8 @@ export function EngineCard({
   connections,
   socket,
   onAddConnection,
+  expanded,
+  onToggle,
   children,
 }: {
   engine: EngineId
@@ -50,6 +52,9 @@ export function EngineCard({
   connections: ApiConnection[]
   socket?: Pick<AppSocket, "command">
   onAddConnection: (protocol: ApiProtocol) => void
+  /** Engines list as one card of overview rows; a row opens to its settings. */
+  expanded: boolean
+  onToggle: () => void
   children: ReactNode
 }) {
   useI18n()
@@ -109,12 +114,97 @@ export function EngineCard({
   const installCommand =
     engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : "npm install -g @openai/codex"
   const needsInstall = engine !== "pi" && executable && !["ready", "not-needed"].includes(executable.state)
+  // Collapsed, the row says what is wrong; open, the notice below says it in full.
+  const summary = !status
+    ? null
+    : !status.ready
+      ? expanded ? null : status.problem === "account-signed-out" ? t("modelAccess:signedOutShort") : engineProblemMessage(status)
+      : access?.mode === "connection"
+        ? (() => {
+            const modelId = access.defaultModel ?? selectedConnection?.models[0]?.id
+            const model = selectedConnection?.models.find((candidate) => candidate.id === modelId)
+            return [selectedConnection?.name, model?.label ?? modelId].filter(Boolean).join(" · ")
+          })()
+        : [t("modelAccess:account"), executable?.version ? `v${executable.version}` : null].filter(Boolean).join(" · ")
+  const detailsId = `engine-details-${engine}`
   return (
-    <div data-engine={engine} data-access-mode={access?.mode} data-executable-state={executable?.state}>
-      <SettingsGroup>
+    <div data-engine={engine} data-access-mode={access?.mode} data-executable-state={executable?.state} data-expanded={expanded || undefined}>
+      <div className="flex items-center gap-1 pr-2">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={onToggle}
+          className="flex min-h-[60px] min-w-0 flex-1 cursor-pointer items-center gap-3 px-4 py-3 text-left outline-none focus-visible:bg-black/[0.03] dark:focus-visible:bg-white/[0.03]"
+        >
+          <BrandTile brand={ENGINE_BRANDS[engine]} />
+          <span className="min-w-0 flex-1">
+            <span className="block text-[13.5px] font-medium leading-5 text-foreground">{ENGINE_NAMES[engine]}</span>
+            {summary ? (
+              <span className={cn("block truncate text-[12.5px] leading-[18px]", status?.ready ? "text-muted-foreground" : "text-cand-fg")}>
+                {summary}
+              </span>
+            ) : null}
+          </span>
+          <span className="inline-flex shrink-0 items-center gap-1.5 text-[12.5px] text-muted-foreground">
+            <span className={cn("size-1.5 rounded-full", status?.ready ? "bg-success" : status ? "bg-cand-dot" : "bg-muted-foreground/40")} />
+            <span role="status">{t(`modelAccess:${badgeKey}`)}</span>
+          </span>
+          <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground/70 transition-transform duration-150", expanded && "rotate-90")} />
+        </button>
+        {engine !== "pi" ? (
+          <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="size-8 text-muted-foreground"
+                aria-label={t("modelAccess:engineActions", { engine: ENGINE_NAMES[engine] })}
+                disabled={!socket || !status || pending}
+              >
+                <MoreHorizontal className="size-4" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="model-access-ui w-48 p-1">
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full justify-start rounded-lg"
+                size="sm"
+                onClick={() => {
+                  setPath(setup?.executablePath ?? "")
+                  setError(null)
+                  setMenuOpen(false)
+                  setPathOpen(true)
+                }}
+              >
+                {t("modelAccess:changePath")}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full justify-start rounded-lg"
+                size="sm"
+                onClick={() => {
+                  setMenuOpen(false)
+                  if (socket) void command(() => socket.command({ type: "modelAccess.refreshExecutables" }))
+                }}
+              >
+                <RefreshCw className="size-4" />
+                {t("modelAccess:refresh")}
+              </Button>
+            </PopoverContent>
+          </Popover>
+        ) : (
+          // Keeps Pi's status and chevron in line with the rows that have a menu.
+          <span aria-hidden="true" className="size-8 shrink-0" />
+        )}
+      </div>
+      {expanded ? (
+      <div id={detailsId} className="divide-y divide-border/60 border-t border-border/60 bg-black/[0.015] dark:bg-black/[0.12]">
         <SettingsRow
-          title={ENGINE_NAMES[engine]}
-          icon={<Terminal className="size-4 shrink-0 text-muted-foreground" />}
+          title={t("modelAccess:executablePath")}
           description={
             engine === "pi" ? (
               t("modelAccess:piBundled")
@@ -126,7 +216,7 @@ export function EngineCard({
               >
                 <span
                   tabIndex={0}
-                  className={`flex min-w-0 max-w-full rounded-sm font-mono text-xs ${MODEL_ACCESS_FOCUS_CLASS}`}
+                  className={`flex min-w-0 max-w-full rounded-sm font-mono text-[11.5px] ${MODEL_ACCESS_FOCUS_CLASS}`}
                 >
                   <span className="shrink-0 whitespace-pre">
                     {executable.version ?? t("modelAccess:versionUnknown")} ·{" "}
@@ -144,61 +234,7 @@ export function EngineCard({
             )
           }
         >
-          <div className="flex items-center gap-2">
-            <SettingsBadge
-              className={
-                status?.ready
-                  ? "border-success/20 bg-success/10 text-success-foreground"
-                  : "border-cand-border bg-cand-surface text-cand-fg"
-              }
-            >
-              <span role="status">{t(`modelAccess:${badgeKey}`)}</span>
-            </SettingsBadge>
-            {engine !== "pi" ? (
-              <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    aria-label={t("modelAccess:engineActions", { engine: ENGINE_NAMES[engine] })}
-                    disabled={!socket || !status || pending}
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent align="end" className="model-access-ui w-48 p-1">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="w-full justify-start rounded-lg"
-                    size="sm"
-                    onClick={() => {
-                      setPath(setup?.executablePath ?? "")
-                      setError(null)
-                      setMenuOpen(false)
-                      setPathOpen(true)
-                    }}
-                  >
-                    {t("modelAccess:changePath")}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="w-full justify-start rounded-lg"
-                    size="sm"
-                    onClick={() => {
-                      setMenuOpen(false)
-                      if (socket) void command(() => socket.command({ type: "modelAccess.refreshExecutables" }))
-                    }}
-                  >
-                    <RefreshCw className="size-4" />
-                    {t("modelAccess:refresh")}
-                  </Button>
-                </PopoverContent>
-              </Popover>
-            ) : null}
-          </div>
+          {null}
         </SettingsRow>
         {status && !status.ready ? (
           <div className="p-3">
@@ -248,7 +284,7 @@ export function EngineCard({
             </SettingsNotice>
           </div>
         ) : null}
-        <fieldset disabled={!status || !socket || pending} className="min-w-0 divide-y divide-border">
+        <fieldset disabled={!status || !socket || pending} className="min-w-0 divide-y divide-border/60">
           <SettingsRow
             title={t("modelAccess:access")}
             description={t(
@@ -261,9 +297,8 @@ export function EngineCard({
             wideControl={engine !== "pi"}
           >
             {ENGINES_WITH_ACCOUNT_MODE.includes(engine) ? (
-              <SegmentedControl
-                size="sm"
-                optionClassName={MODEL_ACCESS_FOCUS_CLASS}
+              <SettingsSegmented
+                aria-label={t("modelAccess:access")}
                 value={access?.mode ?? "account"}
                 options={[
                   { value: "account", label: t("modelAccess:account") },
@@ -280,7 +315,6 @@ export function EngineCard({
           {access?.mode === "connection" || engine === "pi" ? (
             <SettingsRow title={t("modelAccess:connectionRow")}>
               <SettingsSelect
-                className={`rounded-sm focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 ${MODEL_ACCESS_FOCUS_CLASS}`}
                 aria-label={t("modelAccess:connection")}
                 value={access?.mode === "connection" ? access.connectionId || "__empty__" : "__empty__"}
                 onValueChange={chooseConnection}
@@ -313,7 +347,8 @@ export function EngineCard({
           </div>
         ) : null}
         {children}
-      </SettingsGroup>
+      </div>
+      ) : null}
       <Dialog
         open={pathOpen}
         onOpenChange={(open) => {

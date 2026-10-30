@@ -111,9 +111,9 @@ export function MemorySettingsGroups({
         </SettingsGroup>
       </SettingsGroups>
       {(
-        <div className="px-[17px] pt-6">
+        <div className="px-1 pt-6">
           <Link
-            className="inline-flex min-h-9 items-center text-sm text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:underline"
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-black/[0.045] px-3 text-[13px] font-medium text-foreground transition-colors hover:bg-black/[0.07] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 dark:bg-white/[0.07] dark:hover:bg-white/[0.10]"
             to="/memory"
           >
             {t("settings:openMemoryBoard")}</Link>

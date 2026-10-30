@@ -4,7 +4,7 @@ import { t } from "../../i18n"
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip"
 
 export const CONNECTION_FIELD_CLASS =
-  "h-9 min-w-0 w-full rounded-lg border border-input bg-background px-3 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+  "h-9 min-w-0 w-full rounded-lg border-0 bg-black/[0.045] px-3 text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70 focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-60 dark:bg-white/[0.07]"
 export const MODEL_ACCESS_DIALOG_CLASS = "model-access-ui @container w-[calc(100%-2rem)] max-w-2xl"
 export const MODEL_ACCESS_FOCUS_CLASS =
   "outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
