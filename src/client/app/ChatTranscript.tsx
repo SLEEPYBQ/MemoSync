@@ -57,8 +57,10 @@ export interface ResolvedSingleTranscriptRow {
 export function getCurrentTurnAssistantMessageIds(
   messages: HydratedTranscriptMessage[],
   canCancel: boolean,
+  previous?: Set<string>,
 ): Set<string> {
-  if (!canCancel) return new Set()
+  const empty = () => previous?.size === 0 ? previous : new Set<string>()
+  if (!canCancel) return empty()
 
   let promptIndex = -1
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -67,18 +69,19 @@ export function getCurrentTurnAssistantMessageIds(
       break
     }
   }
-  if (promptIndex < 0) return new Set()
+  if (promptIndex < 0) return empty()
 
   const suffix = messages.slice(promptIndex + 1)
   if (suffix.some((message) => message.kind === "result" || message.kind === "interrupted")) {
-    return new Set()
+    return empty()
   }
 
-  return new Set(
+  const next = new Set(
     suffix
       .filter((message) => message.kind === "assistant_text")
       .map((message) => message.id),
   )
+  return previous && next.size === previous.size && [...next].every(id => previous.has(id)) ? previous : next
 }
 
 export interface ResolvedToolGroupTranscriptRow {
@@ -367,9 +370,9 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
         && left.toolName === right.toolName
         && left.toolId === right.toolId
         && left.isError === right.isError
-        && JSON.stringify(left.input) === JSON.stringify(right.input)
-        && JSON.stringify(left.result) === JSON.stringify(right.result)
-        && JSON.stringify(left.rawResult) === JSON.stringify(right.rawResult)
+        && (left.input === right.input || JSON.stringify(left.input) === JSON.stringify(right.input))
+        && (left.result === right.result || JSON.stringify(left.result) === JSON.stringify(right.result))
+        && (left.rawResult === right.rawResult || JSON.stringify(left.rawResult) === JSON.stringify(right.rawResult))
     case "result":
       return right.kind === "result"
         && left.success === right.success
@@ -388,64 +391,16 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
     case "interrupted":
       return true
     case "memory_candidates":
-      return right.kind === "memory_candidates"
-        && left.turn === right.turn
-        && JSON.stringify(left.candidates) === JSON.stringify(right.candidates)
     case "memory_trace":
-      return right.kind === "memory_trace"
-        && left.turn === right.turn
-        && JSON.stringify(left.labels) === JSON.stringify(right.labels)
     case "memory_interrupt":
-      return right.kind === "memory_interrupt"
-        && left.interruptId === right.interruptId
-        && JSON.stringify(left.resolution) === JSON.stringify(right.resolution)
     case "memory_preview":
-      // The relevance prediction FOLDS INTO this message seconds after it
-      // first renders — ignoring it froze the card on its pre-prediction
-      // state (the "highlights only after Go on" bug).
-      return right.kind === "memory_preview"
-        && left.previewId === right.previewId
-        && left.decision === right.decision
-        && left.decisionAuto === right.decisionAuto
-        && left.relevancePending === right.relevancePending
-        && left.refreshing === right.refreshing
-        && left.refreshVersion === right.refreshVersion
-        && left.task === right.task
-        && JSON.stringify(left.memories) === JSON.stringify(right.memories)
-        && JSON.stringify(left.decisionSelectedIds) === JSON.stringify(right.decisionSelectedIds)
-        && JSON.stringify(left.decisionExpectedUses) === JSON.stringify(right.decisionExpectedUses)
-        && JSON.stringify(left.relevant) === JSON.stringify(right.relevant)
-        && JSON.stringify(left.expectedUses) === JSON.stringify(right.expectedUses)
-        && JSON.stringify(left.attention) === JSON.stringify(right.attention)
-        && JSON.stringify(left.attentions) === JSON.stringify(right.attentions)
-        && JSON.stringify(left.attentionIds) === JSON.stringify(right.attentionIds)
     case "memory_proposals":
-      // The decision folds in when the gate settles — the card must re-render.
-      return right.kind === "memory_proposals"
-        && left.proposalsId === right.proposalsId
-        && left.openingReviewId === right.openingReviewId
-        && left.pending === right.pending
-        && left.decision === right.decision
-        && JSON.stringify(left.candidates) === JSON.stringify(right.candidates)
     case "memory_checkup":
-      // Result and decision both fold in after first render (skeleton →
-      // suggestions → settled) — each fold must break memoization.
-      return right.kind === "memory_checkup"
-        && left.checkupId === right.checkupId
-        && left.openingReviewId === right.openingReviewId
-        && left.pending === right.pending
-        && left.waiting === right.waiting
-        && left.decision === right.decision
-        && JSON.stringify(left.suggestions) === JSON.stringify(right.suggestions)
     case "memory_transfer":
-      // Result and decision fold in after first render (live-search skeleton
-      // → suggestions → settled) — each fold must break memoization.
-      return right.kind === "memory_transfer"
-        && left.transferId === right.transferId
-        && left.openingReviewId === right.openingReviewId
-        && left.pending === right.pending
-        && left.decision === right.decision
-        && JSON.stringify(left.suggestions) === JSON.stringify(right.suggestions)
+      // These are live folded records, including errors, audit status and
+      // working-set changes. Compare the whole record so newly added fields
+      // cannot silently freeze a card behind row memoization.
+      return JSON.stringify(left) === JSON.stringify(right)
     case "unknown":
       return right.kind === "unknown" && left.json === right.json
   }
@@ -1016,6 +971,7 @@ export function areChatTranscriptRowPropsEqual(prev: ChatTranscriptRowProps, nex
   if (prev.onMemoryCheckupRespond !== next.onMemoryCheckupRespond) return false
   if (prev.onMemoryTransferRespond !== next.onMemoryTransferRespond) return false
   if (prev.onMemoryPreparationReopen !== next.onMemoryPreparationReopen) return false
+  if (prev.row === next.row) return true
   if (prev.row.kind !== next.row.kind) return false
   if (prev.row.id !== next.row.id) return false
 

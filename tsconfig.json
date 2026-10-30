@@ -80,6 +80,7 @@
     "src/client/components/messages/EditDiffView.tsx",
     "src/client/components/messages/ProcessingMessage.tsx",
     "src/client/i18n/**/*.ts",
-    "src/client/i18n/**/*.tsx"
+    "src/client/i18n/**/*.tsx",
+    "src/client/test-fixtures/transcript-performance/**/*.tsx"
   ]
 }
