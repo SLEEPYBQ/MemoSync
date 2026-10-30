@@ -401,6 +401,8 @@ interface ClaudeSessionHandle {
   ) => Promise<void>
   /** Known for the bundled SDK; override wrappers are detected on their first tagged result. */
   echoesPromptIds?: boolean
+  /** Revoke tool authority while retaining the prompt as a late-result tombstone. */
+  revokeHumanTurnReservation?: (promptSeq: number) => void
   /** Release only the cancelled prompt reservations whose FIFO entries were
    * proven orphaned when a later provider turn started. */
   discardHumanTurnReservations?: (promptSeqs: readonly number[]) => number
@@ -1179,6 +1181,7 @@ export class ClaudeOutboundOriginTracker {
    * positive coordinator FIFO sequence. */
   private readonly pendingHumanTurns: number[] = []
   private readonly promptIds = new Map<number, string>()
+  private readonly revokedHumanTurns = new Set<number>()
   private echoesPromptIds: boolean
   constructor(echoesPromptIds = false) { this.echoesPromptIds = echoesPromptIds }
   private nextAnonymousReservation = 0
@@ -1199,10 +1202,20 @@ export class ClaudeOutboundOriginTracker {
       ? this.pendingHumanTurns.length - 1
       : this.pendingHumanTurns.indexOf(promptSeq)
     if (index >= 0) {
+      this.revokedHumanTurns.delete(this.pendingHumanTurns[index]!)
       this.promptIds.delete(this.pendingHumanTurns[index]!)
       this.pendingHumanTurns.splice(index, 1)
     }
-    if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
+  }
+
+  private hasHumanAuthority() {
+    return this.pendingHumanTurns.some(seq => !this.revokedHumanTurns.has(seq))
+  }
+
+  revokeHumanTurn(promptSeq: number) {
+    if (this.pendingHumanTurns.includes(promptSeq)) this.revokedHumanTurns.add(promptSeq)
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
   }
 
   /**
@@ -1215,11 +1228,12 @@ export class ClaudeOutboundOriginTracker {
     const before = this.pendingHumanTurns.length
     for (let index = this.pendingHumanTurns.length - 1; index >= 0; index -= 1) {
       if (discarded.has(this.pendingHumanTurns[index]!)) {
+        this.revokedHumanTurns.delete(this.pendingHumanTurns[index]!)
         this.promptIds.delete(this.pendingHumanTurns[index]!)
         this.pendingHumanTurns.splice(index, 1)
       }
     }
-    if (this.pendingHumanTurns.length === 0 && this.root === "human") this.root = "unknown"
+    if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
     return before - this.pendingHumanTurns.length
   }
 
@@ -1235,7 +1249,7 @@ export class ClaudeOutboundOriginTracker {
       const seq = this.pendingHumanTurns[0]
       if (seq !== undefined) this.cancelHumanTurn(seq)
     }
-    this.root = this.pendingHumanTurns.length > 0 ? "human" : "unknown"
+    this.root = this.hasHumanAuthority() ? "human" : "unknown"
   }
 
   current(): HarnessEvent["origin"] {
@@ -1245,6 +1259,7 @@ export class ClaudeOutboundOriginTracker {
   clear() {
     this.pendingHumanTurns.splice(0, this.pendingHumanTurns.length)
     this.promptIds.clear()
+    this.revokedHumanTurns.clear()
     this.root = "unknown"
   }
 }
@@ -1528,6 +1543,7 @@ export async function startClaudeSession(args: {
         throw error
       }
     },
+    revokeHumanTurnReservation: (promptSeq) => outboundOrigins.revokeHumanTurn(promptSeq),
     discardHumanTurnReservations: (promptSeqs) => (
       outboundOrigins.discardHumanTurnReservations(promptSeqs)
     ),
@@ -7241,6 +7257,7 @@ export class AgentCoordinator {
     if (active.provider === "claude" && active.claudePromptSeq !== undefined) {
       const session = this.claudeSessions.get(chatId)
       session?.cancelledPromptSeqs.add(active.claudePromptSeq)
+      session?.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
     }
     if (active.startupReservation) {
       this.cancelStartupReservation(chatId, active.startupReservation)

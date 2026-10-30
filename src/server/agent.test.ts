@@ -3566,3 +3566,44 @@ describe("Claude prompt UUID lifecycle", () => {
     } finally { h.events.close() }
   })
 })
+
+test("UUID Stop revokes human authority even when the cancelled prompt never returns a result", async () => {
+  const sdk = new AsyncEventQueue<any>()
+  const tracker = new ClaudeOutboundOriginTracker(true)
+  const store = createFakeStore()
+  const prompts: Array<{ promptId: string; promptSeq: number }> = []
+  const toolOrigins: unknown[] = []
+  const coordinator = new AgentCoordinator({
+    store: store as never, onStateChange() {}, claudeSessionFileExists: () => true,
+    startClaudeSession: async () => ({
+      provider: "claude", echoesPromptIds: true,
+      stream: createClaudeHarnessStream(sdk as never, undefined, (_id, origin) => toolOrigins.push(origin), tracker),
+      close: () => sdk.close(), interrupt: async () => {}, setModel: async () => {}, setPermissionMode: async () => {},
+      revokeHumanTurnReservation: (seq: number) => (tracker as any).revokeHumanTurn?.(seq),
+      sendPrompt: async (_content: string, context: any) => {
+        prompts.push(context)
+        tracker.beginHumanTurn(context.promptSeq, context.promptId)
+        sdk.push({ type: "system", subtype: "init", tools: [], slash_commands: [], mcp_servers: [], model: "test" })
+      },
+    }),
+  })
+  try {
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "first", provider: "claude" })
+    await waitFor(() => store.messages.some(m => m.kind === "system_init"))
+    await coordinator.cancel("chat-1")
+    expect(tracker.current()).toBe("unknown")
+    await coordinator.send({ type: "chat.send", chatId: "chat-1", content: "second", provider: "claude" })
+    sdk.push({ type: "result", subtype: "success", is_error: false, result: "second done", user_message_uuid: prompts[1]!.promptId })
+    await waitFor(() => store.turnFinishedCount === 1)
+    await Bun.sleep(10)
+    expect(tracker.current()).toBe("unknown")
+    // The old prompt remains an attribution tombstone, never authority for tools.
+    sdk.push({ type: "assistant", message: { content: [{ type: "tool_use", id: "late-tool", name: "Edit", input: {} }] } })
+    await waitFor(() => toolOrigins.length === 1)
+    expect(toolOrigins).toEqual(["unknown"])
+    sdk.push({ type: "result", subtype: "error_during_execution", is_error: true, user_message_uuid: prompts[0]!.promptId })
+    await Bun.sleep(10)
+    expect(store.turnFinishedCount).toBe(1)
+    expect(store.messages.filter(m => m.kind === "result" && m.isError)).toHaveLength(0)
+  } finally { sdk.close() }
+})
