@@ -25,6 +25,7 @@ export function startHeroCat(root: HTMLElement, reduceMotion: MediaQueryList) {
   let shown: Frame | null = null
 
   function render() {
+    if (!visible) return
     const k = root.clientWidth / 560
     const at = track.getPointAtLength(length * s.p)
     cat.style.left = `${(at.x + s.dx) * k}px`
@@ -56,7 +57,9 @@ export function startHeroCat(root: HTMLElement, reduceMotion: MediaQueryList) {
   let wake: (() => void) | null = null
   const waitVisible = () => (visible ? Promise.resolve() : new Promise<void>((r) => (wake = r)))
   new IntersectionObserver(([entry]) => {
+    const was = visible
     visible = entry.isIntersecting
+    if (visible && !was && alive && !reduceMotion.matches) requestAnimationFrame(draw)
     if (visible && wake) {
       wake()
       wake = null
@@ -136,9 +139,12 @@ export function startHeroCat(root: HTMLElement, reduceMotion: MediaQueryList) {
     s.dy = 0
   }
 
+  // Draw every frame while the hero is on screen; stop entirely when it isn't
+  // (the current tween finishes off screen and the loop waits to be seen).
   function draw() {
-    if (visible) render()
-    if (alive) requestAnimationFrame(draw)
+    if (!visible || !alive) return
+    render()
+    requestAnimationFrame(draw)
   }
 
   async function loop() {
