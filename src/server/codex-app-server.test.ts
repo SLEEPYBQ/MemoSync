@@ -762,6 +762,8 @@ describe("CodexAppServerManager", () => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
+      } else if (message.method === "config/read") {
+        child.writeServerMessage({ id: message.id, result: { config: { mcp_servers: { local: {} }, web_search: "live" } } })
       } else if (message.method === "thread/start") {
         child.writeServerMessage({
           id: message.id,
@@ -810,6 +812,13 @@ describe("CodexAppServerManager", () => {
 
       expect(result).toBe("{\"title\":\"Codex title\"}")
       expect(process.killed).toBe(true)
+      const thread = (process.messages.find((message: any) => message.method === "thread/start") as any).params
+      expect(thread.sandbox).toBe("read-only")
+      expect(thread.config["features.shell_tool"]).toBe(false)
+      expect(thread.config["features.multi_agent"]).toBe(false)
+      expect(thread.config.web_search).toBe("disabled")
+      expect(thread.config["mcp_servers.local.enabled"]).toBe(false)
+      expect(thread.config["hooks.PreToolUse"][0].hooks[0].command).toEndWith(" --deny-all-tools")
       expect((process.messages.find((message: any) => message.method === "thread/start") as any)?.params.model).toBe("gpt-5.5")
       expect((process.messages.find((message: any) => message.method === "turn/start") as any)?.params.model).toBe("gpt-5.5")
     } finally {
