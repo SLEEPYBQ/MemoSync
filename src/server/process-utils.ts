@@ -1,54 +1,120 @@
 import path from "node:path"
-import { spawn, spawnSync } from "node:child_process"
+import { execFile, spawn, spawnSync } from "node:child_process"
+import { promisify } from "node:util"
 
-export function killProcessTree(child: { pid?: number; kill(signal?: NodeJS.Signals | number): unknown }) {
+type ProcessTreeChild = {
+  pid?: number
+  exitCode?: number | null
+  signalCode?: NodeJS.Signals | null
+  kill(signal?: NodeJS.Signals | number): unknown
+}
+
+const execFileAsync = promisify(execFile)
+const processTreeCleanupPromises = new WeakMap<object, Promise<void>>()
+const PROCESS_TREE_TIMEOUT_MS = 5_000
+
+function childHasExited(child: ProcessTreeChild) {
+  return child.exitCode != null || child.signalCode != null
+}
+
+/**
+ * Best-effort cleanup of active descendants owned by this child. Already
+ * daemonized or reparented processes are out of scope; this is not containment.
+ */
+async function cleanupProcessTree(child: ProcessTreeChild): Promise<void> {
+  if (childHasExited(child)) return
+
   const pid = child.pid
-  if (pid !== undefined && (!Number.isInteger(pid) || pid <= 1 || pid === process.pid)) return
-  const stopped = new Set<number>()
-  try {
-    if (!pid || pid <= 1 || pid === process.pid) return
-    if (process.platform === "win32") {
-      const result = spawnSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], {
-        stdio: "ignore", windowsHide: true, timeout: 5_000,
-      })
-      if (result.error) throw result.error
-      if (result.status !== 0) throw new Error(`Windows subprocess cleanup exited with status ${result.status}`)
-      return
-    }
+  if (pid === undefined) {
+    try { child.kill("SIGKILL") } catch { /* Already exited. */ }
+    return
+  }
+  if (!Number.isInteger(pid) || pid <= 1 || pid === process.pid) return
 
-    // Freeze parents before killing children, so a waiting shell cannot resume
-    // its next command when its current command dies. Tools may own new groups.
-    process.kill(pid, "SIGSTOP")
-    stopped.add(pid)
+  if (process.platform === "win32") {
+    try {
+      await execFileAsync(
+        path.join(process.env.SystemRoot || "C:\\Windows", "System32", "taskkill.exe"),
+        ["/PID", String(pid), "/T", "/F"],
+        { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 },
+      )
+    } catch (error) {
+      console.warn("Subprocess tree cleanup failed:", error)
+    } finally {
+      if (!childHasExited(child)) {
+        try { child.kill("SIGKILL") } catch { /* Already exited. */ }
+      }
+    }
+    return
+  }
+
+  let rootFrozen: unknown
+  try {
+    rootFrozen = child.kill("SIGSTOP")
+  } catch (error) {
+    console.warn("Subprocess tree cleanup failed:", error)
+    return
+  }
+  if (rootFrozen === false) return
+
+  const stopped = new Set<number>([pid])
+  const deadline = Date.now() + PROCESS_TREE_TIMEOUT_MS
+  try {
     let discovered = true
     while (discovered) {
+      if (Date.now() >= deadline) throw new Error("Subprocess ancestry scan timed out")
       discovered = false
-      const result = spawnSync("/bin/ps", ["-axo", "pid=", "-o", "ppid="], {
-        encoding: "utf8", timeout: 1_000, maxBuffer: 1024 * 1024,
+      const result = await execFileAsync("/bin/ps", ["-axo", "pid=", "-o", "ppid="], {
+        encoding: "utf8",
+        timeout: 1_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
       })
-      if (result.error) throw result.error
-      if (result.status !== 0) throw new Error("Cannot read subprocess ancestry")
-      for (const line of result.stdout.split("\n")) {
+      if (childHasExited(child)) break
+      if (Date.now() >= deadline) throw new Error("Subprocess ancestry scan timed out")
+      for (const line of String(result.stdout).split("\n")) {
+        if (childHasExited(child)) break
+        if (Date.now() >= deadline) throw new Error("Subprocess ancestry scan timed out")
         const [descendant, parent] = line.trim().split(/\s+/).map(Number)
         if (!descendant || descendant <= 1 || descendant === process.pid || !parent || !stopped.has(parent) || stopped.has(descendant)) continue
-        try { process.kill(descendant, "SIGSTOP") }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error }
+        let frozen = false
+        try {
+          frozen = process.kill(descendant, "SIGSTOP")
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error
+        }
+        if (!frozen) continue
         stopped.add(descendant)
         discovered = true
       }
     }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") console.warn("Subprocess tree cleanup failed:", error)
+    console.warn("Subprocess tree cleanup failed:", error)
   } finally {
     for (const descendant of [...stopped].reverse()) {
       if (descendant === pid) continue
       try { process.kill(descendant, "SIGKILL") } catch { /* Already exited. */ }
     }
-    if (pid && pid > 1 && pid !== process.pid && process.platform !== "win32") {
-      try { process.kill(-pid, "SIGKILL") } catch { /* No surviving process group. */ }
+    if (!childHasExited(child)) {
+      try { child.kill("SIGKILL") } catch { /* Already exited. */ }
     }
-    try { child.kill("SIGKILL") } catch { /* Already exited. */ }
   }
+}
+
+export function killProcessTree(child: ProcessTreeChild): Promise<void> {
+  const existing = processTreeCleanupPromises.get(child)
+  if (existing) return existing
+
+  let resolveCleanup!: () => void
+  const cleanup = new Promise<void>((resolve) => {
+    resolveCleanup = resolve
+  })
+  processTreeCleanupPromises.set(child, cleanup)
+  cleanupProcessTree(child).then(resolveCleanup, (error) => {
+    console.warn("Subprocess tree cleanup failed:", error)
+    resolveCleanup()
+  })
+  return cleanup
 }
 
 function formatSpawnError(command: string, error: unknown) {

@@ -37,10 +37,11 @@ class FakeCodexProcess extends EventEmitter {
     })
   }
 
-  kill() {
+  kill(_signal?: NodeJS.Signals | number) {
     this.killCalls += 1
     this.killed = true
     this.emit("close", 0)
+    return true
   }
 
   writeServerMessage(message: unknown) {
@@ -2444,8 +2445,9 @@ describe("CodexAppServerManager", () => {
 
   test("interrupt clears a pending exit-plan wait so a new turn can start immediately", async () => {
     let resolveToolRequest!: (value: unknown) => void
+    const processes: FakeCodexProcess[] = []
 
-    const process = new FakeCodexProcess((message, child) => {
+    const onMessage = (message: any, child: FakeCodexProcess) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
       } else if (message.method === "thread/start" || message.method === "thread/resume") {
@@ -2489,47 +2491,61 @@ describe("CodexAppServerManager", () => {
           })
         }
       }
-    })
+    }
 
     const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+      spawnProcess: () => {
+        const process = new FakeCodexProcess(onMessage)
+        processes.push(process)
+        return process as never
+      },
     })
 
-    await manager.startSession({
-      chatId: "chat-1",
-      cwd: "/tmp/project",
-      model: "gpt-5.4",
-      sessionToken: null,
-    })
+    try {
+      await manager.startSession({
+        chatId: "chat-1",
+        cwd: "/tmp/project",
+        model: "gpt-5.4",
+        sessionToken: null,
+      })
 
-    const turn = await manager.startTurn({
-      chatId: "chat-1",
-      model: "gpt-5.4",
-      content: "make a plan",
-      planMode: true,
-      onToolRequest: async () => await new Promise((resolve) => {
-        resolveToolRequest = resolve
-      }),
-    })
+      const turn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "make a plan",
+        planMode: true,
+        onToolRequest: async () => await new Promise((resolve) => {
+          resolveToolRequest = resolve
+        }),
+      })
 
-    const iterator = turn.stream[Symbol.asyncIterator]()
-    await iterator.next()
-    await iterator.next()
-    await iterator.next()
-    await turn.interrupt()
+      const iterator = turn.stream[Symbol.asyncIterator]()
+      await iterator.next()
+      await iterator.next()
+      await iterator.next()
+      await turn.interrupt()
 
-    await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+      await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+      expect(processes).toHaveLength(2)
+      expect(processes[0]?.killed).toBe(true)
+      expect(processes[1]?.killed).toBe(false)
+      expect(processes[1]?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "thread/resume" }),
+      ]))
 
-    const nextTurn = await manager.startTurn({
-      chatId: "chat-1",
-      model: "gpt-5.4",
-      content: "continue",
-      planMode: false,
-      onToolRequest: async () => ({}),
-    })
+      const nextTurn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "continue",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
 
-    await collectStream(nextTurn.stream)
-    resolveToolRequest({})
+      await collectStream(nextTurn.stream)
+    } finally {
+      resolveToolRequest?.({})
+      await manager.stopAll()
+    }
   })
 
   test("interrupt kills real descendants even after a protocol acknowledgement", async () => {
@@ -2557,7 +2573,15 @@ describe("CodexAppServerManager", () => {
     })
     transport.pid = root.pid
     const fakeKill = transport.kill.bind(transport)
-    transport.kill = () => { root.kill("SIGKILL"); fakeKill() }
+    transport.kill = (signal?: NodeJS.Signals | number) => {
+      const result = root.kill(signal ?? "SIGKILL")
+      if (signal === "SIGKILL" || signal === undefined) fakeKill(signal)
+      return result
+    }
+    Object.defineProperties(transport, {
+      exitCode: { get: () => root.exitCode },
+      signalCode: { get: () => root.signalCode },
+    })
     const manager = new CodexAppServerManager({ spawnProcess: () => transport })
     try {
       await manager.startSession({
@@ -2575,7 +2599,7 @@ describe("CodexAppServerManager", () => {
       expect(existsSync(unrelated)).toBe(true)
       expect(manager.hasSession("chat-tree")).toBe(false)
     } finally {
-      manager.stopAll()
+      await manager.stopAll()
       root.kill("SIGKILL")
       sibling.kill("SIGKILL")
       rmSync(directory, { recursive: true, force: true })
