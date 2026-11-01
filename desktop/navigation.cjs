@@ -17,6 +17,14 @@ function classifyNavigation(value, origin, target) {
   return "deny"
 }
 
+function canGrantDesktopPermission(webContents, mainWebContents, permission, details, origin) {
+  return permission === "notifications"
+    && Boolean(webContents && webContents === mainWebContents && !webContents.isDestroyed())
+    && details?.isMainFrame === true
+    && isMainNavigationUrl(details.requestingUrl, origin)
+    && isMainNavigationUrl(webContents.getURL(), origin)
+}
+
 function installNavigationHandlers(webContents, origin, target, actions = {}) {
   const allowedTarget = target === "content" ? "content" : "main"
   const dispatch = (url) => {
@@ -67,6 +75,7 @@ function contentWindowOptions(desktopSession) {
 }
 
 module.exports = {
+  canGrantDesktopPermission,
   classifyNavigation,
   contentWindowOptions,
   installNavigationHandlers,

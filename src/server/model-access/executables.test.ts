@@ -252,6 +252,27 @@ describe("engine executable discovery (isolated HOME, PATH and SDK)", () => {
     expect(await lines()).toEqual(["node", "node"])
   })
 
+  test.each(["%dp0%\\", "%~dp0\\", "%~dp0"])("npm CMD shim prefix %s resolves to its JS entry without a shell", async (prefix) => {
+    const entry = await file(join(home, "npm global/node_modules/@openai/codex/bin/codex.js"), [
+      'if (process.argv[2] === "--version") console.log("codex-cli 0.166.0")',
+      'else if (process.argv.slice(2).join(" ") !== "app-server --help") process.exit(77)',
+    ].join("\n"), 0o600)
+    const shim = await file(join(home, "npm global/codex.cmd"), [
+      "@ECHO off",
+      "SETLOCAL",
+      'SET "dp0=%~dp0"',
+      `IF EXIST "${prefix}node.exe" (`,
+      `  "${prefix}node.exe" "${prefix}node_modules\\@openai\\codex\\bin\\codex.js" %*`,
+      ") ELSE (",
+      `  node "${prefix}node_modules\\@openai\\codex\\bin\\codex.js" %*`,
+      ")",
+    ].join("\r\n"), 0o600)
+
+    expect(await executableLauncher(shim, env)).toEqual({ command: process.execPath, args: [entry] })
+    expect(await resolver().resolveEngineExecutable("codex", { executablePath: shim }, env))
+      .toMatchObject({ state: "ready", path: shim, version: "0.166.0" })
+  })
+
   test("extensionless node scripts and JS files use the current runtime if node is absent", async () => {
     const path = await file(join(home, "shim"), '#!/usr/bin/env node\nconsole.log("2.10.6 (Claude Code)")\n', 0o600)
     expect(await resolver().resolveEngineExecutable("claude", { executablePath: path }, env)).toMatchObject({ state: "ready", path, version: "2.10.6" })

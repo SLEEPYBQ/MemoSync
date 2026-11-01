@@ -20,7 +20,17 @@ async function writeCli(cmdPath: string, jsPath: string, version: string, codexS
     "else process.exit(77)",
   ].join("\n"))
   const entry = relative(dirname(cmdPath), jsPath).replaceAll("\\", "/")
-  await writeFile(cmdPath, `@echo off\r\n"%dp0%/${entry}" %*\r\n`)
+  const windowsEntry = entry.replaceAll("/", "\\")
+  await writeFile(cmdPath, [
+    "@ECHO off",
+    "SETLOCAL",
+    'SET "dp0=%~dp0"',
+    `IF EXIST "%~dp0\\node.exe" (`,
+    `  "%~dp0\\node.exe" "%~dp0\\${windowsEntry}" %*`,
+    ") ELSE (",
+    `  node "%~dp0\\${windowsEntry}" %*`,
+    ")",
+  ].join("\r\n"))
 }
 
 function resolver() {
