@@ -314,7 +314,9 @@ export function buildRegistryModel(connection: PiConnection & { protocol: "opena
 export function buildRegistryModel(connection: PiConnection & { protocol?: "openai-chat" }, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions">
 export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses">
 export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses"> {
-  const isOpenRouter = new URL(connection.baseUrl).hostname === "openrouter.ai"
+  const hostname = new URL(connection.baseUrl).hostname
+  const isOpenRouter = hostname === "openrouter.ai"
+  const isZhipu = hostname === "open.bigmodel.cn"
   return {
     id: modelId,
     name: modelId,
@@ -329,7 +331,13 @@ export function buildRegistryModel(connection: PiConnection, modelId: string, ca
     // Pi treats zero as an unspecified output limit. A cold/partial catalog
     // must not send a guessed 32K limit to a model that only accepts 8K.
     maxTokens: connection.maxOutputTokens ?? (card?.maxTokens ? Math.min(card.maxTokens, 32_000) : 0),
-    compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
+    compat: isZhipu ? {
+      supportsDeveloperRole: false,
+      supportsStore: false,
+      maxTokensField: "max_tokens",
+      // BigModel uses the same thinking.type + reasoning_effort wire format.
+      thinkingFormat: "deepseek",
+    } : { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
 }
 
