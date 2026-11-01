@@ -870,7 +870,7 @@ export class CodexAppServerManager {
     }
 
     if (existing) {
-      await this.stopSession(args.chatId)
+      await this.retireSession(args.chatId)
       if (pending?.cancelled) throw new Error("Codex session stopped")
       args.signal?.throwIfAborted()
     }
@@ -1197,9 +1197,7 @@ export class CodexAppServerManager {
     return tracked
   }
 
-  stopSession(chatId: string): Promise<void> {
-    const pending = this.pendingRuntimeStarts.get(chatId)
-    if (pending) pending.cancelled = true
+  private retireSession(chatId: string): Promise<void> {
     const context = this.sessions.get(chatId)
     if (!context) return this.pendingCleanups.get(chatId) ?? Promise.resolve()
     context.closed = true
@@ -1210,6 +1208,12 @@ export class CodexAppServerManager {
     context.pendingRequests.clear()
     this.sessions.delete(chatId)
     return this.trackCleanup(chatId, context.child)
+  }
+
+  stopSession(chatId: string): Promise<void> {
+    const pending = this.pendingRuntimeStarts.get(chatId)
+    if (pending) pending.cancelled = true
+    return this.retireSession(chatId)
   }
 
   stopAll(): Promise<void> {

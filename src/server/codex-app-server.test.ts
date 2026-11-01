@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
 import { spawn } from "node:child_process"
@@ -8,6 +8,7 @@ import { join } from "node:path"
 import { CodexAppServerManager } from "./codex-app-server"
 import { ModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime } from "./model-access/runtime"
+import type { EngineRuntime } from "./model-access/runtime"
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
 
 class FakeCodexProcess extends EventEmitter {
@@ -55,6 +56,15 @@ class FakeCodexProcess extends EventEmitter {
   closeWithCode(code: number) {
     this.emit("close", code)
   }
+}
+
+const explicitRuntime: EngineRuntime = {
+  engine: "codex",
+  executable: { state: "ready" },
+  env: {},
+  args: [],
+  model: "gpt-5.4",
+  isolated: true,
 }
 
 async function collectStream(stream: AsyncIterable<any>) {
@@ -161,6 +171,130 @@ describe("CodexAppServerManager", () => {
 
     await expect(starting).rejects.toThrow("Codex session stopped")
     expect(child.killed).toBe(true)
+  })
+
+  test("replaces an existing session when its cwd changes and resumes the requested thread", async () => {
+    const children: FakeCodexProcess[] = []
+    const spawnCwds: string[] = []
+    const manager = new CodexAppServerManager({
+      spawnProcess: (cwd) => {
+        spawnCwds.push(cwd)
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+          if (message.method === "thread/start" || message.method === "thread/resume") {
+            process.writeServerMessage({
+              id: message.id,
+              result: { thread: { id: message.params.threadId ?? "new-thread" } },
+            })
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+
+    try {
+      await manager.startSession({
+        chatId: "replace-session",
+        cwd: "/tmp/first-project",
+        model: "gpt-5.4",
+        sessionToken: null,
+        runtime: explicitRuntime,
+      })
+
+      const token = await manager.startSession({
+        chatId: "replace-session",
+        cwd: "/tmp/second-project",
+        model: "gpt-5.4",
+        sessionToken: "saved-thread",
+        runtime: explicitRuntime,
+      })
+
+      expect(token).toBe("saved-thread")
+      expect(spawnCwds).toEqual(["/tmp/first-project", "/tmp/second-project"])
+      expect(children).toHaveLength(2)
+      expect(children[0]?.killed).toBe(true)
+      expect(children[1]?.killed).toBe(false)
+      expect(children[1]?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "thread/resume",
+          params: expect.objectContaining({ threadId: "saved-thread" }),
+        }),
+      ]))
+    } finally {
+      await manager.stopAll()
+    }
+  })
+
+  test("an external stop during replacement cleanup prevents the replacement from spawning", async () => {
+    const chatId = "cancel-replacement"
+    const children: FakeCodexProcess[] = []
+    let manager!: CodexAppServerManager
+    let resolveExternalStop!: () => void
+    const externalStopRequested = new Promise<void>((resolve) => { resolveExternalStop = resolve })
+    let externalStopPromise: Promise<void> | undefined
+    const oldChild = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start" || message.method === "thread/resume") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "old-thread" } } })
+      }
+    })
+    oldChild.pid = Number.MAX_SAFE_INTEGER
+    oldChild.kill = (signal) => {
+      oldChild.killCalls += 1
+      if (signal === "SIGSTOP") {
+        queueMicrotask(() => {
+          externalStopPromise = manager.stopSession(chatId)
+          resolveExternalStop()
+        })
+        return true
+      }
+      oldChild.killed = true
+      oldChild.emit("close", 0)
+      return true
+    }
+
+    manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const child = children.length === 0 ? oldChild : new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+          if (message.method === "thread/start" || message.method === "thread/resume") {
+            process.writeServerMessage({ id: message.id, result: { thread: { id: "replacement-thread" } } })
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const signalTrap = spyOn(process, "kill").mockImplementation(() => true)
+
+    try {
+      await manager.startSession({
+        chatId,
+        cwd: "/tmp/first-project",
+        model: "gpt-5.4",
+        sessionToken: null,
+        runtime: explicitRuntime,
+      })
+
+      const replacement = manager.startSession({
+        chatId,
+        cwd: "/tmp/second-project",
+        model: "gpt-5.4",
+        sessionToken: "saved-thread",
+        runtime: explicitRuntime,
+      })
+      await externalStopRequested
+
+      await expect(replacement).rejects.toThrow("Codex session stopped")
+      await externalStopPromise
+      expect(children).toHaveLength(1)
+      expect(oldChild.killed).toBe(true)
+      expect(signalTrap).not.toHaveBeenCalled()
+    } finally {
+      signalTrap.mockRestore()
+      await manager.stopAll()
+    }
   })
 
   test("aborting a pending turn-start response kills the ready child", async () => {
