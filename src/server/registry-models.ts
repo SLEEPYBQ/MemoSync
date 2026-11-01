@@ -170,6 +170,7 @@ export function createRegistryModelLoader(deps: { fetch?: (input: string, init?:
 }
 
 async function bundledModelCards(connection: RegistryConnection): Promise<RegistryModelCard[]> {
+  if (process.env.MEMOSYNC_EXTERNAL_AGENTS === "1") return []
   // Never borrow catalog routing or capabilities for a custom endpoint.
   const official = (connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === "https://openrouter.ai/api/v1")
     || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")

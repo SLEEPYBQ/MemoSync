@@ -227,6 +227,43 @@ The server code is in `src/server/`:
 
 The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
+## Windows desktop
+
+The Windows desktop build is available as a per-user NSIS installer and as a
+portable ZIP:
+
+- Run the `MemoSync-*-Setup.exe` installer and choose the per-user installation
+  directory when prompted. It does not require administrator access.
+- For the portable build, extract `MemoSync-*-portable.zip` to a directory you
+  control and launch `MemoSync.exe` from the extracted directory.
+
+The desktop app includes its own Bun runtime. You do not need Node.js or Bun on
+the host to run MemoSync. Local agents are separate: install and authenticate
+each agent according to its own prerequisites. Both the installer and portable
+build use the shared `~/.memosync/data` directory and its lock, so do not run
+the CLI/web server and desktop app against the same data directory at once.
+
+Claude and Codex can be discovered from the Windows `PATH`, or you can set an
+explicit executable path in **Settings → Models**. Pi requires a local
+`@mariozechner/pi-coding-agent` SDK in the `0.73.x` line, at least `0.73.1`;
+an explicit Pi executable path is supported.
+
+Build locally on native Windows x64 with Bun **1.3.10** and Node.js **24**:
+
+```powershell
+bun install --frozen-lockfile
+bun run desktop:install
+bun run build
+bun run desktop:dev
+# After closing the development app:
+bun run desktop:package:win
+bun run desktop:smoke
+```
+
+Packages are written to `desktop/release/`. Release signing is not configured;
+Windows may show an unrecognized-publisher warning. The ZIP is portable as an
+application, not as a self-contained data directory.
+
 ## Acknowledgements
 
 MemoSync started as a fork of [Kanna](https://github.com/jakemor/kanna). It runs:

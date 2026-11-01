@@ -228,6 +228,39 @@ bun run check     # 类型检查和前端构建
 
 前端是 `src/client/` 下的 React 应用。开发模式的数据存放在 `~/.memosync-dev/`。
 
+## Windows 桌面版
+
+Windows 桌面版提供按用户安装的 NSIS 安装包和便携 ZIP 包：
+
+- 运行 `MemoSync-*-Setup.exe`，按提示选择按用户安装的目录；不需要管理员权限。
+- 使用便携版时，将 `MemoSync-*-portable.zip` 解压到你有权限的目录，
+  然后从解压目录启动 `MemoSync.exe`。
+
+桌面应用自带 Bun 运行时；运行 MemoSync 不需要主机安装 Node.js 或 Bun。
+本地代理是独立的，请按照各代理自己的要求安装并完成登录。安装版和便携版
+都使用共享的 `~/.memosync/data` 目录及其锁，因此不要让 CLI/Web 服务与桌面版
+同时使用同一个数据目录。
+
+Claude 和 Codex 可以从 Windows 的 `PATH` 中发现，也可以在
+**设置 → 模型**中填写可执行文件的明确路径。Pi 需要本地安装
+`@mariozechner/pi-coding-agent`，版本须为 `0.73.x` 且不低于 `0.73.1`；
+Pi 也支持填写明确的可执行文件路径。
+
+在原生 Windows x64 上构建需要 Bun **1.3.10** 和 Node.js **24**：
+
+```powershell
+bun install --frozen-lockfile
+bun run desktop:install
+bun run build
+bun run desktop:dev
+# 关闭开发版应用后：
+bun run desktop:package:win
+bun run desktop:smoke
+```
+
+产物位于 `desktop/release/`。当前未配置发布签名，Windows 可能提示发布者未知。
+ZIP 的便携性仅指应用程序，数据仍存放在上述用户目录中。
+
 ## 致谢
 
 MemoSync 由 [Kanna](https://github.com/jakemor/kanna) 分叉而来，运行以下智能体：

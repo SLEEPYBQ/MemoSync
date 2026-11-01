@@ -6,6 +6,7 @@ import { knownInstallDirectories, type ExecutableEnvironment } from "./discovery
 import { executableLauncher } from "./launcher"
 import { meetsMinimumVersion, parseExecutableVersion, runExecutableProbe } from "./probe"
 import { readSdkInstallation, type SdkInstallation } from "./sdk-installation"
+import { PI_SDK_MINIMUM, readPiInstallation } from "./pi-installation"
 
 /** Dependency seam for tests: fake SDK and installation roots, never host CLIs. */
 export interface ResolverOptions {
@@ -34,7 +35,7 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
   let generation = 0
 
   async function inspect(
-    engine: "claude" | "codex", file: string, source: Source,
+    engine: EngineId, file: string, source: Source,
     env: ExecutableEnvironment, minimumVersion?: string, explicit = false,
   ): Promise<ExecutableStatus | undefined> {
     const base = { path: file, source, ...(minimumVersion ? { minimumVersion } : {}) }
@@ -47,6 +48,10 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
         throw error
       }
       const target = await realpath(file)
+      if (engine === "pi") {
+        try { await readPiInstallation(target, env) }
+        catch (error) { return { ...base, state: "incompatible", detail: errorDetail(error) } }
+      }
       // Probe exactly the canonical path T2 will launch from status.path.
       const launcher = await executableLauncher(target, env)
       const files = [...new Set([target, launcher.command, ...launcher.args.filter(isAbsolute)])]
@@ -84,13 +89,14 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
     setup: Pick<EngineSetup, "executablePath"> | undefined,
     env: ExecutableEnvironment,
   ): Promise<ExecutableStatus> {
-    if (engine === "pi") return { state: "not-needed" }
+    const externalAgents = env.MEMOSYNC_EXTERNAL_AGENTS === "1"
+    if (engine === "pi" && !externalAgents) return { state: "not-needed" }
     let sdk: SdkInstallation | undefined
     if (engine === "claude") {
       try { sdk = sdkInstallation() }
       catch (error) { return { state: "broken", detail: `Claude Agent SDK: ${errorDetail(error)}` } }
     }
-    const minimumVersion = sdk?.minimumVersion
+    const minimumVersion = engine === "pi" ? PI_SDK_MINIMUM : sdk?.minimumVersion
     const expand = (file: string) => resolve(file.startsWith("~/") && (env.HOME || env.USERPROFILE)
       ? join((env.HOME || env.USERPROFILE)!, file.slice(2)) : file)
     if (setup?.executablePath != null) {
@@ -126,7 +132,7 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
     if (fromPath) return fromPath
     const fromKnown = await inDirectories(await knownDirectories(env), "known-dir")
     if (fromKnown) return fromKnown
-    for (const file of sdk?.bundledPaths ?? []) {
+    for (const file of externalAgents ? [] : sdk?.bundledPaths ?? []) {
       const result = await candidate(file, "bundled")
       if (result) return result
     }

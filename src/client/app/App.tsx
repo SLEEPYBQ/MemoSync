@@ -92,7 +92,7 @@ function PasswordScreen({
   }
 
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-6 py-10">
+    <div className="flex min-h-[var(--app-viewport-height,100dvh)] items-center justify-center bg-background px-6 py-10">
       <Card className="w-full max-w-md rounded-3xl border border-border bg-card shadow-sm">
         <CardHeader className="flex flex-col p-2 space-y-3 px-6 pt-6 pb-5 pl-[28px]">
           <div className="flex items-center gap-3">
@@ -424,7 +424,7 @@ function AppLayout() {
 
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>
-      <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
+      <div className="flex h-[var(--app-viewport-height,100dvh)] min-h-[var(--app-viewport-height,100dvh)] overflow-hidden">
         {sidebarElement}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {memoryBoardRequest ? (
@@ -460,7 +460,7 @@ export function App() {
 
   if (auth.state.status === "checking") {
     return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-background text-sm text-muted-foreground">
+      <div className="flex min-h-[var(--app-viewport-height,100dvh)] items-center justify-center bg-background text-sm text-muted-foreground">
         {t("chat:checkingSession")}</div>
     )
   }

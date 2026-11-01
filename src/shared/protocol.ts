@@ -151,6 +151,7 @@ export type ClientCommand =
   | { type: "modelAccess.saveConnection"; connection: ApiConnectionInput }
   | { type: "modelAccess.deleteConnection"; connectionId: string }
   | { type: "modelAccess.setEngine"; engine: EngineId; setup: EngineSetup }
+  | { type: "modelAccess.setExecutablePath"; engine: EngineId; executablePath: string | null }
   | { type: "modelAccess.testConnection"; connection: ApiConnectionInput | { connectionId: string }; engine?: EngineId; model?: string }
   | { type: "modelAccess.refreshExecutables" }
   | { type: "chat.getPreview"; chatId: string }

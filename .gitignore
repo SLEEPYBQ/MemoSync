@@ -50,3 +50,8 @@ vite.config.ts.timestamp-*
 
 # Codex dispatch run records
 .codex-runs/
+
+# Desktop build output and dependencies
+/desktop/build/
+/desktop/release/
+/desktop/node_modules/

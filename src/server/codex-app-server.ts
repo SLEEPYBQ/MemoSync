@@ -130,6 +130,7 @@ interface SessionContext {
   closed: boolean
   subprocessEnv?: Record<string, string | undefined>
   externalToolsDisabled?: boolean
+  toolsDisabled?: boolean
 }
 
 export interface StartCodexSessionArgs {
@@ -151,6 +152,8 @@ export interface StartCodexSessionArgs {
   allowResumeFallback?: boolean
   /** Branch-only: disable configured MCP servers, native subagents, and web search. */
   disableExternalTools?: boolean
+  /** Structured helpers must not execute instructions embedded in their input. */
+  disableTools?: boolean
 }
 
 export interface StartCodexTurnArgs {
@@ -852,6 +855,7 @@ export class CodexAppServerManager {
     const existing = this.sessions.get(args.chatId)
     if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
       && (!args.disableExternalTools || existing.externalToolsDisabled)
+      && (!args.disableTools || existing.toolsDisabled)
       && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
       return existing.sessionToken
     }
@@ -908,7 +912,7 @@ export class CodexAppServerManager {
     })
 
     let branchConfig: Record<string, unknown> | undefined
-    if (args.disableExternalTools) {
+    if (args.disableExternalTools || args.disableTools) {
       // Sandbox policy covers local commands, not an MCP server's external
       // side effects. Inspect names only, then override each server on this
       // thread; never write config.toml or forward its credentials as config.
@@ -927,7 +931,7 @@ export class CodexAppServerManager {
       if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
       const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
       const guard = fileURLToPath(new URL("./memory/codex-branch-guard.ts", import.meta.url))
-      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)} ${quote(args.cwd)}`
+      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)} ${quote(args.cwd)}${args.disableTools ? " --deny-all-tools" : ""}`
       // Codex normalizes hook identity to sorted JSON before hashing. Session
       // flags are not implicitly trusted; keep trust local to this declaration.
       // scripts/smoke-branch-prefix.ts proves the hook denies on the installed CLI.
@@ -941,7 +945,7 @@ export class CodexAppServerManager {
         // Codex picks the mode per turn from the permission profile: the
         // parent's full access upgrades anything but disabled/indexed to live,
         // while this read-only branch would keep cached. Pin the parent's.
-        ...(config.web_search === "disabled" || config.web_search === "indexed" ? {} : { web_search: "live" }),
+        ...(args.disableTools ? { web_search: "disabled", "features.shell_tool": false } : config.web_search === "disabled" || config.web_search === "indexed" ? {} : { web_search: "live" }),
         "features.multi_agent": false,
         "hooks.PreToolUse": [{ hooks: [{ type: "command", command, timeout: 10 }] }],
       }
@@ -1005,7 +1009,8 @@ export class CodexAppServerManager {
     }
 
     context.sessionToken = response.thread.id
-    context.externalToolsDisabled = args.disableExternalTools === true
+    context.externalToolsDisabled = args.disableExternalTools === true || args.disableTools === true
+    context.toolsDisabled = args.disableTools === true
     return context.sessionToken
   }
 
@@ -1127,6 +1132,8 @@ export class CodexAppServerManager {
         model: args.model ?? "gpt-5.5",
         serviceTier: args.serviceTier,
         sessionToken: null,
+        sandbox: "read-only",
+        disableTools: true,
       })
 
       turn = await this.startTurn({

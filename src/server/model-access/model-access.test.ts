@@ -17,6 +17,20 @@ function fixture(env: Record<string, string> = {}) {
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 const input = { name: "Private", endpoints: [{ protocol: "anthropic-messages" as const, baseUrl: "https://example.test" }], models: [{ id: "large", contextWindow: 1_000_000 }] }
 
+test("Pi executable path can be saved before choosing a connection and survives restart", async () => {
+  const service = await fixture({ MEMOSYNC_EXTERNAL_AGENTS: "1" }).initialize()
+  await service.setExecutablePath("pi", "/test/local Pi/bin/pi")
+  expect(service.setup("pi").executablePath).toBe("/test/local Pi/bin/pi")
+  expect(service.getSnapshot().engines.pi.problem).toBe("connection-missing")
+  await expect(service.setEngine("pi", { access: { mode: "account" } })).rejects.toThrow("engine-setup-invalid")
+  const reopened = await new ModelAccessService({ dataDir: service.dataDir, env: service.env, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
+  expect(reopened.setup("pi").executablePath).toBe("/test/local Pi/bin/pi")
+  const connection = await reopened.saveConnection({ name: "Local", endpoints: [{ protocol: "openai-chat", baseUrl: "http://localhost:1234/v1" }], models: [{ id: "local" }] })
+  await reopened.setEngine("pi", { ...reopened.setup("pi"), access: { mode: "connection", connectionId: connection.id, defaultModel: "local" } })
+  await reopened.setExecutablePath("pi", null)
+  expect(reopened.setup("pi")).toEqual({ executablePath: null, access: { mode: "connection", connectionId: connection.id, defaultModel: "local" } })
+})
+
 for (const engine of ["claude", "codex", "pi"] as const) {
   for (const models of [[{ id: "remaining" }], []]) {
     test(`${engine} runtime ignores a removed default model (${models.length} remaining)`, async () => {
