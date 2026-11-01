@@ -112,6 +112,10 @@ const fakeSocket = {
       snapshot.engines[command.engine].setup = command.setup
       listener?.(structuredClone(snapshot))
     }
+    if (command.type === "modelAccess.setExecutablePath") {
+      snapshot.engines[command.engine].setup.executablePath = command.executablePath
+      listener?.(structuredClone(snapshot))
+    }
     if (command.type === "modelAccess.deleteConnection") {
       snapshot.connections = snapshot.connections.filter((c) => c.id !== command.connectionId)
       listener?.(structuredClone(snapshot))

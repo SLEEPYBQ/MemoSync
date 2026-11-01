@@ -135,6 +135,12 @@ export class ModelAccessService {
     await this.writeCredential(id, null)
     await this.refreshExecutables()
   }) }
+  setExecutablePath(engine: EngineId, executablePath: string | null) { return this.serialize(async () => {
+    if (!engines.includes(engine) || (executablePath !== null && typeof executablePath !== "string")) throw new Error("engine-setup-invalid")
+    const setup = { ...this.setup(engine), executablePath }
+    this.persist({ ...this.data, engines: { ...this.data.engines, [engine]: setup } })
+    await this.refreshExecutables()
+  }) }
   setEngine(engine: EngineId, setup: EngineSetup) { return this.serialize(async () => {
     if (!engines.includes(engine) || !setup?.access || !["account", "connection"].includes(setup.access.mode) || (engine === "pi" && setup.access.mode === "account")) throw new Error("engine-setup-invalid")
     if (setup.executablePath != null && typeof setup.executablePath !== "string") throw new Error("engine-setup-invalid")

@@ -369,9 +369,9 @@ export function EngineCard({
                 void command(
                   () =>
                     socket.command({
-                      type: "modelAccess.setEngine",
+                      type: "modelAccess.setExecutablePath",
                       engine,
-                      setup: { ...setup, executablePath: path.trim() || null },
+                      executablePath: path.trim() || null,
                     }),
                   () => setPathOpen(false),
                 )
