@@ -4,7 +4,8 @@ const { randomBytes } = require("node:crypto")
 const { createInterface } = require("node:readline")
 const path = require("node:path")
 const { trackBackendProcess } = require("./backend-lifecycle.cjs")
-const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
+const { isExternalUrl, parseReadyLine } = require("./policy.cjs")
+const { contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
 
 let backend
 let backendLifecycle
@@ -13,6 +14,7 @@ let origin
 let quitting = false
 let stopped = false
 let desktopSession
+const contentWindows = new Set()
 
 async function openExternal(url) {
   if (!isExternalUrl(url)) return
@@ -47,18 +49,15 @@ function createWindow() {
       webviewTag: false,
     },
   })
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    if (!isAppUrl(url, origin)) {
-      event.preventDefault()
-      void openExternal(url)
-    }
-  })
-  mainWindow.webContents.on("will-redirect", (event, url) => {
-    if (!isAppUrl(url, origin)) event.preventDefault()
-  })
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void openExternal(url)
-    return { action: "deny" }
+  installNavigationHandlers(mainWindow.webContents, origin, "main", {
+    openContent: (url) => { createContentWindow(url) },
+    openExternal: (url) => { void openExternal(url) },
+    navigateMain: (url) => {
+      if (!mainWindow?.isDestroyed()) {
+        void mainWindow.loadURL(url)
+        mainWindow.focus()
+      }
+    },
   })
   mainWindow.once("ready-to-show", () => mainWindow?.show())
   mainWindow.on("closed", () => { mainWindow = undefined })
@@ -68,6 +67,17 @@ function createWindow() {
       app.quit()
     }
   })
+}
+
+function createContentWindow(url) {
+  if (!origin || quitting || !desktopSession) return
+  const contentWindow = new BrowserWindow(contentWindowOptions(desktopSession))
+  contentWindows.add(contentWindow)
+  installNavigationHandlers(contentWindow.webContents, origin, "content", {
+    openContent: (nextUrl) => { createContentWindow(nextUrl) },
+  })
+  contentWindow.on("closed", () => contentWindows.delete(contentWindow))
+  contentWindow.loadURL(url).catch(() => contentWindow.close())
 }
 
 function startBackend(password) {
@@ -148,6 +158,7 @@ else {
   app.on("activate", () => { if (!mainWindow) createWindow() })
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit() })
   app.on("before-quit", (event) => {
+    for (const contentWindow of contentWindows) contentWindow.close()
     if (!backend || stopped || backendLifecycle.stopped) return
     event.preventDefault()
     if (quitting) return

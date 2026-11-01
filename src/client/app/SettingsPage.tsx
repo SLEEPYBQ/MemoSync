@@ -64,6 +64,7 @@ export function SettingsPage() {
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
   const [signingOut, setSigningOut] = useState(false)
   const [authEnabled, setAuthEnabled] = useState(false)
+  const [canSignOut, setCanSignOut] = useState(true)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
@@ -93,15 +94,17 @@ export function SettingsPage() {
     })
       .then(async (response) => {
         if (!response.ok) return { enabled: false }
-        return (await response.json()) as { enabled?: boolean }
+        return (await response.json()) as { enabled?: boolean; canSignOut?: boolean }
       })
       .then((payload) => {
         if (cancelled) return
         setAuthEnabled(payload.enabled === true)
+        setCanSignOut(payload.canSignOut !== false)
       })
       .catch(() => {
         if (cancelled) return
         setAuthEnabled(false)
+        setCanSignOut(false)
       })
 
     return () => {
@@ -252,7 +255,7 @@ export function SettingsPage() {
               })
             )}
           </nav>
-          {authEnabled ? (
+          {authEnabled && canSignOut !== false ? (
             <div className="border-t border-border/60 px-3 py-3">
               <button
                 type="button"
@@ -298,7 +301,7 @@ export function SettingsPage() {
                     <span className="whitespace-nowrap">{item.label}</span>
                   </button>
                 ))}
-                {authEnabled ? (
+                {authEnabled && canSignOut !== false ? (
                   <button
                     type="button"
                     onClick={() => {

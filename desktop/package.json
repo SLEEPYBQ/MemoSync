@@ -22,6 +22,7 @@
       "main.cjs",
       "backend-lifecycle.cjs",
       "policy.cjs",
+      "navigation.cjs",
       "package.json"
     ],
     "extraResources": [

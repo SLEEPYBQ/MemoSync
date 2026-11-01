@@ -121,7 +121,13 @@ describe("staged desktop backend", () => {
     const status = await fetch(`${server.origin}/auth/status`, {
       headers: { Origin: server.origin, Cookie: cookie ?? "" },
     })
-    expect((await status.json()) as { authenticated?: boolean }).toMatchObject({ authenticated: true })
+    expect(await status.json()).toMatchObject({ authenticated: true, canSignOut: false })
+    const logout = await fetch(`${server.origin}/auth/logout`, {
+      method: "POST",
+      headers: { Origin: server.origin, Cookie: cookie ?? "" },
+    })
+    expect(logout.status).toBe(403)
+    expect(logout.headers.get("set-cookie")).toBeNull()
     await stopServer(server.child)
     await rm(root, { recursive: true, force: true })
   })

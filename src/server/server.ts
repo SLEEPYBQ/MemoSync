@@ -147,6 +147,7 @@ export interface StartMemoSyncServerOptions {
   dataDir?: string
   password?: string | null
   strictPort?: boolean
+  allowSignOut?: boolean
   /**
    * When true, the auth layer trusts X-Forwarded-Proto for CSRF origin
    * checks, redirect URLs, and the Secure cookie flag. The hostname still
@@ -265,7 +266,12 @@ async function startLockedMemoSyncServer(
   const appPublicOrigin = (options.appOrigin ?? process.env.MEMOSYNC_APP_ORIGIN ?? "").trim()
   const previewOriginHost = previewOrigin ? new URL(previewOrigin).host : null
   const auth = options.password
-    ? createAuthManager(options.password, { trustProxy, previewOrigin, appOrigin: appPublicOrigin })
+    ? createAuthManager(options.password, {
+      trustProxy,
+      previewOrigin,
+      appOrigin: appPublicOrigin,
+      allowSignOut: options.allowSignOut,
+    })
     : null
   const allowedOrigins = options.allowedOrigins ?? (process.env.MEMOSYNC_ALLOWED_ORIGINS ?? "")
     .split(",")

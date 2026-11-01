@@ -16,6 +16,15 @@ function isExternalUrl(value) {
   }
 }
 
+function isAppContentUrl(value, origin) {
+  if (!isAppUrl(value, origin)) return false
+  try {
+    return /^\/api\/projects\/[^/]+\/(?:uploads|files)\/[^/]+\/content$/.test(new URL(value).pathname)
+  } catch {
+    return false
+  }
+}
+
 function parseReadyLine(line) {
   const prefix = "MEMOSYNC_DESKTOP_READY:"
   if (!line.startsWith(prefix)) return null
@@ -24,4 +33,4 @@ function parseReadyLine(line) {
   return `http://127.0.0.1:${port}`
 }
 
-module.exports = { isAppUrl, isExternalUrl, parseReadyLine }
+module.exports = { isAppContentUrl, isAppUrl, isExternalUrl, parseReadyLine }
