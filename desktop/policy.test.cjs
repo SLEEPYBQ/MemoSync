@@ -3,7 +3,33 @@ const assert = require("node:assert/strict")
 const { EventEmitter } = require("node:events")
 const { trackBackendProcess } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
-const { classifyNavigation, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
+const { canGrantDesktopPermission, classifyNavigation, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
+
+describe("desktop permissions", () => {
+  const origin = "http://127.0.0.1:43210"
+  const main = { isDestroyed: () => false, getURL: () => `${origin}/settings/general` }
+  const details = { isMainFrame: true, requestingUrl: `${origin}/settings/general` }
+
+  it("allows notifications only from the trusted main application document", () => {
+    assert.equal(canGrantDesktopPermission(main, main, "notifications", details, origin), true)
+    for (const requester of [null, { ...main }, { ...main, isDestroyed: () => true }]) {
+      assert.equal(canGrantDesktopPermission(requester, main, "notifications", details, origin), false)
+    }
+    for (const invalid of [undefined, {}, { ...details, isMainFrame: false }, { ...details, requestingUrl: "https://example.com" }, { ...details, requestingUrl: `${origin}/__memosync/preview/1234/` }]) {
+      assert.equal(canGrantDesktopPermission(main, main, "notifications", invalid, origin), false)
+    }
+    const navigated = { ...main, getURL: () => "https://example.com" }
+    assert.equal(canGrantDesktopPermission(navigated, navigated, "notifications", details, origin), false)
+    const destroyed = { ...main, isDestroyed: () => true }
+    assert.equal(canGrantDesktopPermission(destroyed, destroyed, "notifications", details, origin), false)
+  })
+
+  it("continues denying other browser permissions", () => {
+    for (const permission of ["media", "geolocation", "clipboard-read", "openExternal", "unknown"]) {
+      assert.equal(canGrantDesktopPermission(main, main, permission, details, origin), false)
+    }
+  })
+})
 
 describe("desktop backend process lifecycle", () => {
   it("releases shutdown wait when the runtime cannot be spawned", async () => {

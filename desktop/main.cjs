@@ -4,8 +4,8 @@ const { randomBytes } = require("node:crypto")
 const { createInterface } = require("node:readline")
 const path = require("node:path")
 const { trackBackendProcess } = require("./backend-lifecycle.cjs")
-const { isExternalUrl, parseReadyLine } = require("./policy.cjs")
-const { contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
+const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
+const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
 
 let backend
 let backendLifecycle
@@ -174,8 +174,13 @@ else {
       { role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
     ]))
     desktopSession = session.fromPartition(`memosync-${randomBytes(12).toString("hex")}`)
-    desktopSession.setPermissionRequestHandler((_webContents, _permission, callback) => callback(false))
-    desktopSession.setPermissionCheckHandler(() => false)
+    desktopSession.setPermissionRequestHandler((webContents, permission, callback, details) => {
+      callback(canGrantDesktopPermission(webContents, mainWindow?.webContents, permission, details, origin))
+    })
+    desktopSession.setPermissionCheckHandler((webContents, permission, requestingOrigin, details) => {
+      return isAppUrl(requestingOrigin, origin)
+        && canGrantDesktopPermission(webContents, mainWindow?.webContents, permission, details, origin)
+    })
     const password = randomBytes(32).toString("hex")
     origin = await startBackend(password)
     await authenticate(password)
