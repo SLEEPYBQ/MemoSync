@@ -115,4 +115,23 @@ describe('memory branch project read boundary', () => {
       }
     } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
+
+  test('structured helpers deny all tools, including otherwise read-only commands', async () => {
+    const f = fixture()
+    const guard = fileURLToPath(new URL('./codex-branch-guard.ts', import.meta.url))
+    try {
+      for (const [name, input] of [
+        ['exec_command', { cmd: 'pwd' }],
+        ['exec_command', { cmd: 'sleep 45; printf LATE > late.txt' }],
+        ['apply_patch', { patch: '*** Begin Patch\n*** Add File: late.txt\n+LATE\n*** End Patch' }],
+      ] as const) {
+        const child = Bun.spawn([process.execPath, guard, f.project, '--deny-all-tools'], {
+          stdin: new Blob([JSON.stringify({ tool_name: name, tool_input: input, cwd: f.project })]),
+          stdout: 'pipe', stderr: 'pipe', env: { ...process.env, BUN_BE_BUN: '1' },
+        })
+        expect(JSON.parse(await new Response(child.stdout).text()).hookSpecificOutput.permissionDecision).toBe('deny')
+        expect(await child.exited).toBe(0)
+      }
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  })
 })

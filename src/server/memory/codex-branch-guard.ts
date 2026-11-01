@@ -13,7 +13,8 @@ try {
   const projectRoot = process.argv[2]
   const requestedCwd = input?.workdir ?? input?.cwd ?? event.cwd ?? projectRoot
   const cwd = typeof requestedCwd === 'string' && !isAbsolute(requestedCwd) ? `${projectRoot}/${requestedCwd}` : requestedCwd
-  allow = typeof projectRoot === 'string' && typeof cwd === 'string'
+  allow = process.argv[3] !== '--deny-all-tools'
+    && typeof projectRoot === 'string' && typeof cwd === 'string'
     && isProjectBranchPath(cwd, projectRoot)
     && ['exec_command', 'shell_command', 'Bash'].includes(event.tool_name)
     && typeof (input?.cmd ?? input?.command) === 'string'
