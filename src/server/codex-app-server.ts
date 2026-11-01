@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { spawn } from "node:child_process"
+import { killProcessTree } from "./process-utils"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -63,6 +64,7 @@ import {
 } from "./codex-app-server-protocol"
 
 interface CodexAppServerProcess {
+  pid?: number
   stdin: Writable
   stdout: Readable
   stderr: Readable
@@ -821,6 +823,8 @@ export class CodexAppServerManager {
       const command = runtime.launcher?.command ?? runtime.executable.path ?? "codex"
       return spawn(command, [...(runtime.launcher?.args ?? []), ...prepared.args], {
         cwd,
+        detached: process.platform !== "win32",
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: runtime.env,
       }) as unknown as CodexAppServerProcess
@@ -1103,12 +1107,15 @@ export class CodexAppServerManager {
         pendingTurn.resolved = true
         pendingTurn.queue.finish()
 
-        if (!pendingTurn.turnId || !context.sessionToken) return
-
-        await this.sendRequest(context, "turn/interrupt", {
-          threadId: context.sessionToken,
-          turnId: pendingTurn.turnId,
-        } satisfies TurnInterruptParams)
+        if (pendingTurn.turnId && context.sessionToken) {
+          void this.sendRequest(context, "turn/interrupt", {
+            threadId: context.sessionToken,
+            turnId: pendingTurn.turnId,
+          } satisfies TurnInterruptParams).catch(() => {})
+        }
+        // The protocol acknowledgement does not guarantee tool processes stopped.
+        // The next turn resumes the persisted thread in a fresh app-server.
+        if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
       },
       close: () => {},
     }
@@ -1179,11 +1186,7 @@ export class CodexAppServerManager {
     }
     context.pendingRequests.clear()
     this.sessions.delete(chatId)
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // ignore kill failures
-    }
+    killProcessTree(context.child)
   }
 
   stopAll() {
@@ -1732,11 +1735,7 @@ export class CodexAppServerManager {
     if (this.sessions.get(context.chatId) === context) {
       this.sessions.delete(context.chatId)
     }
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // Preserve the original failure if the child has already exited.
-    }
+    killProcessTree(context.child)
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {
