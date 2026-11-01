@@ -3,14 +3,9 @@ const { isAppContentUrl, isAppUrl, isExternalUrl } = require("./policy.cjs")
 function isMainNavigationUrl(value, origin) {
   if (!isAppUrl(value, origin)) return false
   const pathname = new URL(value).pathname
-  return !(
-    pathname === "/api"
-    || pathname.startsWith("/api/")
-    || pathname === "/auth"
-    || pathname.startsWith("/auth/")
-    || pathname === "/__memosync/preview"
-    || pathname.startsWith("/__memosync/preview/")
-  )
+  return pathname === "/"
+    || pathname === "/index.html"
+    || /^\/(?:settings(?:\/[^/]+)?|memory|chat\/[^/]+)\/?$/.test(pathname)
 }
 
 function classifyNavigation(value, origin, target) {

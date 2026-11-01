@@ -3,7 +3,7 @@ const assert = require("node:assert/strict")
 const { EventEmitter } = require("node:events")
 const { trackBackendProcess } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
-const { contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
+const { classifyNavigation, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
 
 describe("desktop backend process lifecycle", () => {
   it("releases shutdown wait when the runtime cannot be spawned", async () => {
@@ -66,6 +66,16 @@ describe("desktop navigation boundary", () => {
     const appPopup = webContents.windowOpenHandler({ url: `${origin}/settings/general` })
     assert.deepEqual(appPopup, { action: "deny" })
     assert.deepEqual(actions.at(-1), ["main", `${origin}/settings/general`])
+  })
+
+  it("allows only app routes in the main window, never arbitrary HTML paths", () => {
+    for (const route of ["/", "/index.html", "/settings", "/settings/general", "/memory", "/chat/chat-1?view=files"]) {
+      assert.equal(classifyNavigation(`${origin}${route}`, origin, "main"), "main")
+    }
+    for (const route of ["/project.html", "/assets/example.html", "/other", "/settings/general/example.html"]) {
+      assert.equal(classifyNavigation(`${origin}${route}`, origin, "main"), "deny")
+    }
+    assert.equal(classifyNavigation(`${origin}/api/projects/project-1/files/page.html/content`, origin, "main"), "content")
   })
 
   it("keeps content windows on allowed content routes and blocks redirects", () => {
