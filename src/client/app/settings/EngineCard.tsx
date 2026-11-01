@@ -113,8 +113,9 @@ export function EngineCard({
             ? "brokenStatus"
             : "notReadyStatus"
   const installCommand =
-    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : "npm install -g @openai/codex"
-  const needsInstall = engine !== "pi" && executable && !["ready", "not-needed"].includes(executable.state)
+    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g @mariozechner/pi-coding-agent@0.73.1" : "npm install -g @openai/codex"
+  const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")
+  const needsInstall = executable && !["ready", "not-needed"].includes(executable.state)
   // Collapsed, the row says what is wrong; open, the notice below says it in full.
   const summary = !status
     ? null
@@ -153,7 +154,7 @@ export function EngineCard({
           </span>
           <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground/70 transition-transform duration-150", expanded && "rotate-90")} />
         </button>
-        {engine !== "pi" ? (
+        {!bundledPi ? (
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -207,7 +208,7 @@ export function EngineCard({
         <SettingsRow
           title={t("modelAccess:executablePath")}
           description={
-            engine === "pi" ? (
+            bundledPi ? (
               t("modelAccess:piBundled")
             ) : executable?.path ? (
               <Hint
@@ -242,7 +243,7 @@ export function EngineCard({
             <SettingsNotice tone="warning">
               <p>
                 {engineProblemMessage(status)}{" "}
-                {needsInstall
+                {needsInstall && engine !== "pi"
                   ? t(engine === "claude" ? "modelAccess:installClaude" : "modelAccess:installCodex")
                   : null}
               </p>
