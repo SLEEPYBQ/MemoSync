@@ -633,6 +633,8 @@ test("model access commands and external edits leave model-access and composer s
     expect(result?.id).toBeString()
     expect(observer.lastSnapshot(TOPIC_IDS.modelAccess)).not.toEqual(initial)
     await command("set", { type: "modelAccess.setEngine", engine: "claude", setup: { access: { mode: "connection", connectionId: result!.id } } })
+    await command("path", { type: "modelAccess.setExecutablePath", engine: "pi", executablePath: "/test/local-pi" })
+    expect(service.setup("pi").executablePath).toBe("/test/local-pi")
     await command("refresh", { type: "modelAccess.refreshExecutables" })
     // Non-router edits also broadcast through the service listener.
     await service.saveConnection({ ...input, id: result!.id, name: "Renamed externally" } as never)

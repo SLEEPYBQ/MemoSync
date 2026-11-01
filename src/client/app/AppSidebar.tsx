@@ -511,7 +511,7 @@ function AppSidebarImpl({
         data-peeking={collapsed && peeking ? "true" : undefined}
         inert={collapsed && !peeking && !open ? true : undefined}
         className={cn(
-          "fixed inset-0 z-50 bg-sidebar flex flex-col h-[100dvh] select-none",
+          "fixed inset-0 z-50 bg-sidebar flex flex-col h-[var(--app-viewport-height,100dvh)] select-none",
           collapsed
             ? cn(
                 "md:inset-y-0 md:left-0 md:right-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",

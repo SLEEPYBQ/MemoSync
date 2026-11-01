@@ -54,6 +54,32 @@ beforeEach(async () => {
 afterEach(async () => { await rm(home, { recursive: true, force: true }) })
 
 describe("engine executable discovery (isolated HOME, PATH and SDK)", () => {
+  test("desktop never falls back to bundled agents", async () => {
+    env.MEMOSYNC_EXTERNAL_AGENTS = "1"
+    await bundle()
+    const r = resolver()
+    expect(await r.resolveEngineExecutable("claude", undefined, env)).toMatchObject({ state: "missing" })
+    expect(await r.resolveEngineExecutable("pi", undefined, env)).toMatchObject({ state: "missing" })
+    expect(await lines()).toEqual([])
+  })
+
+  test("desktop discovers Pi's local SDK and rejects incompatible installations", async () => {
+    env.MEMOSYNC_EXTERNAL_AGENTS = "1"
+    const root = join(home, "global/node_modules/@mariozechner/pi-coding-agent")
+    const entry = await cli(join(root, "dist/cli.js"), "0.73.1")
+    await file(join(root, "dist/index.js"), "export const local = true", 0o600)
+    const metadata = join(root, "package.json")
+    await file(metadata, JSON.stringify({ name: "@mariozechner/pi-coding-agent", version: "0.73.1", main: "dist/index.js" }), 0o600)
+    // A JS CLI is launched through a runtime. This isolated shim executes the fixture.
+    await file(join(root, "dist/node"), '#!/bin/sh\nexec /bin/sh "$@"\n')
+    const r = resolver()
+    expect(await r.resolveEngineExecutable("pi", { executablePath: entry }, env))
+      .toMatchObject({ state: "ready", path: entry, source: "configured", version: "0.73.1" })
+    await file(metadata, JSON.stringify({ name: "@mariozechner/pi-coding-agent", version: "0.72.0" }), 0o600)
+    expect(await r.resolveEngineExecutable("pi", { executablePath: entry }, env))
+      .toMatchObject({ state: "incompatible", source: "configured" })
+  })
+
   test("missing means no candidate; Pi needs no executable", async () => {
     const r = resolver()
     expect(await r.resolveEngineExecutable("codex", undefined, env)).toMatchObject({ state: "missing" })

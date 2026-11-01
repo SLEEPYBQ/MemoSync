@@ -153,9 +153,9 @@ test("engine paths, access, model and refresh send contract commands, with retry
   await shots("path-dialog")
   await pathDialog.getByRole("button", { name: "Save", exact: true }).click()
   expect(await lastCommand()).toMatchObject({
-    type: "modelAccess.setEngine",
+    type: "modelAccess.setExecutablePath",
     engine: "claude",
-    setup: { executablePath: "/fixture/custom/claude", access: { mode: "account" } },
+    executablePath: "/fixture/custom/claude",
   })
   await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByRole("button", { name: "Shared model", exact: true }).click()
@@ -478,7 +478,7 @@ test("path reset, engine-specific add, selected-connection models and keyboard f
   await pathDialog.getByRole("button", { name: "Use automatic discovery" }).click()
   expect(await pathDialog.getByLabel("Executable path override").inputValue()).toBe("")
   await pathDialog.getByRole("button", { name: "Save", exact: true }).click()
-  expect(await lastCommand()).toMatchObject({ type: "modelAccess.setEngine", setup: { executablePath: null } })
+  expect(await lastCommand()).toMatchObject({ type: "modelAccess.setExecutablePath", executablePath: null })
   await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByLabel("API connection", { exact: true }).click()
   await shots("connection-select", async () => {

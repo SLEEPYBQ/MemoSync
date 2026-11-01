@@ -15,6 +15,7 @@ export { PREVIEW_COOKIE_NAME }
 export interface AuthStatusPayload {
   enabled: boolean
   authenticated: boolean
+  canSignOut?: boolean
 }
 
 export interface AuthManager {
@@ -148,6 +149,11 @@ async function readLoginForm(req: Request) {
 
 export interface AuthManagerOptions {
   /**
+   * Whether an authenticated client may clear its session. Desktop keeps the
+   * session owned by the host because the renderer cannot recover its secret.
+   */
+  allowSignOut?: boolean
+  /**
    * When true, the auth layer trusts X-Forwarded-Proto to decide whether the
    * public origin is http or https. The hostname always comes from the Host
    * header (never X-Forwarded-Host) because X-Forwarded-Host is passed
@@ -174,6 +180,7 @@ export interface AuthManagerOptions {
 
 export function createAuthManager(password: string, options: AuthManagerOptions = {}): AuthManager {
   const expectedPassword = Buffer.from(password)
+  const allowSignOut = options.allowSignOut ?? true
   const trustProxy = options.trustProxy ?? false
   // Sessions are STATELESS, HMAC-signed tokens keyed on the password, not an
   // in-memory Set. An in-memory Set was wiped on every restart, so a deploy /
@@ -449,10 +456,12 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   }
 
   function handleStatus(req: Request) {
-    return Response.json({
+    const payload: AuthStatusPayload = {
       enabled: true,
       authenticated: isAuthenticated(req),
-    } satisfies AuthStatusPayload)
+    }
+    if (!allowSignOut) payload.canSignOut = false
+    return Response.json(payload)
   }
 
   function redirectToApp(req: Request) {
@@ -481,6 +490,9 @@ export function createAuthManager(password: string, options: AuthManagerOptions 
   function handleLogout(req: Request) {
     if (!validateOrigin(req)) {
       return Response.json({ error: "Forbidden" }, { status: 403 })
+    }
+    if (!allowSignOut) {
+      return Response.json({ error: "Sign out is disabled" }, { status: 403 })
     }
 
     // Revoke the preview grants bound to this session: the preview cookie

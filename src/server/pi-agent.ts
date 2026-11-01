@@ -1,5 +1,10 @@
 import type { PiParentLaunch } from './memory/parent-launch'
 import { resolveEngineRuntime } from "./model-access/runtime"
+import { getModelAccessService } from "./model-access/service"
+import { resolveEngineExecutable } from "./model-access/executables"
+import { executableEnvironment } from "./model-access/legacy"
+import { readPiInstallation } from "./model-access/pi-installation"
+import { pathToFileURL } from "node:url"
 import { existsSync } from "node:fs"
 import type { BashSpawnContext } from "@mariozechner/pi-coding-agent"
 import { homedir } from "node:os"
@@ -30,10 +35,10 @@ import { toPiToolDefinitions } from "./memory/pi-adapter"
 
 /**
  * Adapter for the pi coding agent (@mariozechner/pi-coding-agent), driven
- * in-process through its SDK — like the Claude Agent SDK harness, rather than
- * shelling out to a user-installed CLI.
+ * in-process through its SDK. Desktop loads the SDK from a discovered local
+ * Pi installation; the CLI/web distribution retains its package dependency.
  *
- * This is deliberately an opinionated, bundled setup:
+ * This is deliberately an opinionated setup:
  *   - Pi connects through MemoSync's Model Registry (the OpenAI-compatible
  *     connection in Settings): OpenRouter, OpenAI, or any custom base URL.
  *     OPENROUTER_API_KEY is the env fallback when no registry is configured.
@@ -42,7 +47,7 @@ import { toPiToolDefinitions } from "./memory/pi-adapter"
  *     OpenAI-completions model definition against the registry base URL.
  *   - Reasoning uses pi's standardized thinking levels
  *     (off/minimal/low/medium/high/xhigh).
- *   - The user's local pi installation (~/.pi) is never read: state lives under
+ *   - The user's local Pi configuration (~/.pi) is never read: state lives under
  *     MemoSync's data root and credentials stay in memory. Markdown resources
  *     are still discovered from MemoSync's agentDir and the project, but
  *     extension and theme discovery stays disabled (extensions are arbitrary
@@ -62,8 +67,15 @@ import { toPiToolDefinitions } from "./memory/pi-adapter"
  * every boot by users who only ever pick Claude. Both call sites are async.
  */
 let piSdkPromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null = null
-function loadPiSdk() {
-  return (piSdkPromise ??= import("@mariozechner/pi-coding-agent"))
+async function loadPiSdk(): Promise<typeof import("@mariozechner/pi-coding-agent")> {
+  if (process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1")
+    return (piSdkPromise ??= import("@mariozechner/pi-coding-agent"))
+  const service = getModelAccessService()
+  const env = executableEnvironment(service?.env ?? process.env)
+  const executable = await (service?.resolveExecutable ?? resolveEngineExecutable)("pi", service?.setup("pi"), env)
+  if (executable.state !== "ready" || !executable.path) throw new Error(executable.detail ?? "Install Pi before using this engine")
+  const installation = await readPiInstallation(executable.path, env)
+  return import(pathToFileURL(installation.entry).href)
 }
 
 export const PI_TOOL_NAMES = ["read", "bash", "edit", "write", "grep", "find", "ls"] as const
@@ -302,7 +314,9 @@ export function buildRegistryModel(connection: PiConnection & { protocol: "opena
 export function buildRegistryModel(connection: PiConnection & { protocol?: "openai-chat" }, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions">
 export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses">
 export function buildRegistryModel(connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<"openai-completions" | "openai-responses"> {
-  const isOpenRouter = new URL(connection.baseUrl).hostname === "openrouter.ai"
+  const hostname = new URL(connection.baseUrl).hostname
+  const isOpenRouter = hostname === "openrouter.ai"
+  const isZhipu = hostname === "open.bigmodel.cn"
   return {
     id: modelId,
     name: modelId,
@@ -317,7 +331,13 @@ export function buildRegistryModel(connection: PiConnection, modelId: string, ca
     // Pi treats zero as an unspecified output limit. A cold/partial catalog
     // must not send a guessed 32K limit to a model that only accepts 8K.
     maxTokens: connection.maxOutputTokens ?? (card?.maxTokens ? Math.min(card.maxTokens, 32_000) : 0),
-    compat: { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
+    compat: isZhipu ? {
+      supportsDeveloperRole: false,
+      supportsStore: false,
+      maxTokensField: "max_tokens",
+      // BigModel uses the same thinking.type + reasoning_effort wire format.
+      thinkingFormat: "deepseek",
+    } : { thinkingFormat: isOpenRouter ? "openrouter" : "openai" },
   }
 }
 

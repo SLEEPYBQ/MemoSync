@@ -121,7 +121,7 @@ export interface ClientState {
 }
 
 /** Model access service (src/server/model-access/). Optional so tests can omit it. */
-export type ModelAccessRouterService = Pick<ModelAccessService, "getSnapshot"> & Partial<Pick<ModelAccessService, "saveConnection" | "deleteConnection" | "setEngine" | "testConnection" | "refreshExecutables" | "onChange">>
+export type ModelAccessRouterService = Pick<ModelAccessService, "getSnapshot"> & Partial<Pick<ModelAccessService, "saveConnection" | "deleteConnection" | "setEngine" | "setExecutablePath" | "testConnection" | "refreshExecutables" | "onChange">>
 
 const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
   connections: [],
@@ -1314,6 +1314,7 @@ export function createWsRouter({
         case "modelAccess.saveConnection":
         case "modelAccess.deleteConnection":
         case "modelAccess.setEngine":
+        case "modelAccess.setExecutablePath":
         case "modelAccess.testConnection":
         case "modelAccess.refreshExecutables": {
           if (!modelAccess) throw new Error("model-access-unavailable")
@@ -1321,6 +1322,7 @@ export function createWsRouter({
           if (command.type === "modelAccess.saveConnection" && modelAccess.saveConnection) result = await modelAccess.saveConnection(command.connection)
           else if (command.type === "modelAccess.deleteConnection" && modelAccess.deleteConnection) await modelAccess.deleteConnection(command.connectionId)
           else if (command.type === "modelAccess.setEngine" && modelAccess.setEngine) await modelAccess.setEngine(command.engine, command.setup)
+          else if (command.type === "modelAccess.setExecutablePath" && modelAccess.setExecutablePath) await modelAccess.setExecutablePath(command.engine, command.executablePath)
           else if (command.type === "modelAccess.testConnection" && modelAccess.testConnection) result = await modelAccess.testConnection(command.connection, command.engine, command.model)
           else if (command.type === "modelAccess.refreshExecutables" && modelAccess.refreshExecutables) result = await modelAccess.refreshExecutables()
           else throw new Error("model-access-unavailable")

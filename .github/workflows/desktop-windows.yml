@@ -1,0 +1,67 @@
+name: desktop-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "src/**"
+      - "assets/icon.svg"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "tsconfig.json"
+      - ".github/workflows/desktop-windows.yml"
+      - "bun.lock"
+      - "package.json"
+  pull_request:
+    paths:
+      - "desktop/**"
+      - "src/**"
+      - "assets/icon.svg"
+      - "README.md"
+      - "README.zh-CN.md"
+      - "tsconfig.json"
+      - ".github/workflows/desktop-windows.yml"
+      - "bun.lock"
+      - "package.json"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.10
+      - name: Install root dependencies
+        run: bun install --frozen-lockfile
+      - name: Install desktop dependencies
+        run: bun run desktop:install
+      - name: Policy tests
+        run: node --test desktop/policy.test.cjs desktop/windows-chrome.test.cjs
+      - name: Runtime pruning tests
+        run: bun test desktop/runtime-packages.test.ts
+      - name: Windows executable discovery tests
+        run: bun test src/server/model-access/executables.windows.test.ts
+      - name: Typecheck and client builds
+        run: bun run check
+      - name: Package Windows desktop
+        run: bun run desktop:package:win
+      - name: Test staged desktop runtime
+        run: bun test desktop/runtime.test.ts --timeout 30000
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: memosync-windows
+          path: |
+            desktop/release/*-Setup.exe
+            desktop/release/*-portable.zip
+          if-no-files-found: error

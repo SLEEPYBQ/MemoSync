@@ -60,7 +60,7 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
-async function startPasswordServer(options: { trustProxy?: boolean; port?: number } = {}) {
+async function startPasswordServer(options: { trustProxy?: boolean; port?: number; allowSignOut?: boolean } = {}) {
   const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-auth-test-"))
   const dataDir = await mkdtemp(path.join(tmpdir(), "memosync-auth-data-"))
   tempDirs.push(projectDir)
@@ -72,6 +72,7 @@ async function startPasswordServer(options: { trustProxy?: boolean; port?: numbe
     strictPort: true,
     password: "secret",
     trustProxy: options.trustProxy ?? false,
+    allowSignOut: options.allowSignOut,
     // Never scan the developer's real ~/.claude / ~/.codex from a test boot.
     discoverProjects: () => [],
   })
@@ -134,6 +135,55 @@ describe("password auth", () => {
     } finally {
       await server.stop()
     }
+  })
+
+  test("keeps desktop sessions authenticated while preserving normal web logout", async () => {
+    const { server: desktopServer } = await startPasswordServer({ allowSignOut: false })
+    const desktopOrigin = `http://localhost:${desktopServer.port}`
+    const desktopLogin = await fetch(`${desktopOrigin}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: desktopOrigin },
+      body: JSON.stringify({ password: "secret", next: "/" }),
+    })
+    const desktopCookie = extractCookie(desktopLogin)
+    const desktopStatus = await fetch(`${desktopOrigin}/auth/status`, {
+      headers: { Cookie: desktopCookie },
+    })
+    expect(await desktopStatus.json()).toEqual({
+      enabled: true,
+      authenticated: true,
+      canSignOut: false,
+    })
+
+    const desktopLogout = await fetch(`${desktopOrigin}/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: desktopCookie, Origin: desktopOrigin },
+    })
+    expect(desktopLogout.status).toBe(403)
+    expect(desktopLogout.headers.get("set-cookie")).toBeNull()
+    const stillAuthenticated = await fetch(`${desktopOrigin}/auth/status`, {
+      headers: { Cookie: desktopCookie },
+    })
+    expect((await stillAuthenticated.json()) as { authenticated?: boolean }).toMatchObject({ authenticated: true })
+
+    const { server: webServer } = await startPasswordServer()
+    const webOrigin = `http://localhost:${webServer.port}`
+    const webLogin = await fetch(`${webOrigin}/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Origin: webOrigin },
+      body: JSON.stringify({ password: "secret", next: "/" }),
+    })
+    const webCookie = extractCookie(webLogin)
+    const webLogout = await fetch(`${webOrigin}/auth/logout`, {
+      method: "POST",
+      headers: { Cookie: webCookie, Origin: webOrigin },
+    })
+    expect(webLogout.status).toBe(200)
+    expect(webLogout.headers.get("set-cookie")).toContain("memosync_session=")
+    const webStatus = await fetch(`${webOrigin}/auth/status`, {
+      headers: { Cookie: "" },
+    })
+    expect(await webStatus.json()).toEqual({ enabled: true, authenticated: false })
   })
 
   test("keeps executable preview content off the app origin even after login", async () => {
