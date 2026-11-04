@@ -43,6 +43,10 @@ export async function handleNativeMemoryRequest(req: Request, url: URL, service?
       const input = await body(req);
       return ok(service.discover(input.rootIds as string[]));
     }
+    if (path === '/api/memories/imports') {
+      if (req.method !== 'GET') return fail(405, 'METHOD_NOT_ALLOWED', 'use GET');
+      return ok(service.listOperations(url.searchParams.get('rootId') ?? undefined));
+    }
     if (path === '/api/memories/imports/dry-run') {
       if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
       return ok(await service.dryRun(await body(req) as unknown as NativeImportDryRunInput));

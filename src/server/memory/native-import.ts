@@ -1,6 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { randomUUID } from 'node:crypto';
-import { NATIVE_MEMORY_POLICY, type NativeDiscoveryResult, type NativeImportCommitInput, type NativeImportDryRunInput, type NativeImportItem, type NativeImportOperation, type NativeImportPlan, type NativeImportReceipt, type NativeImportRollback, type NativeMemoryOwner, type NativeMemorySource } from '../../shared/native-memory';
+import { NATIVE_MEMORY_POLICY, type NativeDiscoveryResult, type NativeImportCommitInput, type NativeImportDryRunInput, type NativeImportHistory, type NativeImportItem, type NativeImportOperation, type NativeImportPlan, type NativeImportReceipt, type NativeImportRollback, type NativeImportSummary, type NativeMemoryOwner, type NativeMemorySource } from '../../shared/native-memory';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
 import { NATIVE_DISCOVERY_LIMITS, NativeMemoryDiscovery, NativeMemoryError, nativeHash, nativeTextSensitive } from './native-discovery';
@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS native_memory_operations (
   operation_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, plan TEXT NOT NULL,
   commit_hash TEXT, receipt TEXT, rollback TEXT
 );
+CREATE INDEX IF NOT EXISTS native_operation_history ON native_memory_operations(json_extract(plan, '$.createdAt') DESC, operation_id DESC);
 CREATE TABLE IF NOT EXISTS native_memory_mappings (
   source_id TEXT NOT NULL, item_key TEXT NOT NULL, owner_key TEXT NOT NULL,
   quote_hash TEXT NOT NULL, claim_hash TEXT NOT NULL, memory_id TEXT,
@@ -129,6 +130,35 @@ export class NativeMemoryImportService {
   getSource(id: string): NativeMemorySource | null {
     const row = this.db.query('SELECT manifest FROM native_memory_sources WHERE source_id = ?').get(id) as { manifest: string } | null;
     return row ? JSON.parse(row.manifest) : null;
+  }
+
+  listOperations(rootId?: string): NativeImportHistory {
+    const roots = this.discovery.allowedRoots();
+    if (rootId !== undefined && !roots.some(root => root.id === rootId)) {
+      throw new NativeMemoryError(400, 'INVALID_ROOT', 'Unknown allowed root ID');
+    }
+    const selected = rootId === undefined ? roots : roots.filter(root => root.id === rootId);
+    // Filter before LIMIT, using complete, case-sensitive owner identity. Select
+    // only metadata in SQLite so history never loads source quotes or proposals.
+    const rows = this.db.query(`SELECT operation_id, json_extract(plan, '$.source') AS source,
+        json_extract(plan, '$.createdAt') AS created_at,
+        CASE WHEN rollback IS NOT NULL THEN 'rolled-back'
+          WHEN receipt IS NOT NULL THEN 'committed' ELSE 'proposed' END AS state
+      FROM native_memory_operations
+      WHERE EXISTS (SELECT 1 FROM json_each(?) AS root
+        WHERE json_extract(plan, '$.source.rootId') = json_extract(root.value, '$.id')
+          AND json_extract(plan, '$.source.owner.scope') = json_extract(root.value, '$.owner.scope')
+          AND json_extract(plan, '$.source.owner.projectId') IS json_extract(root.value, '$.owner.projectId')
+          AND json_extract(plan, '$.source.owner.sessionId') IS json_extract(root.value, '$.owner.sessionId'))
+      ORDER BY json_extract(plan, '$.createdAt') DESC, operation_id DESC LIMIT 51`).all(JSON.stringify(selected)) as Array<{
+        operation_id: string; source: string; created_at: string; state: NativeImportSummary['state'];
+      }>;
+    return {
+      operations: rows.slice(0, 50).map(row => ({
+        operationId: row.operation_id, source: JSON.parse(row.source), createdAt: row.created_at, state: row.state,
+      })),
+      hasMore: rows.length > 50,
+    };
   }
 
   getOperation(id: string): NativeImportOperation | null {

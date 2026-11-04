@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import type { NativeImportOperation, NativeMemoryRoot, NativeMemorySource } from '../../shared/native-memory';
+import type { NativeImportHistory, NativeImportOperation, NativeMemoryRoot, NativeMemorySource } from '../../shared/native-memory';
 import { MemoryService } from './index';
 import { NativeMemoryDiscovery, nativeHash, NATIVE_DISCOVERY_LIMITS } from './native-discovery';
 import { createNativeSemanticExtractor, NativeMemoryImportService, type NativeSemanticExtractor } from './native-import';
@@ -15,7 +15,10 @@ let memory: MemoryService, service: NativeMemoryImportService;
 let roots: NativeMemoryRoot[];
 function put(path: string, text: string) { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, text); }
 function setup(extractor?: NativeSemanticExtractor, isClaimSuppressed?: ConstructorParameters<typeof NativeMemoryImportService>[0]['isClaimSuppressed']) {
-  service = new NativeMemoryImportService({ memory, discovery: new NativeMemoryDiscovery(home, () => roots), semanticExtractor: extractor, isClaimSuppressed });
+  service = new NativeMemoryImportService({
+    memory, discovery: new NativeMemoryDiscovery(home, () => roots), semanticExtractor: extractor,
+    isClaimSuppressed: isClaimSuppressed ?? ((content, exactOwner) => memory.store.wasMemorySuppressed(content, exactOwner)),
+  });
 }
 function source(): NativeMemorySource {
   return service.discover(['project:p1']).sources.find(source => source.kind === 'native-memory')!;
@@ -165,11 +168,13 @@ describe('durable reviewed import and CAS', () => {
     const existing = memory.store.create({ content: 'Use /Src/Parser.ts for parsing.', scope: 'project', projectId: 'p1', type: 'fact' }, { actor: 'user' });
     const before = await plan('target');
     expect(before.plan.items[0]!.disposition).toBe('exact-match');
-    memory.store.archive(existing.id, { actor: 'user' });
-    expect(() => accept(before)).toThrow('rejected or revoked');
-    expect(memory.store.list()).toHaveLength(1);
-    memory.store.update(existing.id, { status: 'active', scope: 'personal' }, { actor: 'user' });
+    memory.store.update(existing.id, { scope: 'personal' }, { actor: 'user' });
     expect(() => accept(before)).toThrow('scope');
+    memory.store.update(existing.id, { scope: 'project', projectId: 'p1' }, { actor: 'user' });
+    const beforeArchive = await plan('target-archive');
+    memory.store.archive(existing.id, { actor: 'user' });
+    expect(() => accept(beforeArchive)).toThrow('rejected or revoked');
+    expect(memory.store.list()).toHaveLength(1);
     const changed = await plan('source-cas');
     put(nativeFile, '- Source edited after dry-run');
     expect(() => accept(changed)).toThrow('Source content changed');
@@ -266,6 +271,55 @@ describe('durable reviewed import and CAS', () => {
     expect((await plan('different-owner', personal)).plan.items[0]!.disposition).toBe('new');
   });
 
+  it('honors hard-erased shared dismissals and retained revocations across restart', async () => {
+    const dismissed = memory.store.create({
+      content: 'Use /Src/Parser.ts for parsing.', scope: 'project', projectId: 'p1',
+      type: 'fact', status: 'candidate', sensitive: true,
+    }, { actor: 'user' });
+    memory.store.discardCandidate(dismissed.id);
+    const revoked = memory.store.create({
+      content: 'Run bun test before release.', scope: 'project', projectId: 'p1', type: 'fact',
+    }, { actor: 'user' });
+    memory.store.archive(revoked.id, { actor: 'user' });
+    memory.store.update(revoked.id, { content: 'Independent replacement text.' }, { actor: 'user' });
+    memory.close();
+    memory = new MemoryService({ dbPath: join(dir, 'memory.sqlite'), dataDir: join(dir, 'managed') }); setup();
+    expect(memory.store.getById(dismissed.id)).toBeNull();
+    const blocked = await plan('shared-negative-decisions');
+    expect(blocked.plan.items.every(item => item.disposition === 'suppressed')).toBe(true);
+    expect(() => accept(blocked)).toThrow('suppressed');
+    // Owner IDs retain case, and personal/project owners stay distinct.
+    roots.push({ id: 'project:P1', label: 'Other owner', path: project, owner: { scope: 'project', projectId: 'P1' } });
+    const other = service.discover(['project:P1']).sources[0]!;
+    expect((await plan('other-case-owner', other)).plan.items.every(item => item.disposition === 'new')).toBe(true);
+    put(join(home, '.codex', 'memories', 'MEMORY.md'), '- Use /Src/Parser.ts for parsing.');
+    const personal = service.discover(['personal']).sources[0]!;
+    expect((await plan('personal-owner', personal)).plan.items[0]!.disposition).toBe('new');
+  });
+
+  it('keeps shared dismissals in other projects and sessions outside the import owner', async () => {
+    const otherProject = memory.store.create({
+      content: 'Use /Src/Parser.ts for parsing.', scope: 'project', projectId: 'P1', type: 'fact', status: 'candidate',
+    }, { actor: 'user' });
+    const session = memory.store.create({
+      content: 'Run bun test before release.', scope: 'session', projectId: 'p1', sessionId: 's1', type: 'fact', status: 'candidate',
+    }, { actor: 'user' });
+    memory.store.discardCandidate(otherProject.id); memory.store.discardCandidate(session.id);
+    expect((await plan('independent-owner')).plan.items.every(item => item.disposition === 'new')).toBe(true);
+  });
+
+  it('rechecks a real shared dismissal inside commit after the dry-run', async () => {
+    const operation = await plan('shared-dismissal-race');
+    const candidate = memory.store.create({
+      content: operation.plan.items[0]!.content, scope: 'project', projectId: 'p1',
+      type: 'fact', status: 'candidate', sensitive: true,
+    }, { actor: 'user' });
+    memory.store.discardCandidate(candidate.id);
+    expect(() => accept(operation)).toThrow('rejected or revoked');
+    expect(memory.store.list()).toEqual([]);
+    expect(service.getOperation('shared-dismissal-race')!.receipt).toBeUndefined();
+  });
+
   it('rechecks shared tombstone authority after the dry-run', async () => {
     let rejected = false;
     setup(undefined, (_content, owner) => rejected && owner.scope === 'project' && owner.projectId === 'p1');
@@ -307,6 +361,103 @@ describe('operation-owned rollback', () => {
     expect(service.rollback('observer', true)).toEqual({ operationId: 'observer', state: 'rolled-back', archived: [], conflicts: [] });
     expect(memory.store.list({ status: 'active' })).toHaveLength(2);
     expect(service.rollback('owner', true).archived).toHaveLength(2);
+  });
+});
+
+describe('durable import history', () => {
+  async function history(query = ''): Promise<NativeImportHistory> {
+    const response = await request('GET', `/api/memories/imports${query}`);
+    expect(response.status).toBe(200);
+    return (await response.json()).data;
+  }
+
+  it('returns an empty list and validates optional server-issued root IDs', async () => {
+    expect(await history()).toEqual({ operations: [], hasMore: false });
+    expect(await history('?rootId=project%3Ap1')).toEqual({ operations: [], hasMore: false });
+    for (const rootId of ['', 'project:P1', nativeFile]) {
+      const response = await request('GET', `/api/memories/imports?rootId=${encodeURIComponent(rootId)}`);
+      expect(response.status).toBe(400);
+      expect((await response.json()).error.code).toBe('INVALID_ROOT');
+    }
+    expect((await request('POST', '/api/memories/imports', {})).status).toBe(405);
+  });
+
+  it('reopens history after restart and rolls back using only the recovered operation ID', async () => {
+    const original = readFileSync(nativeFile, 'utf8');
+    const committed = await plan('history-committed');
+    const receipt = accept(committed);
+    const rolled = await plan('history-rolled-back'); accept(rolled); service.rollback('history-rolled-back', true);
+    await plan('history-proposed');
+    memory.close();
+    memory = new MemoryService({ dbPath: join(dir, 'memory.sqlite'), dataDir: join(dir, 'managed') }); setup();
+
+    const listed = await history();
+    expect(listed.hasMore).toBe(false);
+    expect(Object.fromEntries(listed.operations.map(item => [item.operationId, item.state]))).toEqual({
+      'history-committed': 'committed', 'history-rolled-back': 'rolled-back', 'history-proposed': 'proposed',
+    });
+    for (const summary of listed.operations) {
+      expect(Object.keys(summary).sort()).toEqual(['createdAt', 'operationId', 'source', 'state']);
+      expect(summary.source).toEqual(committed.plan.source);
+    }
+    expect(JSON.stringify(listed)).not.toContain('Use /Src/Parser.ts');
+    expect(JSON.stringify(listed)).not.toContain('Run bun test');
+    expect(JSON.stringify(listed)).not.toContain('provenance');
+    const recovered = listed.operations.find(item => item.state === 'committed')!;
+    const detail = (await (await request('GET', `/api/memories/imports/${recovered.operationId}`)).json()).data;
+    expect(detail.plan).toEqual(committed.plan);
+    expect(detail.receipt).toEqual(receipt);
+    expect(detail.rollback).toBeUndefined();
+
+    const editedId = receipt.accepted[0]!.memoryId;
+    memory.store.update(editedId, { content: 'User-edited imported fact.' }, { actor: 'user' });
+    const rollback = await (await request('POST', `/api/memories/imports/${recovered.operationId}/rollback`, { approved: true })).json();
+    expect(rollback.data.archived).toEqual([receipt.accepted[1]!.memoryId]);
+    expect(rollback.data.conflicts.map((item: { memoryId: string }) => item.memoryId)).toEqual([editedId]);
+    expect(memory.store.getById(editedId)!.status).toBe('active');
+    expect(memory.store.getById(editedId)!.content).toBe('User-edited imported fact.');
+    expect((await history()).operations.find(item => item.operationId === recovered.operationId)!.state).toBe('rolled-back');
+    const reopened = (await (await request('GET', `/api/memories/imports/${recovered.operationId}`)).json()).data;
+    expect(reopened.rollback).toEqual(rollback.data);
+    expect(readFileSync(nativeFile, 'utf8')).toBe(original);
+  });
+
+  it('returns at most 50 newest allowed operations with an explicit overflow indicator', async () => {
+    for (let index = 0; index < 52; index++) {
+      const id = `history-${index.toString().padStart(2, '0')}`;
+      await plan(id);
+      const createdAt = new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString();
+      memory.db.query("UPDATE native_memory_operations SET plan = json_set(plan, '$.createdAt', ?) WHERE operation_id = ?").run(createdAt, id);
+    }
+    // Newer operations from a removed root must not displace allowed history.
+    put(join(home, '.codex', 'memories', 'MEMORY.md'), '- Independent personal claim.');
+    const personal = service.discover(['personal']).sources[0]!;
+    await plan('hidden-newer-1', personal); await plan('hidden-newer-2', personal);
+    roots = roots.filter(root => root.id !== 'personal');
+    const listed = await history();
+    expect(listed.hasMore).toBe(true);
+    expect(listed.operations.map(item => item.operationId)).toEqual(
+      Array.from({ length: 50 }, (_, index) => `history-${(51 - index).toString().padStart(2, '0')}`),
+    );
+    expect(await history('?rootId=project%3Ap1')).toEqual(listed);
+    memory.db.query('DELETE FROM native_memory_operations WHERE operation_id IN (?, ?)').run('history-00', 'history-01');
+    expect((await history()).operations).toHaveLength(50);
+    expect((await history()).hasMore).toBe(false);
+  });
+
+  it('filters roots by complete case-sensitive owner identity before listing', async () => {
+    const projectOperation = await plan('project-history');
+    put(join(home, '.codex', 'memories', 'MEMORY.md'), '- Independent personal claim.');
+    const personal = service.discover(['personal']).sources[0]!;
+    await plan('personal-history', personal);
+    expect((await history('?rootId=personal')).operations.map(item => item.operationId)).toEqual(['personal-history']);
+    expect((await history('?rootId=project%3Ap1')).operations.map(item => item.operationId)).toEqual(['project-history']);
+    roots = roots.map(root => root.id === 'project:p1' ? { ...root, owner: { scope: 'project', projectId: 'P1' } } : root);
+    expect((await history()).operations.map(item => item.operationId)).toEqual(['personal-history']);
+    roots = roots.map(root => root.id === 'project:p1' ? { ...root, owner: projectOperation.plan.source.owner } : root);
+    expect((await history('?rootId=project%3Ap1')).operations).toHaveLength(1);
+    roots = roots.map(root => root.id === 'project:p1' ? { ...root, owner: { scope: 'personal' } } : root);
+    expect((await history('?rootId=project%3Ap1')).operations).toEqual([]);
   });
 });
 

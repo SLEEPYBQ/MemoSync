@@ -19,7 +19,7 @@ export function toClaudeMemoryMcpServer(specs: MemoryToolSpec[], ctx: MemoryTool
       s.description,
       s.schema,
       async (args) => {
-        const r = await s.handler(args as Record<string, unknown>, ctx);
+        const r = await s.handler(args as Record<string, unknown>, { ...ctx });
         return { content: [{ type: 'text' as const, text: r.text }], isError: r.isError };
       },
       { alwaysLoad: true },

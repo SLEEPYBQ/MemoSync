@@ -98,3 +98,15 @@ export interface NativeImportOperation {
   receipt?: NativeImportReceipt;
   rollback?: NativeImportRollback;
 }
+/** Durable history metadata only; source text and proposals require opening the operation. */
+export interface NativeImportSummary {
+  operationId: string;
+  source: NativeMemorySource;
+  createdAt: string;
+  state: NativeImportPlan['state'] | NativeImportReceipt['state'] | NativeImportRollback['state'];
+}
+export interface NativeImportHistory {
+  /** At most 50 newest operations belonging to currently allowed roots. */
+  operations: NativeImportSummary[];
+  hasMore: boolean;
+}

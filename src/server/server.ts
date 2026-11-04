@@ -371,6 +371,7 @@ async function startLockedMemoSyncServer(
       })),
     ]),
     semanticExtractor: createNativeSemanticExtractor(memoryLlm),
+    isClaimSuppressed: (content, exactOwner) => memory.store.wasMemorySuppressed(content, exactOwner),
   })
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
   // route degrades to a verbatim proposal without it.

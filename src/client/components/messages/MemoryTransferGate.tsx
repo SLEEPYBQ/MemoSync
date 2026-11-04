@@ -64,8 +64,6 @@ interface Props {
   onRespond: (transferId: string, decision: "handled" | "skipped") => Promise<void> | void
   canReopen?: boolean
   onReopen?: () => Promise<void> | void
-  /** Position in this turn's flow (the checkup renumbers itself after us). */
-  stepNumber?: number
   surface?: MemoryControlSurface
   /** Session-start Board: every resurfaced row must be handled before leaving. */
   requireAllRows?: boolean
@@ -233,7 +231,6 @@ export function MemoryTransferGate({
   onRespond,
   canReopen = false,
   onReopen,
-  stepNumber = 2,
   surface = "chat_gate",
   requireAllRows = false,
   settledRows,
@@ -250,7 +247,7 @@ export function MemoryTransferGate({
   if (renderOptions.readonly) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        {t("memory:stepNumber", { step: stepNumber })} {t("memory:transferSuggestions2")}{suggestions.length} {t("memory:omittedFromThisExportForPrivacy")}</div>
+        {t("memory:transferSuggestions2")}{suggestions.length} {t("memory:omittedFromThisExportForPrivacy")}</div>
     )
   }
 
@@ -260,7 +257,7 @@ export function MemoryTransferGate({
     if (!message.pending && suggestions.length === 0 && message.decision === undefined) return null
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:transferSuggestions3")}</span>
+        <span className="font-medium text-foreground">{t("memory:transferSuggestions3")}</span>
         <span className="ml-1">{t("memory:nothingWorthBringingInFromYourOtherProjectsOrConversations")}</span>
       </div>
     )
@@ -271,7 +268,7 @@ export function MemoryTransferGate({
     const mayReopen = canReopen && onReopen && (message.decision === "handled" || message.decision === "skipped")
     return (
       <MemoryReviewStepSummary
-        title={t("memory:stepValue0TransferSuggestions", { v0: stepNumber })}
+        title={t("memory:transferSuggestions")}
         outcome={<>✓ {t("memory:suggestionReceipt", { count: suggestions.length, decision: DECISION_LABELS[message.decision] })}</>}
         consequence={t("memory:reviewAgainTransfer")}
         reopening={reopening}
@@ -305,7 +302,7 @@ export function MemoryTransferGate({
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-center gap-2">
         <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
-          <ArrowRightLeft className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })}
+          <ArrowRightLeft className="h-4 w-4" aria-hidden />
         </span>
         <span className="text-sm font-semibold text-foreground">{t("memory:transferSuggestions")}</span>
         <HoverCard>

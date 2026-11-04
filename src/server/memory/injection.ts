@@ -8,9 +8,13 @@ import {
   type MemoryDeltaEntry,
 } from './prompt';
 import type { MemoryItem } from './types';
+import { baselineFor, compileMemoryView, type MemoryBaseline, type MemoryView } from './view';
+export type { MemoryBaseline, MemoryView } from './view';
 
 export interface MemoryInjectionPlan {
   mode: 'skills';
+  view: MemoryView;
+  baseline: MemoryBaseline;
   /** Exact text block baked once into the session context. */
   block: string;
   /** Whether the load_memory_detail tool should be registered. */
@@ -66,38 +70,43 @@ function conflictPairsAmong(memory: MemoryService, items: MemoryItem[]): MemoryC
   const injected = new Set(items.map((m) => m.id));
   const seen = new Set<string>();
   const pairs: MemoryConflictPair[] = [];
-  for (const item of items) {
-    for (const other of memory.store.getConflicts(item.id)) {
-      if (other.status !== 'active' || !injected.has(other.id)) continue;
-      const key = [item.id, other.id].sort().join('|');
-      if (seen.has(key)) continue;
-      seen.add(key);
-      pairs.push({ id: item.id, otherId: other.id });
-    }
+  for (const [sourceId, targetId, type] of memory.store.getViewRelations([...injected])) {
+    if (type !== 'conflicts_with' || !injected.has(sourceId!) || !injected.has(targetId!)) continue;
+    const [id, otherId] = [sourceId!, targetId!].sort();
+    const key = JSON.stringify([id, otherId]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pairs.push({ id: id!, otherId: otherId! });
   }
+  pairs.sort((a, b) => a.id.localeCompare(b.id) || a.otherId.localeCompare(b.otherId));
   return pairs;
 }
 
 export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInjectionPlan {
   const { memory } = opts;
-  const injected = memory.injectedFor(opts.projectId, opts.chatId);
-  const restricted = opts.restrictToIds
-    ? injected.filter((m) => new Set(opts.restrictToIds).has(m.id))
-    : injected;
-  return {
-    mode: 'skills',
-    block: buildMemoryBlock({
-      memories: restricted,
-      tools: true,
-      conflicts: conflictPairsAmong(memory, restricted),
-    }),
-    registerTools: true,
-    injectedMemories: restricted,
-    bakedMemories: restricted,
-    hash: `skills:${restricted.map((m) => `${m.id}@v${m.version}`).join('|')}`,
-    // Content changes ride deltas; only a tools/mode flip rebuilds the session.
-    sessionRebuildKey: 'skills-live:true',
-  };
+  return memory.db.transaction(() => {
+    const injected = memory.injectedFor(opts.projectId, opts.chatId);
+    const selection = opts.restrictToIds ? new Set(opts.restrictToIds) : null;
+    const restricted = selection ? injected.filter(m => selection.has(m.id)) : injected;
+    const view = compileMemoryView(memory, injected, restricted, opts.projectId, opts.chatId);
+    return {
+      mode: 'skills' as const,
+      view,
+      baseline: baselineFor(restricted, view),
+      block: buildMemoryBlock({
+        memories: restricted,
+        tools: true,
+        conflicts: conflictPairsAmong(memory, restricted),
+        viewRevision: view.revision,
+      }),
+      registerTools: true,
+      injectedMemories: restricted,
+      bakedMemories: restricted,
+      hash: `skills:${restricted.map((m) => `${m.id}@v${m.version}`).join('|')}:${view.revision}`,
+      // Semantic changes ride deltas; only a tools/mode flip rebuilds the session.
+      sessionRebuildKey: 'skills-live:true',
+    };
+  })();
 }
 
 export interface MemoryTurnDeltaOptions {
@@ -105,7 +114,7 @@ export interface MemoryTurnDeltaOptions {
   projectId?: string;
   chatId?: string;
   /** id → version as of the last injection (boot snapshot or previous delta). */
-  baseline: Map<string, number>;
+  baseline: MemoryBaseline;
   /** Preview-gate per-turn allowlist (only these ids apply this turn). */
   restrictToIds?: string[];
 }
@@ -114,7 +123,8 @@ export interface MemoryTurnDeltaResult {
   /** Delta block text ('' = quiet turn, append nothing). No envelope. */
   block: string;
   /** Baseline for the next turn (current active set). */
-  nextBaseline: Map<string, number>;
+  nextBaseline: MemoryBaseline;
+  view: MemoryView;
   /** Exact active pool snapshot used to compose this turn's delta. */
   visibleMemories: MemoryItem[];
   /** Exact focused subset from that same snapshot. */
@@ -128,55 +138,62 @@ export interface MemoryTurnDeltaResult {
  * and render the per-turn delta block. Pure read — callers own baseline state.
  */
 export function computeMemoryTurnDelta(opts: MemoryTurnDeltaOptions): MemoryTurnDeltaResult {
-  const visible = opts.memory.injectedFor(opts.projectId, opts.chatId);
-  const selected = opts.restrictToIds ? new Set(opts.restrictToIds) : null;
-  const current = selected ? visible.filter(item => selected.has(item.id)) : visible;
-  const currentById = new Map(current.map((m) => [m.id, m]));
-  const nextBaseline = new Map(current.map((m) => [m.id, m.version]));
+  return opts.memory.db.transaction(() => {
+    const visible = opts.memory.injectedFor(opts.projectId, opts.chatId);
+    const selected = opts.restrictToIds ? new Set(opts.restrictToIds) : null;
+    const current = selected ? visible.filter(item => selected.has(item.id)) : visible;
+    const currentById = new Map(current.map((m) => [m.id, m]));
+    const view = compileMemoryView(opts.memory, visible, current, opts.projectId, opts.chatId);
+    const nextBaseline = baselineFor(current, view);
 
-  const entries: MemoryDeltaEntry[] = [];
-  for (const item of current) {
-    const baseVersion = opts.baseline.get(item.id);
-    const conflictsWith = opts.memory.store
-      .getConflicts(item.id)
-      .filter((o) => o.status === 'active' && currentById.has(o.id))
-      .map((o) => o.id);
-    if (baseVersion === undefined) {
-      entries.push({
-        kind: 'added',
-        id: item.id,
-        version: item.version,
-        line: `(${item.scope} · ${item.type}) ${item.content}${item.detail ? ' [+detail]' : ''}`,
-        conflictsWith: conflictsWith.length ? conflictsWith : undefined,
-      });
-    } else if (item.version > baseVersion) {
-      entries.push({
-        kind: 'edited',
-        id: item.id,
-        version: item.version,
-        fromVersion: baseVersion,
-        line: `(${item.scope} · ${item.type}) ${item.content}${item.detail ? ' [+detail]' : ''}`,
-        conflictsWith: conflictsWith.length ? conflictsWith : undefined,
-      });
+    const entries: MemoryDeltaEntry[] = [];
+    const conflicts = conflictPairsAmong(opts.memory, current);
+    for (const item of current) {
+      const baseVersion = opts.baseline.get(item.id);
+      const conflictsWith = conflicts
+        .filter(pair => pair.id === item.id || pair.otherId === item.id)
+        .map(pair => pair.id === item.id ? pair.otherId : pair.id);
+      if (baseVersion === undefined) {
+        entries.push({
+          kind: 'added',
+          id: item.id,
+          version: item.version,
+          line: `(${item.scope} · ${item.type}) ${item.content}${item.detail ? ' [+detail]' : ''}`,
+          conflictsWith: conflictsWith.length ? conflictsWith : undefined,
+        });
+      } else if (item.version !== baseVersion || !opts.baseline.view ||
+        opts.baseline.view.signatures[item.id] !== view.signatures[item.id]) {
+        entries.push({
+          kind: item.version !== baseVersion ? 'edited' : 'view_changed',
+          id: item.id,
+          version: item.version,
+          fromVersion: baseVersion,
+          line: `(${item.scope} · ${item.type}) ${item.content}${item.detail ? ' [+detail]' : ''}`,
+          conflictsWith: conflictsWith.length ? conflictsWith : undefined,
+        });
+      }
     }
-  }
-  for (const id of opts.baseline.keys()) {
-    if (!currentById.has(id)) entries.push({ kind: 'removed', id });
-  }
+    for (const id of opts.baseline.keys()) {
+      if (!currentById.has(id)) entries.push({ kind: 'removed', id });
+    }
 
-  const ignoreForTurn = opts.restrictToIds
-    ? [...opts.baseline.keys()].filter(id => !currentById.has(id))
-    : undefined;
+    const ignoreForTurn = opts.restrictToIds
+      ? [...opts.baseline.keys()].filter(id => !currentById.has(id))
+      : undefined;
 
-  const effective = opts.restrictToIds
-    ? current.filter((m) => new Set(opts.restrictToIds).has(m.id))
-    : current;
+    const effective = opts.restrictToIds
+      ? current.filter((m) => new Set(opts.restrictToIds).has(m.id))
+      : current;
 
-  return {
-    block: buildMemoryDeltaBlock({ entries, ignoreForTurn }),
-    nextBaseline,
-    visibleMemories: visible,
-    effectiveMemories: effective,
-    effectiveIds: effective.map((m) => m.id),
-  };
+    return {
+      block: buildMemoryDeltaBlock({ entries, ignoreForTurn,
+        viewRevision: opts.baseline.view?.revision !== view.revision ? view.revision : undefined,
+      }),
+      nextBaseline,
+      view,
+      visibleMemories: visible,
+      effectiveMemories: effective,
+      effectiveIds: effective.map((m) => m.id),
+    };
+  })();
 }
