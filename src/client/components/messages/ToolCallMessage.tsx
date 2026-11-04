@@ -1,5 +1,5 @@
 import { Loader2, UserRound, X } from "lucide-react"
-import { useMemo } from "react"
+import { useMemo, useState } from "react"
 import { getLocale, t, useI18n } from "../../i18n"
 import { formatBashCommandTitle, toTitleCase } from "../../lib/formatters"
 import { stripWorkspacePath } from "../../lib/pathUtils"
@@ -101,12 +101,21 @@ export function ToolCallMessage({ message, isLoading = false, localPath, onExpan
   const title = useMemo(() => getToolCallTitle(message, localPath), [message.input, message.toolName, localPath, getLocale()])
   const uses = useToolMemoryUses()?.get(message.toolId) ?? NO_USES
   const Icon = message.toolKind === "subagent_task" ? UserRound : getToolIcon(message.toolName)
-  const errorLine = message.isError ? firstErrorLine(message.result) : undefined
+  const [open, setOpen] = useState(false)
+  // Once opened, the card below shows the whole error.
+  const errorLine = message.isError && !open ? firstErrorLine(message.result) : undefined
 
   return (
     <div className="w-full" data-tool-id={message.toolId}>
       <MetaRow className="w-full">
-        <ExpandableRow fill expandedContent={<ToolCallExpandedContent message={message} />} onExpandedChange={onExpandedChange}>
+        <ExpandableRow
+          fill
+          expandedContent={<ToolCallExpandedContent message={message} />}
+          onExpandedChange={(next) => {
+            setOpen(next)
+            onExpandedChange?.(next)
+          }}
+        >
           <div className="flex size-5 items-center justify-center">
             {message.isError ? (
               <X className="size-3.5 text-destructive" />

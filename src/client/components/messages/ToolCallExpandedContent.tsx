@@ -1,7 +1,9 @@
 import { t, useI18n, getLocale } from "../../i18n"
-import { useMemo } from "react"
+import { Check, Copy } from "lucide-react"
+import { Fragment, useMemo, useState } from "react"
+import { copyTextToClipboard } from "../../lib/clipboard"
+import { cn } from "../../lib/utils"
 import type { ProcessedToolCall } from "./types"
-import { MetaCodeBlock, VerticalLineContainer } from "./shared"
 import { FileContentView } from "./FileContentView"
 
 type ReadImageBlock = {
@@ -75,6 +77,72 @@ export function ReadResultImages({ images }: { images: ReadonlyArray<ReadImageBl
   )
 }
 
+/** A short value reads as itself; anything structured keeps its shape. */
+function formatInputValue(value: unknown) {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2)
+}
+
+/** What a tool was asked and what came back, as one card rather than two labelled boxes. */
+function ToolExchange({ command, background, timeoutMs, input, hasResult, result, isError, copyText }: {
+  command?: string
+  background: boolean
+  timeoutMs?: number
+  input?: object
+  hasResult: boolean
+  result: string
+  isError: boolean
+  copyText: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const fields = Object.entries(input ?? {}).filter(([, value]) => value !== undefined && value !== null && value !== "")
+  const asked = command !== undefined || fields.length > 0
+  return (
+    <div className="group/exchange relative overflow-hidden rounded-xl bg-muted/50 font-mono text-[12px] leading-5 shadow-[0_0_0_1px_hsl(var(--border)/0.7)]">
+      <button
+        type="button"
+        aria-label={t("chat:copy")}
+        title={t("chat:copy")}
+        onClick={async () => {
+          if (!await copyTextToClipboard(copyText)) return
+          setCopied(true)
+          setTimeout(() => setCopied(false), 2000)
+        }}
+        className="absolute right-1.5 top-1.5 z-10 flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover/exchange:opacity-100"
+      >
+        {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+      </button>
+      {command !== undefined ? (
+        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words px-3 py-2 pr-9 text-foreground/90">
+          <span aria-hidden className="select-none text-muted-foreground">$ </span>{command}
+          {background ? <span className="ml-2 select-none text-muted-foreground">{t("chat:background")}</span> : null}
+          {timeoutMs ? <span className="ml-2 select-none text-muted-foreground">{t("chat:timeout")}{timeoutMs}{t("chat:ms")}</span> : null}
+        </pre>
+      ) : null}
+      {fields.length > 0 ? (
+        // Shown field by field, but an audit may quote the input as the tool received it.
+        <dl data-evidence-text={JSON.stringify(input, null, 2)} className="grid max-h-40 grid-cols-[auto_minmax(0,1fr)] gap-x-3 overflow-auto px-3 py-2 pr-9">
+          {fields.map(([key, value]) => (
+            <Fragment key={key}>
+              <dt className="select-none text-muted-foreground">{key}</dt>
+              <dd className="whitespace-pre-wrap break-words text-foreground/90"><pre className="whitespace-pre-wrap break-words font-[inherit]">{formatInputValue(value)}</pre></dd>
+            </Fragment>
+          ))}
+        </dl>
+      ) : null}
+      {hasResult ? (
+        <pre className={cn(
+          "max-h-72 overflow-auto whitespace-pre-wrap break-words px-3 py-2",
+          asked && "border-t border-border/60",
+          !asked && "pr-9",
+          isError ? "text-destructive/90" : "text-muted-foreground",
+        )}>
+          {result || <span className="select-none opacity-70">{t("chat:toolNoOutput")}</span>}
+        </pre>
+      ) : null}
+    </div>
+  )
+}
+
 // Mounted by ExpandableRow only while open. Keep all payload work here.
 export function ToolCallExpandedContent({ message }: { message: ProcessedToolCall }) {
   useI18n()
@@ -114,73 +182,36 @@ export function ToolCallExpandedContent({ message }: { message: ProcessedToolCal
   }, [isReadTool, message.rawResult, message.result])
 
   const inputText = useMemo(() => {
-    switch (message.toolKind) {
-      case "bash":
-        return message.input.command
-      case "write_file":
-      case "delete_file":
-        return message.input.content
-      default:
-        return JSON.stringify(message.input, null, 2)
-    }
+    if (message.toolKind === "bash") return message.input.command
+    return JSON.stringify(message.input, null, 2)
   }, [message])
 
+  // These tools have a better view of their own than the raw exchange: the file
+  // or the diff. They fall back to the card only to say why they failed.
+  const hasFileView = !message.isError && (isReadTool || isWriteTool || isEditTool || isDeleteTool)
+
   return (
-          <VerticalLineContainer className="my-4 text-sm">
-            <div className="flex flex-col gap-2">
-              {isEditTool ? (
-                <FileContentView
-                  content=""
-                  isDiff
-                  oldString={message.input.oldString}
-                  newString={message.input.newString}
-                />
-              ) : isDeleteTool ? (
-                <FileContentView
-                  content={message.input.content}
-                />
-              ) : !isReadTool && !isWriteTool && (
-                <MetaCodeBlock label={
-                  isBashTool ? (
-                    <span className="flex items-center gap-2 w-full">
-                      <span>{t("chat:command")}</span>
-                      {!!message.input.timeoutMs && (
-                        <span className="text-muted-foreground">{t("chat:timeout")}{String(message.input.timeoutMs)}{t("chat:ms")}</span>
-                      )}
-                      {!!message.input.runInBackground && (
-                        <span className="text-muted-foreground">{t("chat:background")}</span>
-                      )}
-                    </span>
-                  ) : isWriteTool ? t("chat:contents") : t("chat:input")
-                } copyText={inputText}>
-                  {inputText}
-                </MetaCodeBlock>
-              )}
-              {hasResult && isReadTool && !message.isError && (
-                readImages.length > 0 ? (
-                  <div>
-                    <span className="font-medium text-muted-foreground">{t("chat:image")}</span>
-                    <div className="mt-1">
-                      <ReadResultImages images={readImages} />
-                    </div>
-                  </div>
-                ) : (
-                  <FileContentView
-                    content={resultText}
-                  />
-                )
-              )}
-              {isWriteTool && !message.isError && (
-                <FileContentView
-                  content={message.input.content}
-                />
-              )}
-              {hasResult && !isReadTool && !(isWriteTool && !message.isError) && !(isEditTool && !message.isError) && !(isDeleteTool && !message.isError) && (
-                <MetaCodeBlock label={message.isError ? t("common:error") : t("chat:result")} copyText={resultText}>
-                  {resultText}
-                </MetaCodeBlock>
-              )}
-            </div>
-          </VerticalLineContainer>
+    <div className="my-1.5 ml-[26px] min-w-0 text-sm">
+      {isEditTool && !message.isError ? (
+        <FileContentView content="" isDiff oldString={message.input.oldString} newString={message.input.newString} />
+      ) : null}
+      {isDeleteTool && !message.isError ? <FileContentView content={message.input.content} /> : null}
+      {isWriteTool && !message.isError ? <FileContentView content={message.input.content} /> : null}
+      {isReadTool && hasResult && !message.isError ? (
+        readImages.length > 0 ? <ReadResultImages images={readImages} /> : <FileContentView content={resultText} />
+      ) : null}
+      {hasFileView ? null : (
+        <ToolExchange
+          command={isBashTool ? message.input.command : undefined}
+          background={isBashTool && Boolean(message.input.runInBackground)}
+          timeoutMs={isBashTool ? message.input.timeoutMs : undefined}
+          input={isBashTool ? undefined : message.input}
+          hasResult={hasResult}
+          result={resultText}
+          isError={Boolean(message.isError)}
+          copyText={[inputText, resultText].filter(Boolean).join("\n\n")}
+        />
+      )}
+    </div>
   )
 }

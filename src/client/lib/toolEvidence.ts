@@ -47,8 +47,8 @@ export async function revealToolEvidence(target: ToolEvidenceTarget, origin: HTM
       if (closed) closed.click()
       else {
         const quote = target.quote ? normalizeQuoteText(target.quote) : ""
-        return (quote ? Array.from(tool.querySelectorAll<HTMLElement>("pre, p, li, blockquote"))
-          .find((element) => normalizeQuoteText(element.textContent ?? "").includes(quote)) : null) ?? tool
+        return (quote ? Array.from(tool.querySelectorAll<HTMLElement>("pre, p, li, blockquote, [data-evidence-text]"))
+          .find((element) => normalizeQuoteText(element.dataset.evidenceText ?? element.textContent ?? "").includes(quote)) : null) ?? tool
       }
     }
     await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()))

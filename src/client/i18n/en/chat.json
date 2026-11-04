@@ -243,6 +243,7 @@
   "compacting": "Compacting...",
   "requesting": "Requesting...",
   "notConnectedCommand": "Not connected. Run <code>{{command}}</code> from any terminal on this machine.",
+  "toolNoOutput": "No output",
   "toolGroupFailed": "{{count}} failed",
   "toolGroupUsedMemory": "Used",
   "toolGroupread_one": "Read {{count}} file",

@@ -1,6 +1,6 @@
 {
   "name": "memosync-desktop",
-  "version": "0.41.7",
+  "version": "0.42.0",
   "private": true,
   "description": "MemoSync desktop shell",
   "main": "main.cjs",
@@ -61,7 +61,8 @@
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.icns",
-      "identity": null,
+      "identity": "-",
+      "hardenedRuntime": false,
       "target": [
         "dmg",
         "zip"
