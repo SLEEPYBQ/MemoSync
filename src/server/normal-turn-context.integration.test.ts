@@ -49,9 +49,12 @@ for (const engine of ['claude', 'codex', 'pi', 'opencode'] as const) {
       opencodeManager: { startTurn, getCommandRuntime: () => native, closeChat() {}, dispose() {} } as never,
     })
     try {
+      const turnId = crypto.randomUUID()
+      const policy = (coordinator as any).executionPolicyFor(chat.id, engine)
+      const policyScope = (coordinator as any).harnessPolicies.beginTurn(chat.id, policy.policy, policy.revision, turnId, version)
       await (coordinator as any).bootEngineTurn({ chatId: chat.id, provider: engine, model: 'synthetic', effort: 'none', planMode: false,
         engineRuntime: { engine, executable: { state: 'ready', version }, env: { HOME: root }, args: [], model: 'synthetic', isolated: true },
-        memoryState: { control: 'auto', memoryActive: true, learnActive: false }, attachments: [], content: 'Ordinary user request.', turnId: crypto.randomUUID() },
+        memoryState: { control: 'auto', memoryActive: true, learnActive: false }, attachments: [], content: 'Ordinary user request.', turnId, policyScope },
         { chat, project, turnNumber: 1, memoryDisabledForTurn: false })
       expect(prepared).toBeDefined()
       expect(prepared!.text).toContain('Preserve recognized user and project instructions')

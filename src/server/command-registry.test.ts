@@ -58,6 +58,16 @@ describe('runtime command registry', () => {
     await execute(s, entry.id, 'file with spaces')
     expect(s.submissions).toEqual([{ command: entry, args: 'file with spaces' }])
   })
+  test('normal commands retain the server-admitted originating window for their turn', async () => {
+    const s = setup()
+    let admitted: string | undefined
+    s.registry.unbind('chat')
+    s.registry.bind('chat', { ...s.binding, submit: async (_command: RuntimeCommand, _args: string, hostClientId?: string) => { admitted = hostClientId; return { chatId: 'chat' } } })
+    await s.registry.refresh('chat')
+    const snapshot = s.registry.snapshot('chat')
+    await s.registry.execute({ type: 'chat.executeCommand', chatId: 'chat', commandId: entry.id, runtimeKey: snapshot.runtimeKey!, expectedRevision: snapshot.revision }, 'originating-window')
+    expect(admitted).toBe('originating-window')
+  })
   test('busy execution never compacts or submits a model turn', async () => {
     let calls = 0
     const s = setup({ compact: async () => { calls++ }, restore: async () => ({ delivery: 'native-accepted' }) }, () => true)
