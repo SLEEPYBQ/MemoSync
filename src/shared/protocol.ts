@@ -2,6 +2,7 @@ import type { HostActionCommand, HostActionServerEvent } from "./host-actions"
 import type { RuntimeCatalogCommand } from "./runtime-commands"
 import type { SetExecutionPolicyCommand } from "./harness-capabilities"
 import type { SidebarPatch } from "./sidebar-patch"
+export type * from "./runtime-commands"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
 import type {

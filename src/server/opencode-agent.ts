@@ -1,4 +1,7 @@
+import type { PrepareNativeContext } from "./context-compiler"
 import { realpath } from 'node:fs/promises'
+import { createOpencodeCommandRuntime } from './native-command-drivers'
+import type { NativeCommandRuntime } from './command-registry'
 import { createHash } from 'node:crypto'
 import type { OpencodeClient, Event, Part, PermissionRequest } from '@opencode-ai/sdk/v2/client'
 import type { TranscriptEntry } from '../shared/types'
@@ -51,6 +54,7 @@ export function translateOpencodeTool(rawName: string, args: Record<string, unkn
 export const OPENCODE_SYSTEM_PROMPT = "Use the memory context supplied with the current user message for that turn. Earlier memory blocks are historical snapshots and may have been updated."
 
 export interface StartOpencodeTurnArgs {
+  prepareContext?: PrepareNativeContext
   chatId: string
   cwd: string
   content: string
@@ -75,6 +79,8 @@ export interface StartOpencodeTurnArgs {
 }
 
 interface ChatServer {
+  commandRuntime?: NativeCommandRuntime
+  sessionID?: string
   key: string
   runtime: EngineRuntime
   server: OpencodeServer
@@ -110,6 +116,17 @@ export class OpencodeAgentManager {
     // Keep the server alive until initialization has deleted that orphan.
     await chat.initializing?.done
     await chat.server.close()
+  }
+  getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
+    const chat = this.chats.get(chatId)
+    if (!chat?.sessionID || chat.closed) return undefined
+    return chat.commandRuntime ??= createOpencodeCommandRuntime({ client: chat.client, session: () => chat.sessionID!,
+      version: chat.runtime.executable.version ?? 'unknown', alive: () => !chat.closed && this.chats.get(chatId) === chat,
+      model: () => {
+        if (chat.runtime.connectionId) return { providerID: 'memosync', modelID: chat.runtime.model }
+        const slash = chat.runtime.model.indexOf('/')
+        return slash > 0 ? { providerID: chat.runtime.model.slice(0, slash), modelID: chat.runtime.model.slice(slash + 1) } : undefined
+      } })
   }
   hasSession(chatId: string) { return Boolean(this.chats.get(chatId) && !this.chats.get(chatId)!.closed) }
   hasPendingWork(chatId: string) { const chat = this.chats.get(chatId); return this.pending.has(chatId) || Boolean(chat?.turn || chat?.initializing) }
@@ -231,6 +248,18 @@ export class OpencodeAgentManager {
         if (updated.data?.id !== sessionID || rules?.length !== 1 || rules[0]?.permission !== '*' || rules[0]?.pattern !== '*' || rules[0]?.action !== args.executionPolicy.permission) throw new Error('OpenCode did not confirm the requested session permission rules')
         if (args.isPolicyCurrent?.() === false) throw new Error('Stale execution policy acknowledgement')
         await args.onExecutionPolicyApplied?.(sessionID)
+      }
+      chat.sessionID = sessionID
+      const native = this.getCommandRuntime(args.chatId)!
+      const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+      if (prepared?.text) {
+        await chat.client.session.prompt({ sessionID, noReply: true, parts: [{ type: 'text', text: prepared.text }] }, { ...options, throwOnError: true })
+        signal.throwIfAborted()
+        prepared.accepted()
+      }
+      // Commands have no prompt parts; admit this turn's memory through the native noReply API first.
+      if (args.memoryContext && args.content.startsWith('/')) {
+        await chat.client.session.prompt({ sessionID, noReply: true, parts: [{ type: 'text', text: args.memoryContext }] }, { ...options, throwOnError: true })
       }
       // Fork copies can emit old message events after the fork HTTP response.
       // Snapshot their IDs before prompting, so inherited text cannot become this
@@ -427,6 +456,7 @@ export class OpencodeAgentManager {
         }
       }
     }
+    chat.sessionID = sessionID
     chat.turn = { sessionID, handle, fail: message => finalize(message, true), cancel: () => finalize('', false, true) }
     queue.push({ type: 'session_token', sessionToken: sessionID })
     transcript({ kind: 'system_init', provider: 'opencode', model: runtime.model, tools: ['Read', 'Bash', 'Edit', 'Write', 'Grep', 'Glob', ...(args.memorySpecs ?? []).map(s => `mcp__memory__${s.name}`)], agents: [], slashCommands: [], mcpServers: chat.mcp ? [{ name: 'memory', status: 'connected' }] : [] })
@@ -440,7 +470,11 @@ export class OpencodeAgentManager {
     const promptParts: Array<{ type: 'text'; text: string }> = []
     if (args.memoryContext) promptParts.push({ type: 'text', text: args.memoryContext })
     promptParts.push({ type: 'text', text: args.content })
-    if (!cancelled) void chat.client.session.promptAsync({ sessionID, model, system: systemPrompt, agent: args.agent, parts: promptParts }, { signal: AbortSignal.timeout(10_000) })
+    const nativeCommand = args.content.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
+    if (!cancelled) void (nativeCommand
+      ? chat.client.session.command({ sessionID, command: nativeCommand[1], arguments: nativeCommand[2] ?? '', agent: args.agent,
+          ...(model ? { model: `${model.providerID}/${model.modelID}` } : {}) }, { signal: AbortSignal.timeout(120_000) })
+      : chat.client.session.promptAsync({ sessionID, model, system: systemPrompt, agent: args.agent, parts: promptParts }, { signal: AbortSignal.timeout(10_000) }))
       .then(response => { if (response.error) void abort('OpenCode prompt request failed') })
       .catch(() => { void abort('OpenCode prompt request failed') })
     return { provider: 'opencode', stream: queue, interrupt: abort, close: () => { if (!finished) void abort() } }
