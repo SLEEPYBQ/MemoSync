@@ -23,6 +23,9 @@
       "backend-lifecycle.cjs",
       "policy.cjs",
       "navigation.cjs",
+      "preload.cjs",
+      "icon-dark.png",
+      "icon-light.png",
       "package.json"
     ],
     "extraResources": [

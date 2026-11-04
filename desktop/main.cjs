@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, session, shell } = require("electron")
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, session, shell } = require("electron")
 const { spawn } = require("node:child_process")
 const { randomBytes } = require("node:crypto")
 const { createInterface } = require("node:readline")
@@ -15,6 +15,28 @@ let quitting = false
 let stopped = false
 let desktopSession
 const contentWindows = new Set()
+
+// The page runs up to the top edge, with the traffic lights centred in its 48px
+// top band. No background colour: that would switch off the sidebar's material.
+const MAC_WINDOW_OPTIONS = process.platform === "darwin"
+  ? { titleBarStyle: "hiddenInset", trafficLightPosition: trafficLightPosition(1) }
+  : {}
+
+// The lights are native and ignore page zoom, so they follow the page's 48px band by hand.
+function trafficLightPosition(zoom) {
+  return { x: 18, y: Math.round(24 * zoom - 7) }
+}
+
+// The Dock icon follows the app's theme while it runs; Finder keeps icon.icns.
+function syncDockIcon() {
+  if (process.platform !== "darwin") return
+  const icon = nativeImage.createFromPath(path.join(__dirname, nativeTheme.shouldUseDarkColors ? "icon-dark.png" : "icon-light.png"))
+  if (!icon.isEmpty()) app.dock?.setIcon(icon)
+}
+
+function windowBackground() {
+  return nativeTheme.shouldUseDarkColors ? "#21201f" : "#fbfbf9"
+}
 
 async function openExternal(url) {
   if (!isExternalUrl(url)) return
@@ -39,8 +61,10 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     show: false,
-    backgroundColor: "#faf9f6",
+    backgroundColor: windowBackground(),
+    ...MAC_WINDOW_OPTIONS,
     webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
       session: desktopSession,
       nodeIntegration: false,
       contextIsolation: true,
@@ -60,6 +84,9 @@ function createWindow() {
     },
   })
   mainWindow.once("ready-to-show", () => mainWindow?.show())
+  for (const [event, fullscreen] of [["enter-full-screen", true], ["leave-full-screen", false]]) {
+    mainWindow.on(event, () => mainWindow?.webContents.send("memosync:fullscreen", fullscreen))
+  }
   mainWindow.on("closed", () => { mainWindow = undefined })
   mainWindow.loadURL(origin).catch((error) => {
     if (!quitting) {
@@ -168,7 +195,19 @@ else {
     void backendLifecycle.waitForStop().then(() => { clearTimeout(timer); app.quit() })
     backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
   })
+  // Follows the app's own theme setting, so the lights and the window behind the page match it.
+  ipcMain.on("memosync:set-theme", (event, theme) => {
+    if (event.sender !== mainWindow?.webContents) return
+    if (theme === "system" || theme === "light" || theme === "dark") nativeTheme.themeSource = theme
+    mainWindow.setBackgroundColor(windowBackground())
+  })
+  ipcMain.on("memosync:zoom", (event, zoom) => {
+    if (event.sender !== mainWindow?.webContents || process.platform !== "darwin") return
+    if (typeof zoom === "number" && zoom >= 0.25 && zoom <= 5) mainWindow.setWindowButtonPosition(trafficLightPosition(zoom))
+  })
+  nativeTheme.on("updated", syncDockIcon)
   app.whenReady().then(async () => {
+    syncDockIcon()
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
       { role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },
