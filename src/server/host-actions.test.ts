@@ -127,7 +127,7 @@ describe("HostActionService", () => {
     expect(f.requests()).toHaveLength(0)
   })
 
-  test("cancel after send leaves outcome unknown; stale ACK cannot confirm presentation", async () => {
+  test("late render acknowledgement records old presentation without restoring cancelled delivery", async () => {
     const f = await fixture()
     const receipt = await f.open()
     const snapshot = f.service.readSnapshot(f.connection, receipt.operationId)
@@ -136,8 +136,10 @@ describe("HostActionService", () => {
     const fresh = f.service.captureAdmission({ ...f.scope, admittedTurnId: "turn-2" })!
     f.service.replay(f.connection)
     expect(f.requests()).toHaveLength(1)
-    expect(() => f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "old-tab", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
-    expect(f.service.statusForClient(f.connection, receipt.operationId)).toMatchObject({ status: "unknown", delivery: "stopped", cancellation: "requested" })
+    const historical = f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "old-tab", fileVersion: snapshot.version, digest: snapshot.digest })
+    expect(historical).toMatchObject({ status: "unknown", delivery: "stopped", cancellation: "requested", presented: { viewInstanceId: "old-tab", fileVersion: snapshot.version, digest: snapshot.digest } })
+    expect(f.service.statusForClient(f.connection, receipt.operationId)).toEqual(historical)
+    expect(() => f.service.readSnapshot(f.connection, receipt.operationId)).toThrow("no longer deliverable")
     expect(f.requests()).toHaveLength(1)
     const newReceipt = await f.service.openFile(fresh, { ...native, nativeToolCallId: "new-call" }, { path: "README.md" })
     expect(newReceipt.operationId).not.toBe(receipt.operationId)
@@ -180,7 +182,8 @@ describe("HostActionService", () => {
     now = 151
     f.service.replay(resumed)
     expect(f.service.statusForClient(resumed, receipt.operationId)).toMatchObject({ status: "unknown", delivery: "stopped" })
-    expect(() => f.service.presented(resumed, { operationId: receipt.operationId, viewInstanceId: "late-after-expiry", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
+    expect(f.service.presented(resumed, { operationId: receipt.operationId, viewInstanceId: "late-after-expiry", fileVersion: snapshot.version, digest: snapshot.digest })).toMatchObject({ status: "unknown", delivery: "stopped", presented: { viewInstanceId: "late-after-expiry" } })
+    expect(() => f.service.readSnapshot(resumed, receipt.operationId)).toThrow("no longer deliverable")
     expect(events.filter(e => e.type === "host.action.requested")).toHaveLength(1)
   })
 
@@ -279,7 +282,8 @@ describe("HostActionService", () => {
     expect(events).toHaveLength(0)
     expect(restarted.statusForClient(connection, receipt.operationId).status).toBe("unknown")
     expect(await restarted.openFile(f.lease, native, { path: "README.md" })).toMatchObject({ status: "unavailable" })
-    expect(() => restarted.presented(connection, { operationId: receipt.operationId, viewInstanceId: "rendered-before-restart", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
+    expect(restarted.presented(connection, { operationId: receipt.operationId, viewInstanceId: "rendered-before-restart", fileVersion: snapshot.version, digest: snapshot.digest })).toMatchObject({ status: "unknown", delivery: "stopped", presented: { viewInstanceId: "rendered-before-restart" } })
+    expect(() => restarted.readSnapshot(connection, receipt.operationId)).toThrow("no longer deliverable")
     expect(events.filter(e => e.type === "host.action.requested")).toHaveLength(0)
   })
 
@@ -333,7 +337,7 @@ describe("host actions with the production execution policy service", () => {
     expect(f.lease.signal.aborted).toBe(true)
     expect(f.service.statusForClient(f.connection, receipt.operationId).status).toBe("unknown")
     expect(() => f.service.readSnapshot(f.connection, receipt.operationId)).toThrow("no longer deliverable")
-    expect(() => f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "stale", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
+    expect(f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "stale", fileVersion: snapshot.version, digest: snapshot.digest })).toMatchObject({ status: "unknown", delivery: "stopped", presented: { viewInstanceId: "stale" } })
     expect((await f.open()).status).toBe("unavailable")
     expect(f.service.statusForTool(f.lease, receipt.operationId).status).toBe("unavailable")
     policy.nativeRuntimeRetired("chat-1", engine)

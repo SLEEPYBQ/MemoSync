@@ -402,11 +402,13 @@ export class HostActionService {
       || input.fileVersion !== op.snapshot.version || input.digest !== op.snapshot.digest
       || !op.snapshotRetrieved || op.receipt.delivery === "not-sent") throw new Error("Invalid snapshot presentation receipt")
     if (op.receipt.presented) return this.receipt(op)
-    if (op.receipt.status !== "accepted" || !this.liveLease(op) || !this.pathStillSafe(op)) {
-      if (op.receipt.status === "accepted") this.stop(op, "Admission or workspace path changed before acknowledgement")
-      throw new Error("Host admission is no longer valid for acknowledgement")
+    if (op.receipt.status === "accepted" && (!this.liveLease(op) || !this.pathStillSafe(op))) {
+      this.stop(op, "Admission or workspace path changed before acknowledgement")
     }
-    op.receipt = { ...op.receipt, status: "presented", observedContent: op.request.snapshot,
+    // Matching bytes already retrieved by this window can establish a historical
+    // render fact after revocation. Preserve the stopped outcome and never
+    // reactivate its lease, resend a request, or authorize another snapshot read.
+    op.receipt = { ...op.receipt, status: op.receipt.status === "accepted" ? "presented" : op.receipt.status, observedContent: op.request.snapshot,
       presented: { at: this.now(), viewInstanceId: input.viewInstanceId, fileVersion: input.fileVersion, digest: input.digest } }
     this.save(op)
     this.notify(op)
