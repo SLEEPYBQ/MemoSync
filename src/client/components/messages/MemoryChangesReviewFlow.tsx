@@ -106,6 +106,7 @@ function MemoryChangesReviewSurface({
           {placement === "board"
             ? t("memory:thisIsTheSameLiveReviewShownInChatRow")
             : t("memory:openTheMemoryBoardToReviewTheseSameRowsAnd")}
+          {" "}{t("memory:transferIsOptional")}
         </p>
       </header>
 
@@ -169,7 +170,6 @@ function MemoryReviewStation({
           onRespond={review.onMemoryTransferRespond ?? noop}
           canReopen={review.canReopenTransfer}
           onReopen={() => review.onMemoryPreparationReopen?.("transfer", message.transferId)}
-          stepNumber={2}
           settledRows={review.progress.settledTransferRows}
           onSuggestionSettled={review.onTransferSettled}
           surface={surface}
@@ -185,7 +185,6 @@ function MemoryReviewStation({
         onRespond={review.onMemoryCheckupRespond ?? noop}
         canReopen={review.canReopenCheckup}
         onReopen={() => review.onMemoryPreparationReopen?.("checkup", message.checkupId)}
-        stepNumber={3}
         resolvedRows={review.progress.resolvedCheckupRows}
         onSuggestionResolved={review.onCheckupResolved}
         surface={surface}
@@ -295,7 +294,6 @@ export function FocusedMemoryCandidateStep({
       {remaining.length > 0 ? (
         <div className={MEMORY_CARD} data-remaining-candidate-review="true">
           <div className="mb-3 flex flex-wrap items-baseline gap-2">
-            {!currentProposal ? <span className="text-[11px] font-semibold text-muted-foreground">{t("memory:step1")}</span> : null}
             <h2 className="text-sm font-medium text-foreground">
               {currentProposal ? t("memory:otherMemoryCandidates") : t("memory:reviewNewMemoryCandidates")}
             </h2>

@@ -1,4 +1,5 @@
 import type { PiParentLaunch } from './memory/parent-launch'
+import { createHash } from 'node:crypto'
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineExecutable } from "./model-access/executables"
@@ -163,6 +164,13 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+/** Compare JSON definitions, never Zod internals or dispatch function identities. */
+function definitionJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+    : item)
 }
 
 /**
@@ -457,8 +465,8 @@ interface PiChatSession {
   connectionProvider: LlmProviderKind
   connectionBaseUrl: string
   connectionProtocol?: PiConnection["protocol"]
-  /** Sorted memory-tool names baked into the session at creation. */
-  toolNamesKey: string
+  /** Stable system and complete native tool definitions fixed at creation. */
+  definitionsKey: string
   modelCardKey: string
   outputSchema?: Record<string, unknown>
   supportsStructuredOutput?: boolean
@@ -551,7 +559,19 @@ export class PiAgentManager {
   private async openSession(args: StartPiTurnArgs & { connection: PiConnection; modelCard?: RegistryModelCard }): Promise<PiChatSession> {
     args.signal?.throwIfAborted()
     const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
-    const toolNamesKey = [...builtinToolNames, ...(args.memorySpecs ?? []).map((spec) => spec.name)].sort().join(",")
+    const memorySpecs = args.memorySpecs ?? []
+    const chatSessionHolder: { session?: PiChatSession } = {}
+    const memoryTools = toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal) => {
+      const invoke = chatSessionHolder.session?.memoryInvoke
+      if (!invoke) return { text: "Memory tools are not available for this turn.", isError: true }
+      return invoke(name, toolArgs, signal)
+    })
+    const definitionsKey = createHash("sha256").update(definitionJson({
+      systemPrompt: args.systemPrompt,
+      builtinTools: [...builtinToolNames].sort(),
+      memoryTools: memoryTools.map(({ name, description, parameters }) => ({ name, description, parameters }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    })).digest("hex")
 
     const modelCardKey = JSON.stringify({ card: args.modelCard, wireEffort: args.effort === "max" || args.effort === "xhigh" ? args.effort : undefined })
     const existing = this.sessions.get(args.chatId)
@@ -560,7 +580,7 @@ export class PiAgentManager {
       && existing.connectionBaseUrl === args.connection.baseUrl
       && existing.connectionProtocol === args.connection.protocol
     if (existing && connectionUnchanged && existing.cwd === args.cwd
-      && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
+      && existing.definitionsKey === definitionsKey && !args.forkSession) {
       await setConnectionKey(existing.modelRuntime, args.connection)
       args.signal?.throwIfAborted()
       existing.memoryInvoke = args.memoryDispatch ?? null
@@ -581,7 +601,14 @@ export class PiAgentManager {
 
     if (existing) {
       this.sessions.delete(args.chatId)
+      if (existing.session.isStreaming) await existing.session.abort()
       existing.session.dispose()
+      // Rebind definitions around the native history, even if an in-process
+      // caller omitted the token it already received on the previous turn.
+      if (connectionUnchanged && existing.cwd === args.cwd && !args.forkSession) {
+        args = { ...args, sessionToken: args.sessionToken ?? existing.session.sessionFile ?? null }
+      }
+      args.signal?.throwIfAborted()
     }
 
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
@@ -622,11 +649,8 @@ export class PiAgentManager {
         ? SessionManager.open(args.sessionToken, this.sessionsDir, args.cwd)
         : SessionManager.create(args.cwd, this.sessionsDir)
 
-    const memorySpecs = args.memorySpecs ?? []
-    // The invoker is intentionally stable: the ToolDefinition closes over the
-    // chat session's mutable `memoryInvoke`, which each startTurn re-binds to
-    // that turn's dispatch context (or clears when memory is disabled).
-    const chatSessionHolder: { session?: PiChatSession } = {}
+    // Tool definitions close over the mutable invoker, so each reused turn
+    // rebinds dispatch without changing the session identity.
     const customTools: ToolDefinition[] | undefined = (() => {
       const defs: ToolDefinition[] = []
       // Shell commands spawned by the bash tool run with a scrubbed
@@ -638,15 +662,7 @@ export class PiAgentManager {
           spawnHook: (context: BashSpawnContext) => ({ ...context, env: scrubPiShellEnv(context.env) }),
         }) as unknown as ToolDefinition)
       }
-      if (memorySpecs.length > 0) {
-        defs.push(...toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal) => {
-          const invoke = chatSessionHolder.session?.memoryInvoke
-          if (!invoke) {
-            return { text: "Memory tools are not available for this turn.", isError: true }
-          }
-          return invoke(name, toolArgs, signal)
-        }))
-      }
+      defs.push(...memoryTools)
       return defs.length > 0 ? defs : undefined
     })()
 
@@ -678,7 +694,7 @@ export class PiAgentManager {
       connectionProvider: args.connection.provider,
       connectionBaseUrl: args.connection.baseUrl,
       connectionProtocol: args.connection.protocol,
-      toolNamesKey,
+      definitionsKey,
       modelCardKey,
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
       memoryInvoke: args.memoryDispatch ?? null,
@@ -761,7 +777,7 @@ export class PiAgentManager {
       args.onLaunch?.({ provider: "pi", options: {
         model: args.model, effort: args.effort, connection: args.connection,
         toolNames: args.toolNames ?? PI_TOOL_NAMES, memorySpecs: args.memorySpecs,
-        modelCard, systemPrompt: chatSession.session.systemPrompt,
+        modelCard, systemPrompt: args.systemPrompt ?? chatSession.session.systemPrompt,
       } })
     } catch (error) {
       args.signal?.throwIfAborted()

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalizeToolCall } from '../shared/tools'
-import { OpencodeAgentManager, translateOpencodeTool } from './opencode-agent'
+import { OPENCODE_SYSTEM_PROMPT, OpencodeAgentManager, translateOpencodeTool } from './opencode-agent'
 import type { HarnessEvent, HarnessTurn } from './harness-types'
 import { createMemoryBranch } from './memory/branch-runtime'
 import { isOpencodeBranchRead } from './memory/branch-read-policy'
@@ -135,6 +135,42 @@ const marker = (id: string) => [
   { type: 'message.part.updated', properties: { part: { id, sessionID: 'ses_created', messageID: 'assistant', type: 'text', text: '' } } },
   { type: 'message.part.delta', properties: { sessionID: 'ses_created', messageID: 'assistant', partID: id, field: 'text', delta: id } },
 ]
+
+test.each([undefined, 'CUSTOM_STABLE_SYSTEM'])('changing OpenCode memory uses prompt parts with stable system and native session (%s)', async systemPrompt => {
+  const f = lifecycleFixture(), launches: any[] = []
+  let token: string | undefined
+  for (const [index, memoryContext] of ['MEMORY_A', 'MEMORY_B', undefined].entries()) {
+    const content = `TURN_${index}`
+    const turn = await f.start({ systemPrompt, memoryContext, content, sessionToken: token, onLaunch: launch => launches.push(launch) })
+    const { events, done } = collectTurn(turn)
+    const request = await f.notices.waitFor(n => n.path?.endsWith('/prompt_async') === true && JSON.stringify(n.body).includes(content))
+    const body = request.body as any
+    expect(body.system).toBe(systemPrompt ?? OPENCODE_SYSTEM_PROMPT)
+    expect(body.parts).toEqual([
+      ...(memoryContext ? [{ type: 'text', text: memoryContext }] : []),
+      { type: 'text', text: content },
+    ])
+    expect(JSON.stringify(body.system)).not.toContain('MEMORY_')
+    expect(request.path).toBe('/session/ses_created/prompt_async')
+    await f.post('/test/events', [
+      { type: 'message.updated', properties: { info: { id: `reply-${index}`, sessionID: 'ses_created', role: 'assistant', time: { created: 1 } } } },
+      { type: 'message.part.updated', properties: { part: { id: `text-${index}`, sessionID: 'ses_created', messageID: `reply-${index}`, type: 'text', text: `reply ${index}`, time: { start: 1, end: 2 } } } },
+      { type: 'session.idle', properties: { sessionID: 'ses_created' } },
+    ])
+    await done
+    expect(events.values.at(-1)?.entry).toMatchObject({ kind: 'result', subtype: 'success' })
+    token = events.values.find(e => e.type === 'session_token')?.sessionToken
+    expect(token).toBe('ses_created')
+  }
+  expect(f.notices.values.filter(n => n.path === '/session')).toHaveLength(1)
+  expect(f.notices.values.filter(n => n.path === '/session/ses_created/message')).toHaveLength(3)
+  expect(f.notices.values.filter(n => n.method === 'DELETE' || n.path?.endsWith('/fork'))).toHaveLength(0)
+  expect(launches).toHaveLength(3)
+  for (const launch of launches) {
+    expect(launch.options.systemPrompt).toBe(systemPrompt ?? OPENCODE_SYSTEM_PROMPT)
+    expect(launch.options).not.toHaveProperty('memoryContext')
+  }
+}, 10_000)
 
 for (const firstAnswer of ['reply', 'cancelled', 'throw'] as const) test(`questions serialize user callbacks through ${firstAnswer} acknowledgement and deduplicate request IDs`, async () => {
   const f = lifecycleFixture(), invoked = journal<string>(), first = deferred<unknown>(), second = deferred<unknown>()

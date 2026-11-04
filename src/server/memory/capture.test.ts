@@ -870,7 +870,7 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
     expect(memory.store.list({ status: 'candidate' })).toHaveLength(1);
   });
 
-  it('preserves legacy routing when the turn is missing or the engine is not Claude', async () => {
+  it('preserves legacy routing without a turn and deduplicates Codex with turn identity', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const { call, calls } = stubCaller([
       { decisions: [{ index: 0, route: 'new', targetId: null }] },
@@ -886,8 +886,8 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
     await capture.routeProposal(proposal, { projectId: 'RenderX', sessionId: 'codex', turn: 3, engine: 'codex' });
     await capture.routeProposal(proposal, { projectId: 'RenderX', sessionId: 'codex', turn: 3, engine: 'codex' });
 
-    expect(calls).toHaveLength(4);
-    expect(memory.store.list({ status: 'candidate' })).toHaveLength(4);
+    expect(calls).toHaveLength(3);
+    expect(memory.store.list({ status: 'candidate' })).toHaveLength(3);
   });
 
   it('does not deduplicate the same observation across turns or chats', async () => {
@@ -1089,7 +1089,7 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     expect((captureEvents[0] as { channel?: string }).channel).toBe('prompt');
   });
 
-  it('does not reuse prompt-capture results after reopening the store', async () => {
+  it('reuses committed same-turn operations after reopening without repeating routing', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     memory = new MemoryService({ dbPath, dataDir: dir });
     let providerCalls = 0;
@@ -1121,9 +1121,11 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
 
     memory.close();
     memory = new MemoryService({ dbPath, dataDir: dir });
-    await createCaptureService({ memory, callJson: call }).captureFromPrompt(input);
+    const retry = await createCaptureService({ memory, callJson: call }).captureFromPrompt(input);
 
-    expect(providerCalls).toBe(4);
+    expect(providerCalls).toBe(3); // extraction may run again; routing and writes do not
+    expect(retry.sameTurnDuplicates).toEqual([{ memoryId: firstCandidateId, status: 'candidate' }]);
+    expect(memory.store.list({ status: 'candidate' })).toHaveLength(1);
   });
 
   it('empty message and zero-candidate parses short-circuit without calling the router', async () => {

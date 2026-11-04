@@ -201,7 +201,7 @@ export function MemoryProposalsGate({
   return (
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-4 w-4" /> {t("memory:step1")}</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><Inbox className="h-4 w-4" aria-hidden /></span>
         <span className="text-sm font-semibold text-foreground">{t("memory:reviewNewMemoryCandidates")}</span>
         <HoverCard>
           <HoverCardTrigger asChild>

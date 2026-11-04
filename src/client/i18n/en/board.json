@@ -7,7 +7,7 @@
   "currentSession": "Current session",
   "archiveMemory": "Archive memory",
   "proposedDestination": "Proposed destination",
-  "reviewThisProposalInStep1Above": "Review this proposal in Step 1 above.",
+  "reviewThisProposalInStep1Above": "Review this proposal with the new memory candidates above.",
   "reviewTheLiveChatSuggestionsAndTheSameCanonicalSaved": "Review the live chat suggestions and the same canonical saved memories together. Working Memory remains separate.",
   "reviewProposalsAndManageYourPersistentUserControlledLongTerm": "Review proposals and manage your persistent, user-controlled long-term memory. Working Memory remains separate.",
   "newMemory": " New memory",
