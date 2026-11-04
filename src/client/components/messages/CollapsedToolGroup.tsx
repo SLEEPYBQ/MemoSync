@@ -1,11 +1,14 @@
-import { t, useI18n, getLocale } from "../../i18n"
-import { useMemo } from "react"
 import { ChevronRight } from "lucide-react"
-import { ToolCallMessage } from "./ToolCallMessage"
-import { MetaRow, MetaLabel } from "./shared"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { getLocale, t, useI18n } from "../../i18n"
+import { mergeToolMemoryUses } from "../../lib/toolMemoryUses"
+import { cn } from "../../lib/utils"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
-import type { ProcessedToolCall } from "./types"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
+import { useToolMemoryUses } from "./render-context"
+import { getToolCallTitle, ToolCallMessage } from "./ToolCallMessage"
+import { ToolMemoryChips } from "./ToolMemoryChips"
+import type { ProcessedToolCall } from "./types"
 
 const TOOL_CATEGORIES = {
   read_file: "toolGroupread",
@@ -14,7 +17,7 @@ const TOOL_CATEGORIES = {
   delete_file: "toolGroupdelete",
   bash: "toolGroupcommand",
   grep: "toolGroupsearch",
-  glob: "toolGroupglob",
+  glob: "toolGroupsearch",
   subagent_task: "toolGroupagent",
   web_search: "toolGroupwebsearch",
   skill: "toolGroupskill",
@@ -22,32 +25,47 @@ const TOOL_CATEGORIES = {
   other: "toolGroupother",
 } as const
 
-function getToolCategory(toolKind: string) {
+/** Stays this long before showing a clock: most steps are over before it would mean anything. */
+const SHOW_ELAPSED_AFTER_SECONDS = 3
+
+function toolCategory(toolKind: string) {
   return TOOL_CATEGORIES[toolKind as keyof typeof TOOL_CATEGORIES] ?? TOOL_CATEGORIES.other
 }
 
-function getToolGroupLabel(messages: HydratedTranscriptMessage[]): string {
-  const counts = new Map<string, { category: ReturnType<typeof getToolCategory>; count: number }>()
-  const order: string[] = []
+/** Reading one file five times is still one file read. */
+function countKey(tool: ProcessedToolCall) {
+  const path = (tool.input as { filePath?: unknown }).filePath
+  return typeof path === "string" ? path : tool.toolId
+}
 
-  for (const msg of messages) {
-    const toolKind = (msg as ProcessedToolCall).toolKind
-    const category = getToolCategory(toolKind)
-
-    const existing = counts.get(category)
-    if (existing) {
-      existing.count++
-    } else {
-      counts.set(category, { category, count: 1 })
-      order.push(category)
-    }
+/** "Read 3 files, ran 2 commands", in the order the agent got to them. */
+export function summarizeToolGroup(tools: ProcessedToolCall[]): string {
+  const seen = new Map<ReturnType<typeof toolCategory>, Set<string>>()
+  for (const tool of tools) {
+    const category = toolCategory(tool.toolKind)
+    const keys = seen.get(category) ?? new Set<string>()
+    keys.add(countKey(tool))
+    seen.set(category, keys)
   }
+  const chinese = getLocale() === "zh-CN"
+  const parts = [...seen].map(([category, keys]) => t(`chat:${category}`, { count: keys.size }))
+  return parts.map((part, index) => (index > 0 && !chinese ? part.charAt(0).toLowerCase() + part.slice(1) : part)).join(chinese ? "，" : ", ")
+}
 
-  // Format as "N reads, M writes" in order of first appearance
-  return order.map(key => {
-    const { category, count } = counts.get(key)!
-    return t(`chat:${category}`, { count })
-  }).join(getLocale() === "zh-CN" ? "、" : ", ")
+function useElapsedSeconds(since: string | undefined, running: boolean) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [running])
+  if (!running || !since) return 0
+  return Math.max(0, Math.floor((now - Date.parse(since)) / 1000))
+}
+
+function formatElapsed(seconds: number) {
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
 }
 
 interface Props {
@@ -60,64 +78,80 @@ interface Props {
 
 export function CollapsedToolGroup({ messages, isLoading, localPath, expanded, onExpandedChange }: Props) {
   useI18n()
-  const label = useMemo(() => getToolGroupLabel(messages), [messages, getLocale()])
+  const tools = messages as ProcessedToolCall[]
+  const memoryUses = useToolMemoryUses()
+  const toolIds = useMemo(() => tools.map((tool) => tool.toolId), [tools])
+  const uses = useMemo(() => mergeToolMemoryUses(memoryUses, toolIds), [memoryUses, toolIds])
 
-  // Check if any tool in the group is still in progress
-  const anyInProgress = messages.some(msg => {
-    const processed = msg as ProcessedToolCall
-    return processed.result === undefined
-  })
+  const finished = tools.filter((tool) => tool.result !== undefined)
+  const current = isLoading ? tools.find((tool) => tool.result === undefined) : undefined
+  const failed = tools.filter((tool) => tool.isError).length
+  const summary = useMemo(() => summarizeToolGroup(current ? finished : tools), [tools, finished.length, Boolean(current), getLocale()])
+  const elapsed = useElapsedSeconds(current?.timestamp, Boolean(current))
 
-  const showLoadingState = anyInProgress && isLoading
+  // Long runs scroll in place. A live one follows the newest step, unless you scrolled away.
+  // An opened step needs its room, so the limit lifts while one is open.
+  const [openSteps, setOpenSteps] = useState(0)
+  const stepsRef = useRef<HTMLDivElement>(null)
+  const pinnedToEnd = useRef(true)
+  const live = Boolean(current)
+  useLayoutEffect(() => {
+    const steps = stepsRef.current
+    if (steps && live && pinnedToEnd.current) steps.scrollTop = steps.scrollHeight
+  }, [expanded, live, tools.length])
 
   return (
-    <div className="w-full" data-tool-group-ids={JSON.stringify(messages.filter((message) => message.kind === "tool").map((message) => message.toolId))}>
-    <MetaRow className="w-full">
-      <div className="flex flex-col w-full">
+    <div className="w-full" data-tool-group-ids={JSON.stringify(toolIds)}>
+      <div className="flex min-h-6 items-center gap-2 text-[13px]">
         <button
+          type="button"
           onClick={() => onExpandedChange(!expanded)}
           data-tool-group-toggle=""
           aria-expanded={expanded}
-          className={`group cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded && !showLoadingState ? "hover:opacity-60 transition-opacity" : ""}`}
+          className="group/tools flex min-w-0 cursor-pointer items-center gap-1.5 text-left"
         >
-          <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
-            <div className="w-5 h-5 relative flex items-center justify-center">
-              <ChevronRight
-                className={`h-4.5 w-4.5 text-muted-icon transition-all duration-200 ${expanded ? "rotate-90" : ""}`}
-              />
-            </div>
-            <MetaLabel className="text-left">
-              <AnimatedShinyText animate={showLoadingState}>{label}</AnimatedShinyText>
-            </MetaLabel>
-          </div>
+          <span className="flex size-5 shrink-0 items-center justify-center">
+            <ChevronRight className={cn("size-4 text-muted-icon transition-transform duration-200", expanded && "rotate-90")} />
+          </span>
+          <span className="min-w-0 truncate text-muted-foreground transition-colors group-hover/tools:text-foreground">
+            {summary}
+            {current ? (
+              <>
+                {summary ? <span aria-hidden className="mx-1.5 opacity-50">·</span> : null}
+                <AnimatedShinyText animate className="inline">{getToolCallTitle(current, localPath)}</AnimatedShinyText>
+              </>
+            ) : null}
+          </span>
         </button>
-        {expanded && (
-          <div className="my-4 flex flex-col gap-3">
-            {messages.map(msg => (
-              <ToolCallMessage
-                key={msg.id}
-                message={msg as ProcessedToolCall}
-                isLoading={isLoading}
-                localPath={localPath}
-              />
-            ))}
-            {messages.length > 5 && (
-              <button
-                onClick={() => onExpandedChange(false)}
-                className="cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-xs hover:opacity-80 transition-opacity"
-              >
-                <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
-                  <div className="w-5 h-5 relative flex items-center justify-center">
-                    <ChevronRight className="h-4.5 w-4.5 text-muted-icon -rotate-90" />
-                  </div>
-                  <MetaLabel className="text-left">{t("chat:collapse")}</MetaLabel>
-                </div>
-              </button>
-            )}
-          </div>
-        )}
+        {elapsed >= SHOW_ELAPSED_AFTER_SECONDS ? <span className="shrink-0 text-xs tabular-nums text-muted-foreground/80">{formatElapsed(elapsed)}</span> : null}
+        {failed > 0 ? <span className="shrink-0 text-xs text-destructive">{t("chat:toolGroupFailed", { count: failed })}</span> : null}
+        {uses.length > 0 ? (
+          <span className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+            {t("chat:toolGroupUsedMemory")}
+            <ToolMemoryChips uses={uses} />
+          </span>
+        ) : null}
       </div>
-    </MetaRow>
+      {expanded ? (
+        <div
+          ref={stepsRef}
+          onScroll={(event) => {
+            const steps = event.currentTarget
+            pinnedToEnd.current = steps.scrollHeight - steps.scrollTop - steps.clientHeight < 8
+          }}
+          className={cn("mt-0.5 flex flex-col overscroll-contain", openSteps === 0 && "max-h-[min(20rem,50dvh)] overflow-y-auto")}
+        >
+          {tools.map((tool) => (
+            <ToolCallMessage
+              key={tool.id}
+              message={tool}
+              isLoading={isLoading}
+              localPath={localPath}
+              onExpandedChange={(open) => setOpenSteps((count) => Math.max(0, count + (open ? 1 : -1)))}
+            />
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }

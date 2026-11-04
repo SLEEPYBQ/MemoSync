@@ -155,9 +155,11 @@ interface ExpandableRowProps {
   defaultExpanded?: boolean
   /** Observe toggles (e.g. monitoring telemetry for pool/trace expansion). */
   onExpandedChange?: (expanded: boolean) => void
+  /** Takes the full width, so long titles truncate and the chevron sits at the end. */
+  fill?: boolean
 }
 
-export function ExpandableRow({ children, expandedContent, defaultExpanded = false, onExpandedChange }: ExpandableRowProps) {
+export function ExpandableRow({ children, expandedContent, defaultExpanded = false, onExpandedChange, fill = false }: ExpandableRowProps) {
   useI18n()
   const [expanded, setExpandedState] = useState(defaultExpanded)
   const setExpanded = (next: boolean) => {
@@ -172,9 +174,11 @@ export function ExpandableRow({ children, expandedContent, defaultExpanded = fal
         onClick={() => setExpanded(!expanded)}
         data-expandable-toggle=""
         aria-expanded={expanded}
-        className={`group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
+        className={fill
+          ? "group/expandable-row grid w-full cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-1 text-sm"
+          : `group/expandable-row cursor-pointer grid grid-cols-[auto_1fr] items-center gap-1 text-sm ${!expanded ? "hover:opacity-60 transition-opacity" : ""}`}
       >
-        <div className="grid grid-cols-[auto_1fr] items-center gap-1.5">
+        <div className={fill ? "grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5" : "grid grid-cols-[auto_1fr] items-center gap-1.5"}>
           {children}
         </div>
         <ChevronRight
@@ -306,7 +310,7 @@ export function CurrentTurnMemoryCitationProvider({ children }: { children: Reac
 // Scope-colored [M-NN] citation chip (SPEC §4.10c). Resolves the memory from
 // the store; unresolved ids render as a neutral, non-interactive chip (either
 // truly unknown, or the store hasn't loaded yet).
-export function MemoryCitationChip({ id, children }: { id: string; children?: ReactNode }) {
+export function MemoryCitationChip({ id, children, note }: { id: string; children?: ReactNode; note?: string }) {
   useI18n()
   useEnsureMemoriesLoaded()
   const { chatId } = useTranscriptChatContext()
@@ -388,6 +392,7 @@ export function MemoryCitationChip({ id, children }: { id: string; children?: Re
           <p className="mb-2 flex items-center gap-1 font-medium text-destructive">
             <AlertTriangle className="h-3 w-3 shrink-0" /> {t("chat:thisReplyViolatedTheMemoryDetailsInTheTraceBelow")}</p>
         ) : null}
+        {note ? <p className="mb-2 leading-relaxed text-muted-foreground">{note}</p> : null}
         {/* Inspect the canonical memory here; Stop/Confirm stays beside the citation. */}
         <MemoryCardCore item={memory} />
       </HoverCardContent>

@@ -7,7 +7,8 @@ import { AnimatedShinyText } from "../../components/ui/animated-shiny-text"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
 import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget, useEnsureMemoriesLoaded } from "../../components/messages/shared"
-import { TranscriptChatContextProvider, ViolatedCitationsMapProvider } from "../../components/messages/render-context"
+import { ToolMemoryUsesProvider, TranscriptChatContextProvider, ViolatedCitationsMapProvider } from "../../components/messages/render-context"
+import { buildToolMemoryUses, toolMemoryUsesSignature, type ToolMemoryUses } from "../../lib/toolMemoryUses"
 import { buildViolatedCitationsByMessageId, violatedCitationsSignature } from "../../lib/violatedCitations"
 import { hasOpenMemoryPreparationStep as hasOpenMemoryPreparationStepIn } from "../../lib/memoryPreparation"
 import { MAX_FILES_PER_DROP } from "../../components/chat-ui/ChatInput"
@@ -166,6 +167,14 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     stableViolatedRef.current = { sig: violatedSig, map: violatedMap }
   }
 
+  // Same deal for the memories tied to each step: verdicts land once per turn.
+  const toolMemoryUses = useMemo(() => buildToolMemoryUses(messages), [messages])
+  const stableToolMemoryRef = useRef<{ sig: string; uses: ToolMemoryUses | null }>({ sig: "", uses: null })
+  const toolMemorySig = toolMemoryUsesSignature(toolMemoryUses)
+  if (toolMemorySig !== stableToolMemoryRef.current.sig) {
+    stableToolMemoryRef.current = { sig: toolMemorySig, uses: toolMemoryUses }
+  }
+
   useEffect(() => {
     setToolGroupExpanded({})
   }, [activeChatId])
@@ -303,7 +312,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
       <ChatTranscriptRow
         row={item}
         isCurrentTurnAssistant={item.kind === "single" && currentTurnAssistantMessageIds.has(item.message.id)}
-        toolGroupExpanded={item.kind === "tool-group" ? (toolGroupExpanded[item.id] ?? true) : undefined}
+        toolGroupExpanded={item.kind === "tool-group" ? (toolGroupExpanded[item.id] ?? false) : undefined}
         onToolGroupExpandedChange={handleToolGroupExpandedChange}
         onAskUserQuestionSubmit={onAskUserQuestionSubmit}
         onExitPlanModeConfirm={onExitPlanModeConfirm}
@@ -371,6 +380,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
     <TranscriptChatContextProvider value={chatContextValue}>
       <OpenLocalLinkProvider onOpenLocalLink={handleOpenLocalLinkClick}>
         <ViolatedCitationsMapProvider value={stableViolatedRef.current.map}>
+        <ToolMemoryUsesProvider value={stableToolMemoryRef.current.uses}>
         <LegendList<ResolvedTranscriptRow>
           ref={listRef}
           data={resolvedRows}
@@ -392,6 +402,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
           ListHeaderComponent={listHeader}
           ListFooterComponent={listFooter}
         />
+        </ToolMemoryUsesProvider>
         </ViolatedCitationsMapProvider>
       </OpenLocalLinkProvider>
 

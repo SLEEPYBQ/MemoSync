@@ -925,7 +925,7 @@ export const ChatTranscriptRow = memo(function ChatTranscriptRow({
         messages={row.messages}
         isLoading={row.isLoading}
         localPath={row.localPath}
-        expanded={toolGroupExpanded ?? true}
+        expanded={toolGroupExpanded ?? false}
         onExpandedChange={onToolGroupExpandedChange}
       />
     )
