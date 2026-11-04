@@ -149,6 +149,7 @@
   "modelAccess_connection-key-missing": "Add an API key for this connection.",
   "modelAccess_connection-protocol-unsupported": "This connection does not support the selected engine.",
   "modelAccess_engine-setup-invalid": "Engine settings are invalid.",
+  "modelAccess_engine-upgrade-unavailable": "This installation can’t be upgraded automatically.",
   "modelAccess_model-unavailable": "The selected model is unavailable.",
   "modelAccess_account-signed-out": "Sign in to the CLI, or select an API connection. Isolated profiles require a connection.",
   "modelAccess_executable-missing": "The engine executable was not found.",

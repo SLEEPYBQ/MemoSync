@@ -128,7 +128,7 @@ test("each engine renders ready/missing/incompatible/broken across account and c
         const card = page.locator(`[data-engine="${engine}"]`)
         // Pi is pinned to one release line, so its mismatch doesn't claim to be "too old".
         expect(await card.textContent()).toContain(
-          engine === "pi" && state === "incompatible" ? "MemoSync works with Pi 0.73.x" : expected,
+          engine === "pi" && state === "incompatible" ? "MemoSync works with Pi 1.x" : expected,
         )
         expect(await card.getByRole("radio", { name: "Your sign-in", exact: true }).count()).toBe(
           engine === "pi" ? 0 : 1,
@@ -177,6 +177,53 @@ test("engine paths, access, model and refresh send contract commands, with retry
   await card.getByRole("button", { name: "Claude Code actions" }).click()
   await page.getByRole("button", { name: "Detect again", exact: true }).click()
   expect(await card.getByRole("alert").count()).toBe(0)
+})
+
+test("an engine below its minimum offers its upgrade, and only then", async () => {
+  await open()
+  const publishPi = (executable: Record<string, unknown>, upgrade?: unknown) =>
+    page.evaluate(({ executable, upgrade }) => {
+      const snapshot = window.modelAccessFixture.snapshot()
+      const pi = snapshot.engines.pi
+      Object.assign(pi, { ready: false, problem: "executable-incompatible", upgrade })
+      pi.executable = { state: "incompatible", path: "/fixture/bin/pi", minimumVersion: "1.3.0", ...executable } as typeof pi.executable
+      window.modelAccessFixture.publish(snapshot)
+    }, { executable, upgrade })
+  const card = page.locator('[data-engine="pi"]')
+  const upgradeButton = card.getByRole("button", { name: "Upgrade", exact: true })
+
+  // Too old, from a source MemoSync recognises: one click, with the command in view.
+  await publishPi({ version: "1.2.0", belowMinimum: true, upgradeCommand: "pi update self" })
+  await upgradeButton.waitFor()
+  expect(await card.textContent()).toContain("pi update self")
+  expect(await card.textContent()).toContain("Requires v1.3.0 or later.")
+  expect(await card.textContent()).toContain("Version too old")
+  await shots("engine-upgrade-offered")
+  await upgradeButton.click()
+  expect(await lastCommand()).toEqual({ type: "modelAccess.upgradeExecutable", engine: "pi" })
+
+  // While it runs nothing else can start.
+  await publishPi({ version: "1.2.0", belowMinimum: true, upgradeCommand: "pi update self" }, { state: "running" })
+  await card.getByRole("button", { name: "Upgrading…", exact: true }).waitFor()
+  expect(await card.getByRole("button", { name: "Upgrading…", exact: true }).isDisabled()).toBe(true)
+  expect(await card.getByRole("button", { name: "Pi actions" }).isDisabled()).toBe(true)
+
+  // A failure says why and leaves the command to run by hand.
+  await publishPi({ version: "1.2.0", belowMinimum: true, upgradeCommand: "pi update self" }, { state: "failed", detail: "pi update self\nEACCES" })
+  await card.getByRole("alert").waitFor()
+  expect(await card.getByRole("alert").textContent()).toContain("EACCES")
+  await shots("engine-upgrade-failed")
+
+  // Too old, but the source is unknown: a command to copy and nothing to run.
+  await publishPi({ version: "1.2.0", belowMinimum: true })
+  await card.getByText("npm install -g --ignore-scripts @earendil-works/pi-coding-agent").waitFor()
+  expect(await upgradeButton.count()).toBe(0)
+
+  // Newer than supported: upgrading couldn't help, so it isn't offered or implied.
+  await publishPi({ version: "2.0.0", belowMinimum: false })
+  await card.getByText("Unsupported version", { exact: true }).waitFor()
+  expect(await upgradeButton.count()).toBe(0)
+  expect(await card.textContent()).not.toContain("npm install")
 })
 
 test("environment connections are read-only and test the existing connection id", async () => {

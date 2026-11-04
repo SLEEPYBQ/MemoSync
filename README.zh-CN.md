@@ -117,7 +117,7 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex 和 Pi�
 
 应用还没有经过 Apple 公证，第一次打开会被 macOS 拦下。先尝试打开一次，再到**系统设置 → 隐私与安全性**，点**仍要打开**。
 
-应用里不带智能体，请先装好 Claude Code 或 Codex。它和源码版共用 `~/.memosync/data`，两者不能同时运行。
+应用里不带智能体，请先装好 Claude Code 或 Codex。要用 Pi，需要安装 `@earendil-works/pi-coding-agent` 1.3.0 或更新版本。应用和源码版共用 `~/.memosync/data`，两者不能同时运行。
 
 ### 从源码运行
 
@@ -165,7 +165,7 @@ bun run start
 
 用 API 连接时，引擎运行在 `~/.memosync/data/cli-profiles` 下的独立配置里，你自己的 `~/.claude` 和 `~/.codex` 不会被读取，也不会被改动。key 保存在 `~/.memosync/data/credentials.json`，只有你的账户能读，也不会回传给浏览器。
 
-MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想指定某个可执行文件，在引擎卡片里填上它的路径。
+MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想指定某个可执行文件，在引擎卡片里填上它的路径。版本太旧时，引擎卡片上会出现**升级**按钮。
 
 ## 日常用到的控制
 

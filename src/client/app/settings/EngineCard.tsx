@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react"
-import { Check, ChevronRight, Copy, MoreHorizontal, RefreshCw } from "lucide-react"
+import { ArrowUpCircle, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw } from "lucide-react"
 import {
   ENGINE_PROTOCOLS,
   ENGINES_WITH_ACCOUNT_MODE,
@@ -102,8 +102,11 @@ export function EngineCard({
     "known-dir": "sourceKnown",
     bundled: "sourceBundled",
   } as const
-  // Pi is pinned to one line of releases, so its mismatch usually means newer, not older.
-  const piUnsupported = engine === "pi" && executable?.state === "incompatible"
+  const belowMinimum = executable?.state === "incompatible" && executable.belowMinimum === true
+  // Pi is held to one major line, so a mismatch can also mean newer than MemoSync supports.
+  const piUnsupported = engine === "pi" && executable?.state === "incompatible" && !belowMinimum
+  const upgrade = status?.upgrade
+  const upgrading = upgrade?.state === "running"
   const badgeKey = !status
     ? "loadingShort"
     : status.ready
@@ -116,9 +119,11 @@ export function EngineCard({
             ? "brokenStatus"
             : "notReadyStatus"
   const installCommand =
-    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g @mariozechner/pi-coding-agent@0.73.1" : "npm install -g @openai/codex"
+    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" : "npm install -g @openai/codex"
   const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")
   const needsInstall = executable && !["ready", "not-needed"].includes(executable.state)
+  const upgradeCommand = belowMinimum ? executable.upgradeCommand : undefined
+  const shownCommand = upgradeCommand ?? installCommand
   // Collapsed, the row says what is wrong; open, the notice below says it in full.
   const summary = !status
     ? null
@@ -166,7 +171,7 @@ export function EngineCard({
                 size="icon"
                 className={SETTINGS_ICON_BUTTON_CLASS}
                 aria-label={t("modelAccess:engineActions", { engine: ENGINE_NAMES[engine] })}
-                disabled={!socket || !status || pending}
+                disabled={!socket || !status || pending || upgrading}
               >
                 <MoreHorizontal className="size-4" />
               </Button>
@@ -257,7 +262,7 @@ export function EngineCard({
               ) : null}
               {needsInstall ? (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  {piUnsupported ? null : <><code className="min-w-0 flex-1 break-all text-xs">{installCommand}</code>
+                  {piUnsupported ? null : <><code className="min-w-0 flex-1 break-all text-xs">{shownCommand}</code>
                   <Hint text={t("modelAccess:copyCommand")}>
                     <Button
                       type="button"
@@ -266,7 +271,7 @@ export function EngineCard({
                       aria-label={t("modelAccess:copyCommand")}
                       onClick={() => {
                         void navigator.clipboard
-                          .writeText(installCommand)
+                          .writeText(shownCommand)
                           .then(() => setCopied(true))
                           .catch(() => setError(t("modelAccess:copyFailed")))
                       }}
@@ -274,9 +279,22 @@ export function EngineCard({
                       {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
                     </Button>
                   </Hint></>}
+                  {upgradeCommand ? (
+                    <SettingsActionButton
+                      prominent
+                      className={`text-xs ${MODEL_ACCESS_FOCUS_CLASS}`}
+                      disabled={!socket || pending || upgrading}
+                      icon={upgrading ? <Loader2 className="size-3.5 animate-spin" /> : <ArrowUpCircle className="size-3.5" />}
+                      onClick={() => {
+                        if (socket) void command(() => socket.command({ type: "modelAccess.upgradeExecutable", engine }))
+                      }}
+                    >
+                      {t(upgrading ? "modelAccess:upgrading" : "modelAccess:upgrade")}
+                    </SettingsActionButton>
+                  ) : null}
                   <SettingsActionButton
                     className={`text-xs ${MODEL_ACCESS_FOCUS_CLASS}`}
-                    disabled={!socket || pending}
+                    disabled={!socket || pending || upgrading}
                     onClick={() => {
                       setPath(setup?.executablePath ?? "")
                       setPathOpen(true)
@@ -284,6 +302,12 @@ export function EngineCard({
                   >
                     {t("modelAccess:choosePath")}
                   </SettingsActionButton>
+                </div>
+              ) : null}
+              {upgrade?.state === "failed" ? (
+                <div className="mt-2" role="alert">
+                  <p>{t("modelAccess:upgradeFailed")}</p>
+                  <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11.5px] leading-4">{upgrade.detail}</pre>
                 </div>
               ) : null}
             </SettingsNotice>

@@ -1,8 +1,54 @@
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { afterEach, describe, expect, test } from "bun:test"
-import { hasCommand, inheritShellPath, mergePathLists, parseShellPathOutput, spawnDetached } from "./process-utils"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
+import { hasCommand, inheritShellPath, killProcessTree, mergePathLists, parseShellPathOutput, spawnDetached } from "./process-utils"
+
+describe("killProcessTree", () => {
+  test.each([
+    { state: "exitCode", exitCode: 0, signalCode: null },
+    { state: "signalCode", exitCode: null, signalCode: "SIGKILL" as NodeJS.Signals },
+  ])("does not signal a child that already exited ($state)", async ({ exitCode, signalCode }) => {
+    let killCalls = 0
+    const signalTrap = spyOn(process, "kill").mockImplementation(() => true)
+    const child = {
+      pid: process.pid + 1,
+      exitCode,
+      signalCode,
+      kill: () => {
+        killCalls += 1
+        return true
+      },
+    }
+
+    try {
+      await killProcessTree(child)
+      await killProcessTree(child)
+
+      expect(killCalls).toBe(0)
+      expect(signalTrap).not.toHaveBeenCalled()
+    } finally {
+      signalTrap.mockRestore()
+    }
+  })
+
+  test("deduplicates active cleanup through completion", async () => {
+    let killCalls = 0
+    const child = {
+      kill: () => {
+        killCalls += 1
+        return true
+      },
+    }
+
+    const first = killProcessTree(child)
+    const second = killProcessTree(child)
+    expect(second).toBe(first)
+    expect(killCalls).toBe(1)
+    await Promise.all([first, second])
+    expect(killCalls).toBe(1)
+  })
+})
 
 describe("spawnDetached", () => {
   test("rejects when the command does not exist", async () => {

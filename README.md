@@ -116,7 +116,7 @@ Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/l
 
 The app isn't notarized yet, so macOS blocks it the first time. Try to open it, then go to **System Settings → Privacy & Security** and choose **Open Anyway**.
 
-The app doesn't include any agents, so install Claude Code or Codex first. It shares `~/.memosync/data` with a source install, and only one of them can run at a time.
+The app doesn't include any agents, so install Claude Code or Codex first. To use Pi, install `@earendil-works/pi-coding-agent` 1.3.0 or newer. The app shares `~/.memosync/data` with a source install, and only one of them can run at a time.
 
 ### From source
 
@@ -164,7 +164,7 @@ When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code a
 
 Engines on an API connection run in a separate profile under `~/.memosync/data/cli-profiles`, so your own `~/.claude` and `~/.codex` are never read or changed. Keys are stored in `~/.memosync/data/credentials.json`, readable only by you, and are never sent back to the browser.
 
-MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card.
+MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card. If a version is too old, the engine card shows an **Upgrade** button.
 
 ## Everyday controls
 

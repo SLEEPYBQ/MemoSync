@@ -122,6 +122,10 @@ export interface ExecutableStatus {
   /** How it was found. "bundled" = the Claude Agent SDK's own CLI (fallback). */
   source?: "configured" | "path" | "known-dir" | "bundled"
   minimumVersion?: string
+  /** The installed version is older than minimumVersion, as opposed to otherwise unusable. */
+  belowMinimum?: boolean
+  /** The command MemoSync can run to upgrade this installation. Absent when its source is unknown. */
+  upgradeCommand?: string
   /** Human-readable reason for broken/incompatible/missing (English; the client localizes by state). */
   detail?: string
 }
@@ -132,6 +136,8 @@ export interface EngineStatus {
   executable: ExecutableStatus
   /** True when a turn on this engine can start right now. */
   ready: boolean
+  /** An upgrade of this engine's CLI that is running or just failed. */
+  upgrade?: { state: "running" } | { state: "failed"; detail: string }
   /** Connection uses the local protocol translation gateway. */
   translated?: boolean
   /** The account is out of reach because this run is isolated, not because nobody signed in. */
