@@ -1,32 +1,25 @@
 import { describe, expect, test } from "bun:test"
-import { deriveMemoryToggleState } from "./MemoryToggle"
+import { deriveMemoryMode, memorySettingsForMode } from "./MemoryToggle"
 
-const on = { enabled: true, learn: true }
+const review = { enabled: true, learn: true, control: "review" as const }
+const auto = { enabled: true, learn: true, control: "auto" as const }
 
-describe("composer memory toggle", () => {
-  test("default is a quiet on icon with a chat toggle", () => {
-    expect(deriveMemoryToggleState(on, false)).toEqual({
-      off: false, label: null, action: "toggle",
-      tooltip: "Memory on — click to turn it off for this chat",
-    })
+describe("composer memory mode", () => {
+  test("follows the control setting while memory is on", () => {
+    expect(deriveMemoryMode(review, false)).toBe("review")
+    expect(deriveMemoryMode(auto, false)).toBe("auto")
   })
-  test("per-chat off explains both reading and learning", () => {
-    expect(deriveMemoryToggleState(on, true)).toMatchObject({
-      off: true, label: "Memory off", action: "toggle",
-      tooltip: "This chat doesn't use or learn memories. Click to turn memory back on.",
-    })
+  test("a chat turned off reads as off whatever the control setting says", () => {
+    expect(deriveMemoryMode(review, true)).toBe("off")
+    expect(deriveMemoryMode(auto, true)).toBe("off")
   })
-  test("global off takes precedence over the chat switch and links to settings", () => {
+  test("memory off in Settings takes precedence over the chat", () => {
     for (const disabled of [false, true]) {
-      expect(deriveMemoryToggleState({ enabled: false, learn: false }, disabled)).toMatchObject({
-        off: true, label: "Memory off", action: "settings", tooltip: "Memory is turned off in Settings",
-      })
+      expect(deriveMemoryMode({ ...auto, enabled: false }, disabled)).toBe("off")
     }
   })
-  test("learning paused stays on and adds only a tooltip hint", () => {
-    const state = deriveMemoryToggleState({ enabled: true, learn: false }, false)
-    expect(state.off).toBe(false)
-    expect(state.label).toBeNull()
-    expect(state.tooltip).toEndWith("Learning is paused in Settings")
+  test("choosing a working mode turns memory back on", () => {
+    expect(memorySettingsForMode("auto")).toEqual({ enabled: true, control: "auto" })
+    expect(memorySettingsForMode("review")).toEqual({ enabled: true, control: "review" })
   })
 })

@@ -24,6 +24,7 @@
     "baseUrl": "."
   },
   "include": [
+    "desktop/**/*.ts",
     "scripts/**/*.ts",
     "vite.config.ts",
     "vite.export-viewer.config.ts",
@@ -82,5 +83,8 @@
     "src/client/i18n/**/*.ts",
     "src/client/i18n/**/*.tsx",
     "src/client/test-fixtures/transcript-performance/**/*.tsx"
+  ],
+  "exclude": [
+    "desktop/build/**"
   ]
 }

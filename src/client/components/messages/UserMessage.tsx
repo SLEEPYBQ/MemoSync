@@ -97,7 +97,7 @@ export function UserMessage({ content, attachments = [], steered = false }: Prop
                 <CornerUpLeft className="h-4 w-4" />
               </span>
             ) : null}
-            <div className="min-w-0 flex-1 rounded-[20px] border border-border bg-muted px-3.5 py-1.5 text-primary prose prose-sm prose-invert [&_p]:whitespace-pre-line">
+            <div className="min-w-0 flex-1 rounded-2xl bg-secondary px-3.5 py-2 text-foreground prose prose-sm prose-invert [&_p]:whitespace-pre-line">
               <CachedMarkdown>{escapeAngleBracketsOutsideCode(parsedContent.body)}</CachedMarkdown>
             </div>
           </div>

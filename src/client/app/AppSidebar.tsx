@@ -4,7 +4,7 @@ import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucid
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import type { KeybindingsSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
-import { BrandIcon, useBrandName } from "../components/BrandMark"
+import { LivingBrandIcon, SidebarRevealButton, useBrandName } from "../components/BrandMark"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
 import { MemoryOffBadge } from "../components/memory/MemorySettingsBanner"
@@ -29,6 +29,13 @@ import {
 import type { SocketStatus } from "./socket"
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "memosync:sidebar-width"
+/** How close to the window's left edge the pointer must come to reveal a collapsed sidebar. */
+const PEEK_EDGE_PX = 6
+const PEEK_DELAY_MS = 60
+const PEEK_HIDE_MARGIN_PX = 12
+/** The panel and the space it reserves move on one curve, so they stay together. */
+const PEEK_LEAVE_WINDOW_DELAY_MS = 400
+const SIDEBAR_MOTION = "duration-[280ms] ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none"
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
 export const MAX_SIDEBAR_WIDTH = 520
@@ -139,10 +146,16 @@ function AppSidebarImpl({
   const [showNumberJumpHints, setShowNumberJumpHints] = useState(false)
   const [sidebarWidth, setSidebarWidth] = useState(readStoredSidebarWidth)
   const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const sidebarWidthRef = useRef(sidebarWidth)
+  sidebarWidthRef.current = sidebarWidth
+  const resizingRef = useRef(isResizingSidebar)
+  resizingRef.current = isResizingSidebar
   // Collapsed on desktop: resting the pointer on the left edge slides the
   // sidebar out over the page; leaving it slides it back.
   const [peeking, setPeeking] = useState(false)
   const peekTimerRef = useRef<number | null>(null)
+  const peekingRef = useRef(false)
+  peekingRef.current = peeking
   const [archivedProjectId, setArchivedProjectId] = useState<string | null>(null)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(keybindings), [keybindings])
   const visibleChats = useMemo(
@@ -250,6 +263,43 @@ function AppSidebarImpl({
   }, [clearPeekTimer, collapsed])
 
   useEffect(() => clearPeekTimer, [clearPeekTimer])
+
+  // Reveal on the window's left edge. A fast flick can cross a thin hover zone
+  // between two pointer events, or leave the window without touching it, so
+  // watch the pointer itself and also count leaving through the left side.
+  useEffect(() => {
+    if (!collapsed) return
+    const onPointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== "mouse" || resizingRef.current) return
+      if (peekingRef.current) {
+        // Away from the panel, not merely off it: a pointer that never touched
+        // the sliding panel still has to send it home.
+        if (event.clientX <= sidebarWidthRef.current + PEEK_HIDE_MARGIN_PX) clearPeekTimer()
+        else if (peekTimerRef.current === null) schedulePeek(false, 280)
+        return
+      }
+      if (event.clientX <= PEEK_EDGE_PX) {
+        if (peekTimerRef.current === null) schedulePeek(true, PEEK_DELAY_MS)
+      } else {
+        clearPeekTimer()
+      }
+    }
+    const onMouseLeave = (event: MouseEvent) => {
+      // No pointer moves arrive from outside the window, so an open panel has to
+      // start going home here. Coming back over it cancels this (see above).
+      if (peekingRef.current) {
+        if (peekTimerRef.current === null) schedulePeek(false, PEEK_LEAVE_WINDOW_DELAY_MS)
+        return
+      }
+      if (event.clientX <= PEEK_EDGE_PX) schedulePeek(true, 0)
+    }
+    window.addEventListener("pointermove", onPointerMove, { passive: true })
+    document.documentElement.addEventListener("mouseleave", onMouseLeave)
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove)
+      document.documentElement.removeEventListener("mouseleave", onMouseLeave)
+    }
+  }, [clearPeekTimer, collapsed, schedulePeek])
 
   const renderChatRow = useCallback((chat: SidebarChatRow) => {
     const visibleIndex = visibleIndexByChatId.get(chat.chatId)
@@ -455,6 +505,7 @@ function AppSidebarImpl({
   const isMemoryActive = location.pathname.startsWith("/memory")
   const isUtilityPageActive = isLocalProjectsActive || isSettingsActive || isMemoryActive
   const isConnecting = connectionStatus === "connecting" || !ready
+  const anyChatRunning = data.projectGroups.some((group) => group.chats.some((chat) => chat.status === "running"))
   const statusLabel = isConnecting ? t("sidebar:connecting") : connectionStatus === "connected" ? t("sidebar:connected") : t("sidebar:disconnected")
   const statusDotClass = connectionStatus === "connected" ? "bg-success" : "bg-amber-500"
   const showUpdateButton = updateSnapshot?.updateAvailable === true
@@ -477,34 +528,16 @@ function AppSidebarImpl({
       )}
 
       {collapsed && isUtilityPageActive && (
-        <div className="hidden md:flex fixed left-0 top-0 h-full z-40 items-start pt-4 pl-5 border-l border-border/0">
-          <div className="flex items-center gap-1">
-            <BrandIcon className="size-6" />
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={onExpand}
-              title={t("sidebar:expandSidebar")}
-            >
-              <PanelLeft className="h-5 w-5" />
-            </Button>
-          </div>
-        </div>
+        <SidebarRevealButton onClick={onExpand} label={t("sidebar:expandSidebar")} className="fixed left-2 top-2 z-40 desktop-mac:left-[var(--mac-lights-inset)]" />
       )}
 
-      {collapsed ? (
-        <div
-          aria-hidden="true"
-          data-sidebar-peek-zone
-          className="fixed inset-y-0 left-0 z-40 hidden w-2 md:block"
-          onPointerEnter={(event) => {
-            if (event.pointerType === "mouse") schedulePeek(true, 120)
-          }}
-          onPointerLeave={() => {
-            if (!peeking) clearPeekTimer()
-          }}
-        />
-      ) : null}
+      {/* The panel floats so it can slide; this reserves its room in the layout. */}
+      <div
+        aria-hidden="true"
+        data-sidebar-spacer
+        className={cn("hidden shrink-0 md:block", !isResizingSidebar && "transition-[width]", SIDEBAR_MOTION)}
+        style={{ width: collapsed ? 0 : sidebarWidth }}
+      />
 
       <div
         data-sidebar="open"
@@ -512,26 +545,19 @@ function AppSidebarImpl({
         inert={collapsed && !peeking && !open ? true : undefined}
         className={cn(
           "fixed inset-0 z-50 bg-sidebar flex flex-col h-[100dvh] select-none",
+          "md:inset-y-0 md:left-0 md:right-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
+          "md:transition-[translate,box-shadow]",
+          SIDEBAR_MOTION,
           collapsed
-            ? cn(
-                "md:inset-y-0 md:left-0 md:right-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
-                "md:transition-[translate,box-shadow] md:duration-200 md:ease-out",
-                peeking
-                  ? "md:translate-x-0 md:shadow-[0_12px_40px_rgba(0,0,0,0.14)] dark:md:shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
-                  : "md:-translate-x-full"
-              )
-            : "md:relative md:inset-auto md:w-[var(--sidebar-width)] md:border-r md:border-border/70",
+            ? peeking
+              ? "md:translate-x-0 md:shadow-[0_12px_40px_rgba(0,0,0,0.14)] dark:md:shadow-[0_12px_40px_rgba(0,0,0,0.5)]"
+              : "md:-translate-x-full"
+            : "md:z-30 md:translate-x-0",
           open ? "flex" : "hidden md:flex"
         )}
         style={{ "--sidebar-width": `${sidebarWidth}px` } as CSSProperties}
-        onPointerEnter={() => {
-          if (collapsed) clearPeekTimer()
-        }}
-        onPointerLeave={(event) => {
-          if (collapsed && peeking && event.pointerType === "mouse" && !isResizingSidebar) schedulePeek(false, 280)
-        }}
       >
-        <div className="px-[5px] h-[47px] border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:h-12 md:border-b-0 md:pl-4 md:pr-2 md:flex md:justify-between">
+        <div className="px-[5px] h-[47px] border-b grid grid-cols-[40px_minmax(0,1fr)_40px] items-center md:h-12 md:border-b-0 md:pl-4 md:pr-2 md:flex md:justify-between desktop-mac:md:pl-[var(--mac-lights-inset)]">
           <div className="md:hidden">
             <Button
               variant="ghost"
@@ -543,11 +569,11 @@ function AppSidebarImpl({
               <X className="h-5 w-5" />
             </Button>
           </div>
-          <div className="flex items-center justify-self-center gap-2 md:justify-self-auto">
-            <BrandIcon animated="none" className="h-5 w-5 sm:h-6 sm:w-6 md:h-5 md:w-5" />
-            <span className="font-logo text-base uppercase sm:text-md text-section-title">{brandName}</span>
+          <div className="flex min-w-0 items-center justify-self-center gap-2 md:justify-self-auto desktop-mac:md:hidden">
+            <LivingBrandIcon busy={anyChatRunning} className="h-5 w-5 shrink-0 sm:h-6 sm:w-6 md:h-5 md:w-5" />
+            <span className="text-[14px] font-semibold tracking-[-0.01em] text-foreground">{brandName}</span>
           </div>
-          <div className="flex items-center justify-self-end md:justify-self-auto">
+          <div className="flex items-center justify-self-end md:justify-self-auto desktop-mac:md:w-full">
             {<Button
               variant="ghost"
               size="icon"
@@ -602,7 +628,7 @@ function AppSidebarImpl({
                     else onCollapse()
                   }}
                   aria-label={collapsed ? t("sidebar:pinSidebar") : t("sidebar:collapseSidebar")}
-                  className="hidden md:inline-flex size-8 rounded-lg border-0 text-muted-foreground hover:border-0 hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
+                  className="hidden md:inline-flex size-8 rounded-lg border-0 text-muted-foreground hover:border-0 hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08] desktop-mac:order-first desktop-mac:mr-auto"
                 >
                   <PanelLeft className="size-4" />
                 </Button>
@@ -612,6 +638,11 @@ function AppSidebarImpl({
               </HotkeyTooltipContent>
             </HotkeyTooltip>
           </div>
+        </div>
+
+        <div className="hidden h-10 shrink-0 items-center gap-2.5 px-4 desktop-mac:md:flex">
+          <LivingBrandIcon busy={anyChatRunning} className="size-[22px] shrink-0" />
+          <span className="text-[15px] font-semibold tracking-[-0.01em] text-foreground">{brandName}</span>
         </div>
 
         <div
@@ -697,7 +728,7 @@ function AppSidebarImpl({
                     />
                   ) : null}
                 </span>
-                <span className="text-[13px]">{t("common:memory")}</span>
+                <span className="text-[14px]">{t("common:memory")}</span>
                 <MemoryOffBadge />
                 <MemoryPendingBadge count={automatic ? pendingSensitiveCount : pendingCount} automatic={automatic} />
               </div>
@@ -714,7 +745,7 @@ function AppSidebarImpl({
             <div className="flex w-full items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <Settings className="h-4 w-4 text-muted-foreground" />
-                <span className="text-[13px]">{t("common:settings")}</span>
+                <span className="text-[14px]">{t("common:settings")}</span>
               </div>
               <div className="flex items-center gap-1.5 text-[11.5px] text-muted-foreground">
                 <span>{statusLabel}</span>

@@ -66,7 +66,7 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
       ...(provider.id === "claude" && (m.contextWindow ?? 0) >= 1_000_000 ? { contextWindowOptions: [{ id: "1m" as const, label: "1M" }] } : {}),
     })))
     if (setup.access.mode === "account") {
-      if (provider.id === "claude") models.unshift(...["sonnet", "opus", "haiku"].map(id => ({ id, label: id, supportsEffort: true })))
+      if (provider.id === "claude") models.unshift(...[["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]].map(([id, label]) => ({ id: id!, label: label!, supportsEffort: true })))
       if (provider.id === "codex") models.unshift(...HARD_CODED_CODEX_MODELS)
     }
     const connectionId = setup.access.mode === "connection" ? setup.access.connectionId : undefined

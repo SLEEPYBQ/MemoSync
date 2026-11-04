@@ -12,6 +12,7 @@ import {
 } from "../../../shared/model-access"
 import type { AppSocket } from "../socket"
 import { t, useI18n } from "../../i18n"
+import { translateUiText } from "../../i18n/uiText"
 import { engineProblemMessage, incompatibleConnectionMessage } from "../../model-access/modelAccess"
 import { Button } from "../../components/ui/button"
 import {
@@ -78,7 +79,7 @@ export function EngineCard({
       await action()
       onSuccess?.()
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : t("modelAccess:commandFailed"))
+      setError(reason instanceof Error ? translateUiText(reason.message) : t("modelAccess:commandFailed"))
     } finally {
       setPending(false)
     }
@@ -101,6 +102,8 @@ export function EngineCard({
     "known-dir": "sourceKnown",
     bundled: "sourceBundled",
   } as const
+  // Pi is pinned to one line of releases, so its mismatch usually means newer, not older.
+  const piUnsupported = engine === "pi" && executable?.state === "incompatible"
   const badgeKey = !status
     ? "loadingShort"
     : status.ready
@@ -108,18 +111,19 @@ export function EngineCard({
       : executable?.state === "missing"
         ? "notFoundStatus"
         : executable?.state === "incompatible"
-          ? "oldVersionStatus"
+          ? piUnsupported ? "unsupportedVersionStatus" : "oldVersionStatus"
           : executable?.state === "broken"
             ? "brokenStatus"
             : "notReadyStatus"
   const installCommand =
-    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : "npm install -g @openai/codex"
-  const needsInstall = engine !== "pi" && executable && !["ready", "not-needed"].includes(executable.state)
+    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g @mariozechner/pi-coding-agent@0.73.1" : "npm install -g @openai/codex"
+  const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")
+  const needsInstall = executable && !["ready", "not-needed"].includes(executable.state)
   // Collapsed, the row says what is wrong; open, the notice below says it in full.
   const summary = !status
     ? null
     : !status.ready
-      ? expanded ? null : status.problem === "account-signed-out" ? t("modelAccess:signedOutShort") : engineProblemMessage(status)
+      ? expanded ? null : status.problem === "account-signed-out" && !status.accountIsolated ? t("modelAccess:signedOutShort") : engineProblemMessage(status)
       : access?.mode === "connection"
         ? (() => {
             const modelId = access.defaultModel ?? selectedConnection?.models[0]?.id
@@ -153,7 +157,7 @@ export function EngineCard({
           </span>
           <ChevronRight className={cn("size-4 shrink-0 text-muted-foreground/70 transition-transform duration-150", expanded && "rotate-90")} />
         </button>
-        {engine !== "pi" ? (
+        {!bundledPi ? (
           <Popover open={menuOpen} onOpenChange={setMenuOpen}>
             <PopoverTrigger asChild>
               <Button
@@ -207,7 +211,7 @@ export function EngineCard({
         <SettingsRow
           title={t("modelAccess:executablePath")}
           description={
-            engine === "pi" ? (
+            bundledPi ? (
               t("modelAccess:piBundled")
             ) : executable?.path ? (
               <Hint
@@ -242,18 +246,18 @@ export function EngineCard({
             <SettingsNotice tone="warning">
               <p>
                 {engineProblemMessage(status)}{" "}
-                {needsInstall
+                {needsInstall && engine !== "pi"
                   ? t(engine === "claude" ? "modelAccess:installClaude" : "modelAccess:installCodex")
                   : null}
               </p>
               {status.problem === "connection-key-missing" ? <p>{t("modelAccess:keyMissingFix")}</p> : null}
               {status.problem === "connection-protocol-unsupported" ? <p>{t("modelAccess:protocolFix")}</p> : null}
-              {executable?.state === "incompatible" && executable.minimumVersion ? (
+              {executable?.state === "incompatible" && executable.minimumVersion && !piUnsupported ? (
                 <p>{t("modelAccess:minimumVersion", { version: executable.minimumVersion })}</p>
               ) : null}
               {needsInstall ? (
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <code className="min-w-0 flex-1 break-all text-xs">{installCommand}</code>
+                  {piUnsupported ? null : <><code className="min-w-0 flex-1 break-all text-xs">{installCommand}</code>
                   <Hint text={t("modelAccess:copyCommand")}>
                     <Button
                       type="button"
@@ -269,7 +273,7 @@ export function EngineCard({
                     >
                       {copied ? <Check className="size-4" /> : <Copy className="size-4" />}
                     </Button>
-                  </Hint>
+                  </Hint></>}
                   <SettingsActionButton
                     className={`text-xs ${MODEL_ACCESS_FOCUS_CLASS}`}
                     disabled={!socket || pending}
@@ -308,7 +312,8 @@ export function EngineCard({
                 onValueChange={(mode) => {
                   if (!setup) return
                   if (mode === "account") setSetup({ ...setup, access: { mode: "account" } })
-                  else chooseConnection(connections.find((c) => compatibleEndpointForEngine(engine, c))?.id ?? "")
+                  // Nothing to switch to yet: go make one rather than fail on an empty choice.
+                  else chooseConnection(connections.find((c) => compatibleEndpointForEngine(engine, c))?.id ?? "__add__")
                 }}
               />
             ) : null}
@@ -368,9 +373,9 @@ export function EngineCard({
                 void command(
                   () =>
                     socket.command({
-                      type: "modelAccess.setEngine",
+                      type: "modelAccess.setExecutablePath",
                       engine,
-                      setup: { ...setup, executablePath: path.trim() || null },
+                      executablePath: path.trim() || null,
                     }),
                   () => setPathOpen(false),
                 )

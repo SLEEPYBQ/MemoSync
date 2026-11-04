@@ -440,5 +440,11 @@
   "proposedCount_other": "已提议 {{count}} 条",
   "suggestedCount_one": "已建议 {{count}} 条",
   "suggestedCount_other": "已建议 {{count}} 条",
-  "violatedCount": "{{count}} 条已违反"
+  "violatedCount": "{{count}} 条已违反",
+  "modeOff": "关闭",
+  "modeReview": "请求",
+  "modeAuto": "自动",
+  "modeOffDescription": "这个对话不使用，也不学习记忆。",
+  "modeReviewDescription": "每轮使用或保存记忆前都先问你。",
+  "modeAutoDescription": "智能体自行使用和保存记忆，你可以事后到记忆页查看。"
 }

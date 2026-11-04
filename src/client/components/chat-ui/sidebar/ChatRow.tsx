@@ -32,6 +32,8 @@ interface Props {
   onDeleteChat: (chatId: string) => void
 }
 
+const AGE_LABEL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+
 function ChatRowImpl({
   chat,
   showFork = true,
@@ -48,7 +50,9 @@ function ChatRowImpl({
   onDeleteChat,
 }: Props) {
   useI18n()
-  const ageLabel = formatSidebarAgeLabel(getSidebarChatTimestamp(chat), nowMs)
+  // Past a week the age stops helping you find a chat; every row saying "17w" is just noise.
+  const timestamp = getSidebarChatTimestamp(chat)
+  const ageLabel = timestamp !== undefined && nowMs - timestamp < AGE_LABEL_WINDOW_MS ? formatSidebarAgeLabel(timestamp, nowMs) : null
   const trailingLabel = showShortcutHint && shortcutHint ? shortcutHint : ageLabel
   const showShortcutKeycap = showShortcutHint && Boolean(shortcutHint)
   const normalizedChatId = normalizeChatId(chat.chatId)
@@ -81,7 +85,7 @@ function ChatRowImpl({
           </div>
         </div>
       ) : null}
-      <span className="text-[13px] truncate flex-1">
+      <span className="text-[14px] truncate flex-1">
         {chat.status !== "idle" && chat.status !== "waiting_for_user" ? (
           <AnimatedShinyText
             animate={chat.status === "running"}

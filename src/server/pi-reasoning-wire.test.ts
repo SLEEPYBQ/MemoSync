@@ -7,17 +7,17 @@ import { parseRegistryModelCard } from "./registry-models"
 
 // Exercise Pi's real clamp/serialization path and capture the HTTP JSON. No
 // provider or paid model is called; the fixture deliberately ends with a 400.
-async function outgoingBody(format: "openai" | "openrouter" | "responses", card?: RegistryModelCard, requested?: "off" | "high" | "max") {
+async function outgoingBody(format: "openai" | "openrouter" | "responses" | "zhipu", card?: RegistryModelCard, requested?: "off" | "low" | "high" | "max") {
   let body: Record<string, unknown> | undefined
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     body = await request.json() as Record<string, unknown>
     return Response.json({ error: { message: "fixture request captured" } }, { status: 400 })
   } })
   try {
-    const connection = { provider: "custom" as const, baseUrl: format === "openrouter" ? "https://openrouter.ai/api/v1" : "https://example.test/v1", apiKey: "fixture-key" }
+    const connection = { provider: "custom" as const, baseUrl: format === "openrouter" ? "https://openrouter.ai/api/v1" : format === "zhipu" ? "https://open.bigmodel.cn/api/paas/v4" : "https://example.test/v1", apiKey: "fixture-key" }
     const effort = resolvePiEffort(card, requested)
     const model = { ...buildRegistryModel(connection, card?.id ?? "unknown-model", card, effort), baseUrl: `http://127.0.0.1:${server.port}/v1` }
-    const context = { messages: [{ role: "user" as const, content: "hello", timestamp: 1 }] }
+    const context = { systemPrompt: "Be concise", messages: [{ role: "user" as const, content: "hello", timestamp: 1 }] }
     // Agent core passes no simple-stream reasoning option for its off slot.
     const thinkingLevel = toPiThinkingLevel(effort)
     const options = { apiKey: connection.apiKey, reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, maxRetries: 0 }
@@ -57,4 +57,15 @@ test.each(["openai", "openrouter", "responses"] as const)("explicit Off remains 
 test("supported Max reaches the OpenRouter HTTP body as max", async () => {
   const card = parseRegistryModelCard({ id: "model", reasoning: { mandatory: true, supported_efforts: ["low", "high", "max"] } })!
   expect((await outgoingBody("openrouter", card, "max")).reasoning).toEqual({ effort: "max" })
+})
+
+test("official Zhipu HTTP JSON uses system role and supported thinking/output fields", async () => {
+  const card = parseRegistryModelCard({ id: "glm-5.3-flash", max_output_tokens: 1024, reasoning: { mandatory: true, supported_efforts: ["low", "high", "max"] } })!
+  const body = await outgoingBody("zhipu", card, "low")
+  expect(body.messages).toEqual([{ role: "system", content: "Be concise" }, { role: "user", content: "hello" }])
+  expect(body.thinking).toEqual({ type: "enabled" })
+  expect(body.reasoning_effort).toBe("low")
+  expect(body.max_tokens).toBe(1024)
+  expect(body).not.toHaveProperty("max_completion_tokens")
+  expect(body).not.toHaveProperty("store")
 })

@@ -23,6 +23,7 @@ import {
 import { piEffortOptions, resolvePiEffort } from "../../../shared/model-capabilities"
 import { useRegistryModels } from "../../hooks/useRegistryModels"
 import { cn } from "../../lib/utils"
+import { BRAND_SVGS } from "../brand/brand-svgs"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
@@ -102,8 +103,26 @@ function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+// Claude's mark, in currentColor like the other engine icons. Static in-repo
+// constant (brand-svgs.ts), never user or network content.
+const CLAUDE_MARKUP = BRAND_SVGS.claude.markup.replace(/\sfill="[^"]*"/g, "")
+function ClaudeIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
+  return (
+    <svg
+      viewBox={BRAND_SVGS.claude.viewBox}
+      fill="currentColor"
+      aria-hidden="true"
+      data-provider-icon="claude"
+      className={cn("shrink-0", className)}
+      {...props}
+      dangerouslySetInnerHTML={{ __html: CLAUDE_MARKUP }}
+    />
+  )
+}
+
 export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
-  claude: DeepSeekIcon,
+  claude: ClaudeIcon,
   codex: OpenAIIcon,
   pi: PiIcon,
 }
@@ -155,12 +174,14 @@ export function InputPopover({
   triggerClassName,
   disabled = false,
   onOpen,
+  align = "center",
   children,
 }: {
   trigger: React.ReactNode
   triggerClassName?: string
   disabled?: boolean
   onOpen?: () => void
+  align?: "start" | "center" | "end"
   children: React.ReactNode | ((close: () => void) => React.ReactNode)
 }) {
   useI18n()
@@ -173,7 +194,7 @@ export function InputPopover({
         className={cn(
           // No dimming: a locked chip (e.g. the DeepSeek provider) should read
           // as the same color as its interactive neighbours, icon and text alike.
-          "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md text-muted-foreground [&>svg]:shrink-0 cursor-default [&>span]:whitespace-nowrap",
+          "flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted-foreground [&>svg]:shrink-0 cursor-default [&>span]:whitespace-nowrap",
           triggerClassName
         )}
       >
@@ -187,15 +208,15 @@ export function InputPopover({
       <PopoverTrigger asChild>
         <button
           className={cn(
-            "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
-            "hover:bg-muted/50",
+            "flex h-8 items-center gap-1.5 rounded-lg px-2 text-[13px] transition-colors text-muted-foreground [&>svg]:shrink-0 [&>span]:whitespace-nowrap",
+            "hover:bg-black/[0.05] hover:text-foreground data-[state=open]:bg-black/[0.05] data-[state=open]:text-foreground dark:hover:bg-white/[0.08] dark:data-[state=open]:bg-white/[0.08]",
             triggerClassName
           )}
         >
           {trigger}
         </button>
       </PopoverTrigger>
-      <PopoverContent align="center" className="w-64 p-1">
+      <PopoverContent align={align} className="w-64 p-1">
         <div className="max-h-[70dvh] space-y-1 overflow-y-auto">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
       </PopoverContent>
     </Popover>
@@ -294,7 +315,13 @@ export function ChatPreferenceControls({
   const registry = useRegistryModels(selectedProvider === "pi" && showModelPicker && !accessSnapshot, model)
   const [modelSearch, setModelSearch] = useState("")
   const modelCard = registry.models.find(candidate => candidate.id === model)
-  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === model)
+  // A remembered model the signed-in account can't run: the server launches the
+  // engine's default instead, so that is what the control has to say.
+  const shownModel = accessSnapshot && access?.mode === "account" && selectedProvider !== "pi"
+    && !connectionId && !providerConfig?.models.some((candidate) => candidate.id === model)
+    ? providerConfig?.defaultModel ?? model
+    : model
+  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === shownModel)
   const piRequested = (modelOptions as PiModelOptions).reasoningEffort
   const useConnectionEfforts = Boolean(accessSnapshot) || !showModelPicker
   const piEffort = useConnectionEfforts ? piRequested : resolvePiEffort(modelCard, piRequested)
@@ -323,7 +350,7 @@ export function ChatPreferenceControls({
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
-  const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === model)?.contextWindowOptions ?? []
+  const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === shownModel)?.contextWindowOptions ?? []
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
   const ContextWindowIcon = selectedContextWindow === "1m" ? SquareMenu : SquareMinus
 
@@ -399,7 +426,7 @@ export function ChatPreferenceControls({
         trigger={(
           <>
             <ModelIcon className="h-3.5 w-3.5" />
-            <span className="max-w-[200px] truncate">{connectionModel?.label ?? selectedModelEntry?.label ?? model}</span>
+            <span className="max-w-[200px] truncate">{connectionModel?.label ?? selectedModelEntry?.label ?? shownModel}</span>
           </>
         )}
       >
@@ -425,7 +452,7 @@ export function ChatPreferenceControls({
                     onModelChange(selectedProvider, candidate.id)
                     close()
                   }}
-                  selected={!activeConnectionId && model === candidate.id}
+                  selected={!activeConnectionId && shownModel === candidate.id}
                   icon={<Icon className="h-4 w-4 text-muted-foreground" />}
                   label={
                     showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"

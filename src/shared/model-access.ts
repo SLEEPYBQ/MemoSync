@@ -134,6 +134,8 @@ export interface EngineStatus {
   ready: boolean
   /** Connection uses the local protocol translation gateway. */
   translated?: boolean
+  /** The account is out of reach because this run is isolated, not because nobody signed in. */
+  accountIsolated?: boolean
   /** Why it isn't ready, as a stable code the client translates. */
   problem?:
     | "executable-missing"

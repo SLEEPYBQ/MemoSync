@@ -1,4 +1,5 @@
 import { createContext, useContext, type ReactNode } from "react"
+import type { ToolMemoryUses } from "../../lib/toolMemoryUses"
 import type {
   ExpectedMemoryUse,
   MemoryPreviewDecision,
@@ -145,6 +146,17 @@ export function MessageViolatedCitationsProvider({
   return (
     <MessageViolatedCitationsContext.Provider value={value}>{children}</MessageViolatedCitationsContext.Provider>
   )
+}
+
+/** Which memories the audit tied to each tool call. Provided by the transcript; null outside one. */
+const ToolMemoryUsesContext = createContext<ToolMemoryUses | null>(null)
+
+export function ToolMemoryUsesProvider({ children, value }: { children: ReactNode; value: ToolMemoryUses | null }) {
+  return <ToolMemoryUsesContext.Provider value={value}>{children}</ToolMemoryUsesContext.Provider>
+}
+
+export function useToolMemoryUses() {
+  return useContext(ToolMemoryUsesContext)
 }
 
 export function useMessageViolatedCitations() {

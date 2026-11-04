@@ -227,6 +227,37 @@ The server code is in `src/server/`:
 
 The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
+## Desktop app
+
+The macOS desktop app bundles Electron and its application runtime (including
+Bun), but discovers Claude Code, Codex and Pi installations on the local
+machine. The application itself does not need host Bun or Node after
+installation; locally installed agents may have their own runtime and native
+dependency requirements. The current CLI and desktop app share
+`~/.memosync/data`; do not run them at the same time because the data lock
+intentionally rejects the second process.
+
+For local development and packaging (macOS, native arm64 or x64 only):
+
+```bash
+bun install
+bun run desktop:install
+bun run desktop:dev
+bun run desktop:package:mac
+```
+
+The package command writes a DMG and ZIP to `desktop/release/`. Open the DMG,
+drag MemoSync to Applications, and launch it normally. macOS may ask you to
+confirm opening an app downloaded from the internet; use the Finder Open action
+if needed. Release signing and notarization are not configured yet.
+
+Desktop agent discovery requires installed local CLIs for Claude Code and
+Codex. Pi must be installed locally as `@mariozechner/pi-coding-agent` in the
+compatible `0.73.x` line (at least `0.73.1`); this keeps the desktop payload
+free of agent implementations while retaining Pi's extension-compatible SDK
+boundary. Configure executable paths in the Engine settings when discovery
+cannot find an installation.
+
 ## Acknowledgements
 
 MemoSync started as a fork of [Kanna](https://github.com/jakemor/kanna). It runs:

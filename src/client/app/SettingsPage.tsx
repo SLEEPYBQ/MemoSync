@@ -64,6 +64,7 @@ export function SettingsPage() {
   const [changelogStatus, setChangelogStatus] = useState<ChangelogStatus>("idle")
   const [signingOut, setSigningOut] = useState(false)
   const [authEnabled, setAuthEnabled] = useState(false)
+  const [canSignOut, setCanSignOut] = useState(true)
   const [releases, setReleases] = useState<GithubRelease[]>([])
   const [changelogError, setChangelogError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
@@ -93,15 +94,17 @@ export function SettingsPage() {
     })
       .then(async (response) => {
         if (!response.ok) return { enabled: false }
-        return (await response.json()) as { enabled?: boolean }
+        return (await response.json()) as { enabled?: boolean; canSignOut?: boolean }
       })
       .then((payload) => {
         if (cancelled) return
         setAuthEnabled(payload.enabled === true)
+        setCanSignOut(payload.canSignOut !== false)
       })
       .catch(() => {
         if (cancelled) return
         setAuthEnabled(false)
+        setCanSignOut(false)
       })
 
     return () => {
@@ -184,9 +187,8 @@ export function SettingsPage() {
       <div className="flex min-w-0 flex-1">
         {/* Settings navigation: its own column against a hairline, so the
             space between it and the centred content reads as layout, not a gap. */}
-        <aside className="hidden w-[248px] shrink-0 flex-col border-r border-border/60 md:flex">
+        <aside className="hidden w-[232px] shrink-0 flex-col border-r border-border/60 bg-muted/40 md:flex">
           <div className="px-3 pb-2 pt-3">
-            <div className="px-2.5 pb-3 text-[15px] font-semibold tracking-[-0.01em] text-foreground">{t("common:settings")}</div>
             <label className="flex h-8 items-center gap-2 rounded-lg bg-black/[0.045] px-2.5 text-muted-foreground focus-within:ring-2 focus-within:ring-focus/40 dark:bg-white/[0.07]">
               <Search className="size-3.5 shrink-0" />
               <input
@@ -252,7 +254,7 @@ export function SettingsPage() {
               })
             )}
           </nav>
-          {authEnabled ? (
+          {authEnabled && canSignOut !== false ? (
             <div className="border-t border-border/60 px-3 py-3">
               <button
                 type="button"
@@ -298,7 +300,7 @@ export function SettingsPage() {
                     <span className="whitespace-nowrap">{item.label}</span>
                   </button>
                 ))}
-                {authEnabled ? (
+                {authEnabled && canSignOut !== false ? (
                   <button
                     type="button"
                     onClick={() => {
@@ -319,7 +321,7 @@ export function SettingsPage() {
             </div>
           </div>
 
-          <div className="w-full px-5 pb-24 pt-8 md:px-10 md:pt-14">
+          <div className="w-full px-5 pb-16 pt-6 md:px-10 md:pt-8">
             {isConnecting ? (
               <div
                 className="flex min-h-[240px] items-center justify-center rounded-2xl border border-border bg-card/40 px-4 py-6 text-sm text-muted-foreground"

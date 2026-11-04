@@ -141,5 +141,8 @@
   "defaults": "Defaults",
   "keyMissingFix": "Edit this connection below to add a key.",
   "protocolFix": "Choose a compatible connection below.",
+  "accountIsolated": "This run is isolated from your own CLI sign-ins. Use an API connection, or open MemoSync normally.",
+  "piVersionUnsupported": "This Pi version isn’t supported yet. MemoSync works with Pi 0.73.x for now.",
+  "unsupportedVersionStatus": "Unsupported version",
   "signedOutShort": "Not signed in"
 }

@@ -1,18 +1,20 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
-import { MemoryBadge } from "../components/memory/MemoryBadge"
-import { MEMORY_CARD, MemoryEmpty } from "../components/memory/MemorySurface"
+import { MEMORY_CARD } from "../components/memory/MemorySurface"
 // Memory Board — the user's memories as operable objects (SPEC §4.9): a
 // candidate-review lane, three scope columns (Personal/Project/Session) with
 // drag-to-rescope, free-text search across every lane, and a right-side
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { AlertTriangle, Archive, ArchiveRestore, ArrowLeft, ArrowRightLeft, BrainCircuit, ChevronRight, Inbox, ListChecks, Loader2, Plus, Search, Trash2, X } from "lucide-react"
+import { AlertTriangle, ArchiveRestore, ArrowLeft, ChevronRight, Inbox, Loader2, Plus, Trash2, X } from "lucide-react"
 import type { DragEvent } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
+import { MemoryExplorer, memoryMatchesLens, type MemoryLens } from "../components/memory/MemoryExplorer"
+import { MemoryGraphCanvas, memoryGraphLegend } from "../components/memory/MemoryGraphCanvas"
+import { buildMemoryGraph } from "../lib/memoryGraph"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
@@ -61,11 +63,28 @@ function matchesQuery(item: MemoryItem, query: string): boolean {
   )
 }
 
+type MemoryBoardView = "graph" | "board"
+const BOARD_VIEW_STORAGE_KEY = "memosync:memory-view"
+
+function readStoredBoardView(): MemoryBoardView {
+  try {
+    return window.localStorage.getItem(BOARD_VIEW_STORAGE_KEY) === "board" ? "board" : "graph"
+  } catch {
+    return "graph"
+  }
+}
+
 export interface MemoryBoardOverlayMode {
   chatId?: string
   focusedReview?: FocusedMemoryReviewController
   onClose?: () => void
   onChanged?: () => void
+}
+
+const SCOPE_DOTS: Record<MemoryScope, string> = {
+  personal: "bg-personal",
+  project: "bg-project",
+  session: "bg-session",
 }
 
 export function memoryBoardSectionVisibility() {
@@ -147,9 +166,20 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // Project lens (?project=<id>, set when entering from a project chat): the
   // Board stays the global inventory, but the project section narrows to the
   // current project until the chip is dismissed. Personal/session stay put.
-  const [projectFilter, setProjectFilter] = useState<string | null>(
-    () => new URLSearchParams(window.location.search).get("project"),
-  )
+  const [lens, setLens] = useState<MemoryLens>(() => {
+    const project = new URLSearchParams(window.location.search).get("project")
+    return project ? { kind: "project", id: project } : { kind: "all" }
+  })
+  const [view, setView] = useState<MemoryBoardView>(() => (overlay ? "board" : readStoredBoardView())) // Inside a chat you're here to review and drag.
+  const [reviewOpen, setReviewOpen] = useState(false)
+  const changeView = useCallback((next: MemoryBoardView) => {
+    setView(next)
+    try {
+      window.localStorage.setItem(BOARD_VIEW_STORAGE_KEY, next)
+    } catch {
+      // A remembered tab is a convenience; the switch still works without it.
+    }
+  }, [])
   // Proposals just created by a Save & sync / import: pinged and scrolled to
   // in the review list so the report line has a visible landing (friction #7).
   const [freshCandidates, setFreshCandidates] = useState<{ ids: Set<string>; at: number }>({ ids: new Set(), at: 0 })
@@ -279,13 +309,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     if (selectedId && !items.some((m) => m.id === selectedId)) setSelectedId(null)
   }, [items, selectedId])
 
-  const inProjectLens = useCallback(
-    (m: MemoryItem) => !projectFilter || m.scope !== "project" || m.projectId === projectFilter,
-    [projectFilter],
-  )
   const boardModel = useMemo(
-    () => deriveMemoryBoardModel(items, { query, projectFilter }),
-    [items, projectFilter, query],
+    () => deriveMemoryBoardModel(items, { query, projectFilter: null }),
+    [items, query],
   )
   const candidates = boardModel.candidateStation
   const [candidateReviewCohortIds, setCandidateReviewCohortIds] = useState<ReadonlySet<string>>(
@@ -301,17 +327,15 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // The archived shelf: archiving must not be a one-way door — the items stay
   // visible (collapsed) and restorable, or "archive" is delete with extra steps.
   const archivedItems = useMemo(
-    () => items.filter((m) => m.status === "archived" && matchesQuery(m, query) && inProjectLens(m)),
-    [items, query, inProjectLens],
+    () => items.filter((m) => m.status === "archived" && matchesQuery(m, query)),
+    [items, query],
   )
-  const [showArchived, setShowArchived] = useState(false)
   const [restoringId, setRestoringId] = useState<string | null>(null)
   // Muted proposals (dismissal fingerprints): loaded lazily on expand.
-  const [showMuted, setShowMuted] = useState(false)
+  const showMuted = lens.kind === "muted"
   const [muted, setMuted] = useState<MutedProposal[] | null>(null)
   const [unmutingId, setUnmutingId] = useState<string | null>(null)
   useEffect(() => {
-    if (!showMuted) return
     memoriesApi
       .listMuted()
       .then((r) => setMuted(r.items))
@@ -352,6 +376,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     if (parseBoardFocus(location.search) !== "candidates") return
     if (status !== "ready") return
     if (candidates.length > 0) {
+      setReviewOpen(true)
       candidatesSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
       setFlashCandidates(true)
       // Timer lives in a ref: the navigate() below changes location.search,
@@ -363,7 +388,49 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     navigate("/memory", { replace: true })
   }, [candidates.length, location.search, navigate, status])
   useEffect(() => () => window.clearTimeout(flashTimerRef.current), [])
-  const boardItemsByScope = boardModel.scopes
+  const boardItemsByScope = useMemo(
+    () => deriveMemoryBoardModel(items.filter((item) => memoryMatchesLens(item, lens)), { query, projectFilter: null }).scopes,
+    [items, lens, query],
+  )
+  const graph = useMemo(() => buildMemoryGraph(items, {
+    root: t("board:graphRoot"),
+    personal: t("common:personal"),
+    projects: originTitles.projects,
+    chats: originTitles.chats,
+    chatProjects,
+  }), [items, originTitles, chatProjects])
+  const graphHighlight = useMemo(() => {
+    if (lens.kind === "all" && !query.trim()) return null
+    const lit = new Set<string>()
+    if (lens.kind === "project") lit.add(`project:${lens.id}`)
+    if (lens.kind === "session") lit.add(`session:${lens.id}`)
+    if (lens.kind === "scope" && lens.scope === "personal") lit.add("personal")
+    for (const node of graph.nodes) {
+      if (lens.kind === "scope" && node.kind === "hub" && node.scope === lens.scope) lit.add(node.id)
+      if (!node.item || !memoryMatchesLens(node.item, lens) || !matchesQuery(node.item, query)) continue
+      lit.add(node.id)
+      if (node.item.scope === "personal") lit.add("personal")
+      if (node.item.scope === "project" && node.item.projectId) lit.add(`project:${node.item.projectId}`)
+      if (node.item.scope === "session" && node.item.sessionId) lit.add(`session:${node.item.sessionId}`)
+    }
+    return lit
+  }, [graph, lens, query])
+  const liveMemoryCount = items.filter((item) => item.status === "active").length
+  const relationCount = graph.edges.filter((edge) => edge.kind === "relation").length
+  const visibleScopes: MemoryScope[] = lens.kind === "scope"
+    ? [lens.scope]
+    : lens.kind === "project"
+      ? ["project"]
+      : lens.kind === "session"
+        ? ["session"]
+        : SCOPES
+  const openReview = useCallback(() => {
+    setReviewOpen(true)
+    candidatesSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
+    setFlashCandidates(true)
+    window.clearTimeout(flashTimerRef.current)
+    flashTimerRef.current = window.setTimeout(() => setFlashCandidates(false), 1800)
+  }, [])
   const selectedItem = useMemo(() => items.find((m) => m.id === selectedId) ?? null, [items, selectedId])
 
   async function handleCreate() {
@@ -493,7 +560,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               variant="ghost"
               size="icon-sm"
               aria-label={t("board:archiveMemory")}
-              className="ml-auto text-destructive hover:text-destructive"
+              className="text-muted-foreground hover:text-destructive"
               onClick={() => void discard(item).catch(() => {})}
             >
               <Trash2 className="h-3.5 w-3.5" />
@@ -562,10 +629,10 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
   return (
     <div className="memory-ui @container/board relative flex min-h-0 min-w-0 flex-1">
-      <div className="min-w-0 flex-1 overflow-y-auto px-3 py-4 @xl/board:px-6 @xl/board:py-6" onScroll={recordBoardScroll}>
-        <div className="mx-auto max-w-5xl">
+      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-3 pb-3 pt-2 @xl/board:px-5 @xl/board:pb-4" onScroll={recordBoardScroll}>
+        <div className="mx-auto flex w-full max-w-[1320px] flex-1 flex-col">
           <MemorySettingsBanner />
-          <header className="mb-4 flex flex-wrap items-center gap-3">
+          <header className={cn("mb-2 flex min-h-8 flex-wrap items-center gap-2", !overlay && "md:group-data-[sidebar-collapsed=true]/app:pl-9 desktop-mac:md:group-data-[sidebar-collapsed=true]/app:pl-[108px]")}>
             {/* The full-page board needs an explicit way back.
                 Overlay mode has no route to go back to. */}
             {overlay ? null : (
@@ -573,36 +640,36 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 variant="ghost"
                 size="sm"
                 aria-label={t("common:back")}
-                className="h-8 w-8 shrink-0 px-0"
+                className="-ml-1 size-8 shrink-0 px-0 text-muted-foreground"
                 onClick={() => (window.history.length > 1 ? navigate(-1) : navigate("/"))}
               >
-                <ArrowLeft className="h-4.5 w-4.5" />
+                <ArrowLeft className="size-4" />
               </Button>
             )}
-            <BrainCircuit className="h-6 w-6 text-logo" />
-            <div className="min-w-0 flex-1 basis-40">
-              <h1 className="text-lg font-semibold text-foreground">
-                {t("common:memoryBoard")}</h1>
-              <p className="text-sm text-muted-foreground">
+            {/* One line, so the title sits on the same band as the window's top controls. */}
+            <div className="flex min-w-0 flex-1 basis-40 items-baseline gap-2.5">
+              <h1 className="shrink-0 text-[15px] font-semibold tracking-[-0.01em] text-foreground">
+                {t("common:memory")}</h1>
+              <p className="min-w-0 truncate text-[13px] text-muted-foreground">
                 {hasFocusedReview
                     ? t("board:reviewTheLiveChatSuggestionsAndTheSameCanonicalSaved")
-                    : t("board:reviewProposalsAndManageYourPersistentUserControlledLongTerm")}
+                    : t("board:memoryScreenSubtitle")}
               </p>
             </div>
             {sections.searchAndCreate ? <MemoryLegendButton /> : null}
             {sections.searchAndCreate ? (
-              <Button variant="juicy" size="sm" onClick={() => setCreating((v) => !v)}>
-                <Plus className="h-4 w-4" /> {t("board:newMemory")}</Button>
+              <Button variant="default" size="sm" onClick={() => setCreating((v) => !v)}>
+                <Plus className="size-4" /> {t("board:newMemory")}</Button>
             ) : null}
             {overlay?.onClose ? (
               <Button
                 variant="ghost"
                 size="sm"
                 aria-label={t("common:close")}
-                className="h-8 w-8 shrink-0 px-0"
+                className="size-8 shrink-0 px-0"
                 onClick={overlay.onClose}
               >
-                <X className="h-4.5 w-4.5" />
+                <X className="size-4" />
               </Button>
             ) : null}
           </header>
@@ -618,12 +685,14 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             </div>
           ) : null}
 
+          {/* Nothing pending, nothing shown: the explorer's "To review" row carries the quiet state. */}
           <section
             ref={candidatesSectionRef}
             data-board-candidates="true"
             data-memory-board-section="candidates"
             className={cn(
-              "mb-6 scroll-mt-4 rounded-lg transition-shadow duration-700",
+              "scroll-mt-4 rounded-lg transition-shadow duration-700",
+              (overlay?.focusedReview || candidateReviewItems.length > 0) && "mb-3",
               flashCandidates && "ring-2 ring-primary/50 ring-offset-8 ring-offset-background",
             )}
           >
@@ -636,54 +705,60 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               />
             ) : candidateReviewItems.length > 0 ? (
               <div className={MEMORY_CARD}>
-                <div className="mb-3 flex flex-wrap items-baseline gap-2">
-                  <Inbox aria-hidden className="h-4 w-4 text-muted-foreground" /><span className="text-[11px] font-semibold text-muted-foreground">{t("board:step1")}</span>
-                  <h2 className="text-sm font-semibold text-foreground">{t("board:reviewNewMemoryCandidates")}</h2>
-                  <span className="ml-auto text-xs text-muted-foreground">{t("memory:inReview", { count: candidateReviewItems.length })}</span>
-                </div>
-                <MemoryCandidateReviewStation
-                  candidates={candidateReviewItems}
-                  freshAt={freshCandidates.at || undefined}
-                  surface="board"
-                  allowRestore
-                  onChanged={overlay?.onChanged}
-                />
-              </div>
-            ) : (
-              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
-                <Inbox aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">{t("board:step1ReviewNewMemoryCandidates")}</span>
-                <span className="ml-1">{t("board:noPendingMemoryCandidates")}</span>
-              </div>
-            )}
-          </section>
-
-          <section data-memory-board-section="library" className="@container/library mb-6">
-            {sections.searchAndCreate ? <div className="mb-4 flex flex-wrap items-center gap-2">
-              <div className="relative max-w-xs flex-1">
-                <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder={t("board:searchMemories")}
-                  className="h-9 w-full rounded-lg border border-border bg-background pl-8 pr-3 text-sm text-foreground placeholder:text-muted-foreground"
-                />
-              </div>
-              {projectFilter ? (
+                {/* The map stays in view until you choose to start reviewing. */}
                 <button
                   type="button"
-                  onClick={() => setProjectFilter(null)}
-                  title={t("board:showingPersonalMemoriesPlusThisProjectSClickToSee")}
-                  className="flex h-9 items-center gap-1.5 rounded-lg border border-border bg-muted/40 px-2.5 text-sm text-foreground transition-colors hover:bg-muted"
+                  aria-expanded={reviewOpen}
+                  className="flex w-full items-center gap-2 text-left"
+                  onClick={() => setReviewOpen((open) => !open)}
                 >
-                  {t("board:project")}{originTitles.projects[projectFilter] ?? projectFilter}
-                  <X className="h-3.5 w-3.5 text-muted-foreground" />
+                  <Inbox aria-hidden className="size-4 shrink-0 text-muted-foreground" />
+                  <h2 className="text-[13px] font-medium text-foreground">{t("board:reviewNewMemoryCandidates")}</h2>
+                  <span className="text-xs text-muted-foreground">{t("memory:inReview", { count: candidateReviewItems.length })}</span>
+                  <ChevronRight className={cn("ml-auto size-4 text-muted-foreground transition-transform duration-150", reviewOpen && "rotate-90")} />
                 </button>
-              ) : null}
-            </div> : null}
+                {reviewOpen ? (
+                  <div className="mt-3">
+                    <MemoryCandidateReviewStation
+                      candidates={candidateReviewItems}
+                      freshAt={freshCandidates.at || undefined}
+                      surface="board"
+                      allowRestore
+                      onChanged={overlay?.onChanged}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
 
-            {sections.searchAndCreate && creating ? (
-              <div className="mb-4 rounded-xl border border-border bg-card p-4 ">
+          {sections.activeLibrary && needsAttention.length > 0 ? (
+            <section className="mb-3 rounded-xl border border-cand-border bg-cand-surface dark:bg-cand-surface p-3">
+              <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
+                <AlertTriangle className="h-4 w-4 text-cand-fg dark:text-cand-fg" />
+                {t("board:needsAttention")}<span className="text-muted-foreground">{t("board:unresolvedConflicts", { count: needsAttention.length })}</span>
+              </h2>
+              <div className="flex flex-col gap-3">
+                {needsAttention.map(({ memory: contested, supersededBy }) => (
+                  <div key={contested.id} className="rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <button type="button" className="min-w-0 flex-1 basis-48 text-left text-sm text-foreground line-through decoration-muted-foreground/60" onClick={() => setSelectedId(contested.id)}>
+                        {contested.content}
+                      </button>
+                      <Button variant="ghost" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={() => void archiveContested(contested).catch(() => {})}>
+                        <Trash2 className="h-4 w-4" /> {t("board:archiveOlderMemory")}</Button>
+                    </div>
+                    {supersededBy.map((next) => (
+                      <p key={next.id} className="mt-1 text-xs text-muted-foreground">{t("board:supersededBy")}<span className="text-foreground">{next.content}</span></p>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {sections.searchAndCreate && creating ? (
+              <div className="mb-3 rounded-xl bg-card p-4 shadow-card">
                 <Textarea
                   value={draft.content}
                   onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
@@ -729,137 +804,59 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
               </div>
             ) : null}
 
-            {/* Measure the library after the detail panel takes its share.
-                At 56rem, three cards still have at least 280px each. */}
-            <div className="grid gap-4 @4xl/library:grid-cols-3">
-              {SCOPES.map((scope) => {
-                const entries = boardItemsByScope[scope]
-                const list = entries.map((entry) => entry.item)
-                const groups = groupCardsByOrigin(scope, list)
-                const Icon = SCOPE_ICONS[scope]
-                const isDropTarget = (DROP_SCOPES as MemoryScope[]).includes(scope)
-                return (
-                  <section
-                    key={scope}
-                    className={cn(
-                      "flex flex-col gap-3 rounded-xl p-1 transition-shadow",
-                      isDropTarget && activeDrop === `col:${scope}` && cn("ring-2", scopeRingClasses(scope)),
-                    )}
-                    onDragOver={isDropTarget ? (event) => handleZoneDragOver(event, `col:${scope}`) : undefined}
-                    onDrop={isDropTarget ? (event) => handleDropTarget(event, scope === "personal" ? { scope: "personal" } : { scope: "project" }) : undefined}
-                  >
-                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                      <Icon className="h-4 w-4 text-muted-foreground" />
-                      {memoryScopeLabel(scope)}
-                      <MemoryBadge>{list.length}</MemoryBadge>
-                    </div>
-                    {groups.length === 0 ? (
-                      <MemoryEmpty icon={Icon}>
-                        {scope === "session"
-                          ? t("board:sessionMemoriesAreCapturedByTheAgentInsideAChat")
-                          : t("board:noValue0MemoriesYet", { v0: memoryScopeLabel(scope).toLowerCase() })}
-                      </MemoryEmpty>
-                    ) : groups.map((group) => {
-                      const groupTarget: TransferInitialTarget | null =
-                        group.key === "unassigned"
-                          ? null
-                          : scope === "project"
-                            ? { scope: "project", projectId: group.key }
-                            : scope === "session"
-                              ? { scope: "session", sessionId: group.key, sessionLabel: group.label ?? undefined }
-                              : null
-                      const groupDropKey = `grp:${scope}:${group.key}`
-                      return (
-                        <div
-                          key={group.key}
-                          data-memory-session-drop-target={scope === "session" ? group.key : undefined}
-                          className={cn(
-                            "flex flex-col gap-2 rounded-xl transition-shadow",
-                            groupTarget && activeDrop === groupDropKey && cn("p-1 ring-2", scopeRingClasses(scope)),
-                          )}
-                          onDragOver={groupTarget ? (event) => handleZoneDragOver(event, groupDropKey) : undefined}
-                          onDrop={groupTarget ? (event) => handleDropTarget(event, groupTarget) : undefined}
-                        >
-                          {group.label ? (
-                            <p className="px-1 pt-1 text-[11px] font-medium text-muted-foreground">{group.label}</p>
-                          ) : null}
-                          {group.items.length === 0 && scope === "session" ? (
-                            <MemoryEmpty icon={Icon}>
-                              {t("board:dropAMemoryHereToKeepItOnlyForThis")}</MemoryEmpty>
-                          ) : group.items.map((item) => (
-                            item.status === "candidate"
-                              ? renderCandidatePlaceholder(item)
-                              : renderScopedCard(item, scope)
-                          ))}
-                        </div>
-                      )
-                    })}
-                  </section>
-                )
-              })}
+
+          <section
+            data-memory-board-section="library"
+            className="mb-1 grid min-h-[560px] flex-1 grid-rows-[auto_minmax(420px,1fr)] overflow-hidden rounded-2xl bg-card shadow-card @3xl/board:grid-cols-[232px_minmax(0,1fr)] @3xl/board:grid-rows-1"
+          >
+            <div className="flex max-h-56 min-h-0 flex-col border-b border-border @3xl/board:max-h-none @3xl/board:border-b-0 @3xl/board:border-r">
+              <MemoryExplorer
+                items={items}
+                lens={lens}
+                onLensChange={setLens}
+                query={query}
+                onQueryChange={setQuery}
+                projectTitles={originTitles.projects}
+                chatTitles={originTitles.chats}
+                pendingCount={candidates.length}
+                archivedCount={archivedItems.length}
+                mutedCount={muted?.length ?? null}
+                onOpenReview={openReview}
+              />
             </div>
-          </section>
 
-          <section data-memory-board-section="transfer" className="mb-6 flex flex-col gap-3">
-            {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="transfer" /> : null}
-            {!overlay?.focusedReview ? (
-              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
-                <ArrowRightLeft aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">{t("board:step2TransferSuggestions")}</span>
-                <span className="ml-1">{t("board:noPendingTransferSuggestions")}</span>
+            <div className="flex min-h-0 min-w-0 flex-col">
+              <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-3">
+                {lens.kind === "archived" || lens.kind === "muted" || lens.kind === "files" ? (
+                  <h2 className="text-[13px] font-medium text-foreground">
+                    {lens.kind === "archived" ? t("board:archived") : lens.kind === "muted" ? t("board:mutedProposals") : t("memory:memoryFiles")}
+                  </h2>
+                ) : (
+                  <SegmentedControl<MemoryBoardView>
+                    size="sm"
+                    value={view}
+                    onValueChange={changeView}
+                    options={[
+                      { value: "graph", label: t("board:graphView") },
+                      { value: "board", label: t("board:boardView") },
+                    ]}
+                  />
+                )}
+                <p className="ml-auto truncate text-xs tabular-nums text-muted-foreground">
+                  {lens.kind === "archived"
+                    ? t("board:memoryCount", { count: archivedItems.length })
+                    : lens.kind === "muted" || lens.kind === "files"
+                      ? null
+                      : view === "graph"
+                        ? `${t("board:memoryCount", { count: liveMemoryCount })} · ${t("board:relationCount", { count: relationCount })}`
+                        : t("board:memoryCount", { count: liveMemoryCount })}
+                </p>
               </div>
-            ) : null}
-          </section>
 
-          <section data-memory-board-section="checkup" className="mb-6 flex flex-col gap-3">
-            {overlay?.focusedReview ? <FocusedMemoryReviewStation controller={overlay.focusedReview} station="checkup" /> : null}
-            {!overlay?.focusedReview ? (
-              <div className={cn(MEMORY_CARD, "flex flex-wrap items-start gap-2 text-muted-foreground")}>
-                <ListChecks aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
-                <span className="text-sm font-semibold text-foreground">{t("board:step3ReviewSuggestedChangesToExistingMemories")}</span>
-                <span className="ml-1">{t("board:noPendingSuggestedChanges")}</span>
-              </div>
-            ) : null}
-          </section>
-
-          {sections.activeLibrary && needsAttention.length > 0 ? (
-            <section className="mb-6 rounded-xl border border-cand-border bg-cand-surface dark:bg-cand-surface p-3">
-              <h2 className="mb-2 flex items-center gap-1.5 text-sm font-medium text-foreground">
-                <AlertTriangle className="h-4 w-4 text-cand-fg dark:text-cand-fg" />
-                {t("board:needsAttention")}<span className="text-muted-foreground">{t("board:unresolvedConflicts", { count: needsAttention.length })}</span>
-              </h2>
-              <div className="flex flex-col gap-3">
-                {needsAttention.map(({ memory: contested, supersededBy }) => (
-                  <div key={contested.id} className="rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 p-3">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <button type="button" className="min-w-0 flex-1 basis-48 text-left text-sm text-foreground line-through decoration-muted-foreground/60" onClick={() => setSelectedId(contested.id)}>
-                        {contested.content}
-                      </button>
-                      <Button variant="ghost" size="sm" className="ml-auto text-destructive hover:text-destructive" onClick={() => void archiveContested(contested).catch(() => {})}>
-                        <Trash2 className="h-4 w-4" /> {t("board:archiveOlderMemory")}</Button>
-                    </div>
-                    {supersededBy.map((next) => (
-                      <p key={next.id} className="mt-1 text-xs text-muted-foreground">{t("board:supersededBy")}<span className="text-foreground">{next.content}</span></p>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
-          {sections.archived && archivedItems.length > 0 ? (
-            <section className="mt-8 border-t border-border pt-4">
-              <button
-                type="button"
-                onClick={() => setShowArchived((v) => !v)}
-                className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <Archive className="h-4 w-4" />
-                {t("board:archived")}<MemoryBadge>{archivedItems.length}</MemoryBadge>
-                <ChevronRight className={cn("h-4 w-4 transition-transform", showArchived && "rotate-90")} />
-              </button>
-              {showArchived ? (
-                <div className="mt-3 flex flex-col gap-1.5">
+              {lens.kind === "archived" ? (
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {archivedItems.length > 0 ? (
+                <div className="flex flex-col gap-1.5">
                   {archivedItems.map((item) => (
                     <div
                       key={item.id}
@@ -886,22 +883,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     </div>
                   ))}
                 </div>
-              ) : null}
-            </section>
-          ) : null}
-
-          {sections.muted ? <section className={cn("pt-4", archivedItems.length === 0 && "mt-8 border-t border-border")}>
-            <button
-              type="button"
-              onClick={() => setShowMuted((v) => !v)}
-              className="flex items-center gap-2 text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground"
-            >
-              <X className="h-4 w-4" />
-              {t("board:mutedProposals")}{muted ? <MemoryBadge>{muted.length}</MemoryBadge> : null}
-              <ChevronRight className={cn("h-4 w-4 transition-transform", showMuted && "rotate-90")} />
-            </button>
-            {showMuted ? (
-              muted === null ? (
+                  ) : <p className="py-12 text-center text-[13px] text-muted-foreground">{t("board:nothingArchived")}</p>}
+                </div>
+              ) : lens.kind === "muted" ? (
+                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  {muted === null ? (
                 <p className="mt-3 flex items-center gap-2 text-xs text-muted-foreground">
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("common:loading")}</p>
               ) : muted.length === 0 ? (
@@ -940,19 +926,127 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     </div>
                   ))}
                 </div>
-              )
-            ) : null}
-          </section> : null}
+              )}
+                </div>
+              ) : lens.kind === "files" ? (
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  {/* Markdown sync (DG5, 2026-08-19 I1): kept for expert users, one
+                      click away in the explorer, never competing with the map. */}
+                  <MarkdownSyncCard
+                    embedded
+                    onSynced={(newIds) => {
+                      void loadAll()
+                      refreshNeedsAttention()
+                      if (newIds?.length) setFreshCandidates({ ids: new Set(newIds), at: Date.now() })
+                    }}
+                  />
+                </div>
+              ) : view === "graph" ? (
+                <div className="min-h-0 flex-1">
+                  <MemoryGraphCanvas
+                    nodes={graph.nodes}
+                    edges={graph.edges}
+                    highlight={graphHighlight}
+                    selectedId={selectedId}
+                    onSelectMemory={setSelectedId}
+                    onHoverMemory={recordBoardHover}
+                    legend={memoryGraphLegend({
+                      personal: t("common:personal"),
+                      project: t("common:project"),
+                      session: t("common:session"),
+                      candidate: t("board:toReview"),
+                    })}
+                    ariaLabel={t("board:graphAriaLabel")}
+                    zoomInLabel={t("board:zoomIn")}
+                    zoomOutLabel={t("board:zoomOut")}
+                    fitLabel={t("board:fitGraph")}
+                    emptyHint={liveMemoryCount === 0 && candidates.length === 0 ? t("board:graphEmpty") : undefined}
+                  />
+                </div>
+              ) : (
+                <div className="@container/library min-h-0 flex-1 overflow-y-auto p-3">
+            <div className={cn("grid items-start gap-3", visibleScopes.length > 1 && "@3xl/library:grid-cols-3")}>
+              {visibleScopes.map((scope) => {
+                const entries = boardItemsByScope[scope]
+                const list = entries.map((entry) => entry.item)
+                const groups = groupCardsByOrigin(scope, list)
+                const isDropTarget = (DROP_SCOPES as MemoryScope[]).includes(scope)
+                return (
+                  <section
+                    key={scope}
+                    className={cn(
+                      "flex min-h-40 flex-col gap-2 rounded-xl bg-muted/70 p-2 transition-shadow",
+                      isDropTarget && activeDrop === `col:${scope}` && cn("ring-2", scopeRingClasses(scope)),
+                    )}
+                    onDragOver={isDropTarget ? (event) => handleZoneDragOver(event, `col:${scope}`) : undefined}
+                    onDrop={isDropTarget ? (event) => handleDropTarget(event, scope === "personal" ? { scope: "personal" } : { scope: "project" }) : undefined}
+                  >
+                    <div className="flex h-6 items-center gap-2 px-1 text-[13px] font-medium text-foreground">
+                      <span aria-hidden className={cn("size-2 rounded-full", SCOPE_DOTS[scope])} />
+                      {memoryScopeLabel(scope)}
+                      <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{list.length}</span>
+                    </div>
+                    {groups.length === 0 ? (
+                      <p className="px-3 py-8 text-center text-xs leading-relaxed text-muted-foreground text-pretty">
+                        {scope === "session"
+                          ? t("board:sessionMemoriesAreCapturedByTheAgentInsideAChat")
+                          : t("board:noValue0MemoriesYet", { v0: memoryScopeLabel(scope).toLowerCase() })}
+                      </p>
+                    ) : groups.map((group) => {
+                      const groupTarget: TransferInitialTarget | null =
+                        group.key === "unassigned"
+                          ? null
+                          : scope === "project"
+                            ? { scope: "project", projectId: group.key }
+                            : scope === "session"
+                              ? { scope: "session", sessionId: group.key, sessionLabel: group.label ?? undefined }
+                              : null
+                      const groupDropKey = `grp:${scope}:${group.key}`
+                      return (
+                        <div
+                          key={group.key}
+                          data-memory-session-drop-target={scope === "session" ? group.key : undefined}
+                          className={cn(
+                            "flex flex-col gap-2 rounded-xl transition-shadow",
+                            groupTarget && activeDrop === groupDropKey && cn("p-1 ring-2", scopeRingClasses(scope)),
+                          )}
+                          onDragOver={groupTarget ? (event) => handleZoneDragOver(event, groupDropKey) : undefined}
+                          onDrop={groupTarget ? (event) => handleDropTarget(event, groupTarget) : undefined}
+                        >
+                          {group.label ? (
+                            <p className="truncate px-1 pt-1 text-[11px] font-medium text-muted-foreground">{group.label}</p>
+                          ) : null}
+                          {group.items.length === 0 && scope === "session" ? (
+                            <p className="px-3 py-6 text-center text-xs text-muted-foreground text-pretty">
+                              {t("board:dropAMemoryHereToKeepItOnlyForThis")}</p>
+                          ) : group.items.map((item) => (
+                            item.status === "candidate"
+                              ? renderCandidatePlaceholder(item)
+                              : renderScopedCard(item, scope)
+                          ))}
+                        </div>
+                      )
+                    })}
+                  </section>
+                )
+              })}
+            </div>
+                </div>
+              )}
+            </div>
+          </section>
 
-          {/* Markdown sync (DG5, 2026-08-19 I1): kept for expert users, parked
-              at the bottom of the board — never competes with the review lanes. */}
-          {sections.markdown ? <MarkdownSyncCard
-            onSynced={(newIds) => {
-              void loadAll()
-              refreshNeedsAttention()
-              if (newIds?.length) setFreshCandidates({ ids: new Set(newIds), at: Date.now() })
-            }}
-          /> : null}
+          {overlay?.focusedReview ? (
+            <section data-memory-board-section="transfer" className="mt-3 flex flex-col gap-3">
+              <FocusedMemoryReviewStation controller={overlay.focusedReview} station="transfer" />
+            </section>
+          ) : null}
+
+          {overlay?.focusedReview ? (
+            <section data-memory-board-section="checkup" className="mt-3 flex flex-col gap-3">
+              <FocusedMemoryReviewStation controller={overlay.focusedReview} station="checkup" />
+            </section>
+          ) : null}
         </div>
       </div>
 
@@ -972,9 +1066,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             // Make the landing visible: if the new item lives outside the
             // current project lens, widen the lens; then open its detail so
             // the user sees exactly WHERE it landed.
-            if (created.scope === "project" && projectFilter && created.projectId !== projectFilter) {
-              setProjectFilter(null)
-            }
+            if (!memoryMatchesLens(created, lens)) setLens({ kind: "all" })
             setSelectedId(created.id)
           }}
         />

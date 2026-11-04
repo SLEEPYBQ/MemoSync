@@ -2,30 +2,24 @@ import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { BrainCircuit, Slash } from "lucide-react"
 import { useState } from "react"
-import { useInRouterContext, useNavigate, useOutletContext } from "react-router-dom"
+import { useInRouterContext, useOutletContext } from "react-router-dom"
 import { create } from "zustand"
 import type { MemorySettings } from "../../../shared/types"
 import type { AppState } from "../../app/useAppState"
-import { cn } from "../../lib/utils"
 import { useAppSettingsStore } from "../../stores/appSettingsStore"
-import { Tooltip, TooltipContent, TooltipTrigger } from "../ui/tooltip"
+import { InputPopover, PopoverMenuItem } from "./ChatPreferenceControls"
 
-export function deriveMemoryToggleState(
-  memory: MemorySettings,
-  memoryDisabled: boolean,
-) {
-  const off = !memory.enabled || memoryDisabled
-  const tooltip = !memory.enabled
-    ? t("memory:memoryIsTurnedOffInSettings")
-    : memoryDisabled
-      ? t("memory:thisChatDoesnTUseOrLearnMemoriesClickTo")
-      : t("memory:memoryOnClickToTurnItOffForThisChat")
-  return {
-    off,
-    label: off ? t("common:memoryOff") : null,
-    action: memory.enabled ? ("toggle" as const) : ("settings" as const),
-    tooltip: tooltip + (memory.enabled && !memory.learn ? t("memory:learningIsPausedInSettings") : ""),
-  }
+export type MemoryMode = "off" | "review" | "auto"
+
+/** Off is per chat (or global, from Settings); Ask and Auto are how memory runs everywhere. */
+export function deriveMemoryMode(memory: MemorySettings, memoryDisabled: boolean): MemoryMode {
+  if (!memory.enabled || memoryDisabled) return "off"
+  return memory.control === "auto" ? "auto" : "review"
+}
+
+export function memorySettingsForMode(mode: Exclude<MemoryMode, "off">): Partial<MemorySettings> {
+  // Picking a working mode also turns memory back on if Settings had it off.
+  return { enabled: true, control: mode }
 }
 
 // One choice for the next new chat, shared by every new-chat composer (landing
@@ -67,33 +61,34 @@ export function MemoryToggle(props: MemoryToggleProps) {
   return useInRouterContext() ? <RoutedMemoryToggle {...props} /> : null
 }
 
+const MEMORY_MODE_LABELS: Record<MemoryMode, () => string> = {
+  off: () => t("memory:modeOff"),
+  review: () => t("memory:modeReview"),
+  auto: () => t("memory:modeAuto"),
+}
+
 function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
   useI18n()
   const app = useOutletContext<AppState | null>()
-  const navigate = useNavigate()
   const memory = useAppSettingsStore((s) => s.settings?.memory) ?? { control: "review" as const, enabled: true, learn: true }
   const draftDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const runtime = app?.runtime && app.runtime.chatId === chatId ? app.runtime : null
-  const disabled = chatId ? (runtime?.memoryDisabled ?? false) : draftDisabled
-  const state = deriveMemoryToggleState(memory, disabled)
+  const chatDisabled = chatId ? (runtime?.memoryDisabled ?? false) : draftDisabled
+  const mode = deriveMemoryMode(memory, chatDisabled)
 
-  async function toggle() {
-    if (state.action === "settings") {
-      navigate("/settings/memory#memoryEnabled")
-      return
-    }
+  async function setChatDisabled(next: boolean) {
     if (!chatId) {
-      setDraftDisabled(!disabled)
+      setDraftDisabled(next)
       return
     }
-    if (!app) return
+    if (next === chatDisabled || !app) return
     setPending(true)
     setError(null)
     try {
-      await app.socket.command({ type: "chat.setMemoryDisabled", chatId, disabled: !disabled })
+      await app.socket.command({ type: "chat.setMemoryDisabled", chatId, disabled: next })
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     } finally {
@@ -101,30 +96,54 @@ function RoutedMemoryToggle({ chatId }: MemoryToggleProps) {
     }
   }
 
+  function choose(next: MemoryMode) {
+    if (next === "off") {
+      void setChatDisabled(true)
+      return
+    }
+    void setChatDisabled(false)
+    if (memory.enabled && memory.control === next) return
+    setError(null)
+    app?.handleWriteAppSettings({ memory: memorySettingsForMode(next) })
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+  }
+
+  const options: Array<{ mode: MemoryMode; description: string }> = [
+    { mode: "off", description: t("memory:modeOffDescription") },
+    { mode: "review", description: t("memory:modeReviewDescription") },
+    { mode: "auto", description: t("memory:modeAutoDescription") },
+  ]
+
   return (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            aria-label={state.label ?? t("common:memoryOn")}
-            aria-pressed={!state.off}
-            disabled={pending || (Boolean(chatId) && !runtime && state.action !== "settings")}
-            className={cn(
-              "flex items-center gap-1.5 px-2 py-1 text-sm rounded-md transition-colors cursor-pointer hover:bg-muted/50 disabled:opacity-50 [&>span]:whitespace-nowrap",
-              // Off changes what the agent does, so it reads as a state to notice, not a preference.
-              state.off ? "text-cand-fg" : "text-muted-foreground",
-            )}
+      <InputPopover
+        disabled={pending || (Boolean(chatId) && !runtime)}
+        align="start"
+        triggerClassName="shrink-0"
+        trigger={(
+          <>
+            <MemoryIcon off={mode === "off"} />
+            <span>
+              <span className="@max-[560px]/composer:hidden">{t("common:memory")} · </span>
+              {MEMORY_MODE_LABELS[mode]()}
+            </span>
+          </>
+        )}
+      >
+        {(close) => options.map((option) => (
+          <PopoverMenuItem
+            key={option.mode}
+            selected={mode === option.mode}
+            icon={<MemoryIcon off={option.mode === "off"} />}
+            label={MEMORY_MODE_LABELS[option.mode]()}
+            description={option.description}
             onClick={() => {
-              void toggle()
+              choose(option.mode)
+              close()
             }}
-          >
-            <MemoryIcon off={state.off} />
-            {state.label ? <span>{state.label}</span> : null}
-          </button>
-        </TooltipTrigger>
-        <TooltipContent>{state.tooltip}</TooltipContent>
-      </Tooltip>
+          />
+        ))}
+      </InputPopover>
       {error ? (
         <span role="alert" className="text-xs text-destructive">
           {translateUiText(error)}

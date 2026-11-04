@@ -24,6 +24,13 @@ export function useThemeSettingsWriter(writer: SettingsWriter) {
   }, [register, writer])
 }
 
+declare global {
+  interface Window {
+    /** Present only inside the desktop app (desktop/preload.cjs). */
+    memosyncDesktop?: { platform: string; setTheme: (theme: "system" | "light" | "dark") => void }
+  }
+}
+
 function getSystemTheme(): ResolvedTheme {
   return typeof window !== "undefined" && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"
 }
@@ -61,6 +68,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     query.addEventListener("change", update)
     return () => query.removeEventListener("change", update)
   }, [])
+
+  useEffect(() => {
+    if (settingsTheme) window.memosyncDesktop?.setTheme(settingsTheme)
+  }, [settingsTheme])
 
   useLayoutEffect(() => {
     const root = document.documentElement

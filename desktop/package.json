@@ -1,0 +1,71 @@
+{
+  "name": "memosync-desktop",
+  "version": "0.41.7",
+  "private": true,
+  "description": "MemoSync desktop shell",
+  "main": "main.cjs",
+  "scripts": {
+    "dev": "electron ."
+  },
+  "trustedDependencies": [
+    "electron"
+  ],
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0"
+  },
+  "build": {
+    "appId": "com.memosync.desktop",
+    "productName": "MemoSync",
+    "asar": true,
+    "files": [
+      "main.cjs",
+      "backend-lifecycle.cjs",
+      "policy.cjs",
+      "navigation.cjs",
+      "preload.cjs",
+      "icon-dark.png",
+      "icon-light.png",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build/runtime",
+        "to": "runtime",
+        "filter": [
+          "**/*",
+          "!**/node_modules/**/*",
+          "!**/*.test.*",
+          "!**/*.spec.*",
+          "!**/{test,tests,__tests__,fixtures,__fixtures__}/**/*",
+          "!**/node_modules/.bin/**/*"
+        ]
+      },
+      {
+        "from": "build/runtime/node_modules",
+        "to": "runtime/node_modules",
+        "filter": [
+          "**/*",
+          "!**/*.test.*",
+          "!**/*.spec.*",
+          "!**/{test,tests,__tests__,fixtures,__fixtures__}/**/*",
+          "!**/.bin",
+          "!**/.bin/**/*"
+        ]
+      }
+    ],
+    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "icon.icns",
+      "identity": null,
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    }
+  }
+}

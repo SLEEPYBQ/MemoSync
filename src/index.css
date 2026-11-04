@@ -1,31 +1,46 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
+/* Inside the macOS app, while the traffic lights are on screen. */
+@custom-variant desktop-mac (&:where([data-desktop="mac"]:not([data-fullscreen]) *));
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+    /* A warm paper canvas: white cards lift off it, the sidebar sits one step back. */
+    --background: 48 14% 98.3%;
+    --foreground: 30 8% 11%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 30 8% 11%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 222 47% 11%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 210 20% 97%;
-    --muted-foreground: 215 16% 46.42%; /* AA on the existing muted surface (4.50:1). */
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: var(--logo);
+    --popover-foreground: 30 8% 11%;
+    --primary: 30 8% 13%;
+    --primary-foreground: 48 20% 98%;
+    --secondary: 42 10% 93.5%;
+    --secondary-foreground: 30 8% 13%;
+    --muted: 42 11% 95%;
+    --muted-foreground: 32 5% 41%; /* AA on the canvas and on muted. */
+    --accent: 42 10% 93.5%;
+    --accent-foreground: 30 8% 13%;
+    --destructive: oklch(55% 0.19 27);
     --destructive-foreground: 0 0% 98%;
-    --border: 214 20% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
+    --border: 40 9% 89.5%;
+    --input: 40 9% 89.5%;
+    --ring: 30 8% 13%;
     /* Keyboard focus: a soft accent ring that hugs the control (Codex / macOS). */
     --focus: 211 92% 52%;
-    /* App sidebar: one quiet step off the page, like Codex's. */
-    --sidebar: 220 14% 97.6%;
+    --sidebar: 42 11% 95.2%;
+    --card-shadow: 0 0 0 1px hsl(30 12% 15% / 0.07), 0 1px 2px hsl(30 12% 15% / 0.04), 0 6px 16px -8px hsl(30 12% 15% / 0.08);
+    --composer-shadow: 0 0 0 1px hsl(30 12% 15% / 0.09), 0 1px 2px hsl(30 12% 15% / 0.04), 0 12px 28px -14px hsl(30 12% 15% / 0.16);
+    --color-slate-50: oklch(98.5% 0.001 60);
+    --color-slate-100: oklch(96.7% 0.0013 60);
+    --color-slate-200: oklch(92.8% 0.0026 60);
+    --color-slate-300: oklch(87.2% 0.004 60);
+    --color-slate-400: oklch(70.7% 0.01 60);
+    --color-slate-500: oklch(55.1% 0.012 60);
+    --color-slate-600: oklch(44.6% 0.012 60);
+    --color-slate-700: oklch(37.3% 0.012 60);
+    --color-slate-800: oklch(27.8% 0.012 60);
+    --color-slate-900: oklch(21% 0.012 60);
+    --color-slate-950: oklch(13% 0.012 60);
     --radius: 0.5rem;
     --muted-icon: 240 2% 79%;
     --chart-1: 24.6 95% 53.1%;
@@ -37,8 +52,9 @@
     --success-foreground: oklch(43% 0.1 162.48);
     --info-foreground: oklch(43% 0.11 237.323);
     --info: oklch(68.5% 0.169 237.323); /* sky-500 */
-    --section-title: oklch(44.6% 0.043 257.281); /* slate-600 */
-    --logo: oklch(71.2% 0.194 13.428);
+    --section-title: oklch(44.6% 0.012 60);
+    /* The terracotta card of the stacked-cards mark. */
+    --logo: oklch(66% 0.135 42);
     /* MemoSync scope colors (canonical v1 values, SPEC §2): RGB triplets.
        DEFAULT = dot/fill; fg = AA-legible text; surface = tint; border = outline. */
     --scope-personal: 217 119 87;
@@ -75,13 +91,15 @@
     --muted-foreground: 34 5% 65%;
     --accent: 30 3% 19%;
     --accent-foreground: 40 14% 94%;
-    --destructive: var(--logo);
-    --destructive-foreground: var(--background);
+    --destructive: oklch(70% 0.17 27);
+    --destructive-foreground: 30 4% 11%;
     --border: 30 3% 23%;
     --input: 30 3% 20%;
     --ring: 34 6% 80%;
     --focus: 211 88% 64%;
-    --sidebar: 30 4% 10.5%;
+    --sidebar: 30 4% 14.5%;
+    --card-shadow: 0 0 0 1px hsl(40 14% 94% / 0.07);
+    --composer-shadow: 0 0 0 1px hsl(40 14% 94% / 0.1), 0 12px 28px -14px hsl(0 0% 0% / 0.5);
     --muted-icon: 32 4% 48%;
     --color-slate-50: oklch(98.5% 0.001 60);
     --color-slate-100: oklch(96.7% 0.0013 60);
@@ -99,7 +117,7 @@
     --info-foreground: oklch(80% 0.12 232.661);
     --info: oklch(74.6% 0.16 232.661); /* sky-400 */
     --section-title: var(--color-slate-300);
-    --logo: oklch(71.2% 0.194 13.428);
+    --logo: oklch(70% 0.13 42);
     --scope-personal: 217 119 87;
     --scope-personal-fg: 235 170 130;
     --scope-personal-surface: 60 44 32;
@@ -121,6 +139,8 @@
 
 @theme {
   --breakpoint-3xl: 125rem;
+  --shadow-card: var(--card-shadow);
+  --shadow-composer: var(--composer-shadow);
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
@@ -449,6 +469,29 @@
   }
 
   /* Fade-in animation for state transitions */
+  .settings-modal-scrim {
+    animation: fade-in 180ms ease-out;
+  }
+  .settings-modal-panel {
+    animation: settings-modal-in 260ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+  @keyframes settings-modal-in {
+    from {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .settings-modal-scrim,
+    .settings-modal-panel {
+      animation: none;
+    }
+  }
+
   .animate-fade-in {
     animation: fade-in 250ms ease-out;
   }
@@ -703,6 +746,7 @@
 /* A gate may host candidate cards. Their detail/reference text stays flat so
    the gate, row, and reference never become three nested boxes. */
 .memory-card .memory-card {
+  box-shadow: none;
   border-radius: var(--radius-lg);
   border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-background) 60%, transparent);
@@ -715,4 +759,27 @@
   border-radius: 0;
   background: transparent;
   padding-inline: 0;
+}
+
+/* ---- The macOS window ----
+   The page reaches the top edge; its top band moves the window. Interactive
+   controls opt out, so they still click wherever a toolbar happens to float. */
+.desktop-drag-band {
+  display: none;
+}
+[data-desktop="mac"] .desktop-drag-band {
+  display: block;
+  position: fixed;
+  inset: 0 0 auto 0;
+  height: 48px;
+  pointer-events: none;
+  -webkit-app-region: drag;
+}
+[data-desktop="mac"] :is(button, a, input, textarea, select, label, summary, [role="button"], [role="menuitem"], [role="option"], [role="tab"], [role="separator"]) {
+  -webkit-app-region: no-drag;
+}
+
+/* Where the page may start beside the lights, whatever the page zoom. */
+[data-desktop="mac"] {
+  --mac-lights-inset: calc(78px / var(--desktop-zoom, 1));
 }

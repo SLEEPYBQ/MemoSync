@@ -228,6 +228,31 @@ bun run check     # 类型检查和前端构建
 
 前端是 `src/client/` 下的 React 应用。开发模式的数据存放在 `~/.memosync-dev/`。
 
+## 桌面应用
+
+macOS 桌面应用会打包 Electron 和应用运行时（包括 Bun），但会在本机查找
+Claude Code、Codex 和 Pi，不会把这些智能体实现打进应用。安装后不需要主机上的
+Bun 或 Node 来运行应用本身；本机安装的智能体可能有各自的运行时和原生依赖要求。
+当前 CLI 和桌面应用共用 `~/.memosync/data`；数据锁会拒绝第二个进程，因此不要同时运行它们。
+
+在 macOS 原生 arm64 或 x64 机器上开发和打包：
+
+```bash
+bun install
+bun run desktop:install
+bun run desktop:dev
+bun run desktop:package:mac
+```
+
+打包命令会把 DMG 和 ZIP 写入 `desktop/release/`。打开 DMG，将 MemoSync 拖入
+“应用程序”，然后正常启动。macOS 可能会要求确认从互联网下载的应用；必要时可在
+Finder 中使用“打开”。当前尚未配置发布签名和公证。
+
+桌面版需要本机已安装 Claude Code 和 Codex CLI。Pi 必须在本机安装为
+`@mariozechner/pi-coding-agent` 的兼容 `0.73.x` 版本（至少 `0.73.1`）；这样
+桌面载荷不会包含智能体实现，同时保留 Pi 的扩展兼容 SDK 边界。如果自动发现不到，
+可以在引擎设置中填写可执行文件路径。
+
 ## 致谢
 
 MemoSync 由 [Kanna](https://github.com/jakemor/kanna) 分叉而来，运行以下智能体：

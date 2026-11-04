@@ -22,9 +22,9 @@ export const SCOPE_ICONS: Record<MemoryScope, LucideIcon> = {
 
 // Full literal strings (not template-built) so Tailwind's scanner can see them.
 const SCOPE_CARD_CLASSES: Record<MemoryScope, string> = {
-  personal: "border-border bg-card",
-  project: "border-border bg-card",
-  session: "border-border bg-card",
+  personal: "border-transparent bg-card shadow-card",
+  project: "border-transparent bg-card shadow-card",
+  session: "border-transparent bg-card shadow-card",
 }
 
 const SCOPE_RING_CLASSES: Record<MemoryScope, string> = {

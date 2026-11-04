@@ -126,7 +126,10 @@ test("each engine renders ready/missing/incompatible/broken across account and c
       }[state as "ready" | "missing" | "incompatible" | "broken"]
       for (const engine of ["claude", "codex", "pi"]) {
         const card = page.locator(`[data-engine="${engine}"]`)
-        expect(await card.textContent()).toContain(expected)
+        // Pi is pinned to one release line, so its mismatch doesn't claim to be "too old".
+        expect(await card.textContent()).toContain(
+          engine === "pi" && state === "incompatible" ? "MemoSync works with Pi 0.73.x" : expected,
+        )
         expect(await card.getByRole("radio", { name: "Your sign-in", exact: true }).count()).toBe(
           engine === "pi" ? 0 : 1,
         )
@@ -153,9 +156,9 @@ test("engine paths, access, model and refresh send contract commands, with retry
   await shots("path-dialog")
   await pathDialog.getByRole("button", { name: "Save", exact: true }).click()
   expect(await lastCommand()).toMatchObject({
-    type: "modelAccess.setEngine",
+    type: "modelAccess.setExecutablePath",
     engine: "claude",
-    setup: { executablePath: "/fixture/custom/claude", access: { mode: "account" } },
+    executablePath: "/fixture/custom/claude",
   })
   await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByRole("button", { name: "Shared model", exact: true }).click()
@@ -478,7 +481,7 @@ test("path reset, engine-specific add, selected-connection models and keyboard f
   await pathDialog.getByRole("button", { name: "Use automatic discovery" }).click()
   expect(await pathDialog.getByLabel("Executable path override").inputValue()).toBe("")
   await pathDialog.getByRole("button", { name: "Save", exact: true }).click()
-  expect(await lastCommand()).toMatchObject({ type: "modelAccess.setEngine", setup: { executablePath: null } })
+  expect(await lastCommand()).toMatchObject({ type: "modelAccess.setExecutablePath", executablePath: null })
   await card.getByRole("radio", { name: "API connection", exact: true }).click()
   await card.getByLabel("API connection", { exact: true }).click()
   await shots("connection-select", async () => {
