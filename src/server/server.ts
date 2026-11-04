@@ -462,6 +462,7 @@ async function startLockedMemoSyncServer(
     },
   })
   agent = activeAgent
+  appSettings.onChange(() => activeAgent.memorySettingsChanged())
   onStartupCleanup(() => activeAgent.shutdownRuntime())
   router = createWsRouter({
     modelAccess,
@@ -738,6 +739,7 @@ async function startLockedMemoSyncServer(
       .then(() => router.broadcastSnapshots())
   }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
   onStartupCleanup(() => clearInterval(staleEmptyChatPruneInterval))
+  activeAgent.recoverAutomaticCaptures()
   void activeAgent.drainOrphanedQueues()
 
   const shutdown = async () => {

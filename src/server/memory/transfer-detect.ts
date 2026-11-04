@@ -59,7 +59,7 @@ export interface TransferTaskOptions {
 
 export interface TransferDetectService {
   /** Full Encode/relevance/Decode prompt, with no preparation sidecars. */
-  buildTaskBranchPrompt?(ctx: TransferTaskContext): { prompt: string; dependencyKey: string; schema?: Record<string, unknown>; deltaSchema?: Record<string, unknown>; constraints?: string };
+  buildTaskBranchPrompt?(ctx: TransferTaskContext): import('./branch-pipeline').BranchRequest;
   /** Validate full branch proposals against the exact source and target snapshot. */
   materializeTaskFromBranch?(ctx: TransferTaskContext, raw: Record<string, unknown>, dependencyKey: string): Promise<TransferTaskResult | null>;
   /** Synchronous shelf probe used only to decide whether a slow cold-start
@@ -441,6 +441,7 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
       const sources = snapshot.input.sources.map(source => ({ sourceId: source.item.id, sourceVersion: source.item.version }));
       return {
         prompt: buildTransferBranchPrompt(snapshot.input), dependencyKey: snapshot.key,
+        ...(!sources.length ? { skip: { raw: { suggestions: [] }, reason: 'no-valid-sources' } } : {}),
         schema: memoryTransferSchema(sources), deltaSchema: memoryTransferSchema(sources, true),
         constraints: sources.length
           ? `Only these source snapshots may be transferred: ${JSON.stringify(sources)}. The task and target store are not additional sources.`

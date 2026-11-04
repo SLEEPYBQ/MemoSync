@@ -42,7 +42,9 @@ export interface DeliveredFocusEvent {
 
 /** Discriminated union of logged events (extend as new signals are wired). */
 export type UsageEvent =
-  { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
+  | { type: "memory.scheduling"; sessionId: string; turnId?: string; stage: string; outcome: string; reason?: string }
+  | { type: "memory.latency"; sessionId: string; turnId?: string; stage: string; segment: "human_wait" | "branch_request" | "host" | "queue_wait"; durationMs: number; requestCount?: number; outcome?: string; branchId?: string }
+  | { type: "memory.branch"; sessionId: string; engine: string; purpose: string; branchId: string; mode: "fork" | "empty-history" }
   | { type: "memory.inject"; schemaVersion?: 1; sessionId?: string; engine?: string; memories: MemoryRef[]; tokenEstimate?: number; mode?: "skills" | "plain" | "file" }
   | DeliveredFocusEvent
   | { type: "memory.propose"; sessionId?: string; engine?: string; id: string; memType: string; scope: string; via?: string; targetId?: string; drift?: string; revisionAction?: string; reason?: string }

@@ -80,6 +80,22 @@ describe('automatic Transfer: prepared source rules -> task-local landing', () =
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('statically skips transfer when every source is inactive or declined, without detector/encode/decode calls', () => {
+    const ctx = { projectId: 'P1', sessionId: 'chat-1', taskText: 'Use Bun for scripts' };
+    const { service, detectorCalls, transferCalls } = makeService();
+    const archived = foreign('Archived foreign rule');
+    memory.store.update(archived.id, { status: 'archived' }, { actor: 'user' });
+    const declined = foreign('A source declined in the current project');
+    memory.store.setKv(`${TRANSFER_DECLINED_PREFIX}${declined.id}:P1`, true);
+    memory.store.create({ content: 'A current-project rule', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    expect(service.hasSourceCandidates(ctx)).toBe(false);
+    expect(service.buildTaskBranchPrompt!(ctx).skip).toEqual({ raw: { suggestions: [] }, reason: 'no-valid-sources' });
+    expect(detectorCalls).toHaveLength(0);
+    expect(transferCalls).toHaveLength(0);
+    foreign('A new eligible foreign rule');
+    expect(service.buildTaskBranchPrompt!(ctx).skip).toBeUndefined();
+  });
+
   it('prepares only other conversations and other projects, never the current visible context', async () => {
     const currentSession = memory.store.create(
       { content: 'Current chat fact', scope: 'session', sessionId: 'chat-1', type: 'fact' },

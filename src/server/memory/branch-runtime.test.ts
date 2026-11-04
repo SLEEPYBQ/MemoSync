@@ -109,6 +109,44 @@ function claudeMustNotRun() {
 }
 
 describe("persistent memory branches", () => {
+  test('reports each provider request including schema repair without inventing token usage', async () => {
+    const observations: Array<{ durationMs: number; requestCount: number; outcome: string }> = []
+    const fake = fakePi(call => [
+      { type: 'session_token', sessionToken: 'pi-child' } as HarnessEvent,
+      { type: 'transcript', entry: { kind: 'assistant_text', text: JSON.stringify({ selected: call === 1 ? 'invalid' : [] }) } } as HarnessEvent,
+      { type: 'transcript', entry: { kind: 'result', subtype: 'success', isError: false, result: '' } } as HarnessEvent,
+    ])
+    const branch = createMemoryBranch({ ...base, provider: 'pi', onRequest: event => observations.push(event) }, fake)
+    try {
+      expect(await branch.ask('Select', { schema: { type: 'object', required: ['selected'], properties: { selected: { type: 'array' } } } })).toEqual({ selected: [] })
+      expect(fake.turns).toHaveLength(2)
+      expect(observations.map(item => item.outcome)).toEqual(['failed', 'completed'])
+      expect(observations.map(item => item.requestCount)).toEqual([1, 1])
+      expect(observations.every(item => item.durationMs >= 0)).toBe(true)
+      expect(JSON.stringify(observations)).not.toContain('tokens')
+    } finally { branch.dispose() }
+  })
+
+  test('cancellation during connection resolution counts zero requests and cannot launch a late turn', async () => {
+    const fake = fakePi()
+    const observed: number[] = []
+    let release!: () => void
+    const connectionReady = new Promise<void>(resolve => { release = resolve })
+    const controller = new AbortController()
+    const branch = createMemoryBranch({ ...base, provider: 'pi', onRequest: event => observed.push(event.requestCount) }, {
+      ...fake, resolvePiConnection: async () => { await connectionReady; return fake.resolvePiConnection!() },
+    })
+    const result = branch.ask('Analyze', { signal: controller.signal })
+    await Promise.resolve(); await Promise.resolve()
+    controller.abort(new Error('Memory disabled'))
+    await expect(result).rejects.toThrow('Memory disabled')
+    release()
+    for (let i = 0; i < 8; i++) await Promise.resolve()
+    expect(fake.turns).toHaveLength(0)
+    expect(observed).toEqual([0])
+    branch.dispose()
+  })
+
   test("Claude forks the main history once and serializes follow-ups into the same child", async () => {
     const fake = fakeClaude([claudeSuccess({ candidates: [1] }), claudeSuccess({ candidates: [] })])
     const branch = createMemoryBranch(base, fake)
