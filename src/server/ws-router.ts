@@ -121,7 +121,7 @@ export interface ClientState {
 }
 
 /** Model access service (src/server/model-access/). Optional so tests can omit it. */
-export type ModelAccessRouterService = Pick<ModelAccessService, "getSnapshot"> & Partial<Pick<ModelAccessService, "saveConnection" | "deleteConnection" | "setEngine" | "setExecutablePath" | "testConnection" | "refreshExecutables" | "onChange">>
+export type ModelAccessRouterService = Pick<ModelAccessService, "getSnapshot"> & Partial<Pick<ModelAccessService, "saveConnection" | "deleteConnection" | "setEngine" | "setExecutablePath" | "testConnection" | "refreshExecutables" | "upgradeExecutable" | "onChange">>
 
 const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
   connections: [],
@@ -1316,7 +1316,8 @@ export function createWsRouter({
         case "modelAccess.setEngine":
         case "modelAccess.setExecutablePath":
         case "modelAccess.testConnection":
-        case "modelAccess.refreshExecutables": {
+        case "modelAccess.refreshExecutables":
+        case "modelAccess.upgradeExecutable": {
           if (!modelAccess) throw new Error("model-access-unavailable")
           let result: unknown
           if (command.type === "modelAccess.saveConnection" && modelAccess.saveConnection) result = await modelAccess.saveConnection(command.connection)
@@ -1325,6 +1326,7 @@ export function createWsRouter({
           else if (command.type === "modelAccess.setExecutablePath" && modelAccess.setExecutablePath) await modelAccess.setExecutablePath(command.engine, command.executablePath)
           else if (command.type === "modelAccess.testConnection" && modelAccess.testConnection) result = await modelAccess.testConnection(command.connection, command.engine, command.model)
           else if (command.type === "modelAccess.refreshExecutables" && modelAccess.refreshExecutables) result = await modelAccess.refreshExecutables()
+          else if (command.type === "modelAccess.upgradeExecutable" && modelAccess.upgradeExecutable) await modelAccess.upgradeExecutable(command.engine)
           else throw new Error("model-access-unavailable")
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastSnapshots()

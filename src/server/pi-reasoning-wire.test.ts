@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
-import { streamSimpleOpenAICompletions } from "@mariozechner/pi-ai/openai-completions"
-import { streamSimpleOpenAIResponses } from "@mariozechner/pi-ai/openai-responses"
+import { normalizeContext } from "@earendil-works/pi-ai"
+import { streamSimple as streamSimpleOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions"
+import { streamSimple as streamSimpleOpenAIResponses } from "@earendil-works/pi-ai/api/openai-responses"
 import { resolvePiEffort, toPiThinkingLevel, type RegistryModelCard } from "../shared/model-capabilities"
 import { buildRegistryModel } from "./pi-agent"
 import { parseRegistryModelCard } from "./registry-models"
@@ -17,7 +18,7 @@ async function outgoingBody(format: "openai" | "openrouter" | "responses" | "zhi
     const connection = { provider: "custom" as const, baseUrl: format === "openrouter" ? "https://openrouter.ai/api/v1" : format === "zhipu" ? "https://open.bigmodel.cn/api/paas/v4" : "https://example.test/v1", apiKey: "fixture-key" }
     const effort = resolvePiEffort(card, requested)
     const model = { ...buildRegistryModel(connection, card?.id ?? "unknown-model", card, effort), baseUrl: `http://127.0.0.1:${server.port}/v1` }
-    const context = { systemPrompt: "Be concise", messages: [{ role: "user" as const, content: "hello", timestamp: 1 }] }
+    const context = normalizeContext({ systemPrompt: "Be concise", messages: [{ role: "user" as const, content: "hello", timestamp: 1 }] })
     // Agent core passes no simple-stream reasoning option for its off slot.
     const thinkingLevel = toPiThinkingLevel(effort)
     const options = { apiKey: connection.apiKey, reasoning: thinkingLevel === "off" ? undefined : thinkingLevel, maxRetries: 0 }

@@ -1,13 +1,14 @@
-import { afterEach, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { afterEach, describe, expect, test } from "bun:test"
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { ModelAccessService } from "./service"
 import { fakeExecutableResolver } from "./test-fixtures"
 import { resolveEngineRuntime } from "./runtime"
 import { legacyConnections } from "./legacy"
 import { testEndpoint } from "./test-connection"
 import type { ExecutableStatus } from "../../shared/model-access"
+import type { UpgradeRunner } from "./upgrade"
 
 const dirs: string[] = []
 function fixture(env: Record<string, string> = {}) {
@@ -333,4 +334,68 @@ test("Anthropic auth fallback retries with x-api-key and succeeds", async () => 
   const server = Bun.serve({ port: 0, fetch: req => { seen.push(req.headers.get("authorization") || req.headers.get("x-api-key") || "none"); return new Response("", { status: req.headers.has("x-api-key") ? 200 : 401 }) } })
   try { expect((await testEndpoint({ protocol: "anthropic-messages", baseUrl: `http://127.0.0.1:${server.port}` }, "probe-key", "small")).ok).toBe(true); expect(seen).toEqual(["Bearer probe-key", "probe-key"]) }
   finally { server.stop(true) }
+})
+
+describe("upgrading an engine's CLI", () => {
+  async function fixtureWithOldPi(run: UpgradeRunner) {
+    const dir = mkdtempSync(join(tmpdir(), "ma-upgrade-")); dirs.push(dir)
+    const prefix = join(dir, "prefix")
+    mkdirSync(join(prefix, "bin"), { recursive: true })
+    writeFileSync(join(prefix, "bin/npm"), "#!/bin/sh\n", { mode: 0o755 })
+    const entry = join(prefix, "lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
+    mkdirSync(dirname(entry), { recursive: true })
+    writeFileSync(entry, "#!/bin/sh\n", { mode: 0o755 })
+    let installed: ExecutableStatus = { state: "incompatible", belowMinimum: true, path: entry, version: "1.2.0", minimumVersion: "1.3.0" }
+    const service = await new ModelAccessService({
+      dataDir: join(dir, "data"), env: { HOME: dir, PATH: "/fixture/none" }, readLegacyPi: async () => null, runUpgrade: run,
+      resolveExecutable: async engine => engine === "pi" ? installed : { state: "ready", path: "/fixture/cli" },
+    }).initialize()
+    return { service, setInstalled: (next: ExecutableStatus) => { installed = next } }
+  }
+
+  test("the snapshot offers what would run, shows it running, then re-detects", async () => {
+    let finish!: (result: { ok: boolean; output: string }) => void
+    const ran: string[][] = []
+    const { service, setInstalled } = await fixtureWithOldPi(step => {
+      ran.push(step.args)
+      return new Promise(resolve => { finish = resolve })
+    })
+    expect(service.getSnapshot().engines.pi.executable.upgradeCommand).toBe("pi update self")
+    expect(service.getSnapshot().engines.claude.executable.upgradeCommand).toBeUndefined()
+
+    await service.upgradeExecutable("pi")
+    expect(service.getSnapshot().engines.pi.upgrade).toEqual({ state: "running" })
+    // A second click while it runs starts nothing.
+    await service.upgradeExecutable("pi")
+    expect(ran).toEqual([["update", "self"]])
+
+    setInstalled({ state: "ready", path: "/fixture/pi", version: "1.5.0" })
+    const changed = new Promise<void>(resolve => { const off = service.onChange(() => { off(); resolve() }) })
+    finish({ ok: true, output: "" })
+    await changed
+    const pi = service.getSnapshot().engines.pi
+    expect(pi.upgrade).toBeUndefined()
+    expect(pi.executable).toMatchObject({ state: "ready", version: "1.5.0" })
+  })
+
+  test("a failure is reported until the next detection", async () => {
+    const { service } = await fixtureWithOldPi(async () => ({ ok: false, output: "EACCES" }))
+    const failed = new Promise<void>(resolve => {
+      const off = service.onChange(() => {
+        if (service.getSnapshot().engines.pi.upgrade?.state !== "failed") return
+        off(); resolve()
+      })
+    })
+    await service.upgradeExecutable("pi")
+    await failed
+    expect(service.getSnapshot().engines.pi.upgrade).toEqual({ state: "failed", detail: "pi update self\nEACCES" })
+    await service.refreshExecutables()
+    expect(service.getSnapshot().engines.pi.upgrade).toBeUndefined()
+  })
+
+  test("an installation that can't be upgraded is refused, whatever the client asks", async () => {
+    const { service } = await fixtureWithOldPi(async () => ({ ok: true, output: "" }))
+    await expect(service.upgradeExecutable("claude")).rejects.toThrow("engine-upgrade-unavailable")
+    await expect(service.upgradeExecutable("nope" as never)).rejects.toThrow("engine-setup-invalid")
+  })
 })

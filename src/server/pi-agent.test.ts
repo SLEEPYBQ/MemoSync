@@ -62,8 +62,7 @@ function fakeSdk(options: {
   create?: () => Promise<ReturnType<typeof fakeSession>>
 } = {}) {
   return {
-    AuthStorage: { inMemory: () => ({ setRuntimeApiKey() {} }) },
-    ModelRegistry: { inMemory: () => ({ find: () => undefined }) },
+    ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {}, registerProvider() {}, getModel: () => undefined }) },
     SettingsManager: { inMemory: () => ({}) },
     DefaultResourceLoader: class { async reload() { await options.reload?.() } },
     SessionManager: { create: () => ({}) },
@@ -477,7 +476,7 @@ test.each([[true, "openai-completions"], [false, "openai-completions"], [true, "
   const knownModel = { ...buildRegistryModel(official, "model", old), api, maxTokens: 64_000, compat: { supportsDeveloperRole: false } }
   const session = { ...fakeSession(), agent: {} as any,
     prompt: async () => { payload = await session.agent.onPayload({ messages: [], text: { verbosity: "low" } }, currentModel) } }
-  const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => knownModel }) },
+  const sdk = { ...fakeSdk(), ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {}, registerProvider() {}, getModel: () => knownModel }) },
     createAgentSession: async (options: any) => { currentModel = options.model; return { session } } }
   await loadModels(official, "model") // The picker has loaded the shared cache.
   const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels })
@@ -511,7 +510,7 @@ test.each([false, true])("an official SDK model keeps limits and prices when met
   const known = { ...buildRegistryModel(connection, card.id), contextWindow: 1_000_000, maxTokens: 64_000,
     cost: { input: 5, output: 15, cacheRead: 1, cacheWrite: 2 }, input: ["text"], thinkingLevelMap: { off: "none" } }
   let selected: any
-  const sdk = { ...fakeSdk(), ModelRegistry: { inMemory: () => ({ find: () => known }) },
+  const sdk = { ...fakeSdk(), ModelRuntime: { create: async () => ({ setRuntimeApiKey: async () => {}, registerProvider() {}, getModel: () => known }) },
     createAgentSession: async (options: any) => { selected = options.model; return { session: fakeSession() } } }
   const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: cached ? cachedModels([card]) : async () => [] })
   try {
@@ -529,9 +528,8 @@ test('memory forks pin effective metadata and system prompt, and refresh their t
   const { parseRegistryModelCard } = await import('./registry-models')
   const card = parseRegistryModelCard({ id: 'model', reasoning: { supported_efforts: ['high'], default_effort: 'high' } })!
   const created: any[] = []
-  const contexts: any[] = []
   const session = { ...fakeSession(), systemPrompt: 'parent prompt', agent: {
-    streamFn: (_model: unknown, context: unknown) => { contexts.push(context) },
+    transformContext: undefined as any,
     beforeToolCall: undefined as any,
   } }
   const sdk = { ...fakeSdk(), createAgentSession: async (args: any) => { created.push(args); return { session } } }
@@ -547,8 +545,8 @@ test('memory forks pin effective metadata and system prompt, and refresh their t
     expect(recorded.options.modelCard).toBe(card)
     expect(created[0].thinkingLevel).toBe('high')
     expect(catalogReads).toBe(0)
-    session.agent.streamFn({}, { systemPrompt: 'reloaded project prompt' })
-    expect(contexts[0].systemPrompt).toBe('parent frozen prompt')
+    const messages = await session.agent.transformContext([{ role: 'system', content: 'reloaded project prompt', timestamp: 1 }])
+    expect(messages[0].content).toBe('parent frozen prompt')
     expect(await session.agent.beforeToolCall({ toolCall: { name: 'write' }, args: {} })).toMatchObject({ block: true })
     const next = await manager.startTurn({ ...startupArgs, model: 'model', effort: 'high', modelCard: card,
       beforeToolCall: async () => ({ block: true, reason: 'zero reads left' }) })

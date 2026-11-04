@@ -7,6 +7,7 @@ import { createExecutableResolver } from "./resolver"
 import { knownInstallDirectories } from "./discovery-paths"
 import { readSdkInstallation } from "./sdk-installation"
 import { executableLauncher } from "./launcher"
+import { readPiInstallation } from "./pi-installation"
 
 let home: string
 let env: Record<string, string>
@@ -63,21 +64,53 @@ describe("engine executable discovery (isolated HOME, PATH and SDK)", () => {
     expect(await lines()).toEqual([])
   })
 
-  test("desktop discovers Pi's local SDK and rejects incompatible installations", async () => {
-    env.MEMOSYNC_EXTERNAL_AGENTS = "1"
-    const root = join(home, "global/node_modules/@mariozechner/pi-coding-agent")
-    const entry = await cli(join(root, "dist/cli.js"), "0.73.1")
-    await file(join(root, "dist/index.js"), "export const local = true", 0o600)
-    const metadata = join(root, "package.json")
-    await file(metadata, JSON.stringify({ name: "@mariozechner/pi-coding-agent", version: "0.73.1", main: "dist/index.js" }), 0o600)
-    // A JS CLI is launched through a runtime. This isolated shim executes the fixture.
-    await file(join(root, "dist/node"), '#!/bin/sh\nexec /bin/sh "$@"\n')
-    const r = resolver()
-    expect(await r.resolveEngineExecutable("pi", { executablePath: entry }, env))
-      .toMatchObject({ state: "ready", path: entry, source: "configured", version: "0.73.1" })
-    await file(metadata, JSON.stringify({ name: "@mariozechner/pi-coding-agent", version: "0.72.0" }), 0o600)
-    expect(await r.resolveEngineExecutable("pi", { executablePath: entry }, env))
-      .toMatchObject({ state: "incompatible", source: "configured" })
+  describe("desktop Pi installations", () => {
+    const install = async (name: string, version: string) => {
+      const root = join(home, "global/lib/node_modules", name)
+      const entry = await cli(join(root, "dist/cli.js"), version)
+      await file(join(root, "dist/index.js"), "export const local = true", 0o600)
+      await file(join(root, "package.json"), JSON.stringify({ name, version, main: "dist/index.js" }), 0o600)
+      // A JS CLI is launched through a runtime. This isolated shim executes the fixture.
+      await file(join(root, "dist/node"), '#!/bin/sh\nexec /bin/sh "$@"\n')
+      return entry
+    }
+    const resolvePi = (entry: string) => resolver().resolveEngineExecutable("pi", { executablePath: entry }, { ...env, MEMOSYNC_EXTERNAL_AGENTS: "1" })
+
+    test("the minimum and newer 1.x releases are ready", async () => {
+      for (const version of ["1.3.0", "1.5.0"]) {
+        const entry = await install("@earendil-works/pi-coding-agent", version)
+        expect(await resolvePi(entry)).toMatchObject({ state: "ready", path: entry, source: "configured", version, minimumVersion: "1.3.0" })
+      }
+    })
+
+    test.each([
+      ["@earendil-works/pi-coding-agent", "1.2.0", true],
+      ["@earendil-works/pi-coding-agent", "0.99.2", true],
+      ["@mariozechner/pi-coding-agent", "0.73.1", true],
+      // Newer than this integration knows is not "too old", and upgrading wouldn't help.
+      ["@earendil-works/pi-coding-agent", "2.0.0", false],
+    ] as const)("%s %s is incompatible, belowMinimum=%s", async (name, version, belowMinimum) => {
+      const result = await resolvePi(await install(name, version))
+      expect(result).toMatchObject({ state: "incompatible", source: "configured", version })
+      expect(result.belowMinimum).toBe(belowMinimum)
+    })
+
+    test("the installer's launcher resolves to its current release", async () => {
+      const root = join(home, "agent")
+      const launcher = await file(join(root, "bin/pi"), '#!/bin/sh\n# PI_MANAGED_INSTALL_ROOT\necho 1.5.0\n')
+      await file(join(root, "install/managed-install.json"), JSON.stringify({ kind: "pi-managed-install", schemaVersion: 1, layout: "releases-v1" }), 0o600)
+      await file(join(root, "install/current-version"), "1.5.0\n", 0o600)
+      const release = join(root, "install/releases/1.5.0/node_modules/@earendil-works/pi-coding-agent")
+      await file(join(release, "package.json"), JSON.stringify({ name: "@earendil-works/pi-coding-agent", version: "1.5.0", main: "dist/index.js" }), 0o600)
+      await file(join(release, "dist/index.js"), "export const local = true", 0o600)
+      expect(await resolvePi(launcher)).toMatchObject({ state: "ready", path: launcher, version: "1.5.0" })
+      expect(await readPiInstallation(launcher, env)).toEqual({ entry: join(release, "dist/index.js"), version: "1.5.0" })
+    })
+
+    test("a script that merely mentions the managed root is not an installation", async () => {
+      const script = await file(join(home, "elsewhere/bin/pi"), '#!/bin/sh\n# PI_MANAGED_INSTALL_ROOT\necho 1.5.0\n')
+      expect(await resolvePi(script)).toMatchObject({ state: "incompatible" })
+    })
   })
 
   test("missing means no candidate; Pi needs no executable", async () => {

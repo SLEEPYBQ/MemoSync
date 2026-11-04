@@ -11,6 +11,7 @@ import { executableEnvironment, legacyConnections, legacyEngineSetup, LEGACY_PI_
 import { CONNECTION_PRESETS } from "./presets"
 import { atomicJson, FileCredentialStore, readJson, type CredentialStore, type ModelAccessData } from "./storage"
 import { testEndpoint } from "./test-connection"
+import { runUpgradePlan, upgradePlan, type UpgradeRunner } from "./upgrade"
 
 export function connectionNeedsKey(connection: Pick<ApiConnection, "presetId" | "endpoints">) {
   return !CONNECTION_PRESETS.find(p => p.id === connection.presetId)?.noKey && !connection.endpoints.every(e => {
@@ -66,12 +67,15 @@ export class ModelAccessService {
   private data: ModelAccessData = { version: 1, connections: [], engines: {} }
   private legacyPi: LlmProviderSnapshot | null = null
   private statuses = {} as Record<EngineId, EngineStatus>
+  private readonly upgrades = new Map<EngineId, NonNullable<EngineStatus["upgrade"]>>()
+  private readonly runUpgrade?: UpgradeRunner
   revision = 0
   private listeners = new Set<() => void>()
   private pending: Promise<unknown> = Promise.resolve()
-  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
+  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; runUpgrade?: UpgradeRunner; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
     this.env = args.env ?? process.env
     this.resolveExecutable = args.resolveExecutable ?? resolveEngineExecutable
+    this.runUpgrade = args.runUpgrade
     this.dataDir = args.dataDir ?? getDataDir(this.env.HOME || homedir(), this.env)
     this.credentials = args.credentials ?? new FileCredentialStore(this.dataDir)
     this.readLegacyPi = args.readLegacyPi ?? (async () => normalizeLlmProviderSnapshot(readJson(getLlmProviderFilePath(this.env.HOME || homedir(), this.env), null)))
@@ -156,11 +160,43 @@ export class ModelAccessService {
     this.persist({ ...this.data, engines: { ...this.data.engines, [engine]: { access, ...(setup.executablePath !== undefined ? { executablePath: setup.executablePath } : {}) } } })
     await this.refreshExecutables()
   }) }
+  /**
+   * Upgrades outlast a command's acknowledgement, so this only starts one and
+   * the snapshot reports how it goes. The client only names the engine: what
+   * runs is decided here, from the installation that was actually found.
+   */
+  async upgradeExecutable(engine: EngineId) {
+    if (!engines.includes(engine)) throw new Error("engine-setup-invalid")
+    if (this.upgrades.get(engine)?.state === "running") return
+    const env = executableEnvironment(this.env)
+    const upgrade = await upgradePlan(engine, this.statuses[engine].executable, env)
+    if (!upgrade) throw new Error("engine-upgrade-unavailable")
+    this.setUpgrade(engine, { state: "running" })
+    void runUpgradePlan(upgrade, env, this.runUpgrade)
+      .catch(error => ({ ok: false as const, detail: error instanceof Error ? error.message : String(error) }))
+      .then(async result => {
+        this.upgrades.delete(engine)
+        await this.refreshExecutables()
+        if (!result.ok) this.setUpgrade(engine, { state: "failed", detail: result.detail })
+      })
+      .catch(() => {})
+  }
+  private setUpgrade(engine: EngineId, upgrade: NonNullable<EngineStatus["upgrade"]>) {
+    this.upgrades.set(engine, upgrade)
+    this.statuses = { ...this.statuses, [engine]: { ...this.statuses[engine], upgrade } }
+    this.changed()
+  }
   async refreshExecutables() {
     this.legacyPi = await this.readLegacyPi().catch(() => null)
+    // A failure stays on screen until the next look at the installation.
+    for (const [engine, upgrade] of this.upgrades) if (upgrade.state === "failed") this.upgrades.delete(engine)
     const entries = await Promise.all(engines.map(async engine => {
       const setup = this.setup(engine)
-      const executable = await this.resolveExecutable(engine, setup, executableEnvironment(this.env))
+      const env = executableEnvironment(this.env)
+      const found = await this.resolveExecutable(engine, setup, env)
+      const upgradeCommand = found.belowMinimum ? (await upgradePlan(engine, found, env).catch(() => undefined))?.display : undefined
+      const executable = upgradeCommand ? { ...found, upgradeCommand } : found
+      const upgrade = this.upgrades.get(engine)
       const connection = setup.access.mode === "connection" ? this.connection(setup.access.connectionId) : undefined
       const translated = connection && connectionSupport(engine, connection) === "translated"
       let problem: EngineStatus["problem"]
@@ -173,7 +209,7 @@ export class ModelAccessService {
       } else if (engine === "pi") problem = "connection-missing"
       const accountIsolated = setup.access.mode === "account" && engine !== "pi" && Boolean(this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR)
       if (!problem && setup.access.mode === "account" && engine !== "pi" && (accountIsolated || !accountSignedIn(engine, this.env))) problem = "account-signed-out"
-      return [engine, { engine, setup, executable, ready: !problem, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}), ...(accountIsolated && problem === "account-signed-out" ? { accountIsolated: true } : {}) }] as const
+      return [engine, { engine, setup, executable, ready: !problem, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}), ...(accountIsolated && problem === "account-signed-out" ? { accountIsolated: true } : {}), ...(upgrade ? { upgrade } : {}) }] as const
     }))
     this.statuses = Object.fromEntries(entries) as Record<EngineId, EngineStatus>
     this.changed()

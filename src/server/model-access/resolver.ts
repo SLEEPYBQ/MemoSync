@@ -6,7 +6,7 @@ import { knownInstallDirectories, type ExecutableEnvironment } from "./discovery
 import { executableLauncher } from "./launcher"
 import { meetsMinimumVersion, parseExecutableVersion, runExecutableProbe } from "./probe"
 import { readSdkInstallation, type SdkInstallation } from "./sdk-installation"
-import { PI_SDK_MINIMUM, readPiInstallation } from "./pi-installation"
+import { PI_SDK_MINIMUM, PiVersionError, readPiInstallation } from "./pi-installation"
 
 /** Dependency seam for tests: fake SDK and installation roots, never host CLIs. */
 export interface ResolverOptions {
@@ -16,7 +16,7 @@ export interface ResolverOptions {
 }
 
 type Source = NonNullable<ExecutableStatus["source"]>
-type ProbeStatus = Pick<ExecutableStatus, "state" | "version" | "detail">
+type ProbeStatus = Pick<ExecutableStatus, "state" | "version" | "detail" | "belowMinimum">
 
 function errorDetail(error: unknown) {
   return error instanceof Error ? error.message : "Unable to inspect executable"
@@ -50,7 +50,12 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
       const target = await realpath(file)
       if (engine === "pi") {
         try { await readPiInstallation(target, env) }
-        catch (error) { return { ...base, state: "incompatible", detail: errorDetail(error) } }
+        catch (error) {
+          return {
+            ...base, state: "incompatible", detail: errorDetail(error),
+            ...(error instanceof PiVersionError ? { version: error.version, belowMinimum: error.belowMinimum } : {}),
+          }
+        }
       }
       // Probe exactly the canonical path T2 will launch from status.path.
       const launcher = await executableLauncher(target, env)
@@ -69,7 +74,7 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
           const version = parseExecutableVersion(versionProbe.output)
           if (!version) return { state: "broken", detail: "--version did not return a semantic version" }
           if (engine === "claude" && minimumVersion && !meetsMinimumVersion(version, minimumVersion))
-            return { state: "incompatible", version, detail: `Claude ${version} is below the SDK minimum ${minimumVersion}` }
+            return { state: "incompatible", version, belowMinimum: true, detail: `Claude ${version} is below the SDK minimum ${minimumVersion}` }
           if (engine === "codex") {
             const capability = await runExecutableProbe(launcher, ["app-server", "--help"], env, timeoutMs)
             if (!capability.ok) return { state: "incompatible", version, detail: `Codex app-server is unavailable: ${capability.detail}` }

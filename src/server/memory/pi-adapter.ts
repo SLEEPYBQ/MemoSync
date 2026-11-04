@@ -3,7 +3,7 @@
 // model calls one, execute() funnels through the caller-supplied invoker, which
 // the coordinator backs with dispatchMemoryTool under engine "pi".
 import { z } from 'zod';
-import type { ToolDefinition } from '@mariozechner/pi-coding-agent';
+import type { ToolDefinition } from '@earendil-works/pi-coding-agent';
 import type { TSchema } from 'typebox';
 import type { MemoryToolSpec } from './tools';
 

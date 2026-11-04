@@ -1,7 +1,7 @@
 import { lstat, readFile, readdir, readlink, rm } from "node:fs/promises"
 import path from "node:path"
 
-const PI_PACKAGE_PREFIX = "@mariozechner/pi-"
+const PI_PACKAGE_PREFIX = "@earendil-works/pi-"
 const CLAUDE_NATIVE_PACKAGE_PREFIX = "@anthropic-ai/claude-agent-sdk-"
 const CLAUDE_CODE_PACKAGE_PREFIX = "@anthropic-ai/claude-code"
 const CODEX_PACKAGE_PREFIX = "@openai/codex"

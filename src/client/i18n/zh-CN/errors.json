@@ -149,6 +149,7 @@
   "modelAccess_connection-key-missing": "请为此连接添加 API 密钥。",
   "modelAccess_connection-protocol-unsupported": "此连接不支持所选引擎。",
   "modelAccess_engine-setup-invalid": "引擎设置无效。",
+  "modelAccess_engine-upgrade-unavailable": "这个安装无法自动升级。",
   "modelAccess_model-unavailable": "所选模型不可用。",
   "modelAccess_account-signed-out": "请登录 CLI 或选择 API 连接。隔离配置必须使用 API 连接。",
   "modelAccess_executable-missing": "未找到引擎可执行文件。",

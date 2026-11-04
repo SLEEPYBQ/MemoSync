@@ -6,18 +6,17 @@ import { executableEnvironment } from "./model-access/legacy"
 import { readPiInstallation } from "./model-access/pi-installation"
 import { pathToFileURL } from "node:url"
 import { existsSync } from "node:fs"
-import type { BashSpawnContext } from "@mariozechner/pi-coding-agent"
+import type { BashSpawnContext } from "@earendil-works/pi-coding-agent"
 import { homedir } from "node:os"
 import path from "node:path"
 import type {
-  AuthStorage,
   DefaultResourceLoader,
-  ModelRegistry,
+  ModelRuntime,
   AgentSession,
   AgentSessionEvent,
   ToolDefinition,
-} from "@mariozechner/pi-coding-agent"
-import type { Model, ThinkingLevelMap } from "@mariozechner/pi-ai"
+} from "@earendil-works/pi-coding-agent"
+import type { CredentialStore, Model, ThinkingLevelMap } from "@earendil-works/pi-ai"
 import { resolvePiEffort, toPiThinkingLevel, type RegistryModelCard } from "../shared/model-capabilities"
 import { loadRegistryModels, type RegistryModelLoader } from "./registry-models"
 import type {
@@ -34,7 +33,7 @@ import type { MemoryToolResult, MemoryToolSpec } from "./memory/tools"
 import { toPiToolDefinitions } from "./memory/pi-adapter"
 
 /**
- * Adapter for the pi coding agent (@mariozechner/pi-coding-agent), driven
+ * Adapter for the pi coding agent (@earendil-works/pi-coding-agent 1.x), driven
  * in-process through its SDK. Desktop loads the SDK from a discovered local
  * Pi installation; the CLI/web distribution retains its package dependency.
  *
@@ -66,10 +65,10 @@ import { toPiToolDefinitions } from "./memory/pi-adapter"
  * pulls several vendor SDK clients and is expensive to evaluate — paid on
  * every boot by users who only ever pick Claude. Both call sites are async.
  */
-let piSdkPromise: Promise<typeof import("@mariozechner/pi-coding-agent")> | null = null
-async function loadPiSdk(): Promise<typeof import("@mariozechner/pi-coding-agent")> {
+let piSdkPromise: Promise<typeof import("@earendil-works/pi-coding-agent")> | null = null
+async function loadPiSdk(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
   if (process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1")
-    return (piSdkPromise ??= import("@mariozechner/pi-coding-agent"))
+    return (piSdkPromise ??= import("@earendil-works/pi-coding-agent"))
   const service = getModelAccessService()
   const env = executableEnvironment(service?.env ?? process.env)
   const executable = await (service?.resolveExecutable ?? resolveEngineExecutable)("pi", service?.setup("pi"), env)
@@ -306,6 +305,49 @@ export interface PiConnection {
 }
 
 /**
+ * Every model MemoSync builds itself runs under this provider. Pi's built-in
+ * providers each serve one API whatever the model says (its "openai" sends
+ * everything to /responses), so only a provider with no base of its own honours
+ * the protocol chosen for the connection.
+ */
+const PI_REGISTRY_PROVIDER = "custom"
+
+/** Keys are set per session and never persisted, so Pi's store stays empty. */
+const emptyCredentialStore: CredentialStore = {
+  read: async () => undefined,
+  list: async () => [],
+  modify: async (_providerId, fn) => fn(undefined),
+  delete: async () => {},
+}
+
+/**
+ * A session's model can be Pi's own or one of ours, so the key has to reach
+ * both. Pi refuses to send a request with no key, but local servers don't need
+ * one and ignore what they're given.
+ */
+async function setConnectionKey(runtime: ModelRuntime, connection: PiConnection) {
+  const key = connection.apiKey || "no-key"
+  await runtime.setRuntimeApiKey(PI_REGISTRY_PROVIDER, key)
+  if (connection.provider !== PI_REGISTRY_PROVIDER) await runtime.setRuntimeApiKey(connection.provider, key)
+}
+
+/**
+ * Pi carries its prompt in the transcript's system messages. Replace their text
+ * so a branch reuses its parent's prompt byte for byte and its prompt cache,
+ * while keeping the tool declarations those messages also hold.
+ */
+function withExactSystemPrompt<T extends { role: string }>(messages: T[], systemPrompt: string): T[] {
+  const blank = { content: "", sections: undefined }
+  const later = messages.slice(messages[0]?.role === "system" ? 1 : 0).flatMap(message => {
+    if (message.role !== "system") return [message]
+    const { toolsAdded, toolsRemoved } = message as { toolsAdded?: unknown[]; toolsRemoved?: unknown[] }
+    return toolsAdded?.length || toolsRemoved?.length ? [{ ...message, ...blank }] : []
+  })
+  const head = messages[0]?.role === "system" ? messages[0] : { role: "system", timestamp: 0 } as unknown as T
+  return [{ ...head, ...blank, content: systemPrompt }, ...later]
+}
+
+/**
  * Build a Model definition for an arbitrary model id against the registry's
  * base URL. The configured provider card controls reasoning, context and cost. Without
  * capability metadata, omit reasoning rather than inventing supported levels.
@@ -321,7 +363,7 @@ export function buildRegistryModel(connection: PiConnection, modelId: string, ca
     id: modelId,
     name: modelId,
     api: connection.protocol === "openai-responses" ? "openai-responses" : "openai-completions",
-    provider: connection.provider,
+    provider: PI_REGISTRY_PROVIDER,
     baseUrl: connection.baseUrl,
     reasoning: card?.reasoningEfforts.some(e => e !== "off") ?? true,
     thinkingLevelMap: registryThinkingMap(card, effort),
@@ -407,8 +449,7 @@ export interface StartPiTurnArgs {
 
 interface PiChatSession {
   session: AgentSession
-  authStorage: AuthStorage
-  modelRegistry: ModelRegistry
+  modelRuntime: ModelRuntime
   resourceLoader: DefaultResourceLoader
   cwd: string
   model: string
@@ -487,10 +528,10 @@ export class PiAgentManager {
     }
   }
 
-  private resolveModel(registry: ModelRegistry, connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<any> {
+  private resolveModel(runtime: ModelRuntime, connection: PiConnection, modelId: string, card?: RegistryModelCard, effort?: PiReasoningEffort): Model<any> {
     const official = !connection.protocol && ((connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === OPENROUTER_BASE_URL)
       || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1"))
-    const known = official ? registry.find(connection.provider, modelId) : undefined
+    const known = official ? runtime.getModel(connection.provider, modelId) : undefined
     if (known) {
       // A cold cache means provider defaults, even if the SDK knows the model.
       // Its usual off mapping must not turn this default into explicit "none".
@@ -520,11 +561,12 @@ export class PiAgentManager {
       && existing.connectionProtocol === args.connection.protocol
     if (existing && connectionUnchanged && existing.cwd === args.cwd
       && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
-      existing.authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
+      await setConnectionKey(existing.modelRuntime, args.connection)
+      args.signal?.throwIfAborted()
       existing.memoryInvoke = args.memoryDispatch ?? null
       existing.beforeToolCall = args.beforeToolCall
       if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
-        await existing.session.setModel(this.resolveModel(existing.modelRegistry, args.connection, args.model, args.modelCard, args.effort))
+        await existing.session.setModel(this.resolveModel(existing.modelRuntime, args.connection, args.model, args.modelCard, args.effort))
         args.signal?.throwIfAborted()
         existing.model = args.model
         existing.modelCardKey = modelCardKey
@@ -544,11 +586,12 @@ export class PiAgentManager {
 
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
     // under MemoSync's data root, and no discovery of the user's ~/.pi setup.
-    const { AuthStorage, ModelRegistry, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await this.loadSdk()
+    const { ModelRuntime, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await this.loadSdk()
     args.signal?.throwIfAborted()
-    const authStorage = AuthStorage.inMemory()
-    authStorage.setRuntimeApiKey(args.connection.provider, args.connection.apiKey)
-    const modelRegistry = ModelRegistry.inMemory(authStorage)
+    const modelRuntime = await ModelRuntime.create({ credentials: emptyCredentialStore, modelsPath: null })
+    modelRuntime.registerProvider(PI_REGISTRY_PROVIDER, { name: "MemoSync" })
+    await setConnectionKey(modelRuntime, args.connection)
+    args.signal?.throwIfAborted()
     const settingsManager = SettingsManager.inMemory()
 
     // Markdown resources (prompt templates + skills) are discovered from
@@ -610,12 +653,11 @@ export class PiAgentManager {
     const { session } = await createAgentSession({
       cwd: args.cwd,
       agentDir: this.agentDir,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       settingsManager,
       sessionManager,
       resourceLoader,
-      model: this.resolveModel(modelRegistry, args.connection, args.model, args.modelCard, args.effort),
+      model: this.resolveModel(modelRuntime, args.connection, args.model, args.modelCard, args.effort),
       thinkingLevel: toPiThinkingLevel(args.effort),
       tools: [...builtinToolNames, ...memorySpecs.map((spec) => spec.name)],
       customTools,
@@ -628,8 +670,7 @@ export class PiAgentManager {
 
     const chatSession: PiChatSession = {
       session,
-      authStorage,
-      modelRegistry,
+      modelRuntime,
       resourceLoader,
       cwd: args.cwd,
       model: args.model,
@@ -645,8 +686,10 @@ export class PiAgentManager {
     }
     if (session.agent) {
       if (args.systemPrompt !== undefined) {
-        const originalStream = session.agent.streamFn
-        session.agent.streamFn = (model, context, options) => originalStream(model, { ...context, systemPrompt: args.systemPrompt }, options)
+        const systemPrompt = args.systemPrompt
+        const previousTransform = session.agent.transformContext
+        session.agent.transformContext = async (messages, signal) =>
+          withExactSystemPrompt(previousTransform ? await previousTransform(messages, signal) : messages, systemPrompt)
       }
       const previousToolHook = session.agent.beforeToolCall
       session.agent.beforeToolCall = async (context, signal) => {

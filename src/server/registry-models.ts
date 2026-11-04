@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto"
-import type { Model } from "@mariozechner/pi-ai"
+import type { Model } from "@earendil-works/pi-ai"
 import { PI_REASONING_OPTIONS, type LlmProviderKind, type PiReasoningEffort } from "../shared/types"
 import type { RegistryModelCard } from "../shared/model-capabilities"
 import { loadModelsDevCatalog, type ModelsDevCatalog } from "./models-dev"
@@ -175,8 +175,8 @@ async function bundledModelCards(connection: RegistryConnection): Promise<Regist
   const official = (connection.provider === "openrouter" && connection.baseUrl.replace(/\/+$/, "") === "https://openrouter.ai/api/v1")
     || (connection.provider === "openai" && connection.baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1")
   if (!official) return []
-  const { getModels, getSupportedThinkingLevels } = await import("@mariozechner/pi-ai")
-  return getModels(connection.provider as "openai" | "openrouter").map(model => piModelCard(model, getSupportedThinkingLevels(model)))
+  const [{ getBuiltinModels }, { getSupportedThinkingLevels }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("@earendil-works/pi-ai")])
+  return getBuiltinModels(connection.provider as "openai" | "openrouter").map(model => piModelCard(model, getSupportedThinkingLevels(model)))
 }
 
 export const loadRegistryModels = createRegistryModelLoader()
