@@ -83,9 +83,10 @@ function formatInputValue(value: unknown) {
 }
 
 /** What a tool was asked and what came back, as one card rather than two labelled boxes. */
-function ToolExchange({ command, background, input, hasResult, result, isError, copyText }: {
+function ToolExchange({ command, background, timeoutMs, input, hasResult, result, isError, copyText }: {
   command?: string
   background: boolean
+  timeoutMs?: number
   input?: object
   hasResult: boolean
   result: string
@@ -114,10 +115,12 @@ function ToolExchange({ command, background, input, hasResult, result, isError, 
         <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words px-3 py-2 pr-9 text-foreground/90">
           <span aria-hidden className="select-none text-muted-foreground">$ </span>{command}
           {background ? <span className="ml-2 select-none text-muted-foreground">{t("chat:background")}</span> : null}
+          {timeoutMs ? <span className="ml-2 select-none text-muted-foreground">{t("chat:timeout")}{timeoutMs}{t("chat:ms")}</span> : null}
         </pre>
       ) : null}
       {fields.length > 0 ? (
-        <dl className="grid max-h-40 grid-cols-[auto_minmax(0,1fr)] gap-x-3 overflow-auto px-3 py-2 pr-9">
+        // Shown field by field, but an audit may quote the input as the tool received it.
+        <dl data-evidence-text={JSON.stringify(input, null, 2)} className="grid max-h-40 grid-cols-[auto_minmax(0,1fr)] gap-x-3 overflow-auto px-3 py-2 pr-9">
           {fields.map(([key, value]) => (
             <Fragment key={key}>
               <dt className="select-none text-muted-foreground">{key}</dt>
@@ -201,6 +204,7 @@ export function ToolCallExpandedContent({ message }: { message: ProcessedToolCal
         <ToolExchange
           command={isBashTool ? message.input.command : undefined}
           background={isBashTool && Boolean(message.input.runInBackground)}
+          timeoutMs={isBashTool ? message.input.timeoutMs : undefined}
           input={isBashTool ? undefined : message.input}
           hasResult={hasResult}
           result={resultText}

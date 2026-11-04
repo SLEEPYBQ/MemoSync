@@ -107,6 +107,17 @@ describe("the tool trace", () => {
     expect(html).not.toContain("{")
   })
 
+  test("a grep's input can still be found by the audit's quote of it", () => {
+    const grep = { kind: "tool", toolKind: "grep", toolName: "Grep", toolId: "g", id: "g", input: { pattern: "needle" }, result: "a.ts", timestamp: "2026-09-10T00:00:00Z" } as ProcessedToolCall
+    expect(renderToStaticMarkup(<ToolCallExpandedContent message={grep} />)).toContain("data-evidence-text")
+  })
+
+  test("a command's timeout stays visible", () => {
+    const timed = bash("d")
+    ;(timed.input as { timeoutMs?: number }).timeoutMs = 5000
+    expect(renderToStaticMarkup(<ToolCallExpandedContent message={timed} />)).toContain("5000")
+  })
+
   test("a command that printed nothing says so", () => {
     expect(renderToStaticMarkup(<ToolCallExpandedContent message={bash("d", { result: "" })} />)).toContain("No output")
   })
