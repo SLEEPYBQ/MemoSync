@@ -12,6 +12,8 @@ import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
 import { CandidateDismissalTransitionError, RevisionConflictError } from './MemoryStore';
 import { rankMemories } from './retrieval';
+import { handleNativeMemoryRequest } from './native-routes';
+import type { NativeMemoryImportService } from './native-import';
 import type { ReviseInjectionService } from './revise-injection';
 import type { SanitizeService } from './sanitize';
 import type { TransferService } from './transfer';
@@ -21,6 +23,7 @@ import type { UsePlanService } from './use-plan';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
+  nativeMemory?: NativeMemoryImportService;
   transfer?: TransferService | null;
   sanitize?: SanitizeService | null;
   /** Maintenance actions used by the in-chat Checkup and Board conflict resolution. */
@@ -110,6 +113,8 @@ export async function handleMemoryRequest(
 ): Promise<Response | null> {
   const { pathname } = url;
   if (pathname !== '/api/memories' && !pathname.startsWith('/api/memories/')) return null;
+  const nativeResponse = await handleNativeMemoryRequest(req, url, services.nativeMemory);
+  if (nativeResponse) return nativeResponse;
   if (pathname === '/api/memories/summary' || pathname.startsWith('/api/memories/summary/')) {
     return fail(404, 'NOT_FOUND', 'route not found');
   }

@@ -75,6 +75,43 @@ async function collectStream(stream: AsyncIterable<any>) {
   return items
 }
 
+describe('Codex branch runtime isolation', () => {
+  test.each(['credentials', 'native-args', 'tools', 'sandbox', 'external-tools', 'no-tools', 'policy'] as const)('reuses only an identical launch and isolates %s changes', async change => {
+    const children: FakeCodexProcess[] = [];
+    const manager = new CodexAppServerManager({ spawnProcess: () => {
+      const child = new FakeCodexProcess((message, process) => {
+        if (message.method === 'initialize') process.writeServerMessage({ id: message.id, result: {} });
+        if (message.method === 'config/read') process.writeServerMessage({ id: message.id, result: { config: {} } });
+        if (message.method === 'thread/start') process.writeServerMessage({ id: message.id, result: { thread: { id: `child-${children.length}` } } });
+      });
+      children.push(child);
+      return child as never;
+    } });
+    const original = { chatId: 'branch-isolation', cwd: '/tmp', model: 'gpt-5.4', sessionToken: null,
+      runtime: structuredClone(explicitRuntime) };
+    try {
+      await manager.startSession(original);
+      await manager.startSession(original);
+      expect(children).toHaveLength(1);
+      const next: Parameters<CodexAppServerManager['startSession']>[0] = structuredClone(original);
+      if (change === 'credentials') next.runtime!.env.MEMOSYNC_MODEL_API_KEY = 'synthetic-other';
+      if (change === 'native-args') next.runtime!.args = ['app-server', '-c', 'model_context_window=123456'];
+      if (change === 'tools') next.dynamicTools = [{ type: 'function', name: 'propose_memory', description: 'proposal', inputSchema: { type: 'object' } }];
+      if (change === 'sandbox') next.sandbox = 'read-only';
+      if (change === 'external-tools') next.disableExternalTools = true;
+      if (change === 'no-tools') next.disableTools = true;
+      if (change === 'policy') next.executionPolicy = { engine: 'codex', approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write' };
+      await manager.startSession(next);
+      expect(children).toHaveLength(2);
+      expect(children[0]!.killed).toBe(true);
+      await manager.startSession(next);
+      expect(children).toHaveLength(2);
+      await manager.startSession(original);
+      expect(children).toHaveLength(3);
+    } finally { await manager.stopAll(); }
+  });
+});
+
 describe("Codex developer context delivery", () => {
   const session = { chatId: "context", cwd: "/tmp", model: "gpt-6-astra", sessionToken: null, runtime: explicitRuntime }
   const turnArgs = { chatId: session.chatId, model: session.model, content: "USER", effort: "high" as const, planMode: false, onToolRequest: async () => ({}) }

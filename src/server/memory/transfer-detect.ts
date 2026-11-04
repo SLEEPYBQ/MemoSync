@@ -10,6 +10,7 @@
 import { memoryTransferSchema } from './branch-schemas';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
+import { compileMemoryView } from './view';
 import type { SessionClockEntry } from './maintenance';
 import type { MemoryItem, MemoryScope } from './types';
 import type { TransferDecoding, TransferEncoding, TransferService } from './transfer';
@@ -43,6 +44,7 @@ export interface TransferTaskContext extends TransferSourceContext {
   taskText: string;
   /** Prior turns only; taskText is supplied separately. */
   recentContext?: string;
+  policyKey?: string;
 }
 
 export interface TransferTaskResult {
@@ -59,7 +61,7 @@ export interface TransferTaskOptions {
 
 export interface TransferDetectService {
   /** Full Encode/relevance/Decode prompt, with no preparation sidecars. */
-  buildTaskBranchPrompt?(ctx: TransferTaskContext): { prompt: string; dependencyKey: string; schema?: Record<string, unknown>; deltaSchema?: Record<string, unknown>; constraints?: string };
+  buildTaskBranchPrompt?(ctx: TransferTaskContext): import('./branch-pipeline').BranchRequest;
   /** Validate full branch proposals against the exact source and target snapshot. */
   materializeTaskFromBranch?(ctx: TransferTaskContext, raw: Record<string, unknown>, dependencyKey: string): Promise<TransferTaskResult | null>;
   /** Synchronous shelf probe used only to decide whether a slow cold-start
@@ -351,10 +353,7 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
       ...(ctx.projectId ? memory.store.list({ scope: 'project', projectId: ctx.projectId, status: 'active' }) : []),
       ...(ctx.sessionId ? memory.store.list({ scope: 'session', sessionId: ctx.sessionId, status: 'active' }) : []),
     ];
-    const key = items
-      .map((item) => `${item.id}:${item.version}:${item.scope}:${item.projectId ?? ''}:${item.sessionId ?? ''}`)
-      .sort()
-      .join('|');
+    const key = compileMemoryView(memory, items, items, ctx.projectId, ctx.sessionId).revision;
     return { items, key };
   }
 
@@ -368,7 +367,9 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
     return {
       input: { task: ctx.taskText, memories: target.items, sources, projectId: ctx.projectId, projectTitle: ctx.projectTitle },
       key: JSON.stringify({ task: ctx.taskText, projectId: ctx.projectId, projectTitle: ctx.projectTitle,
-        target: target.key, sources: sources.map((source) => [source.item.id, source.item.version, source.profileKey]) }),
+        policyKey: ctx.policyKey ?? '', target: target.key,
+        sourceView: compileMemoryView(memory, sources.map(source => source.item), [], ctx.projectId, ctx.sessionId).revision,
+        sources: sources.map((source) => [source.item.id, source.item.version, source.profileKey]) }),
       targetKey: target.key,
     };
   }
@@ -441,6 +442,7 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
       const sources = snapshot.input.sources.map(source => ({ sourceId: source.item.id, sourceVersion: source.item.version }));
       return {
         prompt: buildTransferBranchPrompt(snapshot.input), dependencyKey: snapshot.key,
+        ...(!sources.length ? { skip: { raw: { suggestions: [] }, reason: 'no-valid-sources' } } : {}),
         schema: memoryTransferSchema(sources), deltaSchema: memoryTransferSchema(sources, true),
         constraints: sources.length
           ? `Only these source snapshots may be transferred: ${JSON.stringify(sources)}. The task and target store are not additional sources.`

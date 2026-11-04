@@ -69,6 +69,34 @@ describe('provider branch stage contracts', () => {
     expect(sidecarCalls).toBe(0);
   });
 
+  it.each(['relation', 'scope', 'status', 'exclusion', 'policy', 'task'] as const)('rejects C/T/M results from a different approved view (%s)', async change => {
+    const a = memory.store.create({ content: 'Use integer cents', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+    const b = memory.store.create({ content: 'Validate monetary inputs', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+    memory.store.create({ content: 'Check ports before starting servers', type: 'lesson', scope: 'project', projectId: 'other' }, { actor: 'user' });
+    const capture = createCaptureService({ memory, callJson: forbiddenSidecar });
+    const checkup = createCheckupService({ memory, callJson: forbiddenSidecar, listRecentSessions: () => [] });
+    const transfer = createTransferDetectService({ memory, callJson: forbiddenSidecar,
+      transfer: createTransferService({ callJson: forbiddenSidecar }), listRecentSessions: () => [],
+      listProjects: () => [{ id: 'other', title: 'Other' }, { id: 'P', title: 'Current' }],
+    });
+    const ctx = { projectId: 'P', sessionId: 'S', taskText: 'Start the server', policyKey: 'review:1' };
+    const input = { ...ctx, userText: ctx.taskText };
+    const c = capture.buildBranchPrompt!(input);
+    const t = transfer.buildTaskBranchPrompt!(ctx);
+    const m = checkup.buildBranchPrompt!(ctx);
+    if (change === 'relation') memory.store.addRelation(a.id, b.id, 'conflicts_with');
+    if (change === 'scope') memory.store.update(a.id, { scope: 'project', projectId: 'P' }, { actor: 'user' });
+    if (change === 'status') memory.store.update(a.id, { status: 'archived' }, { actor: 'user' });
+    if (change === 'exclusion') memory.store.setSessionExclusions('S', [a.id]);
+    if (change === 'policy') ctx.policyKey = 'review:2';
+    if (change === 'task') ctx.taskText = 'Validate a refund';
+    const currentInput = { ...ctx, userText: ctx.taskText };
+    await expect(capture.captureFromBranch!({ candidates: [] }, currentInput, c.dependencyKey)).rejects.toThrow('inputs changed');
+    expect(await transfer.materializeTaskFromBranch!(ctx, { suggestions: [] }, t.dependencyKey)).toBeNull();
+    expect(await checkup.primeFromBranchResult!(ctx, m.dependencyKey, { conflicts: [], redundancy: [], staleness: [] })).toBeNull();
+    expect(sidecarCalls).toBe(0);
+  });
+
   it('an in-batch duplicate cannot overwrite the first candidate’s persistence route', async () => {
     const service = createCaptureService({ memory, callJson: forbiddenSidecar });
     const input = { sessionId: 'S', engine: 'codex', turn: 1, userText: 'Use integer cents.' };
@@ -200,14 +228,15 @@ describe('provider branch stage contracts', () => {
     const a = memory.store.create({ content: 'Use the temporary 2020 test endpoint', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const b = memory.store.create({ content: 'Only use the production endpoint', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const service = createCheckupService({ memory, callJson: forbiddenSidecar, listRecentSessions: () => [], now: () => new Date('2026-09-10') });
-    const request = service.buildBranchPrompt!({}, 'Run the payment integration');
-    const result = await service.primeFromBranchResult!({}, request.dependencyKey, {
+    const context = { taskText: 'Run the payment integration' };
+    const request = service.buildBranchPrompt!(context);
+    const result = await service.primeFromBranchResult!(context, request.dependencyKey, {
       conflicts: [{ memoryId: a.id, otherMemoryId: b.id, reason: 'Different required endpoints' }], redundancy: [],
       staleness: [{ memoryId: a.id, reason: 'The temporary endpoint expired in 2020' }],
     });
     expect(result!.suggestions).toHaveLength(1);
     expect(result!.suggestions[0]!.reason).toContain('expired in 2020');
-    expect(service.needsRecompute({})).toBe(false);
+    expect(service.needsRecompute(context)).toBe(false);
     expect(sidecarCalls).toBe(0);
   });
 

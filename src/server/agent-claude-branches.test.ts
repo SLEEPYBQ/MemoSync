@@ -126,7 +126,7 @@ async function fixture(provider: AgentProvider, failCandidate = false, automatic
     rmSync(directory, { recursive: true, force: true })
   })
   await coordinator.send({ type: "chat.send", chatId: chat.id, provider, model: provider === "claude" ? "glm-5.3-flash" : "gpt-5.5", content: "Return the numbers 3, 1, 2 sorted. For this project remember to use Bun for scripts." })
-  await until(() => automatic ? mainPrompts.length === 1 : calls.length === 3)
+  await until(() => automatic ? mainPrompts.length === 1 : calls.length === 2)
   if (failCandidate) candidate.reject(new Error("Candidate branch transport failed"))
   return { store, chat, memory, rule, coordinator, candidate, created, calls, disposed, mainOptions, mainPrompts, finishedMain, sidecarCalls: () => sidecarCalls }
 }
@@ -139,7 +139,7 @@ describe("coordinator provider branches", () => {
     await until(() => h.disposed.includes("audit"))
     expect(h.calls.map(call => call.purpose).sort()).toEqual(["audit", "candidate"])
     expect(h.created.every(branch => branch.parentSessionToken === "parent-after-turn")).toBe(true)
-    expect(h.created.every(branch => branch.model === "glm-5.3-flash")).toBe(true)
+    expect(h.created.every(branch => branch.model === (h.mainOptions[0]!.engineRuntime as { model: string }).model)).toBe(true)
     expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(false)
     h.candidate.resolve({ candidates: [{ proposalId: "C:1", content: "Use Bun for project scripts", type: "constraint", scope: "project", abstractionLevel: "contextual", sensitive: false, route: "new" }] })
     await until(() => h.store.getMessages(h.chat.id).some(entry => entry.kind === "memory_candidates"))
@@ -197,8 +197,8 @@ describe("coordinator provider branches", () => {
   for (const provider of ["claude"] as const) {
     test(`${provider}: concurrent preparation, reviewed-store working fork, and completed-turn audit stay out of the main context`, async () => {
       const h = await fixture(provider)
-      expect(h.calls.map((call) => call.purpose)).toEqual(["candidate", "transfer", "changes"])
-      expect(h.created.map((branch) => branch.parentSessionToken)).toEqual(["parent-before-turn", "parent-before-turn", "parent-before-turn"])
+      expect(h.calls.map((call) => call.purpose)).toEqual(["candidate", "changes"])
+      expect(h.created.map((branch) => branch.parentSessionToken)).toEqual(["parent-before-turn", "parent-before-turn"])
       expect(h.mainOptions).toHaveLength(0)
       h.candidate.resolve({ candidates: [{ proposalId: "C:1", content: "Use Bun for project scripts", type: "constraint", scope: "project", abstractionLevel: "contextual", sensitive: false, route: "new" }] })
       await until(() => h.memory.store.list({ status: "candidate" }).length === 1 && h.store.getMessages(h.chat.id).some((entry) => entry.kind === "memory_proposals_result"))
@@ -211,11 +211,11 @@ describe("coordinator provider branches", () => {
       const working = h.created.find((branch) => branch.purpose === "working-memory")!
       expect(working.parentSessionToken).toBe("parent-before-turn")
       expect(h.calls.find((call) => call.purpose === "working-memory")?.prompt).toContain("Use Bun for project scripts")
-      expect(h.calls.filter((call) => call.purpose === "transfer").map((call) => call.prompt).slice(1).join("\n")).toContain("Candidate review")
-      const changeReviews = h.calls.filter((call) => call.purpose === "changes").slice(1).map((call) => call.prompt).join("\n")
-      expect(changeReviews).toContain("Candidate review")
-      expect(changeReviews).toContain("Transfer and memory review")
-      expect(h.created.filter((branch) => branch.purpose === "transfer")).toHaveLength(1)
+      expect(h.calls.filter((call) => call.purpose === "transfer")).toHaveLength(0)
+      const changeReviews = h.calls.filter((call) => call.purpose === "changes").slice(1)
+      expect(changeReviews).toHaveLength(1)
+      expect(changeReviews[0]!.prompt).toContain("Candidate review")
+      expect(h.created.filter((branch) => branch.purpose === "transfer")).toHaveLength(0)
       expect(h.created.filter((branch) => branch.purpose === "changes")).toHaveLength(1)
       await until(() => h.store.getMessages(h.chat.id).some((entry) => entry.kind === "memory_preview_relevance"))
       const preview = h.store.getMessages(h.chat.id).find((entry) => entry.kind === "memory_preview")!

@@ -140,7 +140,7 @@ export class OpencodeAgentManager {
   }
 
   private async ensureServer(args: StartOpencodeTurnArgs, runtime: EngineRuntime): Promise<ChatServer> {
-    const key = createHash('sha256').update(JSON.stringify([args.cwd, runtime.executable.path, runtime.env, runtime.opencodeConfig, args.agent, args.executionPolicy, (args.memorySpecs ?? []).map(s => [s.name, s.description, s.schema])])).digest('hex')
+    const key = createHash('sha256').update(JSON.stringify([args.cwd, runtime, args.agent, args.executionPolicy, (args.memorySpecs ?? []).map(s => [s.name, s.description, s.schema])])).digest('hex')
     const previous = this.chats.get(args.chatId)
     if (previous?.key === key && !previous.closed) return previous
     if (previous) { this.chats.delete(args.chatId); await this.stop(previous) }

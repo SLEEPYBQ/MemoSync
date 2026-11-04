@@ -1,6 +1,6 @@
 import { BRANCH_READ_DENIAL, isOpencodeBranchRead, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
 export { isReadOnlyBranchCommand } from './branch-read-policy'
-import type { ParentLaunch } from './parent-launch'
+import { snapshotParentLaunch, type ParentLaunch } from './parent-launch'
 import { toClaudeMemoryMcpServer } from './claude-adapter'
 import { rememberRuntime, resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "../model-access/runtime"
 import { query, type Options, type Query } from "@anthropic-ai/claude-agent-sdk"
@@ -27,6 +27,10 @@ export interface MemoryBranchInput {
   subprocessEnv?: Record<string, string | undefined>
   timeoutMs?: number
   purpose?: string
+  /** One analysis attempt, including schema repairs. Count increments at the
+   * native query/startTurn boundary; hidden provider rounds are not observable.
+   * Request duration includes transport/tools, separate from host setup time. */
+  onRequest?: (event: { branchId: string; durationMs: number; hostDurationMs: number; requestCount: 0 | 1; outcome: 'completed' | 'failed' | 'cancelled' }) => void
 }
 
 export interface MemoryBranchAskOptions {
@@ -176,9 +180,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   const pi = dependencies.piManager ?? new PiAgentManager()
   const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
   const source = input.parentLaunch
-  const parent: ParentLaunch | undefined = source?.provider === "codex"
-    ? { provider: "codex", session: { ...source.session }, turn: { ...source.turn } }
-    : source ? { ...source, options: { ...source.options } } as ParentLaunch : undefined
+  const parent = source ? snapshotParentLaunch(source) : undefined
   if (parent && parent.provider !== input.provider) throw new Error("Memory branch parent engine mismatch")
   input = { ...input, parentLaunch: parent, model: parent?.provider === "codex" ? parent.turn.model : parent?.options.model ?? input.model,
     effort: parent?.provider === "codex" ? parent.turn.effort : (parent && "effort" in parent.options ? parent.options.effort : undefined) ?? input.effort }
@@ -194,6 +196,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   let activeQuery: Query | null = null
   let activeTurn: HarnessTurn | null = null
   let pending: Promise<unknown> = Promise.resolve()
+  let requestStartedAt: number | undefined
 
   const closeTransport = () => {
     activeQuery?.close()
@@ -226,6 +229,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     // Supplied environments were already isolated and routed by the main
     // coordinator. Re-sanitizing here would erase the selected provider key.
     runtime ??= await resolveEngineRuntime({ engine: "claude", model: input.model, env: input.subprocessEnv })
+    controller.signal.throwIfAborted()
     const env = { ...runtime.env }
     // A developer's global ripgrep helper must not escape the Bash gate.
     env.RIPGREP_CONFIG_PATH = ""
@@ -243,6 +247,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       return permission
     }
     const parent = input.parentLaunch?.provider === "claude" ? input.parentLaunch : undefined
+    requestStartedAt = performance.now()
     activeQuery = runClaude({
       prompt,
       options: {
@@ -253,6 +258,10 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
         tools: [...READ_TOOLS, "Bash"],
         settingSources: [],
         ...parent?.options,
+        // Review forks keep the parent's prompt/tool schemas, but never its
+        // execution privilege. All reads still pass through the branch gate.
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
         resume: sessionToken ?? input.parentSessionToken ?? undefined,
         forkSession: !sessionToken && Boolean(input.parentSessionToken),
         abortController: controller,
@@ -323,6 +332,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     controller.signal.throwIfAborted()
     if (!connection) throw new Error(MISSING_PI_CONNECTION_MESSAGE)
     let admittedReads = 0
+    requestStartedAt = performance.now()
     activeTurn = await pi.startTurn({
       signal: controller.signal,
       chatId: id,
@@ -389,8 +399,10 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
 
   async function askOpencode(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
     runtime ??= await resolveEngineRuntime({ engine: "opencode", model: input.model, env: input.subprocessEnv })
+    controller.signal.throwIfAborted()
     const branchRuntime = rememberRuntime({ ...runtime, env: { ...runtime.env, RIPGREP_CONFIG_PATH: "" } })
     const admitted = new Set<string>()
+    requestStartedAt = performance.now()
     activeTurn = await opencode.startTurn({
       chatId: id, cwd: input.localPath, content: prompt, model: input.model,
       runtime: branchRuntime, signal: controller.signal,
@@ -435,6 +447,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     if (!codexConnected) {
       // Keep endpoint/model/argv, but prevent rg from invoking an ambient --pre helper.
       if (!runtime && !dependencies.codexManager) runtime = await resolveEngineRuntime({ engine: "codex", model: input.model, env: input.subprocessEnv })
+      controller.signal.throwIfAborted()
       const branchRuntime = runtime ? rememberRuntime({ ...runtime, env: { ...runtime.env, RIPGREP_CONFIG_PATH: "" } }) : undefined
       const resumedToken = sessionToken
       const nextToken = await codex.startSession({
@@ -462,6 +475,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       codexConnected = true
     }
     if (controller.signal.aborted) throw controller.signal.reason
+    requestStartedAt = performance.now()
     activeTurn = await codex.startTurn({
       model: input.model,
       effort: input.effort as CodexReasoningEffort | undefined,
@@ -532,13 +546,29 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       controller.signal.addEventListener("abort", rejectAbort, { once: true })
     })
     try {
-      const attempt = async (text: string, requestOptions: MemoryBranchAskOptions, requestLimits: MemoryBranchBudget) => validateBranchOutput(await Promise.race([
-        input.provider === "codex" ? askCodex(text, requestOptions, controller, requestLimits)
-          : input.provider === "pi" ? askPi(text, requestOptions, controller, requestLimits)
-          : input.provider === "opencode" ? askOpencode(text, requestOptions, controller, requestLimits)
-            : askClaude(text, requestOptions, controller, requestLimits),
-        aborted,
-      ]), options.schema)
+      const attempt = async (text: string, requestOptions: MemoryBranchAskOptions, requestLimits: MemoryBranchBudget) => {
+        const started = performance.now()
+        requestStartedAt = undefined
+        let outcome: 'completed' | 'failed' | 'cancelled' = 'failed'
+        try {
+          const raw = await Promise.race([
+            input.provider === "codex" ? askCodex(text, requestOptions, controller, requestLimits)
+              : input.provider === "pi" ? askPi(text, requestOptions, controller, requestLimits)
+              : input.provider === "opencode" ? askOpencode(text, requestOptions, controller, requestLimits)
+                : askClaude(text, requestOptions, controller, requestLimits),
+            aborted,
+          ])
+          const validated = validateBranchOutput(raw, options.schema)
+          outcome = 'completed'
+          return validated
+        } finally {
+          // Observability cannot change provider success/failure or usage totals.
+          const ended = performance.now()
+          try { input.onRequest?.({ branchId: id, durationMs: requestStartedAt === undefined ? 0 : ended - requestStartedAt,
+            hostDurationMs: (requestStartedAt ?? ended) - started, requestCount: requestStartedAt === undefined ? 0 : 1,
+            outcome: controller.signal.aborted ? 'cancelled' : outcome }) } catch {}
+        }
+      }
       try {
         return await attempt(requestPrompt, options, budget)
       } catch (error) {
