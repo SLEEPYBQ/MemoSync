@@ -27,7 +27,11 @@ export function useThemeSettingsWriter(writer: SettingsWriter) {
 declare global {
   interface Window {
     /** Present only inside the desktop app (desktop/preload.cjs). */
-    memosyncDesktop?: { platform: string; setTheme: (theme: "system" | "light" | "dark") => void }
+    memosyncDesktop?: {
+      platform: string
+      setTheme: (theme: "system" | "light" | "dark") => void
+      chooseDirectory?: (defaultPath?: string) => Promise<string | null>
+    }
   }
 }
 

@@ -23,7 +23,7 @@ import {
 } from "./modelAccessUi"
 import { cn } from "../../lib/utils"
 import { SETTINGS_ICON_BUTTON_CLASS, SettingsActionButton, SettingsBadge, SettingsGroup, SettingsNotice } from "./shared"
-import { BrandTile, brandForConnection } from "../../components/brand/BrandIcon"
+import { ConnectionTile } from "../../components/brand/ConnectionTile"
 
 export function ConnectionDialog({
   connection,
@@ -129,7 +129,7 @@ export function ConnectionDialog({
                           aria-label={preset.name}
                           onClick={() => setEditor({ preset })}
                         >
-                          <BrandTile brand={brandForConnection(preset)} />
+                          <ConnectionTile connection={{ presetId: preset.id, name: preset.name }} />
                           <span className="min-w-0 flex-1">
                           <span className="flex items-center justify-between gap-2">
                             <span className="truncate text-[13.5px] font-medium">{preset.name}</span>
@@ -226,7 +226,7 @@ export function ConnectionsSection({
           const locked = connection.readOnly || connection.keySource === "env"
           return (
             <div key={connection.id} data-connection={connection.id} className="group/connection flex min-h-[60px] min-w-0 items-center gap-3 px-4 py-3">
-              <BrandTile brand={brandForConnection(connection)} />
+              <ConnectionTile connection={connection} />
               <div className="min-w-0 flex-1 space-y-0.5">
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <p className="break-words text-[13.5px] font-medium leading-5">{connection.name}</p>

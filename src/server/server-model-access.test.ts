@@ -41,7 +41,7 @@ test("server awaits login-shell PATH before its first executable resolution and 
     expect(snapshot).not.toHaveBeenCalled()
     release()
     started = await starting
-    expect(resolve.mock.calls.map(call => call[0]).sort()).toEqual(["claude", "codex", "pi"])
+    expect(resolve.mock.calls.map(call => call[0]).sort()).toEqual(["claude", "codex", "opencode", "pi"])
     expect(snapshot).toHaveBeenCalled()
   } finally {
     release()

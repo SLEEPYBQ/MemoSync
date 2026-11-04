@@ -38,7 +38,7 @@ import { BrandTile, ENGINE_BRANDS } from "../../components/brand/BrandIcon"
 import { cn } from "../../lib/utils"
 import { CONNECTION_FIELD_CLASS, Hint, MODEL_ACCESS_FOCUS_CLASS } from "./modelAccessUi"
 
-const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi" }
+const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" }
 export function EngineCard({
   engine,
   status,
@@ -119,7 +119,7 @@ export function EngineCard({
             ? "brokenStatus"
             : "notReadyStatus"
   const installCommand =
-    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" : "npm install -g @openai/codex"
+    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" : engine === "opencode" ? "npm install -g opencode-ai" : "npm install -g @openai/codex"
   const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")
   const needsInstall = executable && !["ready", "not-needed"].includes(executable.state)
   const upgradeCommand = belowMinimum ? executable.upgradeCommand : undefined
@@ -252,9 +252,12 @@ export function EngineCard({
               <p>
                 {engineProblemMessage(status)}{" "}
                 {needsInstall && engine !== "pi"
-                  ? t(engine === "claude" ? "modelAccess:installClaude" : "modelAccess:installCodex")
+                  ? t(engine === "claude" ? "modelAccess:installClaude" : engine === "opencode" ? "modelAccess:installOpencode" : "modelAccess:installCodex")
                   : null}
               </p>
+              {status.problemDetail ? (
+                <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11.5px] leading-4">{status.problemDetail}</pre>
+              ) : null}
               {status.problem === "connection-key-missing" ? <p>{t("modelAccess:keyMissingFix")}</p> : null}
               {status.problem === "connection-protocol-unsupported" ? <p>{t("modelAccess:protocolFix")}</p> : null}
               {executable?.state === "incompatible" && executable.minimumVersion && !piUnsupported ? (

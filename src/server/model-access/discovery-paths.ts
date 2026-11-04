@@ -31,7 +31,7 @@ export async function knownInstallDirectories(
   const home = env.HOME || env.USERPROFILE
   if (home && isAbsolute(home)) {
     for (const suffix of [
-      ".local/bin", ".claude/local", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin",
+      ".opencode/bin", ".local/bin", ".claude/local", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin",
       ".asdf/shims", ".local/share/mise/shims", ".cargo/bin", ".deno/bin", "Library/pnpm",
       ".local/share/pnpm", ".yarn/bin", ".n/bin",
     ]) add(join(home, suffix))

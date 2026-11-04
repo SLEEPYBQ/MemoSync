@@ -193,6 +193,12 @@ function getEffectiveComposerState(
     return composerState
   }
 
+  if (activeProvider === "opencode") return {
+    provider: "opencode",
+    model: providerDefaults.opencode.model,
+    modelOptions: {},
+    planMode: false,
+  }
   if (activeProvider === "pi") return {
     provider: "pi",
     model: providerDefaults.pi.model,
@@ -324,12 +330,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       return contextWindowSnapshot
     }
 
+    const connectionModel = providerPrefs.connectionId
+      ? modelAccess?.connections.find(connection => connection.id === providerPrefs.connectionId)?.models.find(model => model.id === providerPrefs.model)
+      : undefined
+    if (connectionModel?.contextWindow) return overrideContextWindowMaxTokens(contextWindowSnapshot, connectionModel.contextWindow)
+    const model = providerConfig?.models.find(model => model.id === providerPrefs.model && !model.connectionId)
+    // Account models report their actual window in the usage snapshot. Only a
+    // selectable window needs a temporary override while that change is staged.
+    if (!model?.contextWindowOptions?.length || model.contextWindowOptions.length < 2) return contextWindowSnapshot
     const claudeModelOptions = providerPrefs.modelOptions as Extract<ComposerState, { provider: "claude" }>["modelOptions"]
-    const stagedMaxTokens = resolveClaudeContextWindowTokens(
-      normalizeClaudeContextWindow(providerPrefs.model, claudeModelOptions.contextWindow),
-    )
-    return overrideContextWindowMaxTokens(contextWindowSnapshot, stagedMaxTokens)
-  }, [contextWindowSnapshot, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
+    const selected = model.contextWindowOptions.find(option => option.id === claudeModelOptions.contextWindow) ?? model.contextWindowOptions[0]!
+    return overrideContextWindowMaxTokens(contextWindowSnapshot, resolveClaudeContextWindowTokens(selected.id))
+  }, [contextWindowSnapshot, modelAccess, providerConfig, providerPrefs.connectionId, providerPrefs.model, providerPrefs.modelOptions, providerPrefs.provider])
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const hasTextToSend = value.trim().length > 0
@@ -623,6 +635,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       modelOptions = { claude: { ...providerPrefs.modelOptions } }
     } else if (providerPrefs.provider === "pi") {
       modelOptions = { pi: { ...providerPrefs.modelOptions } }
+    } else if (providerPrefs.provider === "opencode") {
+      modelOptions = {}
     } else {
       modelOptions = { codex: { ...providerPrefs.modelOptions } }
     }

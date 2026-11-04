@@ -4,7 +4,7 @@ import { PROVIDERS } from "../../../shared/types"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
 
 describe("ChatPreferenceControls", () => {
-  test("renders codex-specific controls and can omit plan mode", () => {
+  test("omits unsupported effort controls while retaining Codex fast mode", () => {
     const html = renderToStaticMarkup(
       <ChatPreferenceControls
         availableProviders={PROVIDERS}
@@ -20,9 +20,29 @@ describe("ChatPreferenceControls", () => {
 
     expect(html).toContain("Codex")
     expect(html).toContain("GPT-5.3 Codex")
-    expect(html).toContain("XHigh")
+    expect(html).not.toContain("lucide-brain")
     expect(html).toContain("Fast Mode")
     expect(html).not.toContain("Plan Mode")
+  })
+
+  test("shows the CLI's concrete version on the selected account model", () => {
+    const html = renderToStaticMarkup(
+      <ChatPreferenceControls
+        availableProviders={PROVIDERS.map(provider => provider.id === "claude" ? {
+          ...provider,
+          defaultModel: "sonnet",
+          models: [{ id: "sonnet", label: "Sonnet 5.5", resolvedModel: "claude-sonnet-5-5", supportsEffort: false }],
+        } : provider)}
+        selectedProvider="claude"
+        model="sonnet"
+        modelOptions={{ reasoningEffort: "high", contextWindow: "200k" }}
+        onProviderChange={() => {}}
+        onModelChange={() => {}}
+        onModelOptionChange={() => {}}
+        includePlanMode={false}
+      />
+    )
+    expect(html).toContain("Sonnet 5.5")
   })
 
   test("renders DeepSeek branding, icon, and Pro controls when enabled", () => {

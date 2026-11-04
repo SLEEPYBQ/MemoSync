@@ -194,6 +194,24 @@ else {
     void backendLifecycle.waitForStop().then(() => { clearTimeout(timer); app.quit() })
     backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
   })
+  let directorySelection
+  ipcMain.handle("memosync:choose-directory", async (event, defaultPath) => {
+    const owner = mainWindow
+    if (!owner || owner.isDestroyed() || event.sender !== owner.webContents
+      || event.senderFrame !== owner.webContents.mainFrame || !isAppUrl(event.senderFrame.url, origin)) {
+      throw new Error("Directory selection is only available in the main app window")
+    }
+    if (!directorySelection) {
+      const initialPath = typeof defaultPath === "string" && defaultPath.length <= 4096
+        && !defaultPath.includes("\0") && path.isAbsolute(defaultPath) ? defaultPath : undefined
+      directorySelection = dialog.showOpenDialog(owner, {
+        properties: ["openDirectory", "createDirectory"],
+        ...(initialPath ? { defaultPath: initialPath } : {}),
+      }).then(result => result.canceled ? null : result.filePaths[0] ?? null)
+        .finally(() => { directorySelection = undefined })
+    }
+    return directorySelection
+  })
   // Follows the app's own theme setting, so the lights and the window behind the page match it.
   ipcMain.on("memosync:set-theme", (event, theme) => {
     if (event.sender !== mainWindow?.webContents) return

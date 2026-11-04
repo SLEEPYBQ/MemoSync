@@ -36,6 +36,25 @@ function entry(kind: "user_prompt" | "assistant_text", createdAt: number, extra:
 }
 
 describe("EventStore", () => {
+  test("OpenCode provider and queued selection survive log replay and snapshot reload", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject("/tmp/opencode-project")
+    const chat = await store.createChat(project.id)
+    await store.setChatProvider(chat.id, "opencode")
+    await store.enqueueMessage(chat.id, { content: "continue", provider: "opencode", model: "provider/vendor/model", modelOptions: { opencode: {} }, attachments: [] })
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(chat.id).provider).toBe("opencode")
+    expect(reloaded.getQueuedMessages(chat.id)[0]).toMatchObject({ provider: "opencode", model: "provider/vendor/model" })
+    await reloaded.compact()
+    const compacted = new EventStore(dataDir)
+    await compacted.initialize()
+    expect(compacted.requireChat(chat.id).provider).toBe("opencode")
+    expect(compacted.getQueuedMessages(chat.id)[0]?.provider).toBe("opencode")
+  })
+
   test("uses the runtime profile for the default data dir", () => {
     process.env.MEMOSYNC_RUNTIME_PROFILE = "dev"
 

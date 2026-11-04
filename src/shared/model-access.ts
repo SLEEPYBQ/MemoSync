@@ -12,7 +12,9 @@
 //
 // Native protocols take precedence; Chat translation is a fallback for Claude and Codex.
 
-export type EngineId = "claude" | "codex" | "pi"
+import type { ProviderCatalogEntry } from "./types"
+
+export type EngineId = "claude" | "codex" | "pi" | "opencode"
 
 /** Wire protocol an endpoint speaks. */
 export type ApiProtocol = "anthropic-messages" | "openai-responses" | "openai-chat"
@@ -22,11 +24,12 @@ export const ENGINE_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>
   claude: ["anthropic-messages"],
   codex: ["openai-responses"],
   pi: ["openai-chat", "openai-responses"],
+  opencode: ["openai-chat", "openai-responses", "anthropic-messages"],
 }
 
 /** Fallback protocols translated by the loopback gateway. Pi uses native endpoints. */
 export const ENGINE_TRANSLATED_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>> = {
-  claude: ["openai-chat"], codex: ["openai-chat"], pi: [],
+  claude: ["openai-chat"], codex: ["openai-chat"], pi: [], opencode: [],
 }
 
 export function connectionSupport(engine: EngineId, connection: Pick<ApiConnection, "endpoints">): "native" | "translated" | "unsupported" {
@@ -40,7 +43,7 @@ export function compatibleEndpointForEngine(engine: EngineId, connection: Pick<A
 }
 
 /** Engines that can use the agent's own sign-in. Pi has none. */
-export const ENGINES_WITH_ACCOUNT_MODE: readonly EngineId[] = ["claude", "codex"]
+export const ENGINES_WITH_ACCOUNT_MODE: readonly EngineId[] = ["claude", "codex", "opencode"]
 
 export interface ConnectionEndpoint {
   protocol: ApiProtocol
@@ -142,6 +145,10 @@ export interface EngineStatus {
   translated?: boolean
   /** The account is out of reach because this run is isolated, not because nobody signed in. */
   accountIsolated?: boolean
+  /** Connected OpenCode account models, projected without provider credentials. */
+  accountModels?: ConnectionModel[]
+  accountDefaultModel?: string
+  problemDetail?: string
   /** Why it isn't ready, as a stable code the client translates. */
   problem?:
     | "executable-missing"
@@ -151,10 +158,13 @@ export interface EngineStatus {
     | "connection-key-missing"
     | "connection-protocol-unsupported"
     | "account-signed-out"
+    | "account-config-invalid"
 }
 
 /** Snapshot published on the "model-access" WebSocket topic. */
 export interface ModelAccessSnapshot {
+  /** Refreshed with model access, including background CLI discovery on the home screen. */
+  providers?: ProviderCatalogEntry[]
   connections: ApiConnection[]
   engines: Record<EngineId, EngineStatus>
   presets: ConnectionPreset[]

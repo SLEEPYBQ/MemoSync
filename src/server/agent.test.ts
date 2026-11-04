@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
@@ -25,8 +25,9 @@ import { ModelAccessService, setModelAccessService } from "./model-access/servic
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
 import type { EngineRuntime } from "./model-access/runtime"
 
-for (const engine of ["claude", "codex", "pi"] as const) {
-  for (const payload of ["top-level", "legacy", "both"] as const) {
+for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
+  for (const payload of ["top-level", "legacy", "both", "default"] as const) {
+    if (engine === "opencode" && payload !== "top-level" && payload !== "default") continue
     test(`${engine} chat selection resolves connection B over default A (${payload})`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "chat-connection-"))
       const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir }, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
@@ -35,31 +36,79 @@ for (const engine of ["claude", "codex", "pi"] as const) {
         { protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" },
       ]
       let bootModel: string | undefined
+      let bootEffort: string | undefined
       let bootRuntime: EngineRuntime | undefined
       let piBaseUrl: string | undefined
       const bootError = new Error("test-provider-boot")
       const coordinator = new AgentCoordinator({
         store: createFakeStore() as never,
         onStateChange: () => {},
-        startClaudeSession: async args => { bootModel = args.model; bootRuntime = args.engineRuntime; throw bootError },
+        startClaudeSession: async args => { bootModel = args.model; bootEffort = args.effort; bootRuntime = args.engineRuntime; throw bootError },
         codexManager: { startSession: async (args: { model: string; runtime: EngineRuntime }) => { bootModel = args.model; bootRuntime = args.runtime; throw bootError } } as never,
+        opencodeManager: { startTurn: async (args: { model: string; runtime: EngineRuntime }) => { bootModel = args.model; bootRuntime = args.runtime; throw bootError } } as never,
         piManager: { startTurn: async (args: { model: string; connection: { baseUrl: string } }) => { bootModel = args.model; piBaseUrl = args.connection.baseUrl; throw bootError } } as never,
       })
       try {
         const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
-        const b = await service.saveConnection({ name: "B", endpoints: endpoints.map(e => ({ ...e, baseUrl: e.baseUrl.replace("1234", "5678") })), models: [{ id: "model-b" }] })
-        await service.setEngine(engine, { access: { mode: "connection", connectionId: a.id, defaultModel: "model-a" } })
+        const b = await service.saveConnection({ name: "B", endpoints: endpoints.map(e => ({ ...e, baseUrl: e.baseUrl.replace("1234", "5678") })), models: [{ id: "model-b", supportsReasoning: false }] })
+        await service.setEngine(engine, { access: { mode: "connection", connectionId: payload === "default" ? b.id : a.id, defaultModel: payload === "default" ? "model-b" : "model-a" } })
         setModelAccessService(service)
-        const modelOptions = {
+        const modelOptions = payload === "default" ? {} : {
           ...(payload !== "legacy" ? { connectionId: b.id } : {}),
           ...(payload !== "top-level" ? { [engine]: { connectionId: payload === "both" ? a.id : b.id } } : {}),
         } as ModelOptions
         // Stop at the provider boot boundary: exercise send + runtime resolution without starting a real agent.
         await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model: "model-b", modelOptions, content: "hello" })).rejects.toThrow(bootError.message)
         expect(bootModel?.replace(/\[1m\]$/, "")).toBe("model-b")
+        if (engine === "claude") expect(bootEffort).toBeUndefined()
         if (engine === "pi") expect(piBaseUrl).toBe("http://127.0.0.1:5678/v1")
         else expect(bootRuntime).toMatchObject({ connectionId: b.id, model: "model-b" })
       } finally {
+        setModelAccessService(undefined)
+        rmSync(dir, { recursive: true, force: true })
+      }
+    })
+  }
+}
+
+for (const engine of ["claude", "codex"] as const) {
+  for (const selection of ["exact", "alias", "versioned", "no-effort"] as const) {
+    test(`${engine} account ${selection} selection reaches provider boot with current CLI capabilities`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), "chat-account-model-"))
+      mkdirSync(join(dir, ".codex"))
+      writeFileSync(join(dir, ".codex", "auth.json"), JSON.stringify({ tokens: {} }))
+      writeFileSync(join(dir, ".claude.json"), JSON.stringify({ oauthAccount: {} }))
+      const id = engine === "claude" ? (selection === "versioned" ? "claude-opus-4-8" : "claude-fable-5-1[1m]") : (selection === "versioned" ? "gpt-5-codex" : "gpt-live")
+      const service = await new ModelAccessService({
+        dataDir: dir, env: { HOME: dir, CODEX_MODEL: "ambient-default" }, readLegacyPi: async () => null,
+        resolveExecutable: fakeExecutableResolver,
+        readEngineModels: async current => current === engine ? { defaultModel: id, models: [
+          { id, label: "Native", supportsEffort: true, aliases: ["resolved-wire-id"], reasoningEfforts: ["low", "max"], defaultReasoningEffort: "max" },
+          { id: "without-effort", label: "Simple", supportsEffort: false, reasoningEfforts: [] },
+        ] } : null,
+      }).initialize()
+      let launch: { model: string; effort?: string; runtime?: EngineRuntime; engineRuntime?: EngineRuntime } | undefined
+      const bootError = new Error("synthetic-boot-boundary")
+      const coordinator = new AgentCoordinator({
+        store: createFakeStore() as never, onStateChange() {},
+        startClaudeSession: async args => { launch = args; throw bootError },
+        codexManager: {
+          startSession: async (args: NonNullable<typeof launch>) => { launch = args; return "synthetic-session" },
+          startTurn: async (args: { model: string; effort?: string }) => { launch = { ...launch, ...args }; throw bootError },
+          async stopAll() {},
+        } as never,
+      })
+      try {
+        await waitFor(() => Boolean(service.accountModels(engine)))
+        setModelAccessService(service)
+        const model = selection === "alias" ? "resolved-wire-id" : selection === "no-effort" ? "without-effort" : id
+        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model, modelOptions: { [engine]: { reasoningEffort: "high" } }, content: "synthetic message" })).rejects.toThrow(bootError.message)
+        const expectedModel = selection === "no-effort" ? "without-effort" : id
+        expect(launch?.model).toBe(expectedModel)
+        expect((launch?.engineRuntime ?? launch?.runtime)?.model).toBe(expectedModel)
+        expect(launch?.effort).toBe(selection === "no-effort" ? undefined : "max")
+      } finally {
+        await coordinator.shutdownRuntime()
         setModelAccessService(undefined)
         rmSync(dir, { recursive: true, force: true })
       }
@@ -1409,7 +1458,7 @@ describe("AgentCoordinator codex integration", () => {
     ])
   })
 
-  test("maps codex model options into session and turn settings", async () => {
+  test("omits effort for a non-reasoning Codex model and retains the service tier", async () => {
     const sessionCalls: Array<{ chatId: string; sessionToken: string | null; serviceTier?: string }> = []
     const turnCalls: Array<{ effort?: string; serviceTier?: string }> = []
 
@@ -1486,7 +1535,7 @@ describe("AgentCoordinator codex integration", () => {
     await waitFor(() => store.turnFinishedCount === 1)
 
     expect(sessionCalls).toEqual([{ chatId: "chat-1", sessionToken: null, serviceTier: "fast" }])
-    expect(turnCalls).toEqual([{ effort: "xhigh", serviceTier: "fast" }])
+    expect(turnCalls).toEqual([{ effort: undefined, serviceTier: "fast" }])
   })
 
   test("approving synthetic codex ExitPlanMode starts a hidden follow-up turn and can clear context", async () => {

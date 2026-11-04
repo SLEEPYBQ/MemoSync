@@ -49,6 +49,18 @@ afterEach(() => {
 })
 
 describe("migrateChatPreferencesState", () => {
+  test("preserves native CLI IDs and effort choices in defaults and restored composers", () => {
+    for (const model of ["haiku", "fable", "claude-fable-5-1[1m]", "claude-opus-4-8"]) {
+      const preference = { model, modelOptions: { reasoningEffort: "max", contextWindow: "1m" }, planMode: false }
+      const migrated = migrateChatPreferencesState({
+        providerDefaults: { claude: preference },
+        chatStates: { existing: { provider: "claude", ...preference } },
+      })
+      expect(migrated.providerDefaults.claude).toEqual(preference)
+      expect(migrated.chatStates.existing).toEqual({ provider: "claude", ...preference })
+    }
+  })
+
   test("preserves isolated Codex provider models across a reload", () => {
     const migrated = migrateChatPreferencesState({
       providerDefaults: { codex: { model: "glm-5.3-flash" } },
@@ -60,7 +72,7 @@ describe("migrateChatPreferencesState", () => {
     expect(migrated.chatStates.existing?.model).toBe("glm-5.3-flash")
   })
 
-  test("migrates versioned Opus preferences to the official Opus alias", () => {
+  test("retains the exact versioned Opus ID in saved preferences", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -73,7 +85,7 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.claude).toEqual({
-      model: "opus",
+      model: "claude-opus-4-8",
       modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
       planMode: false,
     })
@@ -107,8 +119,7 @@ describe("migrateChatPreferencesState", () => {
       providerDefaults: {
         claude: {
           model: "opus",
-          // Legacy "low" tier no longer exists — falls back to the default.
-          modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
+          modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
           planMode: true,
         },
         codex: {
@@ -121,12 +132,13 @@ describe("migrateChatPreferencesState", () => {
           modelOptions: { reasoningEffort: "medium" },
           planMode: false,
         },
+        opencode: { model: "", modelOptions: {}, planMode: false },
       },
       chatStates: {},
       legacyComposerState: {
         provider: "claude",
         model: "sonnet",
-        modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
+        modelOptions: { reasoningEffort: "max", contextWindow: "1m" },
         planMode: false,
       },
     })
@@ -152,16 +164,16 @@ describe("migrateChatPreferencesState", () => {
       },
     })
 
-    expect(migrated.providerDefaults.claude.modelOptions).toEqual({ reasoningEffort: "high", contextWindow: "1m" })
+    expect(migrated.providerDefaults.claude.modelOptions).toEqual({ reasoningEffort: "low", contextWindow: "1m" })
     expect(migrated.chatStates.chatA).toEqual({
       provider: "claude",
-      model: "deepseek-v4-flash",
+      model: "haiku",
       modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
       planMode: false,
     })
   })
 
-  test("normalizes legacy Codex aliases without forcing the default model", () => {
+  test("retains legacy Codex selections for resolution against the server catalog", () => {
     const migrated = migrateChatPreferencesState({
       defaultProvider: "last_used",
       providerDefaults: {
@@ -174,7 +186,7 @@ describe("migrateChatPreferencesState", () => {
     })
 
     expect(migrated.providerDefaults.codex).toEqual({
-      model: "gpt-5.3-codex",
+      model: "gpt-5-codex",
       modelOptions: { reasoningEffort: "low", fastMode: true },
       planMode: false,
     })
@@ -322,9 +334,8 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "sonnet",
-      // "low" is not a DeepSeek tier — normalized to the "high" default.
-      modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
+      model: "claude-sonnet-4-6",
+      modelOptions: { reasoningEffort: "low", contextWindow: "1m" },
       planMode: true,
     })
     expect(store.getComposerState("chat-b")).toEqual({
@@ -348,7 +359,7 @@ describe("chat preference store", () => {
 
     expect(store.getComposerState("chat-a")).toEqual({
       provider: "claude",
-      model: "deepseek-v4-flash",
+      model: "haiku",
       modelOptions: { reasoningEffort: "high", contextWindow: "1m" },
       planMode: false,
     })

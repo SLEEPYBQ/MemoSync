@@ -34,6 +34,7 @@ export function engineProblemMessage(status: EngineStatus) {
     "connection-key-missing": "modelAccess:keyMissing",
     "connection-protocol-unsupported": "modelAccess:protocolUnsupported",
     "account-signed-out": "modelAccess:signedOut",
+    "account-config-invalid": "modelAccess:accountConfigInvalid",
   } as const
   return t(status.problem ? messages[status.problem] : "modelAccess:unknownStatus")
 }

@@ -42,6 +42,10 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
   // path field can be mistaken for a path on the user's own computer.
   const [dirs, setDirs] = useState<WorkspaceDirsSnapshot | null>(null)
   const [dirsLoading, setDirsLoading] = useState(false)
+  const [pickingFolder, setPickingFolder] = useState(false)
+  const [pickerError, setPickerError] = useState<string | null>(null)
+  const chooseDirectory = typeof window === "undefined" ? undefined : window.memosyncDesktop?.chooseDirectory
+  const pickerSession = useRef(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const existingInputRef = useRef<HTMLInputElement>(null)
 
@@ -62,6 +66,9 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
   }, [])
 
   useEffect(() => {
+    pickerSession.current += 1
+    setPickingFolder(false)
+    setPickerError(null)
     if (open) {
       setTab("new")
       setName("")
@@ -77,9 +84,9 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
         if (tab === "new") inputRef.current?.focus()
         else existingInputRef.current?.focus()
       }, 0)
-      if (tab === "existing" && dirs === null) void browse()
+      if (tab === "existing" && dirs === null && !chooseDirectory) void browse()
     }
-  }, [browse, dirs, tab, open])
+  }, [browse, chooseDirectory, dirs, tab, open])
 
   const kebab = toKebab(name)
   const newPath = kebab ? `${DEFAULT_NEW_PROJECT_ROOT}/${kebab}` : ""
@@ -103,6 +110,23 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
     void browse(target)
   }
 
+  const pickNativeDirectory = async () => {
+    if (!chooseDirectory || pickingFolder) return
+    const session = pickerSession.current
+    setPickingFolder(true)
+    setPickerError(null)
+    try {
+      const selected = await chooseDirectory(trimmedExisting || undefined)
+      if (session !== pickerSession.current || !selected) return
+      setExistingPath(selected)
+      setTab("existing")
+    } catch {
+      if (session === pickerSession.current) setPickerError(t("chat:folderPickerFailed"))
+    } finally {
+      if (session === pickerSession.current) setPickingFolder(false)
+    }
+  }
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent size="sm">
@@ -119,6 +143,19 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
             className="w-full mb-2"
             optionClassName="flex-1 justify-center"
           />
+
+          {chooseDirectory ? (
+            <Button
+              variant="secondary"
+              className="w-full justify-start rounded-lg"
+              disabled={pickingFolder}
+              onClick={() => void pickNativeDirectory()}
+            >
+              {pickingFolder ? <Loader2 className="size-4 animate-spin" /> : <Folder className="size-4 text-muted-foreground" />}
+              {t("chat:chooseExistingFolder")}
+            </Button>
+          ) : null}
+          {pickerError ? <p role="alert" className="text-sm text-destructive">{pickerError}</p> : null}
 
           {tab === "new" ? (
             <div className="space-y-2">
@@ -156,7 +193,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
                 }}
                 placeholder="~/Projects/my-app"
               />
-              <div className="overflow-hidden rounded-lg border border-border">
+              {!chooseDirectory ? <div className="overflow-hidden rounded-lg border border-border">
                 <div className="flex items-center gap-2 border-b border-border bg-muted/40 px-2.5 py-1.5">
                   <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
                     {dirs?.path ?? "…"}
@@ -189,9 +226,10 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
                     <p className="px-2.5 py-1.5 text-xs text-muted-foreground">{t("chat:noFoldersHereYet")}</p>
                   ) : null}
                 </div>
-              </div>
+              </div> : null}
               <p className="text-xs text-muted-foreground">
-                {t("chat:youAreBrowsingThe")}<strong>{t("chat:workspaceMachine")}</strong> {t("chat:theRemoteEnvironmentWhereTheAgentRunsNotThisComputer")}</p>
+                {chooseDirectory ? t("chat:localFolderHint") : <>{t("chat:youAreBrowsingThe")}<strong>{t("chat:workspaceMachine")}</strong> {t("chat:theRemoteEnvironmentWhereTheAgentRunsNotThisComputer")}</>}
+              </p>
             </div>
           )}
         </DialogBody>

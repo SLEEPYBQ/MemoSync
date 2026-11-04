@@ -5,6 +5,15 @@ import { CONNECTION_PRESETS } from "./presets"
 export type RuntimeEnv = Readonly<Record<string, string | undefined>>
 export const LEGACY_PI_ID = "env-llm-provider"
 
+/** Account discovery and connection launches share the same ambient-env boundary. */
+export function cleanConnectionEnv(base: RuntimeEnv): Record<string, string | undefined> {
+  const env = { ...base }
+  for (const key of Object.keys(env)) {
+    if (/^(ANTHROPIC_|CLAUDE_|CODEX_|OPENAI_|CHATGPT_)/.test(key) || key === "CLAUDECODE" || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET)$/.test(key) || key === "MEMOSYNC_CODEX_API_KEY") delete env[key]
+  }
+  return env
+}
+
 export function legacyConnections(env: RuntimeEnv, pi?: LlmProviderSnapshot | null): ApiConnection[] {
   const out: ApiConnection[] = []
   const add = (id: string, preset: string, key: string, endpoints?: ApiConnection["endpoints"], models?: ApiConnection["models"]) => {

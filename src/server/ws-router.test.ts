@@ -124,6 +124,7 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
   },
   defaultProvider: "last_used",
   providerDefaults: {
+    opencode: { model: "", modelOptions: {}, planMode: false },
     claude: {
       model: "claude-opus-4-8",
       modelOptions: {

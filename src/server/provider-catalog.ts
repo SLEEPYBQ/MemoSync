@@ -61,17 +61,26 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
     const setup = access.setup(provider.id)
     const connections = access.connections().filter(c => compatibleEndpointForEngine(provider.id, c))
     const models: ProviderModelOption[] = connections.flatMap(c => c.models.map(m => ({
-      id: m.id, label: m.label || m.id, supportsEffort: m.supportsReasoning ?? true,
+      id: m.id, label: m.label || m.id, supportsEffort: provider.id === "opencode" ? false : m.supportsReasoning ?? true,
       connectionId: c.id, vendor: c.name,
       ...(provider.id === "claude" && (m.contextWindow ?? 0) >= 1_000_000 ? { contextWindowOptions: [{ id: "1m" as const, label: "1M" }] } : {}),
     })))
     if (setup.access.mode === "account") {
-      if (provider.id === "claude") models.unshift(...[["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]].map(([id, label]) => ({ id: id!, label: label!, supportsEffort: true })))
-      if (provider.id === "codex") models.unshift(...HARD_CODED_CODEX_MODELS)
+      // What the engine itself reports; these fixed lists only cover the time before that.
+      const live = access.accountModels(provider.id)
+      if (live) models.unshift(...live.models)
+      else if (provider.id === "claude") models.unshift(...[["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]].map(([id, label]) => ({ id: id!, label: label!, supportsEffort: true })))
+      else if (provider.id === "codex") models.unshift(...HARD_CODED_CODEX_MODELS)
+      else if (provider.id === "opencode") models.unshift(...(access.getSnapshot().engines.opencode?.accountModels ?? []).map(m => ({ id: m.id, label: m.label || m.id, supportsEffort: false })))
     }
     const connectionId = setup.access.mode === "connection" ? setup.access.connectionId : undefined
     const selected = connections.find(c => c.id === connectionId)
-    const defaultModel = setup.access.mode === "connection" ? setup.access.defaultModel || selected?.models[0]?.id || "" : provider.id === "claude" ? "sonnet" : provider.defaultModel
+    const live = access.accountModels(provider.id)
+    const defaultModel = setup.access.mode === "connection"
+      ? setup.access.defaultModel || selected?.models[0]?.id || ""
+      : provider.id === "opencode"
+        ? access.getSnapshot().engines.opencode?.accountDefaultModel || ""
+        : live?.defaultModel || live?.models[0]?.id || (provider.id === "claude" ? "sonnet" : provider.defaultModel)
     return { ...provider, models, defaultModel }
   })
   return SERVER_PROVIDERS.map((provider) => {
@@ -155,8 +164,10 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   const catalog = deployedProviders().find((entry) => entry.id === provider) ?? getServerProviderCatalog(provider)
   // Any non-empty registry id is a valid pi model — only missing values fall
   // back to the catalog default.
+  if (provider === "opencode") return model?.trim() || catalog.defaultModel
   if (provider === "pi") return normalizePiModelId(model, catalog.defaultModel)
-  if (model && catalog.models.some((candidate) => candidate.id === model)) return model
+  const match = model && catalog.models.find((candidate) => candidate.id === model || candidate.aliases?.includes(model))
+  if (match) return match.id
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
   if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
     return normalizedModel

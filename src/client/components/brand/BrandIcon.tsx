@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import type { EngineId } from "../../../shared/model-access"
 import { cn } from "../../lib/utils"
 import { BRAND_SVGS, type BrandId } from "./brand-svgs"
@@ -38,10 +39,13 @@ export function BrandTile({
   brand,
   size = "md",
   className,
+  children,
 }: {
   brand: BrandId | "pi" | null
   size?: "sm" | "md"
   className?: string
+  /** Something other than a known brand to show on the tile. */
+  children?: ReactNode
 }) {
   return (
     <span
@@ -51,12 +55,12 @@ export function BrandTile({
         className,
       )}
     >
-      {brand === "pi" ? <PiMark /> : brand ? <BrandMark brand={brand} /> : <span className="size-2 rounded-full bg-muted-foreground/40" />}
+      {children ?? (brand === "pi" ? <PiMark /> : brand ? <BrandMark brand={brand} /> : <span className="size-2 rounded-full bg-muted-foreground/40" />)}
     </span>
   )
 }
 
-export const ENGINE_BRANDS: Record<EngineId, BrandId | "pi"> = { claude: "claude", codex: "openai", pi: "pi" }
+export const ENGINE_BRANDS: Record<EngineId, BrandId | "pi"> = { claude: "claude", codex: "openai", pi: "pi", opencode: "opencode" }
 
 /** Best-effort vendor mark for a connection, from its preset id or name. */
 export function brandForConnection(connection: { presetId?: string; name: string; id?: string }): BrandId | null {
@@ -78,4 +82,22 @@ export function brandForConnection(connection: { presetId?: string; name: string
     [/openai|chatgpt/, "openai"],
   ]
   return rules.find(([pattern]) => pattern.test(key))?.[1] ?? null
+}
+
+/** The maker of a model, going by the id every vendor and relay keeps in its name. */
+export function brandForModel(modelId: string): BrandId | null {
+  const id = modelId.toLowerCase()
+  const rules: [RegExp, BrandId][] = [
+    [/claude|opus|sonnet|haiku|fable/, "claude"],
+    [/gpt|codex|(^|\/)o\d|openai/, "openai"],
+    [/deepseek/, "deepseek"],
+    [/glm|zhipu|z-ai/, "zhipu"],
+    [/kimi|moonshot/, "kimi"],
+    [/qwen/, "qwen"],
+    [/minimax/, "minimax"],
+    [/gemini/, "gemini"],
+    [/grok/, "xai"],
+    [/stepfun|(^|\/)step-/, "stepfun"],
+  ]
+  return rules.find(([pattern]) => pattern.test(id))?.[1] ?? null
 }

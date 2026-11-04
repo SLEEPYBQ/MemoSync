@@ -29,6 +29,7 @@ const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
   claude: SETTINGS_ROWS.claudeDefaults,
   codex: SETTINGS_ROWS.codexDefaults,
   pi: SETTINGS_ROWS.piDefaults,
+  opencode: SETTINGS_ROWS.opencodeDefaults,
 }
 
 /** The option a picker change sets on that provider's saved defaults, if it is one this provider has. */
@@ -158,7 +159,7 @@ export function ProvidersSection({
               preferences.setProviderDefaultPlanMode(provider, planMode)
               void save({ providerDefaults: { [provider]: { planMode } } })
             }}
-            includePlanMode={provider !== "pi"}
+            includePlanMode={provider !== "pi" && provider !== "opencode"}
             className="justify-start flex-wrap"
           />
         </div>
@@ -191,7 +192,7 @@ export function ProvidersSection({
         </SettingsGroup>
         <section id={SETTINGS_ROWS.modelEngines.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <SettingsGroup title={t("modelAccess:engines")}>
-            {(["claude", "codex", "pi"] as const).map((engine) => (
+            {(["claude", "codex", "pi", "opencode"] as const).map((engine) => (
               <EngineCard
                 key={engine}
                 engine={engine}

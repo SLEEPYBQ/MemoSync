@@ -1,4 +1,5 @@
 import { getModelAccessService, ModelAccessService, setModelAccessService } from "./model-access/service"
+import { readEngineModels } from "./model-access/engine-models"
 import { stopGateway } from "./model-access/gateway"
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
@@ -281,7 +282,7 @@ async function startLockedMemoSyncServer(
   // initialize() resolves executables and creates the first Settings snapshot.
   // Gate both that work and the HTTP/WebSocket server on the imported PATH.
   await shellPathReady
-  const modelAccess = await new ModelAccessService({ dataDir: store.dataDir }).initialize()
+  const modelAccess = await new ModelAccessService({ dataDir: store.dataDir, readEngineModels }).initialize()
   setModelAccessService(modelAccess)
   const disposeModelAccess = () => { if (getModelAccessService() === modelAccess) setModelAccessService(undefined) }
   onStartupCleanup(disposeModelAccess)

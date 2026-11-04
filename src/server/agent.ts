@@ -16,7 +16,7 @@ import type {
   QueuedChatMessage,
   TranscriptEntry,
 } from "../shared/types"
-import { resolveClaudeApiModelId } from "../shared/types"
+import { resolveClaudeApiModelId, resolveModelReasoningEffort } from "../shared/types"
 import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
@@ -61,6 +61,7 @@ import type {
 import type { MemoryItem } from "./memory/types"
 import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
 import { ensureProjectDirectory } from "./paths"
+import { OpencodeAgentManager } from "./opencode-agent"
 import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import {
   applyClaudeSdkModels,
@@ -71,6 +72,7 @@ import {
   normalizePiModelOptions,
   normalizeServerModel,
   type ClaudeSdkModelInfo,
+  deployedProviders,
 } from "./provider-catalog"
 import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, resolveOfficialClaudeEnv } from "./provider-runtime"
 import {
@@ -465,6 +467,7 @@ interface AgentCoordinatorArgs {
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
+  opencodeManager?: OpencodeAgentManager
   piManager?: PiAgentManager
   /** Injectable for tests; defaults to the Model Registry/env resolution. */
   resolvePiConnection?: () => Promise<PiConnection | null>
@@ -1569,7 +1572,7 @@ export async function startClaudeSession(args: {
     ),
     setModel: async (model: string) => {
       const bare = model.replace(/\[1m\]$/, "")
-      const selected = sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare
+      const selected = sdkRuntime.isolated ? (sdkRuntime.model.endsWith("[1m]") ? `${bare}[1m]` : bare) : model
       await q.setModel(selected)
       parentLaunch.options.model = selected
     },
@@ -1622,6 +1625,7 @@ export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
+  private readonly opencodeManager: OpencodeAgentManager
   private readonly piManager: PiAgentManager
   private readonly hasCustomPiConnection: boolean
   private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
@@ -1765,6 +1769,7 @@ export class AgentCoordinator {
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
+    this.opencodeManager = args.opencodeManager ?? new OpencodeAgentManager()
     this.piManager = args.piManager ?? new PiAgentManager()
     this.hasCustomPiConnection = Boolean(args.resolvePiConnection)
     this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
@@ -1816,7 +1821,13 @@ export class AgentCoordinator {
       get mode() { return branch.mode },
       get sessionToken() { return branch.sessionToken },
       ask: (prompt, options) => this.trackMemoryWork(args.chatId, () => branch.ask(prompt, options)),
-      dispose: () => branch.dispose(),
+      dispose: () => {
+        const cleanup = branch.dispose()
+        if (!cleanup) return
+        this.branchCleanups.add(cleanup)
+        void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => this.branchCleanups.delete(cleanup))
+        return cleanup
+      },
     } satisfies MemoryBranch
   }
 
@@ -1831,6 +1842,7 @@ export class AgentCoordinator {
 
   private readonly runtimeSelections = new Map<string, string>()
   private readonly sessionRuntimes = new Map<string, EngineRuntime>()
+  private readonly branchCleanups = new Set<Promise<void>>()
   private readonly parentLaunches = new Map<string, ParentLaunch>()
   private readonly sessionLaunches = new Map<string, ParentLaunch>()
 
@@ -3160,7 +3172,7 @@ export class AgentCoordinator {
 
   private hasIdleSession(chatId: string) {
     const claude = this.claudeSessions.get(chatId)
-    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId))
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId))
   }
 
   private idleCloseBlocked(chatId: string) {
@@ -3175,6 +3187,7 @@ export class AgentCoordinator {
       || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
         !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
       || Boolean(this.codexManager.hasPendingWork?.(chatId))
+      || Boolean(this.opencodeManager.hasPendingWork?.(chatId))
   }
 
   /** All work must be settled for a full 30 minutes, including detached memory passes. */
@@ -3200,6 +3213,7 @@ export class AgentCoordinator {
     // No await between checking and retiring: a concurrent send either owns
     // the startup reservation or sees a retired Query and waits for its pump.
     this.codexManager.stopSession(chatId)
+    this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
     if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
   }
@@ -3369,6 +3383,7 @@ export class AgentCoordinator {
     await this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
+    this.opencodeManager.closeChat(chatId)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
@@ -3399,6 +3414,8 @@ export class AgentCoordinator {
     const codexCleanup = this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     this.piManager.dispose()
+    await Promise.allSettled([...this.branchCleanups])
+    await this.opencodeManager.dispose()
     this.sessionRuntimes.clear()
     this.runtimeSelections.clear()
     await Promise.all([
@@ -3435,6 +3452,7 @@ export class AgentCoordinator {
       await attempt(() => session.session.close())
     }
     await attempt(() => this.codexManager.stopAll())
+    await attempt(() => this.opencodeManager.dispose())
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
       throw new AggregateError(errors, "Failed to stop remaining agent turns")
@@ -3474,19 +3492,29 @@ export class AgentCoordinator {
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
-    const connectionId = options.modelOptions?.connectionId ?? options.modelOptions?.[provider]?.connectionId
+    const connectionId = options.modelOptions?.connectionId ?? (provider === "opencode" ? undefined : options.modelOptions?.[provider]?.connectionId)
+    const access = getModelAccessService()?.setup(provider).access
+    const modelConnectionId = connectionId ?? (access?.mode === "connection" ? access.connectionId : undefined)
     if (provider === "claude") {
       const model = connectionId && options.model ? options.model : normalizeServerModel(provider, options.model)
       const modelOptions = normalizeClaudeModelOptions(model, options.modelOptions, options.effort)
+      const entry = deployedProviders().find(provider => provider.id === "claude")?.models.find(option => option.id === model && (modelConnectionId ? option.connectionId === modelConnectionId : !option.connectionId))
       return {
         connectionId,
-        model: resolveClaudeApiModelId(model, modelOptions.contextWindow),
-        effort: modelOptions.reasoningEffort,
+        // An account's models are the CLI's own ids. Adding [1m] to one asks for a
+        // window its list didn't offer.
+        model: !modelConnectionId && entry && !entry.contextWindowOptions?.length
+          ? model
+          : resolveClaudeApiModelId(model, modelOptions.contextWindow),
+        effort: resolveModelReasoningEffort(entry, modelOptions.reasoningEffort),
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
       }
     }
 
+    if (provider === "opencode") {
+      return { connectionId, model: options.model?.trim() || normalizeServerModel(provider), effort: undefined, serviceTier: undefined, planMode: false }
+    }
     if (provider === "pi") {
       const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
       return {
@@ -3499,10 +3527,12 @@ export class AgentCoordinator {
     }
 
     const modelOptions = normalizeCodexModelOptions(options.modelOptions, options.effort)
+    const model = connectionId && options.model ? options.model : normalizeServerModel(provider, options.model)
+    const entry = deployedProviders().find(provider => provider.id === "codex")?.models.find(option => option.id === model && (modelConnectionId ? option.connectionId === modelConnectionId : !option.connectionId))
     return {
       connectionId,
-      model: connectionId && options.model ? options.model : normalizeServerModel(provider, options.model),
-      effort: modelOptions.reasoningEffort,
+      model,
+      effort: resolveModelReasoningEffort(entry, modelOptions.reasoningEffort),
       serviceTier: codexServiceTierFromModelOptions(modelOptions),
       planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
     }
@@ -5826,16 +5856,15 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-    } else if (args.provider === "pi") {
+    } else if (args.provider === "pi" || args.provider === "opencode") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
         provider: args.provider,
         model: args.model,
       })
-      // MemoSync memory for Pi: the same injection plan + tool specs as Codex,
-      // but Pi has no developer_instructions channel, so the memory block is
-      // prepended to the user prompt. Custom memory tools are registered on
-      // the pi session (see memory/pi-adapter) and dispatched per turn.
+      // Pi and OpenCode share the injection plan and per-turn memory dispatch.
+      // Pi prepends the block to the prompt; OpenCode receives it as system.
+      // Each adapter binds the current dispatch context to its reused session.
       // "Proceed without memory" (preview gate) skips both the block and
       // dispatch for this turn.
       const piPlan: MemoryInjectionPlan | null = turnMemoryPlan
@@ -5875,7 +5904,7 @@ export class AgentCoordinator {
         this.memory.logger.event({
           type: "memory.inject",
           sessionId: args.chatId,
-          engine: "pi",
+          engine: args.provider,
           memories: piPlan.injectedMemories.map((m) => ({ id: m.id, scope: m.scope })),
           tokenEstimate: Math.ceil(piMemoryBlock.length / 4),
           mode: piPlan.mode,
@@ -5887,11 +5916,25 @@ export class AgentCoordinator {
               projectId: chat.projectId,
               sessionId: args.chatId,
               turn: turnNumber,
-              engine: "pi",
+              engine: args.provider,
               allowedMemoryIds: piPlan?.injectedMemories.map(item => item.id) ?? [],
             })
           }
         : undefined
+      if (args.provider === "opencode") {
+        const opencodeLaunch: import("./opencode-agent").StartOpencodeTurnArgs = {
+          signal: startController.signal, chatId: args.chatId, cwd: project.localPath,
+          content: buildPromptText(args.content, providerAttachments),
+          model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
+          systemPrompt: piMemoryBlock || undefined,
+          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+          forkSession: Boolean(chat.pendingForkSessionToken),
+          memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+          memoryDispatch: piMemoryDispatch, onToolRequest,
+          onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
+        }
+        turn = await this.opencodeManager.startTurn(opencodeLaunch)
+      } else {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
       const piPrompt = buildPromptText(args.content, providerAttachments)
@@ -5911,6 +5954,7 @@ export class AgentCoordinator {
       }
       this.parentLaunches.set(args.chatId, { provider: "pi", options: { model: piLaunch.model, effort: piLaunch.effort, connection, memorySpecs: piLaunch.memorySpecs, toolNames: piLaunch.toolNames } })
       turn = await this.piManager.startTurn(piLaunch)
+      }
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) {
         turn.close()
         return
@@ -6102,13 +6146,13 @@ export class AgentCoordinator {
       memoryDisabled: memoryDisabledForTurn,
       // Pi accepts its memory block inside the user prompt (there is no
       // developer_instructions channel) — delivery counts like Codex's.
-      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi",
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
     bootedActive = active
     } catch (error) {
-      if (args.provider === "pi" && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
+      if ((args.provider === "pi" || args.provider === "opencode") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
       throw error
     } finally {
       if (this.engineStartAbortControllers.get(args.chatId) === startController) {
@@ -7113,7 +7157,7 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    if ((chat.provider !== "claude" && ((chat.provider !== "codex" && chat.provider !== "pi")))) {
+    if (!["claude", "codex", "pi", "opencode"].includes(chat.provider ?? "")) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
