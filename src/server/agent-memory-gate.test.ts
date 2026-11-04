@@ -5326,9 +5326,11 @@ describe("memory on/off turn controls", () => {
       const names = sessionArgs.dynamicTools?.map((tool: any) => tool.name) ?? []
       if (mode === "off") {
         expect(turnArgs.developerInstructions).toBeUndefined()
-        // Codex fixes tool declarations per thread, so they stay declared (memory
-        // can be turned back on mid-chat); this turn just has nothing to dispatch to.
-        expect(turnArgs.onDynamicToolCall).toBeUndefined()
+        // The shared dispatcher remains registered for host tools, while
+        // disabled memory calls must fail without exposing a selected detail.
+        const disabled = await turnArgs.onDynamicToolCall("load_memory_detail", { ids: [item.id] })
+        expect(disabled.isError).toBe(true)
+        expect(disabled.text).not.toContain(item.content)
         expect(names.includes("propose_memory")).toBe(false)
       } else {
         expect(turnArgs.developerInstructions).toContain(item.content)
@@ -5379,7 +5381,9 @@ describe("memory on/off turn controls", () => {
       expect(turnArgs.systemPrompt).toBeUndefined()
       if (mode === "off") {
         expect(turnArgs.memoryContext).toBeUndefined()
-        expect(turnArgs.memoryDispatch).toBeUndefined()
+        const disabled = await turnArgs.memoryDispatch("load_memory_detail", { ids: [item.id] })
+        expect(disabled.isError).toBe(true)
+        expect(disabled.text).not.toContain(item.content)
       } else {
         expect(turnArgs.memoryContext).toContain(item.content)
         expect(turnArgs.memorySpecs.map((spec: any) => spec.name).includes("propose_memory")).toBe(mode === "on")
@@ -5409,7 +5413,9 @@ describe("memory on/off turn controls", () => {
       const names: string[] = turnArgs.memorySpecs?.map((spec: any) => spec.name) ?? []
       if (mode === "off") {
         expect(turnArgs.content).not.toContain(item.content)
-        expect(turnArgs.memoryDispatch).toBeUndefined()
+        const disabled = await turnArgs.memoryDispatch("load_memory_detail", { ids: [item.id] })
+        expect(disabled.isError).toBe(true)
+        expect(disabled.text).not.toContain(item.content)
       } else {
         expect(turnArgs.content).toContain(item.content)
         expect(names).toContain("load_memory_detail")
