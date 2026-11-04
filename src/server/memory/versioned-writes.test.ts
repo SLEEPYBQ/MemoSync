@@ -315,6 +315,24 @@ describe('durable capture operations', () => {
     expect(memory.store.list({ scope: 'project', projectId: 'P1' })).toHaveLength(1);
   });
 
+  test('concurrent case-sensitive file claims do not share an observation', async () => {
+    let entered!: () => void, release!: () => void;
+    const firstEntered = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const capture = createCaptureService({ memory, callJson: async () => {
+      entered();
+      await gate;
+      return { decisions: [{ index: 0, route: 'new', targetId: null }] };
+    } });
+    const first = capture.routeProposal({ ...proposal, content: 'Keep src/Foo.ts.' }, context);
+    await firstEntered;
+    const second = capture.routeProposal({ ...proposal, content: 'Keep src/foo.ts.' }, context);
+    await Promise.resolve();
+    release();
+    await Promise.all([first, second]);
+    expect(memory.store.list({ status: 'candidate' }).map(item => item.content).sort()).toEqual(['Keep src/Foo.ts.', 'Keep src/foo.ts.'].sort());
+  });
+
   test('scope owners are part of same-turn identity, including project-to-session fallback', async () => {
     const capture = createCaptureService({ memory, callJson: routeNew });
     await capture.routeProposal(proposal, context);
