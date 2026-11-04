@@ -65,6 +65,8 @@ Before a turn starts, MemoSync shows the memory changes it proposes, in three gr
 
 Replies cite the memories they apply (`M-07`). Hover a citation to see the item.
 
+Tool calls fold into one line, like *Read 3 files, ran 2 commands*, with the running step beside it. Open the line to see each step and what came back.
+
 If the agent is doing the opposite of a memory:
 1. Press **Stop** on that citation.
 2. Write what should have happened.
@@ -84,14 +86,16 @@ For a violated item:
 - **Where used** jumps to the sentence and tool call behind the verdict.
 - **Enforce this next run** makes the item a required row in the next turn. Only you can remove it.
 
+Verdicts also come back to the trace: a memory shows on the tool call that used it, and a violated one is marked in red.
+
 The audit is a model judgment and can be wrong.
 
 ### Between turns
 
 <p align="center"><img src="docs/figures/memory-board.png" alt="The Memory Board" width="900" /></p>
 
-**The Memory Board** is the whole library, one column per scope.
-- Drag an item to change its scope.
+**The Memory Board** is the whole library. The rail on the left lists every scope, project and session, along with items waiting for review, archived items and memory files. See the library as a **graph** of where each memory lives, or as a **board** with one column per scope.
+- On the board, drag an item to change its scope.
 - Open an item to edit it, read its history, or archive it.
 - **Memory files** keeps a Markdown copy for other tools, and imports an existing `CLAUDE.md` as candidates for review.
 
@@ -106,6 +110,16 @@ Reviewing every turn pays off when memory matters, and is too much for a quick q
 
 ## Quick start
 
+### Mac app
+
+Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest), `arm64` for Apple silicon or `x64` for Intel, and drag MemoSync to Applications.
+
+The app isn't notarized yet, so macOS blocks it the first time. Try to open it, then go to **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+The app doesn't include any agents, so install Claude Code or Codex first. It shares `~/.memosync/data` with a source install, and only one of them can run at a time.
+
+### From source
+
 You need [Bun](https://bun.sh) 1.3.5 or newer, plus one of:
 - Claude Code or Codex already signed in, or
 - an API key from any provider.
@@ -118,7 +132,9 @@ bun run build
 bun run start
 ```
 
-MemoSync opens at <http://localhost:3210>. Then:
+MemoSync opens at <http://localhost:3210>.
+
+### First steps
 
 1. Open **Settings → Models**, pick an engine and give it access (see the next section).
 2. Click **+** in the sidebar, then **Add project** to open a folder.
@@ -130,9 +146,9 @@ An **engine** is the agent that does the work. **Access** is how it reaches a mo
 
 | Engine | What it runs | Access |
 | --- | --- | --- |
-| **Claude Code** | Your installed `claude`, or the copy bundled with the Agent SDK | Your sign-in, or an API connection that speaks the Anthropic API or OpenAI Chat |
+| **Claude Code** | Your installed `claude`; from source, the copy bundled with the Agent SDK if you have none | Your sign-in, or an API connection that speaks the Anthropic API or OpenAI Chat |
 | **Codex** | Your installed `codex` (required) | Your sign-in, or an API connection that speaks the OpenAI Responses API or OpenAI Chat |
-| **Pi** | Built into MemoSync | An API connection that speaks OpenAI Chat or Responses |
+| **Pi** | Built into MemoSync; the Mac app uses your installed `pi` | An API connection that speaks OpenAI Chat or Responses |
 
 When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code and Codex through a local gateway on `127.0.0.1`; the engine card says **via translation**. The engine never sees your key.
 
@@ -154,7 +170,8 @@ MemoSync finds `claude` and `codex` on your `PATH` and in the usual install fold
 
 **In the composer**, under the message box:
 - the project;
-- memory on or off for this chat;
+- **+** to attach files, or drag them in;
+- the **Memory** menu: **Off** applies to this chat, while **Ask** and **Auto** set the control mode below;
 - the engine and the model;
 - reasoning effort;
 - Plan Mode, where the agent proposes a plan and waits for you before it acts.
@@ -227,36 +244,13 @@ The server code is in `src/server/`:
 
 The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
-## Desktop app
-
-The macOS desktop app bundles Electron and its application runtime (including
-Bun), but discovers Claude Code, Codex and Pi installations on the local
-machine. The application itself does not need host Bun or Node after
-installation; locally installed agents may have their own runtime and native
-dependency requirements. The current CLI and desktop app share
-`~/.memosync/data`; do not run them at the same time because the data lock
-intentionally rejects the second process.
-
-For local development and packaging (macOS, native arm64 or x64 only):
+The Mac app is developed and packaged on macOS, for that machine's architecture only:
 
 ```bash
-bun install
-bun run desktop:install
+bun run desktop:install       # once
 bun run desktop:dev
-bun run desktop:package:mac
+bun run desktop:package:mac   # DMG and ZIP in desktop/release/
 ```
-
-The package command writes a DMG and ZIP to `desktop/release/`. Open the DMG,
-drag MemoSync to Applications, and launch it normally. macOS may ask you to
-confirm opening an app downloaded from the internet; use the Finder Open action
-if needed. Release signing and notarization are not configured yet.
-
-Desktop agent discovery requires installed local CLIs for Claude Code and
-Codex. Pi must be installed locally as `@mariozechner/pi-coding-agent` in the
-compatible `0.73.x` line (at least `0.73.1`); this keeps the desktop payload
-free of agent implementations while retaining Pi's extension-compatible SDK
-boundary. Configure executable paths in the Engine settings when discovery
-cannot find an installation.
 
 ## Acknowledgements
 

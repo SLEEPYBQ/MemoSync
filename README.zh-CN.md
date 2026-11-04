@@ -66,6 +66,8 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex 和 Pi�
 
 回复里用到某条记忆时会带上引用标记（`M-07`），鼠标悬停就能看到原文。
 
+工具调用会折叠成一行，比如“读了 3 个文件，运行了 2 条命令”，旁边显示正在跑的那一步。点开能看每一步和它的输出。
+
 发现它跟记忆反着来，可以这样处理：
 1. 在那个引用上点**停止**；
 2. 写下本来应该怎么做；
@@ -85,14 +87,16 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex 和 Pi�
 - 点**使用位置**，直接跳到判定依据所在的那句话和那次工具调用；
 - 点**下次运行强制执行**，下一轮就会把它列为必选项，只有你能移除。
 
+结论也会回到执行轨迹上：用到的记忆标在对应的工具调用旁边，违反的会标红。
+
 审查本身也是模型做出的判断，可能出错。
 
 ### 两轮之间
 
 <p align="center"><img src="docs/figures/memory-board.png" alt="记忆看板" width="900" /></p>
 
-**记忆看板**是整个记忆库，按作用范围分栏：
-- 把条目拖到另一栏，就改了它的作用范围；
+**记忆看板**是整个记忆库。左侧列出所有作用范围、项目和会话，还有待审阅的、已归档的条目和记忆文件。记忆库可以用**关系图**看每条记忆归属哪里，也可以用**看板**按作用范围分栏看：
+- 在看板里把条目拖到另一栏，就改了它的作用范围；
 - 点开一条，可以编辑、查看历史或归档；
 - **记忆文件**会同步一份 Markdown 副本，方便别的工具使用，也能把已有的 `CLAUDE.md` 导入成候选，逐条审阅。
 
@@ -107,6 +111,16 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex 和 Pi�
 
 ## 快速开始
 
+### Mac 应用
+
+从 [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) 下载 DMG（Apple 芯片选 `arm64`，Intel 选 `x64`），把 MemoSync 拖进“应用程序”。
+
+应用还没有经过 Apple 公证，第一次打开会被 macOS 拦下。先尝试打开一次，再到**系统设置 → 隐私与安全性**，点**仍要打开**。
+
+应用里不带智能体，请先装好 Claude Code 或 Codex。它和源码版共用 `~/.memosync/data`，两者不能同时运行。
+
+### 从源码运行
+
 需要 [Bun](https://bun.sh) 1.3.5 或更新版本，再加上下面任意一种：
 - 已经登录好的 Claude Code 或 Codex；
 - 任意一家服务商的 API key。
@@ -119,7 +133,9 @@ bun run build
 bun run start
 ```
 
-浏览器会打开 <http://localhost:3210>。接下来：
+浏览器会打开 <http://localhost:3210>。
+
+### 开始使用
 
 1. 打开**设置 → 模型**，选一个引擎，给它接上模型（见下一节）。
 2. 点侧边栏的 **+**，再点**添加项目**，选一个文件夹。
@@ -131,9 +147,9 @@ bun run start
 
 | 引擎 | 运行的程序 | 接入方式 |
 | --- | --- | --- |
-| **Claude Code** | 你装好的 `claude`；没装就用 Agent SDK 自带的那份 | 自己的登录，或支持 Anthropic API 或 OpenAI Chat 的 API 连接 |
+| **Claude Code** | 你装好的 `claude`；源码版没装时用 Agent SDK 自带的那份 | 自己的登录，或支持 Anthropic API 或 OpenAI Chat 的 API 连接 |
 | **Codex** | 你装好的 `codex`（必须安装） | 自己的登录，或支持 OpenAI Responses API 或 OpenAI Chat 的 API 连接 |
-| **Pi** | MemoSync 内置 | 支持 OpenAI Chat 或 Responses API 的 API 连接 |
+| **Pi** | MemoSync 内置；Mac 应用要用你本机装的 `pi` | 支持 OpenAI Chat 或 Responses API 的 API 连接 |
 
 连接只支持 OpenAI Chat 时，MemoSync 会在本机 `127.0.0.1` 上起一个转换层，替 Claude Code 和 Codex 做协议转换，引擎卡片上会标出**经协议转换**。引擎本身拿不到你的 key。
 
@@ -155,7 +171,8 @@ MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想
 
 **输入框下方**可以切换：
 - 项目；
-- 本对话的记忆开关；
+- **+** 添加文件，也可以直接拖进来；
+- **记忆**菜单：**关闭**只影响这个对话，**请求**和**自动**对应下面的控制方式；
 - 引擎和模型；
 - 推理强度；
 - 规划模式：智能体先给出方案，等你同意了再动手。
@@ -228,30 +245,13 @@ bun run check     # 类型检查和前端构建
 
 前端是 `src/client/` 下的 React 应用。开发模式的数据存放在 `~/.memosync-dev/`。
 
-## 桌面应用
-
-macOS 桌面应用会打包 Electron 和应用运行时（包括 Bun），但会在本机查找
-Claude Code、Codex 和 Pi，不会把这些智能体实现打进应用。安装后不需要主机上的
-Bun 或 Node 来运行应用本身；本机安装的智能体可能有各自的运行时和原生依赖要求。
-当前 CLI 和桌面应用共用 `~/.memosync/data`；数据锁会拒绝第二个进程，因此不要同时运行它们。
-
-在 macOS 原生 arm64 或 x64 机器上开发和打包：
+Mac 应用要在 macOS 上开发和打包，只能打当前机器架构的版本：
 
 ```bash
-bun install
-bun run desktop:install
+bun run desktop:install       # 只需一次
 bun run desktop:dev
-bun run desktop:package:mac
+bun run desktop:package:mac   # DMG 和 ZIP 在 desktop/release/
 ```
-
-打包命令会把 DMG 和 ZIP 写入 `desktop/release/`。打开 DMG，将 MemoSync 拖入
-“应用程序”，然后正常启动。macOS 可能会要求确认从互联网下载的应用；必要时可在
-Finder 中使用“打开”。当前尚未配置发布签名和公证。
-
-桌面版需要本机已安装 Claude Code 和 Codex CLI。Pi 必须在本机安装为
-`@mariozechner/pi-coding-agent` 的兼容 `0.73.x` 版本（至少 `0.73.1`）；这样
-桌面载荷不会包含智能体实现，同时保留 Pi 的扩展兼容 SDK 边界。如果自动发现不到，
-可以在引擎设置中填写可执行文件路径。
 
 ## 致谢
 
