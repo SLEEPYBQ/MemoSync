@@ -55,7 +55,7 @@ describe("coordinator execution policy", () => {
     await reloaded.initialize()
     expect(reloaded.requireChat(chat.id).executionPolicyStates?.pi).toMatchObject({ effectiveRevision: 1, effective: { engine: "pi", toolGate: "ask" } })
     const restored = new AgentCoordinator({ store: reloaded, onStateChange() {} })
-    expect(restored.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "pending", effectiveRevision: 1 })
+    expect(restored.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "pending", effective: null, effectiveRevision: null })
   })
 
   test("approval contains arguments and authorizes only one call; duplicate replies are rejected", async () => {
@@ -89,13 +89,18 @@ describe("coordinator execution policy", () => {
     expect(await gate("read", {})).toMatchObject({ block: true })
     expect(await waiting).toMatchObject({ block: true })
     const state = await changed
-    expect(state).toMatchObject({ status: "partial", desiredRevision: 2, effectiveRevision: 1 })
+    expect(state).toMatchObject({ status: "partial", desiredRevision: 2, effectiveRevision: null })
     const reloaded = new EventStore(store.dataDir)
     await reloaded.initialize()
     const restored = new AgentCoordinator({ store: reloaded, onStateChange() {} })
-    expect(restored.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "unknown", desiredRevision: 2, effectiveRevision: 1 })
+    expect(restored.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "unknown", desiredRevision: 2, effectiveRevision: null })
     expect(restored.getHarnessSnapshot(chat.id)?.policy.boundaries).toContainEqual(expect.objectContaining({ boundary: "existing-processes", status: "unknown" }))
-    await expect(boot()).rejects.toThrow("unknown")
+    await boot()
+    await launch().onExecutionPolicyApplied?.("fresh-native")
+    expect(await launch().beforeToolCall!("bash", { command: "write under new policy" })).toMatchObject({ block: true })
+    expect(await launch().beforeToolCall!("read", {})).toBeUndefined()
+    expect(coordinator.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "partial", effectiveRevision: 2 })
+    expect(coordinator.getHarnessSnapshot(chat.id)?.policy.boundaries).toContainEqual(expect.objectContaining({ boundary: "existing-processes", status: "unknown" }))
   })
 
   test("tightening during startup aborts native dispatch before it can register a stale turn", async () => {
@@ -120,6 +125,10 @@ describe("coordinator execution policy", () => {
     const sent: any[] = []
     const ws = { data: { subscriptions: new Map(), protectedDraftChatIds: new Set<string>() }, send(text: string) { sent.push(JSON.parse(text)); return text.length } }
     const command = (id: string, value: unknown) => router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id, command: value }))
+    const fresh = await store.createChat(chat.projectId)
+    await command("fresh", { type: "chat.readHarness", chatId: fresh.id, engine: "pi" })
+    expect(sent.at(-1)).toMatchObject({ type: "ack", id: "fresh", result: { capabilities: { engine: "pi" }, policy: { desired: { engine: "pi", toolGate: "ask" }, effective: null } } })
+    expect(store.requireChat(fresh.id).provider).toBeNull()
     await command("caps", { type: "harness.getCapabilities", engine: "pi" })
     expect(sent.at(-1)).toMatchObject({ type: "ack", id: "caps", result: { engine: "pi", executionPolicies: expect.arrayContaining([expect.objectContaining({ boundary: "tool-gating", availability: "available" })]) } })
     await command("set", { type: "chat.setExecutionPolicy", chatId: chat.id, policy: { engine: "pi", toolGate: "read-only" }, expectedRevision: 1 })

@@ -98,6 +98,7 @@ export interface TerminalTailResult {
 export type ClientCommand =
   | SetExecutionPolicyCommand
   | { type: "harness.getCapabilities"; engine: AgentProvider }
+  | { type: "chat.readHarness"; chatId: string; engine: AgentProvider }
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }

@@ -36,7 +36,7 @@ describe("execution policy boundaries", () => {
     expect(service.snapshot("chat", policy, 1).policy.desiredRevision).toBe(1)
   })
 
-  test("tightening revokes old host calls before native interruption and blocks uncertain restarts", () => {
+  test("tightening revokes old calls and applies a fresh native epoch without losing process uncertainty", () => {
     const service = new HarnessPolicyService(), policy = defaultExecutionPolicy("pi", true)
     const scope = service.beginTurn("chat", policy, 1, "turn", "1.5.0")
     service.applied(scope)
@@ -48,8 +48,16 @@ describe("execution policy boundaries", () => {
     expect(state).toMatchObject({ desiredRevision: 2, effectiveRevision: 1, status: "partial" })
     expect(state.boundaries).toContainEqual(expect.objectContaining({ boundary: "host-dispatch", status: "applied", effectiveFrom: "immediate" }))
     expect(state.boundaries).toContainEqual(expect.objectContaining({ boundary: "existing-processes", status: "unknown" }))
-    expect(() => service.beginTurn("chat", strict, 2, "next", "1.5.0")).toThrow("unknown")
+    expect(() => service.beginTurn("chat", strict, 2, "next", "1.5.0")).toThrow("retire")
     expect(() => service.applied(scope)).toThrow("Stale")
+    service.nativeRuntimeRetired("chat", "pi")
+    const next = service.beginTurn("chat", strict, 2, "next", "1.5.0")
+    expect(service.admit(next, "bash")).toBe("deny")
+    expect(service.admit(next, "read")).toBe("allow")
+    expect(service.applied(next)).toMatchObject({ effectiveRevision: 2, status: "partial" })
+    expect(service.state("chat", "pi").boundaries).toContainEqual(expect.objectContaining({ boundary: "existing-processes", status: "unknown" }))
+    service.endTurn(next)
+    expect(service.beginTurn("chat", strict, 2, "third", "1.5.0").policyRevision).toBe(2)
   })
 
   test("idle changes remain pending and read-only Pi blocks arbitrary shell commands", () => {

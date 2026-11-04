@@ -6707,10 +6707,12 @@ export class AgentCoordinator {
     return chat.executionPolicies?.[engine] ?? { policy: defaultExecutionPolicy(engine, !chat.executionPolicyVersion), revision: 1 }
   }
 
-  getHarnessSnapshot(chatId: string) {
+  getHarnessSnapshot(chatId: string, engine?: AgentProvider) {
     const chat = this.store.getChat(chatId)
     if (!chat || chat.deletedAt) return undefined
-    const selected = this.executionPolicyFor(chatId, chat.provider ?? "claude")
+    if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
+    const selected = this.executionPolicyFor(chatId, engine ?? chat.provider ?? "claude")
     return this.harnessPolicies.snapshot(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[selected.policy.engine], this.harnessRuntimeVersion(selected.policy.engine, lastEngineExecutable(selected.policy.engine)?.version))
   }
 
@@ -6745,8 +6747,11 @@ export class AgentCoordinator {
       if (session) await this.retireClaudeSession(session, "session_rebuild")
       await this.codexManager.stopSession(command.chatId)
       this.piManager.closeChat(command.chatId)
-      this.opencodeManager.closeChat(command.chatId)
-      return state
+      await this.opencodeManager.closeChat(command.chatId)
+      this.parentLaunches.delete(command.chatId)
+      const retired = this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
+      await this.store.setExecutionPolicyState(command.chatId, retired)
+      return retired
     } catch (error) {
       this.releasePolicyInteraction(command.chatId)
       throw error

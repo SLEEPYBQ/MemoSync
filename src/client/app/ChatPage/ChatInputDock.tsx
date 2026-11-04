@@ -24,6 +24,7 @@ interface ChatInputDockProps {
   slashCommands: string[]
   harness?: ChatHarnessSnapshot
   onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
+  onReadHarness?: (engine: AgentProvider) => Promise<ChatHarnessSnapshot>
   onSubmit: AppState["handleSend"]
   onCancel: () => void
   onSendOldestQueued?: () => void
@@ -51,6 +52,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   slashCommands,
   harness,
   onExecutionPolicyChange,
+  onReadHarness,
   onSubmit,
   onCancel,
   onSendOldestQueued,
@@ -97,6 +99,7 @@ export const ChatInputDock = memo(function ChatInputDock({
           slashCommands={slashCommands}
           harness={harness}
           onExecutionPolicyChange={onExecutionPolicyChange}
+          onReadHarness={onReadHarness}
         />
       </div>
     </div>

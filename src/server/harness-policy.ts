@@ -92,6 +92,7 @@ interface RuntimeState {
   version?: string
   blocked: boolean
   uncertainProcesses: boolean
+  restartRequired: boolean
   hasRuntime: boolean
 }
 
@@ -106,11 +107,11 @@ export class HarnessPolicyService {
     let runtime = this.runtimes.get(id)
     if (!runtime) {
       const uncertainProcesses = persisted?.boundaries.some(b => b.boundary === "existing-processes" && b.status === "unknown") ?? false
-      runtime = { state: { desired: structuredClone(policy), effective: persisted?.effective ? structuredClone(persisted.effective) : null, desiredRevision: revision, effectiveRevision: persisted?.effectiveRevision ?? null, status: uncertainProcesses ? "unknown" : "pending", reason: persisted?.effective ? "Last native acknowledgement is historical; this runtime must apply the policy again." : undefined, boundaries: [
+      runtime = { state: { desired: structuredClone(policy), effective: null, desiredRevision: revision, effectiveRevision: null, status: uncertainProcesses ? "unknown" : "pending", reason: persisted?.effective ? "Last native acknowledgement is historical; this runtime must apply the policy again." : undefined, boundaries: [
         { boundary: "host-dispatch", status: "pending", revision, effectiveFrom: "next-turn" },
         { boundary: "native-runtime", status: "unknown", revision: persisted?.effectiveRevision ?? null, effectiveFrom: "next-turn" },
         ...(uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
-      ] }, generation: Math.max(0, ...persisted?.boundaries.map(b => b.generation ?? 0) ?? []), blocked: true, uncertainProcesses, hasRuntime: false }
+      ] }, generation: Math.max(0, ...persisted?.boundaries.map(b => b.generation ?? 0) ?? []), blocked: true, uncertainProcesses, restartRequired: false, hasRuntime: false }
       this.runtimes.set(id, runtime)
     }
     return runtime
@@ -128,37 +129,51 @@ export class HarnessPolicyService {
   request(chatId: string, policy: NativeExecutionPolicy, expectedRevision: number, active: boolean): ExecutionPolicyState {
     const runtime = this.runtimes.get(this.id(chatId, policy.engine))
     if (!runtime || !Number.isSafeInteger(expectedRevision) || expectedRevision !== runtime.state.desiredRevision) throw new Error("Execution policy revision changed; refresh the chat")
-    if (runtime.uncertainProcesses) throw new Error("Previous native processes have unknown authority; start a new chat")
     const choice = this.registry.snapshot(policy.engine, runtime.version).executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(policy))
     if (!choice || choice.availability !== "available") throw new Error(choice?.reason ?? "Unsupported execution policy")
     runtime.generation++
     runtime.blocked = true
-    runtime.uncertainProcesses = active
+    runtime.uncertainProcesses ||= active
+    runtime.restartRequired = active
     runtime.state.desired = structuredClone(policy)
     runtime.state.desiredRevision++
-    runtime.state.status = active ? "partial" : "pending"
-    runtime.state.reason = active ? "Host dispatch is blocked. Interruption cannot prove that existing subprocesses stopped; start a new chat." : "Waiting for the next native policy acknowledgement."
+    runtime.state.status = runtime.uncertainProcesses ? "partial" : "pending"
+    runtime.state.reason = runtime.uncertainProcesses ? "New calls are blocked until the native session restarts. Previously started processes have not confirmed shutdown." : "Waiting for the next native policy acknowledgement."
     runtime.state.boundaries = [
       { boundary: "host-dispatch", status: "applied", revision: runtime.state.desiredRevision, effectiveFrom: "immediate", generation: runtime.generation },
       { boundary: "native-runtime", status: "pending", revision: runtime.state.effectiveRevision, effectiveFrom: "restart" },
-      ...(active ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
+      ...(runtime.uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
     ]
+    return structuredClone(runtime.state)
+  }
+  /** Known native sessions have retired; descendant-process uncertainty remains a separate fact. */
+  nativeRuntimeRetired(chatId: string, engine: AgentProvider): ExecutionPolicyState {
+    const runtime = this.runtimes.get(this.id(chatId, engine))
+    if (!runtime) throw new Error("Execution policy not initialized")
+    runtime.restartRequired = false
+    runtime.hasRuntime = false
+    runtime.turnId = undefined
+    runtime.blocked = true
+    runtime.state.effective = null
+    runtime.state.effectiveRevision = null
+    runtime.state.reason = "Waiting for a fresh native session to acknowledge the requested policy."
     return structuredClone(runtime.state)
   }
   beginTurn(chatId: string, policy: NativeExecutionPolicy, revision: number, turnId: string, version?: string): PolicyCallScope {
     const runtime = this.ensure(chatId, policy, revision)
-    if (runtime.uncertainProcesses) throw new Error("Execution policy boundary is unknown; start a new chat")
+    if (runtime.restartRequired) throw new Error("The previous native session must retire before applying a new execution policy")
     if (revision !== runtime.state.desiredRevision || executionPolicyKey(policy) !== executionPolicyKey(runtime.state.desired)) throw new Error("Stale execution policy turn")
     runtime.version = version
     runtime.hasRuntime = true
     runtime.generation++
     runtime.turnId = turnId
     runtime.blocked = false
-    runtime.state.status = "pending"
+    runtime.state.status = runtime.uncertainProcesses ? "partial" : "pending"
     runtime.state.reason = "Waiting for native acknowledgement for this turn."
     runtime.state.boundaries = [
       { boundary: "host-dispatch", status: "applied", revision, effectiveFrom: "immediate", generation: runtime.generation, turnId },
       { boundary: "native-runtime", status: "pending", revision: runtime.state.effectiveRevision, effectiveFrom: "next-turn", generation: runtime.generation, turnId },
+      ...(runtime.uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
     ]
     return Object.freeze({ chatId, engine: policy.engine, requestId: "turn", turnId, generation: runtime.generation, policyRevision: revision })
   }
@@ -169,9 +184,10 @@ export class HarnessPolicyService {
   applied(scope: PolicyCallScope, nativeSessionId?: string): ExecutionPolicyState | undefined {
     if (!this.isCurrent(scope)) throw new Error("Stale execution policy acknowledgement")
     const runtime = this.runtimes.get(this.id(scope.chatId, scope.engine))!
-    runtime.state = { ...runtime.state, effective: structuredClone(runtime.state.desired), effectiveRevision: scope.policyRevision, status: "applied", reason: undefined, boundaries: [
+    runtime.state = { ...runtime.state, effective: structuredClone(runtime.state.desired), effectiveRevision: scope.policyRevision, status: runtime.uncertainProcesses ? "partial" : "applied", reason: runtime.uncertainProcesses ? "New calls use the acknowledged permissions. Previously started processes have not confirmed shutdown." : undefined, boundaries: [
       { boundary: "host-dispatch", status: "applied", revision: scope.policyRevision, effectiveFrom: "immediate", generation: scope.generation, turnId: scope.turnId },
       { boundary: "native-runtime", status: "applied", revision: scope.policyRevision, effectiveFrom: "next-turn", generation: scope.generation, nativeSessionId, turnId: scope.turnId },
+      ...(runtime.uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
     ] }
     return structuredClone(runtime.state)
   }

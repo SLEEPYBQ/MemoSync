@@ -159,6 +159,7 @@ interface Props {
   slashCommands?: string[]
   harness?: ChatHarnessSnapshot
   onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
+  onReadHarness?: (engine: AgentProvider) => Promise<ChatHarnessSnapshot>
   /** Extra chips rendered in the preference-controls row (e.g. the landing page's project picker). */
   leadingControls?: React.ReactNode
 }
@@ -243,6 +244,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   slashCommands = [],
   harness,
   onExecutionPolicyChange,
+  onReadHarness,
   leadingControls = null,
 }, forwardedRef) {
   useI18n()
@@ -329,6 +331,29 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? { ...baseProviderPrefs, connectionId: engineAccess.connectionId, model: engineAccess.defaultModel ?? modelAccess?.connections.find(c => c.id === engineAccess.connectionId)?.models[0]?.id ?? baseProviderPrefs.model }
     : baseProviderPrefs
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
+  const harnessOwner = `${chatId ?? ""}:${selectedProvider}`
+  const harnessOwnerRef = useRef(harnessOwner)
+  harnessOwnerRef.current = harnessOwner
+  const [engineHarness, setEngineHarness] = useState<{ owner: string; snapshot: ChatHarnessSnapshot } | null>(null)
+  const matchingHarness = harness?.capabilities.engine === selectedProvider ? harness : engineHarness?.owner === harnessOwner ? engineHarness.snapshot : undefined
+  useEffect(() => {
+    if (!chatId || !onReadHarness || matchingHarness) return
+    let cancelled = false
+    void onReadHarness(selectedProvider).then(snapshot => {
+      if (!cancelled && harnessOwnerRef.current === harnessOwner && snapshot?.capabilities.engine === selectedProvider) setEngineHarness({ owner: harnessOwner, snapshot })
+    }).catch(() => {})
+    return () => { cancelled = true }
+  }, [chatId, selectedProvider, harnessOwner, matchingHarness, onReadHarness])
+  async function changeExecutionPolicy(policy: NativeExecutionPolicy, revision: number) {
+    try {
+      await onExecutionPolicyChange?.(policy, revision)
+    } finally {
+      if (onReadHarness && harnessOwnerRef.current === harnessOwner) {
+        const snapshot = await onReadHarness(policy.engine).catch(() => null)
+        if (snapshot && harnessOwnerRef.current === harnessOwner) setEngineHarness({ owner: harnessOwner, snapshot })
+      }
+    }
+  }
   const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
   const activeContextWindow = useMemo(() => {
@@ -1027,8 +1052,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   onPlanModeChange={setEffectivePlanMode}
                   includePlanMode={showPlanMode}
                 />
-                {chatId && harness && harness.capabilities.engine === selectedProvider && onExecutionPolicyChange ? (
-                  <ExecutionPolicyControl chatId={chatId} snapshot={harness} disabled={disabled} onChange={onExecutionPolicyChange} />
+                {chatId && matchingHarness && onExecutionPolicyChange ? (
+                  <ExecutionPolicyControl chatId={chatId} snapshot={matchingHarness} disabled={disabled} onChange={changeExecutionPolicy} />
                 ) : null}
               </div>
               {activeContextWindow ? (

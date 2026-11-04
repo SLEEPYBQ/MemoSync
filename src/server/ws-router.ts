@@ -1850,6 +1850,11 @@ export function createWsRouter({
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
+        case "chat.readHarness": {
+          const result = agent.getHarnessSnapshot(command.chatId, command.engine)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
         case "chat.setExecutionPolicy": {
           const result = await agent.setExecutionPolicy(command)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
