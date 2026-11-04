@@ -34,6 +34,7 @@ const PEEK_EDGE_PX = 6
 const PEEK_DELAY_MS = 60
 const PEEK_HIDE_MARGIN_PX = 12
 /** The panel and the space it reserves move on one curve, so they stay together. */
+const PEEK_LEAVE_WINDOW_DELAY_MS = 400
 const SIDEBAR_MOTION = "duration-[280ms] ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none"
 export const DEFAULT_SIDEBAR_WIDTH = 275
 export const MIN_SIDEBAR_WIDTH = 220
@@ -284,7 +285,13 @@ function AppSidebarImpl({
       }
     }
     const onMouseLeave = (event: MouseEvent) => {
-      if (!peekingRef.current && event.clientX <= PEEK_EDGE_PX) schedulePeek(true, 0)
+      // No pointer moves arrive from outside the window, so an open panel has to
+      // start going home here. Coming back over it cancels this (see above).
+      if (peekingRef.current) {
+        if (peekTimerRef.current === null) schedulePeek(false, PEEK_LEAVE_WINDOW_DELAY_MS)
+        return
+      }
+      if (event.clientX <= PEEK_EDGE_PX) schedulePeek(true, 0)
     }
     window.addEventListener("pointermove", onPointerMove, { passive: true })
     document.documentElement.addEventListener("mouseleave", onMouseLeave)
