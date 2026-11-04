@@ -1647,6 +1647,7 @@ export type HydratedTranscriptMessage =
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 
 export interface ChatRuntime {
+  commandCatalog?: import("./runtime-commands").ChatCommandCatalog
   harness?: ChatHarnessSnapshot
   memoryDisabled: boolean
   chatId: string

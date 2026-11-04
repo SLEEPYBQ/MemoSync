@@ -6,6 +6,7 @@ import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { AppState } from "../useAppState"
 import type { AgentProvider } from "../../../shared/types"
 import type { ChatHarnessSnapshot, NativeExecutionPolicy } from "../../../shared/harness-capabilities"
+import type { ChatCommandCatalog, RuntimeCommand } from "../../../shared/runtime-commands"
 
 interface ChatInputDockProps {
   inputRef: RefObject<HTMLDivElement | null>
@@ -22,6 +23,12 @@ interface ChatInputDockProps {
   availableProviders: AppState["availableProviders"]
   contextWindowSnapshot: ContextWindowSnapshot | null
   slashCommands: string[]
+  commandCatalog?: ChatCommandCatalog | null
+  commandBusy?: boolean
+  commandError?: string | null
+  onReadCommands?: () => Promise<unknown>
+  onExecuteCommand?: (command: RuntimeCommand, args?: string) => Promise<unknown>
+  onCancelCommand?: () => Promise<unknown>
   harness?: ChatHarnessSnapshot
   onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
   onReadHarness?: (engine: AgentProvider) => Promise<ChatHarnessSnapshot>
@@ -50,6 +57,12 @@ export const ChatInputDock = memo(function ChatInputDock({
   availableProviders,
   contextWindowSnapshot,
   slashCommands,
+  commandCatalog,
+  commandBusy,
+  commandError,
+  onReadCommands,
+  onExecuteCommand,
+  onCancelCommand,
   harness,
   onExecutionPolicyChange,
   onReadHarness,
@@ -97,6 +110,12 @@ export const ChatInputDock = memo(function ChatInputDock({
           contextWindowSnapshot={contextWindowSnapshot}
           previousPrompt={previousPrompt}
           slashCommands={slashCommands}
+          commandCatalog={commandCatalog}
+          commandBusy={commandBusy}
+          commandError={commandError}
+          onReadCommands={onReadCommands}
+          onExecuteCommand={onExecuteCommand}
+          onCancelCommand={onCancelCommand}
           harness={harness}
           onExecutionPolicyChange={onExecutionPolicyChange}
           onReadHarness={onReadHarness}

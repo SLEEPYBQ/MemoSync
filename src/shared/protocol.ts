@@ -1,4 +1,5 @@
 import type { HostActionCommand, HostActionServerEvent } from "./host-actions"
+import type { RuntimeCatalogCommand } from "./runtime-commands"
 import type { SetExecutionPolicyCommand } from "./harness-capabilities"
 import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
@@ -97,6 +98,7 @@ export interface TerminalTailResult {
 }
 
 export type ClientCommand =
+  | RuntimeCatalogCommand
   | HostActionCommand
   | SetExecutionPolicyCommand
   | { type: "harness.getCapabilities"; engine: AgentProvider }

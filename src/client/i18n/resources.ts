@@ -9,6 +9,8 @@ import chat from "./en/chat.json"
 import chatZh from "./zh-CN/chat.json"
 import harness from "./en/harness.json"
 import harnessZh from "./zh-CN/harness.json"
+import commands from "./en/commands.json"
+import commandsZh from "./zh-CN/commands.json"
 import common from "./en/common.json"
 import commonZh from "./zh-CN/common.json"
 import errors from "./en/errors.json"
@@ -27,5 +29,5 @@ import sidebar from "./en/sidebar.json"
 import sidebarZh from "./zh-CN/sidebar.json"
 import terminal from "./en/terminal.json"
 import terminalZh from "./zh-CN/terminal.json"
-export const en = { modelAccess, board, browser, chat, harness, common, errors: { ...errors, ...STANDALONE_UI_COPY.en }, export: exportViewer, files, git, memory, settings, sidebar, terminal }
-export const zhCN: typeof en = { modelAccess: modelAccessZh, board: boardZh, browser: browserZh, chat: chatZh, harness: harnessZh, common: commonZh, errors: { ...errorsZh, ...STANDALONE_UI_COPY.zhCN }, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }
+export const en = { modelAccess, board, browser, chat, harness, commands, common, errors: { ...errors, ...STANDALONE_UI_COPY.en }, export: exportViewer, files, git, memory, settings, sidebar, terminal }
+export const zhCN: typeof en = { modelAccess: modelAccessZh, board: boardZh, browser: browserZh, chat: chatZh, harness: harnessZh, commands: commandsZh, common: commonZh, errors: { ...errorsZh, ...STANDALONE_UI_COPY.zhCN }, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }
