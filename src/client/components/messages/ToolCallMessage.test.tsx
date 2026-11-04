@@ -104,7 +104,8 @@ describe("the tool trace", () => {
     const html = renderToStaticMarkup(<ToolCallExpandedContent message={grep} />)
     expect(html).toContain("needle")
     expect(html).toContain("a.ts")
-    expect(html).not.toContain("{")
+    // The JSON may sit in an attribute for the evidence jump, but isn't shown.
+    expect(html.replace(/<[^>]*>/g, "")).not.toContain("{")
   })
 
   test("a grep's input can still be found by the audit's quote of it", () => {
