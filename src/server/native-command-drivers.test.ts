@@ -24,10 +24,14 @@ describe('public native command protocol fixtures', () => {
     expect(completed).toBe(false)
     control.observe({ type: 'result', user_message_uuids: [inputs[0]!.uuid], is_error: false })
     await done
-    const restored = control.runtime.restore!('view-7', signal())
+    let restoreAccepted = false
+    const restored = control.runtime.restore!('view-7', signal()).then(receipt => { restoreAccepted = true; return receipt })
     expect(inputs[1]!.text).toContain('view-7')
     expect(inputs[1]!.shouldQuery).toBe(false)
     control.observe({ type: 'user', uuid: inputs[1]!.uuid, shouldQuery: false })
+    await flush()
+    expect(restoreAccepted).toBe(false)
+    control.observe({ type: 'result', user_message_uuid: inputs[1]!.uuid, is_error: false })
     expect(await restored).toEqual({ delivery: 'native-accepted' })
     commands = []
     expect((await control.runtime.discover()).commands).toMatchObject({ status: 'ready', items: [] })

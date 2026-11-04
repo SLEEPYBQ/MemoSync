@@ -1,3 +1,4 @@
+import type { PrepareNativeContext } from "./context-compiler"
 import type { PiParentLaunch } from './memory/parent-launch'
 import { createPiCommandRuntime } from './native-command-drivers'
 import type { NativeCommandRuntime } from './command-registry'
@@ -426,6 +427,7 @@ export const MISSING_PI_CONNECTION_MESSAGE =
   "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
 
 export interface StartPiTurnArgs {
+  prepareContext?: PrepareNativeContext
   chatId: string
   /** Cancels SDK initialization as well as the first prompt dispatch. */
   signal?: AbortSignal
@@ -824,6 +826,13 @@ export class PiAgentManager {
     await args.onExecutionPolicyApplied?.(session.sessionFile ?? undefined)
     args.signal?.throwIfAborted()
     if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
+    const native = this.getCommandRuntime(args.chatId)!
+    const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+    if (prepared?.text) {
+      await session.sendCustomMessage({ customType: "memosync-context", content: prepared.text, display: false }, { triggerTurn: false })
+      args.signal?.throwIfAborted()
+      prepared.accepted()
+    }
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

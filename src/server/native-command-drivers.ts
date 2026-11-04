@@ -37,7 +37,7 @@ export function createClaudeCommandRuntime(args: {
   let alive = true, hasCompact = false
   let nativeSession = args.session()
   const listeners = new Set<() => void>()
-  let pending: { id: string; boundary: boolean; restore: boolean; resolve(): void; reject(error: Error): void } | undefined
+  let pending: { id: string; boundary: boolean; restore: boolean; acknowledged: boolean; resolve(): void; reject(error: Error): void } | undefined
   const invoke = (text: string, restore: boolean, signal: AbortSignal) => new Promise<void>((resolve, reject) => {
     signal.throwIfAborted()
     if (pending) throw new Error("Native control is busy")
@@ -45,7 +45,7 @@ export function createClaudeCommandRuntime(args: {
     const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", onAbort); pending = undefined }
     const onAbort = () => { cleanup(); reject(new Error("Native control cancelled")) }
     const timer = setTimeout(() => { cleanup(); alive = false; args.close(); reject(new Error("Native control completion timed out")) }, 120_000)
-    pending = { id, boundary: false, restore, resolve: () => { cleanup(); resolve() }, reject: error => { cleanup(); reject(error) } }
+    pending = { id, boundary: false, restore, acknowledged: false, resolve: () => { cleanup(); resolve() }, reject: error => { cleanup(); reject(error) } }
     signal.addEventListener("abort", onAbort, { once: true })
     try { args.push(text, id, !restore) } catch { pending?.reject(new Error("Native control input failed")) }
   })
@@ -76,13 +76,13 @@ export function createClaudeCommandRuntime(args: {
       if (!pending) return false
       const origin = record(m.origin).kind
       if (typeof origin === 'string' && origin !== 'human') return false
-      if (m.type === 'user' && m.uuid === pending.id && pending.restore) { pending.resolve(); return true }
+      if (m.type === 'user' && m.uuid === pending.id && pending.restore) { pending.acknowledged = true; return true }
       if (m.type === "system" && m.subtype === "compact_boundary" && record(m.compact_metadata).trigger === 'manual') pending.boundary = true
       if (m.type === "result") {
         // Control inputs own the idle Query until their result; no ordinary turn/capture is admitted.
         const ids = [m.user_message_uuid, ...(Array.isArray(m.user_message_uuids) ? m.user_message_uuids : [])]
         if (ids.some(id => id === pending!.id)) {
-          if (m.is_error || pending.restore || !pending.boundary) pending.reject(new Error("Native compact or no-reply append completion was not observed"))
+          if (m.is_error || (pending.restore ? !pending.acknowledged : !pending.boundary)) pending.reject(new Error("Native compact or no-reply append completion was not observed"))
           else pending.resolve()
         }
       }
@@ -180,5 +180,8 @@ export async function discoverCodexCommands(request: (method: string, params: un
     } while (cursor)
     return items
   })
-  return { commands: discovery("ready", [], proof("app-server public command routes (TUI-only commands unsupported)", version)), skills, connectors }
+  const commands = skills.status === 'ready' ? skills.items.filter(s => s.enabled !== false && s.id !== s.name).map(s => ({
+    ...command(`skill:${s.name}`, s.description ?? '', source, 'native-skill', true), nativeSkill: { name: s.name, path: s.id },
+  })) : []
+  return { commands: discovery(skills.status, commands, proof("turn/start input:skill (TUI-only commands unsupported)", version)), skills, connectors }
 }

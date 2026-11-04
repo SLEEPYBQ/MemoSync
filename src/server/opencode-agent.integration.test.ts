@@ -70,6 +70,28 @@ integration('OpenCode real-binary backend with scripted local model', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
+  test('native command discovery, execution, compact and noReply context restoration use the installed server', async () => {
+    runtime.opencodeConfig = { ...runtime.opencodeConfig, command: { fixture: { template: 'TURN_SECOND', description: 'Synthetic native command' } } }
+    const first = await collect(await start('TURN_SECOND'))
+    processId('main')
+    const sessionToken = token(first)
+    const native = manager.getCommandRuntime('main')!
+    const found = await native.discover()
+    expect(found.commands.status).toBe('ready')
+    expect(found.commands.items.some(c => c.name === 'fixture')).toBe(true)
+    const command = await collect(await start('/fixture local-arguments', { sessionToken }))
+    expect(entries(command).at(-1)).toMatchObject({ kind: 'result', subtype: 'success' })
+    const beforeCompact = fake.requests.length
+    await native.compact!(AbortSignal.timeout(15_000))
+    expect(fake.requests.length).toBeGreaterThan(beforeCompact)
+    const afterCompact = fake.requests.length
+    expect(await native.restore!('CURRENT_HOST_AND_MEMORY_CONTEXT', AbortSignal.timeout(5_000))).toEqual({ delivery: 'native-accepted' })
+    expect(fake.requests.length).toBe(afterCompact)
+    const after = await collect(await start('TURN_SECOND', { sessionToken }))
+    expect(entries(after).at(-1)).toMatchObject({ kind: 'result', subtype: 'success' })
+    expect(JSON.stringify(fake.requests.slice(afterCompact).map(r => r.body.messages))).toContain('CURRENT_HOST_AND_MEMORY_CONTEXT')
+  }, 30_000)
+
   test('streams text, memory and read calls; changing memory preserves the system and native history', async () => {
     const dispatched: string[] = []
     const specs = [{ name: 'search_memory', description: 'Search saved memory', schema: { query: z.string() }, handler: async () => ({ text: '[M-7] codeword pelican' }) }]

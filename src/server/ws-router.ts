@@ -924,7 +924,7 @@ export function createWsRouter({
             }
           },
           agent.getStreamingAssistantTexts(),
-          agent.getCommandCatalog?.(topic.chatId)
+          agent.getCommandCatalog?.(topic.chatId),
           agent.getHarnessSnapshot?.(topic.chatId)
         ),
       },

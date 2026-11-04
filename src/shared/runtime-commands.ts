@@ -9,6 +9,9 @@ export interface CommandRuntimeIdentity {
   profile: string
   workspace: string
   mode: string
+  /** P1 effective acknowledgement, with zero denoting no native acknowledgement yet. */
+  policyRevision?: number
+  desiredPolicyRevision?: number
 }
 export interface RuntimeSourceProof {
   api: string
@@ -31,9 +34,10 @@ export interface RuntimeCommand {
   arguments: { type: "string"; hint?: string }
   requiresIdle: boolean
   sideEffect: "model-turn" | "context-compaction"
-  route: "native-prompt" | "session-command" | "compact"
+  route: "native-prompt" | "native-skill" | "session-command" | "compact"
   source: RuntimeSourceProof
   requiredRuntimeVersion: string
+  nativeSkill?: { name: string; path: string }
 }
 export interface RuntimeSkill {
   id: string

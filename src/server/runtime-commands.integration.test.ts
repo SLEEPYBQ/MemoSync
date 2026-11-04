@@ -112,6 +112,7 @@ class LocalCodexProtocol extends EventEmitter {
   readonly stderr = new PassThrough()
   readonly requests: any[] = []
   compactRequest?: string
+  injectRequests: string[] = []
   constructor() {
     super()
     let buffer = ''
@@ -123,6 +124,7 @@ class LocalCodexProtocol extends EventEmitter {
         if (request.method === 'initialize') this.write({ id: request.id, result: {} })
         if (request.method === 'thread/start') this.write({ id: request.id, result: { thread: { id: 'fixture-thread' } } })
         if (request.method === 'skills/list' || request.method === 'mcpServerStatus/list') this.write({ id: request.id, result: { data: [] } })
+        if (request.method === 'thread/inject_items') this.injectRequests.push(request.id)
         if (request.method === 'thread/compact/start') {
           this.compactRequest = request.id
           this.write({ method: 'turn/started', params: { threadId: 'fixture-thread', turn: { id: 'compact-turn', status: 'inProgress', error: null } } })
@@ -165,6 +167,38 @@ test.each(['legacy', 'item'] as const)('Codex compact waits for matching boundar
     await compact
     expect(await native.restore!('current-view', new AbortController().signal)).toEqual({ delivery: 'native-accepted' })
     expect(appended).toEqual(['current-view'])
+    expect(child.requests.some(r => r.method === 'turn/start')).toBe(false)
+  } finally { await manager.stopAll() }
+})
+
+test('production coordinator binds serialized Codex developer restoration and waits for native ACK', async () => {
+  const child = new LocalCodexProtocol()
+  const runtime: EngineRuntime = { engine: 'codex', executable: { state: 'ready', version: '0.166.0-alpha.6' },
+    env: { HOME: '/temp/isolated-fixture', CODEX_HOME: '/temp/isolated-fixture/codex' }, args: [], model: 'fixture', isolated: true }
+  const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+  // No manual setCommandContextRestorer: exercise the actual production constructor seam.
+  new AgentCoordinator({ store: {} as never, onStateChange() {}, codexManager: manager })
+  try {
+    await manager.startSession({ chatId: 'fixture', cwd: '/temp/fixture-project', model: 'fixture', runtime, sessionToken: null })
+    const native = manager.getCommandRuntime('fixture')!
+    expect(native.restore).toBeFunction()
+    let accepted = false
+    const first = native.restore!('first-context', new AbortController().signal).then(() => { accepted = true })
+    const second = manager.appendDeveloperContext('fixture', 'second-context', new AbortController().signal)
+    await flush()
+    expect(accepted).toBe(false)
+    expect(child.injectRequests).toHaveLength(1)
+    await expect(manager.startTurn({ chatId: 'fixture', model: 'fixture', content: 'user', planMode: false, onToolRequest: async () => ({}) })).rejects.toThrow('already running')
+    child.write({ id: child.injectRequests[0], result: {} })
+    await first
+    await flush()
+    expect(accepted).toBe(true)
+    expect(child.injectRequests).toHaveLength(2)
+    child.write({ id: child.injectRequests[1], result: {} })
+    await second
+    expect(child.requests.filter(r => r.method === 'thread/inject_items').map(r => r.params.items[0])).toMatchObject([
+      { role: 'developer', content: [{ text: 'first-context' }] }, { role: 'developer', content: [{ text: 'second-context' }] },
+    ])
     expect(child.requests.some(r => r.method === 'turn/start')).toBe(false)
   } finally { await manager.stopAll() }
 })

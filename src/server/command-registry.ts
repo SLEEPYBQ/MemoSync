@@ -26,6 +26,7 @@ interface Binding {
   snapshot: ChatCommandCatalog
   busy: () => boolean
   restoreText: () => string
+  contextAccepted?: (text: string) => void
   invalidateContext?: () => void
   submit: (command: RuntimeCommand, args: string) => Promise<unknown>
   generation: number
@@ -159,6 +160,7 @@ export class CommandRegistry {
         controller.signal.throwIfAborted()
         if (receipt.delivery !== "native-accepted") throw new Error("Context append queued without native acceptance")
         if (b.restoreText() !== restoredText) throw new Error('Current context view changed during restoration')
+        b.contextAccepted?.(restoredText)
         update({ status: "completed", phase: "settled", contextRestored: true, delivery: receipt.delivery })
         this.invalidate(command.chatId)
         await this.refresh(command.chatId)

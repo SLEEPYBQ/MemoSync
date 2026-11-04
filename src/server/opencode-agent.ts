@@ -1,3 +1,4 @@
+import type { PrepareNativeContext } from "./context-compiler"
 import { realpath } from 'node:fs/promises'
 import { createOpencodeCommandRuntime } from './native-command-drivers'
 import type { NativeCommandRuntime } from './command-registry'
@@ -53,6 +54,7 @@ export function translateOpencodeTool(rawName: string, args: Record<string, unkn
 export const OPENCODE_SYSTEM_PROMPT = "Use the memory context supplied with the current user message for that turn. Earlier memory blocks are historical snapshots and may have been updated."
 
 export interface StartOpencodeTurnArgs {
+  prepareContext?: PrepareNativeContext
   chatId: string
   cwd: string
   content: string
@@ -246,6 +248,18 @@ export class OpencodeAgentManager {
         if (updated.data?.id !== sessionID || rules?.length !== 1 || rules[0]?.permission !== '*' || rules[0]?.pattern !== '*' || rules[0]?.action !== args.executionPolicy.permission) throw new Error('OpenCode did not confirm the requested session permission rules')
         if (args.isPolicyCurrent?.() === false) throw new Error('Stale execution policy acknowledgement')
         await args.onExecutionPolicyApplied?.(sessionID)
+      }
+      chat.sessionID = sessionID
+      const native = this.getCommandRuntime(args.chatId)!
+      const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+      if (prepared?.text) {
+        await chat.client.session.prompt({ sessionID, noReply: true, parts: [{ type: 'text', text: prepared.text }] }, { ...options, throwOnError: true })
+        signal.throwIfAborted()
+        prepared.accepted()
+      }
+      // Commands have no prompt parts; admit this turn's memory through the native noReply API first.
+      if (args.memoryContext && args.content.startsWith('/')) {
+        await chat.client.session.prompt({ sessionID, noReply: true, parts: [{ type: 'text', text: args.memoryContext }] }, { ...options, throwOnError: true })
       }
       // Fork copies can emit old message events after the fork HTTP response.
       // Snapshot their IDs before prompting, so inherited text cannot become this

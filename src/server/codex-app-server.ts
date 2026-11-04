@@ -1,3 +1,4 @@
+import type { PrepareNativeContext } from "./context-compiler"
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
@@ -130,6 +131,7 @@ interface PendingTurn {
 }
 
 interface SessionContext {
+  runtime?: EngineRuntime
   commandRuntime?: NativeCommandRuntime
   commandListeners?: Set<() => void>
   compactControl?: { turnId: string | null; boundary: boolean; completed: boolean; resolve(): void; reject(error: Error): void }
@@ -145,6 +147,8 @@ interface SessionContext {
   externalToolsDisabled?: boolean
   toolsDisabled?: boolean
   executionPolicyKey?: string
+  nativeVersion?: string
+  contextAppend?: Promise<void>
   developerInjectionUnsupported?: boolean
 }
 
@@ -186,6 +190,8 @@ export interface StartCodexTurnArgs {
   isPolicyCurrent?: () => boolean
   onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
   /** Append host/memory context as a native developer item before starting this turn. */
+  nativeSkill?: { name: string; path: string }
+  prepareContext?: PrepareNativeContext
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
   outputSchema?: Record<string, unknown>
@@ -900,7 +906,7 @@ export class CodexAppServerManager {
       && (!args.disableExternalTools || existing.externalToolsDisabled)
       && (!args.disableTools || existing.toolsDisabled)
       && existing.executionPolicyKey === JSON.stringify(args.executionPolicy)
-      && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
+      && JSON.stringify(existing.runtime ?? runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
       return existing.sessionToken
     }
 
@@ -915,6 +921,7 @@ export class CodexAppServerManager {
       chatId: args.chatId,
       cwd: args.cwd,
       child,
+      runtime: args.runtime,
       pendingRequests: new Map(),
       pendingTurn: null,
       sessionToken: null,
@@ -954,6 +961,7 @@ export class CodexAppServerManager {
         experimentalApi: true,
       },
     } satisfies InitializeParams)
+    context.nativeVersion = args.runtime?.executable.version
     this.writeMessage(context, {
       method: "initialized",
     })
@@ -1067,7 +1075,7 @@ export class CodexAppServerManager {
 
   async startTurn(args: StartCodexTurnArgs): Promise<HarnessTurn> {
     const context = this.requireSession(args.chatId)
-    if (context.pendingTurn) {
+    if (context.pendingTurn || context.contextAppend || context.compactControl) {
       throw new Error("Codex turn is already running")
     }
 
@@ -1115,13 +1123,19 @@ export class CodexAppServerManager {
       // pendingTurn reserves the idle boundary across both RPCs. A second
       // startTurn cannot inject into this thread while either request is pending.
       let content = args.content
-      if (args.developerInstructions) {
+      const native = this.getCommandRuntime(args.chatId)!
+      const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+      const developerInstructions = [prepared?.text, args.developerInstructions].filter(Boolean).join("\n\n")
+      let contextInjected = false
+      if (developerInstructions) {
         if (!context.developerInjectionUnsupported && !codexProtocolCompat09x()) {
           try {
             await this.sendRequest(context, "thread/inject_items", {
               threadId: context.sessionToken ?? "",
-              items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: args.developerInstructions }] }],
+              items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: developerInstructions }] }],
             } satisfies ThreadInjectItemsParams)
+            contextInjected = true
+            prepared?.accepted()
           } catch (error) {
             if (!isUnsupportedDeveloperInjection(error)) throw error
             context.developerInjectionUnsupported = true
@@ -1131,7 +1145,7 @@ export class CodexAppServerManager {
           // 0.92–0.94 and servers explicitly missing inject_items retain native
           // instructions/history. User text is a visible priority downgrade;
           // collaboration settings are not a reliable developer channel.
-          content = `${args.developerInstructions}\n\n${args.content}`
+          content = `${developerInstructions}\n\n${args.content}`
           queue.push({ type: "transcript", entry: timestamped({
             kind: "status",
             status: "This Codex version does not support native developer injection. Memory context is included in user input for this turn without developer priority. Upgrade Codex to enable developer injection.",
@@ -1147,6 +1161,7 @@ export class CodexAppServerManager {
             text: content,
             text_elements: [],
           },
+          ...(args.nativeSkill ? [{ type: "skill" as const, ...args.nativeSkill }] : []),
         ],
         approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
         ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
@@ -1164,6 +1179,7 @@ export class CodexAppServerManager {
           },
         },
       } satisfies TurnStartParams)
+      if (prepared && !contextInjected) prepared.accepted()
       pendingTurn.turnId = response.turn.id
       if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
       if (args.onExecutionPolicyApplied) await args.onExecutionPolicyApplied(context.sessionToken ?? undefined)
@@ -1264,7 +1280,34 @@ export class CodexAppServerManager {
     return Boolean(context && (context.pendingTurn || context.pendingRequests.size > 0 || context.compactControl))
   }
 
-  /** P0 owns the verified developer-channel append. Register it after adapter integration. */
+  /** Serialized public developer append; completion is the inject_items RPC acknowledgement. */
+  async appendDeveloperContext(chatId: string, text: string, signal: AbortSignal): Promise<void> {
+    const context = this.requireSession(chatId)
+    if (context.pendingTurn || context.compactControl) throw new Error("Codex session is busy")
+    const prior = context.contextAppend
+    const pending = (async () => {
+      await prior
+      signal.throwIfAborted()
+      if (context.closed || this.sessions.get(chatId) !== context) throw new Error("Codex session retired")
+      if (context.developerInjectionUnsupported || codexProtocolCompat09x()) throw new Error("Native developer append unsupported")
+      const abort = () => { void this.stopSession(chatId) }
+      signal.addEventListener("abort", abort, { once: true })
+      try {
+        await this.sendRequest(context, "thread/inject_items", {
+          threadId: context.sessionToken!,
+          items: [{ type: "message", role: "developer", content: [{ type: "input_text", text }] }],
+        } satisfies ThreadInjectItemsParams)
+        signal.throwIfAborted()
+      } catch (error) {
+        if (isUnsupportedDeveloperInjection(error)) context.developerInjectionUnsupported = true
+        throw error
+      } finally { signal.removeEventListener("abort", abort) }
+    })()
+    context.contextAppend = pending
+    try { await pending } finally { if (context.contextAppend === pending) context.contextAppend = undefined }
+  }
+
+  /** Bind the host restoration path to the same serialized native developer channel. */
   private commandContextRestorer?: (chatId: string, text: string, signal: AbortSignal) => Promise<void>
   setCommandContextRestorer(restore: (chatId: string, text: string, signal: AbortSignal) => Promise<void>) {
     this.commandContextRestorer = restore
@@ -1273,7 +1316,7 @@ export class CodexAppServerManager {
     const context = this.sessions.get(chatId)
     if (!context?.sessionToken || context.closed) return undefined
     if (context.commandRuntime) return context.commandRuntime
-    const version = runtimeForEnv(context.subprocessEnv)?.executable.version ?? 'unknown'
+    const version = context.nativeVersion ?? context.runtime?.executable.version ?? runtimeForEnv(context.subprocessEnv)?.executable.version ?? 'unreported'
     const manager = this
     const listeners = context.commandListeners ??= new Set()
     return context.commandRuntime = {
@@ -1282,10 +1325,11 @@ export class CodexAppServerManager {
       discover: () => discoverCodexCommands((method, params) => this.sendRequest(context, method, params), context.cwd, version),
       onChanged(listener) { listeners.add(listener); return () => listeners.delete(listener) },
       compactSource: { api: 'thread/compact/start + compaction boundary + matching turn/completed', version, evidence: 'public-api' },
-      // This fixed public protocol is verified for the research baseline; unknown older versions stay unavailable.
-      compact: /(?:^|\s)0\.166\.0-alpha\.5\.1(?:$|\s)/.test(version) ? async signal => {
+      // Versioned API evidence: the research baseline and installed alpha.6 loopback compact probe.
+      // Injection or a similar version alone is not evidence of the compact completion boundary.
+      compact: /(?:^|\s)0\.166\.0-alpha\.(?:5\.1|6)(?:$|\s)/.test(version) ? async signal => {
         signal.throwIfAborted()
-        if (context.pendingTurn || context.compactControl) throw new Error('Codex session is busy')
+        if (context.pendingTurn || context.contextAppend || context.compactControl) throw new Error('Codex session is busy')
         let resolve!: () => void, reject!: (error: Error) => void
         const done = new Promise<void>((yes, no) => { resolve = yes; reject = no })
         const control = { resolve, reject, turnId: null as string | null, boundary: false, completed: false }
@@ -1296,12 +1340,16 @@ export class CodexAppServerManager {
         try {
           // Install the completion observer before request dispatch; the completion may precede its JSON-RPC ACK.
           await Promise.all([this.sendRequest(context, 'thread/compact/start', { threadId: context.sessionToken }), done])
+        } catch (error) {
+          // A timeout/failed ACK does not prove the native control loop stopped.
+          await this.stopSession(chatId)
+          throw error
         } finally {
           clearTimeout(timer); signal.removeEventListener('abort', abort)
           if (context.compactControl === control) context.compactControl = undefined
         }
       } : undefined,
-      get restore() { return manager.commandContextRestorer ? async (text: string, signal: AbortSignal) => {
+      get restore() { return !context.developerInjectionUnsupported && !codexProtocolCompat09x() && manager.commandContextRestorer ? async (text: string, signal: AbortSignal) => {
         await manager.commandContextRestorer!(chatId, text, signal)
         return { delivery: 'native-accepted' as const }
       } : undefined },

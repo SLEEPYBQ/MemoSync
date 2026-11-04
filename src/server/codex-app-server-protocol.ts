@@ -93,7 +93,7 @@ export interface TextUserInput {
   text_elements: []
 }
 
-export type CodexUserInput = TextUserInput
+export type CodexUserInput = TextUserInput | { type: "skill"; name: string; path: string }
 
 export interface CollaborationMode {
   /** "code" is the pre-0.95 protocol's name for the default mode (CODEX_PROTOCOL_COMPAT=0.9x). */
