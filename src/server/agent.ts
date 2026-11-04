@@ -1,4 +1,6 @@
-import type { ParentLaunch, ClaudeParentLaunch } from './memory/parent-launch'
+import { createHash } from 'node:crypto'
+import { CaptureQueue, type CaptureJob } from './memory/capture-queue'
+import { snapshotParentLaunch, type ParentLaunch, type ClaudeParentLaunch } from './memory/parent-launch'
 import type { ChatCommandCatalog, ExecuteRuntimeCommand, RuntimeCommand } from '../shared/runtime-commands'
 import { CommandRegistry, type NativeCommandRuntime } from './command-registry'
 import { createClaudeCommandRuntime, supportsClaudeInputReplay } from './native-command-drivers'
@@ -311,6 +313,7 @@ export function resolveTurnMemoryState(
 
 interface StartTurnArgs {
   nativeSkill?: { name: string; path: string }
+  approvedMemoryViewRevision?: string
   connectionId?: string
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
@@ -366,6 +369,13 @@ interface StartupReservation {
 }
 
 interface ActiveTurn {
+  engineRuntime?: EngineRuntime
+  parentLaunch?: ParentLaunch
+  analysisPolicyKey?: string
+  projectId?: string
+  localPath?: string
+  sessionToken?: string | null
+  expectedUses?: ExpectedMemoryUse[]
   memoryState: TurnMemoryState
   chatId: string
   provider: AgentProvider
@@ -417,6 +427,7 @@ interface ActiveTurn {
 interface ClaudeExecutionControl {
   permissionMode: Extract<NativeExecutionPolicy, { engine: "claude" }>["permissionMode"]
   isCurrent: () => boolean
+  canUseMemory?: (name: string) => boolean
   approve: (name: string, input: Record<string, unknown>, requestId: string) => Promise<boolean>
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApplied: () => Promise<void>
@@ -513,6 +524,8 @@ interface AgentCoordinatorArgs {
   /** Persistent C/T/M/W/A conversations; injected in tests, enabled in the application. */
   memoryBranches?: boolean
   createMemoryBranch?: typeof createMemoryBranch
+  /** Recovery resolves the original runtime identity; injectable for offline tests. */
+  resolveCaptureRuntime?: typeof resolveEngineRuntime
   /** Sidecar relevance prediction for the preview receipt (REDESIGN D6); null disables. */
   memoryRelevance?: RelevanceService | null
   /** Turn-scoped instructions for how Claude should use each selected memory. */
@@ -557,6 +570,18 @@ interface AgentCoordinatorArgs {
   }) => Promise<ClaudeSessionHandle>
 }
 
+interface DurableCaptureInput {
+  finished: Omit<PostTurnMemoryPassArgs, 'parentLaunch' | 'engineRuntime' | 'injectedMemories' | 'expectedUses'>
+  policyKey: string
+  runtime?: { fingerprint: string; connectionId?: string; model: string }
+}
+
+function captureRuntimeFingerprint(runtime: EngineRuntime): string {
+  // Credentials and profile paths never leave this process; only their digest
+  // is journaled so recovery cannot silently switch endpoints or profiles.
+  return createHash('sha256').update(JSON.stringify({ ...runtime, env: Object.entries(runtime.env).sort(([a], [b]) => a.localeCompare(b)) })).digest('hex')
+}
+
 interface SendToStartingProfile {
   traceId: string
   startedAt: number
@@ -566,6 +591,7 @@ interface PostTurnMemoryPassArgs {
   /** Launch of the completed turn; detached passes must never use the next turn. */
   parentLaunch?: ParentLaunch
   engineRuntime?: EngineRuntime
+  analysisPolicyKey?: string
   memoryState?: TurnMemoryState
   chatId: string
   projectId?: string
@@ -1564,6 +1590,7 @@ export async function startClaudeSession(args: {
       ? {
           memory: toClaudeMemoryMcpServer(memorySpecs.map(spec => ({ ...spec, handler: (input, context) => {
             if (executionControl && !executionControl.isCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
+            if (executionControl?.canUseMemory?.(spec.name) === false) return { text: "Memory access is disabled", isError: true }
             return spec.handler(input, context)
           } })), memoryToolContext),
         }
@@ -1706,6 +1733,7 @@ interface PendingMemoryPreview {
   memories: MemoryItem[]
   /** Expected-use text is generated server-side and scoped to this revision. */
   expectedUseById: Map<string, string>
+  assertCurrentView?: () => void
   proposalsId?: string
   transferId?: string
   checkupId?: string
@@ -1750,18 +1778,22 @@ export class AgentCoordinator {
   private readonly forkQueryFn: typeof runForkQuery
   private readonly memoryBranches: boolean
   private readonly createMemoryBranchFn: typeof createMemoryBranch
+  private readonly resolveCaptureRuntimeFn: typeof resolveEngineRuntime
   private readonly branchPreparations = new Map<string, {
     pipeline: MemoryBranchPipeline
     args: StartTurnArgs
     snapshots: { transfer: Map<string, string>; changes: Map<string, string> }
   }>()
   private readonly workingBranches = new Map<string, MemoryBranch>()
-  /** Detached from turn/preparation ownership: one running C and one latest
-   * completed turn per chat. Sending/Stopping the next turn never waits on C. */
+  private readonly auditBranches = new Map<string, Set<MemoryBranch>>()
+  /** Detached from foreground turns; every completed turn has its own journal row. */
+  private readonly captureQueue: CaptureQueue<DurableCaptureInput> | null
+  private captureRecoveryStarted = false
+  private readonly captureLaunches = new Map<string, Pick<PostTurnMemoryPassArgs, 'engineRuntime' | 'parentLaunch'>>()
   private readonly automaticCaptures = new Map<string, {
     controller: AbortController
     branch?: MemoryBranch
-    pending?: PostTurnMemoryPassArgs
+    task?: Promise<void>
   }>()
   private readonly memoryRelevance: RelevanceService | null
   private readonly memoryUsePlan: UsePlanService | null
@@ -1905,17 +1937,20 @@ export class AgentCoordinator {
     this.getMemorySettings = args.getMemorySettings ?? (() => ({ enabled: true, learn: true }))
     this.memoryBranches = (args.memoryBranches ?? Boolean(args.createMemoryBranch))
     this.createMemoryBranchFn = args.createMemoryBranch ?? createMemoryBranch
+    this.resolveCaptureRuntimeFn = args.resolveCaptureRuntime ?? resolveEngineRuntime
+    this.captureQueue = this.memoryBranches && this.memory ? new CaptureQueue(this.memory.db) : null
     this.getMemoryPreviewSettings =
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
 
-  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null, parentLaunch?: ParentLaunch) {
+  private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null, parentLaunch?: ParentLaunch, completedTurn = false, turnId?: string) {
     const chat = this.store.requireChat(args.chatId)
+    if (this.isEngineStartBlocked(args.chatId) || chat.memoryDisabled || !this.getMemorySettings().enabled) throw new Error('Memory branch is no longer enabled')
     const project = this.store.getProject(chat.projectId)
     if (!project) throw new Error("Memory branch project is unavailable")
-    const runtime = args.engineRuntime ?? this.sessionRuntimes.get(args.chatId)
+    const runtime = args.engineRuntime ?? (completedTurn ? undefined : this.sessionRuntimes.get(args.chatId))
     const parentSessionToken = parent === undefined ? chat.pendingForkSessionToken ?? chat.sessionToken : parent
     const branch = this.createMemoryBranchFn({
       provider: args.provider,
@@ -1928,22 +1963,47 @@ export class AgentCoordinator {
       runtime,
       purpose,
       // A completion snapshot also disambiguates successive models on one token.
-      parentLaunch: parentLaunch ?? this.sessionLaunches.get(`${args.provider}:${parentSessionToken}`) ?? this.parentLaunches.get(args.chatId),
+      parentLaunch: parentLaunch ?? (completedTurn ? undefined : this.sessionLaunches.get(`${args.provider}:${parentSessionToken}`) ?? this.parentLaunches.get(args.chatId)),
+      onRequest: observation => {
+        this.memory?.logger.event({ type: 'memory.latency', sessionId: args.chatId, turnId,
+          stage: purpose, segment: 'branch_request', branchId: observation.branchId, durationMs: observation.durationMs,
+          requestCount: observation.requestCount, outcome: observation.outcome })
+        this.memory?.logger.event({ type: 'memory.latency', sessionId: args.chatId, turnId,
+          stage: purpose, segment: 'host', branchId: observation.branchId, durationMs: observation.hostDurationMs, outcome: observation.outcome })
+      },
     })
     this.memory?.logger.event({ type: "memory.branch", sessionId: args.chatId, engine: args.provider, purpose, branchId: branch.id, mode: branch.mode })
-    return {
+    let branchDisposed = false
+    const tracked: MemoryBranch = {
       get id() { return branch.id },
       get mode() { return branch.mode },
       get sessionToken() { return branch.sessionToken },
-      ask: (prompt, options) => this.trackMemoryWork(args.chatId, () => branch.ask(prompt, options)),
+      ask: (prompt, options) => this.trackMemoryWork(args.chatId, () => {
+        if (this.isEngineStartBlocked(args.chatId) || !this.store.getChat(args.chatId) || this.store.getChat(args.chatId)?.memoryDisabled || !this.getMemorySettings().enabled) throw new Error('Memory branch is no longer enabled')
+        return branch.ask(prompt, options)
+      }),
       dispose: () => {
+        if (branchDisposed) return
+        branchDisposed = true
+        this.auditBranches.get(args.chatId)?.delete(tracked)
         const cleanup = branch.dispose()
         if (!cleanup) return
         this.branchCleanups.add(cleanup)
         void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => this.branchCleanups.delete(cleanup))
         return cleanup
       },
-    } satisfies MemoryBranch
+    }
+    if (purpose === 'audit') {
+      const audits = this.auditBranches.get(args.chatId) ?? new Set<MemoryBranch>()
+      audits.add(tracked)
+      this.auditBranches.set(args.chatId, audits)
+    }
+    return tracked
+  }
+
+  private cancelAudits(chatId: string) {
+    for (const branch of this.auditBranches.get(chatId) ?? []) branch.dispose()
+    this.auditBranches.delete(chatId)
   }
 
   private memoryBranchSnapshot(): Map<string, string> {
@@ -1970,28 +2030,73 @@ export class AgentCoordinator {
 
   private startMemoryBranches(args: StartTurnArgs, ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number }) {
     if (!this.memoryBranches) return
+    const hostStarted = performance.now()
     this.disposeMemoryBranches(args.chatId)
-    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content }
+    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
     const candidate = this.capture?.buildBranchPrompt?.(captureInput)
     const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
     const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
-    const empty = (schema: string): BranchRequest => ({ prompt: `The current memory store is empty. Analyze the current task only if it yields a valid proposal. Otherwise return ${schema}. Current task: ${JSON.stringify(captureInput.userText)}`, dependencyKey: "" })
+    const empty = (raw: Record<string, unknown>): BranchRequest => ({ prompt: '', dependencyKey: '', skip: { raw, reason: 'service-unavailable' } })
     const snapshot = this.memoryBranchSnapshot()
     this.branchPreparations.set(args.chatId, {
       args,
       snapshots: { transfer: new Map(snapshot), changes: new Map(snapshot) },
       pipeline: new MemoryBranchPipeline({
-        createBranch: purpose => this.newMemoryBranch(args, purpose),
+        createBranch: purpose => this.newMemoryBranch(args, purpose, undefined, undefined, false, args.turnId),
+        onStage: (stage, outcome, reason) => this.memory?.logger.event({ type: 'memory.scheduling', sessionId: args.chatId, turnId: args.turnId, stage, outcome, reason }),
         requests: {
-          candidate: candidate ?? empty('{"candidates":[]}'),
-          transfer: transfer ?? empty('{"suggestions":[]}'),
-          changes: changes ?? empty('{"conflicts":[],"redundancy":[],"staleness":[]}'),
+          candidate: candidate ?? empty({ candidates: [] }),
+          transfer: this.memoryBranchRequest(args, transfer ?? empty({ suggestions: [] })),
+          changes: this.memoryBranchRequest(args, changes ?? empty({ conflicts: [], redundancy: [], staleness: [] })),
         },
       }),
     })
+    this.memory?.logger.event({ type: 'memory.latency', sessionId: args.chatId, turnId: args.turnId, stage: 'preparation-start', segment: 'host', durationMs: performance.now() - hostStarted })
   }
 
-  private async continueMemoryBranch(chatId: string, stage: "transfer" | "changes", review: string, dependencyKey: string) {
+  private memoryWait(chatId: string, stage: string, turnId?: string) {
+    const started = performance.now()
+    let settled = false
+    return (outcome: string) => {
+      if (settled) return
+      settled = true
+      this.memory?.logger.event({ type: 'memory.latency', sessionId: chatId, turnId, stage, segment: 'human_wait', durationMs: performance.now() - started, outcome })
+    }
+  }
+
+  private memoryPolicyKey() {
+    return JSON.stringify(this.getMemorySettings())
+  }
+
+  private memoryAnalysisPolicyKey(chatId: string, engine: AgentProvider): string {
+    const selected = this.executionPolicyFor(chatId, engine)
+    return JSON.stringify([this.memoryPolicyKey(), executionPolicyKey(selected.policy), selected.revision])
+  }
+
+  private memoryViewGuard(args: StartTurnArgs): () => void {
+    const key = () => {
+      const chat = this.store.requireChat(args.chatId)
+      return JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider),
+        chat.memoryDisabled, this.memory && planMemoryInjection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId }).view.revision])
+    }
+    const approved = key()
+    return () => {
+      if (key() !== approved) throw new Error('Working memory changed during review. Reopen preparation to review the updated items.')
+    }
+  }
+
+  private memoryBranchRequest(args: StartTurnArgs, request: BranchRequest): BranchRequest {
+    const chat = this.store.requireChat(args.chatId)
+    const view = this.memory ? planMemoryInjection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId }).view : undefined
+    return { ...request, viewKey: JSON.stringify({ policy: this.memoryAnalysisPolicyKey(args.chatId, args.provider), task: args.memoryUserText ?? args.content,
+      viewRevision: view?.revision,
+      projectId: chat.projectId, chatId: args.chatId, disabled: chat.memoryDisabled,
+      store: [...this.memoryBranchSnapshot()].sort(([a], [b]) => a.localeCompare(b)),
+      declined: (this.memory?.store.list() ?? []).filter(item => this.memory!.store.getKv(`transfer_declined:${item.id}:${chat.projectId ?? args.chatId}`)).map(item => item.id).sort(),
+    }) }
+  }
+
+  private async continueMemoryBranch(chatId: string, stage: "transfer" | "changes", review: string, dependencyKey: string, currentRequest?: BranchRequest | null) {
     const preparation = this.branchPreparations.get(chatId)
     if (!preparation) throw new Error("Memory preparation branch is unavailable")
     const previous = preparation.snapshots[stage]
@@ -2005,7 +2110,9 @@ export class AgentCoordinator {
       && message.createdAt >= (this.store.getMessages(chatId).find(entry => entry._id === preparation.args.turnId)?.createdAt ?? Infinity),
     ).map(({ _id, createdAt, ...decision }) => decision)
     const declinedSources = (this.memory?.store.list() ?? []).filter(item => this.memory!.store.getKv(`transfer_declined:${item.id}:${chat.projectId ?? chatId}`)).map(item => item.id)
-    return await preparation.pipeline.continue(stage, { review, changes: { upsert, remove, decisions, declinedSources }, dependencyKey })
+    return await preparation.pipeline.continue(stage, { review, changes: { upsert, remove, decisions, declinedSources }, dependencyKey,
+      request: currentRequest ? this.memoryBranchRequest(preparation.args, currentRequest) : undefined,
+    })
   }
 
   private disposeMemoryBranches(chatId: string) {
@@ -2043,8 +2150,10 @@ export class AgentCoordinator {
     this.workingBranches.get(args.chatId)?.dispose()
     const branch = this.newMemoryBranch(args, "working-memory")
     this.workingBranches.set(args.chatId, branch)
+    const assertCurrentView = this.memoryViewGuard(args)
     const input = { task: args.memoryUserText ?? args.content, memories, mandatoryIds }
     const raw = await branch.ask(buildWorkingMemoryBranchPrompt(input), { schema: memoryStageSchema("working-memory") })
+    assertCurrentView()
     const result = parseWorkingMemoryBranchResult(raw, input)
     const expected = new Map(result.expectedUses.map(use => [use.id, use.expectedUse]))
     return result.relevant.map(item => ({ ...item, expectedUse: expected.get(item.id) }))
@@ -2142,6 +2251,7 @@ export class AgentCoordinator {
       const authoritativeExpectedUses = command.decision === "go_on"
         ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
         : []
+      if (command.decision === 'go_on') pending.assertCurrentView?.()
 
       handedOff = true
       pending.respond(
@@ -2189,6 +2299,7 @@ export class AgentCoordinator {
     const pending = this.pendingPreviews.get(input.chatId)
     const branch = this.workingBranches.get(input.chatId)
     if (!pending?.published || pending.previewId !== input.previewId || !branch) throw new Error("No matching working-memory branch")
+    pending.assertCurrentView?.()
     const selected = new Set(input.selectedIds)
     const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
     const branchInput = { task: pending.task, memories: pending.memories, mandatoryIds }
@@ -2198,6 +2309,7 @@ export class AgentCoordinator {
       buildWorkingMemoryBranchPrompt(branchInput),
     ].join('\n\n'), { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
     if (this.pendingPreviews.get(input.chatId) !== pending) throw new Error("Working-memory preview changed during revision")
+    pending.assertCurrentView?.()
     const result = parseWorkingMemoryBranchResult(raw, branchInput)
     for (const use of result.expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
     return { selectedIds: result.relevant.map(item => item.id), reply: typeof raw.reply === "string" ? raw.reply : "Updated working memory for this task." }
@@ -2684,20 +2796,24 @@ export class AgentCoordinator {
     }
   }
 
-  private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
-    args.engineRuntime ??= this.sessionRuntimes.get(args.chatId)
-    args.parentLaunch ??= this.parentLaunches.get(args.chatId)
+  private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs, active: ActiveTurn): void {
     if (args.memoryState?.memoryActive === false) return
-    const active = this.activeTurns.get(args.chatId)
-    if (this.memoryBranches && active) {
+    // The source is the completed turn, even if cancellation or persistence
+    // awaits have already allowed a successor to enter activeTurns.
+    args.engineRuntime ??= active.engineRuntime
+    args.parentLaunch ??= active.parentLaunch
+    args.analysisPolicyKey ??= active.analysisPolicyKey
+    args.projectId = active.projectId
+    if (this.memoryBranches) {
       args.injectedMemories = active.memoryPlan?.injectedMemories.map(item => ({ ...item }))
-      args.expectedUses = this.turnExpectedUses.get(args.chatId)
+      args.expectedUses = active.expectedUses
       args.model = active.model
       args.effort = active.effort
       args.serviceTier = active.serviceTier
       const messages = this.store.getMessages(args.chatId)
       const start = messages.findIndex(message => message._id === args.turnId)
-      const turnMessages = start >= 0 ? messages.slice(start + 1) : []
+      const nextTurn = start >= 0 ? messages.findIndex((message, index) => index > start && message.kind === 'user_prompt') : -1
+      const turnMessages = start >= 0 ? messages.slice(start + 1, nextTurn < 0 ? undefined : nextTurn) : []
       args.executionText = turnMessages.filter(message => message.kind === "tool_call" || message.kind === "tool_result")
         .map(message => JSON.stringify(message)).join("\n")
       args.executionTools = turnMessages.flatMap(message => {
@@ -2705,90 +2821,164 @@ export class AgentCoordinator {
         if (message.kind === "tool_result") return [{ toolId: message.toolId, text: typeof message.content === "string" ? message.content : JSON.stringify(message.content) }]
         return []
       })
-      const chat = this.store.getChat(args.chatId)
-      args.sessionToken = chat?.sessionToken
-      args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
+      args.sessionToken = active.sessionToken
+      args.localPath = active.localPath
     }
     void this.trackMemoryWork(args.chatId, () => this.runPostTurnMemoryPasses(args)).catch((error) => {
       this.reportBackgroundError?.(`[memory-post-turn] chat ${args.chatId}: ${error instanceof Error ? error.message : String(error)}`)
     })
   }
 
-  private cancelAutomaticCapture(chatId: string): void {
+  private cancelAutomaticCapture(chatId: string, reason = 'chat-closed', preserve = false): void {
     const run = this.automaticCaptures.get(chatId)
-    if (!run) return
-    run.pending = undefined
-    run.controller.abort(new Error("Automatic memory capture cancelled"))
-    run.branch?.dispose()
-    this.automaticCaptures.delete(chatId)
+    run?.controller.abort(new Error(reason))
+    run?.branch?.dispose()
+    if (!preserve) {
+      this.captureQueue?.cancelChat(chatId, reason)
+      for (const key of this.captureLaunches.keys()) if (key.startsWith(`${chatId}:`)) this.captureLaunches.delete(key)
+    }
+  }
+
+  /** Called by the settings owner, and also checked at every job boundary. */
+  memorySettingsChanged(chatId?: string): void {
+    const settings = this.getMemorySettings()
+    const chats = new Set([...(this.captureQueue?.list().filter(job => ['pending', 'running', 'ready', 'applying'].includes(job.status)).map(job => job.chatId) ?? []), ...this.auditBranches.keys()])
+    if (chatId) chats.add(chatId)
+    for (const id of chats) {
+      const chat = this.store.getChat(id)
+      if (!chat || chat.memoryDisabled || !settings.enabled) { this.cancelAudits(id); this.disposeMemoryBranches(id) }
+      if (!chat || chat.memoryDisabled || !settings.enabled || !settings.learn || settings.control !== 'auto') this.cancelAutomaticCapture(id, 'memory-disabled-or-policy-changed')
+    }
+  }
+
+  /** Call once after store/settings initialization. Native launch snapshots
+   * stay in memory; recovery resolves only the original runtime identity. */
+  recoverAutomaticCaptures(): void {
+    if (!this.captureQueue || this.runtimeStopping || this.captureRecoveryStarted) return
+    this.captureRecoveryStarted = true
+    this.captureQueue.recover()
+    for (const chatId of new Set(this.captureQueue.list().filter(job => ['pending', 'ready'].includes(job.status)).map(job => job.chatId))) this.drainAutomaticCaptures(chatId)
+  }
+
+  getAutomaticCaptureOutcomes(chatId: string) {
+    return (this.captureQueue?.list(chatId) ?? []).map(({ payload, result, ...job }) => job)
+  }
+
+  private captureInvalidReason(job: CaptureJob<DurableCaptureInput>): string | undefined {
+    const chat = this.store.getChat(job.chatId)
+    const finished = job.payload.finished
+    if (!chat || chat.deletedAt || this.closedChats.has(job.chatId)) return 'chat-unavailable'
+    if (chat.projectId !== job.projectId || !this.store.getProject(chat.projectId) || this.store.getProject(chat.projectId)?.localPath !== finished.localPath) return 'scope-changed'
+    const settings = this.getMemorySettings()
+    if (chat.memoryDisabled || !settings.enabled || !settings.learn || settings.control !== 'auto' || this.memoryPolicyKey() !== job.payload.policyKey) return 'memory-disabled-or-policy-changed'
+    if (finished.analysisPolicyKey !== this.memoryAnalysisPolicyKey(job.chatId, finished.engine as AgentProvider)) return 'execution-policy-changed'
+    if (!this.store.getMessages(job.chatId).some(message => message._id === job.turnId)) return 'original-turn-unavailable'
   }
 
   private launchAutomaticCapture(args: PostTurnMemoryPassArgs): void {
-    if (!this.memory || !this.capture?.buildBranchPrompt || !this.capture.captureFromBranch
-      || args.memoryState?.control !== "auto" || !args.memoryState.memoryActive
+    if (!this.captureQueue || !this.capture?.buildBranchPrompt || !this.capture.captureFromBranch
+      || args.memoryState?.control !== 'auto' || !args.memoryState.memoryActive
       || !args.memoryState.learnActive || args.memoryDisabled || this.isEngineStartBlocked(args.chatId)) return
-    const existing = this.automaticCaptures.get(args.chatId)
-    if (existing) {
-      existing.pending = args
-      return
-    }
-    const run: {
-      controller: AbortController
-      branch?: MemoryBranch
-      pending?: PostTurnMemoryPassArgs
-    } = { controller: new AbortController(), pending: args }
-    this.automaticCaptures.set(args.chatId, run)
+    const { parentLaunch, engineRuntime, injectedMemories, expectedUses, ...finished } = args
+    const runtime = engineRuntime ? { fingerprint: captureRuntimeFingerprint(engineRuntime), connectionId: engineRuntime.connectionId, model: engineRuntime.model } : undefined
+    const enqueued = this.captureQueue.enqueue({ chatId: args.chatId, turnId: args.turnId, projectId: args.projectId, turnNumber: args.turnNumber ?? 0 }, { finished, policyKey: this.memoryPolicyKey(), runtime })
+    this.memory?.logger.event({ type: 'memory.scheduling', sessionId: args.chatId, turnId: args.turnId, stage: 'automatic-capture', ...enqueued })
+    if (enqueued.outcome === 'queued') this.captureLaunches.set(`${args.chatId}:${args.turnId}`, { parentLaunch, engineRuntime })
+    this.drainAutomaticCaptures(args.chatId)
+  }
+
+  private drainAutomaticCaptures(chatId: string): void {
+    if (!this.captureQueue || this.automaticCaptures.has(chatId) || this.runtimeStopping) return
+    const queue = this.captureQueue
+    const run: { controller: AbortController; branch?: MemoryBranch; task?: Promise<void> } = { controller: new AbortController() }
+    this.automaticCaptures.set(chatId, run)
     const signal = run.controller.signal
     const task = async () => {
       try {
-        while (run.pending && !signal.aborted) {
-          const finished = run.pending
-          run.pending = undefined
+        let job: CaptureJob<DurableCaptureInput> | undefined
+        while (!signal.aborted && (job = queue.next(chatId))) {
+          const current = job
+          const launchKey = `${chatId}:${current.turnId}`
+          let hostStarted: number | undefined
           try {
-            const input = {
-              projectId: finished.projectId, sessionId: finished.chatId,
-              turn: finished.turnNumber, engine: finished.engine, userText: finished.userText, signal,
-            }
-            const request = this.capture!.buildBranchPrompt!(input)
-            const provider = finished.engine as AgentProvider
-            const settings = { ...this.getProviderSettings(provider, { model: finished.model, effort: finished.effort }), serviceTier: finished.serviceTier }
-            // Snapshot taken at completion, never the current chat/session: a
-            // coalesced run may start after another main turn has already begun.
-            const branch = this.newMemoryBranch({ chatId: finished.chatId, provider, ...settings, engineRuntime: finished.engineRuntime }, "candidate", finished.sessionToken ?? finished.claudeSessionToken ?? null, finished.parentLaunch)
-            run.branch = branch
-            let rejectAbort!: () => void
-            const cancelled = new Promise<never>((_, reject) => {
-              rejectAbort = () => reject(signal.reason)
-              signal.addEventListener("abort", rejectAbort, { once: true })
-            })
-            let raw: Record<string, unknown>
-            try {
-              raw = await Promise.race([branch.ask(request.prompt, { schema: memoryStageSchema("candidate"), signal }), cancelled])
-            } finally {
-              signal.removeEventListener("abort", rejectAbort)
-              // cancelAutomaticCapture already disposes an aborted branch.
-              if (!signal.aborted) branch.dispose()
-              run.branch = undefined
+            const invalid = this.captureInvalidReason(current)
+            if (invalid) { queue.finish(current, 'skipped', invalid); continue }
+            const finished = current.payload.finished
+            const launch = this.captureLaunches.get(launchKey)
+            let runtime = launch?.engineRuntime
+            // A request that survived restart must never borrow the next turn's
+            // runtime, model defaults, task or parent launch. No credentials are
+            // persisted. Missing/changed identities settle without model work.
+            if (!launch && current.status === 'pending') {
+              const reference = current.payload.runtime
+              if (!reference) { queue.finish(current, 'skipped', 'original-runtime-unavailable'); continue }
+              runtime = await this.resolveCaptureRuntimeFn({ engine: finished.engine as AgentProvider, model: reference.model, connectionId: reference.connectionId })
+              signal.throwIfAborted()
+              if (captureRuntimeFingerprint(runtime) !== reference.fingerprint) { queue.finish(current, 'skipped', 'runtime-changed'); continue }
             }
             signal.throwIfAborted()
-            // Same validation, snapshot guard, dismissal dedup and routing as C
-            // at the review gate. Passing the signal also guards late persistence.
-            const outcome = await this.capture!.captureFromBranch!(raw, input, request.dependencyKey)
+            const invalidAfterResolve = this.captureInvalidReason(current)
+            if (invalidAfterResolve) { queue.finish(current, 'skipped', invalidAfterResolve); continue }
+            const input = { projectId: current.projectId, sessionId: chatId, turn: current.turnNumber, engine: finished.engine, userText: finished.userText, policyKey: finished.analysisPolicyKey, signal }
+            this.memory?.logger.event({ type: 'memory.latency', sessionId: chatId, turnId: current.turnId, stage: 'automatic-capture', segment: 'queue_wait', durationMs: Date.now() - current.enqueuedAt })
+            if (current.status === 'pending') {
+              if (!queue.transition(current, 'pending', 'running')) continue
+              const request = this.capture!.buildBranchPrompt!(input)
+              const branch = this.newMemoryBranch({ chatId, provider: finished.engine as AgentProvider,
+                model: finished.model ?? runtime?.model ?? '', effort: finished.effort, serviceTier: finished.serviceTier, engineRuntime: runtime },
+                'candidate', finished.sessionToken ?? finished.claudeSessionToken ?? null, launch?.parentLaunch, true, current.turnId)
+              run.branch = branch
+              let rejectAbort!: () => void
+              const cancelled = new Promise<never>((_, reject) => {
+                rejectAbort = () => reject(signal.reason)
+                signal.addEventListener('abort', rejectAbort, { once: true })
+              })
+              try {
+                const prompt = [request.prompt,
+                  'BOUND COMPLETED TURN: extract observations only from this original turn. Later turns in inherited native history are not evidence for this capture. Do not execute or continue the task.',
+                  JSON.stringify({ turnId: current.turnId, turn: current.turnNumber, task: finished.userText,
+                    assistantText: finished.assistantText, executionText: finished.executionText, executionTools: finished.executionTools }),
+                ].join('\n\n')
+                const raw = await Promise.race([branch.ask(prompt, { schema: memoryStageSchema('candidate'), signal }), cancelled])
+                signal.throwIfAborted()
+                queue.ready(current, { raw, dependencyKey: request.dependencyKey })
+              } finally {
+                signal.removeEventListener('abort', rejectAbort)
+                if (!signal.aborted) branch.dispose()
+                run.branch = undefined
+              }
+            }
             signal.throwIfAborted()
+            const invalidAfterAnalysis = this.captureInvalidReason(current)
+            if (invalidAfterAnalysis) { queue.finish(current, 'skipped', invalidAfterAnalysis); continue }
+            const ready = queue.get(chatId, current.turnId)
+            if (!ready?.result || !queue.transition(current, 'ready', 'applying')) continue
+            hostStarted = performance.now()
+            const outcome = await this.capture!.captureFromBranch!(ready.result.raw, input, ready.result.dependencyKey)
+            signal.throwIfAborted()
+            // Commit the terminal receipt before transcript publication. A
+            // restart cannot replay reinforcement after an append failure.
+            queue.finish(current, 'completed')
             await this.publishCapturedProposals(outcome, finished)
           } catch (error) {
-            if (!signal.aborted) this.reportBackgroundError?.(
-              `[memory-auto-capture] chat ${finished.chatId} turn ${finished.turnNumber ?? "?"}: ${error instanceof Error ? error.message : String(error)}`,
-            )
+            if (!signal.aborted) {
+              queue.finish(current, 'failed', error instanceof Error ? error.message : String(error))
+              this.reportBackgroundError?.(`[memory-auto-capture] chat ${chatId} turn ${current.turnNumber}: ${error instanceof Error ? error.message : String(error)}`)
+            }
+          } finally {
+            this.captureLaunches.delete(launchKey)
+            if (hostStarted !== undefined) this.memory?.logger.event({ type: 'memory.latency', sessionId: chatId, turnId: current.turnId, stage: 'automatic-capture', segment: 'host', durationMs: performance.now() - hostStarted })
+            const outcome = queue.get(chatId, current.turnId)
+            if (outcome) this.memory?.logger.event({ type: 'memory.scheduling', sessionId: chatId, turnId: current.turnId, stage: 'automatic-capture', outcome: outcome.status, reason: outcome.reason })
           }
         }
       } finally {
-        // Clear ownership in the same microtask as the final pending check;
-        // a completion arriving afterwards must launch its own worker.
-        if (this.automaticCaptures.get(args.chatId) === run) this.automaticCaptures.delete(args.chatId)
+        if (this.automaticCaptures.get(chatId) === run) this.automaticCaptures.delete(chatId)
+        if (!this.isEngineStartBlocked(chatId) && queue.next(chatId)) this.drainAutomaticCaptures(chatId)
       }
     }
-    void task()
+    run.task = task()
+    void run.task.catch(error => this.reportBackgroundError?.(`[memory-auto-capture-queue] ${String(error)}`))
   }
 
   private async publishCapturedProposals(outcome: CaptureOutcome, args: PostTurnMemoryPassArgs): Promise<void> {
@@ -2900,10 +3090,9 @@ export class AgentCoordinator {
           let outcome: TraceOutcome | null = null
           let tracedVia: "fork" | "sidecar" = "sidecar"
           if (this.memoryBranches) {
-            const chat = this.store.requireChat(args.chatId)
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
-            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken, args.parentLaunch)
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? null, args.parentLaunch, true, args.turnId)
             const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
@@ -2953,6 +3142,7 @@ export class AgentCoordinator {
           // edited or archived while the LLM ran gets no verdict written
           // anywhere — a health dot for text the judgment never saw is worse
           // than a missing one. Dropped ids also lose their summary citation.
+          if (this.isEngineStartBlocked(args.chatId) || !this.store.getChat(args.chatId) || this.store.getChat(args.chatId)?.memoryDisabled || !this.getMemorySettings().enabled) return
           const labels = outcome.labels.filter((l) => {
             const now = this.memory!.store.getById(l.id)
             const snap = usedById.get(l.id)
@@ -3603,6 +3793,8 @@ export class AgentCoordinator {
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
+    this.cancelAudits(chatId)
+    this.disposeMemoryBranches(chatId)
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
     if (reservation) {
@@ -3642,8 +3834,12 @@ export class AgentCoordinator {
   async shutdownRuntime() {
     this.commandRegistry.dispose()
     this.runtimeStopping = true
+    for (const chatId of this.auditBranches.keys()) this.cancelAudits(chatId)
     for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
-    for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId)
+    const captureTasks = [...this.automaticCaptures.values()].flatMap(run => run.task ? [run.task] : [])
+    for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId, 'server-shutdown', true)
+    await Promise.allSettled(captureTasks)
+    this.captureLaunches.clear()
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
     const codexCleanup = this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
@@ -4109,6 +4305,7 @@ export class AgentCoordinator {
         turn: ctx.turnNumber,
         engine: args.provider,
         userText: args.memoryUserText ?? args.content,
+        policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
         signal: prep?.cancellation.signal,
       }
       const branches = this.branchPreparations.get(args.chatId)
@@ -4190,11 +4387,13 @@ export class AgentCoordinator {
     }
 
     const decision = await new Promise<"reviewed" | "skipped" | "cancelled">((resolve) => {
+      const finishWaiting = this.memoryWait(args.chatId, 'candidate', args.turnId)
       this.pendingProposalGates.set(args.chatId, {
         proposalsId,
         published: true,
         respond: (d) => {
           this.pendingProposalGates.delete(args.chatId)
+          finishWaiting(d)
           resolve(d)
         },
       })
@@ -4240,11 +4439,13 @@ export class AgentCoordinator {
     const candidates = result?.candidates ?? parent.candidates
 
     const decision = await new Promise<"reviewed" | "skipped" | "cancelled">((resolve) => {
+      const finishWaiting = this.memoryWait(args.chatId, 'candidate', args.turnId)
       this.pendingProposalGates.set(args.chatId, {
         proposalsId,
         published: true,
         respond: (next) => {
           this.pendingProposalGates.delete(args.chatId)
+          finishWaiting(next)
           resolve(next)
         },
       })
@@ -4407,15 +4608,18 @@ export class AgentCoordinator {
     const suggestions = result?.suggestions ?? parent.suggestions
 
     const decision = await new Promise<InternalGateWake<TransferGateDecision>>((resolve) => {
+      const finishWaiting = this.memoryWait(args.chatId, 'transfer', args.turnId)
       this.pendingTransferGates.set(args.chatId, {
         transferId,
         published: true,
         respond: (next) => {
           this.pendingTransferGates.delete(args.chatId)
+          finishWaiting(next)
           resolve(next)
         },
         invalidate: () => {
           this.pendingTransferGates.delete(args.chatId)
+          finishWaiting("invalidated")
           resolve("invalidated")
         },
       })
@@ -4551,6 +4755,7 @@ export class AgentCoordinator {
       sessionId: args.chatId,
       projectTitle: ctx.project.title,
       taskText: args.memoryUserText ?? args.content,
+      policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
       recentContext: this.recentConversationDigest(args.chatId),
     }
     let searched = false
@@ -4725,7 +4930,7 @@ export class AgentCoordinator {
 
     if (this.memoryBranches) {
       const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
-      const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate review", request.dependencyKey)
+      const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate review", request.dependencyKey, request)
       result = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
       if (!result) throw new Error("Memory transfer dependencies changed during review; prepare this turn again")
     }
@@ -4749,7 +4954,7 @@ export class AgentCoordinator {
             | { kind: "cancelled" } = await Promise.race([
             this.trackMemoryWork(args.chatId, () => this.memoryBranches ? (async () => {
               const request = this.memoryTransferDetect!.buildTaskBranchPrompt!(taskCtx)
-              const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey)
+              const updated = await this.continueMemoryBranch(args.chatId, "transfer", "Candidate edits", request.dependencyKey, request)
               const fresh = await this.memoryTransferDetect!.materializeTaskFromBranch!(taskCtx, updated.raw, updated.dependencyKey)
               if (!fresh) throw new Error("Memory transfer dependencies changed")
               return fresh
@@ -4828,15 +5033,18 @@ export class AgentCoordinator {
     const decisionPromise = new Promise<InternalGateWake<TransferGateDecision>>((resolve) => {
       resolveDecision = resolve
     })
+    const finishWaiting = this.memoryWait(args.chatId, 'transfer', args.turnId)
     this.pendingTransferGates.set(args.chatId, {
       transferId,
       published: true,
       respond: (d) => {
         this.pendingTransferGates.delete(args.chatId)
+        finishWaiting(d)
         resolveDecision(d)
       },
       invalidate: () => {
         this.pendingTransferGates.delete(args.chatId)
+        finishWaiting("invalidated")
         resolveDecision("invalidated")
       },
     })
@@ -4895,7 +5103,7 @@ export class AgentCoordinator {
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled" | "reopen_proposals" | "reopen_transfer"; checkupId: string }> {
     const checkupId = options?.checkupId ?? crypto.randomUUID()
     const reuseParent = Boolean(options?.reuseParent)
-    const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId }
+    const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
     const runState = {
       checkupId,
       proposalsId: options?.proposalsId,
@@ -4925,7 +5133,7 @@ export class AgentCoordinator {
       if (this.memoryBranches) {
         const request = this.memoryCheckup!.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
           ?? this.memoryCheckup!.buildForkPrompt!(checkupCtx)
-        const prepared = await this.continueMemoryBranch(args.chatId, "changes", "Transfer and memory review", request?.dependencyKey ?? "")
+        const prepared = await this.continueMemoryBranch(args.chatId, "changes", "Transfer and memory review", request?.dependencyKey ?? "", request)
         const checked = await this.memoryCheckup!.primeFromBranchResult!(checkupCtx, prepared.dependencyKey, prepared.raw)
         if (!checked) throw new Error("Memory change dependencies changed during analysis")
         result = checked
@@ -5029,6 +5237,7 @@ export class AgentCoordinator {
     }
 
     const decision = await new Promise<InternalGateWake<CheckupGateDecision>>((resolve) => {
+      const finishWaiting = this.memoryWait(args.chatId, 'changes', args.turnId)
       this.pendingCheckupGates.set(args.chatId, {
         checkupId,
         proposalsId: options?.proposalsId,
@@ -5038,10 +5247,12 @@ export class AgentCoordinator {
         published: true,
         respond: (d) => {
           this.pendingCheckupGates.delete(args.chatId)
+          finishWaiting(d)
           resolve(d)
         },
         invalidate: () => {
           this.pendingCheckupGates.delete(args.chatId)
+          finishWaiting("invalidated")
           resolve("invalidated")
         },
       })
@@ -5333,6 +5544,7 @@ export class AgentCoordinator {
     pending: PendingMemoryPreview,
     selectedIds: string[],
   ): Promise<ExpectedMemoryUse[]> {
+    pending.assertCurrentView?.()
     const allowed = new Set(pending.memoryIds)
     const selected = [...new Set(selectedIds)].filter((id) => allowed.has(id))
     if (this.memoryBranches) {
@@ -5377,6 +5589,7 @@ export class AgentCoordinator {
         )
       }
     }
+    pending.assertCurrentView?.()
     return selected.flatMap((id) => {
       const expectedUse = pending.expectedUseById.get(id)
       return expectedUse ? [{ id, expectedUse }] : []
@@ -5404,6 +5617,7 @@ export class AgentCoordinator {
     const willAssessRelevance = (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
 
     this.turnExpectedUses.delete(args.chatId)
+    const finishWaiting = this.memoryWait(args.chatId, 'working-memory', args.turnId)
     const pending: PendingMemoryPreview = {
       chatId: args.chatId,
       previewId,
@@ -5413,10 +5627,12 @@ export class AgentCoordinator {
       task: args.memoryUserText ?? args.content,
       memories: ctx.injected,
       expectedUseById: new Map(),
+      assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
       respond: (decision, selectedIds, expectedUses, operationId) => {
+        finishWaiting(decision)
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
         void this.finishMemoryPreview({
           args,
@@ -5432,6 +5648,7 @@ export class AgentCoordinator {
         })
       },
       reopen: (from, stageId) => {
+        finishWaiting('reopened')
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
         this.reserveStartup(args, "previewing_memory")
         void this.runReopenedMemoryPreparation({
@@ -5558,10 +5775,10 @@ export class AgentCoordinator {
           // M incorporates Candidate decisions while T is still being reviewed.
           void (proposalsRun ?? Promise.resolve()).then(() => {
             if (this.cancelledDuringPreview.has(args.chatId)) return
-            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId }
+            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
             const request = this.memoryCheckup?.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
               ?? this.memoryCheckup?.buildForkPrompt?.(checkupCtx)
-            return this.continueMemoryBranch(args.chatId, "changes", "Candidate review", request?.dependencyKey ?? "")
+            return this.continueMemoryBranch(args.chatId, "changes", "Candidate review", request?.dependencyKey ?? "", request)
           }).catch(() => {})
         }
         const transferRun =
@@ -5699,6 +5916,7 @@ export class AgentCoordinator {
         // after the append left a microtask window where a fast respond threw
         // "No matching pending memory preview".
         if (!autoProceed) {
+          const finishWaiting = this.memoryWait(args.chatId, 'working-memory', args.turnId)
           const pending: PendingMemoryPreview = {
             chatId: args.chatId,
             previewId,
@@ -5708,10 +5926,12 @@ export class AgentCoordinator {
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected,
             expectedUseById: new Map(),
+            assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
             proposalsId,
             transferId,
             checkupId,
             respond: (decision, selectedIds, expectedUses, operationId) => {
+              finishWaiting(decision)
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
               void this.finishMemoryPreview({
@@ -5727,6 +5947,7 @@ export class AgentCoordinator {
               })
             },
             reopen: (from, stageId) => {
+              finishWaiting('reopened')
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
               this.reserveStartup(args, "previewing_memory")
@@ -5944,6 +6165,9 @@ export class AgentCoordinator {
         || this.isEngineStartBlocked(args.chatId)) return
       this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
+      if (this.memoryBranches && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
+        memory: this.memory, projectId: ctx.chat.projectId, chatId: args.chatId, restrictToIds: [...selected],
+      }).view.revision
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
         .map((use) => ({ id: use.id, expectedUse: use.expectedUse.trim().slice(0, 220) }))
@@ -6059,6 +6283,9 @@ export class AgentCoordinator {
             restrictToIds: turnRestriction,
           })
         : null
+    if (args.approvedMemoryViewRevision && args.approvedMemoryViewRevision !== turnMemoryPlan?.view.revision) {
+      throw new Error('Working memory changed after approval. Reopen preparation to review the updated view.')
+    }
     const injectedIdsAtBoot = turnMemoryPlan?.injectedMemories.map((m) => m.id) ?? []
     if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
@@ -6079,6 +6306,12 @@ export class AgentCoordinator {
       if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
       if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
       this.emitStateChange(args.chatId)
+    }
+    const canUseMemory = (name: string) => {
+      const settings = this.getMemorySettings()
+      const live = this.store.getChat(args.chatId)
+      return !memoryDisabledForTurn && !!live && !live.deletedAt && !live.memoryDisabled && settings.enabled
+        && (!name.endsWith('propose_memory') || (settings.learn && args.memoryState?.learnActive !== false))
     }
     const requestNativeApproval = async (name: string, input: Record<string, unknown>, requestId?: string) => {
       await turnReady
@@ -6130,6 +6363,7 @@ export class AgentCoordinator {
         executionControl: {
           permissionMode: executionPolicy.engine === "claude" ? executionPolicy.permissionMode : "default",
           isCurrent: isPolicyCurrent,
+          canUseMemory,
           approve: async (name, input, requestId) => {
             if (!isPolicyCurrent() || executionPolicy.engine !== "claude") return false
             if (legacyExecution || isMemoryTool(name)) return true
@@ -6221,7 +6455,7 @@ export class AgentCoordinator {
               return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native, signal)
             }
             if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
-            if (memoryDisabledForTurn) return { text: "Memory tools unavailable for this turn", isError: true }
+            if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6366,7 +6600,7 @@ export class AgentCoordinator {
               return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native)
             }
             if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
-            if (memoryDisabledForTurn) return { text: "Memory tools unavailable for this turn", isError: true }
+            if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6455,7 +6689,15 @@ export class AgentCoordinator {
       return
     }
 
+    const parentLaunch = this.parentLaunches.get(args.chatId)
     const active: ActiveTurn = {
+      engineRuntime: args.engineRuntime ? structuredClone(args.engineRuntime) : undefined,
+      parentLaunch: parentLaunch ? snapshotParentLaunch(parentLaunch) : undefined,
+      analysisPolicyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
+      projectId: chat.projectId,
+      localPath: project.localPath,
+      sessionToken: chat.sessionToken,
+      expectedUses: this.turnExpectedUses.get(args.chatId)?.map(use => ({ ...use })),
       memoryState: args.memoryState ?? { control: "review", memoryActive: true, learnActive: true },
       chatId: args.chatId,
       provider: args.provider,
@@ -6781,15 +7023,12 @@ export class AgentCoordinator {
     const memoryEnabled = args.memoryEnabled ?? true
     const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model })
     const subprocessEnv = engineRuntime.env
-    const runtimeEnv = engineRuntime.env
-    // Endpoint, credentials and profile belong to the subprocess. setModel()
-    // cannot migrate any of them when the user switches vendors.
-    const providerRuntimeKey = String(Bun.hash(JSON.stringify([
-      runtimeEnv.ANTHROPIC_BASE_URL ?? "official",
-      runtimeEnv.ANTHROPIC_API_KEY, runtimeEnv.ANTHROPIC_AUTH_TOKEN,
-      runtimeEnv.CLAUDE_CONFIG_DIR, engineRuntime.executable.path, engineRuntime.connectionId,
-      engineRuntime.isolated ? engineRuntime.model : undefined, runtimeEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
-    ])))
+    // Endpoint, credentials, profile and native limits belong to the process.
+    // Account-mode model changes may use setModel; every other launch field
+    // (including output/context limits and executable identity) must match.
+    const providerRuntimeKey = captureRuntimeFingerprint({
+      ...engineRuntime, model: engineRuntime.isolated ? engineRuntime.model : '',
+    })
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
     // and tools flips. Skills-mode content changes deliberately do
@@ -6981,6 +7220,9 @@ export class AgentCoordinator {
       || this.parentLaunches.has(command.chatId) // An idle native runtime may still own background subprocesses.
     const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
     this.policyChanges.add(command.chatId)
+    this.cancelAutomaticCapture(command.chatId, 'execution-policy-changed')
+    this.cancelAudits(command.chatId)
+    this.disposeMemoryBranches(command.chatId)
     this.abortEngineStart(command.chatId)
     // Revocation is synchronous; persistence and native interruption follow it.
     this.emitStateChange(command.chatId)
@@ -7080,6 +7322,7 @@ export class AgentCoordinator {
 
     if (typeof disabled !== "boolean") throw new Error("disabled must be a boolean")
     await this.store.setMemoryDisabled(chatId, disabled)
+    this.memorySettingsChanged(chatId)
     this.emitStateChange(chatId)
   }
 
@@ -7293,6 +7536,8 @@ export class AgentCoordinator {
           const launch = this.parentLaunches.get(session.chatId)
           if (launch) this.sessionLaunches.set(`claude:${event.sessionToken}`, launch)
           session.sessionToken = event.sessionToken
+          const tokenOwner = this.activeTurns.get(session.chatId)
+          if (tokenOwner?.provider === 'claude' && tokenOwner.claudePromptSeq === promptSeq) tokenOwner.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
           continue
@@ -7402,7 +7647,7 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
             const chat = this.store.getChat(session.chatId)
-            this.launchPostTurnMemoryPasses({
+            if (!active.cancelRequested) this.launchPostTurnMemoryPasses({
               chatId: session.chatId,
               projectId: chat?.projectId,
               engine: "claude",
@@ -7415,11 +7660,11 @@ export class AgentCoordinator {
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
               claudeSessionToken: chat?.sessionToken,
-              localPath: chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined,
-            })
+              localPath: active.localPath,
+            }, active)
           }
           this.endPolicyTurn(session.chatId, active.turnId)
-          this.activeTurns.delete(session.chatId)
+          if (this.activeTurns.get(session.chatId) === active) this.activeTurns.delete(session.chatId)
           if (!active.cancelRequested) {
             // Starting the next queued message can fail (project dir gone after
             // a container rebuild, engine reboot failure). Without this guard
@@ -7513,6 +7758,7 @@ export class AgentCoordinator {
         if (active.cancelRequested) break
 
         if (event.type === "session_token" && event.sessionToken) {
+          active.sessionToken = event.sessionToken
           const launch = this.parentLaunches.get(active.chatId)
           if (launch) this.sessionLaunches.set(`${active.provider}:${event.sessionToken}`, launch)
           await this.store.setSessionToken(active.chatId, event.sessionToken)
@@ -7560,7 +7806,7 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
             const chat = this.store.getChat(active.chatId)
-            this.launchPostTurnMemoryPasses({
+            if (!active.cancelRequested) this.launchPostTurnMemoryPasses({
               chatId: active.chatId,
               projectId: chat?.projectId,
               engine: active.provider,
@@ -7572,17 +7818,17 @@ export class AgentCoordinator {
               memoryState: active.memoryState,
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
-            })
+            }, active)
           }
           // Remove from activeTurns as soon as the result arrives so the UI
           // transitions to idle immediately. The stream may still be open
           // (e.g. background tasks), but the user should be able to send
           // new messages without having to hit stop first.
           this.endPolicyTurn(active.chatId, active.turnId)
-          this.activeTurns.delete(active.chatId)
+          if (this.activeTurns.get(active.chatId) === active) this.activeTurns.delete(active.chatId)
           // Track the still-open stream so the UI can show a draining
           // indicator and the user can stop background tasks.
-          this.drainingStreams.set(active.chatId, { turn: active.turn })
+          if (!active.cancelRequested) this.drainingStreams.set(active.chatId, { turn: active.turn })
         }
 
         this.emitStateChange(active.chatId)
@@ -7617,8 +7863,8 @@ export class AgentCoordinator {
         this.endPolicyTurn(active.chatId, active.turnId)
         this.activeTurns.delete(active.chatId)
       }
-      // Stream has fully ended — no longer draining.
-      this.drainingStreams.delete(active.chatId)
+      // A predecessor must not clear a successor's draining stream.
+      if (this.drainingStreams.get(active.chatId)?.turn === active.turn) this.drainingStreams.delete(active.chatId)
       this.emitStateChange(active.chatId)
 
       if (active.postToolFollowUp && !active.cancelRequested) {
@@ -8062,7 +8308,7 @@ export class AgentCoordinator {
         memoryState: active.memoryState,
         memoryDisabled: true,
         injectedIds: [],
-      })
+      }, active)
     }
     logClaudeSteer("cancel_active_turn_deleted", {
       chatId,

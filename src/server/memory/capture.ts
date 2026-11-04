@@ -18,6 +18,7 @@
 // (D5).
 import { createHash } from 'node:crypto';
 import { MEMORY_ATOM_SPEC } from './atom-spec';
+import { compileMemoryView } from './view';
 import { buildCandidateBranchPrompt, parseCandidateBranchResult, type CandidateBranchInput } from './branch-stages';
 import { describeLlmJsonFailure, type LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
@@ -76,6 +77,7 @@ export interface PromptCaptureInput {
   turn?: number;
   engine?: string;
   userText: string;
+  policyKey?: string;
   /** Pre-turn preparation cancellation. Post-turn/tool channels deliberately
    * omit this and retain their existing settlement semantics. */
   signal?: AbortSignal;
@@ -349,7 +351,9 @@ export function createCaptureService(opts: {
       input: { task: input.userText, memories: items, dismissed },
       items,
       key: JSON.stringify({ task: input.userText, projectId: input.projectId, sessionId: input.sessionId,
-        items: items.map((item) => [item.id, item.version, item.scope, item.status]), dismissed }),
+        policyKey: input.policyKey ?? '',
+        viewRevision: compileMemoryView(memory, items, items, input.projectId, input.sessionId).revision,
+        dismissed }),
     };
   }
   type TurnObservationResolution = { memoryId?: string };

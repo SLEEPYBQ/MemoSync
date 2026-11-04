@@ -52,10 +52,12 @@ function entry(value: Record<string, unknown>): TranscriptEntry {
 async function setup(options: {
   blockPreparation?: boolean;
   workingFailsOnce?: boolean;
+  working?: (prompt: string) => Record<string, unknown>;
   invalidAuditReplies?: number;
   getMemorySettings?: () => { enabled: boolean; learn: boolean; control: "review" | "auto" };
   candidate?: (prompt: string, options?: MemoryBranchAskOptions) => Promise<Record<string, unknown>>;
   audit?: () => Promise<void>;
+  resolveCaptureRuntime?: ConstructorParameters<typeof AgentCoordinator>[0]['resolveCaptureRuntime'];
 } = {}) {
   const directory = mkdtempSync(join(tmpdir(), 'memosync-agent-branches-'));
   const store = new EventStore(join(directory, 'events'));
@@ -84,8 +86,9 @@ async function setup(options: {
     stopSession: () => {},
     stopAll: () => {},
   } as unknown as CodexAppServerManager;
-  const coordinator = new AgentCoordinator({
+  const coordinatorArgs: ConstructorParameters<typeof AgentCoordinator>[0] = {
     store, memory, codexManager,
+    resolveCaptureRuntime: options.resolveCaptureRuntime,
     piManager: {
       startTurn: async (args: MainTurnRequest): Promise<HarnessTurn> => {
         mainTurns.push(args);
@@ -117,6 +120,7 @@ async function setup(options: {
           if (purpose === 'transfer') return count === 1 ? { suggestions: [] } : { upsert: {}, remove: {} };
           if (purpose === 'changes') return count === 1 ? { conflicts: [], redundancy: [], staleness: [] } : { upsert: {}, remove: {} };
           if (purpose === 'working-memory') {
+            if (options.working) return options.working(prompt);
             if (options.workingFailsOnce && count === 1) throw new Error('Working-memory provider unavailable');
             return { selected: [{ id: item.id, why: 'Charging the order', expectedUse: 'Represent the charge amount as integer cents.' }], reply: 'Kept the enforced money rule for this charge.' };
           }
@@ -129,7 +133,8 @@ async function setup(options: {
         },
       };
     },
-  });
+  };
+  const coordinator = new AgentCoordinator(coordinatorArgs);
   const send = () => coordinator.send({ type: 'chat.send', chatId: chat.id, provider: 'codex', model: 'gpt-5.4', content: 'Charge the test order for 12.50 USD' });
   const start = async () => {
     const expectedTurns = mainTurns.length + 1;
@@ -140,6 +145,7 @@ async function setup(options: {
   };
   return {
     store, memory, item, chat, coordinator, calls, branches, disposed, sidecarCalls, mainTurns, mainSessions, send, start,
+    restart: () => new AgentCoordinator(coordinatorArgs),
     emit: (value: HarnessEvent) => queues.at(-1)!.push(value),
     close: () => { queues.forEach((queue) => queue.close()); memory.close(); rmSync(directory, { recursive: true, force: true }); },
   };
@@ -165,6 +171,137 @@ async function finish(h: Awaited<ReturnType<typeof setup>>, session = 'finished-
 
 describe('Automatic background candidate learning', () => {
   const automatic = () => ({ enabled: true, learn: true, control: 'auto' as const });
+
+  it('recovers queued turns with the original runtime/session and does not repeat terminal jobs', async () => {
+    const first = deferred<Record<string, unknown>>();
+    let runtime: any;
+    let count = 0;
+    const h = await setup({ getMemorySettings: automatic,
+      resolveCaptureRuntime: async () => runtime,
+      candidate: async () => ++count === 1 ? first.promise : { candidates: [] },
+    });
+    let recovered: AgentCoordinator | undefined;
+    try {
+      await h.send(); await finish(h, 'parent-one');
+      runtime = (h.coordinator as any).sessionRuntimes.get(h.chat.id);
+      await h.send(); await finish(h, 'parent-two');
+      await h.coordinator.shutdownRuntime();
+      expect(h.coordinator.getAutomaticCaptureOutcomes(h.chat.id).map(job => job.status)).toEqual(['running', 'pending']);
+      recovered = h.restart(); recovered.recoverAutomaticCaptures();
+      await until(() => recovered!.getAutomaticCaptureOutcomes(h.chat.id).every(job => job.status === 'completed'));
+      expect(h.branches.filter(branch => branch.purpose === 'candidate').map(branch => branch.parentSessionToken)).toEqual(['parent-one', 'parent-one', 'parent-two']);
+      const calls = count;
+      recovered.recoverAutomaticCaptures();
+      expect(count).toBe(calls);
+      expect(recovered.getAutomaticCaptureOutcomes(h.chat.id).map(job => job.turnNumber)).toEqual([1, 2]);
+    } finally { first.resolve({ candidates: [] }); await recovered?.shutdownRuntime(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('settles recovered jobs without a model request when the runtime identity changed', async () => {
+    const first = deferred<Record<string, unknown>>();
+    let runtime: any;
+    const h = await setup({ getMemorySettings: automatic, resolveCaptureRuntime: async () => ({ ...runtime, env: { ...runtime.env, CHANGED_PROFILE: 'changed' } }), candidate: () => first.promise });
+    let recovered: AgentCoordinator | undefined;
+    try {
+      await h.send(); await finish(h);
+      runtime = (h.coordinator as any).sessionRuntimes.get(h.chat.id);
+      await h.coordinator.shutdownRuntime();
+      recovered = h.restart(); recovered.recoverAutomaticCaptures();
+      await until(() => recovered!.getAutomaticCaptureOutcomes(h.chat.id)[0]?.status === 'skipped');
+      expect(recovered.getAutomaticCaptureOutcomes(h.chat.id)[0]?.reason).toBe('runtime-changed');
+      expect(h.calls.filter(call => call.purpose === 'candidate')).toHaveLength(1);
+    } finally { first.resolve({ candidates: [] }); await recovered?.shutdownRuntime(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  for (const disable of ['chat', 'global'] as const) {
+    it(`cancels active and queued capture when ${disable} memory is disabled`, async () => {
+      let enabled = true;
+      const first = deferred<Record<string, unknown>>();
+      const h = await setup({ getMemorySettings: () => ({ ...automatic(), enabled }), candidate: () => first.promise });
+      try {
+        await h.send(); await finish(h);
+        await h.send(); await finish(h, 'second');
+        if (disable === 'chat') await h.coordinator.setMemoryDisabled(h.chat.id, true);
+        else { enabled = false; h.coordinator.memorySettingsChanged(); }
+        expect(h.calls.find(call => call.purpose === 'candidate')!.options!.signal!.aborted).toBe(true);
+        expect(h.coordinator.getAutomaticCaptureOutcomes(h.chat.id).map(job => job.status)).toEqual(['skipped', 'skipped']);
+        first.resolve({ candidates: [candidateResult('This disabled result must never land')] });
+        await Bun.sleep(10);
+        expect(h.calls.filter(call => call.purpose === 'candidate')).toHaveLength(1);
+        expect(h.memory.store.list()).toHaveLength(1);
+      } finally { first.resolve({ candidates: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('policy changes terminate every queued turn and recovery never revives those outcomes', async () => {
+    const first = deferred<Record<string, unknown>>();
+    const h = await setup({ getMemorySettings: automatic, candidate: () => first.promise });
+    let recovered: AgentCoordinator | undefined;
+    try {
+      const sendPi = () => h.coordinator.send({ type: 'chat.send', chatId: h.chat.id, provider: 'pi', model: 'pi-model', content: 'Validate the charge' });
+      await sendPi(); await finish(h, 'pi-one');
+      await sendPi(); await finish(h, 'pi-two');
+      await h.coordinator.setExecutionPolicy({ type: 'chat.setExecutionPolicy', chatId: h.chat.id,
+        policy: { engine: 'pi', toolGate: 'read-only' }, expectedRevision: 1 });
+      expect(h.coordinator.getAutomaticCaptureOutcomes(h.chat.id).map(job => [job.turnNumber, job.status, job.reason]))
+        .toEqual([[1, 'skipped', 'execution-policy-changed'], [2, 'skipped', 'execution-policy-changed']]);
+      expect(h.calls.find(call => call.purpose === 'candidate')!.options!.signal!.aborted).toBe(true);
+      first.resolve({ candidates: [candidateResult('A revoked late result')] });
+      await h.coordinator.shutdownRuntime();
+      recovered = h.restart(); recovered.recoverAutomaticCaptures();
+      expect(recovered.getAutomaticCaptureOutcomes(h.chat.id).every(job => job.status === 'skipped')).toBe(true);
+      expect(h.calls.filter(call => call.purpose === 'candidate')).toHaveLength(1);
+      expect(h.memory.store.list()).toHaveLength(1);
+    } finally { first.resolve({ candidates: [] }); await recovered?.shutdownRuntime(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('a stopped completion awaiting persistence cannot capture or remove its successor', async () => {
+    const h = await setup({ getMemorySettings: automatic });
+    const entered = deferred<void>(), release = deferred<void>(), settled = deferred<void>();
+    const record = h.store.recordTurnFinished.bind(h.store);
+    h.store.recordTurnFinished = async chatId => {
+      entered.resolve(); await release.promise;
+      await record(chatId); settled.resolve();
+    };
+    try {
+      await h.send();
+      h.emit({ type: 'transcript', entry: entry({ kind: 'result', subtype: 'success', isError: false, durationMs: 1, result: 'Done' }) });
+      await entered.promise;
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      await h.send();
+      const successor = h.coordinator.activeTurns.get(h.chat.id);
+      expect(successor).toBeDefined();
+      release.resolve(); await settled.promise;
+      await Bun.sleep(10);
+      expect(h.coordinator.activeTurns.get(h.chat.id)).toBe(successor);
+      expect(h.coordinator.getAutomaticCaptureOutcomes(h.chat.id)).toEqual([]);
+      expect(h.calls.filter(call => call.purpose === 'candidate')).toHaveLength(0);
+    } finally { release.resolve(); await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('snapshots queued credentials and parent definitions before a later launch mutates them', async () => {
+    const first = deferred<Record<string, unknown>>();
+    let count = 0;
+    const h = await setup({ getMemorySettings: automatic, candidate: () => ++count === 1 ? first.promise : Promise.resolve({ candidates: [] }) });
+    try {
+      await h.send(); await finish(h, 'parent-one');
+      await h.send(); await finish(h, 'parent-two');
+      const coordinator = h.coordinator as any;
+      const runtime = coordinator.sessionRuntimes.get(h.chat.id);
+      const launch = coordinator.parentLaunches.get(h.chat.id);
+      const originalModel = launch.turn.model;
+      runtime.env.LATER_TURN_CREDENTIAL = 'synthetic-later';
+      launch.turn.model = 'later-model';
+      launch.session.dynamicTools[0].description = 'later definition';
+      first.resolve({ candidates: [] });
+      await until(() => h.coordinator.getAutomaticCaptureOutcomes(h.chat.id).every(job => job.status === 'completed'));
+      const queued = h.branches.filter(branch => branch.purpose === 'candidate')[1]!;
+      expect(queued.runtime!.env.LATER_TURN_CREDENTIAL).toBeUndefined();
+      expect(queued.parentLaunch).toMatchObject({ provider: 'codex', turn: { model: originalModel } });
+      if (queued.parentLaunch?.provider !== 'codex') throw new Error('Original Codex launch missing');
+      expect(queued.parentLaunch.session.dynamicTools![0]!.description).not.toBe('later definition');
+    } finally { first.resolve({ candidates: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
 
   it('forks only C alongside audit, boots the next turn immediately, and uses auto cards only for non-sensitive proposals', async () => {
     const result = deferred<Record<string, unknown>>();
@@ -204,10 +341,10 @@ describe('Automatic background candidate learning', () => {
     } finally { result.resolve({ candidates: [] }); audit.resolve(); await h.coordinator.shutdownRuntime(); h.close(); }
   });
 
-  it('coalesces two finished turns into one follow-up using the latest finished session and provenance', async () => {
+  it('retains every finished turn while busy, with its own session, task and terminal outcome', async () => {
     const first = deferred<Record<string, unknown>>();
     let count = 0;
-    const h = await setup({ getMemorySettings: automatic, candidate: async () => ++count === 1 ? first.promise : { candidates: [candidateResult('Validate refund inputs before submitting')] } });
+    const h = await setup({ getMemorySettings: automatic, candidate: async () => ++count === 1 ? first.promise : { candidates: [candidateResult(count === 2 ? 'Check second task amounts' : 'Validate refund inputs before submitting')] } });
     try {
       await h.send();
       await finish(h, 'parent-one');
@@ -219,11 +356,12 @@ describe('Automatic background candidate learning', () => {
       // Starting a fourth task must not change the queued C's parent/task.
       await h.send();
       first.resolve({ candidates: [candidateResult('Validate charge inputs before submitting')] });
-      await until(() => h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_candidates').length === 2);
-      expect(count).toBe(2);
-      expect(h.branches.filter(branch => branch.purpose === 'candidate').map(branch => branch.parentSessionToken)).toEqual(['parent-one', 'parent-three']);
-      expect(h.calls.filter(call => call.purpose === 'candidate')[1]!.prompt).toContain('NEW TASK:\nValidate refunds');
-      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_candidates').map(message => message.turn)).toEqual([1, 3]);
+      await until(() => h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_candidates').length === 3);
+      expect(count).toBe(3);
+      expect(h.coordinator.getAutomaticCaptureOutcomes(h.chat.id).map(job => [job.turnNumber, job.status])).toEqual([[1, 'completed'], [2, 'completed'], [3, 'completed']]);
+      expect(h.branches.filter(branch => branch.purpose === 'candidate').map(branch => branch.parentSessionToken)).toEqual(['parent-one', 'parent-two', 'parent-three']);
+      expect(h.calls.filter(call => call.purpose === 'candidate')[2]!.prompt).toContain('NEW TASK:\nValidate refunds');
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_candidates').map(message => message.turn)).toEqual([1, 2, 3]);
       expect(h.memory.store.list().find(item => item.content === 'Validate refund inputs before submitting')!.provenanceTurn).toBe(3);
       await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
     } finally { first.resolve({ candidates: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
@@ -350,7 +488,7 @@ describe('Automatic background candidate learning', () => {
   }
 
   for (const stop of ['closeChat', 'shutdownRuntime'] as const) {
-    it(`${stop} aborts C, discards the coalesced turn, and prevents late writes even when the transport ignores abort`, async () => {
+    it(`${stop} aborts C, stops queued turns, and prevents late writes even when the transport ignores abort`, async () => {
       const result = deferred<Record<string, unknown>>();
       const h = await setup({ getMemorySettings: automatic, candidate: () => result.promise });
       try {
@@ -372,7 +510,7 @@ describe('Automatic background candidate learning', () => {
     });
   }
 
-  it('continues the coalesced run after a failed analysis without falling back to sidecars', async () => {
+  it('continues the queued run after a failed analysis without falling back to sidecars', async () => {
     const first = deferred<Record<string, unknown>>();
     let count = 0;
     const h = await setup({ getMemorySettings: automatic, candidate: async () => ++count === 1 ? first.promise : { candidates: [candidateResult('Recover learning on the next completed task')] } });
@@ -391,6 +529,67 @@ describe('Automatic background candidate learning', () => {
 });
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  for (const moment of ['before-confirmation', 'during-decision-write'] as const) {
+    it(`never boots against a changed semantic view (${moment})`, async () => {
+      const h = await setup();
+      try {
+        const other = h.memory.store.create({ content: 'Validate monetary inputs', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+        await h.send();
+        await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+        const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+        if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+        const command = { chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on' as const, memoryIds: [h.item.id] };
+        if (moment === 'before-confirmation') {
+          h.memory.store.addRelation(h.item.id, other.id, 'conflicts_with');
+          await expect(h.coordinator.respondMemoryPreview(command)).rejects.toThrow('changed during review');
+        } else {
+          const append = h.store.appendMessage.bind(h.store);
+          h.store.appendMessage = async (chatId, message) => {
+            if (message.kind === 'memory_preview_decision') h.memory.store.addRelation(h.item.id, other.id, 'conflicts_with');
+            return append(chatId, message);
+          };
+          await h.coordinator.respondMemoryPreview(command);
+          await until(() => h.store.getChat(h.chat.id)?.lastTurnOutcome === 'failed');
+          expect(h.store.getMessages(h.chat.id).some(message => message.kind === 'result' && message.isError && message.result.includes('changed after approval'))).toBe(true);
+        }
+        expect(h.mainTurns).toHaveLength(0);
+        expect(h.mainSessions).toHaveLength(0);
+      } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('analyzes approved candidate changes before publishing this turn’s working-memory view', async () => {
+    const selected: string[] = [];
+    const h = await setup({ candidate: async () => ({ candidates: [candidateResult('Validate charge requests before submitting')] }),
+      working: () => ({ selected: selected.map(id => ({ id, why: 'Required for the charge', expectedUse: 'Validate the charge before submitting it.' })) }),
+    });
+    try {
+      selected.push(h.item.id);
+      await h.send();
+      await until(() => h.coordinator.pendingProposalGates.has(h.chat.id));
+      const candidate = h.memory.store.list({ status: 'candidate' })[0]!;
+      expect(h.calls.filter(call => call.purpose === 'changes')).toHaveLength(1);
+      h.memory.store.acceptRevision(candidate.id, { actor: 'user' });
+      selected.push(candidate.id);
+      const gate = h.coordinator.pendingProposalGates.get(h.chat.id)!;
+      await h.coordinator.respondMemoryProposals({ chatId: h.chat.id, proposalsId: gate.proposalsId, decision: 'reviewed' });
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const changes = h.calls.filter(call => call.purpose === 'changes');
+      expect(changes).toHaveLength(2);
+      expect(changes[1]!.prompt).toContain(candidate.id);
+      expect(changes[1]!.prompt).toContain(candidate.content);
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Missing preview');
+      expect(preview.memories.some(item => item.id === candidate.id)).toBe(true);
+      expect(h.mainTurns).toHaveLength(0);
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: selected });
+      await until(() => h.mainTurns.length === 1);
+      expect(h.mainTurns[0]!.developerInstructions).toContain(candidate.content);
+      expect(h.mainTurns[0]!.developerInstructions).toContain('Validate the charge before submitting it.');
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+    } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
   it('switching to auto skips C/T/M/W and clears the previous review planner guidance', async () => {
     let control: "review" | "auto" = "review";
     const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control }) });
@@ -441,8 +640,9 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
     try {
       await h.send();
       await until(() => h.store.getMessages(h.chat.id).some((message) => message.kind === 'memory_preview_relevance'));
-      expect(h.calls.slice(0, 3).map((call) => call.purpose)).toEqual(['candidate', 'transfer', 'changes']);
-      expect(h.calls.filter((call) => call.purpose === 'changes')).toHaveLength(3);
+      expect(h.calls.slice(0, 2).map((call) => call.purpose)).toEqual(['candidate', 'changes']);
+      expect(h.calls.filter((call) => call.purpose === 'transfer')).toHaveLength(0);
+      expect(h.calls.filter((call) => call.purpose === 'changes')).toHaveLength(1);
       expect(h.mainTurns).toHaveLength(0);
       await h.start();
       expect(h.mainTurns[0]!.developerInstructions).toContain('Represent the charge amount as integer cents.');
@@ -466,9 +666,9 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
     const h = await setup({ blockPreparation: true });
     try {
       await h.send();
-      await until(() => h.calls.length === 3);
+      await until(() => h.calls.length === 2);
       await h.coordinator.cancel(h.chat.id);
-      expect(h.disposed.sort()).toEqual(['candidate', 'changes', 'transfer']);
+      expect(h.disposed.sort()).toEqual(['candidate', 'changes']);
       expect(h.mainTurns).toHaveLength(0);
       expect(h.memory.store.list({ status: 'candidate' })).toHaveLength(0);
       expect(h.sidecarCalls).toHaveLength(0);
@@ -549,6 +749,8 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       expect(loaded.text).not.toContain(excluded.detail!);
       expect(loaded.text).not.toContain(`[${excluded.id}]`);
       expect(h.memory.store.getById(excluded.id)!.usageCount).toBe(0);
+      await h.coordinator.setMemoryDisabled(h.chat.id, true);
+      expect(await handler('load_memory_detail', { ids: [h.item.id] })).toMatchObject({ isError: true, text: 'Memory access is disabled' });
       await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
     } finally { h.close(); }
   });

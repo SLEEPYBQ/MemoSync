@@ -230,9 +230,11 @@ describe("idle provider sessions", () => {
       if (++calls === 1) await first.promise
       else { await second.promise; throw new Error("simulated trace failure") }
     }
-    await h.send(); await h.finish()
+    await h.send()
+    const completedTurn = h.coordinator.activeTurns.get(h.chat.id)!
+    await h.finish()
     expect(calls).toBe(1)
-    ;(h.coordinator as any).launchPostTurnMemoryPasses({ chatId: h.chat.id })
+    ;(h.coordinator as any).launchPostTurnMemoryPasses({ chatId: h.chat.id }, completedTurn)
     await advance(TIMEOUT * 2); expect(h.closes()).toBe(0)
     first.resolve(); await Bun.sleep(10)
     await advance(TIMEOUT * 2); expect(h.closes()).toBe(0)
