@@ -409,7 +409,7 @@ interface ClaudeSessionHandle {
   close: () => void
   sendPrompt: (
     content: string,
-    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
+    context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string },
   ) => Promise<void>
   /** Known for the bundled SDK; override wrappers are detected on their first tagged result. */
   echoesPromptIds?: boolean
@@ -460,7 +460,7 @@ interface ClaudeSessionState {
    * id → version of what the context currently claims (boot snapshot, then
    * updated after every delta append). null = memory off or non-skills mode.
    */
-  memoryBaseline: Map<string, number> | null
+  memoryBaseline: import("./memory/injection").MemoryBaseline | null
 }
 
 interface AgentCoordinatorArgs {
@@ -1397,6 +1397,7 @@ export async function startClaudeSession(args: {
   let activeMemoryToolTurn: number | undefined
   let activeMemoryToolEngine: string | undefined
   let activeMemoryToolIds: readonly string[] | undefined = plan?.injectedMemories.map(item => item.id)
+  let activeMemoryToolView: MemoryToolContext["memoryView"] = plan?.view
   // Claude sessions persist across user turns, as does their in-process MCP
   // server. Use getters so every tool call reads the context installed just
   // before the corresponding prompt is queued, rather than the boot turn.
@@ -1410,6 +1411,7 @@ export async function startClaudeSession(args: {
       return activeMemoryToolEngine
     },
     get allowedMemoryIds() { return activeMemoryToolIds },
+    get memoryView() { return activeMemoryToolView },
   }
   const memorySpecs =
     args.memory && plan?.registerTools
@@ -1544,11 +1546,12 @@ export async function startClaudeSession(args: {
     },
     sendPrompt: async (
       content: string,
-      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
+      context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string },
     ) => {
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
+      activeMemoryToolView = context?.memoryView
       outboundOrigins.beginHumanTurn(context?.promptSeq, context?.promptId)
       try {
         promptQueue.push({
@@ -5918,6 +5921,7 @@ export class AgentCoordinator {
               turn: turnNumber,
               engine: args.provider,
               allowedMemoryIds: piPlan?.injectedMemories.map(item => item.id) ?? [],
+              memoryView: piPlan?.view,
             })
           }
         : undefined
@@ -6045,6 +6049,7 @@ export class AgentCoordinator {
               turn: turnNumber,
               engine: "codex",
               allowedMemoryIds: codexPlan?.injectedMemories.map(item => item.id) ?? [],
+              memoryView: codexPlan?.view,
             })
             return { text: r.text, isError: r.isError }
           }
@@ -6209,7 +6214,8 @@ export class AgentCoordinator {
       let deliveredFocusedMemories = active.memoryPlan?.injectedMemories ?? []
       let deliveredExpectedUses: ExpectedMemoryUse[] = []
       let deliveredResumeInterruptId: string | undefined
-      let nextMemoryBaseline: Map<string, number> | null = null
+      let nextMemoryBaseline: import("./memory/injection").MemoryBaseline | null = null
+      let deliveredMemoryView = active.memoryPlan?.view
       if (session.memoryBaseline && this.memory) {
         const delta = computeMemoryTurnDelta({
           memory: this.memory,
@@ -6221,6 +6227,7 @@ export class AgentCoordinator {
         // Commit the new baseline only after Claude accepts this prompt. If
         // sendPrompt fails, the next attempt must resend the same delta.
         nextMemoryBaseline = delta.nextBaseline
+        deliveredMemoryView = delta.view
         deliveredFocusIds = delta.effectiveIds
         deliveredVisiblePool = delta.visibleMemories
         deliveredFocusedMemories = delta.effectiveMemories
@@ -6336,6 +6343,7 @@ export class AgentCoordinator {
       try {
         await session.session.sendPrompt(promptText, {
           allowedMemoryIds: deliveredFocusIds,
+          memoryView: deliveredMemoryView,
           turn: active.turnNumber ?? turnNumber,
           engine: "claude",
           promptSeq,
@@ -6554,7 +6562,7 @@ export class AgentCoordinator {
         providerRuntimeKey,
         memoryBaseline:
           bootPlan?.mode === "skills"
-            ? new Map(bootPlan.bakedMemories.map((m) => [m.id, m.version]))
+            ? bootPlan.baseline
             : null,
       }
       this.claudeSessions.set(args.chatId, session)
