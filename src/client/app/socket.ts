@@ -1,3 +1,4 @@
+import { HOST_ACTION_CAPABILITY, type HostActionClientBinding, type HostActionServerEvent } from "../../shared/host-actions"
 import { applySidebarPatch } from "../../shared/sidebar-patch"
 import type { SidebarData } from "../../shared/types"
 import { localizeUiResult, translateServerUiText } from "../i18n/uiText"
@@ -67,6 +68,9 @@ export class AppSocket {
   private readonly pending = new Map<string, { resolve: (value: unknown) => void; reject: (reason?: unknown) => void }>()
   private readonly outboundQueue: ClientEnvelope[] = []
   private readonly statusListeners = new Set<StatusListener>()
+  private readonly hostActionListeners = new Set<EventListener<HostActionServerEvent>>()
+  private hostActionBinding: HostActionClientBinding | null = null
+  private hostActionBindingPromise: Promise<HostActionClientBinding> | null = null
   private heartbeatTimer: number | null = null
   private pingTimeoutTimer: number | null = null
   private pingPromise: Promise<void> | null = null
@@ -123,6 +127,9 @@ export class AppSocket {
     this.outboundQueue.length = 0
     this.subscriptions.clear()
     this.statusListeners.clear()
+    this.hostActionListeners.clear()
+    this.hostActionBinding = null
+    this.hostActionBindingPromise = null
   }
 
   onStatus(listener: StatusListener) {
@@ -197,7 +204,45 @@ export class AppSocket {
     }
   }
 
-  command<TResult = unknown>(command: ClientCommand) {
+  onHostAction(listener: EventListener<HostActionServerEvent>) {
+    this.hostActionListeners.add(listener)
+    if (this.getStatus() === "connected") void this.ensureHostActionBinding().catch(() => {})
+    return () => { this.hostActionListeners.delete(listener) }
+  }
+
+  getHostActionClientId() { return this.hostActionBinding?.clientId ?? null }
+
+  ensureHostActionBinding(): Promise<HostActionClientBinding> {
+    if (this.hostActionBinding) return Promise.resolve(this.hostActionBinding)
+    if (this.hostActionBindingPromise) return this.hostActionBindingPromise
+    if (this.getStatus() !== "connected") return Promise.reject(new Error("Host action connection unavailable"))
+    const connection = this.ws
+    const key = `memosync:host-actions:${this.url}`
+    let resumeToken: string | undefined
+    try { resumeToken = window.sessionStorage.getItem(key) ?? undefined } catch { /* Private window storage may be disabled. */ }
+    const pending = this.dispatchCommand<HostActionClientBinding>({
+      type: "host.actions.bind", resumeToken,
+      capabilities: globalThis.crypto?.subtle ? [HOST_ACTION_CAPABILITY] : [],
+    }).then(binding => {
+      if (this.ws !== connection) throw new Error("Host action connection changed")
+      this.hostActionBinding = binding
+      try { window.sessionStorage.setItem(key, binding.resumeToken) } catch { /* Binding still works in memory. */ }
+      return binding
+    }).finally(() => { if (this.hostActionBindingPromise === pending) this.hostActionBindingPromise = null })
+    this.hostActionBindingPromise = pending
+    return pending
+  }
+
+  command<TResult = unknown>(command: ClientCommand): Promise<TResult> {
+    if (command.type === "chat.send" && this.hostActionListeners.size && this.getStatus() === "connected") {
+      // The sending socket owns the navigation target before the turn is admitted.
+      // An older server without host views can still run an ordinary conversation.
+      return this.ensureHostActionBinding().catch(() => null).then(() => this.dispatchCommand<TResult>(command))
+    }
+    return this.dispatchCommand<TResult>(command)
+  }
+
+  private dispatchCommand<TResult = unknown>(command: ClientCommand) {
     const id = generateUUID()
     const envelope: ClientEnvelope = { v: 1, type: "command", id, command }
     return new Promise<TResult>((resolve, reject) => {
@@ -243,6 +288,8 @@ export class AppSocket {
       return
     }
     this.emitStatus("connecting")
+    this.hostActionBinding = null
+    this.hostActionBindingPromise = null
     this.ws = new WebSocket(this.url)
     const connection = this.ws
 
@@ -257,6 +304,7 @@ export class AppSocket {
       for (const [id, subscription] of this.subscriptions.entries()) {
         this.sendNow({ v: 1, type: "subscribe", id, topic: subscription.topicOnReconnect?.() ?? subscription.topic })
       }
+      if (this.hostActionListeners.size) void this.ensureHostActionBinding().catch(() => {})
       while (this.outboundQueue.length > 0) {
         const envelope = this.outboundQueue.shift()
         if (!envelope) continue
@@ -302,6 +350,11 @@ export class AppSocket {
           payloadBytes: rawText.length,
           commandId: payload.id,
         })
+      }
+
+      if (payload.type === "host.action.requested" || payload.type === "host.action.updated") {
+        for (const listener of this.hostActionListeners) listener(payload)
+        return
       }
 
       if (payload.type === "snapshot") {
@@ -372,6 +425,8 @@ export class AppSocket {
       this.reconnectImmediatelyOnClose = false
       this.stopHeartbeat()
       this.clearPingState()
+      this.hostActionBinding = null
+      this.hostActionBindingPromise = null
       this.emitStatus("disconnected")
       for (const pending of this.pending.values()) {
         pending.reject(new Error(t("errors:disconnected")))

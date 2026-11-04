@@ -124,10 +124,12 @@ interface PendingTurn {
   onDynamicToolCall?: (
     name: string,
     args: Record<string, unknown>,
+    native?: import("../shared/host-actions").HostNativeToolContext,
   ) => Promise<{ text: string; isError?: boolean }>
 }
 
 interface SessionContext {
+  hostEngineInstanceId: string
   chatId: string
   cwd: string
   child: CodexAppServerProcess
@@ -911,6 +913,7 @@ export class CodexAppServerManager {
 
     const child = this.spawnProcess(args.cwd, args.subprocessEnv, args.runtime)
     const context: SessionContext = {
+      hostEngineInstanceId: randomUUID(),
       chatId: args.chatId,
       cwd: args.cwd,
       child,
@@ -1484,7 +1487,13 @@ export class CodexAppServerManager {
         let text: string
         let isError = false
         try {
-          const result = await pendingTurn.onDynamicToolCall(request.params.tool, toolArgs)
+          // The callback captures the actual process/thread/turn/call before awaiting.
+          // Missing or mismatched provenance stays undefined; host tools fail closed.
+          const native = !context.closed && !pendingTurn.resolved && request.params.threadId === context.sessionToken
+            && request.params.turnId === pendingTurn.turnId && request.params.callId
+            ? Object.freeze({ engineInstanceId: context.hostEngineInstanceId, nativeSessionId: request.params.threadId,
+              nativeTurnId: request.params.turnId, nativeToolCallId: request.params.callId }) : undefined
+          const result = await pendingTurn.onDynamicToolCall(request.params.tool, toolArgs, native)
           text = result.text
           isError = Boolean(result.isError)
         } catch (error) {

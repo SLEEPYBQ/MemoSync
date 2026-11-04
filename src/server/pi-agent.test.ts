@@ -155,13 +155,18 @@ describe("Pi stable definitions", () => {
     const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [] })
     const base = { ...startupArgs, systemPrompt: "STABLE" }
     try {
+      const results: unknown[] = []
+      session.prompt = async () => { results.push(await created[0].customTools[0].execute(`call-${results.length + 1}`, {}, undefined)) }
       await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()], memoryDispatch: async () => ({ text: "turn one" }) })).stream)
       const execute = created[0].customTools[0].execute
-      expect(await execute("call-1", {}, undefined)).toMatchObject({ content: [{ text: "turn one" }] })
+      expect(results[0]).toMatchObject({ content: [{ text: "turn one" }] })
+      await expect(execute("late-first-call", {}, undefined)).rejects.toThrow("not available for this turn")
       await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()], memoryDispatch: async () => ({ text: "turn two" }),
         beforeToolCall: async () => ({ block: true, reason: "current gate" }) })).stream)
       expect(created).toHaveLength(1)
-      expect(await execute("call-2", {}, undefined)).toMatchObject({ content: [{ text: "turn two" }] })
+      expect(results[1]).toMatchObject({ content: [{ text: "turn two" }] })
+      await expect(execute("late-second-call", {}, undefined)).rejects.toThrow("not available for this turn")
+      session.prompt = async () => {}
       expect(await session.agent.beforeToolCall({ toolCall: { name: "write" }, args: {} })).toMatchObject({ reason: "current gate" })
       await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()] })).stream)
       await expect(execute("call-3", {}, undefined)).rejects.toThrow("not available for this turn")

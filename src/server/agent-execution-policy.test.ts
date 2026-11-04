@@ -31,7 +31,12 @@ async function setup(onStart?: (args: StartPiTurnArgs) => Promise<void>) {
     opencodeManager: { closeChat() {}, dispose() {} } as never,
   })
   cleanups.push(async () => { await coordinator.closeChat(chat.id); await rm(dir, { recursive: true, force: true }) })
-  const boot = () => (coordinator as any).bootEngineTurn({ chatId: chat.id, provider: "pi", model: "synthetic", effort: "none", planMode: false, attachments: [], content: "synthetic turn", turnId: crypto.randomUUID() }, { chat, project, turnNumber: 1, memoryDisabledForTurn: true })
+  const boot = () => {
+    const turnId = crypto.randomUUID()
+    const policy = (coordinator as any).executionPolicyFor(chat.id, "pi")
+    const policyScope = (coordinator as any).harnessPolicies.beginTurn(chat.id, policy.policy, policy.revision, turnId, "1.5.0")
+    return (coordinator as any).bootEngineTurn({ chatId: chat.id, provider: "pi", model: "synthetic", effort: "none", planMode: false, attachments: [], content: "synthetic turn", turnId, policyScope }, { chat, project, turnNumber: 1, memoryDisabledForTurn: true })
+  }
   return { store, coordinator, chat, boot, launch: () => launch }
 }
 async function pending(coordinator: AgentCoordinator, chatId: string) {

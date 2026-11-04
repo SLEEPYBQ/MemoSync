@@ -1,4 +1,6 @@
 import type { AgentProvider } from "../shared/types"
+import { HOST_ACTION_CAPABILITY, HOST_ACTION_TOOL_NAMES } from "../shared/host-actions"
+import type { HostActionAdmissionPolicy, HostAdmissionLease, HostAdmissionScope } from "./host-actions"
 import type { ChatHarnessSnapshot, EngineCapabilities, ExecutionPolicyChoice, ExecutionPolicyState, NativeExecutionPolicy, PolicyCallScope } from "../shared/harness-capabilities"
 
 export function defaultExecutionPolicy(engine: AgentProvider, legacy = false): NativeExecutionPolicy {
@@ -81,7 +83,13 @@ export class CapabilityRegistry {
         ...(ineligible ? { reason: "Runtime/model eligibility and managed requirements have not been verified." } : !verified ? { reason: engine === "pi" ? "This runtime version has not been verified. Tool gating only; no OS sandbox." : "This runtime version has not been verified." } : engine === "pi" ? { reason: "Tool gating only. Shell subprocesses have no OS sandbox." } : {}),
       }
     })
-    return { engine, revision, executionPolicies, capabilities: [{ id: "set-execution-policy", availability: "available", revision: 1, executionOwner: "host", proof: { version: "1", source: "MemoSync policy service (desired-state command)", level: "versioned-api" } }] }
+    const correlated = engine === "pi" || engine === "codex"
+    return { engine, revision, executionPolicies, capabilities: [
+      { id: "set-execution-policy", availability: "available", revision: 1, executionOwner: "host", proof: { version: "1", source: "MemoSync policy service (desired-state command)", level: "versioned-api" } },
+      { id: HOST_ACTION_CAPABILITY, availability: !correlated ? "unavailable" : verified ? "available" : "unknown", revision, executionOwner: "host",
+        proof: { version: version ?? "unknown", source: engine === "pi" ? "Pi native session/custom-tool call correlation" : engine === "codex" ? "Codex app-server process/thread/turn/call correlation" : "Trusted native host-action correlation is unavailable", level: "versioned-api" },
+        ...(!correlated ? { reason: "This adapter cannot verify native host-action correlation." } : !verified ? { reason: "This runtime version has not been verified." } : {}) },
+    ] }
   }
 }
 
@@ -89,6 +97,8 @@ interface RuntimeState {
   state: ExecutionPolicyState
   generation: number
   turnId?: string
+  /** Pending UI presentation may outlive the stream, until revoked or superseded. */
+  hostScope?: PolicyCallScope
   version?: string
   blocked: boolean
   uncertainProcesses: boolean
@@ -97,8 +107,37 @@ interface RuntimeState {
 }
 
 /** Persisted effective values describe the last acknowledgement, never a live process after restart. */
-export class HarnessPolicyService {
+export class HarnessPolicyService implements HostActionAdmissionPolicy {
   private runtimes = new Map<string, RuntimeState>()
+  private readonly revocations = new Set<(chatId: string, reason: string) => void>()
+  onRevoked(listener: (chatId: string, reason: string) => void) {
+    this.revocations.add(listener)
+    return () => { this.revocations.delete(listener) }
+  }
+  private revoke(chatId: string, reason: string) {
+    for (const listener of this.revocations) listener(chatId, reason)
+  }
+  capture(scope: Readonly<HostAdmissionScope>) {
+    const policy = scope.policyScope
+    if (!policy || policy.chatId !== scope.chatId || policy.turnId !== scope.admittedTurnId || !this.isCurrent(policy)) throw new Error("Host execution scope unavailable")
+    const runtime = this.runtimes.get(this.id(scope.chatId, policy.engine))!
+    const capability = this.registry.snapshot(policy.engine, runtime.version).capabilities.find(c => c.id === HOST_ACTION_CAPABILITY)!
+    return { policyRevision: policy.policyRevision, capabilityRevision: capability.revision }
+  }
+  allows(lease: HostAdmissionLease): boolean {
+    const scope = lease.policyScope
+    if (!scope || scope.chatId !== lease.chatId || scope.turnId !== lease.admittedTurnId || scope.policyRevision !== lease.policyRevision) return false
+    const runtime = this.runtimes.get(this.id(scope.chatId, scope.engine))
+    if (!runtime?.hostScope || runtime.hostScope.turnId !== scope.turnId || runtime.generation !== scope.generation || runtime.state.desiredRevision !== scope.policyRevision) return false
+    const capability = this.registry.snapshot(scope.engine, runtime.version).capabilities.find(c => c.id === HOST_ACTION_CAPABILITY)
+    return capability?.availability === "available" && capability.revision === lease.capabilityRevision
+  }
+  observeRuntime(scope: PolicyCallScope, version?: string) {
+    if (!this.isCurrent(scope)) throw new Error("Stale execution policy runtime")
+    const runtime = this.runtimes.get(this.id(scope.chatId, scope.engine))!
+    runtime.version = version
+    this.registry.snapshot(scope.engine, version)
+  }
   constructor(readonly registry = new CapabilityRegistry()) {}
   private id(chatId: string, engine: AgentProvider) { return `${chatId}:${engine}` }
   ensure(chatId: string, policy: NativeExecutionPolicy, revision: number, persisted?: ExecutionPolicyState): RuntimeState {
@@ -132,6 +171,7 @@ export class HarnessPolicyService {
     const choice = this.registry.snapshot(policy.engine, runtime.version).executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(policy))
     if (!choice || choice.availability !== "available") throw new Error(choice?.reason ?? "Unsupported execution policy")
     runtime.generation++
+    runtime.hostScope = undefined
     runtime.blocked = true
     runtime.uncertainProcesses ||= active
     runtime.restartRequired = active
@@ -144,6 +184,7 @@ export class HarnessPolicyService {
       { boundary: "native-runtime", status: "pending", revision: runtime.state.effectiveRevision, effectiveFrom: "restart" },
       ...(runtime.uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
     ]
+    this.revoke(chatId, "Execution policy changed")
     return structuredClone(runtime.state)
   }
   /** Known native sessions have retired; descendant-process uncertainty remains a separate fact. */
@@ -151,6 +192,8 @@ export class HarnessPolicyService {
     const runtime = this.runtimes.get(this.id(chatId, engine))
     if (!runtime) throw new Error("Execution policy not initialized")
     runtime.restartRequired = false
+    runtime.hostScope = undefined
+    this.revoke(chatId, "Native policy runtime retired")
     runtime.hasRuntime = false
     runtime.turnId = undefined
     runtime.blocked = true
@@ -175,7 +218,9 @@ export class HarnessPolicyService {
       { boundary: "native-runtime", status: "pending", revision: runtime.state.effectiveRevision, effectiveFrom: "next-turn", generation: runtime.generation, turnId },
       ...(runtime.uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
     ]
-    return Object.freeze({ chatId, engine: policy.engine, requestId: "turn", turnId, generation: runtime.generation, policyRevision: revision })
+    const scope = Object.freeze({ chatId, engine: policy.engine, requestId: "turn", turnId, generation: runtime.generation, policyRevision: revision })
+    runtime.hostScope = scope
+    return scope
   }
   isCurrent(scope: PolicyCallScope): boolean {
     const runtime = this.runtimes.get(this.id(scope.chatId, scope.engine))
@@ -195,6 +240,8 @@ export class HarnessPolicyService {
     if (!this.isCurrent(scope)) return
     const runtime = this.runtimes.get(this.id(scope.chatId, scope.engine))!
     runtime.blocked = true
+    runtime.hostScope = undefined
+    this.revoke(scope.chatId, "Execution policy rejected")
     runtime.state.status = "rejected"
     runtime.state.reason = reason
     runtime.state.boundaries = runtime.state.boundaries.map(b => b.boundary === "native-runtime" ? { ...b, status: "rejected" } : b)
@@ -225,5 +272,5 @@ export function isMemoryTool(name: string): boolean {
   return ["load_memory_detail", "propose_memory"].includes(name) || ["mcp__memory__load_memory_detail", "mcp__memory__propose_memory"].includes(name)
 }
 export function isReadOnlyTool(name: string): boolean {
-  return ["read", "grep", "find", "ls", "glob", "list", "Read", "Grep", "Glob"].includes(name)
+  return ["read", "grep", "find", "ls", "glob", "list", "Read", "Grep", "Glob", ...Object.values(HOST_ACTION_TOOL_NAMES)].includes(name)
 }

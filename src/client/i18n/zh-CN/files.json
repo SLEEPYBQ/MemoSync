@@ -1,4 +1,9 @@
 {
+  "snapshot": "快照",
+  "readonlySnapshot": "只读快照",
+  "closeSnapshot": "关闭 {{name}} 的快照",
+  "source": "源码",
+  "openCurrentFile": "打开当前文件",
   "unsavedChangesClose": "未保存的更改，点击关闭",
   "serverUnreachableCheckYourConnectionThenRetry": "无法连接服务器，请检查网络后重试",
   "failedToListDirectory": "无法列出目录",

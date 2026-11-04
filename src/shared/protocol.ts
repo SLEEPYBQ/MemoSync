@@ -1,3 +1,4 @@
+import type { HostActionCommand, HostActionServerEvent } from "./host-actions"
 import type { SetExecutionPolicyCommand } from "./harness-capabilities"
 import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
@@ -96,6 +97,7 @@ export interface TerminalTailResult {
 }
 
 export type ClientCommand =
+  | HostActionCommand
   | SetExecutionPolicyCommand
   | { type: "harness.getCapabilities"; engine: AgentProvider }
   | { type: "chat.readHarness"; chatId: string; engine: AgentProvider }
@@ -310,6 +312,7 @@ export type ServerSnapshot =
   | { type: "terminal"; data: TerminalSnapshot | TerminalTailResult | null }
 
 export type ServerEnvelope =
+  | HostActionServerEvent
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage | StandaloneTranscriptExportResult }

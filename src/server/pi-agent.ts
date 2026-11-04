@@ -454,10 +454,11 @@ export interface StartPiTurnArgs {
    * dispatch for a turn (e.g. the user proceeded without memory) without
    * rebuilding the session.
    */
-  memoryDispatch?: (name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>
+  memoryDispatch?: (name: string, args: Record<string, unknown>, signal?: AbortSignal, native?: import("../shared/host-actions").HostNativeToolContext) => Promise<MemoryToolResult>
 }
 
 interface PiChatSession {
+  hostEngineInstanceId: string
   session: AgentSession
   modelRuntime: ModelRuntime
   resourceLoader: DefaultResourceLoader
@@ -475,7 +476,7 @@ interface PiChatSession {
   beforeToolCall?: StartPiTurnArgs["beforeToolCall"]
   isPolicyCurrent?: () => boolean
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
-  memoryInvoke: ((name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>) | null
+  memoryInvoke: StartPiTurnArgs["memoryDispatch"] | null
 }
 
 /** A turn that failed before the agent could start (missing key, bad session file). */
@@ -528,6 +529,9 @@ export class PiAgentManager {
     const existing = this.sessions.get(chatId)
     if (!existing) return
     this.sessions.delete(chatId)
+    existing.memoryInvoke = null
+    existing.beforeToolCall = undefined
+    existing.isPolicyCurrent = () => false
     void existing.session.abort().catch(() => {})
     existing.session.dispose()
   }
@@ -564,10 +568,13 @@ export class PiAgentManager {
     const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
     const memorySpecs = args.memorySpecs ?? []
     const chatSessionHolder: { session?: PiChatSession } = {}
-    const memoryTools = toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal) => {
-      const invoke = chatSessionHolder.session?.memoryInvoke
-      if (!invoke) return { text: "Memory tools are not available for this turn.", isError: true }
-      return invoke(name, toolArgs, signal)
+    const memoryTools = toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal, callId) => {
+      const current = chatSessionHolder.session
+      const invoke = current?.memoryInvoke
+      if (!invoke || signal?.aborted) return { text: "Memory tools are not available for this turn.", isError: true }
+      const native = current && callId ? Object.freeze({ engineInstanceId: current.hostEngineInstanceId,
+        nativeSessionId: current.session.sessionId, nativeToolCallId: callId }) : undefined
+      return invoke(name, toolArgs, signal, native)
     })
     const definitionsKey = createHash("sha256").update(definitionJson({
       systemPrompt: args.systemPrompt,
@@ -585,9 +592,12 @@ export class PiAgentManager {
     if (existing && connectionUnchanged && existing.cwd === args.cwd
       && existing.definitionsKey === definitionsKey && !args.forkSession) {
       if (args.beforeToolCall && !existing.session.agent) throw new Error("Pi tool gating is unavailable in this SDK runtime")
+      // Retire old dispatch and finish aborting before replacing any turn-owned hooks.
+      existing.memoryInvoke = null
+      if (existing.session.isStreaming) await existing.session.abort()
+      args.signal?.throwIfAborted()
       await setConnectionKey(existing.modelRuntime, args.connection)
       args.signal?.throwIfAborted()
-      existing.memoryInvoke = args.memoryDispatch ?? null
       existing.beforeToolCall = args.beforeToolCall
       existing.isPolicyCurrent = args.isPolicyCurrent
       if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
@@ -606,6 +616,9 @@ export class PiAgentManager {
 
     if (existing) {
       this.sessions.delete(args.chatId)
+      existing.memoryInvoke = null
+      existing.beforeToolCall = undefined
+      existing.isPolicyCurrent = () => false
       if (existing.session.isStreaming) await existing.session.abort()
       existing.session.dispose()
       // Rebind definitions around the native history, even if an in-process
@@ -702,7 +715,8 @@ export class PiAgentManager {
       definitionsKey,
       modelCardKey,
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
-      memoryInvoke: args.memoryDispatch ?? null,
+      hostEngineInstanceId: crypto.randomUUID(),
+      memoryInvoke: null,
       beforeToolCall: args.beforeToolCall,
       isPolicyCurrent: args.isPolicyCurrent,
     }
@@ -804,6 +818,9 @@ export class PiAgentManager {
       await session.abort()
     }
     args.signal?.throwIfAborted()
+    // Install this turn's dispatch only after the old prompt has fully aborted.
+    const turnDispatch = args.memoryDispatch
+    chatSession.memoryInvoke = turnDispatch ?? null
     chatSession.outputSchema = args.outputSchema
     await args.onExecutionPolicyApplied?.(session.sessionFile ?? undefined)
     args.signal?.throwIfAborted()
@@ -825,6 +842,7 @@ export class PiAgentManager {
     const finalize = (result: { isError: boolean; message: string; cancelled?: boolean }) => {
       if (finished) return
       finished = true
+      if (chatSession.memoryInvoke === turnDispatch) chatSession.memoryInvoke = null
       unsubscribe()
       pushSessionToken()
       if (!result.cancelled) {

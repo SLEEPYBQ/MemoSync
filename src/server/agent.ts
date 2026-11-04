@@ -44,6 +44,8 @@ import { runForkCapture } from "./memory/capture-fork"
 import type { CheckupResult, CheckupService } from "./memory/checkup"
 import { extractCitations } from "./memory/citations"
 import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
+import { HostActionService, dispatchHostAction, hostActionToolSpecs, isHostActionTool, type HostAdmissionLease } from "./host-actions"
+import type { HostNativeToolContext } from "../shared/host-actions"
 import { toCodexDynamicTools } from "./memory/codex-adapter"
 import type { RevisionService } from "./memory/evolution"
 import { runForkQuery } from "./memory/fork-query"
@@ -335,6 +337,10 @@ interface StartTurnArgs {
    */
   memoryUserText?: string
   profile?: SendToStartingProfile | null
+  /** Transport-owned identity; never read this from the model/client command body. */
+  hostClientId?: string
+  hostAdmission?: HostAdmissionLease
+  policyScope?: PolicyCallScope
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
   /**
@@ -487,6 +493,8 @@ interface ClaudeSessionState {
 }
 
 interface AgentCoordinatorArgs {
+  hostActions?: HostActionService
+  harnessPolicies?: HarnessPolicyService
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
@@ -539,6 +547,7 @@ interface AgentCoordinatorArgs {
     forkSession: boolean
     executionControl?: ClaudeExecutionControl
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+    hostActionsEnabled?: boolean
     memory?: MemoryService | null
     /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
     capture?: CaptureService | null
@@ -1406,6 +1415,7 @@ export async function startClaudeSession(args: {
   sessionToken: string | null
   forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  hostActionsEnabled?: boolean
   executionControl?: ClaudeExecutionControl
   memory?: MemoryService | null
   /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
@@ -1465,6 +1475,9 @@ export async function startClaudeSession(args: {
           onProposed: args.onMemoryProposal,
         })
       : []
+  // Claude MCP lacks verified native call provenance. Advertise the real tools,
+  // whose fallback handlers fail unavailable rather than guess an active turn.
+  if (args.hostActionsEnabled) memorySpecs.push(...hostActionToolSpecs())
   const memoryBlock = plan?.block ?? ""
   // Append environment guidance so the agent knows how a dev server it
   // starts becomes visible to the user.
@@ -1694,9 +1707,10 @@ type InternalGateWake<T extends string> = T | "invalidated"
 export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 
 export class AgentCoordinator {
+  private readonly hostActions?: HostActionService
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
-  private readonly harnessPolicies = new HarnessPolicyService()
+  private readonly harnessPolicies: HarnessPolicyService
   private readonly policyScopes = new Map<string, PolicyCallScope>()
   private readonly policyApprovals = new Map<string, PolicyCallScope>()
   private readonly policyChanges = new Set<string>()
@@ -1849,6 +1863,8 @@ export class AgentCoordinator {
   private readonly streamingAssistantTexts = new Map<string, { itemId: string; text: string }>()
 
   constructor(args: AgentCoordinatorArgs) {
+    this.hostActions = args.hostActions
+    this.harnessPolicies = args.harnessPolicies ?? new HarnessPolicyService()
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
@@ -3608,6 +3624,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.hostActions?.revokeChat(chatId, "Chat closed")
     this.endPolicyTurn(chatId)
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
@@ -3924,6 +3941,20 @@ export class AgentCoordinator {
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
     try {
+    // Freeze execution and host admission together, before runtime/memory startup awaits.
+    if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
+    const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
+    this.harnessPolicies.ensure(args.chatId, selectedPolicy.policy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
+    args.policyScope = this.harnessPolicies.beginTurn(args.chatId, selectedPolicy.policy, selectedPolicy.revision, logicalTurnId,
+      this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
+    this.policyScopes.set(args.chatId, args.policyScope)
+    if (this.hostActions) {
+      const hostProject = this.store.getProject(chat.projectId)
+      if (hostProject) args.hostAdmission = this.hostActions.captureAdmission({
+        chatId: args.chatId, admittedTurnId: logicalTurnId, workspaceRef: chat.projectId,
+        workspaceRoot: hostProject.localPath, targetClientId: args.hostClientId, policyScope: args.policyScope,
+      })
+    }
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
       const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
       if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
@@ -4057,7 +4088,10 @@ export class AgentCoordinator {
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) this.settleStartupReservation(args.chatId, reservation)
+      if (!reservationHandedOff) {
+        if (!this.activeTurns.has(args.chatId)) this.endPolicyTurn(args.chatId, logicalTurnId)
+        this.settleStartupReservation(args.chatId, reservation)
+      }
     }
   }
 
@@ -6045,6 +6079,7 @@ export class AgentCoordinator {
   ) {
     if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
+    const hostAdmission = args.hostAdmission
     const reservation = args.startupReservation
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
@@ -6087,14 +6122,14 @@ export class AgentCoordinator {
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
     const executionPolicy = selectedPolicy.policy
     const legacyExecution = !chat.executionPolicyVersion
-    this.harnessPolicies.ensure(args.chatId, executionPolicy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
-    const policyScope = this.harnessPolicies.beginTurn(args.chatId, executionPolicy, selectedPolicy.revision, args.turnId!, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
-    this.policyScopes.set(args.chatId, policyScope)
+    const policyScope = args.policyScope
+    if (!policyScope || !this.harnessPolicies.isCurrent(policyScope) || policyScope.policyRevision !== selectedPolicy.revision) throw new Error("Stale execution policy admission")
+    this.harnessPolicies.observeRuntime(policyScope, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
     await this.store.setExecutionPolicyState?.(args.chatId, this.harnessPolicies.state(args.chatId, args.provider))
     const isPolicyCurrent = () => !this.policyChanges.has(args.chatId) && this.harnessPolicies.isCurrent(policyScope)
     const onExecutionPolicyApplied = async (nativeSessionId?: string) => {
       if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
-      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
         .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(executionPolicy))
       // Unknown runtimes and legacy unrestricted policies never gain an invented proof.
       if (!choice || choice.availability !== "available") return
@@ -6221,6 +6256,8 @@ export class AgentCoordinator {
               },
             })
           : []
+      const piHostSpecs = this.hostActions ? hostActionToolSpecs() : []
+      const piAllSpecs = [...piMemorySpecs, ...piHostSpecs]
       const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
       const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
       const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
@@ -6242,8 +6279,12 @@ export class AgentCoordinator {
           mode: piPlan.mode,
         })
       }
-      const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
-        ? async (name: string, toolArgs: Record<string, unknown>) => {
+      const piMemoryDispatch = piAllSpecs.length
+        ? async (name: string, toolArgs: Record<string, unknown>, signal?: AbortSignal, native?: HostNativeToolContext) => {
+            if (isHostActionTool(name)) {
+              if (!isPolicyCurrent()) return dispatchHostAction(undefined, undefined, name, toolArgs)
+              return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native, signal)
+            }
             if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
             if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
@@ -6264,7 +6305,7 @@ export class AgentCoordinator {
           memoryContext: piMemoryBlock || undefined,
           sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
           forkSession: Boolean(chat.pendingForkSessionToken),
-          memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+          memorySpecs: piAllSpecs.length ? piAllSpecs : undefined,
           memoryDispatch: piMemoryDispatch, onToolRequest,
           executionPolicy: !legacyExecution && executionPolicy.engine === "opencode" ? executionPolicy : undefined,
           isPolicyCurrent, onExecutionPolicyApplied,
@@ -6286,7 +6327,7 @@ export class AgentCoordinator {
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         connection,
-        memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+        memorySpecs: piAllSpecs.length ? piAllSpecs : undefined,
         memoryDispatch: piMemoryDispatch,
         beforeToolCall: async (name, input) => await authorizeHostTool(name, input) && isPolicyCurrent() ? undefined : { block: true, reason: "Execution approval denied or expired" },
         isPolicyCurrent,
@@ -6357,6 +6398,7 @@ export class AgentCoordinator {
               },
             })
           : []
+      const codexAllSpecs = [...codexMemorySpecs, ...(this.hostActions ? hostActionToolSpecs() : [])]
       const codexSelected = new Set(codexPlan?.injectedMemories.map(item => item.id) ?? [])
       const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => codexSelected.has(use.id))
       const enforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => codexSelected.has(item.id))
@@ -6378,8 +6420,12 @@ export class AgentCoordinator {
           mode: codexPlan.mode,
         })
       }
-      const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
-        ? async (name: string, toolArgs: Record<string, unknown>) => {
+      const onDynamicToolCall = codexAllSpecs.length
+        ? async (name: string, toolArgs: Record<string, unknown>, native?: HostNativeToolContext) => {
+            if (isHostActionTool(name)) {
+              if (!isPolicyCurrent()) return dispatchHostAction(undefined, undefined, name, toolArgs)
+              return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native)
+            }
             if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
             if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
@@ -6402,7 +6448,7 @@ export class AgentCoordinator {
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
-        dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
+        dynamicTools: codexAllSpecs.length ? toCodexDynamicTools(codexAllSpecs) : undefined,
         executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
       }
       this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
@@ -6850,6 +6896,7 @@ export class AgentCoordinator {
         sessionToken: resumeToken,
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
+        hostActionsEnabled: Boolean(this.hostActions),
         executionControl: args.executionControl,
         memory: memoryEnabled ? this.memory : null,
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
@@ -7092,7 +7139,7 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
-  async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+  async send(command: Extract<ClientCommand, { type: "chat.send" }>, hostClientId?: string) {
     if (command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
       throw new Error("memoryDisabled must be a boolean")
     }
@@ -7151,6 +7198,7 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       appendUserPrompt: true,
+      hostClientId,
       profile,
     })
 
@@ -7876,6 +7924,7 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    this.hostActions?.revokeChat(chatId)
     this.endPolicyTurn(chatId, undefined, false)
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)

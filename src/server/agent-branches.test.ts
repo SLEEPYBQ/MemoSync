@@ -731,7 +731,9 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       await until(() => h.mainTurns.length === 1);
       expect(h.mainSessions[0]!.sessionToken).toBeNull();
       expect(h.mainSessions[0]!.dynamicTools?.map((tool) => tool.name)).toContain('load_memory_detail');
-      expect(h.mainTurns[0]!.onDynamicToolCall).toBeUndefined();
+      const disabled = await h.mainTurns[0]!.onDynamicToolCall!('load_memory_detail', { ids: [h.item.id] });
+      expect(disabled.isError).toBe(true);
+      expect(disabled.text).not.toContain('Multiply USD totals by 100');
       expect(h.mainTurns[0]!.developerInstructions).toBeUndefined();
       h.emit({ type: 'session_token', sessionToken: 'main-session' });
       h.emit({ type: 'transcript', entry: entry({ kind: 'result', subtype: 'success', isError: false, durationMs: 1, result: 'Done without memory.' }) });

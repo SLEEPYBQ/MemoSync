@@ -20,6 +20,7 @@ import {
 import type { ShareMode } from "../shared/share"
 import type { AgentProvider, ChatAttachment } from "../shared/types"
 import { AgentCoordinator } from "./agent"
+import { HarnessPolicyService } from "./harness-policy"
 import { AppSettingsManager } from "./app-settings"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
@@ -61,6 +62,8 @@ import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter, type ClientState } from "./ws-router"
+import { HostActionService } from "./host-actions"
+import { realpathSync } from "node:fs"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -445,7 +448,21 @@ async function startLockedMemoSyncServer(
     const route = memoryCapture.routeProposal.bind(memoryCapture)
     memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
   }
+  const harnessPolicies = new HarnessPolicyService()
+  const hostActions = new HostActionService({
+    dataDir: store.dataDir,
+    policy: harnessPolicies,
+    workspaceStillCurrent: lease => {
+      const chat = store.getChat(lease.chatId)
+      const project = store.getProject(lease.workspaceRef)
+      try { return Boolean(chat && chat.projectId === lease.workspaceRef && project && realpathSync(project.localPath) === lease.workspaceRoot) }
+      catch { return false }
+    },
+  })
+  onStartupCleanup(() => hostActions.close())
   const activeAgent = new AgentCoordinator({
+    harnessPolicies,
+    hostActions,
     store,
     memory,
     memoryBranches: true,
@@ -480,6 +497,7 @@ async function startLockedMemoSyncServer(
   appSettings.onChange(() => activeAgent.memorySettingsChanged())
   onStartupCleanup(() => activeAgent.shutdownRuntime())
   router = createWsRouter({
+    hostActions,
     modelAccess,
     store,
     diffStore,
@@ -776,6 +794,7 @@ async function startLockedMemoSyncServer(
     await attempt(() => activeAgent.forceStopAllTurns())
     await attempt(() => stopGateway())
     await attempt(() => router.dispose())
+    await attempt(() => hostActions.close())
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())
     await attempt(() => terminals.closeAll())
