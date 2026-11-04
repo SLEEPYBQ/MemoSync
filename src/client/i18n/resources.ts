@@ -19,11 +19,13 @@ import git from "./en/git.json"
 import gitZh from "./zh-CN/git.json"
 import memory from "./en/memory.json"
 import memoryZh from "./zh-CN/memory.json"
+import nativeMemory from "./en/nativeMemory.json"
+import nativeMemoryZh from "./zh-CN/nativeMemory.json"
 import settings from "./en/settings.json"
 import settingsZh from "./zh-CN/settings.json"
 import sidebar from "./en/sidebar.json"
 import sidebarZh from "./zh-CN/sidebar.json"
 import terminal from "./en/terminal.json"
 import terminalZh from "./zh-CN/terminal.json"
-export const en = { modelAccess, board, browser, chat, common, errors: { ...errors, ...STANDALONE_UI_COPY.en }, export: exportViewer, files, git, memory, settings, sidebar, terminal }
-export const zhCN: typeof en = { modelAccess: modelAccessZh, board: boardZh, browser: browserZh, chat: chatZh, common: commonZh, errors: { ...errorsZh, ...STANDALONE_UI_COPY.zhCN }, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }
+export const en = { modelAccess, board, browser, chat, common, errors: { ...errors, ...STANDALONE_UI_COPY.en }, export: exportViewer, files, git, memory, nativeMemory, settings, sidebar, terminal }
+export const zhCN: typeof en = { modelAccess: modelAccessZh, board: boardZh, browser: browserZh, chat: chatZh, common: commonZh, errors: { ...errorsZh, ...STANDALONE_UI_COPY.zhCN }, export: exportZh, files: filesZh, git: gitZh, memory: memoryZh, nativeMemory: nativeMemoryZh, settings: settingsZh, sidebar: sidebarZh, terminal: terminalZh }
