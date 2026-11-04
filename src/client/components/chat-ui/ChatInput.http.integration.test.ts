@@ -50,7 +50,7 @@ test("uploads and submits attachments over ordinary HTTP without crypto.randomUU
       name: "hello.txt", mimeType: "text/plain", buffer: Buffer.from("hello upload"),
     })
     await page.getByPlaceholder("Build something...").fill("Use this file")
-    await page.getByPlaceholder("Build something...").locator("..").locator("button").click()
+    await page.getByRole("button", { name: "Send" }).click()
     await page.getByTestId("submitted").filter({ hasText: "uploaded-file" }).waitFor({ state: "visible" })
     expect(uploads).toHaveLength(1)
     expect(uploads[0]).toContain('filename="hello.txt"')

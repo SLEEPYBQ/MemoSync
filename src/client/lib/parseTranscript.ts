@@ -156,13 +156,21 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           accountInfo: entry.accountInfo,
         })
         break
-      case "assistant_text":
+      case "assistant_text": {
+        // Some gateways store one reply as adjacent stream fragments. They are
+        // one message: rendered apart, each becomes a paragraph split mid-word.
+        const previous = messages.at(-1)
+        if (previous?.kind === "assistant_text" && entry.messageId && previous.messageId === entry.messageId) {
+          previous.text += entry.text
+          break
+        }
         messages.push({
           ...createBaseMessage(entry),
           kind: "assistant_text",
           text: entry.text,
         })
         break
+      }
       case "tool_call": {
         const previous = pendingToolCalls.get(entry.tool.toolId)
         if (previous?.turn === toolTurn && !("rawResult" in previous.hydrated)) break

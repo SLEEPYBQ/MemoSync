@@ -142,7 +142,7 @@ function EmptyProjectChatButton({
       )}
       onClick={() => onNewLocalChat(localPath)}
     >
-      <span className="text-[13px] truncate flex-1 text-muted-foreground">
+      <span className="text-[14px] truncate flex-1 text-muted-foreground">
         {t("sidebar:newChat")}</span>
       <div className="h-7 w-6 mr-[2px] shrink-0" aria-hidden />
     </button>
@@ -238,7 +238,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
     <div
       ref={setActivatorNodeRef}
       className={cn(
-        "sticky top-0 z-10 relative mt-1 flex h-8 items-center justify-between rounded-lg bg-sidebar px-2 hover:bg-[color-mix(in_srgb,var(--color-foreground)_4%,var(--color-sidebar))]",
+        "sticky top-0 z-10 relative mt-1 flex h-9 items-center justify-between rounded-lg bg-sidebar px-2 hover:bg-[color-mix(in_srgb,var(--color-foreground)_4%,var(--color-sidebar))]",
         "md:cursor-grab md:active:cursor-grabbing md:select-none md:touch-none",
         isDragging && "cursor-grabbing"
       )}
@@ -260,7 +260,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
         </span>
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="truncate max-w-[180px] whitespace-nowrap text-[13px] font-medium text-foreground/85">
+            <span className="truncate max-w-[180px] whitespace-nowrap text-[14px] font-medium text-foreground/85">
               {title || getPathBasename(localPath)}
             </span>
           </TooltipTrigger>
@@ -343,7 +343,7 @@ const SortableProjectGroup = memo(function SortableProjectGroup({
       ) : header}
 
       {!collapsedSections.has(groupKey) && (isEmptyProject ? Boolean(onNewLocalChat) : group.previewChats.length > 0 || hasMore) && (
-        <div className="space-y-px mb-2">
+        <div className="space-y-0.5 mb-3">
           {isEmptyProject && onNewLocalChat ? (
             <EmptyProjectChatButton
               localPath={localPath}

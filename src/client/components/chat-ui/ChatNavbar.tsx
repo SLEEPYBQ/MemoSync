@@ -1,7 +1,7 @@
 import { t, useI18n } from "../../i18n"
 import { type MouseEvent as ReactMouseEvent } from "react"
-import { BrainCircuit, FolderOpen, GitBranch, Globe, Menu, MoreHorizontal, PanelLeft, PanelRight, SquarePen, Terminal } from "lucide-react"
-import { BrandIcon } from "../BrandMark"
+import { BrainCircuit, FolderOpen, GitBranch, Globe, Menu, MoreHorizontal, PanelRight, SquarePen, Terminal } from "lucide-react"
+import { SidebarRevealButton } from "../BrandMark"
 import { Button } from "../ui/button"
 import { CardHeader } from "../ui/card"
 import { HotkeyTooltip, HotkeyTooltipContent, HotkeyTooltipTrigger } from "../ui/tooltip"
@@ -40,7 +40,7 @@ function NavbarOverflowMenu({
           onClick={openContextMenuFromButton}
           title={t("chat:moreActions")}
           className={cn(
-            "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
+            "border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent",
             showOnDesktop ? "flex" : "flex md:hidden"
           )}
         >
@@ -132,41 +132,26 @@ export function ChatNavbar({
   return (
     <CardHeader
       className={cn(
-        "absolute top-0 left-0 right-0 z-10 md:pt-[9px]  pl-1 pr-2 border-border/0 flex items-center justify-center",
-        "bg-gradient-to-b from-background lg:from-background/0"
+        "absolute top-0 left-0 right-0 z-10 pl-2 pr-2 py-2 border-border/0 flex items-center justify-center desktop-mac:md:group-data-[sidebar-collapsed=true]/app:pl-[var(--mac-lights-inset)]"
       )}
     >
-      <div className="absolute top-0 left-0 right-0 z-0 h-[100px] bg-gradient-to-b from-background via-background/50 pointer-events-none block"></div>
+      {/* Content fades out well below the controls, so nothing reads through them. */}
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-0 h-[68px] bg-gradient-to-b from-background from-65% to-transparent" />
       <div className="relative flex items-center gap-2 w-full">
-        <div className={`h-[30px] flex items-center gap-0 flex-shrink-0 border border-border/0 rounded-[9px] ${sidebarCollapsed ? 'px-1.5  border-border' : ''} px-[2px]`}>
+        <div className="flex h-8 flex-shrink-0 items-center gap-0.5">
           <Button
             variant="ghost"
             size="icon"
-            className="md:hidden !h-[auto] hover:!border-border/0 hover:!bg-transparent"
+            className="md:hidden !h-[auto] hover:!border-border/0 hover:!bg-black/[0.05] dark:hover:!bg-white/[0.08]"
             onClick={onOpenSidebar}
           >
             <Menu className="size-4" />
           </Button>
-          {sidebarCollapsed && (
-            <>
-              <div className="hidden md:flex items-center justify-center w-[36px] h-[36px]">
-                <BrandIcon className="h-4 w-4 sm:h-5 sm:w-5 ml-1 hidden md:block" />
-              </div>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="hidden md:flex  hover:!border-border/0 hover:!bg-transparent"
-                onClick={onExpandSidebar}
-                title={t("chat:expandSidebar")}
-              >
-                <PanelLeft className="size-4" />
-              </Button>
-            </>
-          )}
+          {sidebarCollapsed ? <SidebarRevealButton onClick={onExpandSidebar} label={t("chat:expandSidebar")} /> : null}
           <Button
             variant="ghost"
             size="icon"
-            className="hover:!border-border/0 hover:!bg-transparent"
+            className="hover:!border-border/0 hover:!bg-black/[0.05] dark:hover:!bg-white/[0.08]"
             onClick={onNewChat}
             title={t("chat:compose")}
           >
@@ -177,7 +162,7 @@ export function ChatNavbar({
         <div className="flex-1 min-w-0" />
 
         {localPath && (onToggleEmbeddedTerminal || onToggleGitPanel || onToggleBrowserPanel) ? (
-          <div className="flex items-center gap-2 flex-shrink-0">
+          <div className="flex items-center gap-0.5 flex-shrink-0">
             {memoryChatId && onToggleMemoryPanel ? (
               <Button
                 variant="ghost"
@@ -186,7 +171,7 @@ export function ChatNavbar({
                 title={t("chat:sessionMemories")}
                 aria-label={t("chat:sessionMemories")}
                 className={cn(
-                  "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
+                  "border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent",
                   rightPanel === "memory" && "text-foreground",
                 )}
               >
@@ -194,7 +179,7 @@ export function ChatNavbar({
               </Button>
             ) : null}
             {(onToggleEmbeddedTerminal || onToggleGitPanel || onToggleBrowserPanel) ? (
-              <div className="flex items-center  rounded-[9px] h-[30px]">
+              <div className="flex h-8 items-center gap-0.5">
                 <NavbarOverflowMenu
                   showOnDesktop={rightPanelVisible}
                   onToggleEmbeddedTerminal={onToggleEmbeddedTerminal}
@@ -211,7 +196,7 @@ export function ChatNavbar({
                       aria-pressed={embeddedTerminalVisible}
                       className={cn(
                         rightPanelVisible ? "hidden" : "hidden md:flex",
-                        "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent",
+                        "border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent",
                         embeddedTerminalVisible && "text-foreground"
                       )}
                     >
@@ -229,7 +214,7 @@ export function ChatNavbar({
                     title={t("chat:browser")}
                     aria-label={t("chat:browser")}
                     className={cn(
-                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
+                      "border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent"
                     )}
                   >
                     <Globe strokeWidth={2.25} className="h-4" />
@@ -243,7 +228,7 @@ export function ChatNavbar({
                     title={t("chat:files2")}
                     aria-label={t("chat:files2")}
                     className={cn(
-                      "border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent"
+                      "border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent"
                     )}
                   >
                     <FolderOpen strokeWidth={2.25} className="h-4" />
@@ -257,12 +242,12 @@ export function ChatNavbar({
                         size="none"
                         onClick={onToggleGitPanel}
                         className={cn(
-                          "border flex flex-row items-center gap-1.5 h-9 border-border/0 hover:!border-border/0 hover:!bg-transparent",
+                          "border flex h-8 flex-row items-center gap-1.5 rounded-lg border-border/0 hover:!border-border/0 hover:!bg-black/[0.05] dark:hover:!bg-white/[0.08]",
                           rightPanelVisible ? "w-[38px] justify-center px-0" : "pl-1.5 pr-2"
                         )}
                       >
                         <GitBranch strokeWidth={2.25} className="h-4" />
-                        {branchLabel && !rightPanelVisible ? <div className="font-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
+                        {branchLabel && !rightPanelVisible ? <div className="text-[13px] max-w-[140px] truncate hidden md:block">{branchLabel}</div> : null}
                       </Button>
                     </HotkeyTooltipTrigger>
                     <HotkeyTooltipContent side="bottom" shortcut={rightSidebarShortcut} />
@@ -275,7 +260,7 @@ export function ChatNavbar({
                     onClick={handleCloseRightPanel}
                     title={t("chat:collapseSidebar")}
                     aria-label={t("chat:collapseSidebar")}
-                    className="border border-border/0 hover:!border-border/0 px-1.5 h-9 hover:!bg-transparent text-foreground"
+                    className="border border-border/0 hover:!border-border/0 size-8 justify-center rounded-lg px-0 hover:!bg-transparent text-foreground"
                   >
                     <PanelRight strokeWidth={2.25} className="h-4" />
                   </Button>

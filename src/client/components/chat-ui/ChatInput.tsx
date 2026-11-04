@@ -3,7 +3,8 @@ import { useModelAccessStore, type AccessModelOptions } from "../../model-access
 import { httpUiError } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, Paperclip } from "lucide-react"
+import { ArrowUp, Paperclip, Plus } from "lucide-react"
+import { hasFileDragTypes } from "../../app/ChatPage/utils"
 import {
   type AgentProvider,
   type ChatAttachment,
@@ -16,7 +17,7 @@ import {
   normalizeClaudeContextWindow,
   resolveClaudeContextWindowTokens,
 } from "../../../shared/types"
-import { Button, buttonVariants } from "../ui/button"
+import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScrollArea } from "../ui/scroll-area"
 import { resolveComposerEnter } from "../../../shared/submit-mode"
@@ -572,6 +573,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     }
   }, [projectId, setAttachments, getLocale()])
 
+  const [isFileDragOver, setIsFileDragOver] = useState(false)
+  const composerDragDepthRef = useRef(0)
   const enqueueFiles = useCallback((files: File[]) => {
     if (!projectId) {
       setUploadError(t("chat:openAProjectBeforeUploadingFiles"))
@@ -822,38 +825,72 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   return (
     <div>
       {!chatId ? <FirstRunCallout /> : null}
-      <div className={cn("px-3 pt-0", isStandalone && "px-5")}>
-        <div className="max-w-[840px] mx-auto rounded-[32px]">
-          {attachments.length > 0 ? (
-            <ScrollArea className="overflow-x-auto overflow-y-hidden whitespace-nowrap px-2 pb-2">
-              <div className="flex items-end gap-2 pt-2">
-                {orderedAttachments.map((attachment) => (
-                  <div
-                    key={attachment.id}
-                    className={cn("flex shrink-0 flex-col justify-end", attachment.status === "failed" && "text-destructive")}
-                  >
-                    {attachment.kind === "image" ? (
-                      <AttachmentImageCard
-                        attachment={attachment}
-                        previewUrl={attachment.previewUrl}
-                        size="composer"
-                        onClick={attachment.status === "uploaded" ? () => handleAttachmentPreview(attachment) : undefined}
-                        onRemove={() => removeAttachment(attachment)}
-                      />
-                    ) : (
-                      <AttachmentFileCard
-                        attachment={attachment}
-                        onClick={attachment.status === "uploaded" ? () => handleAttachmentPreview(attachment) : undefined}
-                        onRemove={() => removeAttachment(attachment)}
-                      />
-                    )}
-                  </div>
-                ))}
+      <div className={cn("px-3 pb-3 pt-0", isStandalone && "px-5 pb-5")}>
+        <div className="@container/composer relative mx-auto max-w-[800px]">
+          {/* One card holds the draft and every control that shapes the turn. */}
+          <div
+            className="relative z-[1] rounded-2xl bg-card shadow-composer transition-shadow focus-within:shadow-[0_0_0_1px_hsl(var(--foreground)/0.22),0_1px_2px_hsl(var(--foreground)/0.04),0_14px_30px_-14px_hsl(var(--foreground)/0.18)]"
+            // Inside a chat the whole page is the drop target; the landing page has only this card.
+            {...(chatId ? {} : {
+              onDragEnter: (event: React.DragEvent) => {
+                if (disabled || !hasFileDragTypes(event.dataTransfer.types)) return
+                event.preventDefault()
+                composerDragDepthRef.current += 1
+                setIsFileDragOver(true)
+              },
+              onDragOver: (event: React.DragEvent) => {
+                if (disabled || !hasFileDragTypes(event.dataTransfer.types)) return
+                event.preventDefault()
+                event.dataTransfer.dropEffect = "copy"
+              },
+              onDragLeave: () => {
+                composerDragDepthRef.current = Math.max(0, composerDragDepthRef.current - 1)
+                if (composerDragDepthRef.current === 0) setIsFileDragOver(false)
+              },
+              onDrop: (event: React.DragEvent) => {
+                if (disabled || !hasFileDragTypes(event.dataTransfer.types)) return
+                event.preventDefault()
+                composerDragDepthRef.current = 0
+                setIsFileDragOver(false)
+                const files = [...event.dataTransfer.files]
+                if (files.length > 0) enqueueFiles(files)
+              },
+            })}
+          >
+            {isFileDragOver ? (
+              <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 rounded-2xl border border-dashed border-foreground/30 bg-card/90 text-[13px] text-muted-foreground backdrop-blur-sm">
+                <Paperclip className="size-4" />
+                {t("chat:dropFilesToAttach")}
               </div>
-            </ScrollArea>
-          ) : null}
-
-          <div className="relative flex items-end max-w-[840px] mx-auto border dark:bg-card/40 backdrop-blur-lg border-border rounded-[29px] pr-1.5">
+            ) : null}
+            {attachments.length > 0 ? (
+              <ScrollArea className="overflow-x-auto overflow-y-hidden whitespace-nowrap rounded-t-2xl px-3 pt-1">
+                <div className="flex items-end gap-2 pt-2">
+                  {orderedAttachments.map((attachment) => (
+                    <div
+                      key={attachment.id}
+                      className={cn("flex shrink-0 flex-col justify-end", attachment.status === "failed" && "text-destructive")}
+                    >
+                      {attachment.kind === "image" ? (
+                        <AttachmentImageCard
+                          attachment={attachment}
+                          previewUrl={attachment.previewUrl}
+                          size="composer"
+                          onClick={attachment.status === "uploaded" ? () => handleAttachmentPreview(attachment) : undefined}
+                          onRemove={() => removeAttachment(attachment)}
+                        />
+                      ) : (
+                        <AttachmentFileCard
+                          attachment={attachment}
+                          onClick={attachment.status === "uploaded" ? () => handleAttachmentPreview(attachment) : undefined}
+                          onRemove={() => removeAttachment(attachment)}
+                        />
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            ) : null}
             {slashMatch ? (
               <div
                 ref={slashListRef}
@@ -879,31 +916,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 ))}
               </div>
             ) : null}
-            <label
-              aria-label={t("chat:addAttachment")}
-              title={t("chat:attachFilesOrDragThemIn")}
-              className={cn(
-                buttonVariants({ variant: "ghost", size: "icon" }),
-                "relative flex-shrink-0 ml-1.5 mb-1 md:mb-2 h-10 w-10 rounded-full text-muted-foreground hover:text-foreground",
-                disabled && "pointer-events-none opacity-50",
-              )}
-            >
-              <Paperclip className="h-5 w-5" />
-              <input
-                type="file"
-                multiple
-                disabled={disabled}
-                aria-label={t("chat:addAttachment")}
-                className="absolute inset-0 cursor-pointer opacity-0"
-                onChange={(event) => {
-                  const files = [...(event.target.files ?? [])]
-                  if (files.length > 0) {
-                    enqueueFiles(files)
-                  }
-                  event.target.value = ""
-                }}
-              />
-            </label>
             <Textarea
               ref={setTextareaRefs}
               placeholder={t("chat:buildSomething")}
@@ -920,107 +932,126 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               onPaste={handlePaste}
               onKeyDown={handleKeyDown}
               disabled={disabled}
-              className="flex-1 text-base p-3 md:p-4 !pr-2 pl-1 md:pl-1.5 resize-none max-h-[200px] outline-none bg-transparent border-0 shadow-none"
+              className="block w-full resize-none border-0 bg-transparent px-4 pb-1 pt-3.5 text-base leading-6 shadow-none outline-none max-h-[240px] min-h-[52px] placeholder:text-muted-foreground/70"
             />
-            <Button
-              type="button"
-              onPointerDown={(event) => {
-                event.preventDefault()
-                if (!disabled && hasTextToSend && !hasPendingUploads) {
-                  void handleSubmit()
-                } else if (canCancel) {
-                  onCancel?.()
-                } else if (!disabled && canSubmit && !hasPendingUploads) {
-                  void handleSubmit()
-                }
-              }}
-              disabled={disabled || (!canCancel && !canSubmit) || hasPendingUploads}
-              size="icon"
-              className="flex-shrink-0 bg-slate-600 text-white dark:bg-primary dark:text-primary-foreground rounded-full cursor-pointer h-10 w-10 md:h-11 md:w-11 mb-1 -mr-0.5 md:mr-0 md:mb-1.5 touch-manipulation disabled:bg-white/60 disabled:text-slate-700 dark:disabled:bg-primary/60 dark:disabled:text-primary-foreground"
-            >
-              {hasTextToSend ? (
-                <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
-              ) : canCancel ? (
-                <div className="w-3 h-3 md:w-4 md:h-4 rounded-xs bg-current" />
-              ) : (
-                <ArrowUp className="h-5 w-5 md:h-6 md:w-6" />
-              )}
-            </Button>
+            <div className="flex items-center gap-0.5 px-2 pb-2">
+              <label
+                aria-label={t("chat:addAttachment")}
+                title={t("chat:attachFilesOrDragThemIn")}
+                className={cn(
+                  "relative flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]",
+                  disabled && "pointer-events-none opacity-50",
+                )}
+              >
+                <Plus className="size-[18px]" />
+                <input
+                  type="file"
+                  multiple
+                  disabled={disabled}
+                  aria-label={t("chat:addAttachment")}
+                  className="absolute inset-0 cursor-pointer opacity-0"
+                  onChange={(event) => {
+                    const files = [...(event.target.files ?? [])]
+                    if (files.length > 0) {
+                      enqueueFiles(files)
+                    }
+                    event.target.value = ""
+                  }}
+                />
+              </label>
+              {/* Stays outside the scrolling chips: the memory state must always be in view. */}
+              <MemoryToggle chatId={chatId} />
+              <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <ChatPreferenceControls
+                  className="ml-auto w-max md:justify-end"
+                  availableProviders={availableProviders}
+                  selectedProvider={selectedProvider}
+                  providerLocked={providerLocked}
+                  showCodexCliRequirementHints
+                  model={providerPrefs.model}
+                  modelOptions={providerPrefs.modelOptions}
+                  onProviderChange={(provider) => {
+                    if (providerLocked) return
+                    resetChatComposerFromProvider(composerChatId, provider)
+                  }}
+                  connectionId={providerPrefs.connectionId}
+                  onModelChange={(_, model, connectionId) => {
+                    updateComposerState(state => ({ ...withNormalizedContextWindow(state, model), connectionId }))
+                  }}
+                  onModelOptionChange={(change) => {
+                    switch (change.type) {
+                      case "claudeReasoningEffort":
+                        setReasoningEffort(change.effort)
+                        break
+                      case "codexReasoningEffort":
+                        setReasoningEffort(change.effort)
+                        break
+                      case "piReasoningEffort":
+                        setReasoningEffort(change.effort)
+                        break
+                      case "contextWindow":
+                        setClaudeContextWindow(change.contextWindow)
+                        break
+                      case "fastMode":
+                        updateComposerState(
+                          (state) => state.provider === "claude"
+                            ? state
+                            : state.provider === "codex"
+                              ? { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
+                              : state
+                        )
+                        break
+                    }
+                  }}
+                  planMode={providerPrefs.planMode}
+                  onPlanModeChange={setEffectivePlanMode}
+                  includePlanMode={showPlanMode}
+                />
+              </div>
+              {activeContextWindow ? (
+                <div className="flex shrink-0 items-center px-1">
+                  <ContextWindowMeter usage={activeContextWindow} />
+                </div>
+              ) : null}
+              <Button
+                type="button"
+                aria-label={canCancel && !hasTextToSend ? t("common:cancel") : t("common:send")}
+                onPointerDown={(event) => {
+                  event.preventDefault()
+                  if (!disabled && hasTextToSend && !hasPendingUploads) {
+                    void handleSubmit()
+                  } else if (canCancel) {
+                    onCancel?.()
+                  } else if (!disabled && canSubmit && !hasPendingUploads) {
+                    void handleSubmit()
+                  }
+                }}
+                disabled={disabled || (!canCancel && !canSubmit) || hasPendingUploads}
+                size="icon"
+                className="ml-1 size-8 shrink-0 cursor-pointer touch-manipulation rounded-full border-0 bg-primary text-primary-foreground hover:bg-primary/85 disabled:bg-foreground/[0.08] disabled:text-muted-foreground disabled:opacity-100"
+              >
+                {hasTextToSend ? (
+                  <ArrowUp className="size-[18px]" />
+                ) : canCancel ? (
+                  <div className="size-2.5 rounded-[2px] bg-current" />
+                ) : (
+                  <ArrowUp className="size-[18px]" />
+                )}
+              </Button>
+            </div>
           </div>
+
+          {/* The tray behind the card: where this chat will run. */}
+          {leadingControls ? (
+            <div className="-mt-3 flex items-center gap-0.5 overflow-x-auto rounded-b-2xl bg-muted px-2 pb-1.5 pt-[18px] shadow-[inset_0_0_0_1px_hsl(var(--border))] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              {leadingControls}
+            </div>
+          ) : null}
         </div>
 
         {uploadError ? (
-          <div className="max-w-[840px] mx-auto mt-2 px-1 text-sm text-destructive">
+          <div className="max-w-[800px] mx-auto mt-2 px-1 text-sm text-destructive">
             {uploadError}
-          </div>
-        ) : null}
-      </div>
-
-      <div className={cn("relative py-3 max-w-[840px] mx-auto", isStandalone && "p-5 pt-3")}>
-        <div className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden flex flex-row">
-          <div className="min-w-3" />
-          {/* One mx-auto group so leading chips and preference chips center TOGETHER — no gap between them. */}
-          <div className="mx-auto flex shrink-0 items-center gap-0.5">
-          {leadingControls}
-          {/* Before the preference chips: the row scrolls with a hidden
-              scrollbar, and the memory state must stay in view. */}
-          <MemoryToggle chatId={chatId} />
-          <ChatPreferenceControls
-            availableProviders={availableProviders}
-            selectedProvider={selectedProvider}
-            providerLocked={providerLocked}
-            showCodexCliRequirementHints
-            model={providerPrefs.model}
-            modelOptions={providerPrefs.modelOptions}
-            onProviderChange={(provider) => {
-              if (providerLocked) return
-              resetChatComposerFromProvider(composerChatId, provider)
-            }}
-            connectionId={providerPrefs.connectionId}
-            onModelChange={(_, model, connectionId) => {
-              updateComposerState(state => ({ ...withNormalizedContextWindow(state, model), connectionId }))
-            }}
-            onModelOptionChange={(change) => {
-              switch (change.type) {
-                case "claudeReasoningEffort":
-                  setReasoningEffort(change.effort)
-                  break
-                case "codexReasoningEffort":
-                  setReasoningEffort(change.effort)
-                  break
-                case "piReasoningEffort":
-                  setReasoningEffort(change.effort)
-                  break
-                case "contextWindow":
-                  setClaudeContextWindow(change.contextWindow)
-                  break
-                case "fastMode":
-                  updateComposerState(
-                    (state) => state.provider === "claude"
-                      ? state
-                      : state.provider === "codex"
-                        ? { ...state, modelOptions: { ...state.modelOptions, fastMode: change.fastMode } }
-                        : state
-                  )
-                  break
-              }
-            }}
-            planMode={providerPrefs.planMode}
-            onPlanModeChange={setEffectivePlanMode}
-            includePlanMode={showPlanMode}
-          />
-          </div>
-          {activeContextWindow ? (
-            <div className="flex items-center md:hidden mx-[13px]">
-              <ContextWindowMeter usage={activeContextWindow} />
-            </div>
-          ) : null}
-          <div className="min-w-3" />
-        </div>
-
-        {activeContextWindow ? (
-          <div className="absolute right-[29px] top-1/2 translate-x-1/2 -translate-y-1/2 hidden md:block">
-            <ContextWindowMeter usage={activeContextWindow} />
           </div>
         ) : null}
       </div>

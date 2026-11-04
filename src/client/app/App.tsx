@@ -1,7 +1,9 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
-import { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
+import { type ReactNode, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import * as DialogPrimitive from "@radix-ui/react-dialog"
+import { X } from "lucide-react"
+import { type Location, Navigate, Outlet, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom"
 import { SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import type { AppSettingsSnapshot, ChatPreview } from "../../shared/types"
 import { BrandIcon, useBrandFavicon, useBrandName } from "../components/BrandMark"
@@ -229,7 +231,37 @@ export function shouldPlayChatNotificationSound(
   return Boolean(appSettings) && shouldPlayChatSound(preference, doc)
 }
 
-function AppLayout() {
+const HOME_LOCATION = { pathname: "/", search: "", hash: "", state: null, key: "settings-home", unstable_mask: undefined } as Location
+
+/** Settings float over whatever you were doing, so that page stays mounted underneath. */
+function SettingsModal({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+  useI18n()
+  return (
+    <DialogPrimitive.Root open onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogPrimitive.Portal>
+        <DialogPrimitive.Overlay className="settings-modal-scrim fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[3px] desktop-mac:md:pt-8">
+          <DialogPrimitive.Content
+            aria-describedby={undefined}
+            className="settings-modal-panel flex h-[100dvh] w-full flex-col overflow-hidden bg-background shadow-2xl outline-none md:h-[min(820px,calc(100dvh-48px))] desktop-mac:md:h-[min(820px,calc(100dvh-72px))] md:w-[min(1120px,calc(100vw-48px))] md:rounded-2xl md:ring-1 md:ring-black/10 dark:md:ring-white/10"
+          >
+            <div className="flex h-11 shrink-0 items-center justify-between border-b border-border/70 pl-4 pr-2">
+              <DialogPrimitive.Title className="text-[13px] font-medium text-foreground">{t("common:settings")}</DialogPrimitive.Title>
+              <DialogPrimitive.Close
+                aria-label={t("common:close")}
+                className="flex size-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
+              >
+                <X className="size-4" />
+              </DialogPrimitive.Close>
+            </div>
+            <div className="flex min-h-0 flex-1">{children}</div>
+          </DialogPrimitive.Content>
+        </DialogPrimitive.Overlay>
+      </DialogPrimitive.Portal>
+    </DialogPrimitive.Root>
+  )
+}
+
+function AppLayout({ settingsLocation, settingsBackground }: { settingsLocation: Location | null; settingsBackground: Location }) {
   useI18n()
   const location = useLocation()
   const navigate = useNavigate()
@@ -424,9 +456,13 @@ function AppLayout() {
 
   return (
     <MemoryBoardLauncherProvider onOpenMemoryBoard={handleOpenMemoryBoard}>
-      <div className="flex h-[100dvh] min-h-[100dvh] overflow-hidden">
+      <div
+        className="group/app flex h-[100dvh] min-h-[100dvh] overflow-hidden"
+        data-sidebar-collapsed={state.sidebarCollapsed ? "true" : undefined}
+      >
+        <div aria-hidden="true" className="desktop-drag-band" />
         {sidebarElement}
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
           {memoryBoardRequest ? (
             <MemoryBoardOverlay
               chatId={memoryBoardRequest.chatId}
@@ -438,6 +474,16 @@ function AppLayout() {
             <Outlet context={state} />
           </div>
         </div>
+        {settingsLocation ? (
+          <SettingsModal onClose={() => navigate(`${settingsBackground.pathname}${settingsBackground.search}${settingsBackground.hash}`)}>
+            <Routes location={settingsLocation}>
+              <Route element={<Outlet context={state} />}>
+                <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
+                <Route path="/settings/:sectionId" element={<Suspense fallback={<PanelLoading />}><LazySettingsPage /></Suspense>} />
+              </Route>
+            </Routes>
+          </SettingsModal>
+        ) : null}
         <StandaloneShareDialog
           open={Boolean(state.standaloneShareUrl)}
           shareUrl={state.standaloneShareUrl ?? ""}
@@ -451,6 +497,23 @@ function AppLayout() {
         />
       </div>
     </MemoryBoardLauncherProvider>
+  )
+}
+
+function AppRoutes() {
+  const location = useLocation()
+  const isSettings = /^\/settings(\/|$)/.test(location.pathname)
+  const backgroundRef = useRef<Location | null>(null)
+  if (!isSettings) backgroundRef.current = location
+  const background = backgroundRef.current ?? HOME_LOCATION
+  return (
+    <Routes location={isSettings ? background : location}>
+      <Route element={<AppLayout settingsLocation={isSettings ? location : null} settingsBackground={background} />}>
+        <Route path="/" element={<LocalProjectsPage />} />
+        <Route path="/memory" element={<Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage /></Suspense>} />
+        <Route path="/chat/:chatId" element={<ChatPage />} />
+      </Route>
+    </Routes>
   )
 }
 
@@ -473,15 +536,7 @@ export function App() {
     <TooltipProvider>
       <AppDialogProvider>
         <TelemetryBootstrap />
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route path="/" element={<LocalProjectsPage />} />
-            <Route path="/settings" element={<Navigate to="/settings/general" replace />} />
-            <Route path="/settings/:sectionId" element={<Suspense fallback={<PanelLoading />}><LazySettingsPage /></Suspense>} />
-            <Route path="/memory" element={<Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage /></Suspense>} />
-            <Route path="/chat/:chatId" element={<ChatPage />} />
-          </Route>
-        </Routes>
+        <AppRoutes />
       </AppDialogProvider>
     </TooltipProvider>
   )

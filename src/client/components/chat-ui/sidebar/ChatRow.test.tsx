@@ -35,6 +35,24 @@ describe("ChatRow", () => {
     expect(html).toContain(">1m<")
   })
 
+  test("drops the age label once a chat is over a week old", () => {
+    const html = renderToStaticMarkup(
+      <ChatRow
+        chat={{ ...baseChat, lastMessageAt: 0 }}
+        activeChatId={null}
+        nowMs={8 * 24 * 60 * 60 * 1000}
+        onSelectChat={() => undefined}
+        onRenameChat={() => undefined}
+        onShareChat={() => undefined}
+        onOpenInFinder={() => undefined}
+        onDeleteChat={() => undefined}
+        onForkChat={() => undefined}
+        onArchiveChat={() => undefined}
+      />
+    )
+    expect(html).not.toContain(">1w<")
+  })
+
   test("falls back to the chat creation time for the age label", () => {
     const html = renderToStaticMarkup(
       <ChatRow

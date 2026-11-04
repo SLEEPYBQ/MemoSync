@@ -232,17 +232,13 @@ function CardBadge({ count, countTitle }: { count: number; countTitle: string })
     return (
       <span
         title={countTitle}
-        className="absolute right-3 top-3 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-500 px-1.5 text-[11px] font-medium leading-none text-white"
+        className="absolute right-3 top-3 flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-medium leading-none text-primary-foreground"
       >
         {count}
       </span>
     )
   }
-  return (
-    <span className="absolute right-3 top-3 flex h-5 w-5 items-center justify-center rounded-full bg-success">
-      <Check className="h-3 w-3 text-white" />
-    </span>
-  )
+  return null
 }
 
 function FeatureCard({
@@ -263,11 +259,11 @@ function FeatureCard({
     <button
       type="button"
       onClick={onClick}
-      className="relative flex w-full flex-col items-start gap-1.5 rounded-2xl border border-border bg-card p-4 pr-10 text-left shadow-sm transition-colors hover:border-primary/30 hover:bg-muted/50 sm:w-[240px]"
+      className="relative flex w-full flex-col items-start gap-1.5 rounded-xl bg-card p-3.5 pr-9 text-left shadow-card transition-shadow hover:shadow-composer sm:w-[240px]"
     >
       {badge}
-      <Icon className="mb-1 h-5 w-5 text-muted-foreground" />
-      <span className="text-sm font-medium text-foreground">{title}</span>
+      <Icon className="mb-1 size-4 text-muted-foreground" />
+      <span className="text-[13px] font-medium text-foreground">{title}</span>
       <span className="text-xs leading-5 text-muted-foreground">{description}</span>
     </button>
   )
@@ -451,7 +447,7 @@ export function LocalDevContent({
             </div>
 
             {commandError ? (
-              <div className="mt-4 w-full max-w-[840px] rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+              <div className="mt-4 w-full max-w-[800px] rounded-xl border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 {translateUiText(commandError)}
               </div>
             ) : null}
