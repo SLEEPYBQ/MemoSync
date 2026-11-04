@@ -243,6 +243,7 @@
   "compacting": "正在压缩…",
   "requesting": "正在请求…",
   "notConnectedCommand": "尚未连接。请在本机的任意终端中运行 <code>{{command}}</code>。",
+  "toolNoOutput": "没有输出",
   "toolGroupFailed": "{{count}} 个失败",
   "toolGroupUsedMemory": "用到",
   "toolGroupread_one": "读了 {{count}} 个文件",

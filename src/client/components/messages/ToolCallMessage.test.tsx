@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { ReadResultImages, ToolCallMessage } from "./ToolCallMessage"
 import { CollapsedToolGroup, summarizeToolGroup } from "./CollapsedToolGroup"
 import { ToolMemoryUsesProvider } from "./render-context"
+import { ToolCallExpandedContent } from "./ToolCallExpandedContent"
 import type { ProcessedToolCall } from "./types"
 
 describe("ToolCallMessage", () => {
@@ -88,5 +89,25 @@ describe("the tool trace", () => {
     expect(wrap(<CollapsedToolGroup messages={[read("a", "/x.ts"), bash("d")]} isLoading={false} expanded={false} onExpandedChange={() => {}} />)).toContain('data-tool-memory-uses="M-07"')
     expect(wrap(<ToolCallMessage message={bash("d")} />)).toContain('data-tool-memory-uses="M-07"')
     expect(wrap(<ToolCallMessage message={read("a", "/x.ts")} />)).not.toContain("data-tool-memory-uses")
+  })
+
+  test("opening a command shows it with its output, ready for the evidence jump", () => {
+    const html = renderToStaticMarkup(<ToolCallExpandedContent message={bash("d", { result: "12 pass" })} />)
+    expect(html).toContain("run d")
+    expect(html).toContain("12 pass")
+    // toolEvidence.ts finds quoted evidence by looking inside these.
+    expect(html.match(/<pre/g)?.length).toBe(2)
+  })
+
+  test("other tools list what they were asked instead of dumping JSON", () => {
+    const grep = { kind: "tool", toolKind: "grep", toolName: "Grep", toolId: "g", id: "g", input: { pattern: "needle", outputMode: "files_with_matches" }, result: "a.ts", timestamp: "2026-09-10T00:00:00Z" } as ProcessedToolCall
+    const html = renderToStaticMarkup(<ToolCallExpandedContent message={grep} />)
+    expect(html).toContain("needle")
+    expect(html).toContain("a.ts")
+    expect(html).not.toContain("{")
+  })
+
+  test("a command that printed nothing says so", () => {
+    expect(renderToStaticMarkup(<ToolCallExpandedContent message={bash("d", { result: "" })} />)).toContain("No output")
   })
 })
