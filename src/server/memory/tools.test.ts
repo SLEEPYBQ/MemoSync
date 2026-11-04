@@ -7,6 +7,7 @@ import { buildMemoryToolSpecs, dispatchMemoryTool } from './tools';
 import { buildMemoryBlock } from './prompt';
 import { extractCitations, recordCitations } from './citations';
 import { toCodexDynamicTools } from './codex-adapter';
+import { planMemoryInjection } from './injection';
 
 let dir: string;
 let memory: MemoryService;
@@ -24,7 +25,7 @@ describe('memory tools (engine-neutral)', () => {
   it('loads details only for the server-confirmed working set', async () => {
     const selected = memory.store.create({ content: 'Use integer cents', detail: '1250 is USD 12.50.', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const hidden = memory.store.create({ content: 'Hidden rule', detail: 'Unselected details must stay out of context.', scope: 'personal', type: 'fact' }, { actor: 'user' });
-    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [selected.id, hidden.id] }, { sessionId: 'chat-1', allowedMemoryIds: [selected.id] });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [selected.id, hidden.id] }, { sessionId: 'chat-1', allowedMemoryIds: [selected.id], memoryView: planMemoryInjection({ memory, chatId: 'chat-1', restrictToIds: [selected.id] }).view });
     expect(result.text).toContain('1250 is USD 12.50.');
     expect(result.text).not.toContain('Unselected details');
     expect(memory.store.getById(hidden.id)?.usageCount).toBe(0);
@@ -314,7 +315,7 @@ describe('memory tools (engine-neutral)', () => {
       specs,
       'load_memory_detail',
       { ids: [withDetail.id, shortOnly.id] },
-      { sessionId: 'sess-1' },
+      { projectId: 'RenderX', sessionId: 'sess-1', memoryView: planMemoryInjection({ memory, projectId: 'RenderX', chatId: 'sess-1' }).view },
     );
     expect(r.isError).toBeFalsy();
     expect(r.text).toContain('MainTests covers the gate');
@@ -331,7 +332,7 @@ describe('memory tools (engine-neutral)', () => {
     const archived = memory.store.create({ content: 'x', scope: 'personal', type: 'fact' }, { actor: 'system' });
     memory.store.archive(archived.id, { actor: 'system' });
     const specs = buildMemoryToolSpecs(memory);
-    const r = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: ['M-99', archived.id] }, {});
+    const r = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: ['M-99', archived.id] }, { memoryView: planMemoryInjection({ memory }).view });
     expect(r.text).toContain('No matching active memories');
     expect((await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [] }, {})).isError).toBe(true);
   });

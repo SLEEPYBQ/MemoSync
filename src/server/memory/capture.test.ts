@@ -754,15 +754,16 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
     expect(terminal.channel).toBe('agent');
   });
 
-  it('skips a normalized exact repeat already captured in the same Claude review turn before routing', async () => {
+  it('deduplicates whitespace-only retries but routes case-sensitive file changes in the same Claude review turn', async () => {
     const { logger, events } = fakeLogger();
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir, logger });
     const { call, calls } = stubCaller([
       {
         candidates: [
-          { content: 'Use pnpm in this repo', type: 'constraint', scope: 'project' },
+          { content: 'Keep src/Foo.ts as the entry point', type: 'constraint', scope: 'project' },
         ],
       },
+      { decisions: [{ index: 0, route: 'new', targetId: null }] },
       { decisions: [{ index: 0, route: 'new', targetId: null }] },
     ]);
     const capture = createCaptureService({ memory, callJson: call });
@@ -772,10 +773,10 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
       sessionId: 's-tool',
       turn: 7,
       engine: 'claude',
-      userText: 'Remember that this repo uses pnpm.',
+      userText: 'Remember that src/Foo.ts is the entry point.',
     });
     const repeated = await capture.routeProposal(
-      { content: '  USE   PNPM IN THIS REPO  ', type: 'constraint', scope: 'project' },
+      { content: '  Keep   src/Foo.ts as the entry point  ', type: 'constraint', scope: 'project' },
       { projectId: 'RenderX', sessionId: 's-tool', turn: 7, engine: 'claude' },
     );
 
@@ -791,6 +792,19 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
       .filter((event) => (event as { type?: string }).type === 'memory.capture')
       .at(-1) as { channel?: string; sameTurnDuplicates?: number };
     expect(terminal).toMatchObject({ channel: 'agent', sameTurnDuplicates: 1 });
+
+    // A path whose case changed is a distinct observation, even in the same turn.
+    const caseChanged = await capture.routeProposal(
+      { content: 'Keep src/foo.ts as the entry point', type: 'constraint', scope: 'project' },
+      { projectId: 'RenderX', sessionId: 's-tool', turn: 7, engine: 'claude' },
+    );
+    expect(calls).toHaveLength(3);
+    expect(caseChanged!.sameTurnDuplicates).toBeUndefined();
+    expect(caseChanged!.created.map(item => item.content)).toEqual(['Keep src/foo.ts as the entry point']);
+    expect(memory.store.list({ status: 'candidate' }).map(item => item.content).sort()).toEqual([
+      'Keep src/Foo.ts as the entry point',
+      'Keep src/foo.ts as the entry point',
+    ]);
   });
 
   it('routes the same normalized content separately when its scope differs in one Claude review turn', async () => {
@@ -807,7 +821,7 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
       context,
     );
     const personal = await capture.routeProposal(
-      { content: '  USE   PNPM IN THIS REPO  ', type: 'constraint', scope: 'personal' },
+      { content: '  Use   pnpm in this repo  ', type: 'constraint', scope: 'personal' },
       context,
     );
 
@@ -870,7 +884,7 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
     expect(memory.store.list({ status: 'candidate' })).toHaveLength(1);
   });
 
-  it('preserves legacy routing when the turn is missing or the engine is not Claude', async () => {
+  it('preserves legacy routing without a turn and deduplicates Codex with turn identity', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const { call, calls } = stubCaller([
       { decisions: [{ index: 0, route: 'new', targetId: null }] },
@@ -886,8 +900,8 @@ describe('routeProposal (propose_memory channel, REDESIGN D3)', () => {
     await capture.routeProposal(proposal, { projectId: 'RenderX', sessionId: 'codex', turn: 3, engine: 'codex' });
     await capture.routeProposal(proposal, { projectId: 'RenderX', sessionId: 'codex', turn: 3, engine: 'codex' });
 
-    expect(calls).toHaveLength(4);
-    expect(memory.store.list({ status: 'candidate' })).toHaveLength(4);
+    expect(calls).toHaveLength(3);
+    expect(memory.store.list({ status: 'candidate' })).toHaveLength(3);
   });
 
   it('does not deduplicate the same observation across turns or chats', async () => {
@@ -1089,7 +1103,7 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
     expect((captureEvents[0] as { channel?: string }).channel).toBe('prompt');
   });
 
-  it('does not reuse prompt-capture results after reopening the store', async () => {
+  it('reuses committed same-turn operations after reopening without repeating routing', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     memory = new MemoryService({ dbPath, dataDir: dir });
     let providerCalls = 0;
@@ -1121,9 +1135,11 @@ describe('captureFromPrompt (step-one prompt parse, redesign 2026-08-07)', () =>
 
     memory.close();
     memory = new MemoryService({ dbPath, dataDir: dir });
-    await createCaptureService({ memory, callJson: call }).captureFromPrompt(input);
+    const retry = await createCaptureService({ memory, callJson: call }).captureFromPrompt(input);
 
-    expect(providerCalls).toBe(4);
+    expect(providerCalls).toBe(3); // extraction may run again; routing and writes do not
+    expect(retry.sameTurnDuplicates).toEqual([{ memoryId: firstCandidateId, status: 'candidate' }]);
+    expect(memory.store.list({ status: 'candidate' })).toHaveLength(1);
   });
 
   it('empty message and zero-candidate parses short-circuit without calling the router', async () => {
@@ -1315,7 +1331,7 @@ describe('captureFromExtraction (fork channel, 2026-08-08 option A)', () => {
     const postTurn = await capture.captureFromExtraction!(
       {
         candidates: [
-          { content: ' USE PNPM IN THIS REPO ', type: 'constraint', scope: 'project' },
+          { content: ' Use   pnpm in this repo ', type: 'constraint', scope: 'project' },
           { content: 'Vite preview requires the --host flag', type: 'lesson', scope: 'project' },
         ],
       },
@@ -1324,7 +1340,8 @@ describe('captureFromExtraction (fork channel, 2026-08-08 option A)', () => {
 
     expect(calls).toHaveLength(3); // extraction + first Routing + one Routing for the genuinely new lesson
     expect(prompt.created).toHaveLength(1);
-    expect(postTurn.created).toHaveLength(1);
+    expect(postTurn.created.map(item => item.content)).toEqual(['Vite preview requires the --host flag']);
+    expect(postTurn.dropped).toBe(1);
     expect(postTurn.sameTurnDuplicates).toEqual([
       { memoryId: prompt.created[0]!.id, status: 'candidate' },
     ]);

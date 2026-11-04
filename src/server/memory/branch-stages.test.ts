@@ -35,8 +35,8 @@ describe('provider branch stage contracts', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it('persists a resolved C branch as review candidates without routing through another model', async () => {
-    const prior = memory.store.create({ content: 'Use npm', type: 'constraint', scope: 'session', sessionId: 'S' }, { actor: 'user' });
+  it.each(['project', 'session'] as const)('persists resolved C candidates without a sidecar and only revises the same scope (%s)', async scope => {
+    const prior = memory.store.create({ content: 'Use npm', type: 'constraint', scope, ...(scope === 'project' ? { projectId: 'P' } : { sessionId: 'S' }) }, { actor: 'user' });
     const service = createCaptureService({ memory, callJson: forbiddenSidecar });
     const input = { sessionId: 'S', projectId: 'P', engine: 'codex', turn: 1, userText: 'For this project, always use bun instead of npm.' };
     const request = service.buildBranchPrompt!(input);
@@ -48,7 +48,10 @@ describe('provider branch stage contracts', () => {
     expect(result.created).toHaveLength(1);
     expect(result.created[0]!.status).toBe('candidate');
     expect(memory.store.getById(prior.id)!.status).toBe('active');
-    expect(memory.store.getRelations(result.created[0]!.id)).toContainEqual({ type: 'revises', targetId: prior.id });
+    expect(result.created[0]).toMatchObject({ scope: 'project', projectId: 'P' });
+    const relations = memory.store.getRelations(result.created[0]!.id);
+    if (scope === 'project') expect(relations).toContainEqual({ type: 'revises', targetId: prior.id });
+    else expect(relations).toEqual([]);
     expect(sidecarCalls).toBe(0);
   });
 

@@ -113,7 +113,7 @@ describe('computeMemoryTurnDelta', () => {
       memory,
       projectId: 'proj-1',
     });
-    return new Map(plan.bakedMemories.map((m) => [m.id, m.version]));
+    return plan.baseline;
   }
 
   test('quiet turn: empty block, baseline unchanged', () => {
