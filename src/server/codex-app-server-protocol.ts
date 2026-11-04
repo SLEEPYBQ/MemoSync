@@ -445,7 +445,13 @@ export interface ErrorItem {
   message: string
 }
 
+export interface ContextCompactionItem {
+  type: "contextCompaction"
+  id: string
+}
+
 export type ThreadItem =
+  | ContextCompactionItem
   | UserMessageItem
   | ReasoningItem
   | AgentMessageItem

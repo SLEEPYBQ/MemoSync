@@ -1,4 +1,8 @@
 import type { ParentLaunch, ClaudeParentLaunch } from './memory/parent-launch'
+import type { ChatCommandCatalog, ExecuteRuntimeCommand } from '../shared/runtime-commands'
+import { CommandRegistry, type NativeCommandRuntime } from './command-registry'
+import { createClaudeCommandRuntime, supportsClaudeInputReplay } from './native-command-drivers'
+import { compileContext, contextIdentity, HOST_CONTRACT } from './context-compiler'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -265,7 +269,7 @@ const BROWSER_USAGE_GUIDE = [
 ].join("\n")
 
 export function buildClaudeSystemAppend(memoryBlock: string) {
-  return [BROWSER_USAGE_GUIDE, memoryBlock].filter(Boolean).join("\n\n")
+  return [BROWSER_USAGE_GUIDE, HOST_CONTRACT, memoryBlock].filter(Boolean).join("\n\n")
 }
 
 interface PendingToolRequest {
@@ -401,6 +405,7 @@ interface ActiveTurn {
 }
 
 interface ClaudeSessionHandle {
+  commandRuntime?: NativeCommandRuntime
   parentLaunch?: ClaudeParentLaunch
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
@@ -916,6 +921,7 @@ export async function* createClaudeHarnessStream(
   onTurnOriginChange?: (origin: HarnessEvent["origin"]) => void,
   onToolOrigin?: (toolUseId: string, origin: HarnessEvent["origin"]) => void,
   outboundOrigins?: ClaudeOutboundOriginTracker,
+  observeControl?: (message: unknown) => boolean,
 ): AsyncGenerator<HarnessEvent> {
   let seenAssistantUsageIds = new Set<string>()
   let latestUsageSnapshot: ContextWindowUsageSnapshot | null = null
@@ -937,6 +943,7 @@ export async function* createClaudeHarnessStream(
   const lineageOrigins = new Map<string, HarnessEvent["origin"]>()
 
   for await (const sdkMessage of q as AsyncIterable<any>) {
+    if (observeControl?.(sdkMessage)) continue
     const promptIds = sdkMessage?.type === "result" ? claudeResultPromptIds(sdkMessage) : undefined
     const explicitOrigin = (() => {
       const kind = sdkMessage?.origin?.kind
@@ -967,6 +974,7 @@ export async function* createClaudeHarnessStream(
         || sdkMessage?.shouldQuery === false
       )
       rootOrigin = explicitOrigin
+        ?? (typeof sdkMessage.uuid === 'string' ? outboundOrigins?.originForPromptId(sdkMessage.uuid) : undefined)
         ?? (internalOriginlessFrame ? "unknown" : outboundOrigins?.current())
         ?? "human"
       outboundOrigins?.observeRoot(rootOrigin)
@@ -1232,6 +1240,12 @@ export class ClaudeOutboundOriginTracker {
     return this.pendingHumanTurns.some(seq => !this.revokedHumanTurns.has(seq))
   }
 
+  /** Input replay acknowledges the exact reservation; a cancelled UUID cannot regain human authority. */
+  originForPromptId(id: string): HarnessEvent['origin'] | undefined {
+    for (const [seq, promptId] of this.promptIds) if (promptId === id) return this.revokedHumanTurns.has(seq) ? 'unknown' : 'human'
+    return undefined
+  }
+
   revokeHumanTurn(promptSeq: number) {
     if (this.pendingHumanTurns.includes(promptSeq)) this.revokedHumanTurns.add(promptSeq)
     if (!this.hasHumanAuthority() && this.root === "human") this.root = "unknown"
@@ -1411,20 +1425,22 @@ export async function startClaudeSession(args: {
     },
     get allowedMemoryIds() { return activeMemoryToolIds },
   }
-  const memorySpecs =
-    args.memory && plan?.registerTools
+  let nativeControlInput = false
+  const memorySpecs = (args.memory && plan?.registerTools
       ? buildMemoryToolSpecs(args.memory, {
           capture: args.capture,
           pendingCandidateTiming: 'next_turn',
           onProposed: args.onMemoryProposal,
         })
-      : []
+      : []).map(spec => ({ ...spec, handler: async (...input: Parameters<typeof spec.handler>) => nativeControlInput
+        ? { text: 'Memory tools are disabled during native context control.', isError: true }
+        : spec.handler(...input) }))
   const memoryBlock = plan?.block ?? ""
   // Append environment guidance so the agent knows how a dev server it
   // starts becomes visible to the user.
   const systemAppend = buildClaudeSystemAppend(memoryBlock)
   const canUseTool: CanUseTool = async (toolName, input, options) => {
-
+    if (nativeControlInput) return { behavior: 'deny', message: 'Native context control does not authorize tool execution.' }
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
       return {
         behavior: "allow",
@@ -1496,6 +1512,7 @@ export async function startClaudeSession(args: {
     // without this the reply pops in whole at turn end (the DeepSeek
     // Anthropic-compatible endpoint streams SSE like the real one).
     includePartialMessages: true,
+    ...(supportsClaudeInputReplay(engineRuntime.executable.version ?? '') ? { extraArgs: { 'replay-user-messages': null } } : {}),
     tools: [...CLAUDE_TOOLSET],
     systemPrompt: systemAppend
       ? { type: "preset", preset: "claude_code", append: systemAppend }
@@ -1524,14 +1541,24 @@ export async function startClaudeSession(args: {
     },
   }
   const q = query({ prompt: promptQueue, options: launchOptions })
+  const controls = createClaudeCommandRuntime({ query: q, session: () => args.sessionToken ?? '',
+    version: engineRuntime.executable.version ?? 'unknown', acknowledgesInputs: supportsClaudeInputReplay(engineRuntime.executable.version ?? ''),
+    push: (content, uuid, shouldQuery) => {
+      // Control inputs have no human turn reservation and cannot run memory tools.
+      nativeControlInput = true
+      activeMemoryToolIds = []
+      promptQueue.push({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, shouldQuery,
+        session_id: args.sessionToken ?? '', uuid: uuid as SDKUserMessage['uuid'] })
+    }, close: () => { promptQueue.close(); q.close() },
+  })
+  const nativeStream = createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {}, outboundOrigins, controls.observe)
 
   return {
     provider: "claude",
+    commandRuntime: controls.runtime,
     echoesPromptIds,
     parentLaunch,
-    stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
-
-    }, outboundOrigins),
+    stream: { async *[Symbol.asyncIterator]() { try { yield* nativeStream } finally { controls.dispose() } } },
     getAccountInfo: async () => {
       try {
         return await q.accountInfo()
@@ -1546,6 +1573,7 @@ export async function startClaudeSession(args: {
       content: string,
       context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string },
     ) => {
+      nativeControlInput = false
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
@@ -1583,6 +1611,7 @@ export async function startClaudeSession(args: {
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
     close: () => {
+      controls.dispose()
       toolOriginResolver.clear()
       outboundOrigins.clear()
       promptQueue.close()
@@ -3116,6 +3145,77 @@ export class AgentCoordinator {
     this.reportBackgroundError = report
   }
 
+  private readonly commandRegistry = new CommandRegistry(chatId => this.emitStateChange(chatId))
+
+  getCommandCatalog(chatId: string): ChatCommandCatalog {
+    const chat = this.store.getChat(chatId)
+    const runtime = this.sessionRuntimes.get(chatId)
+    const claude = this.claudeSessions.get(chatId)
+    const native = chat?.provider === 'claude' ? (!claude?.retired ? claude?.session.commandRuntime : undefined)
+      : chat?.provider === 'pi' ? this.piManager.getCommandRuntime?.(chatId)
+      : chat?.provider === 'opencode' ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : chat?.provider === 'codex' ? this.codexManager.getCommandRuntime?.(chatId) : undefined
+    const project = chat ? this.store.getProject(chat.projectId) : undefined
+    if (!chat?.provider || !project || !native || !native.alive()) {
+      this.commandRegistry.unbind(chatId)
+      return this.commandRegistry.snapshot(chatId)
+    }
+    this.commandRegistry.bind(chatId, {
+      identity: { engine: chat.provider, nativeInstance: native.instance, nativeSession: chat.sessionToken ?? native.session,
+        version: native.version, profile: native.profile ?? contextIdentity({ isolated: runtime?.isolated,
+          home: runtime?.env.HOME, claude: runtime?.env.CLAUDE_CONFIG_DIR, codex: runtime?.env.CODEX_HOME, xdg: runtime?.env.XDG_CONFIG_HOME }),
+        workspace: project.localPath, mode: contextIdentity({ planMode: chat.planMode, model: runtime?.model, connection: runtime?.connectionId, memoryDisabled: chat.memoryDisabled }) },
+      native, busy: () => this.idleCloseBlocked(chatId),
+      restoreText: () => this.compileCurrentContext(chatId, native.session),
+      invalidateContext: () => {
+        // Compaction or cancellation can remove the previously accepted dynamic view.
+        // Force a full current view at the next ordinary append boundary, including after failed restoration.
+        const session = this.claudeSessions.get(chatId)
+        if (session?.memoryBaseline) session.memoryBaseline = new Map()
+      },
+      submit: (entry, args) => this.send({ type: 'chat.send', chatId, content: `/${entry.name}${args ? ` ${args}` : ''}`,
+        model: runtime?.model, modelOptions: runtime?.connectionId ? { connectionId: runtime.connectionId } : undefined, planMode: chat.planMode }, true),
+    })
+    const snapshot = this.commandRegistry.snapshot(chatId)
+    if (runtime) snapshot.connectors.items.push({ id: `model:${runtime.connectionId ?? runtime.engine}`, name: runtime.model, kind: 'model-provider',
+      state: 'discovered', source: { api: 'EngineRuntime (configured; authentication not probed)', version: native.version, evidence: 'host-config' } })
+    snapshot.connectors.items.push({ id: 'hosted:private', name: 'Provider-hosted connectors', kind: 'hosted-service', state: 'unsupported',
+      source: { api: 'No public hosted connector API bound to this session', version: native.version, evidence: 'public-api' } })
+    return snapshot
+  }
+
+  async readCommandCatalog(chatId: string, refresh = false) {
+    this.store.requireChat(chatId)
+    const snapshot = this.getCommandCatalog(chatId)
+    if (refresh || snapshot.commands.status === 'unknown') await this.commandRegistry.refresh(chatId)
+    return this.getCommandCatalog(chatId)
+  }
+
+  async executeCommand(command: ExecuteRuntimeCommand) {
+    this.store.requireChat(command.chatId)
+    this.getCommandCatalog(command.chatId)
+    this.cancelIdleClose(command.chatId)
+    return await this.commandRegistry.execute(command) as { chatId: string; operationId?: string }
+  }
+
+  async cancelCommand(chatId: string, operationId: string) { await this.commandRegistry.cancel(chatId, operationId) }
+
+  /** Narrow pure compiler seam. Parent P0 adapters can use the same view at native append boundaries. */
+  private compileCurrentContext(chatId: string, nativeSession: string) {
+    const chat = this.store.requireChat(chatId)
+    const restriction = this.turnMemoryRestriction.get(chatId)
+    const visible = !chat.memoryDisabled && this.memory ? this.memory.injectedFor(chat.projectId, chatId) : []
+    const memories = visible.filter(m => !restriction || restriction.includes(m.id)).map(m => ({ id: m.id, version: m.version, content: m.content, scope: m.scope,
+      semantics: { type: m.type, hasDetail: Boolean(m.detail), conflicts: this.memory?.store.getConflicts(m.id).filter(c => c.status === 'active').map(c => c.id).sort() } }))
+    // No usage counters, arbitrary installed skills, credentials, or native instruction replacement.
+    const launch = this.parentLaunches.get(chatId)
+    const declarations = launch?.provider === 'codex' ? launch.session.dynamicTools ?? []
+      : toCodexDynamicTools(launch?.provider === 'claude' ? launch.memorySpecs : launch?.options.memorySpecs ?? [])
+    const tools = declarations.map(tool => ({ name: tool.name, description: tool.description, schema: tool.inputSchema }))
+    return compileContext({ epoch: 0, nativeSession, capabilityRevision: contextIdentity(tools), policyRevision: 'unknown', tools,
+      view: { revision: contextIdentity(memories), selectionRevision: contextIdentity(restriction ?? memories.map(m => m.id)), memories } }).append
+  }
+
   getActiveStatuses() {
     const statuses = new Map<string, ChatActivityStatus>()
     // Reservation phase first; a booted ActiveTurn (mutually exclusive by
@@ -3176,7 +3276,7 @@ export class AgentCoordinator {
   }
 
   private idleCloseBlocked(chatId: string) {
-    return this.activeTurns.has(chatId) || this.startingChats.has(chatId)
+    return this.commandRegistry.isRunning(chatId) || this.activeTurns.has(chatId) || this.startingChats.has(chatId)
       || this.startupReservations.has(chatId) || this.engineStartAbortControllers.has(chatId)
       || this.drainingStreams.has(chatId)
       || this.pendingPreviews.has(chatId) || this.pendingProposalGates.has(chatId)
@@ -3212,6 +3312,7 @@ export class AgentCoordinator {
     if (this.runtimeStopping || this.closedChats.has(chatId) || this.idleCloseBlocked(chatId)) return
     // No await between checking and retiring: a concurrent send either owns
     // the startup reservation or sees a retired Query and waits for its pump.
+    this.commandRegistry.unbind(chatId)
     this.codexManager.stopSession(chatId)
     this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
@@ -3367,6 +3468,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.commandRegistry.unbind(chatId)
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
@@ -3407,6 +3509,7 @@ export class AgentCoordinator {
 
   /** Close every old-project query before the preview process group changes. */
   async shutdownRuntime() {
+    this.commandRegistry.dispose()
     this.runtimeStopping = true
     for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
     for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId)
@@ -3545,6 +3648,7 @@ export class AgentCoordinator {
     options?: SendMessageOptions,
     channel: "chat.send" | "message.enqueue" = "chat.send",
   ) {
+    if (content.trimStart().startsWith('/')) throw new Error('Native commands require an idle session and its current command catalog')
     const queued = await this.store.enqueueMessage(chatId, {
       content,
       attachments,
@@ -3577,6 +3681,7 @@ export class AgentCoordinator {
       }
       return "cancelled"
     }
+    if (queuedMessage.content.trimStart().startsWith('/')) throw new Error('Queued native commands must be resubmitted through the current command catalog')
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
@@ -3635,7 +3740,7 @@ export class AgentCoordinator {
   }
 
   private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.activeTurns.has(chatId)) return false
+    if (this.commandRegistry.isRunning(chatId) || this.activeTurns.has(chatId)) return false
     const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
     if (!nextQueuedMessage) return false
     await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
@@ -3643,6 +3748,8 @@ export class AgentCoordinator {
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
+    if (this.commandRegistry.isRunning(args.chatId)) throw new Error('Native context control is running')
+    if (/^\s*\/compact(?:\s|$)/.test(args.content)) throw new Error('Compact must use the native command control route')
     const logicalTurnId = args.turnId ?? crypto.randomUUID()
     args.turnId = logicalTurnId
     logSendToStartingProfile(args.profile, "start_turn.begin", {
@@ -6590,7 +6697,7 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
-  async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+  async send(command: Extract<ClientCommand, { type: "chat.send" }>, nativeCommandValidated = false) {
     if (command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
       throw new Error("memoryDisabled must be a boolean")
     }
@@ -6621,6 +6728,16 @@ export class AgentCoordinator {
 
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(command, chat.provider)
+    if (this.commandRegistry.isRunning(chatId)) throw new Error('Native context control is running')
+    if (!nativeCommandValidated && command.content.trimStart().startsWith('/')) {
+      if (command.attachments?.length) throw new Error('Native commands do not accept attachments')
+      const match = command.content.trim().match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
+      const catalog = await this.readCommandCatalog(chatId)
+      const entry = match && catalog.commands.items.find(item => item.name === match[1])
+      if (!entry || !catalog.runtimeKey) throw new Error('Command unavailable in the current native session; refresh its catalog')
+      return this.executeCommand({ type: 'chat.executeCommand', chatId, runtimeKey: catalog.runtimeKey, expectedRevision: catalog.revision,
+        commandId: entry.id, arguments: match?.[2] ?? '' })
+    }
     if (
       this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
@@ -6837,6 +6954,7 @@ export class AgentCoordinator {
           }
         }
         if (event.entry.kind === "system_init" && active) {
+          void this.readCommandCatalog(session.chatId, true).catch(() => {})
           active.status = "running"
           active.providerTurnStarted = true
           // Compatibility for wrappers that never echo UUIDs: retain their
@@ -7035,6 +7153,7 @@ export class AgentCoordinator {
         }
 
         if (event.entry.kind === "system_init") {
+          void this.readCommandCatalog(active.chatId, true).catch(() => {})
           active.status = "running"
         }
 
@@ -7363,6 +7482,11 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    if (this.commandRegistry.isRunning(chatId)) {
+      const operation = this.commandRegistry.snapshot(chatId).operation
+      if (operation) await this.commandRegistry.cancel(chatId, operation.id)
+      return
+    }
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind

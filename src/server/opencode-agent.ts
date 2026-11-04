@@ -1,4 +1,6 @@
 import { realpath } from 'node:fs/promises'
+import { createOpencodeCommandRuntime } from './native-command-drivers'
+import type { NativeCommandRuntime } from './command-registry'
 import { createHash } from 'node:crypto'
 import type { OpencodeClient, Event, Part, PermissionRequest } from '@opencode-ai/sdk/v2/client'
 import type { TranscriptEntry } from '../shared/types'
@@ -66,6 +68,8 @@ export interface StartOpencodeTurnArgs {
 }
 
 interface ChatServer {
+  commandRuntime?: NativeCommandRuntime
+  sessionID?: string
   key: string
   runtime: EngineRuntime
   server: OpencodeServer
@@ -101,6 +105,17 @@ export class OpencodeAgentManager {
     // Keep the server alive until initialization has deleted that orphan.
     await chat.initializing?.done
     await chat.server.close()
+  }
+  getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
+    const chat = this.chats.get(chatId)
+    if (!chat?.sessionID || chat.closed) return undefined
+    return chat.commandRuntime ??= createOpencodeCommandRuntime({ client: chat.client, session: () => chat.sessionID!,
+      version: chat.runtime.executable.version ?? 'unknown', alive: () => !chat.closed && this.chats.get(chatId) === chat,
+      model: () => {
+        if (chat.runtime.connectionId) return { providerID: 'memosync', modelID: chat.runtime.model }
+        const slash = chat.runtime.model.indexOf('/')
+        return slash > 0 ? { providerID: chat.runtime.model.slice(0, slash), modelID: chat.runtime.model.slice(slash + 1) } : undefined
+      } })
   }
   hasSession(chatId: string) { return Boolean(this.chats.get(chatId) && !this.chats.get(chatId)!.closed) }
   hasPendingWork(chatId: string) { const chat = this.chats.get(chatId); return this.pending.has(chatId) || Boolean(chat?.turn || chat?.initializing) }
@@ -405,6 +420,7 @@ export class OpencodeAgentManager {
         }
       }
     }
+    chat.sessionID = sessionID
     chat.turn = { sessionID, handle, fail: message => finalize(message, true), cancel: () => finalize('', false, true) }
     queue.push({ type: 'session_token', sessionToken: sessionID })
     transcript({ kind: 'system_init', provider: 'opencode', model: runtime.model, tools: ['Read', 'Bash', 'Edit', 'Write', 'Grep', 'Glob', ...(args.memorySpecs ?? []).map(s => `mcp__memory__${s.name}`)], agents: [], slashCommands: [], mcpServers: chat.mcp ? [{ name: 'memory', status: 'connected' }] : [] })
@@ -414,7 +430,11 @@ export class OpencodeAgentManager {
       const slash = runtime.model.indexOf('/')
       return slash > 0 ? { providerID: runtime.model.slice(0, slash), modelID: runtime.model.slice(slash + 1) } : undefined
     })()
-    if (!cancelled) void chat.client.session.promptAsync({ sessionID, model, system: args.systemPrompt, agent: args.agent, parts: [{ type: 'text', text: args.content }] }, { signal: AbortSignal.timeout(10_000) })
+    const nativeCommand = args.content.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
+    if (!cancelled) void (nativeCommand
+      ? chat.client.session.command({ sessionID, command: nativeCommand[1], arguments: nativeCommand[2] ?? '', agent: args.agent,
+          ...(model ? { model: `${model.providerID}/${model.modelID}` } : {}) }, { signal: AbortSignal.timeout(120_000) })
+      : chat.client.session.promptAsync({ sessionID, model, system: args.systemPrompt, agent: args.agent, parts: [{ type: 'text', text: args.content }] }, { signal: AbortSignal.timeout(10_000) }))
       .then(response => { if (response.error) void abort('OpenCode prompt request failed') })
       .catch(() => { void abort('OpenCode prompt request failed') })
     return { provider: 'opencode', stream: queue, interrupt: abort, close: () => { if (!finished) void abort() } }

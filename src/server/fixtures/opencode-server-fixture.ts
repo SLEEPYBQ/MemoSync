@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 // Transport fixture: deterministic SSE/HTTP failure cases unavailable from a real model.
+import { appendFileSync } from 'node:fs'
 if (process.argv.includes('--version')) { console.log('1.19.5'); process.exit(0) }
 if (process.env.FAKE_OC_CONFIG === 'invalid') {
   console.error(`private key FAKE-SECRET\n\x1b[31mConfiguration is invalid at ${process.env.HOME}/bad.json\x1b[0m\n↳ Unrecognized key: "invalid"\nprivate footer FAKE-SECRET`)
@@ -14,6 +15,21 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
   async fetch(request) {
     if (request.headers.get('authorization') !== `Basic ${Buffer.from(`opencode:${process.env.OPENCODE_SERVER_PASSWORD}`).toString('base64')}`) return new Response(null, { status: 401 })
     const url = new URL(request.url)
+    if (process.env.FAKE_OC_COMMAND_LOG && request.method === 'POST') appendFileSync(process.env.FAKE_OC_COMMAND_LOG, `${JSON.stringify({ path: url.pathname, body: await request.clone().json() })}\n`)
+    if (request.method === 'GET' && url.pathname === '/command') return Response.json([{ name: 'fixture', description: 'Native fixture command', source: 'command', template: 'Fixture', hints: [] }])
+    if (request.method === 'GET' && url.pathname === '/skill') return Response.json([{ name: 'fixture', description: 'Native fixture skill', location: '/temp/fixture/SKILL.md', content: 'Fixture instructions' }])
+    if (request.method === 'GET' && url.pathname === '/mcp') return Response.json({ fixture: { status: 'disabled' } })
+    if (request.method === 'POST' && url.pathname.endsWith('/command')) {
+      const body = await request.json() as { command: string; arguments: string }
+      setTimeout(() => {
+        send('message.updated', { info: { id: 'command-assistant', sessionID: 'ses_fixture', role: 'assistant', time: { created: 1 } } })
+        send('message.part.updated', { part: { id: 'command-text', sessionID: 'ses_fixture', messageID: 'command-assistant', type: 'text', text: `native-command:${body.command}:${body.arguments}`, time: { start: 1, end: 2 } } })
+        send('session.idle', { sessionID: 'ses_fixture' })
+      }, 10)
+      return Response.json({ info: { id: 'command-assistant' }, parts: [] })
+    }
+    if (request.method === 'POST' && url.pathname.endsWith('/summarize')) return Response.json(true)
+    if (request.method === 'POST' && url.pathname.endsWith('/message')) return Response.json({ info: { id: 'restore', role: 'user' }, parts: [] })
     if (url.pathname === '/config/providers') return Response.json({ providers: [{ id: 'connected', name: 'Connected', key: 'FAKE-SECRET', options: { apiKey: 'FAKE-SECRET' }, models: { 'vendor/m': { id: 'vendor/m', name: 'Model', tool_call: true, limit: { context: 10000, output: 1000 }, key: 'FAKE-SECRET' } } }], default: { connected: 'vendor/m' }, key: 'FAKE-SECRET' })
     if (url.pathname === '/config') return Response.json({ model: process.env.FAKE_OC_MODEL || 'connected/vendor/m', key: 'FAKE-SECRET' })
     if (url.pathname === '/event') return new Response(new ReadableStream({ start(controller) { controllers.add(controller); controller.enqueue(new TextEncoder().encode('data: {"type":"server.connected","properties":{}}\n\n')) }, cancel() {} }), { headers: { 'content-type': 'text/event-stream' } })

@@ -1,4 +1,6 @@
 import type { SidebarPatch } from "./sidebar-patch"
+import type { RuntimeCatalogCommand } from "./runtime-commands"
+export type * from "./runtime-commands"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
 import type {
@@ -95,6 +97,7 @@ export interface TerminalTailResult {
 }
 
 export type ClientCommand =
+  | RuntimeCatalogCommand
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }

@@ -1,6 +1,8 @@
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
+import { discoverCodexCommands } from "./native-command-drivers"
+import type { NativeCommandRuntime } from "./command-registry"
 import { spawn } from "node:child_process"
 import { killProcessTree } from "./process-utils"
 import { randomUUID } from "node:crypto"
@@ -124,6 +126,9 @@ interface PendingTurn {
 }
 
 interface SessionContext {
+  commandRuntime?: NativeCommandRuntime
+  commandListeners?: Set<() => void>
+  compactControl?: { turnId: string | null; boundary: boolean; completed: boolean; resolve(): void; reject(error: Error): void }
   chatId: string
   cwd: string
   child: CodexAppServerProcess
@@ -1189,7 +1194,52 @@ export class CodexAppServerManager {
 
   hasPendingWork(chatId: string): boolean {
     const context = this.sessions.get(chatId)
-    return Boolean(context && (context.pendingTurn || context.pendingRequests.size > 0))
+    return Boolean(context && (context.pendingTurn || context.pendingRequests.size > 0 || context.compactControl))
+  }
+
+  /** P0 owns the verified developer-channel append. Register it after adapter integration. */
+  private commandContextRestorer?: (chatId: string, text: string, signal: AbortSignal) => Promise<void>
+  setCommandContextRestorer(restore: (chatId: string, text: string, signal: AbortSignal) => Promise<void>) {
+    this.commandContextRestorer = restore
+  }
+  getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
+    const context = this.sessions.get(chatId)
+    if (!context?.sessionToken || context.closed) return undefined
+    if (context.commandRuntime) return context.commandRuntime
+    const version = runtimeForEnv(context.subprocessEnv)?.executable.version ?? 'unknown'
+    const manager = this
+    const listeners = context.commandListeners ??= new Set()
+    return context.commandRuntime = {
+      instance: crypto.randomUUID(), get session() { return context.sessionToken! }, version,
+      alive: () => !context.closed && this.sessions.get(chatId) === context,
+      discover: () => discoverCodexCommands((method, params) => this.sendRequest(context, method, params), context.cwd, version),
+      onChanged(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+      compactSource: { api: 'thread/compact/start + compaction boundary + matching turn/completed', version, evidence: 'public-api' },
+      // This fixed public protocol is verified for the research baseline; unknown older versions stay unavailable.
+      compact: /(?:^|\s)0\.166\.0-alpha\.5\.1(?:$|\s)/.test(version) ? async signal => {
+        signal.throwIfAborted()
+        if (context.pendingTurn || context.compactControl) throw new Error('Codex session is busy')
+        let resolve!: () => void, reject!: (error: Error) => void
+        const done = new Promise<void>((yes, no) => { resolve = yes; reject = no })
+        const control = { resolve, reject, turnId: null as string | null, boundary: false, completed: false }
+        context.compactControl = control
+        const abort = () => reject(new Error('Codex compact cancelled'))
+        const timer = setTimeout(() => reject(new Error('Codex compact completion timed out')), 120_000)
+        signal.addEventListener('abort', abort, { once: true })
+        try {
+          // Install the completion observer before request dispatch; the completion may precede its JSON-RPC ACK.
+          await Promise.all([this.sendRequest(context, 'thread/compact/start', { threadId: context.sessionToken }), done])
+        } finally {
+          clearTimeout(timer); signal.removeEventListener('abort', abort)
+          if (context.compactControl === control) context.compactControl = undefined
+        }
+      } : undefined,
+      get restore() { return manager.commandContextRestorer ? async (text: string, signal: AbortSignal) => {
+        await manager.commandContextRestorer!(chatId, text, signal)
+        return { delivery: 'native-accepted' as const }
+      } : undefined },
+      cancel: () => this.stopSession(chatId),
+    }
   }
 
   private trackCleanup(chatId: string, child: CodexAppServerProcess): Promise<void> {
@@ -1208,6 +1258,7 @@ export class CodexAppServerManager {
     const context = this.sessions.get(chatId)
     if (!context) return this.pendingCleanups.get(chatId) ?? Promise.resolve()
     context.closed = true
+    context.compactControl?.reject(new Error('Codex session stopped'))
     context.pendingTurn?.queue.finish()
     for (const pending of context.pendingRequests.values()) {
       pending.reject(new Error("Codex session stopped"))
@@ -1260,6 +1311,9 @@ export class CodexAppServerManager {
           continue
         }
 
+        if ((parsed as { method?: string }).method === 'skills/changed') {
+          for (const listener of context.commandListeners ?? []) listener()
+        }
         if (isServerNotification(parsed)) {
           void this.handleNotification(context, parsed)
         }
@@ -1502,6 +1556,24 @@ export class CodexAppServerManager {
       return
     }
 
+    if (context.compactControl) {
+      const control = context.compactControl
+      const threadId = this.notificationThreadId(notification)
+      const turnId = this.notificationTurnId(notification)
+      if (threadId === context.sessionToken) {
+        if (notification.method === 'turn/started' && control.turnId === null) control.turnId = notification.params.turn.id
+        if (notification.method === 'error' && !notification.params.willRetry && (!turnId || turnId === control.turnId)) control.reject(new Error('Codex compaction failed'))
+        if (turnId && turnId === control.turnId) {
+          if (notification.method === 'thread/compacted') control.boundary = true
+          if (notification.method === 'item/completed' && notification.params.item.type === 'contextCompaction') control.boundary = true
+          if (notification.method === 'turn/completed') {
+            if (notification.params.turn.status !== 'completed') control.reject(new Error('Codex compaction did not complete'))
+            else control.completed = true
+          }
+          if (control.boundary && control.completed) control.resolve()
+        }
+      }
+    }
     const pendingTurn = context.pendingTurn
     if (!pendingTurn) return
     const notificationThreadId = this.notificationThreadId(notification)
@@ -1749,6 +1821,7 @@ export class CodexAppServerManager {
 
   private failContext(context: SessionContext, message: string) {
     if (context.closed) return
+    context.compactControl?.reject(new Error('Codex native process exited'))
     context.closed = true
     const pendingTurn = context.pendingTurn
     if (pendingTurn && !pendingTurn.resolved) {

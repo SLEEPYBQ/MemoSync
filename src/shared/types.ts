@@ -1,4 +1,5 @@
 import type { UiTextFields, UiTextReference } from "./ui-copy"
+import type { ChatCommandCatalog } from "./runtime-commands"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
@@ -1646,6 +1647,8 @@ export type HydratedTranscriptMessage =
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 
 export interface ChatRuntime {
+  /** Read-only facts for this live native session; historical system_init is not an executable catalog. */
+  commandCatalog?: ChatCommandCatalog
   memoryDisabled: boolean
   chatId: string
   projectId: string
