@@ -3366,7 +3366,7 @@ export class AgentCoordinator {
       this.startupReservations.delete(chatId)
     }
     this.cancelledDuringPreview.delete(chatId)
-    this.codexManager.stopSession(chatId)
+    await this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
     this.parentLaunches.delete(chatId)
@@ -3396,14 +3396,15 @@ export class AgentCoordinator {
     for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
     for (const chatId of this.automaticCaptures.keys()) this.cancelAutomaticCapture(chatId)
     for (const controller of this.engineStartAbortControllers.values()) controller.abort()
-    this.codexManager.stopAll()
+    const codexCleanup = this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     this.piManager.dispose()
     this.sessionRuntimes.clear()
     this.runtimeSelections.clear()
-    await Promise.all(
-      [...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
-    )
+    await Promise.all([
+      codexCleanup,
+      ...[...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
+    ])
   }
 
   /** Shutdown safety net: a cancel() that fails while persisting the

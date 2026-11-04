@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { spawn } from "node:child_process"
+import { killProcessTree } from "./process-utils"
 import { randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -63,11 +64,14 @@ import {
 } from "./codex-app-server-protocol"
 
 interface CodexAppServerProcess {
+  pid?: number
+  exitCode?: number | null
+  signalCode?: NodeJS.Signals | null
   stdin: Writable
   stdout: Readable
   stderr: Readable
   killed?: boolean
-  kill(signal?: NodeJS.Signals | number): void
+  kill(signal?: NodeJS.Signals | number): boolean | void
   on(event: "close", listener: (code: number | null) => void): this
   on(event: "error", listener: (error: Error) => void): this
   once(event: "close", listener: (code: number | null) => void): this
@@ -813,6 +817,7 @@ export async function serializeCodexRuntimeStart<T>(profile: string, start: () =
 export class CodexAppServerManager {
   private readonly sessions = new Map<string, SessionContext>()
   private readonly pendingRuntimeStarts = new Map<string, { cancelled: boolean }>()
+  private readonly pendingCleanups = new Map<string, Promise<void>>()
   private readonly spawnProcess: SpawnCodexAppServer
   private readonly serializeStarts: boolean
 
@@ -824,6 +829,8 @@ export class CodexAppServerManager {
       const command = runtime.launcher?.command ?? runtime.executable.path ?? "codex"
       return spawn(command, [...(runtime.launcher?.args ?? []), ...prepared.args], {
         cwd,
+        detached: process.platform !== "win32",
+        windowsHide: true,
         stdio: ["pipe", "pipe", "pipe"],
         env: runtime.env,
       }) as unknown as CodexAppServerProcess
@@ -839,19 +846,25 @@ export class CodexAppServerManager {
       if (pending.cancelled) throw new Error("Codex session stopped")
       args.signal?.throwIfAborted()
       args = { ...args, runtime, subprocessEnv: runtime.env }
-      if (!this.serializeStarts) return await this.startSessionUnlocked(args)
+      if (!this.serializeStarts) return await this.startSessionUnlocked(args, pending)
       const profile = runtime.env.CODEX_HOME || join(homedir(), ".codex")
       return await serializeCodexRuntimeStart(profile, () => {
         if (pending.cancelled) throw new Error("Codex session stopped")
-        return this.startSessionUnlocked(args)
+        return this.startSessionUnlocked(args, pending)
       })
     } finally {
       if (this.pendingRuntimeStarts.get(args.chatId) === pending) this.pendingRuntimeStarts.delete(args.chatId)
     }
   }
 
-  private async startSessionUnlocked(args: StartCodexSessionArgs) {
+  private async startSessionUnlocked(args: StartCodexSessionArgs, pending?: { cancelled: boolean }) {
     args.signal?.throwIfAborted()
+    const priorCleanup = this.pendingCleanups.get(args.chatId)
+    if (priorCleanup) {
+      await priorCleanup
+      if (pending?.cancelled) throw new Error("Codex session stopped")
+      args.signal?.throwIfAborted()
+    }
     const existing = this.sessions.get(args.chatId)
     if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
       && (!args.disableExternalTools || existing.externalToolsDisabled)
@@ -861,7 +874,9 @@ export class CodexAppServerManager {
     }
 
     if (existing) {
-      this.stopSession(args.chatId)
+      await this.retireSession(args.chatId)
+      if (pending?.cancelled) throw new Error("Codex session stopped")
+      args.signal?.throwIfAborted()
     }
 
     const child = this.spawnProcess(args.cwd, args.subprocessEnv, args.runtime)
@@ -889,7 +904,7 @@ export class CodexAppServerManager {
     } catch (error) {
       // A rejected handshake must not remain reusable with a null thread ID.
       // Do not stop a replacement session if an older request fails late.
-      if (this.sessions.get(args.chatId) === context) this.stopSession(args.chatId)
+      if (this.sessions.get(args.chatId) === context) await this.stopSession(args.chatId)
       throw error
     } finally {
       args.signal?.removeEventListener("abort", stopForAbort)
@@ -1108,12 +1123,15 @@ export class CodexAppServerManager {
         pendingTurn.resolved = true
         pendingTurn.queue.finish()
 
-        if (!pendingTurn.turnId || !context.sessionToken) return
-
-        await this.sendRequest(context, "turn/interrupt", {
-          threadId: context.sessionToken,
-          turnId: pendingTurn.turnId,
-        } satisfies TurnInterruptParams)
+        if (pendingTurn.turnId && context.sessionToken) {
+          void this.sendRequest(context, "turn/interrupt", {
+            threadId: context.sessionToken,
+            turnId: pendingTurn.turnId,
+          } satisfies TurnInterruptParams).catch(() => {})
+        }
+        // The protocol acknowledgement does not guarantee tool processes stopped.
+        // The next turn resumes the persisted thread in a fresh app-server.
+        if (this.sessions.get(args.chatId) === context) await this.stopSession(args.chatId)
       },
       close: () => {},
     }
@@ -1160,7 +1178,7 @@ export class CodexAppServerManager {
       return candidate || null
     } finally {
       turn?.close()
-      this.stopSession(chatId)
+      await this.stopSession(chatId)
     }
   }
 
@@ -1174,11 +1192,21 @@ export class CodexAppServerManager {
     return Boolean(context && (context.pendingTurn || context.pendingRequests.size > 0))
   }
 
-  stopSession(chatId: string) {
-    const pending = this.pendingRuntimeStarts.get(chatId)
-    if (pending) pending.cancelled = true
+  private trackCleanup(chatId: string, child: CodexAppServerProcess): Promise<void> {
+    const cleanup = killProcessTree(child)
+    const previous = this.pendingCleanups.get(chatId)
+    const tracked = previous ? Promise.all([previous, cleanup]).then(() => {}) : cleanup
+    this.pendingCleanups.set(chatId, tracked)
+    void tracked.then(
+      () => { if (this.pendingCleanups.get(chatId) === tracked) this.pendingCleanups.delete(chatId) },
+      () => { if (this.pendingCleanups.get(chatId) === tracked) this.pendingCleanups.delete(chatId) },
+    )
+    return tracked
+  }
+
+  private retireSession(chatId: string): Promise<void> {
     const context = this.sessions.get(chatId)
-    if (!context) return
+    if (!context) return this.pendingCleanups.get(chatId) ?? Promise.resolve()
     context.closed = true
     context.pendingTurn?.queue.finish()
     for (const pending of context.pendingRequests.values()) {
@@ -1186,18 +1214,25 @@ export class CodexAppServerManager {
     }
     context.pendingRequests.clear()
     this.sessions.delete(chatId)
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // ignore kill failures
-    }
+    return this.trackCleanup(chatId, context.child)
   }
 
-  stopAll() {
+  stopSession(chatId: string): Promise<void> {
+    const pending = this.pendingRuntimeStarts.get(chatId)
+    if (pending) pending.cancelled = true
+    return this.retireSession(chatId)
+  }
+
+  stopAll(): Promise<void> {
     for (const pending of this.pendingRuntimeStarts.values()) pending.cancelled = true
     for (const chatId of this.sessions.keys()) {
       this.stopSession(chatId)
     }
+    return (async () => {
+      while (this.pendingCleanups.size > 0) {
+        await Promise.all([...this.pendingCleanups.values()])
+      }
+    })()
   }
 
   private requireSession(chatId: string) {
@@ -1739,11 +1774,7 @@ export class CodexAppServerManager {
     if (this.sessions.get(context.chatId) === context) {
       this.sessions.delete(context.chatId)
     }
-    try {
-      context.child.kill("SIGKILL")
-    } catch {
-      // Preserve the original failure if the child has already exited.
-    }
+    this.trackCleanup(context.chatId, context.child)
   }
 
   private async sendRequest<TResult>(context: SessionContext, method: string, params: unknown): Promise<TResult> {

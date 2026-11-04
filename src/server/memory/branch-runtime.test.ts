@@ -69,7 +69,7 @@ function fakeCodex() {
         close() {},
       }
     },
-    stopSession(id) { stopped.push(id) },
+    async stopSession(id) { stopped.push(id) },
   }
   return { sessions, turns, stopped, codexManager }
 }

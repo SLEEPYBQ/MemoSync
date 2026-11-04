@@ -1,12 +1,18 @@
-import { describe, expect, test } from "bun:test"
+import { describe, expect, spyOn, test } from "bun:test"
 import { EventEmitter } from "node:events"
 import { PassThrough } from "node:stream"
+import { spawn } from "node:child_process"
+import { existsSync, mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { CodexAppServerManager } from "./codex-app-server"
 import { ModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime } from "./model-access/runtime"
+import type { EngineRuntime } from "./model-access/runtime"
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
 
 class FakeCodexProcess extends EventEmitter {
+  pid?: number
   readonly stdin = new PassThrough()
   readonly stdout = new PassThrough()
   readonly stderr = new PassThrough()
@@ -32,10 +38,11 @@ class FakeCodexProcess extends EventEmitter {
     })
   }
 
-  kill() {
+  kill(_signal?: NodeJS.Signals | number) {
     this.killCalls += 1
     this.killed = true
     this.emit("close", 0)
+    return true
   }
 
   writeServerMessage(message: unknown) {
@@ -49,6 +56,15 @@ class FakeCodexProcess extends EventEmitter {
   closeWithCode(code: number) {
     this.emit("close", code)
   }
+}
+
+const explicitRuntime: EngineRuntime = {
+  engine: "codex",
+  executable: { state: "ready" },
+  env: {},
+  args: [],
+  model: "gpt-5.4",
+  isolated: true,
 }
 
 async function collectStream(stream: AsyncIterable<any>) {
@@ -155,6 +171,130 @@ describe("CodexAppServerManager", () => {
 
     await expect(starting).rejects.toThrow("Codex session stopped")
     expect(child.killed).toBe(true)
+  })
+
+  test("replaces an existing session when its cwd changes and resumes the requested thread", async () => {
+    const children: FakeCodexProcess[] = []
+    const spawnCwds: string[] = []
+    const manager = new CodexAppServerManager({
+      spawnProcess: (cwd) => {
+        spawnCwds.push(cwd)
+        const child = new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+          if (message.method === "thread/start" || message.method === "thread/resume") {
+            process.writeServerMessage({
+              id: message.id,
+              result: { thread: { id: message.params.threadId ?? "new-thread" } },
+            })
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+
+    try {
+      await manager.startSession({
+        chatId: "replace-session",
+        cwd: "/tmp/first-project",
+        model: "gpt-5.4",
+        sessionToken: null,
+        runtime: explicitRuntime,
+      })
+
+      const token = await manager.startSession({
+        chatId: "replace-session",
+        cwd: "/tmp/second-project",
+        model: "gpt-5.4",
+        sessionToken: "saved-thread",
+        runtime: explicitRuntime,
+      })
+
+      expect(token).toBe("saved-thread")
+      expect(spawnCwds).toEqual(["/tmp/first-project", "/tmp/second-project"])
+      expect(children).toHaveLength(2)
+      expect(children[0]?.killed).toBe(true)
+      expect(children[1]?.killed).toBe(false)
+      expect(children[1]?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          method: "thread/resume",
+          params: expect.objectContaining({ threadId: "saved-thread" }),
+        }),
+      ]))
+    } finally {
+      await manager.stopAll()
+    }
+  })
+
+  test("an external stop during replacement cleanup prevents the replacement from spawning", async () => {
+    const chatId = "cancel-replacement"
+    const children: FakeCodexProcess[] = []
+    let manager!: CodexAppServerManager
+    let resolveExternalStop!: () => void
+    const externalStopRequested = new Promise<void>((resolve) => { resolveExternalStop = resolve })
+    let externalStopPromise: Promise<void> | undefined
+    const oldChild = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start" || message.method === "thread/resume") {
+        process.writeServerMessage({ id: message.id, result: { thread: { id: "old-thread" } } })
+      }
+    })
+    oldChild.pid = Number.MAX_SAFE_INTEGER
+    oldChild.kill = (signal) => {
+      oldChild.killCalls += 1
+      if (signal === "SIGSTOP") {
+        queueMicrotask(() => {
+          externalStopPromise = manager.stopSession(chatId)
+          resolveExternalStop()
+        })
+        return true
+      }
+      oldChild.killed = true
+      oldChild.emit("close", 0)
+      return true
+    }
+
+    manager = new CodexAppServerManager({
+      spawnProcess: () => {
+        const child = children.length === 0 ? oldChild : new FakeCodexProcess((message, process) => {
+          if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+          if (message.method === "thread/start" || message.method === "thread/resume") {
+            process.writeServerMessage({ id: message.id, result: { thread: { id: "replacement-thread" } } })
+          }
+        })
+        children.push(child)
+        return child as never
+      },
+    })
+    const signalTrap = spyOn(process, "kill").mockImplementation(() => true)
+
+    try {
+      await manager.startSession({
+        chatId,
+        cwd: "/tmp/first-project",
+        model: "gpt-5.4",
+        sessionToken: null,
+        runtime: explicitRuntime,
+      })
+
+      const replacement = manager.startSession({
+        chatId,
+        cwd: "/tmp/second-project",
+        model: "gpt-5.4",
+        sessionToken: "saved-thread",
+        runtime: explicitRuntime,
+      })
+      await externalStopRequested
+
+      await expect(replacement).rejects.toThrow("Codex session stopped")
+      await externalStopPromise
+      expect(children).toHaveLength(1)
+      expect(oldChild.killed).toBe(true)
+      expect(signalTrap).not.toHaveBeenCalled()
+    } finally {
+      signalTrap.mockRestore()
+      await manager.stopAll()
+    }
   })
 
   test("aborting a pending turn-start response kills the ready child", async () => {
@@ -2183,7 +2323,7 @@ describe("CodexAppServerManager", () => {
     })
   })
 
-  test("interrupt sends turn/interrupt for the active turn", async () => {
+  test.each([true, false])("interrupt stops the session even without an acknowledgement (ack=%s)", async (acknowledge) => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
@@ -2197,7 +2337,7 @@ describe("CodexAppServerManager", () => {
           id: message.id,
           result: { turn: { id: "turn-1", status: "inProgress", error: null } },
         })
-      } else if (message.method === "turn/interrupt") {
+      } else if (message.method === "turn/interrupt" && acknowledge) {
         child.writeServerMessage({ id: message.id, result: {} })
       }
     })
@@ -2223,6 +2363,9 @@ describe("CodexAppServerManager", () => {
 
     await turn.interrupt()
 
+    expect(process.killed).toBe(true)
+    expect(manager.hasSession("chat-1")).toBe(false)
+
     const interruptRequest = process.messages.find((message: any) => message.method === "turn/interrupt") as
       | { id: string; method: "turn/interrupt"; params: { threadId: string; turnId: string } }
       | undefined
@@ -2240,10 +2383,10 @@ describe("CodexAppServerManager", () => {
 
   test("ignores old-turn notifications buffered before a replacement turn starts", async () => {
     let turnStartCount = 0
-    const process = new FakeCodexProcess((message, child) => {
+    const onMessage = (message: any, child: FakeCodexProcess) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
-      } else if (message.method === "thread/start") {
+      } else if (message.method === "thread/start" || message.method === "thread/resume") {
         child.writeServerMessage({
           id: message.id,
           result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
@@ -2294,9 +2437,14 @@ describe("CodexAppServerManager", () => {
       } else if (message.method === "turn/interrupt") {
         child.writeServerMessage({ id: message.id, result: {} })
       }
-    })
+    }
 
-    const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
+    const children: FakeCodexProcess[] = []
+    const manager = new CodexAppServerManager({ spawnProcess: () => {
+      const child = new FakeCodexProcess(onMessage)
+      children.push(child)
+      return child
+    } })
     try {
       await manager.startSession({
         chatId: "chat-1",
@@ -2312,6 +2460,11 @@ describe("CodexAppServerManager", () => {
         onToolRequest: async () => ({}),
       })
       await first.interrupt?.()
+
+      await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+      expect(children).toHaveLength(2)
+      expect(children[0]!.killed).toBe(true)
+      expect(children[1]!.messages.some((message: any) => message.method === "thread/resume" && message.params.threadId === "thread-1")).toBe(true)
 
       const second = await manager.startTurn({
         chatId: "chat-1",
@@ -2435,11 +2588,12 @@ describe("CodexAppServerManager", () => {
 
   test("interrupt clears a pending exit-plan wait so a new turn can start immediately", async () => {
     let resolveToolRequest!: (value: unknown) => void
+    const processes: FakeCodexProcess[] = []
 
-    const process = new FakeCodexProcess((message, child) => {
+    const onMessage = (message: any, child: FakeCodexProcess) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
-      } else if (message.method === "thread/start") {
+      } else if (message.method === "thread/start" || message.method === "thread/resume") {
         child.writeServerMessage({
           id: message.id,
           result: { thread: { id: "thread-1" }, model: "gpt-5.4", reasoningEffort: "high" },
@@ -2480,46 +2634,120 @@ describe("CodexAppServerManager", () => {
           })
         }
       }
-    })
+    }
 
     const manager = new CodexAppServerManager({
-      spawnProcess: () => process as never,
+      spawnProcess: () => {
+        const process = new FakeCodexProcess(onMessage)
+        processes.push(process)
+        return process as never
+      },
     })
 
-    await manager.startSession({
-      chatId: "chat-1",
-      cwd: "/tmp/project",
-      model: "gpt-5.4",
-      sessionToken: null,
-    })
+    try {
+      await manager.startSession({
+        chatId: "chat-1",
+        cwd: "/tmp/project",
+        model: "gpt-5.4",
+        sessionToken: null,
+      })
 
-    const turn = await manager.startTurn({
-      chatId: "chat-1",
-      model: "gpt-5.4",
-      content: "make a plan",
-      planMode: true,
-      onToolRequest: async () => await new Promise((resolve) => {
-        resolveToolRequest = resolve
-      }),
-    })
+      const turn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "make a plan",
+        planMode: true,
+        onToolRequest: async () => await new Promise((resolve) => {
+          resolveToolRequest = resolve
+        }),
+      })
 
-    const iterator = turn.stream[Symbol.asyncIterator]()
-    await iterator.next()
-    await iterator.next()
-    await iterator.next()
-    await turn.interrupt()
+      const iterator = turn.stream[Symbol.asyncIterator]()
+      await iterator.next()
+      await iterator.next()
+      await iterator.next()
+      await turn.interrupt()
 
-    const nextTurn = await manager.startTurn({
-      chatId: "chat-1",
-      model: "gpt-5.4",
-      content: "continue",
-      planMode: false,
-      onToolRequest: async () => ({}),
-    })
+      await manager.startSession({ chatId: "chat-1", cwd: "/tmp/project", model: "gpt-5.4", sessionToken: "thread-1" })
+      expect(processes).toHaveLength(2)
+      expect(processes[0]?.killed).toBe(true)
+      expect(processes[1]?.killed).toBe(false)
+      expect(processes[1]?.messages).toEqual(expect.arrayContaining([
+        expect.objectContaining({ method: "thread/resume" }),
+      ]))
 
-    await collectStream(nextTurn.stream)
-    resolveToolRequest({})
+      const nextTurn = await manager.startTurn({
+        chatId: "chat-1",
+        model: "gpt-5.4",
+        content: "continue",
+        planMode: false,
+        onToolRequest: async () => ({}),
+      })
+
+      await collectStream(nextTurn.stream)
+    } finally {
+      resolveToolRequest?.({})
+      await manager.stopAll()
+    }
   })
+
+  test("interrupt kills real descendants even after a protocol acknowledgement", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "memosync-cancel-tree-"))
+    const ready = join(directory, "ready")
+    const late = join(directory, "late")
+    const unrelated = join(directory, "unrelated")
+    const writer = (destination: string, readyFile?: string) => `
+      const fs = require('node:fs');
+      ${readyFile ? `fs.writeFileSync(${JSON.stringify(readyFile)}, 'ready');` : ''}
+      setTimeout(() => fs.writeFileSync(${JSON.stringify(destination)}, 'LATE'), 1500);
+    `
+    const parent = (script: string) => `
+      const {spawn} = require('node:child_process');
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(script)}], {detached: process.platform !== 'win32', stdio: 'ignore'});
+      child.on('exit', () => process.exit());
+    `
+    const root = spawn(process.execPath, ['-e', parent(parent(writer(late, ready)))], { detached: process.platform !== 'win32', stdio: 'ignore' })
+    const sibling = spawn(process.execPath, ['-e', writer(unrelated)], { stdio: 'ignore' })
+    const transport = new FakeCodexProcess((message, child) => {
+      if (message.method === "initialize") child.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") child.writeServerMessage({ id: message.id, result: { thread: { id: "thread-1" } } })
+      if (message.method === "turn/start") child.writeServerMessage({ id: message.id, result: { turn: { id: "turn-1", status: "inProgress" } } })
+      if (message.method === "turn/interrupt") child.writeServerMessage({ id: message.id, result: {} })
+    })
+    transport.pid = root.pid
+    const fakeKill = transport.kill.bind(transport)
+    transport.kill = (signal?: NodeJS.Signals | number) => {
+      const result = root.kill(signal ?? "SIGKILL")
+      if (signal === "SIGKILL" || signal === undefined) fakeKill(signal)
+      return result
+    }
+    Object.defineProperties(transport, {
+      exitCode: { get: () => root.exitCode },
+      signalCode: { get: () => root.signalCode },
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => transport })
+    try {
+      await manager.startSession({
+        chatId: "chat-tree", cwd: directory, model: "gpt-5.4", sessionToken: null,
+        runtime: { engine: "codex", executable: { state: "ready" }, env: {}, args: [], model: "gpt-5.4", isolated: true },
+      })
+      const turn = await manager.startTurn({ chatId: "chat-tree", model: "gpt-5.4", content: "wait", planMode: false, onToolRequest: async () => ({}) })
+      const deadline = Date.now() + 3000
+      while (!existsSync(ready) && Date.now() < deadline) await Bun.sleep(10)
+      expect(existsSync(ready)).toBe(true)
+      expect(existsSync(late)).toBe(false)
+      await turn.interrupt()
+      await Bun.sleep(1800)
+      expect(existsSync(late)).toBe(false)
+      expect(existsSync(unrelated)).toBe(true)
+      expect(manager.hasSession("chat-tree")).toBe(false)
+    } finally {
+      await manager.stopAll()
+      root.kill("SIGKILL")
+      sibling.kill("SIGKILL")
+      rmSync(directory, { recursive: true, force: true })
+    }
+  }, 10000)
 
   test("emits an error result when the app-server exits mid-turn", async () => {
     const process = new FakeCodexProcess((message, child) => {
