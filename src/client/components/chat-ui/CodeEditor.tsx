@@ -26,8 +26,10 @@ interface CodeEditorProps {
   onChange?: (doc: string) => void
   /** Invoked on Mod-S. Return true when handled (always preventDefaults). */
   onSave?: () => void
-  /** Scroll to and select a 1-based line; bump `nonce` to re-trigger. */
-  reveal?: { line: number; nonce: number }
+  /** Called after the editor has mounted its document. */
+  onReady?: () => void
+  /** Scroll to and select 1-based lines; bump `nonce` to re-trigger. */
+  reveal?: { line: number; endLine?: number; nonce: number }
 }
 
 // Palette follows GitHub's light theme; the chrome
@@ -104,7 +106,7 @@ export function matchEditorLanguage(fileName: string): LanguageDescription | nul
   return LanguageDescription.matchFilename(languages, fileName)
 }
 
-export function CodeEditor({ fileName, initialValue, readOnly = false, onChange, onSave, reveal }: CodeEditorProps) {
+export function CodeEditor({ fileName, initialValue, readOnly = false, onChange, onSave, onReady, reveal }: CodeEditorProps) {
   const { resolvedTheme } = useTheme()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -114,6 +116,8 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
   onChangeRef.current = onChange
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
+  const onReadyRef = useRef(onReady)
+  onReadyRef.current = onReady
 
   const compartments = useMemo(
     () => ({ language: new Compartment(), highlight: new Compartment(), readOnly: new Compartment() }),
@@ -167,6 +171,7 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
 
     const view = new EditorView({ state, parent: containerRef.current })
     viewRef.current = view
+    onReadyRef.current?.()
 
     let cancelled = false
     const description = matchEditorLanguage(fileName)
@@ -207,9 +212,11 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
   useEffect(() => {
     const view = viewRef.current
     if (!view || !reveal) return
-    const line = view.state.doc.line(Math.max(1, Math.min(reveal.line, view.state.doc.lines)))
+    const lineNumber = Math.max(1, Math.min(reveal.line, view.state.doc.lines))
+    const line = view.state.doc.line(lineNumber)
+    const end = view.state.doc.line(Math.max(lineNumber, Math.min(reveal.endLine ?? lineNumber, view.state.doc.lines)))
     view.dispatch({
-      selection: { anchor: line.from, head: line.to },
+      selection: { anchor: line.from, head: end.to },
       effects: EditorView.scrollIntoView(line.from, { y: "center" }),
     })
     view.focus()

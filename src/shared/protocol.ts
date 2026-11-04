@@ -1,3 +1,4 @@
+import type { HostActionCommand, HostActionServerEvent } from "./host-actions"
 import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
@@ -95,6 +96,7 @@ export interface TerminalTailResult {
 }
 
 export type ClientCommand =
+  | HostActionCommand
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }
@@ -306,6 +308,7 @@ export type ServerSnapshot =
   | { type: "terminal"; data: TerminalSnapshot | TerminalTailResult | null }
 
 export type ServerEnvelope =
+  | HostActionServerEvent
   | { v: 1; type: "snapshot"; id: string; snapshot: ServerSnapshot }
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage | StandaloneTranscriptExportResult }

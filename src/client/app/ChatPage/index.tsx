@@ -33,6 +33,7 @@ import type { AppState } from "../useAppState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useAppState"
 import { hasPendingMemoryPreview } from "../derived"
 import { ChatInputDock } from "./ChatInputDock"
+import { useHostFileActions } from "./useHostFileActions"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
@@ -539,6 +540,7 @@ export function ChatPage() {
     }
   }, [state.messages, rememberSlashCommands])
   const projectId = state.activeProjectId
+  const hostFileWorkbench = useHostFileActions(state.socket, state.activeChatId, projectId)
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
   const terminalLayout = projectTerminalLayout ?? DEFAULT_PROJECT_TERMINAL_LAYOUT
   const projectRightSidebarVisibility = useRightSidebarStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -1198,7 +1200,7 @@ export function ChatPage() {
     : activeRightPanel === "memory" && projectId && state.activeChatId
       ? memoryPanelContent
       : activeRightPanel === "files" && projectId
-        ? <Suspense fallback={<PanelLoading />}><FilesPanel key={projectId} projectId={projectId} chatId={state.activeChatId ?? undefined} onClose={handleCloseRightSidebar} /></Suspense>
+        ? <Suspense fallback={<PanelLoading />}><FilesPanel key={projectId} projectId={projectId} chatId={state.activeChatId ?? undefined} workbench={hostFileWorkbench} onClose={handleCloseRightSidebar} /></Suspense>
         : gitPanelContentProps
           ? <ChatSidebarContent {...gitPanelContentProps} />
           : null

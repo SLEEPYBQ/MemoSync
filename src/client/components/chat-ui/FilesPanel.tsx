@@ -5,7 +5,7 @@ import { t, useI18n, getLocale } from "../../i18n"
 // in the main area, and a filterable lazy-loaded file tree on the right.
 // Markdown keeps a rendered preview (toggle to source), images/PDF render
 // inline, and text files are editable with ⌘S / save-button persistence.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import Markdown from "react-markdown"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import remarkGfm from "remark-gfm"
@@ -30,10 +30,13 @@ import {
 import { markdownComponentsWithLinks } from "../messages/shared"
 import { CodeEditor } from "./CodeEditor"
 import { FileTypeIcon } from "./FileTypeIcon"
+import type { HostFileWorkbench } from "../../lib/hostFileWorkbench"
+import { HostFileSnapshotTab, HostFileSnapshotView } from "./HostFileSnapshotView"
 
 interface FilesPanelProps {
   projectId: string
   chatId?: string
+  workbench?: HostFileWorkbench | null
   onClose?: () => void
 }
 
@@ -172,6 +175,10 @@ function TreeEditInput({
   )
 }
 
+const EMPTY_HOST_WORKBENCH: ReturnType<HostFileWorkbench["getSnapshot"]> = { tabs: [], activeId: null }
+const emptyHostSnapshot = () => EMPTY_HOST_WORKBENCH
+const noHostSubscription = () => () => {}
+
 const MAX_INLINE_TEXT_BYTES = 2 * 1024 * 1024
 /** Below this panel width the tree and the editor swap instead of sharing. */
 const NARROW_PANEL_PX = 560
@@ -188,7 +195,7 @@ function fetchFailMessage(err: unknown, fallback: string): string {
       : fallback
 }
 
-export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
+export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
   useI18n()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
@@ -213,6 +220,10 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
   const [wideShowTree, setWideShowTree] = useState(true)
   const [copied, setCopied] = useState(false)
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const hostState = useSyncExternalStore(workbench?.subscribe ?? noHostSubscription, workbench?.getSnapshot ?? emptyHostSnapshot, workbench?.getServerSnapshot ?? emptyHostSnapshot)
+  const activeHost = hostState.tabs.find(tab => tab.request.operationId === hostState.activeId)
+  const visiblePath = activeHost?.request.action.path ?? active
+  useEffect(() => { if (activeHost) setNarrowShowTree(false) }, [activeHost])
 
   const updateBuffer = useCallback((path: string, patch: Partial<FileBuffer>) => {
     setBuffers((prev) => {
@@ -312,8 +323,8 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
 
   // Fall back to the tree when the last tab closes in narrow mode.
   useEffect(() => {
-    if (!active) setNarrowShowTree(true)
-  }, [active])
+    if (!active && !hostState.activeId) setNarrowShowTree(true)
+  }, [active, hostState.activeId])
 
   useEffect(() => {
     if (!hasDirty) return
@@ -326,6 +337,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
 
   const openFile = useCallback(
     (path: string) => {
+      workbench?.showEditableFiles()
       setTabs((prev) => (prev.includes(path) ? prev : [...prev, path]))
       setActive(path)
       setNarrowShowTree(false)
@@ -353,7 +365,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
         return next
       })
     },
-    [],
+    [workbench],
   )
 
   // Ensure ancestor dir listings exist for the active file (reveal-in-tree
@@ -979,7 +991,9 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
 
   const mainPane = (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
-      {active && activeBuffer ? (
+      {activeHost && workbench ? (
+        <HostFileSnapshotView key={activeHost.viewInstanceId} tab={activeHost} workbench={workbench} onOpenCurrentFile={() => openFile(activeHost.request.action.path)} />
+      ) : active && activeBuffer ? (
         activeBuffer.status === "loading" ? (
           <div className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" /> {t("common:loading")}</div>
@@ -1036,7 +1050,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
           <p className="text-sm">{t("files:selectAFileToView")}</p>
         </div>
       )}
-      {activeBuffer?.saveError ? (
+      {!activeHost && activeBuffer?.saveError ? (
         <div className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-background/95 px-3 py-1.5 text-xs text-destructive shadow-sm">
           <span className="truncate">{translateUiText(activeBuffer.saveError)}</span>
           <button
@@ -1055,7 +1069,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
   return (
     <div ref={rootRef} className="flex h-full flex-col overflow-hidden">
       {/* Tab strip */}
-      {tabs.length > 0 ? (
+      {tabs.length > 0 || hostState.tabs.length > 0 ? (
         <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-1.5 pt-1.5 pb-1 [scrollbar-width:thin]">
           <DndContext sensors={tabDndSensors} collisionDetection={closestCenter} onDragEnd={handleTabDragEnd}>
             <SortableContext items={tabs} strategy={horizontalListSortingStrategy}>
@@ -1065,9 +1079,10 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
                   <SortableFileTab
                     key={path}
                     path={path}
-                    isActive={active === path}
+                    isActive={!activeHost && active === path}
                     dirty={buffer?.status === "ready" && buffer.current !== buffer.original}
                     onSelect={() => {
+                      workbench?.showEditableFiles()
                       setActive(path)
                       setNarrowShowTree(false)
                     }}
@@ -1077,6 +1092,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               })}
             </SortableContext>
           </DndContext>
+          {workbench ? hostState.tabs.map(tab => <HostFileSnapshotTab key={tab.request.operationId} tab={tab} active={hostState.activeId === tab.request.operationId} workbench={workbench} />) : null}
         </div>
       ) : null}
 
@@ -1084,8 +1100,8 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
       <div className="flex h-9 items-center justify-between gap-2 border-b border-border px-2">
         <div className="flex min-w-0 items-center gap-1 font-mono text-xs text-muted-foreground">
           <span className="shrink-0 truncate">{projectTitle ?? t("common:project")}</span>
-          {active
-            ? active.split("/").map((part, i, parts) => (
+          {visiblePath
+            ? visiblePath.split("/").map((part, i, parts) => (
                 <span key={`${part}-${i}`} className="flex min-w-0 items-center gap-1">
                   <ChevronRight className="size-3 shrink-0" />
                   <span className={cn("truncate", i === parts.length - 1 && "text-foreground")}>{part}</span>
@@ -1094,7 +1110,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
             : null}
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          {activeBuffer?.status === "ready" && activeBuffer.kind === "markdown" ? (
+          {!activeHost && activeBuffer?.status === "ready" && activeBuffer.kind === "markdown" ? (
             <Button
               variant="ghost"
               size="icon"
@@ -1105,7 +1121,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               {activeBuffer.mdMode === "preview" ? <Pencil className="size-3.5" /> : <Eye className="size-3.5" />}
             </Button>
           ) : null}
-          {activeIsDirty || activeBuffer?.saving || activeBuffer?.justSaved ? (
+          {!activeHost && (activeIsDirty || activeBuffer?.saving || activeBuffer?.justSaved) ? (
             <Button
               variant="ghost"
               size="icon"
@@ -1123,7 +1139,7 @@ export function FilesPanel({ projectId, onClose }: FilesPanelProps) {
               )}
             </Button>
           ) : null}
-          {active ? (
+          {!activeHost && active ? (
             <>
               <Button variant="ghost" size="icon" className="h-7 w-7" onClick={copyActivePath} title={t("common:copyPath")}>
                 {copied ? <Check className="size-3.5 text-green-600 dark:text-green-400" /> : <Copy className="size-3.5" />}

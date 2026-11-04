@@ -1,4 +1,9 @@
 {
+  "snapshot": "Snapshot",
+  "readonlySnapshot": "Read-only snapshot",
+  "closeSnapshot": "Close snapshot of {{name}}",
+  "source": "Source",
+  "openCurrentFile": "Open current file",
   "unsavedChangesClose": "Unsaved changes — close",
   "serverUnreachableCheckYourConnectionThenRetry": "server unreachable — check your connection, then retry",
   "failedToListDirectory": "failed to list directory",
