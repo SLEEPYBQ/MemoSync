@@ -927,6 +927,7 @@ export function createWsRouter({
             }
           },
           agent.getStreamingAssistantTexts(),
+          agent.getCommandCatalog?.(topic.chatId),
           agent.getHarnessSnapshot?.(topic.chatId)
         ),
       },
@@ -1632,6 +1633,21 @@ export function createWsRouter({
           await agent.setMemoryDisabled(command.chatId, command.disabled)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastChatAndSidebar(command.chatId)
+          return
+        }
+        case "chat.readCommandCatalog": {
+          const result = await agent.readCommandCatalog(command.chatId, command.refresh ?? false)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.executeCommand": {
+          const result = await agent.executeCommand(command, hostActions?.originatingClient(ws))
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.cancelCommand": {
+          await agent.cancelCommand(command.chatId, command.operationId)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }
         case "chat.send": {

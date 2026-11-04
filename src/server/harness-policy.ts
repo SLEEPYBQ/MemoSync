@@ -54,7 +54,7 @@ export class CapabilityRegistry {
     this.revisions.set(engine, { version, revision })
     const verified = engine === "pi" ? version === "1.5.0"
       : engine === "claude" ? ["2.1.241", "2.1.318"].includes(version ?? "")
-      : engine === "codex" ? version === "0.166.0-alpha.5.1" : version === "1.19.5"
+      : engine === "codex" ? ["0.166.0-alpha.5.1", "0.166.0-alpha.6"].includes(version ?? "") : version === "1.19.5"
     const policies: Array<[string, NativeExecutionPolicy]> = engine === "claude" ? [
       ["Ask for native approvals", { engine, permissionMode: "default" }],
       ["Accept file edits", { engine, permissionMode: "acceptEdits" }],

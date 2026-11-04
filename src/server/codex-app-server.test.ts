@@ -335,7 +335,7 @@ describe("CodexAppServerManager", () => {
         return child as never
       },
     })
-    const args = { chatId: "fatal-chat", cwd: "/tmp/project", model: "test", sessionToken: null }
+    const args = { chatId: "fatal-chat", cwd: "/tmp/project", model: "test", sessionToken: null, runtime: explicitRuntime }
     try {
       await manager.startSession(args)
       const pending = manager.startTurn({
@@ -743,7 +743,7 @@ describe("CodexAppServerManager", () => {
         if (message.method === "config/read") child.writeServerMessage({ id: message.id, ...response })
       })
       const manager = new CodexAppServerManager({ spawnProcess: () => process as never })
-      await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", sessionToken: null, disableExternalTools: true })).rejects.toThrow("Cannot establish read-only memory branch")
+      await expect(manager.startSession({ chatId: "memory", cwd: "/tmp/project", model: "test", runtime: explicitRuntime, sessionToken: null, disableExternalTools: true })).rejects.toThrow("Cannot establish read-only memory branch")
       expect(process.messages.some((message: any) => message.method.startsWith("thread/"))).toBe(false)
       expect(process.killed).toBe(true)
     }

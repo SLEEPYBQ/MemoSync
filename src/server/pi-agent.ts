@@ -1,4 +1,7 @@
+import type { PrepareNativeContext } from "./context-compiler"
 import type { PiParentLaunch } from './memory/parent-launch'
+import { createPiCommandRuntime } from './native-command-drivers'
+import type { NativeCommandRuntime } from './command-registry'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { getModelAccessService } from "./model-access/service"
@@ -67,14 +70,18 @@ import { toPiToolDefinitions } from "./memory/pi-adapter"
  * every boot by users who only ever pick Claude. Both call sites are async.
  */
 let piSdkPromise: Promise<typeof import("@earendil-works/pi-coding-agent")> | null = null
+let piSdkVersion = '1.5.0' // Exact bundled dependency; external SDK provenance is resolved below.
 async function loadPiSdk(): Promise<typeof import("@earendil-works/pi-coding-agent")> {
-  if (process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1")
+  if (process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1") {
+    piSdkVersion = '1.5.0'
     return (piSdkPromise ??= import("@earendil-works/pi-coding-agent"))
+  }
   const service = getModelAccessService()
   const env = executableEnvironment(service?.env ?? process.env)
   const executable = await (service?.resolveExecutable ?? resolveEngineExecutable)("pi", service?.setup("pi"), env)
   if (executable.state !== "ready" || !executable.path) throw new Error(executable.detail ?? "Install Pi before using this engine")
   const installation = await readPiInstallation(executable.path, env)
+  piSdkVersion = installation.version
   return import(pathToFileURL(installation.entry).href)
 }
 
@@ -420,6 +427,7 @@ export const MISSING_PI_CONNECTION_MESSAGE =
   "Pi needs a Model Registry connection. Add an API key under Settings → Providers → Model Registry (OpenRouter, OpenAI, or a custom OpenAI-compatible URL), or export OPENROUTER_API_KEY."
 
 export interface StartPiTurnArgs {
+  prepareContext?: PrepareNativeContext
   chatId: string
   /** Cancels SDK initialization as well as the first prompt dispatch. */
   signal?: AbortSignal
@@ -459,6 +467,8 @@ export interface StartPiTurnArgs {
 
 interface PiChatSession {
   hostEngineInstanceId: string
+  commandRuntime?: NativeCommandRuntime
+  sdkVersion: string
   session: AgentSession
   modelRuntime: ModelRuntime
   resourceLoader: DefaultResourceLoader
@@ -520,6 +530,12 @@ export class PiAgentManager {
 
   getResourceCounts() {
     return { piSessions: this.sessions.size }
+  }
+
+  getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
+    const chat = this.sessions.get(chatId)
+    if (!chat) return undefined
+    return chat.commandRuntime ??= createPiCommandRuntime(chat.session, this.agentDir, () => this.sessions.get(chatId) === chat && !this.disposed, chat.sdkVersion)
   }
 
   closeChat(chatId: string) {
@@ -632,6 +648,7 @@ export class PiAgentManager {
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
     // under MemoSync's data root, and no discovery of the user's ~/.pi setup.
     const { ModelRuntime, SettingsManager, DefaultResourceLoader, SessionManager, createAgentSession, createBashToolDefinition } = await this.loadSdk()
+    const sdkVersion = this.loadSdk === loadPiSdk ? piSdkVersion : 'unknown'
     args.signal?.throwIfAborted()
     const modelRuntime = await ModelRuntime.create({ credentials: emptyCredentialStore, modelsPath: null })
     modelRuntime.registerProvider(PI_REGISTRY_PROVIDER, { name: "MemoSync" })
@@ -704,6 +721,7 @@ export class PiAgentManager {
 
     const chatSession: PiChatSession = {
       session,
+      sdkVersion,
       modelRuntime,
       resourceLoader,
       cwd: args.cwd,
@@ -825,6 +843,13 @@ export class PiAgentManager {
     await args.onExecutionPolicyApplied?.(session.sessionFile ?? undefined)
     args.signal?.throwIfAborted()
     if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
+    const native = this.getCommandRuntime(args.chatId)!
+    const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+    if (prepared?.text) {
+      await session.sendCustomMessage({ customType: "memosync-context", content: prepared.text, display: false }, { triggerTurn: false })
+      args.signal?.throwIfAborted()
+      prepared.accepted()
+    }
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

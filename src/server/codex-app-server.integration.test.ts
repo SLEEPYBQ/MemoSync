@@ -14,9 +14,15 @@ nativeTest("native Codex catalog overrides cannot erase injected developer memor
   const home = join(root, "home"), codexHome = join(root, "codex"), cwd = join(root, "project")
   for (const dir of [home, codexHome, cwd, join(root, "tmp")]) mkdirSync(dir)
   const requests: any[] = []
+  let compactions = 0
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
     if (request.method !== "POST") return Response.json({ data: [] })
-    requests.push(await request.json())
+    const body = await request.json()
+    if (new URL(request.url).pathname.endsWith('/compact')) {
+      compactions++
+      return Response.json({ id: 'cmp_local', object: 'response.compaction', output: [{ type: 'compaction', id: 'cmp_item', encrypted_content: 'synthetic-loopback-summary' }], usage: { input_tokens: 30, output_tokens: 5, total_tokens: 35 } })
+    }
+    requests.push(body)
     const index = requests.length
     const item = { type: "message", id: `msg_local_${index}`, role: "assistant", status: "completed",
       content: [{ type: "output_text", text: `LOCAL_REPLY_${index}`, annotations: [] }] }
@@ -55,18 +61,22 @@ nativeTest("native Codex catalog overrides cannot erase injected developer memor
     '[model_providers.offline]', 'name = "Offline local fixture"', `base_url = "http://127.0.0.1:${server.port}/v1"`,
     'wire_api = "responses"', 'env_key = "OFFLINE_SYNTHETIC_KEY"', 'requires_openai_auth = false', 'supports_websockets = false',
   ].join("\n"))
-  const runtime: EngineRuntime = { engine: "codex", executable: { state: "ready", path: binary! }, args: ["app-server"], model, isolated: true,
+  const runtime: EngineRuntime = { engine: "codex", executable: { state: "ready", path: binary!, version: new TextDecoder().decode(Bun.spawnSync([binary!, "--version"], { env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: codexHome } }).stdout).trim().replace(/^codex-cli /, "") }, args: ["app-server"], model, isolated: true,
     env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: codexHome, TMPDIR: join(root, "tmp"),
       XDG_CONFIG_HOME: join(root, "config"), XDG_DATA_HOME: join(root, "data"), XDG_CACHE_HOME: join(root, "cache"),
       OFFLINE_SYNTHETIC_KEY: "synthetic-local-only" } }
+  const skillDir = join(cwd, '.agents', 'skills', 'local-context-fixture')
+  mkdirSync(skillDir, { recursive: true })
+  const skillPath = join(skillDir, 'SKILL.md')
+  writeFileSync(skillPath, '---\nname: local-context-fixture\ndescription: Synthetic local skill for an offline protocol probe\n---\nSYNTHETIC_SKILL_INSTRUCTION\n')
   const manager = new CodexAppServerManager()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 20_000)
   try {
-    const token = await manager.startSession({ chatId: "native-context", cwd, model, runtime, sessionToken: null, sandbox: "read-only", signal: controller.signal })
+    const token = await manager.startSession({ chatId: "native-context", cwd, model, runtime, sessionToken: null, executionPolicy: { engine: "codex", sandbox: "read-only", approvalPolicy: "on-request", approvalsReviewer: "user" }, signal: controller.signal })
     for (const [index, developerInstructions] of ["MEMORY_A", "MEMORY_B"].entries()) {
       const turn = await manager.startTurn({ chatId: "native-context", model, content: `USER_${index}`, developerInstructions,
-        effort: "low", planMode: index === 1, onToolRequest: async () => ({}), signal: controller.signal })
+        executionPolicy: { engine: "codex", sandbox: "read-only", approvalPolicy: "on-request", approvalsReviewer: "user" }, effort: "low", planMode: index === 1, onToolRequest: async () => ({}), signal: controller.signal })
       const events: any[] = []
       const cancel = () => { void turn.interrupt() }
       controller.signal.addEventListener("abort", cancel, { once: true })
@@ -89,6 +99,26 @@ nativeTest("native Codex catalog overrides cannot erase injected developer memor
     expect(JSON.stringify(b.input)).toContain("LOCAL_REPLY_1")
     expect(b.instructions).toEqual(a.instructions)
     expect(b.tools).toEqual(a.tools)
+
+    // Prove the installed binary's public compact boundary independently of injection/history.
+    manager.setCommandContextRestorer((chatId, text, signal) => manager.appendDeveloperContext(chatId, text, signal))
+    const native = manager.getCommandRuntime('native-context')!
+    expect(native.version).toContain('0.166.0-alpha.')
+    expect(native.compact).toBeDefined()
+    await native.compact!(controller.signal)
+    // This catalog may choose local summarization (/responses) or remote compaction (/responses/compact).
+    expect(requests.length > 2 || compactions > 0).toBe(true)
+    expect(await native.restore!('AFTER_COMPACT_CONTEXT', controller.signal)).toEqual({ delivery: 'native-accepted' })
+    const discovered = await native.discover()
+    const skill = discovered.commands.items.find(c => c.name === 'skill:local-context-fixture')
+    expect(skill?.nativeSkill?.name).toBe('local-context-fixture')
+    expect(skill?.nativeSkill?.path).toContain('/SKILL.md')
+    expect(discovered.skills.items.find(s => s.name === 'local-context-fixture')?.loaded).toBeNull()
+    const after = await manager.startTurn({ chatId: 'native-context', model, content: 'AFTER_COMPACT_USER', nativeSkill: skill!.nativeSkill,
+      effort: 'low', planMode: false, onToolRequest: async () => ({}), signal: controller.signal })
+    for await (const _ of after.stream) {}
+    expect(JSON.stringify(requests.at(-1).input)).toContain('AFTER_COMPACT_CONTEXT')
+    expect(JSON.stringify(requests.at(-1).input)).toContain('SYNTHETIC_SKILL_INSTRUCTION')
   } finally {
     clearTimeout(timer)
     await manager.stopAll()

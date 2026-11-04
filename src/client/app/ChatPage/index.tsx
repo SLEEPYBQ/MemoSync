@@ -7,7 +7,7 @@ import type { ChatInputHandle } from "../../components/chat-ui/ChatInput"
 import { ChatNavbar } from "../../components/chat-ui/ChatNavbar"
 import { BrowserPanel } from "../../components/chat-ui/BrowserPanel"
 import { PanelLoading } from "../../components/ui/panel-loading"
-import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
+import { useRuntimeCommands } from "./useRuntimeCommands"
 import { SessionMemoriesPanel } from "../../components/memory-chat/SessionMemoriesPanel"
 import { TurnInterruptContext, type TurnInterruptApi } from "../../components/messages/shared"
 import { useAppDialog } from "../../components/ui/app-dialog"
@@ -519,27 +519,8 @@ export function ChatPage() {
     setDismissedStopBannerId(lastInterruptedId)
   }, [lastInterruptedId])
 
-  // The engine reports its slash commands/skills in system_init — the newest
-  // one wins (models/settings can change between session boots). Powers the
-  // composer's "/" autocomplete; a fresh chat falls back to the per-provider
-  // cache inside ChatInput until its first turn boots.
-  const rememberSlashCommands = useSlashCommandsStore((s) => s.remember)
-  const availableSlashCommands = useMemo(() => {
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      const message = state.messages[i]
-      if (message.kind === "system_init" && message.slashCommands.length) return message.slashCommands
-    }
-    return []
-  }, [state.messages])
-  useEffect(() => {
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      const message = state.messages[i]
-      if (message.kind === "system_init" && message.slashCommands.length) {
-        rememberSlashCommands(message.provider, message.slashCommands)
-        return
-      }
-    }
-  }, [state.messages, rememberSlashCommands])
+  const commands = useRuntimeCommands(state.socket, state.activeChatId, state.runtime?.provider ?? null,
+    state.connectionStatus === "connected", state.runtime?.commandCatalog)
   const projectId = state.activeProjectId
   const hostFileWorkbench = useHostFileActions(state.socket, state.activeChatId, projectId)
   const projectTerminalLayout = useTerminalLayoutStore((store) => (projectId ? store.projects[projectId] : undefined))
@@ -1090,7 +1071,13 @@ export function ChatPage() {
         activeProvider={state.runtime?.provider ?? null}
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}
-        slashCommands={availableSlashCommands}
+        slashCommands={[]}
+        commandCatalog={commands.catalog}
+        commandBusy={commands.busy}
+        commandError={commands.error}
+        onReadCommands={commands.refresh}
+        onExecuteCommand={commands.execute}
+        onCancelCommand={commands.cancel}
         harness={state.runtime?.harness}
         onReadHarness={state.activeChatId ? engine => state.socket.command<ChatHarnessSnapshot>({ type: "chat.readHarness", chatId: state.activeChatId!, engine }) : undefined}
         onExecutionPolicyChange={state.activeChatId ? (policy, expectedRevision) => state.socket.command({

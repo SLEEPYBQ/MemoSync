@@ -62,7 +62,8 @@ import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { HostActionService } from "./host-actions"
+import { HostActionService, hostActionToolSpecs } from "./host-actions"
+import { toCodexDynamicTools } from "./memory/codex-adapter"
 import { realpathSync } from "node:fs"
 
 const MAX_UPLOAD_FILES = 50
@@ -463,6 +464,7 @@ async function startLockedMemoSyncServer(
   const activeAgent = new AgentCoordinator({
     harnessPolicies,
     hostActions,
+    stableToolSchemas: () => toCodexDynamicTools(hostActionToolSpecs()).map(tool => ({ name: tool.name, description: tool.description, schema: tool.inputSchema })),
     store,
     memory,
     memoryBranches: true,

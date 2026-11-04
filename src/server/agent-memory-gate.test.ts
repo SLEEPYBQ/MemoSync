@@ -194,7 +194,11 @@ interface Harness {
   cleanup: () => void
 }
 
-type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string }
+type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & {
+  promptSeq?: number
+  promptId?: string
+  prepareContext?: (target: import("./context-compiler").NativeContextTarget) => import("./context-compiler").PreparedNativeContext
+}
 
 function createHarness(
   opts: {
@@ -335,6 +339,9 @@ function createHarness(
           prompts.push(text)
           promptContexts.push(context)
           await opts.onSendPrompt?.(text, context)
+          // This synthetic Query accepts successfully queued inputs. Production
+          // invokes the same receipt only after its native input replay ACK.
+          context?.prepareContext?.({ nativeSession: `fixture-session-${attempt}`, nativeInstance: `fixture-query-${attempt}`, version: "synthetic" }).accepted()
         },
       } as never
     },
@@ -1411,8 +1418,8 @@ describe("memory preview gate (coordinator)", () => {
 
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.promptContexts).toEqual([
-        { turn: 1, engine: "claude", promptSeq: 1, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }) },
-        { turn: 2, engine: "claude", promptSeq: 2, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }) },
+        { turn: 1, engine: "claude", promptSeq: 1, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }), prepareContext: expect.any(Function) },
+        { turn: 2, engine: "claude", promptSeq: 2, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }), prepareContext: expect.any(Function) },
       ])
     } finally {
       h.cleanup()

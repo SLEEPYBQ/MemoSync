@@ -25,7 +25,9 @@ import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
-import { useSlashCommandsStore } from "../../stores/slashCommandsStore"
+import type { ChatCommandCatalog, RuntimeCommand } from "../../../shared/runtime-commands"
+import { RuntimeCommandControl } from "./RuntimeCommandControl"
+import { resolveRuntimeSlash, runtimeCommandToken } from "../../lib/runtimeCommands"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { runRetainedDraftSubmission } from "./chatDraftSubmission"
@@ -157,6 +159,12 @@ interface Props {
   previousPrompt?: string | null
   /** Slash commands/skills the engine reported (system_init) — powers the "/" autocomplete. */
   slashCommands?: string[]
+  commandCatalog?: ChatCommandCatalog | null
+  commandBusy?: boolean
+  commandError?: string | null
+  onReadCommands?: () => Promise<unknown>
+  onExecuteCommand?: (command: RuntimeCommand, args?: string) => Promise<unknown>
+  onCancelCommand?: () => Promise<unknown>
   harness?: ChatHarnessSnapshot
   onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
   onReadHarness?: (engine: AgentProvider) => Promise<ChatHarnessSnapshot>
@@ -242,6 +250,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   contextWindowSnapshot = null,
   previousPrompt = null,
   slashCommands = [],
+  commandCatalog,
+  commandBusy,
+  commandError,
+  onReadCommands,
+  onExecuteCommand,
+  onCancelCommand,
   harness,
   onExecutionPolicyChange,
   onReadHarness,
@@ -376,7 +390,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const hasTextToSend = value.trim().length > 0
-  const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
+  const commandInProgress = commandCatalog?.operation?.status === "running" || commandCatalog?.operation?.status === "busy"
+  const canSubmit = !commandInProgress && (value.trim().length > 0 || uploadedAttachments.length > 0)
   const orderedAttachments = [...attachments].sort((left, right) => {
     if (left.kind === right.kind) return 0
     return left.kind === "image" ? -1 : 1
@@ -685,7 +700,17 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // Keep both local and persisted drafts intact until the *real* send is
     // accepted, so reload/back/send failure cannot erase user input.
     await runRetainedDraftSubmission({
-      submit: () => onSubmit(nextValue, submitOptions),
+      submit: async () => {
+        if (onExecuteCommand) {
+          const invocation = resolveRuntimeSlash(nextValue, matchingCatalog)
+          if (invocation) {
+            if (attachmentsForSubmit.length) throw new Error(t("commands:noAttachments"))
+            await onExecuteCommand(invocation.command, invocation.args)
+            return
+          }
+        }
+        await onSubmit(nextValue, submitOptions)
+      },
       onAccepted: () => {
         if (submissionRef.current === submission && !ownsDraft()) return
         if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
@@ -697,16 +722,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         previousAttachments.forEach(cleanupAttachmentPreview)
       },
       onRejected: (error) => {
+        setUploadError(error instanceof Error ? error.message : t("commands:executeFailed"))
         console.error("[ChatInput] Submit failed:", error)
       },
     })
     if (submissionRef.current === submission) submissionRef.current = null
   }
 
-  // Fresh chats have no system_init yet — fall back to the last list this
-  // provider reported anywhere (persisted per provider).
-  const cachedSlashCommands = useSlashCommandsStore((state) => state.byProvider[selectedProvider])
-  const effectiveSlashCommands = slashCommands.length ? slashCommands : (cachedSlashCommands ?? [])
+  const matchingCatalog = commandCatalog?.runtime?.engine === selectedProvider ? commandCatalog : null
+  // A successful empty discovery is authoritative. Only legacy callers without
+  // a registry prop use the supplied list; no provider-wide cache is consulted.
+  const effectiveSlashCommands = commandCatalog === undefined ? slashCommands
+    : matchingCatalog?.commands.status === "ready" ? matchingCatalog.commands.items.map(command => runtimeCommandToken(command, matchingCatalog.commands.items)) : []
   const slashMatch = slashDismissed ? null : matchSlashCommands(value, effectiveSlashCommands)
   const activeSlashIndex = slashMatch ? Math.min(slashIndex, slashMatch.matches.length - 1) : 0
   const slashListRef = useRef<HTMLDivElement>(null)
@@ -956,7 +983,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                       i === activeSlashIndex ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
                     )}
                   >
-                    <span className="font-mono">/{command}</span>
+                    <span className="shrink-0">/{command}</span>
+                    <span className="truncate text-xs text-muted-foreground">{matchingCatalog?.commands.items.find(item => runtimeCommandToken(item, matchingCatalog.commands.items) === command)?.description}</span>
                   </button>
                 ))}
               </div>
@@ -1006,6 +1034,21 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </label>
               {/* Stays outside the scrolling chips: the memory state must always be in view. */}
               <MemoryToggle chatId={chatId} />
+              {chatId && onReadCommands && onExecuteCommand && onCancelCommand ? <RuntimeCommandControl
+                key={`${chatId}:${selectedProvider}`}
+                chatId={chatId}
+                catalog={matchingCatalog}
+                busy={commandBusy}
+                error={commandError}
+                disabled={disabled}
+                onRefresh={onReadCommands}
+                onExecute={onExecuteCommand}
+                onCancel={onCancelCommand}
+                onInsert={name => {
+                  setValue(current => `/${name} ${/^\/\S*$/.test(current) ? "" : current}`)
+                  textareaRef.current?.focus()
+                }}
+              /> : null}
               <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <ChatPreferenceControls
                   className="ml-auto w-max md:justify-end"

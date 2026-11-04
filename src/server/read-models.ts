@@ -247,6 +247,7 @@ export function deriveChatSnapshot(
   chatId: string,
   getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history" | "memoryRecordMessages">,
   streamingTexts?: Map<string, string>,
+  commandCatalog?: ChatRuntime["commandCatalog"],
   harness?: import("../shared/harness-capabilities").ChatHarnessSnapshot
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
@@ -268,6 +269,7 @@ export function deriveChatSnapshot(
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
     streamingText: streamingTexts?.get(chat.id) ?? null,
+    ...(commandCatalog ? { commandCatalog } : {}),
   }
 
   const transcript = getMessages(chat.id)
