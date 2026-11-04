@@ -47,13 +47,19 @@ export function translateOpencodeTool(rawName: string, args: Record<string, unkn
   }
 }
 
+/** Stable across turns; selected memories belong to the current prompt parts. */
+export const OPENCODE_SYSTEM_PROMPT = "Use the memory context supplied with the current user message for that turn. Earlier memory blocks are historical snapshots and may have been updated."
+
 export interface StartOpencodeTurnArgs {
   chatId: string
   cwd: string
   content: string
   model: string
   runtime?: EngineRuntime
+  /** Stable host instructions, also retained by memory-analysis forks. */
   systemPrompt?: string
+  /** Current memory selection/reminders; appended to native conversation history. */
+  memoryContext?: string
   sessionToken?: string | null
   forkSession?: boolean
   signal?: AbortSignal
@@ -198,7 +204,8 @@ export class OpencodeAgentManager {
     if (this.disposed || chat.closed) throw new Error('OpenCode start cancelled')
     if (chat.turn || chat.initializing) throw new Error('OpenCode chat is already running')
     chat.mcp?.setDispatch(args.memoryDispatch)
-    args.onLaunch?.({ provider: 'opencode', options: { model: runtime.model, runtime, systemPrompt: args.systemPrompt, memorySpecs: args.memorySpecs } })
+    const systemPrompt = args.systemPrompt ?? OPENCODE_SYSTEM_PROMPT
+    args.onLaunch?.({ provider: 'opencode', options: { model: runtime.model, runtime, systemPrompt, memorySpecs: args.memorySpecs } })
     let initialized!: () => void
     const initialization = { controller: new AbortController(), done: new Promise<void>(resolve => { initialized = resolve }) }
     chat.initializing = initialization
@@ -430,7 +437,10 @@ export class OpencodeAgentManager {
       return slash > 0 ? { providerID: runtime.model.slice(0, slash), modelID: runtime.model.slice(slash + 1) } : undefined
     })()
     if (args.isPolicyCurrent?.() === false) { await abort(); throw new Error('Stale execution policy turn') }
-    if (!cancelled) void chat.client.session.promptAsync({ sessionID, model, system: args.systemPrompt, agent: args.agent, parts: [{ type: 'text', text: args.content }] }, { signal: AbortSignal.timeout(10_000) })
+    const promptParts: Array<{ type: 'text'; text: string }> = []
+    if (args.memoryContext) promptParts.push({ type: 'text', text: args.memoryContext })
+    promptParts.push({ type: 'text', text: args.content })
+    if (!cancelled) void chat.client.session.promptAsync({ sessionID, model, system: systemPrompt, agent: args.agent, parts: promptParts }, { signal: AbortSignal.timeout(10_000) })
       .then(response => { if (response.error) void abort('OpenCode prompt request failed') })
       .catch(() => { void abort('OpenCode prompt request failed') })
     return { provider: 'opencode', stream: queue, interrupt: abort, close: () => { if (!finished) void abort() } }

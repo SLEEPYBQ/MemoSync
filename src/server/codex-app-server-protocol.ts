@@ -120,6 +120,16 @@ export interface TurnStartParams {
   outputSchema?: Record<string, unknown> | null
 }
 
+/** Experimental native history injection; only valid while the thread is idle. */
+export interface ThreadInjectItemsParams {
+  threadId: string
+  items: Array<{
+    type: "message"
+    role: "developer"
+    content: Array<{ type: "input_text"; text: string }>
+  }>
+}
+
 export interface TurnInterruptParams {
   threadId: string
   turnId: string

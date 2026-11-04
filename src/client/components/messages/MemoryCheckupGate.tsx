@@ -1,7 +1,7 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
-// Step 2 (redesign 2026-08-07 §3): suggested changes to saved memories. Three
+// Saved-memory review: three
 // parallel library checks (conflicts / redundancy / staleness) surface here,
 // grouped by type with empty groups hidden. Promotion rows are legacy-only;
 // old transcripts keep a passive receipt but no longer expose a scope-changing
@@ -33,8 +33,6 @@ interface Props {
   onRespond: (checkupId: string, decision: "handled" | "skipped") => Promise<void> | void
   canReopen?: boolean
   onReopen?: () => Promise<void> | void
-  /** Position in this turn's flow — 3 when a Transfer card sits before us, 2 otherwise. */
-  stepNumber?: number
   surface?: MemoryControlSurface
   /** Session-start Board: every resurfaced row must be handled before leaving. */
   requireAllRows?: boolean
@@ -77,7 +75,6 @@ export function MemoryCheckupGate({
   onRespond,
   canReopen = false,
   onReopen,
-  stepNumber = 2,
   surface = "chat_gate",
   requireAllRows = false,
   resolvedRows,
@@ -93,7 +90,7 @@ export function MemoryCheckupGate({
   const [reopening, setReopening] = useState(false)
   const effectiveResolvedRows = resolvedRows ?? localResolvedRows
 
-  // Reopening Step 1 or Step 2 invalidates the previous checkup result. Clear
+  // Reopening candidates or saved-memory review invalidates the result. Clear
   // local row state as soon as the reset marker folds into this component so
   // newly generated suggestions can never inherit an old "handled" status.
   useEffect(() => {
@@ -104,20 +101,20 @@ export function MemoryCheckupGate({
     if (!suggestions.length && !failedKinds.length) return null
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        {t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories")}{suggestions.length} {t("memory:omittedFromThisExport")}{failedKinds.length ? t("memory:incompleteChecks", { v0: failedKindsLabel(failedKinds) }) : ""}
+        {t("memory:reviewSuggestedChangesToExistingMemories")}{suggestions.length} {t("memory:omittedFromThisExport")}{failedKinds.length ? t("memory:incompleteChecks", { v0: failedKindsLabel(failedKinds) }) : ""}
       </div>
     )
   }
 
   // Skeleton: queries in flight. The wireframe rows pulse; the words cycle.
   if (message.pending && message.suggestions === undefined) {
-    return <CheckupSkeleton stepNumber={stepNumber} />
+    return <CheckupSkeleton />
   }
 
   if (message.waiting) {
     return (
       <div className="memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
-        <span className="text-sm font-semibold text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
         <span className="ml-1">{t("memory:waitingForTheEarlierStepsThisReviewWillRegenerateWhen")}</span>
       </div>
     )
@@ -128,7 +125,7 @@ export function MemoryCheckupGate({
       <div className="flex items-start gap-2 rounded-lg border border-info/25 bg-info/8 px-3 py-2 text-sm text-info-foreground">
         <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
         <div>
-          <span className="font-medium">{t("memory:stepNumber", { step: stepNumber })} {t("memory:checkupIncomplete2")}</span>
+          <span className="font-medium">{t("memory:checkupIncomplete2")}</span>
           <span className="ml-1">{failedKindsLabel(failedKinds)} {t("memory:couldNotFinishNoClearVerdictWasRecordedTheseChecks")}</span>
         </div>
       </div>
@@ -139,7 +136,7 @@ export function MemoryCheckupGate({
     return (
       <div className="flex flex-wrap items-center gap-2 memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-3 text-sm leading-relaxed text-muted-foreground">
         <CheckCheck className="h-4 w-4 shrink-0 text-success-foreground dark:text-success-foreground" />
-        <span className="text-sm font-semibold text-foreground">{t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
+        <span className="text-sm font-semibold text-foreground">{t("memory:reviewSuggestedChangesToExistingMemories2")}</span>
         <span className="basis-full @lg:basis-auto">{t("memory:nothingNeedsAttention2")}</span>
       </div>
     )
@@ -149,7 +146,7 @@ export function MemoryCheckupGate({
     const mayReopen = canReopen && onReopen && (message.decision === "handled" || message.decision === "skipped")
     return (
       <MemoryReviewStepSummary
-        title={t("memory:stepValue0ReviewSuggestedChangesToExistingMemories", { v0: stepNumber })}
+        title={t("memory:reviewSuggestedChangesToExistingMemories3")}
         outcome={
           <>
             ✓ {t("memory:suggestionReceipt", { count: suggestions.length, decision: DECISION_LABELS[message.decision] })}
@@ -186,7 +183,7 @@ export function MemoryCheckupGate({
   return (
     <div className={MEMORY_CARD} data-memory-control-surface={surface}>
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })}</span>
+        <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground"><ListChecks className="h-4 w-4" aria-hidden /></span>
         <span className="text-sm font-semibold text-foreground">{t("memory:reviewSuggestedChangesToExistingMemories3")}</span>
         <HoverCard>
           <HoverCardTrigger asChild>
@@ -269,7 +266,7 @@ export function MemoryCheckupGate({
   )
 }
 
-function CheckupSkeleton({ stepNumber = 2 }: { stepNumber?: number }) {
+function CheckupSkeleton() {
   useI18n()
   const [wordIndex, setWordIndex] = useState(0)
   useEffect(() => {
@@ -279,7 +276,7 @@ function CheckupSkeleton({ stepNumber = 2 }: { stepNumber?: number }) {
   return (
     <div className={MEMORY_CARD}>
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-4 w-4" /> {t("memory:stepNumber", { step: stepNumber })} {t("memory:reviewingSavedMemories")}</span>
+        <span className="inline-flex items-center gap-1.5 font-medium"><ListChecks className="h-4 w-4" /> {t("memory:reviewingSavedMemories")}</span>
       </div>
       <div className="mt-3">
         <MemoryReviewSkeleton

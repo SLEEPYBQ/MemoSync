@@ -41,6 +41,7 @@ import {
   type ServerNotification,
   type ServerRequest,
   type ThreadItem,
+  type ThreadInjectItemsParams,
   type ThreadResumeParams,
   type ThreadResumeResponse,
   type ThreadForkParams,
@@ -139,6 +140,7 @@ interface SessionContext {
   externalToolsDisabled?: boolean
   toolsDisabled?: boolean
   executionPolicyKey?: string
+  developerInjectionUnsupported?: boolean
 }
 
 export interface StartCodexSessionArgs {
@@ -178,7 +180,7 @@ export interface StartCodexTurnArgs {
   executionPolicy?: StartCodexSessionArgs["executionPolicy"]
   isPolicyCurrent?: () => boolean
   onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
-  /** Memory block injected as Codex developer_instructions for this turn. */
+  /** Append host/memory context as a native developer item before starting this turn. */
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
   outputSchema?: Record<string, unknown>
@@ -254,6 +256,21 @@ function parseJsonLine(line: string): unknown | null {
   } catch {
     return null
   }
+}
+
+class CodexRpcError extends Error {
+  constructor(method: string, error: NonNullable<JsonRpcResponse["error"]>) {
+    super(`${method} failed: ${error.message ?? "Unknown error"}`)
+    this.code = error.code
+  }
+  readonly code?: number
+}
+
+function isUnsupportedDeveloperInjection(error: unknown): boolean {
+  // Only an explicit missing-method response permits the compatibility path.
+  // Busy threads, invalid items and transport failures must never start a turn.
+  return error instanceof CodexRpcError && (error.code === -32601
+    || /unknown (?:method|variant).*thread\/inject_items|method.*thread\/inject_items.*not found/i.test(error.message))
 }
 
 function isRecoverableResumeError(error: unknown): boolean {
@@ -1090,12 +1107,39 @@ export class CodexAppServerManager {
         stopForAbort()
         args.signal.throwIfAborted()
       }
+      // pendingTurn reserves the idle boundary across both RPCs. A second
+      // startTurn cannot inject into this thread while either request is pending.
+      let content = args.content
+      if (args.developerInstructions) {
+        if (!context.developerInjectionUnsupported && !codexProtocolCompat09x()) {
+          try {
+            await this.sendRequest(context, "thread/inject_items", {
+              threadId: context.sessionToken ?? "",
+              items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: args.developerInstructions }] }],
+            } satisfies ThreadInjectItemsParams)
+          } catch (error) {
+            if (!isUnsupportedDeveloperInjection(error)) throw error
+            context.developerInjectionUnsupported = true
+          }
+        }
+        if (context.developerInjectionUnsupported || codexProtocolCompat09x()) {
+          // 0.92–0.94 and servers explicitly missing inject_items retain native
+          // instructions/history. User text is a visible priority downgrade;
+          // collaboration settings are not a reliable developer channel.
+          content = `${args.developerInstructions}\n\n${args.content}`
+          queue.push({ type: "transcript", entry: timestamped({
+            kind: "status",
+            status: "This Codex version does not support native developer injection. Memory context is included in user input for this turn without developer priority. Upgrade Codex to enable developer injection.",
+          }) })
+        }
+      }
+      args.signal?.throwIfAborted()
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
         input: [
           {
             type: "text",
-            text: args.content,
+            text: content,
             text_elements: [],
           },
         ],
@@ -1110,7 +1154,8 @@ export class CodexAppServerManager {
           settings: {
             model: resolveCodexModel(args.model, context.subprocessEnv),
             reasoning_effort: null,
-            developer_instructions: args.developerInstructions ?? null,
+            // Preserve native mode instructions, including model-catalog overrides.
+            developer_instructions: null,
           },
         },
       } satisfies TurnStartParams)
@@ -1316,7 +1361,7 @@ export class CodexAppServerManager {
     if (!pending) return
     context.pendingRequests.delete(response.id)
     if (response.error) {
-      pending.reject(new Error(`${pending.method} failed: ${response.error.message ?? "Unknown error"}`))
+      pending.reject(new CodexRpcError(pending.method, response.error))
       return
     }
     pending.resolve(response.result)
