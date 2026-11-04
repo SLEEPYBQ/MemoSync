@@ -246,7 +246,8 @@ export function deriveChatSnapshot(
   drainingChatIds: Set<string>,
   chatId: string,
   getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history" | "memoryRecordMessages">,
-  streamingTexts?: Map<string, string>
+  streamingTexts?: Map<string, string>,
+  harness?: import("../shared/harness-capabilities").ChatHarnessSnapshot
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
@@ -263,6 +264,7 @@ export function deriveChatSnapshot(
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
     memoryDisabled: chat.memoryDisabled ?? false,
+    ...(harness ? { harness } : {}),
     planMode: chat.planMode,
     sessionToken: chat.sessionToken,
     streamingText: streamingTexts?.get(chat.id) ?? null,

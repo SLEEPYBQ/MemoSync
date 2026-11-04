@@ -16,6 +16,7 @@ export type PiMemoryToolInvoker = (
   name: string,
   args: Record<string, unknown>,
   signal: AbortSignal | undefined,
+  nativeToolCallId?: string,
 ) => Promise<PiMemoryToolInvokeResult>;
 
 function piSchema(schema: unknown): unknown {
@@ -49,8 +50,8 @@ export function toPiToolDefinitions(
     description: spec.description,
     promptSnippet: spec.description,
     parameters: piSchema(z.toJSONSchema(z.object(spec.schema))) as TSchema,
-    async execute(_callId, input, signal) {
-      const result = await invoke(spec.name, input as Record<string, unknown>, signal);
+    async execute(callId, input, signal) {
+      const result = await invoke(spec.name, input as Record<string, unknown>, signal, callId);
       if (result.isError) throw new Error(result.text);
       return { content: [{ type: 'text' as const, text: result.text }], details: {} };
     },

@@ -34,7 +34,7 @@ export interface HostActionReceipt {
   cancellation: "none" | "requested" | "confirmed"
   target?: { workspaceRef: string; path: string }
   observedContent?: HostSnapshotVersion
-  /** A stopped delivery can later gain this old-operation fact without being re-delivered. */
+  /** Exact snapshot presentation fact; recording it never authorizes redelivery. */
   presented?: { at: number; viewInstanceId: string; fileVersion: string; digest: string }
   reason?: string
   expiresAt?: number
@@ -78,7 +78,10 @@ export interface HostActionClientBinding { clientId: string; resumeToken: string
 
 /** Parent UI contract: use a separate immutable readonly tab, preserve existing dirty tabs.
  * Resolve only after render commits. Deduplicate operationId across reconnects. Never navigate
- * from host.action.updated (a late ACK is historical). Render Markdown without raw HTML,
+ * from host.action.updated (a late ACK is historical). Stop pending presentation on a
+ * stopped receipt, local expiry, chat/generation change, or an aborted signal. A replay of
+ * an already rendered operation should repeat its exact ACK without navigating again.
+ * Render Markdown without raw HTML,
  * embedded network resources, executable content, or automatic link navigation.
  */
 export interface HostActionWorkbenchController {

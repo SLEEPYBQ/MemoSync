@@ -5354,7 +5354,7 @@ describe("memory on/off turn controls", () => {
     } finally { events.close(); h.cleanup() }
   })
 
-  for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} injects memory in system and scopes tool dispatch`, async () => {
+  for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} delivers memory as prompt context and scopes tool dispatch`, async () => {
     const s = services()
     const dir = mkdtempSync(join(tmpdir(), "opencode-memory-gate-"))
     const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
@@ -5376,11 +5376,12 @@ describe("memory on/off turn controls", () => {
       const excluded = h.memory.store.create({ content: "Unselected detail", detail: "MUST NOT DISCLOSE", scope: "project", projectId: "other-project", type: "fact" }, { actor: "system" })
       await h.coordinator.send({ ...send, provider: "opencode", content: "Remember that I prefer pnpm" })
       expect(turnArgs.content).toBe("Remember that I prefer pnpm")
+      expect(turnArgs.systemPrompt).toBeUndefined()
       if (mode === "off") {
-        expect(turnArgs.systemPrompt).toBeUndefined()
+        expect(turnArgs.memoryContext).toBeUndefined()
         expect(turnArgs.memoryDispatch).toBeUndefined()
       } else {
-        expect(turnArgs.systemPrompt).toContain(item.content)
+        expect(turnArgs.memoryContext).toContain(item.content)
         expect(turnArgs.memorySpecs.map((spec: any) => spec.name).includes("propose_memory")).toBe(mode === "on")
         expect((await turnArgs.memoryDispatch("load_memory_detail", { ids: [item.id] })).isError).not.toBe(true)
         const blocked = await turnArgs.memoryDispatch("load_memory_detail", { ids: [excluded.id] })

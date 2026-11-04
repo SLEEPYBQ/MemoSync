@@ -56,6 +56,7 @@ function sameRuntime(left: ChatSnapshot["runtime"] | null | undefined, right: Ch
     && left.planMode === right.planMode
     && left.sessionToken === right.sessionToken
     && left.streamingText === right.streamingText
+    && (left.harness === right.harness || JSON.stringify(left.harness) === JSON.stringify(right.harness))
 }
 
 function sameTranscriptEntries(left: ChatSnapshot["messages"] | null | undefined, right: ChatSnapshot["messages"] | null | undefined) {

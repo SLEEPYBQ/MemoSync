@@ -1,4 +1,5 @@
 import type { HostActionCommand, HostActionServerEvent } from "./host-actions"
+import type { SetExecutionPolicyCommand } from "./harness-capabilities"
 import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
@@ -97,6 +98,9 @@ export interface TerminalTailResult {
 
 export type ClientCommand =
   | HostActionCommand
+  | SetExecutionPolicyCommand
+  | { type: "harness.getCapabilities"; engine: AgentProvider }
+  | { type: "chat.readHarness"; chatId: string; engine: AgentProvider }
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }

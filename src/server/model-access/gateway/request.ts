@@ -1,6 +1,7 @@
 // Adapted from Magpie (https://github.com/yetone/magpie), MIT License, Copyright (c) 2026 yetone
 // internal/gateway/{ir,anthropic,responses,chat}.go: text/function request subset.
 import { customSchema, type ToolMapping } from "./custom-tool"
+import { addDiagnostic, UNKNOWN_CHAT_CAPABILITIES, type ChatCapabilities, type TranslationDiagnostic } from "./capabilities"
 
 export type Target = "anthropic" | "responses"
 // Wire objects are validated at the protocol boundary; schemas remain opaque JSON.
@@ -36,14 +37,52 @@ export interface TranslationRequest {
   tools: Wire[]
   options: Wire
   toolMappings: Record<string, ToolMapping>
+  capabilities: ChatCapabilities
+  diagnostics: TranslationDiagnostic[]
 }
 
-export function parseRequest(target: Target, value: unknown): TranslationRequest {
+function cacheOptions(target: Target, b: Wire, r: TranslationRequest) {
+  const unsupported = (path: string, message: string) => addDiagnostic(r.diagnostics, { code: "unsupported_cache_option", path, message })
+  // Visit protocol containers, not arbitrary tool schemas/argument objects.
+  const markers = (value: unknown, path: string) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return
+    const node = value as Wire
+    for (const key of ["cache_control", "prompt_cache_breakpoint"]) if (node[key] !== undefined) {
+      unsupported(`${path}.${key}`, "Cache boundaries have no verified translation on this path; use a native endpoint")
+    }
+    for (const key of ["system", "messages", "input", "content", "tools", "output"]) if (Array.isArray(node[key])) {
+      node[key].forEach((child: unknown, i: number) => markers(child, `${path}.${key}[${i}]`))
+    }
+  }
+  markers(b, "$")
+  const caps = r.capabilities
+  for (const key of ["prompt_cache_key", "prompt_cache_retention", "prompt_cache_options"]) {
+    if (b[key] === undefined) continue
+    if (target !== "responses") {
+      unsupported(`$.${key}`, "This cache option is not defined by the source Messages protocol")
+      continue
+    }
+    if (key === "prompt_cache_key" && caps.promptCacheKey) {
+      if (b[key] !== null && (typeof b[key] !== "string" || !b[key].trim())) throw new GatewayError("prompt_cache_key must be a non-empty string or null")
+      r.options[key] = b[key]
+    } else if (key === "prompt_cache_retention" && caps.promptCacheRetention.includes(b[key])) r.options[key] = b[key]
+    else if (key === "prompt_cache_options" && caps.implicitCacheOptions) {
+      const options = object(b[key])
+      // Explicit mode depends on source content boundaries, which this text-only
+      // converter cannot preserve. Responses prewarm/12h are not Chat options.
+      if (Object.keys(options).some(k => !["mode", "ttl"].includes(k)) || (options.mode !== undefined && options.mode !== "implicit") || (options.ttl !== undefined && options.ttl !== "30m")) {
+        unsupported(`$.${key}`, "Only implicit mode with a 30m TTL has a verified Chat translation; use a native endpoint for other options")
+      } else r.options[key] = { ...options }
+    } else unsupported(`$.${key}`, "Cache option/value is not verified for this backend, model and Chat protocol; it was omitted")
+  }
+}
+
+export function parseRequest(target: Target, value: unknown, capabilities: ChatCapabilities = UNKNOWN_CHAT_CAPABILITIES): TranslationRequest {
   const b = object(value)
   if (!str(b.model).trim()) throw new GatewayError("model is required")
   if (b.stream !== undefined && typeof b.stream !== "boolean") throw new GatewayError("stream must be boolean")
   if (b.previous_response_id || b.conversation || b.background) throw new GatewayError("Stateful/background Responses requests require a native endpoint; send the full input history")
-  const r: TranslationRequest = { model: b.model, stream: b.stream === true, messages: [], tools: [], options: {}, toolMappings: Object.create(null) }
+  const r: TranslationRequest = { model: b.model, stream: b.stream === true, messages: [], tools: [], options: {}, toolMappings: Object.create(null), capabilities, diagnostics: [] }
   const add = (role: string, parts: Part[]) => {
     if (!["user", "assistant", "system", "developer"].includes(role)) throw new GatewayError(`Unsupported role: ${role}`)
     r.messages.push({ role, parts })
@@ -54,7 +93,7 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
     for (const raw of list(b.messages)) {
       const m = object(raw)
       // Current Claude Code also appends system/developer turn instructions;
-      // encodeChat places them where every Chat vendor accepts them.
+      // encodeChat uses the selected backend's instruction-role capabilities.
       if (!["user", "assistant", "system", "developer"].includes(m.role)) throw new GatewayError("Unsupported Messages role")
       const parts: Part[] = typeof m.content === "string" ? [plain(m.content, ["text"])] : list(m.content).map(raw => {
         const p = object(raw)
@@ -160,22 +199,30 @@ export function parseRequest(target: Target, value: unknown): TranslationRequest
   if (r.options.tool_choice === "required" && !r.tools.length) throw new GatewayError("Required tool choice has no callable tools")
   const named = r.options.tool_choice?.function?.name
   if (named && !r.tools.some(t => t.function.name === named)) throw new GatewayError("Chosen tool is not declared")
+  cacheOptions(target, b, r)
   return r
 }
 
 export function encodeChat(r: TranslationRequest): Wire {
   const messages: Wire[] = []
-  // Many Chat vendors reject "developer" and any system message after the first
-  // (GLM: 1214). As Magpie does, instructions before the first reply become one
-  // leading system message; later ones ride in a user turn as a system reminder.
+  // Unknown backends retain the compatible leading-system fallback (GLM: 1214),
+  // with explicit diagnostics. Known backends retain supported roles and order.
   const system: string[] = []
   let replied = false
-  for (const m of r.messages) {
+  for (const [i, m] of r.messages.entries()) {
     if (m.role === "system" || m.role === "developer") {
       const text = m.parts.map(p => p.kind === "text" ? p.text : "").join("")
       if (!text) continue
-      if (!replied) system.push(text)
-      else messages.push({ role: "user", content: `<system-reminder>\n${text}\n</system-reminder>` })
+      const path = `messages[${i}].role`
+      if (r.capabilities.instructionRoles !== "leading-system") {
+        const role = r.capabilities.instructionRoles === "system" ? "system" : m.role
+        messages.push({ role, content: text })
+        if (role !== m.role) addDiagnostic(r.diagnostics, { code: "instruction_role_changed", path, message: "Backend supports system instructions but not developer; developer was translated to system at the same position" })
+      } else {
+        if (!replied) system.push(text)
+        else messages.push({ role: "user", content: `<system-reminder>\n${text}\n</system-reminder>` })
+        if (replied || m.role === "developer" || i > 0 || system.length > 1) addDiagnostic(r.diagnostics, { code: replied || m.role === "developer" ? "instruction_role_changed" : "instruction_position_changed", path, message: replied ? "Backend instruction support is unverified; later instructions were downgraded to a user reminder" : "Backend instruction support is unverified; instructions were combined into a leading system message" })
+      }
       continue
     }
     if (m.role === "assistant") {
