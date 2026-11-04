@@ -46,8 +46,7 @@ export function mergeToolMemoryUses(uses: ToolMemoryUses | null, toolIds: readon
   return [...merged.values()]
 }
 
-/** Keeps the map's identity while nothing changed, so memoized rows skip the context update. */
+/** Keeps the map's identity while nothing shown changed, so memoized rows skip the context update. */
 export function toolMemoryUsesSignature(uses: ToolMemoryUses | null): string {
-  if (!uses) return ""
-  return [...uses.entries()].map(([toolId, list]) => `${toolId}:${list.map((use) => `${use.id}${use.violated ? "!" : ""}`).join("+")}`).join("|")
+  return uses ? JSON.stringify([...uses]) : ""
 }

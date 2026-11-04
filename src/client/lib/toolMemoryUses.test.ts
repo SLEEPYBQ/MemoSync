@@ -71,5 +71,7 @@ test("the signature changes only when the uses do", () => {
   const flipped = buildToolMemoryUses([trace([{ id: "M-01", label: "violated", toolId: "tool-a" }])])
   expect(toolMemoryUsesSignature(first)).toBe(toolMemoryUsesSignature(same))
   expect(toolMemoryUsesSignature(first)).not.toBe(toolMemoryUsesSignature(flipped))
+  const reworded = buildToolMemoryUses([trace([{ id: "M-01", label: "operational", toolId: "tool-a", note: "confirmed" }])])
+  expect(toolMemoryUsesSignature(first)).not.toBe(toolMemoryUsesSignature(reworded))
   expect(toolMemoryUsesSignature(null)).toBe("")
 })

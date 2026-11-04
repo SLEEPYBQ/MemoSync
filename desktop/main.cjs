@@ -16,8 +16,7 @@ let stopped = false
 let desktopSession
 const contentWindows = new Set()
 
-// The page runs up to the top edge, with the traffic lights centred in its 48px
-// top band. No background colour: that would switch off the sidebar's material.
+// The page runs up to the top edge, with the traffic lights centred in its 48px top band.
 const MAC_WINDOW_OPTIONS = process.platform === "darwin"
   ? { titleBarStyle: "hiddenInset", trafficLightPosition: trafficLightPosition(1) }
   : {}
