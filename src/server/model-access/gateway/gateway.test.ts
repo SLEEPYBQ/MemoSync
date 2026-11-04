@@ -112,22 +112,29 @@ for (const target of ["anthropic", "responses"] as const) {
     expect((await post(route, target, { model: "m" })).status).toBe(400)
     expect(count).toBe(0)
   })
-  test(`${target}: official SDK consumes both streaming and buffered responses`, async () => {
-    const f = await fixture()
+  test(`${target}: official SDK consumes streaming and buffered responses with cache read/write usage`, async () => {
+    const usage = { prompt_tokens: 12, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 } }
+    const f = await fixture(() => sse([...textChunks.slice(0, 2), JSON.stringify({ choices: [], usage })]))
     const route = gatewayEndpoint(f.service, f.connection.id, target)
     if (target === "anthropic") {
       const client = new Anthropic({ baseURL: route.endpoint.baseUrl, apiKey: route.key, maxRetries: 0 })
       const final = await client.messages.stream({ model: "m", max_tokens: 100, messages: [{ role: "user", content: "Hello" }] }).finalMessage()
       expect(final.content).toMatchObject([{ type: "text", text: "Hello" }])
-      expect((await client.messages.create({ model: "m", max_tokens: 100, messages: [{ role: "user", content: "Hello" }] })).content).toEqual(final.content)
+      expect(final.usage).toMatchObject({ input_tokens: 7, output_tokens: 4, cache_read_input_tokens: 3, cache_creation_input_tokens: 2 })
+      const buffered = await client.messages.create({ model: "m", max_tokens: 100, messages: [{ role: "user", content: "Hello" }] })
+      expect(buffered.content).toEqual(final.content)
+      expect(buffered.usage).toEqual(final.usage)
     } else {
       const client = new OpenAI({ baseURL: route.endpoint.baseUrl, apiKey: route.key, maxRetries: 0 })
       const stream = await client.responses.create({ model: "m", input: "Hello", stream: true })
       const out = []
-      for await (const ev of stream) out.push(ev.type)
+      let streamedUsage: unknown
+      for await (const ev of stream) { out.push(ev.type); if (ev.type === "response.completed") streamedUsage = ev.response.usage }
       expect(out.at(-1)).toBe("response.completed")
       const final = await client.responses.create({ model: "m", input: "Hello" })
       expect(final.output_text).toBe("Hello")
+      expect(final.usage).toMatchObject({ input_tokens: 12, output_tokens: 4, total_tokens: 16, input_tokens_details: { cached_tokens: 3, cache_write_tokens: 2 } })
+      expect(streamedUsage).toEqual(final.usage)
     }
   })
   test(`${target}: official SDK consumes interleaved text, reasoning and parallel tools`, async () => {
@@ -265,4 +272,61 @@ test("downstream cancellation aborts the upstream request", async () => {
   abort.abort()
   await aborted
   await reader.cancel().catch(() => {})
+})
+
+for (const target of ["anthropic", "responses"] as const) test(`${target}: HTTP responses expose unknown/cache provenance, diagnostics and stable gateway identity`, async () => {
+  const synthetic = { prompt_tokens: 4096, completion_tokens: 32, prompt_cache_hit_tokens: 3072, prompt_cache_miss_tokens: 1024 }
+  const received: Wire[] = []
+  const f = await fixture(async r => { received.push(await r.json()); return sse([chunk({ content: "ok" }, "stop"), JSON.stringify({ choices: [], usage: synthetic })]) })
+  const route = gatewayEndpoint(f.service, f.connection.id, target)
+  const metadata: Wire[] = []
+  for (const stream of [true, false]) {
+    const request = { ...body(target, stream), ...(target === "anthropic" ? { cache_control: { type: "ephemeral" } } : { prompt_cache_key: "synthetic-affinity" }) }
+    const response = await post(route, target, request)
+    expect(response.headers.get("x-memosync-path")).toBe("gateway")
+    expect(response.headers.get("x-memosync-usage-normalizer")).toBe("chat-completions-usage-v1")
+    expect(response.headers.get("x-memosync-translation-diagnostics")).toContain("unsupported_cache_option")
+    const output = stream ? await events(response) : []
+    const final = stream ? (target === "anthropic" ? output.find(e => e.type === "message_delta") : output.at(-1)?.response) : await response.json()
+    metadata.push(final.memosync)
+    expect(final.memosync.usage).toMatchObject({ input: 4096, cached: 3072, basis: "per-request" })
+    expect(final.memosync.usage.cacheWrite).toBeUndefined()
+    expect(final.memosync.diagnostics[0]).toMatchObject({ code: "unsupported_cache_option", path: target === "anthropic" ? "$.cache_control" : "$.prompt_cache_key" })
+  }
+  expect(metadata[0].path).toEqual(metadata[1].path)
+  expect(metadata[0].path).toEqual({ mode: "gateway", engine: target === "anthropic" ? "claude" : "codex", provider: "unknown", connectionId: f.connection.id, model: "m", sourceProtocol: target === "anthropic" ? "anthropic-messages" : "openai-responses", upstreamProtocol: "openai-chat", normalizer: "chat-completions-usage-v1" })
+  expect(received).toHaveLength(2)
+  for (const value of received) { expect(value.cache_control).toBeUndefined(); expect(value.prompt_cache_key).toBeUndefined() }
+  expect(JSON.stringify(metadata)).not.toContain("upstream-secret")
+  expect(JSON.stringify(metadata)).not.toContain("synthetic-affinity")
+  expect(JSON.stringify(metadata)).not.toContain(route.key)
+})
+
+test("verified backend options and roles reach the HTTP egress; provider responses remain synthetic", async () => {
+  const f = await fixture()
+  await f.service.saveConnection({ ...f.connection, endpoints: [{ protocol: "openai-chat", baseUrl: "https://api.openai.com/v1" }] })
+  const originalFetch = globalThis.fetch
+  const received: Wire[] = []
+  // Intercept before making any gateway request. Never allow a real remote call.
+  globalThis.fetch = Object.assign(async (input: Request | URL | string, init?: RequestInit) => {
+    const url = new URL(input instanceof Request ? input.url : String(input))
+    if (url.href === "https://api.openai.com/v1/chat/completions") {
+      received.push(JSON.parse(String(init?.body)))
+      return sse(textChunks)
+    }
+    if (url.hostname === "127.0.0.1") return originalFetch(input, init)
+    throw new Error("Unexpected non-loopback request in gateway fixture")
+  }, { preconnect: originalFetch.preconnect.bind(originalFetch) }) as typeof fetch
+  try {
+    const route = gatewayEndpoint(f.service, f.connection.id, "responses")
+    const request = { model: "gpt-5.6", stream: false, prompt_cache_key: "synthetic-affinity", prompt_cache_options: { mode: "implicit", ttl: "30m" }, input: [{ role: "user", content: "Question" }, { role: "assistant", content: "Answer" }, { role: "developer", content: "New instructions" }] }
+    const response = await post(route, "responses", request)
+    expect(response.status).toBe(200)
+    expect(response.headers.get("x-memosync-translation-diagnostics")).toBeNull()
+    const final = await response.json()
+    expect(final.memosync.path).toMatchObject({ mode: "gateway", provider: "openai", engine: "codex", model: "gpt-5.6" })
+    expect(final.memosync.diagnostics).toEqual([])
+    expect(received).toHaveLength(1)
+    expect(received[0]).toMatchObject({ prompt_cache_key: "synthetic-affinity", prompt_cache_options: { mode: "implicit", ttl: "30m" }, messages: request.input })
+  } finally { globalThis.fetch = originalFetch }
 })

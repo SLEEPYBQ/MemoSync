@@ -5866,7 +5866,7 @@ export class AgentCoordinator {
         model: args.model,
       })
       // Pi and OpenCode share the injection plan and per-turn memory dispatch.
-      // Pi prepends the block to the prompt; OpenCode receives it as system.
+      // Both engines deliver changing memory through normal prompt content.
       // Each adapter binds the current dispatch context to its reused session.
       // "Proceed without memory" (preview gate) skips both the block and
       // dispatch for this turn.
@@ -5930,7 +5930,7 @@ export class AgentCoordinator {
           signal: startController.signal, chatId: args.chatId, cwd: project.localPath,
           content: buildPromptText(args.content, providerAttachments),
           model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
-          systemPrompt: piMemoryBlock || undefined,
+          memoryContext: piMemoryBlock || undefined,
           sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
           forkSession: Boolean(chat.pendingForkSessionToken),
           memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
@@ -5977,10 +5977,9 @@ export class AgentCoordinator {
         model: args.model,
       })
       // MemoSync memory for Codex: declare the memory tools as dynamic tools
-      // when enabled, inject the memory block as
-      // developer_instructions, and dispatch item/tool/call to the memory
-      // handler. Codex injection is per-turn, so file-mode contents are
-      // naturally fresh each turn.
+      // when enabled, append the memory block through native developer-item
+      // injection at the idle boundary, and dispatch item/tool/call to the memory
+      // handler. File-mode contents are naturally fresh each turn.
       // "Proceed without memory" (preview gate): skip injection for this turn.
       // The dynamic tool declarations are thread-level and persist regardless.
       const codexPlan: MemoryInjectionPlan | null =

@@ -32,7 +32,7 @@ integration('OpenCode real-binary backend with scripted local model', () => {
   const token = (events: HarnessEvent[]) => events.find(e => e.type === 'session_token')!.sessionToken!
   const entries = (events: HarnessEvent[]) => events.flatMap(e => e.entry ? [e.entry] : [])
   function start(content: string, extra: Partial<StartOpencodeTurnArgs> = {}) {
-    return manager.startTurn({ chatId: 'main', cwd: project, content, model: runtime.model, runtime, systemPrompt: 'MemoSync memory block: SYSTEM-EVERY-TURN', ...extra })
+    return manager.startTurn({ chatId: 'main', cwd: project, content, model: runtime.model, runtime, systemPrompt: 'STABLE_MEMOSYNC_CONTRACT', memoryContext: 'MEMORY_A', ...extra })
   }
   beforeEach(async () => {
     root = realpathSync(mkdtempSync(join(tmpdir(), 'memosync-opencode-test-')))
@@ -56,7 +56,10 @@ integration('OpenCode real-binary backend with scripted local model', () => {
     }).initialize()
     const connection = await service.saveConnection({ name: 'Fake', endpoints: [{ protocol: 'openai-chat', baseUrl: fake.baseUrl }], models: [{ id: 'vendor/m', contextWindow: 100_000, maxOutputTokens: 4000 }], apiKey: 'fake-integration-key' })
     runtime = await resolveEngineRuntime({ engine: 'opencode', connectionId: connection.id, service })
-    runtime.env.OPENCODE_DISABLE_MODELS_FETCH = '1'
+    Object.assign(runtime.env, {
+      OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
+      OPENCODE_DISABLE_LSP_DOWNLOAD: '1', OPENCODE_DISABLE_EXTERNAL_SKILLS: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1',
+    })
     manager = new OpencodeAgentManager()
     groups.clear()
   })
@@ -67,7 +70,7 @@ integration('OpenCode real-binary backend with scripted local model', () => {
     rmSync(root, { recursive: true, force: true })
   })
 
-  test('streams text, memory and read calls with stable IDs and usage; resumes with system every turn', async () => {
+  test('streams text, memory and read calls; changing memory preserves the system and native history', async () => {
     const dispatched: string[] = []
     const specs = [{ name: 'search_memory', description: 'Search saved memory', schema: { query: z.string() }, handler: async () => ({ text: '[M-7] codeword pelican' }) }]
     const extra = { memorySpecs: specs, memoryDispatch: async (name: string) => { dispatched.push(name); return { text: '[M-7] codeword pelican' } } }
@@ -86,15 +89,24 @@ integration('OpenCode real-binary backend with scripted local model', () => {
     expect(transcript.filter(e => e.kind === 'context_window_updated').at(-1)).toMatchObject({ usage: { inputTokens: 11, outputTokens: 7, usedTokens: 18, cachedInputTokens: 3 } })
     const before = fake.requests.length
     let secondDispatches = 0
-    const second = await collect(await start('TURN_MEMORY', { ...extra, sessionToken: token(first), memoryDispatch: async () => { secondDispatches++; return { text: 'new turn context' } } }))
+    const second = await collect(await start('TURN_MEMORY', { ...extra, memoryContext: 'MEMORY_B', sessionToken: token(first), memoryDispatch: async () => { secondDispatches++; return { text: 'new turn context' } } }))
     expect(secondDispatches).toBe(1)
     expect(dispatched).toEqual(['search_memory'])
     expect(token(second)).toBe(token(first))
     expect(processId('main').pid).toBe(original.pid)
     const requests = fake.requests.slice(before).filter(r => r.body.tools?.length)
     expect(requests.length).toBeGreaterThan(0)
-    expect(requests.every(r => JSON.stringify(r.body.messages.filter((m: any) => m.role === 'system')).includes('SYSTEM-EVERY-TURN'))).toBe(true)
-    expect(requests.every(r => !JSON.stringify(r.body.messages.filter((m: any) => m.role === 'user')).includes('SYSTEM-EVERY-TURN'))).toBe(true)
+    const primary = fake.requests.filter(r => r.body.tools?.length)
+    const systems = (body: any) => body.messages.filter((m: any) => ['system', 'developer'].includes(m.role))
+    expect(JSON.stringify(systems(primary[0].body))).toContain('STABLE_MEMOSYNC_CONTRACT')
+    expect(primary.every(r => JSON.stringify(systems(r.body)) === JSON.stringify(systems(primary[0].body)))).toBe(true)
+    expect(primary.every(r => !JSON.stringify(systems(r.body)).includes('MEMORY_A') && !JSON.stringify(systems(r.body)).includes('MEMORY_B'))).toBe(true)
+    expect(JSON.stringify(requests[0].body.messages.filter((m: any) => m.role === 'user'))).toContain('MEMORY_B')
+    // The completed first turn remains an exact prefix, including memory A and
+    // native tool results; memory B is appended with the next user message.
+    const completedFirstInput = primary.filter(r => fake.requests.indexOf(r) < before).at(-1)!.body.messages
+    expect(requests[0].body.messages.slice(0, completedFirstInput.length)).toEqual(completedFirstInput)
+    expect(requests[0].body.tools).toEqual(primary[0].body.tools)
     expect(fake.requests.every(r => r.authorization === 'Bearer fake-integration-key')).toBe(true)
   }, 40_000)
 
