@@ -39,6 +39,8 @@ import { runForkCapture } from "./memory/capture-fork"
 import type { CheckupResult, CheckupService } from "./memory/checkup"
 import { extractCitations } from "./memory/citations"
 import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
+import { HostActionService, dispatchHostAction, hostActionToolSpecs, isHostActionTool, type HostAdmissionLease } from "./host-actions"
+import type { HostNativeToolContext } from "../shared/host-actions"
 import { toCodexDynamicTools } from "./memory/codex-adapter"
 import type { RevisionService } from "./memory/evolution"
 import { runForkQuery } from "./memory/fork-query"
@@ -329,6 +331,9 @@ interface StartTurnArgs {
    */
   memoryUserText?: string
   profile?: SendToStartingProfile | null
+  /** Transport-owned identity; never read this from the model/client command body. */
+  hostClientId?: string
+  hostAdmission?: HostAdmissionLease
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
   /**
@@ -464,6 +469,7 @@ interface ClaudeSessionState {
 }
 
 interface AgentCoordinatorArgs {
+  hostActions?: HostActionService
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
@@ -513,6 +519,7 @@ interface AgentCoordinatorArgs {
     sessionToken: string | null
     forkSession: boolean
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+    hostActionsEnabled?: boolean
     memory?: MemoryService | null
     /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
     capture?: CaptureService | null
@@ -1365,6 +1372,7 @@ export async function startClaudeSession(args: {
   sessionToken: string | null
   forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  hostActionsEnabled?: boolean
   memory?: MemoryService | null
   /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
   capture?: CaptureService | null
@@ -1419,6 +1427,9 @@ export async function startClaudeSession(args: {
           onProposed: args.onMemoryProposal,
         })
       : []
+  // Claude MCP lacks verified native call provenance. Advertise the real tools,
+  // whose fallback handlers fail unavailable rather than guess an active turn.
+  if (args.hostActionsEnabled) memorySpecs.push(...hostActionToolSpecs())
   const memoryBlock = plan?.block ?? ""
   // Append environment guidance so the agent knows how a dev server it
   // starts becomes visible to the user.
@@ -1622,6 +1633,7 @@ type InternalGateWake<T extends string> = T | "invalidated"
 export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 
 export class AgentCoordinator {
+  private readonly hostActions?: HostActionService
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   private readonly codexManager: CodexAppServerManager
@@ -1766,6 +1778,7 @@ export class AgentCoordinator {
   private readonly streamingAssistantTexts = new Map<string, { itemId: string; text: string }>()
 
   constructor(args: AgentCoordinatorArgs) {
+    this.hostActions = args.hostActions
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
@@ -3367,6 +3380,7 @@ export class AgentCoordinator {
   }
 
   async closeChat(chatId: string) {
+    this.hostActions?.revokeChat(chatId, "Chat closed")
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
@@ -3667,6 +3681,13 @@ export class AgentCoordinator {
     // Hold the reservation across every await below (preview pass, engine boot)
     // until the turn hands off to pendingPreviews (parked) or activeTurns (booted).
     const reservation = this.reserveStartup(args)
+    if (this.hostActions) {
+      const hostProject = this.store.getProject(chat.projectId)
+      if (hostProject) args.hostAdmission = this.hostActions.captureAdmission({
+        chatId: args.chatId, admittedTurnId: logicalTurnId, workspaceRef: chat.projectId,
+        workspaceRoot: hostProject.localPath, targetClientId: args.hostClientId,
+      })
+    }
     const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
@@ -5769,6 +5790,7 @@ export class AgentCoordinator {
   ) {
     if (this.isEngineStartBlocked(args.chatId)) return
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
+    const hostAdmission = args.hostAdmission
     const reservation = args.startupReservation
     const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
@@ -5889,6 +5911,8 @@ export class AgentCoordinator {
               },
             })
           : []
+      const piHostSpecs = this.hostActions ? hostActionToolSpecs() : []
+      const piAllSpecs = [...piMemorySpecs, ...piHostSpecs]
       const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
       const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
       const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
@@ -5910,8 +5934,10 @@ export class AgentCoordinator {
           mode: piPlan.mode,
         })
       }
-      const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
-        ? async (name: string, toolArgs: Record<string, unknown>) => {
+      const piMemoryDispatch = piAllSpecs.length
+        ? async (name: string, toolArgs: Record<string, unknown>, signal?: AbortSignal, native?: HostNativeToolContext) => {
+            if (isHostActionTool(name)) return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native, signal)
+            if (memoryDisabledForTurn) return { text: "Memory tools unavailable for this turn", isError: true }
             return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -5929,7 +5955,7 @@ export class AgentCoordinator {
           systemPrompt: piMemoryBlock || undefined,
           sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
           forkSession: Boolean(chat.pendingForkSessionToken),
-          memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+          memorySpecs: piAllSpecs.length ? piAllSpecs : undefined,
           memoryDispatch: piMemoryDispatch, onToolRequest,
           onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         }
@@ -5948,7 +5974,7 @@ export class AgentCoordinator {
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         connection,
-        memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
+        memorySpecs: piAllSpecs.length ? piAllSpecs : undefined,
         memoryDispatch: piMemoryDispatch,
         onLaunch: (launch) => this.parentLaunches.set(args.chatId, launch),
       }
@@ -6017,6 +6043,7 @@ export class AgentCoordinator {
               },
             })
           : []
+      const codexAllSpecs = [...codexMemorySpecs, ...(this.hostActions ? hostActionToolSpecs() : [])]
       const codexSelected = new Set(codexPlan?.injectedMemories.map(item => item.id) ?? [])
       const expectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => codexSelected.has(use.id))
       const enforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => codexSelected.has(item.id))
@@ -6038,8 +6065,10 @@ export class AgentCoordinator {
           mode: codexPlan.mode,
         })
       }
-      const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
-        ? async (name: string, toolArgs: Record<string, unknown>) => {
+      const onDynamicToolCall = codexAllSpecs.length
+        ? async (name: string, toolArgs: Record<string, unknown>, native?: HostNativeToolContext) => {
+            if (isHostActionTool(name)) return dispatchHostAction(this.hostActions, hostAdmission, name, toolArgs, native)
+            if (memoryDisabledForTurn) return { text: "Memory tools unavailable for this turn", isError: true }
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6059,7 +6088,7 @@ export class AgentCoordinator {
         serviceTier: args.serviceTier,
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
-        dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
+        dynamicTools: codexAllSpecs.length ? toCodexDynamicTools(codexAllSpecs) : undefined,
       }
       this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
       const sessionToken = await this.codexManager.startSession(codexLaunch)
@@ -6486,6 +6515,7 @@ export class AgentCoordinator {
         sessionToken: resumeToken,
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
+        hostActionsEnabled: Boolean(this.hostActions),
         memory: memoryEnabled ? this.memory : null,
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
@@ -6590,7 +6620,7 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
-  async send(command: Extract<ClientCommand, { type: "chat.send" }>) {
+  async send(command: Extract<ClientCommand, { type: "chat.send" }>, hostClientId?: string) {
     if (command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
       throw new Error("memoryDisabled must be a boolean")
     }
@@ -6649,6 +6679,7 @@ export class AgentCoordinator {
       serviceTier: settings.serviceTier,
       planMode: settings.planMode,
       appendUserPrompt: true,
+      hostClientId,
       profile,
     })
 
@@ -7363,6 +7394,7 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    this.hostActions?.revokeChat(chatId)
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind

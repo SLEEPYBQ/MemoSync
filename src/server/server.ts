@@ -59,6 +59,8 @@ import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter, type ClientState } from "./ws-router"
+import { HostActionService, type HostActionAdmissionPolicy } from "./host-actions"
+import { realpathSync } from "node:fs"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -141,6 +143,8 @@ export function createAuditAdmission(args: {
 }
 
 export interface StartMemoSyncServerOptions {
+  /** Inject the runtime policy service's captured revisions and admission check. */
+  hostActionPolicy?: HostActionAdmissionPolicy
   port?: number
   host?: string
   openBrowser?: boolean
@@ -430,7 +434,19 @@ async function startLockedMemoSyncServer(
     const route = memoryCapture.routeProposal.bind(memoryCapture)
     memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
   }
+  const hostActions = new HostActionService({
+    dataDir: store.dataDir,
+    policy: options.hostActionPolicy,
+    workspaceStillCurrent: lease => {
+      const chat = store.getChat(lease.chatId)
+      const project = store.getProject(lease.workspaceRef)
+      try { return Boolean(chat && chat.projectId === lease.workspaceRef && project && realpathSync(project.localPath) === lease.workspaceRoot) }
+      catch { return false }
+    },
+  })
+  onStartupCleanup(() => hostActions.close())
   const activeAgent = new AgentCoordinator({
+    hostActions,
     store,
     memory,
     memoryBranches: true,
@@ -464,6 +480,7 @@ async function startLockedMemoSyncServer(
   agent = activeAgent
   onStartupCleanup(() => activeAgent.shutdownRuntime())
   router = createWsRouter({
+    hostActions,
     modelAccess,
     store,
     diffStore,
@@ -758,6 +775,7 @@ async function startLockedMemoSyncServer(
     await attempt(() => activeAgent.forceStopAllTurns())
     await attempt(() => stopGateway())
     await attempt(() => router.dispose())
+    await attempt(() => hostActions.close())
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())
     await attempt(() => terminals.closeAll())

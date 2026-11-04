@@ -21,6 +21,7 @@ import type {
 } from "../shared/types"
 import { DEFAULT_DEEPSEEK_MODEL_ID, DEFAULT_PI_MODEL, PROTOCOL_VERSION } from "../shared/types"
 import type { AgentCoordinator } from "./agent"
+import type { HostActionService } from "./host-actions"
 import type { AppSettingsManager } from "./app-settings"
 import { DiffStore } from "./diff-store"
 import type { DiscoveredProject } from "./discovery"
@@ -136,6 +137,7 @@ const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
 }
 
 interface CreateWsRouterArgs {
+  hostActions?: HostActionService
   modelAccess?: ModelAccessRouterService
   store: EventStore
   diffStore?: Pick<DiffStore, "getProjectSnapshot" | "refreshSnapshot" | "initializeGit" | "getGitHubPublishInfo" | "checkGitHubRepoAvailability" | "publishToGitHub" | "listBranches" | "previewMergeBranch" | "mergeBranch" | "syncBranch" | "checkoutBranch" | "createBranch" | "generateCommitMessage" | "commitFiles" | "discardFile" | "ignoreFile" | "readPatch">
@@ -438,6 +440,7 @@ function ensureSnapshotSignatures(ws: ServerWebSocket<ClientState>) {
 }
 
 export function createWsRouter({
+  hostActions,
   store,
   diffStore,
   agent,
@@ -1202,6 +1205,7 @@ export function createWsRouter({
 
   async function handleDrain(ws: ServerWebSocket<ClientState>) {
     await retryDirtySnapshots(ws)
+    hostActions?.replay(ws)
   }
 
   function broadcastError(message: string) {
@@ -1315,6 +1319,30 @@ export function createWsRouter({
     const { command, id } = message
     try {
       switch (command.type) {
+        case "host.actions.bind": {
+          if (!hostActions || !sockets.has(ws)) throw new Error("Host actions unavailable")
+          if (!Array.isArray(command.capabilities) || (command.resumeToken !== undefined && typeof command.resumeToken !== "string")) throw new Error("Invalid host client handshake")
+          // The socket has passed the server's normal WS authentication. Neither model nor
+          // client picks a clientId. A private server-issued token resumes the same window.
+          hostActions.disconnect(ws)
+          const result = hostActions.bind(ws, command.capabilities,
+            event => { try { return sockets.has(ws) && send(ws, event).status !== 0 } catch { return false } },
+            chatId => sockets.has(ws) && [...ws.data.subscriptions.values()].some(topic => topic.type === "chat" && topic.chatId === chatId),
+            command.resumeToken)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          hostActions.replay(ws)
+          return
+        }
+        case "host.action.readSnapshot":
+        case "host.action.status":
+        case "host.action.presented": {
+          if (!hostActions || typeof command.operationId !== "string") throw new Error("Host actions unavailable")
+          const result = command.type === "host.action.readSnapshot" ? hostActions.readSnapshot(ws, command.operationId)
+            : command.type === "host.action.status" ? hostActions.statusForClient(ws, command.operationId)
+              : hostActions.presented(ws, command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
         case "modelAccess.saveConnection":
         case "modelAccess.deleteConnection":
         case "modelAccess.setEngine":
@@ -1607,7 +1635,7 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
-          const result = await agent.send(command)
+          const result = await agent.send(command, hostActions?.originatingClient(ws, command.chatId))
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)
             : null
@@ -1960,6 +1988,7 @@ export function createWsRouter({
       sockets.add(ws)
     },
     handleClose(ws: ServerWebSocket<ClientState>) {
+      hostActions?.disconnect(ws)
       sockets.delete(ws)
       dirtySnapshotSockets.delete(ws)
       clearDroppedSnapshotRetry(ws)
@@ -2003,6 +2032,7 @@ export function createWsRouter({
           return
         }
         await pushSnapshots(ws, { skipPrune: true })
+        hostActions?.replay(ws)
         return
       }
 
