@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { MemoryBranchPipeline, type PreparationStage } from './branch-pipeline';
+import { MemoryBranchPipeline, type BranchRequest, type PreparationStage } from './branch-pipeline';
 import type { MemoryBranch, MemoryBranchAskOptions } from './branch-runtime';
 import { parseTransferBranchResult } from './branch-stages';
 
@@ -10,7 +10,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function harness() {
+function harness(requests: Partial<Record<PreparationStage, BranchRequest>> = {}) {
   const calls: Array<{ stage: PreparationStage; prompt: string; options?: MemoryBranchAskOptions; reply: ReturnType<typeof deferred<Record<string, unknown>>> }> = [];
   const created: PreparationStage[] = [];
   const disposed: PreparationStage[] = [];
@@ -33,6 +33,7 @@ function harness() {
       candidate: { prompt: 'extract and route C', dependencyKey: 'C-before' },
       transfer: { prompt: 'encode and localize T', dependencyKey: 'T-before' },
       changes: { prompt: 'review changes M', dependencyKey: 'M-before' },
+      ...requests,
     },
   });
   return { pipeline, calls, created, disposed };
@@ -41,6 +42,45 @@ function harness() {
 async function flush() { await Promise.resolve(); await Promise.resolve(); }
 
 describe('MemoryBranchPipeline', () => {
+  it('does not construct empty-source transfer or empty-library changes, and starts changes when approved objects appear', async () => {
+    const skipped = { prompt: '', dependencyKey: 'empty', skip: { raw: { conflicts: [], redundancy: [], staleness: [] }, reason: 'no-saved-memories' } };
+    const h = harness({ transfer: { prompt: '', dependencyKey: 'no-sources', skip: { raw: { suggestions: [] }, reason: 'no-valid-sources' } }, changes: skipped });
+    try {
+      expect(h.created).toEqual(['candidate']);
+      expect(h.calls).toHaveLength(1);
+      expect((await h.pipeline.result('transfer')).raw).toEqual({ suggestions: [] });
+      const result = h.pipeline.continue('changes', { review: 'Approved a candidate', changes: { upsert: [{ id: 'M-1' }] }, dependencyKey: 'with-item', request: { prompt: 'Analyze the approved M-1', dependencyKey: 'with-item' } });
+      await flush();
+      expect(h.calls[1]!.prompt).toBe('Analyze the approved M-1');
+      h.calls[1]!.reply.resolve({ conflicts: [], redundancy: [], staleness: [] });
+      expect((await result).dependencyKey).toBe('with-item');
+      h.calls[0]!.reply.resolve({ candidates: [] });
+    } finally { h.pipeline.dispose(); }
+  });
+
+  it('reuses only an exact dependency/task/policy view and reserves queued updates in order', async () => {
+    const original = { prompt: 'review task A', dependencyKey: 'same', viewKey: 'policy-A' };
+    const h = harness({ changes: original });
+    try {
+      h.calls[0]!.reply.resolve({ candidates: [] });
+      h.calls[1]!.reply.resolve({ suggestions: [] });
+      h.calls[2]!.reply.resolve({ conflicts: [], redundancy: [], staleness: [] });
+      const reused = await h.pipeline.continue('changes', { review: 'Empty review', changes: {}, dependencyKey: 'same', request: { ...original } });
+      expect(reused.dependencyKey).toBe('same');
+      expect(h.calls).toHaveLength(3);
+      const changedTask = { ...original, prompt: 'review task B' };
+      const task = h.pipeline.continue('changes', { review: 'Task changed', changes: {}, dependencyKey: 'same', request: changedTask });
+      const policy = h.pipeline.continue('changes', { review: 'Policy changed', changes: {}, dependencyKey: 'same', request: { ...changedTask, viewKey: 'policy-B' } });
+      await flush();
+      h.calls[3]!.reply.resolve({ upsert: {}, remove: {} });
+      await task; await flush();
+      h.calls[4]!.reply.resolve({ upsert: {}, remove: {} });
+      await policy;
+      expect(h.calls).toHaveLength(5);
+      expect(h.created).toEqual(['candidate', 'transfer', 'changes']);
+    } finally { h.pipeline.dispose(); }
+  });
+
   it('continues the same transfer child after explicitly removing a malformed old proposal', async () => {
     const h = harness();
     try {

@@ -137,9 +137,7 @@ interface SessionContext {
   lastStderrLine: string | null
   closed: boolean
   subprocessEnv?: Record<string, string | undefined>
-  externalToolsDisabled?: boolean
-  toolsDisabled?: boolean
-  executionPolicyKey?: string
+  launchKey: string
   developerInjectionUnsupported?: boolean
 }
 
@@ -890,12 +888,18 @@ export class CodexAppServerManager {
       if (pending?.cancelled) throw new Error("Codex session stopped")
       args.signal?.throwIfAborted()
     }
+    // Reuse only the same native runtime and capability surface. The digest
+    // includes credential/profile identity without exposing it in diagnostics.
+    const launchKey = createHash('sha256').update(JSON.stringify({
+      cwd: args.cwd, runtime: args.runtime, env: args.subprocessEnv,
+      model: args.model, serviceTier: args.serviceTier, dynamicTools: args.dynamicTools ?? [],
+      sandbox: args.sandbox, policy: args.executionPolicy,
+      externalToolsDisabled: Boolean(args.disableExternalTools), toolsDisabled: Boolean(args.disableTools),
+    })).digest('hex')
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
-      && (!args.disableExternalTools || existing.externalToolsDisabled)
-      && (!args.disableTools || existing.toolsDisabled)
-      && existing.executionPolicyKey === JSON.stringify(args.executionPolicy)
-      && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
+    if (existing && !existing.closed && !args.pendingForkSessionToken
+      && (!args.sessionToken || args.sessionToken === existing.sessionToken)
+      && existing.launchKey === launchKey) {
       return existing.sessionToken
     }
 
@@ -916,7 +920,7 @@ export class CodexAppServerManager {
       lastStderrLine: null,
       closed: false,
       subprocessEnv: args.subprocessEnv,
-      executionPolicyKey: JSON.stringify(args.executionPolicy),
+      launchKey,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
@@ -1054,9 +1058,6 @@ export class CodexAppServerManager {
     }
 
     context.sessionToken = response.thread.id
-    context.externalToolsDisabled = args.disableExternalTools === true || args.disableTools === true
-    context.toolsDisabled = args.disableTools === true
-    context.executionPolicyKey = JSON.stringify(args.executionPolicy)
     return context.sessionToken
   }
 

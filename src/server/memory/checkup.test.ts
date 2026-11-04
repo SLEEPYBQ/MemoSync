@@ -36,6 +36,21 @@ describe('createCheckupService (step-one container 2, redesign 2026-08-07)', () 
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('skips an empty branch and rejects task/policy/scope changes when priming a semantic result', async () => {
+    const checkup = createCheckupService({ memory, callJson: async () => { throw new Error('Unexpected model call'); }, listRecentSessions: noSessions });
+    const ctx = { projectId: 'P1', sessionId: 'S1', taskText: 'Task A', policyKey: 'policy-A' };
+    const empty = checkup.buildBranchPrompt!(ctx, ctx.taskText);
+    expect(empty.skip?.reason).toBe('no-saved-memories');
+    memory.store.create({ content: 'A saved rule', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const request = checkup.buildBranchPrompt!(ctx, ctx.taskText);
+    const raw = { conflicts: [], redundancy: [], staleness: [] };
+    expect(await checkup.primeFromBranchResult!(ctx, request.dependencyKey, raw)).not.toBeNull();
+    for (const changed of [{ ...ctx, taskText: 'Task B' }, { ...ctx, policyKey: 'policy-B' }, { ...ctx, projectId: 'P2' }]) {
+      expect(await checkup.primeFromBranchResult!(changed, request.dependencyKey, raw)).toBeNull();
+      expect(checkup.buildBranchPrompt!(changed, changed.taskText).dependencyKey).not.toBe(request.dependencyKey);
+    }
+  });
+
   it('runs the pair queries over the pool, validates ids, and filters already-related pairs', async () => {
     const a = memory.store.create({ content: 'Commit messages in Chinese', scope: 'personal', type: 'constraint' }, { actor: 'system' });
     const b = memory.store.create({ content: 'Commit messages in English', scope: 'personal', type: 'constraint' }, { actor: 'system' });
