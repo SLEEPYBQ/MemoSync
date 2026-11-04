@@ -445,6 +445,8 @@ export interface StartPiTurnArgs {
    * The list is part of the session-reuse key.
    */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => Promise<{ block?: boolean; reason?: string } | undefined>
+  onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
+  isPolicyCurrent?: () => boolean
   outputSchema?: Record<string, unknown>
   toolNames?: readonly string[]
   /**
@@ -471,6 +473,7 @@ interface PiChatSession {
   outputSchema?: Record<string, unknown>
   supportsStructuredOutput?: boolean
   beforeToolCall?: StartPiTurnArgs["beforeToolCall"]
+  isPolicyCurrent?: () => boolean
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
   memoryInvoke: ((name: string, args: Record<string, unknown>, signal?: AbortSignal) => Promise<MemoryToolResult>) | null
 }
@@ -581,10 +584,12 @@ export class PiAgentManager {
       && existing.connectionProtocol === args.connection.protocol
     if (existing && connectionUnchanged && existing.cwd === args.cwd
       && existing.definitionsKey === definitionsKey && !args.forkSession) {
+      if (args.beforeToolCall && !existing.session.agent) throw new Error("Pi tool gating is unavailable in this SDK runtime")
       await setConnectionKey(existing.modelRuntime, args.connection)
       args.signal?.throwIfAborted()
       existing.memoryInvoke = args.memoryDispatch ?? null
       existing.beforeToolCall = args.beforeToolCall
+      existing.isPolicyCurrent = args.isPolicyCurrent
       if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
         await existing.session.setModel(this.resolveModel(existing.modelRuntime, args.connection, args.model, args.modelCard, args.effort))
         args.signal?.throwIfAborted()
@@ -699,6 +704,11 @@ export class PiAgentManager {
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
       memoryInvoke: args.memoryDispatch ?? null,
       beforeToolCall: args.beforeToolCall,
+      isPolicyCurrent: args.isPolicyCurrent,
+    }
+    if (args.beforeToolCall && !session.agent) {
+      session.dispose()
+      throw new Error("Pi tool gating is unavailable in this SDK runtime")
     }
     if (session.agent) {
       if (args.systemPrompt !== undefined) {
@@ -709,9 +719,12 @@ export class PiAgentManager {
       }
       const previousToolHook = session.agent.beforeToolCall
       session.agent.beforeToolCall = async (context, signal) => {
-        const denied = await chatSession.beforeToolCall?.(context.toolCall.name, context.args as Record<string, unknown>)
+        const gate = chatSession.beforeToolCall, current = chatSession.isPolicyCurrent
+        const denied = await gate?.(context.toolCall.name, context.args as Record<string, unknown>)
         if (denied?.block) return denied
-        return previousToolHook?.(context, signal)
+        const nativeResult = await previousToolHook?.(context, signal)
+        if (gate !== chatSession.beforeToolCall || current?.() === false) return { block: true, reason: "Execution policy changed or turn ended" }
+        return nativeResult
       }
       const previousPayloadHook = session.agent.onPayload
       session.agent.onPayload = async (payload, model) => {
@@ -792,6 +805,9 @@ export class PiAgentManager {
     }
     args.signal?.throwIfAborted()
     chatSession.outputSchema = args.outputSchema
+    await args.onExecutionPolicyApplied?.(session.sessionFile ?? undefined)
+    args.signal?.throwIfAborted()
+    if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

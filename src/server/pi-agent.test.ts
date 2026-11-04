@@ -78,6 +78,41 @@ const startupArgs = {
   connection: { provider: "custom" as const, baseUrl: "https://example.test/v1", apiKey: "test-key" },
 }
 
+describe("Pi execution gates", () => {
+  test("a policy expiring during a native extension hook blocks dispatch", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "pi-policy-")); tempDirs.push(dataDir)
+    const entered = deferred(), nativeGate = deferred()
+    let current = true, checks = 0
+    const session = { ...fakeSession(), agent: { beforeToolCall: async () => { entered.resolve(); await nativeGate.promise; return undefined } } }
+    const sdk = fakeSdk({ create: async () => session })
+    const manager = new PiAgentManager({ dataDir, loadModels: async () => [], loadSdk: async () => sdk as never })
+    try {
+      await manager.startTurn({ ...startupArgs, beforeToolCall: async () => { checks++; return undefined }, isPolicyCurrent: () => current })
+      const hook = session.agent.beforeToolCall as (context: unknown, signal?: AbortSignal) => Promise<unknown>
+      const result = hook({ toolCall: { name: "bash" }, args: { command: "synthetic" } })
+      await entered.promise
+      current = false
+      nativeGate.resolve()
+      expect(await result).toMatchObject({ block: true })
+      expect(checks).toBe(1)
+    } finally { manager.dispose() }
+  })
+
+  test("a reused SDK session without a native tool hook cannot claim gated execution", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "pi-no-gate-")); tempDirs.push(dataDir)
+    const session = fakeSession(), sdk = fakeSdk({ create: async () => session })
+    const manager = new PiAgentManager({ dataDir, loadModels: async () => [], loadSdk: async () => sdk as never })
+    try {
+      const first = await manager.startTurn(startupArgs)
+      await collectEvents(first.stream)
+      const denied = await manager.startTurn({ ...startupArgs, beforeToolCall: async () => undefined })
+      const events = await collectEvents(denied.stream)
+      expect(events.at(-1)?.entry).toMatchObject({ kind: "result", isError: true, result: expect.stringContaining("tool gating is unavailable") })
+      expect(session.calls.prompts).toBe(1)
+    } finally { manager.dispose() }
+  })
+})
+
 describe("Pi stable definitions", () => {
   const spec = (): MemoryToolSpec => ({ name: "memory_probe", description: "Read memory", schema: {
     selection: z.enum(["alpha", "beta"]),
