@@ -8,6 +8,7 @@ Parts of model access are adapted from [Magpie](https://github.com/yetone/magpie
 - `src/server/model-access/presets.ts` — provider presets and model data (`internal/provider/presets.go`, catalog test data)
 - `src/server/model-access/runtime.ts` — Claude Code and Codex provider mapping (`internal/agent/claude.go`, `codex.go`)
 - `src/server/model-access/test-connection.ts` — connection test requests (`internal/provider/test.go`)
+- `src/client/components/brand/preset-icons.ts` — preset-to-brand assignments and vendor marks (`internal/provider/presets.go`, `internal/gui/assets/icons/`, Magpie commit `f73c2fc`); lobe-icons marks are covered by the notice below
 - `src/server/model-access/gateway/index.ts` — translation routing/orchestration (`internal/gateway/gateway.go`)
 - `src/server/model-access/gateway/request.ts` — shared request shape, Messages/Responses parsing and Chat encoding (`internal/gateway/ir.go`, `anthropic.go`, `responses.go`, `chat.go`)
 - `src/server/model-access/gateway/stream.ts` — SSE reader, Chat decoding and client event encoding (`internal/gateway/sse.go`, `chat.go`, `anthropic.go`, `responses.go`)
@@ -72,7 +73,9 @@ SOFTWARE.
 ## lobe-icons
 
 Vendor marks in `src/client/components/brand/brand-svgs.ts` are taken from
-[lobe-icons](https://github.com/lobehub/lobe-icons) (`@lobehub/icons-static-svg` 1.95.1). They identify the
+[lobe-icons](https://github.com/lobehub/lobe-icons) (`@lobehub/icons-static-svg` 1.95.1).
+`src/client/components/brand/preset-icons.ts` also includes lobe-icons marks distributed by Magpie.
+They identify the
 providers and engines a user connects; the trademarks belong to their owners.
 
 MIT License

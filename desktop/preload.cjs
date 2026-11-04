@@ -5,6 +5,7 @@ const { contextBridge, ipcRenderer, webFrame } = require("electron")
 contextBridge.exposeInMainWorld("memosyncDesktop", {
   platform: process.platform,
   setTheme: (theme) => ipcRenderer.send("memosync:set-theme", theme),
+  chooseDirectory: (defaultPath) => ipcRenderer.invoke("memosync:choose-directory", defaultPath),
 })
 
 // The traffic lights leave in full screen, so the room kept for them has to go too.

@@ -14,15 +14,20 @@ import {
   type ClaudeReasoningEffort,
   type CodexModelOptions,
   type CodexReasoningEffort,
+  type OpencodeModelOptions,
   type PiModelOptions,
   type PiReasoningEffort,
   type ProviderCatalogEntry,
   supportsClaudeMaxReasoningEffort,
+  resolveModelReasoningEffort,
+  isClaudeReasoningEffort,
+  isCodexReasoningEffort,
   getProviderCatalog,
 } from "../../../shared/types"
 import { piEffortOptions, resolvePiEffort } from "../../../shared/model-capabilities"
 import { useRegistryModels } from "../../hooks/useRegistryModels"
 import { cn } from "../../lib/utils"
+import { BrandMark, brandForModel } from "../brand/BrandIcon"
 import { BRAND_SVGS } from "../brand/brand-svgs"
 import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 
@@ -103,6 +108,21 @@ function PiIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function OpencodeIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
+  return (
+    <svg
+      viewBox={BRAND_SVGS.opencode.viewBox}
+      fill="currentColor"
+      aria-hidden="true"
+      data-provider-icon="opencode"
+      className={cn("shrink-0", className)}
+      {...props}
+      dangerouslySetInnerHTML={{ __html: BRAND_SVGS.opencode.markup }}
+    />
+  )
+}
+
 // Claude's mark, in currentColor like the other engine icons. Static in-repo
 // constant (brand-svgs.ts), never user or network content.
 const CLAUDE_MARKUP = BRAND_SVGS.claude.markup.replace(/\sfill="[^"]*"/g, "")
@@ -125,6 +145,7 @@ export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   claude: ClaudeIcon,
   codex: OpenAIIcon,
   pi: PiIcon,
+  opencode: OpencodeIcon,
 }
 
 // The Claude-engine catalog spans vendors; the composer chip follows the
@@ -216,8 +237,12 @@ export function InputPopover({
           {trigger}
         </button>
       </PopoverTrigger>
-      <PopoverContent align={align} className="w-64 p-1">
-        <div className="max-h-[70dvh] space-y-1 overflow-y-auto">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
+      <PopoverContent
+        align={align}
+        collisionPadding={12}
+        className="max-h-[min(28rem,var(--radix-popover-content-available-height))] w-64 overflow-y-auto overscroll-contain p-1"
+      >
+        <div className="space-y-1">{typeof children === "function" ? children(() => setOpen(false)) : children}</div>
       </PopoverContent>
     </Popover>
   )
@@ -273,7 +298,7 @@ interface ChatPreferenceControlsProps {
   providerLocked?: boolean
   showCodexCliRequirementHints?: boolean
   model: string
-  modelOptions: ClaudeModelOptions | CodexModelOptions | PiModelOptions
+  modelOptions: ClaudeModelOptions | CodexModelOptions | PiModelOptions | OpencodeModelOptions
   onProviderChange?: (provider: AgentProvider) => void
   onModelChange: (provider: AgentProvider, model: string, connectionId?: string) => void
   onModelOptionChange: (change: ModelOptionChange) => void
@@ -281,6 +306,11 @@ interface ChatPreferenceControlsProps {
   onPlanModeChange?: (planMode: boolean) => void
   includePlanMode?: boolean
   className?: string
+}
+
+function ModelIcon({ id, className }: { id: string; className: string }) {
+  const brand = brandForModel(id)
+  return <span data-model-icon className="contents">{brand ? <BrandMark brand={brand} className={className} /> : <Box className={className} />}</span>
 }
 
 export function ChatPreferenceControls({
@@ -317,11 +347,18 @@ export function ChatPreferenceControls({
   const modelCard = registry.models.find(candidate => candidate.id === model)
   // A remembered model the signed-in account can't run: the server launches the
   // engine's default instead, so that is what the control has to say.
-  const shownModel = accessSnapshot && access?.mode === "account" && selectedProvider !== "pi"
-    && !connectionId && !providerConfig?.models.some((candidate) => candidate.id === model)
-    ? providerConfig?.defaultModel ?? model
+  const accountModels = providerConfig.models.filter(candidate => !candidate.connectionId)
+  const accountMatch = accountModels.find(candidate => candidate.id === model || candidate.aliases?.includes(model))
+  const shownModel = showAccountModels && selectedProvider !== "pi" && !connectionId && accountModels.length
+    ? accountMatch?.id ?? providerConfig.defaultModel
     : model
-  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig?.models.find((candidate) => candidate.id === shownModel)
+  const selectedModelEntry = (selectedProvider === "pi" ? modelCard : undefined) ?? providerConfig.models.find(candidate => candidate.id === shownModel && (activeConnectionId ? candidate.connectionId === activeConnectionId : !candidate.connectionId))
+  const nativeEffort = selectedProvider === "claude" || selectedProvider === "codex"
+    ? resolveModelReasoningEffort(selectedModelEntry, (modelOptions as ClaudeModelOptions | CodexModelOptions).reasoningEffort)
+    : undefined
+  const nativeEffortOptions = selectedModelEntry?.reasoningEfforts
+    ? selectedModelEntry.reasoningEfforts.filter(selectedProvider === "claude" ? isClaudeReasoningEffort : isCodexReasoningEffort).map(id => ({ id, label: id === "xhigh" ? "Extra High" : id[0]!.toUpperCase() + id.slice(1) }))
+    : (selectedProvider === "claude" ? CLAUDE_REASONING_OPTIONS.filter(option => !providerConfig.efforts?.length || providerConfig.efforts.some(effort => effort.id === option.id)) : CODEX_REASONING_OPTIONS)
   const piRequested = (modelOptions as PiModelOptions).reasoningEffort
   const useConnectionEfforts = Boolean(accessSnapshot) || !showModelPicker
   const piEffort = useConnectionEfforts ? piRequested : resolvePiEffort(modelCard, piRequested)
@@ -339,14 +376,14 @@ export function ChatPreferenceControls({
     return acc
   }, [])
   const useVendorPicker = showModelPicker && !accessSnapshot && vendors.length > 1
+  const catalogModels = showAccountModels ? accountModels : providerConfig.models
   const baseModelList = useVendorPicker && selectedVendor
-    ? (providerConfig?.models ?? []).filter((candidate) => candidate.vendor === selectedVendor)
-    : (providerConfig?.models ?? [])
+    ? catalogModels.filter(candidate => candidate.vendor === selectedVendor)
+    : catalogModels
   const VendorIcon = (selectedVendor ? VENDOR_ICONS[selectedVendor] : undefined) ?? PROVIDER_ICONS[selectedProvider]
   // Engine and model vendor are independent choices: a multi-vendor Claude
   // catalog must not hide the switch to Codex.
   const showEngineProviderPicker = showProviderPicker && availableProviders.length > 1
-  const ModelIcon = Box
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
@@ -356,7 +393,9 @@ export function ChatPreferenceControls({
 
   const allModels = selectedProvider === "pi" && registry.models.length ? registry.models : baseModelList
   const query = modelSearch.trim().toLowerCase()
-  const modelList = selectedProvider === "pi"
+  // An OpenCode sign-in can expose hundreds of models across its providers.
+  const searchableAccountModels = selectedProvider === "opencode" && showAccountModels
+  const modelList = selectedProvider === "pi" || searchableAccountModels
     ? allModels.filter(candidate => !query || `${candidate.id} ${candidate.label}`.toLowerCase().includes(query)).slice(0, 60)
     : allModels
   return (
@@ -422,29 +461,34 @@ export function ChatPreferenceControls({
       ) : null}
 
       {showModelPicker ? <InputPopover
-        onOpen={selectedProvider === "pi" ? () => { setModelSearch(""); registry.refresh() } : undefined}
+        onOpen={selectedProvider === "pi" ? () => { setModelSearch(""); registry.refresh() } : searchableAccountModels ? () => setModelSearch("") : undefined}
         trigger={(
           <>
-            <ModelIcon className="h-3.5 w-3.5" />
-            <span className="max-w-[200px] truncate">{connectionModel?.label ?? selectedModelEntry?.label ?? shownModel}</span>
+            <ModelIcon id={shownModel} className="h-3.5 w-3.5" />
+            <span className="max-w-[200px] truncate">{connectionModel?.label ?? selectedModelEntry?.label ?? (shownModel || t("chat:engineDefaultModel"))}</span>
           </>
         )}
       >
         {(close) => (
           <>
-            {groups.map(({ connection, models }) => <div key={connection.id} role="group" aria-label={connection.name} className="max-h-60 overflow-y-auto border-b border-border pb-1 last:border-0">
-              <p className="break-words px-2 py-1 text-xs text-muted-foreground">{connection.name}</p>
-              {models.map(candidate => <PopoverMenuItem key={candidate.id} onClick={() => { onModelChange(selectedProvider, candidate.id, connection.id); close() }} selected={activeConnectionId === connection.id && model === candidate.id} icon={<Box className="size-4 text-muted-foreground" />} label={candidate.label ?? candidate.id} />)}
-            </div>)}
             {accessSnapshot && !showAccountModels && !groups.length ? <p className="p-2 text-sm text-muted-foreground">{t("modelAccess:noCompatibleModels")}</p> : null}
             {accessSnapshot && showAccountModels ? <p className="px-2 py-1 text-xs text-muted-foreground">{t("modelAccess:accountModels")}</p> : null}
             {selectedProvider === "pi" && !accessSnapshot ? <PiCustomModelItem onSearch={setModelSearch} onSubmit={(modelId) => {
               onModelChange(selectedProvider, modelId)
               close()
             }} /> : null}
-            <div className="max-h-72 overflow-y-auto">
+            {searchableAccountModels ? (
+              <div className="p-1">
+                <input
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                  placeholder={t("chat:searchModels")}
+                  aria-label={t("chat:searchModels")}
+                  className="w-full rounded-md border border-border bg-transparent px-2 py-1 text-sm outline-none placeholder:text-muted-foreground/60 focus:border-foreground/30"
+                />
+              </div>
+            ) : null}
             {(showAccountModels ? modelList : []).map((candidate) => {
-              const Icon = Box
               return (
                 <PopoverMenuItem
                   key={candidate.id}
@@ -453,7 +497,7 @@ export function ChatPreferenceControls({
                     close()
                   }}
                   selected={!activeConnectionId && shownModel === candidate.id}
-                  icon={<Icon className="h-4 w-4 text-muted-foreground" />}
+                  icon={<ModelIcon id={candidate.id} className="h-4 w-4 text-muted-foreground" />}
                   label={
                     showCodexCliRequirementHints && selectedProvider === "codex" && candidate.id === "gpt-5.5"
                       ? (
@@ -466,10 +510,10 @@ export function ChatPreferenceControls({
                       )
                       : candidate.label
                   }
+                  description={candidate.resolvedModel ?? candidate.id}
                 />
               )
             })}
-            </div>
             {selectedProvider === "pi" && !accessSnapshot ? (
               <>
                 {/* Pi accepts any non-empty registry model id; show the active
@@ -486,70 +530,51 @@ export function ChatPreferenceControls({
 
               </>
             ) : null}
+            {groups.map(({ connection, models }) => <div key={connection.id} role="group" aria-label={connection.name} className="border-t border-border pt-1 first:border-0">
+              <p className="break-words px-2 py-1 text-xs text-muted-foreground">{connection.name}</p>
+              {models.map(candidate => <PopoverMenuItem key={candidate.id} onClick={() => { onModelChange(selectedProvider, candidate.id, connection.id); close() }} selected={activeConnectionId === connection.id && model === candidate.id} icon={<ModelIcon id={candidate.id} className="size-4 text-muted-foreground" />} label={candidate.label ?? candidate.id} />)}
+            </div>)}
           </>
         )}
       </InputPopover> : null}
 
-      <InputPopover
+      {selectedProvider === "pi" || nativeEffort !== undefined ? <InputPopover
         trigger={(
           <>
             <Brain className="h-3.5 w-3.5" />
-            <span>{
-              selectedProvider === "claude"
-                ? effortLabel(CLAUDE_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort)
-                : selectedProvider === "pi"
-                  ? effortLabel(PI_REASONING_OPTIONS.find((effort) => effort.id === piEffort)?.label ?? piEffort)
-                  : effortLabel(CODEX_REASONING_OPTIONS.find((effort) => effort.id === modelOptions.reasoningEffort)?.label ?? modelOptions.reasoningEffort)
-            }</span>
+            <span>{selectedProvider === "pi"
+              ? effortLabel(PI_REASONING_OPTIONS.find(effort => effort.id === piEffort)?.label ?? piEffort)
+              : effortLabel(nativeEffortOptions.find(effort => effort.id === nativeEffort)?.label ?? nativeEffort ?? "")}</span>
           </>
         )}
       >
-        {(close) => (
-          selectedProvider === "claude"
-            ? CLAUDE_REASONING_OPTIONS.filter((effort) =>
-                !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
-              ).map((effort) => (
+        {(close) => selectedProvider === "pi"
+          ? (useConnectionEfforts ? PI_REASONING_OPTIONS : piEffortOptions(modelCard)).filter(effort =>
+              !providerConfig.efforts?.length || providerConfig.efforts.some(option => option.id === effort.id)
+            ).map(effort => (
               <PopoverMenuItem
                 key={effort.id}
-                onClick={() => {
-                  onModelOptionChange({ type: "claudeReasoningEffort", effort: effort.id })
-                  close()
-                }}
-                selected={modelOptions.reasoningEffort === effort.id}
-                icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                label={effortLabel(effort.label)}
-                disabled={effort.id === "max" && !supportsClaudeMaxReasoningEffort(model)}
-              />
-            ))
-            : selectedProvider === "pi"
-              ? (useConnectionEfforts ? PI_REASONING_OPTIONS : piEffortOptions(modelCard)).filter((effort) =>
-                  !providerConfig?.efforts?.length || providerConfig.efforts.some((option) => option.id === effort.id)
-                ).map((effort) => (
-                <PopoverMenuItem
-                  key={effort.id}
-                  onClick={() => {
-                    onModelOptionChange({ type: "piReasoningEffort", effort: effort.id })
-                    close()
-                  }}
-                  selected={piEffort === effort.id}
-                  icon={<Brain className="h-4 w-4 text-muted-foreground" />}
-                  label={effortLabel(effort.label)}
-                />
-              ))
-              : CODEX_REASONING_OPTIONS.map((effort) => (
-              <PopoverMenuItem
-                key={effort.id}
-                onClick={() => {
-                  onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
-                  close()
-                }}
-                selected={modelOptions.reasoningEffort === effort.id}
+                onClick={() => { onModelOptionChange({ type: "piReasoningEffort", effort: effort.id }); close() }}
+                selected={piEffort === effort.id}
                 icon={<Brain className="h-4 w-4 text-muted-foreground" />}
                 label={effortLabel(effort.label)}
               />
             ))
-        )}
-      </InputPopover>
+          : nativeEffortOptions.map(effort => (
+              <PopoverMenuItem
+                key={effort.id}
+                onClick={() => {
+                  if (selectedProvider === "claude" && isClaudeReasoningEffort(effort.id)) onModelOptionChange({ type: "claudeReasoningEffort", effort: effort.id })
+                  if (selectedProvider === "codex" && isCodexReasoningEffort(effort.id)) onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
+                  close()
+                }}
+                selected={nativeEffort === effort.id}
+                icon={<Brain className="h-4 w-4 text-muted-foreground" />}
+                label={effortLabel(effort.label)}
+                disabled={selectedProvider === "claude" && !selectedModelEntry?.reasoningEfforts && effort.id === "max" && !supportsClaudeMaxReasoningEffort(shownModel)}
+              />
+            ))}
+      </InputPopover> : null}
 
       {selectedProvider === "claude" && contextWindowOptions.length > 1 ? (
         <InputPopover

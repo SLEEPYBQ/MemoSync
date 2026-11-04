@@ -5,6 +5,8 @@ import { mkdir } from "node:fs/promises"
 import { chromium, type Browser, type Page } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
 import type { ExecutableState } from "../../shared/model-access"
+import { PROVIDERS } from "../../shared/types"
+import { CONNECTION_PRESETS } from "../../server/model-access/presets"
 import type {} from "../test-fixtures/model-access-ui/fixture"
 
 let vite: ViteDevServer
@@ -177,6 +179,70 @@ test("engine paths, access, model and refresh send contract commands, with retry
   await card.getByRole("button", { name: "Claude Code actions" }).click()
   await page.getByRole("button", { name: "Detect again", exact: true }).click()
   expect(await card.getByRole("alert").count()).toBe(0)
+})
+
+test("account defaults follow a refreshed CLI catalog and save the exact native model id", async () => {
+  await open()
+  await page.evaluate((providers) => window.modelAccessFixture.providers(providers), PROVIDERS.map(provider =>
+    provider.id === "claude" ? { ...provider, defaultModel: "sonnet", models: [
+      { id: "sonnet", label: "Sonnet 5.5", resolvedModel: "claude-sonnet-5-5", supportsEffort: true },
+      { id: "claude-fable-5-1[1m]", label: "Fable 5.1 [1m]", resolvedModel: "claude-fable-5-1", supportsEffort: true, reasoningEfforts: ["low", "max"], defaultReasoningEffort: "max" },
+      { id: "haiku", label: "Haiku 5.5", resolvedModel: "claude-haiku-5-5", supportsEffort: false, reasoningEfforts: [] },
+    ] } : provider.id === "codex" ? { ...provider, defaultModel: "gpt-live", models: [
+      { id: "gpt-live", label: "Live Codex", supportsEffort: true },
+    ] } : provider,
+  ))
+  const claude = page.locator('[data-engine="claude"]')
+  await claude.getByRole("button", { name: "Sonnet 5.5", exact: true }).click()
+  const picker = page.getByRole("dialog")
+  expect(await picker.getByRole("button").allTextContents()).toEqual(["Sonnet 5.5claude-sonnet-5-5", "Fable 5.1 [1m]claude-fable-5-1", "Haiku 5.5claude-haiku-5-5"])
+  expect(await picker.locator("[data-model-icon] svg").count()).toBe(3)
+  await picker.getByRole("button", { name: /^Fable 5\.1/ }).click()
+  expect(await lastCommand()).toMatchObject({
+    type: "settings.writeAppSettingsPatch",
+    patch: { providerDefaults: { claude: { model: "claude-fable-5-1[1m]" } } },
+  })
+  await claude.getByRole("button", { name: "Fable 5.1 [1m]", exact: true }).waitFor()
+  await claude.getByRole("button", { name: "Max", exact: true }).click()
+  expect(await page.getByRole("dialog").getByRole("button").allTextContents()).toEqual(["Low", "Max"])
+  await page.getByRole("dialog").getByRole("button", { name: "Low", exact: true }).click()
+  await page.locator('[data-engine="codex"]').getByRole("button", { name: "Live Codex", exact: true }).waitFor()
+
+  await page.getByRole("link", { name: "New chat", exact: true }).click()
+  await page.getByRole("button", { name: "Fable 5.1 [1m]", exact: true }).waitFor()
+  await page.getByPlaceholder("Build something...").fill("native model fixture")
+  await page.getByPlaceholder("Build something...").press("Enter")
+  expect(await page.evaluate(() => window.modelAccessFixture.submissions().at(-1))).toMatchObject({ options: { model: "claude-fable-5-1[1m]", modelOptions: { claude: { reasoningEffort: "low" } } } })
+
+  await page.getByRole("button", { name: "Fable 5.1 [1m]", exact: true }).click()
+  await page.getByRole("dialog").getByRole("button", { name: /^Haiku 5\.5/ }).click()
+  expect(await page.locator("button:has(svg.lucide-brain)").count()).toBe(0)
+  expect(await page.evaluate(() => window.modelAccessFixture.composer())).toMatchObject({ model: "haiku" })
+  await page.evaluate(() => window.modelAccessFixture.usage({
+    usedTokens: 150000, maxTokens: 200000, remainingTokens: 50000,
+    usedPercentage: 75, remainingPercentage: 25,
+    compactsAutomatically: false, updatedAt: new Date().toISOString(),
+  }))
+  await page.getByRole("button", { name: "Context window 75% used", exact: true }).waitFor()
+  expect(await page.getByRole("button", { name: "Context window 15% used", exact: true }).count()).toBe(0)
+})
+
+test("all built-in provider presets have a visible SVG mark and remain searchable", async () => {
+  await open()
+  await page.evaluate((presets) => {
+    const snapshot = window.modelAccessFixture.snapshot()
+    snapshot.presets = presets
+    window.modelAccessFixture.publish(snapshot)
+  }, CONNECTION_PRESETS)
+  await page.getByRole("button", { name: "Add connection", exact: true }).click()
+  const picker = page.getByTestId("preset-picker")
+  for (const preset of CONNECTION_PRESETS) {
+    const button = picker.getByRole("button", { name: preset.name, exact: true })
+    expect(await button.locator("svg path").count()).toBeGreaterThan(0)
+  }
+  await picker.getByRole("textbox", { name: "Search providers" }).fill("Nous")
+  expect(await picker.getByRole("button", { name: "Nous Portal", exact: true }).count()).toBe(1)
+  expect(await picker.getByRole("button", { name: "Anthropic", exact: true }).count()).toBe(0)
 })
 
 test("an engine below its minimum offers its upgrade, and only then", async () => {
@@ -434,7 +500,7 @@ test("picker groups connection names and sends selected connectionId with a cust
   await page.getByRole("link", { name: "New chat", exact: true }).click()
   await page
     .locator("button")
-    .filter({ has: page.locator("svg.lucide-box") })
+    .filter({ has: page.locator("[data-model-icon]") })
     .first()
     .click()
   const popover = page.getByRole("dialog")
@@ -479,6 +545,32 @@ test("stable readiness problems render in both access modes and localize to Chin
   await page.evaluate(() => window.modelAccessFixture.language("zh-CN"))
   await page.getByRole("button", { name: "添加连接", exact: true }).waitFor()
   await shots("providers-zh-CN")
+}, 30000)
+
+test("OpenCode explains an invalid configuration and offers no effort or plan controls", async () => {
+  await open()
+  await page.evaluate(() => window.modelAccessFixture.opencodeConfigInvalid("Configuration is invalid at ~/.config/opencode/opencode.jsonc\n↳ Unrecognized key: mcpServers"))
+  const card = page.locator('[data-engine="opencode"]')
+  await card.locator('button[aria-controls="engine-details-opencode"]').click()
+  await card.getByText("OpenCode can’t start with your own configuration. Fix it or use an API connection, then refresh.", { exact: true }).waitFor()
+  await card.getByText("Unrecognized key: mcpServers").waitFor()
+  await shots("opencode-config-invalid")
+
+  await page.evaluate(() => {
+    window.modelAccessFixture.engineState("ready", "connection")
+    window.modelAccessFixture.clearComposer()
+  })
+  await page.getByRole("link", { name: "New chat", exact: true }).click()
+  await page.getByRole("button", { name: "Claude Code", exact: true }).click()
+  await page.getByRole("dialog").getByRole("button", { name: "OpenCode", exact: true }).click()
+  await page.locator('[data-provider-icon="opencode"]').first().waitFor()
+  expect(await page.getByRole("button", { name: /^(Low|Medium|High|Max)$/ }).count()).toBe(0)
+  const input = page.getByPlaceholder("Build something...")
+  await input.fill("message for OpenCode")
+  await input.press("Enter")
+  expect(await page.evaluate(() => window.modelAccessFixture.submissions().at(-1))).toMatchObject({
+    options: { provider: "opencode", model: "shared-model", modelOptions: { connectionId: "connection-0" }, planMode: false },
+  })
 }, 30000)
 
 test("every engine uses its configured connection default and retains effort and plan defaults", async () => {

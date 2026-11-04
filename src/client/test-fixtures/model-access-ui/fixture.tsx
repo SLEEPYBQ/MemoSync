@@ -1,4 +1,4 @@
-import { useEffect } from "react"
+import { useEffect, useState } from "react"
 import { createRoot } from "react-dom/client"
 import { MemoryRouter, Link, Route, Routes } from "react-router-dom"
 import { PROVIDERS } from "../../../shared/types"
@@ -17,11 +17,14 @@ import { TooltipProvider } from "../../components/ui/tooltip"
 import { AppDialogProvider } from "../../components/ui/app-dialog"
 import { i18n } from "../../i18n"
 import { subscribeModelAccess } from "../../model-access/modelAccess"
+import { useServerProviders } from "../../lib/providerApi"
+import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import { useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import "./fixture.css"
 
 const protocols = ["anthropic-messages", "openai-responses", "openai-chat"] as const
 export const fixtureSnapshot: ModelAccessSnapshot = {
+  providers: PROVIDERS,
   connections: protocols.map((protocol, i) => ({
     id: `connection-${i}`,
     name: ["Anthropic Direct", "Responses Relay", "Local Chat"][i],
@@ -44,7 +47,7 @@ export const fixtureSnapshot: ModelAccessSnapshot = {
     noKey: i === 2,
   })),
   engines: Object.fromEntries(
-    (["claude", "codex", "pi"] as const).map((engine, i) => [
+    (["claude", "codex", "pi", "opencode"] as const).map((engine, i) => [
       engine,
       {
         engine,
@@ -82,6 +85,7 @@ fixtureSnapshot.presets.push(
 )
 let snapshot = structuredClone(fixtureSnapshot)
 let listener: ((snapshot: ModelAccessSnapshot) => void) | undefined
+let usageListener: ((usage: ContextWindowSnapshot) => void) | undefined
 const commands: ClientCommand[] = []
 const submissions: unknown[] = []
 let testResult: ConnectionTestResult = { ok: true, protocol: "openai-chat", latencyMs: 42 }
@@ -149,6 +153,11 @@ const api = {
     listener?.(structuredClone(snapshot))
   },
   snapshot: () => structuredClone(snapshot),
+  providers: (providers: typeof PROVIDERS) => {
+    snapshot.providers = structuredClone(providers)
+    listener?.(structuredClone(snapshot))
+  },
+  usage: (usage: ContextWindowSnapshot) => usageListener?.(usage),
   reset: () => {
     snapshot = structuredClone(fixtureSnapshot)
     commands.length = 0
@@ -165,7 +174,7 @@ const api = {
           ? { mode: "account" }
           : {
               mode: "connection",
-              connectionId: `connection-${["claude", "codex", "pi"].indexOf(id)}`,
+              connectionId: `connection-${["claude", "codex", "pi", "opencode"].indexOf(id) % 3}`,
               defaultModel: "shared-model",
             }
     }
@@ -185,6 +194,11 @@ const api = {
     rejectNext = true
   },
   language: (value: string) => i18n.changeLanguage(value),
+  opencodeConfigInvalid: (detail: string) => {
+    Object.assign(snapshot.engines.opencode, { ready: false, problem: "account-config-invalid", problemDetail: detail })
+    snapshot.engines.opencode.setup.access = { mode: "account" }
+    listener?.(structuredClone(snapshot))
+  },
   composer: () => useChatPreferencesStore.getState().getComposerState("__new__"),
   clearComposer: () => {
     useChatPreferencesStore.setState({ chatStates: {} })
@@ -198,6 +212,12 @@ declare global {
 window.modelAccessFixture = api
 
 function Fixture() {
+  const providers = useServerProviders()
+  const [usage, setUsage] = useState<ContextWindowSnapshot | null>(null)
+  useEffect(() => {
+    usageListener = setUsage
+    return () => { usageListener = undefined }
+  }, [])
   useEffect(() => subscribeModelAccess(fakeSocket), [])
   return (
     <main className="@container mx-auto max-w-[900px] space-y-6 p-4 text-foreground sm:p-8">
@@ -212,7 +232,7 @@ function Fixture() {
             <ProvidersSection
               state={{
                 socket: fakeSocket,
-                availableProviders: PROVIDERS,
+                availableProviders: providers,
                 handleWriteAppSettings: async (patch) => {
                   commands.push({ type: "settings.writeAppSettingsPatch", patch })
                 },
@@ -230,7 +250,8 @@ function Fixture() {
               disabled={false}
               canCancel={false}
               activeProvider={null}
-              availableProviders={PROVIDERS}
+              availableProviders={providers}
+              contextWindowSnapshot={usage}
               draftKey="fixture-new-chat"
               projectId="fixture-project"
             />

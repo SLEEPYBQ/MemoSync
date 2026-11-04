@@ -52,6 +52,7 @@ export function mergeAppSettingsPatch(
           ...patch.providerDefaults?.pi?.modelOptions,
         },
       },
+      opencode: { ...settings.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: {}, planMode: false },
     },
     memory: {
       ...settings.memory,

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   applySidebarProjectOrder,
+  sameProviders,
   composerStateFromSendOptions,
   countMatchingUserPrompts,
   getActiveChatSnapshot,
@@ -19,7 +20,23 @@ import {
   shouldRefreshStaleChatSnapshot,
   shouldAutoFollowTranscript,
 } from "./useAppState"
-import type { ChatAttachment, ChatSnapshot, SidebarData, UserPromptEntry } from "../../shared/types"
+import { PROVIDERS, type ChatAttachment, type ChatSnapshot, type SidebarData, type UserPromptEntry } from "../../shared/types"
+
+test("active chat snapshots accept capability-only and connection changes", () => {
+  const previous = structuredClone(PROVIDERS)
+  expect(sameProviders(previous, structuredClone(previous))).toBe(true)
+  for (const patch of [
+    { reasoningEfforts: ["low", "high"] },
+    { defaultReasoningEffort: "low" },
+    { resolvedModel: "claude-sonnet-5-5" },
+    { connectionId: "another-connection" },
+    { vendor: "Another vendor" },
+  ]) {
+    const next = structuredClone(previous)
+    Object.assign(next[0]!.models[0]!, patch)
+    expect(sameProviders(previous, next)).toBe(false)
+  }
+})
 
 for (const provider of ["claude", "codex", "pi"] as const) {
   test(`${provider} composer restores top-level and legacy connection selections`, () => {

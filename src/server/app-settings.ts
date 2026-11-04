@@ -16,7 +16,6 @@ import {
   normalizeClaudeModelId,
   normalizeCodexModelId,
   normalizePiModelId,
-  supportsClaudeMaxReasoningEffort,
   type AppSettingsPatch,
   type AppSettingsSnapshot,
   type AppThemePreference,
@@ -31,6 +30,7 @@ import {
   type MemoryPreviewSettings,
   type MemorySettings,
   type PiModelOptions,
+  type OpencodeModelOptions,
   type ProviderPreference,
   type SubmitWhileRunning,
 } from "../shared/types"
@@ -56,6 +56,7 @@ interface AppSettingsFile {
     claude?: Partial<ProviderPreference<Partial<ClaudeModelOptions>>> & { effort?: unknown }
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
     pi?: Partial<ProviderPreference<Partial<PiModelOptions>>> & { effort?: unknown }
+    opencode?: Partial<ProviderPreference<OpencodeModelOptions>>
   }
   memory?: {
     control?: unknown
@@ -140,6 +141,7 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       modelOptions: { ...DEFAULT_CODEX_MODEL_OPTIONS },
       planMode: false,
     },
+    opencode: { model: "", modelOptions: {}, planMode: false },
     pi: {
       model: DEFAULT_PI_MODEL,
       modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
@@ -190,7 +192,7 @@ function normalizeSubmitWhileRunning(value: unknown): SubmitWhileRunning {
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
-  return value === "claude" || value === "codex" || value === "pi" || value === "last_used" ? value : "last_used"
+  return value === "claude" || value === "codex" || value === "pi" || value === "opencode" || value === "last_used" ? value : "last_used"
 }
 
 function normalizeEditorPreset(value: unknown): EditorPreset {
@@ -222,7 +224,7 @@ function normalizeClaudePreference(value?: {
     model,
     modelOptions: {
       ...(typeof value?.modelOptions?.connectionId === "string" ? { connectionId: value.modelOptions.connectionId } : {}),
-      reasoningEffort: !supportsClaudeMaxReasoningEffort(model) && normalizedEffort === "max" ? "high" : normalizedEffort,
+      reasoningEffort: normalizedEffort,
       contextWindow: normalizeClaudeContextWindow(model, value?.modelOptions?.contextWindow),
     },
     planMode: value?.planMode === true,
@@ -280,6 +282,7 @@ function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | 
     claude: normalizeClaudePreference(value?.claude ?? defaults.claude),
     codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
     pi: normalizePiPreference(value?.pi ?? defaults.pi),
+    opencode: { model: typeof value?.opencode?.model === "string" ? value.opencode.model.trim() : "", modelOptions: {}, planMode: false },
   }
 }
 
@@ -418,6 +421,7 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
           ...patch.providerDefaults?.codex?.modelOptions,
         },
       },
+      opencode: { ...state.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: { ...state.providerDefaults.opencode.modelOptions, ...patch.providerDefaults?.opencode?.modelOptions }, planMode: false },
       pi: {
         ...state.providerDefaults.pi,
         ...patch.providerDefaults?.pi,

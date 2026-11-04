@@ -48,10 +48,10 @@ function contains(parent: string, child: string): boolean {
 }
 
 /** Stable across the main session and its forks; never reuse a host CLI home. */
-export function prepareProfileDir(engine: "claude" | "codex", env: RuntimeEnv): string {
+export function prepareProfileDir(engine: "claude" | "codex" | "opencode", env: RuntimeEnv): string {
   const root = resolve(env.MEMOSYNC_CLI_PROFILE_DIR?.trim() || join(getDataRootDir(homedir(), env), "cli-profiles"))
   const target = canonicalPath(join(root, engine))
-  const protectedPaths = [join(homedir(), ".claude"), join(homedir(), ".codex")]
+  const protectedPaths = [join(homedir(), ".claude"), join(homedir(), ".codex"), join(homedir(), ".config/opencode"), join(homedir(), ".local/share/opencode")]
   // An explicitly inherited host profile must not accidentally become the test profile.
   for (const value of [env.CLAUDE_CONFIG_DIR, env.CODEX_HOME]) {
     if (value?.trim() && !contains(canonicalPath(root), canonicalPath(resolve(value)))) {

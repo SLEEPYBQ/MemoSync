@@ -28,7 +28,7 @@ https://github.com/user-attachments/assets/488a1e41-5a01-4c01-ac76-5c37b8e764f0
 
 编程智能体都有记忆：`CLAUDE.md`、它自己总结的笔记、以前会话里的经验。但这些记忆里有什么、这次任务带进去了哪几条、它到底照做没有，通常没人看得到。
 
-MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex 和 Pi，把这些记忆摆到你眼前：
+MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex、Pi 和 OpenCode，把这些记忆摆到你眼前：
 - 每一处改动都要你点头；
 - 每一轮开始前，带哪些记忆由你确认；
 - 干活时，回复会标出用了哪条；
@@ -150,6 +150,7 @@ bun run start
 | **Claude Code** | 你装好的 `claude`；源码版没装时用 Agent SDK 自带的那份 | 自己的登录，或支持 Anthropic API 或 OpenAI Chat 的 API 连接 |
 | **Codex** | 你装好的 `codex`（必须安装） | 自己的登录，或支持 OpenAI Responses API 或 OpenAI Chat 的 API 连接 |
 | **Pi** | MemoSync 内置；Mac 应用要用你本机装的 `pi` | 支持 OpenAI Chat 或 Responses API 的 API 连接 |
+| **OpenCode** | 你装好的 `opencode`，需要 1.17.4 或更新版本 | 自己的 OpenCode 登录，或支持 Anthropic API、OpenAI Responses 或 OpenAI Chat 的 API 连接 |
 
 连接只支持 OpenAI Chat 时，MemoSync 会在本机 `127.0.0.1` 上起一个转换层，替 Claude Code 和 Codex 做协议转换，引擎卡片上会标出**经协议转换**。引擎本身拿不到你的 key。
 
@@ -165,7 +166,7 @@ bun run start
 
 用 API 连接时，引擎运行在 `~/.memosync/data/cli-profiles` 下的独立配置里，你自己的 `~/.claude` 和 `~/.codex` 不会被读取，也不会被改动。key 保存在 `~/.memosync/data/credentials.json`，只有你的账户能读，也不会回传给浏览器。
 
-MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想指定某个可执行文件，在引擎卡片里填上它的路径。版本太旧时，引擎卡片上会出现**升级**按钮。
+MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想指定某个可执行文件，在引擎卡片里填上它的路径。版本太旧且 MemoSync 能识别其安装方式时，引擎卡片上会出现**升级**按钮。
 
 ## 日常用到的控制
 
@@ -245,7 +246,7 @@ bun run check     # 类型检查和前端构建
 
 前端是 `src/client/` 下的 React 应用。开发模式的数据存放在 `~/.memosync-dev/`。
 
-Mac 应用要在 macOS 上开发和打包，只能打当前机器架构的版本：
+Mac 应用内置运行时，使用你在本机安装的智能体。开发和打包要在 macOS 上进行，只能打当前机器架构的版本：
 
 ```bash
 bun run desktop:install       # 只需一次
@@ -258,7 +259,8 @@ bun run desktop:package:mac   # DMG 和 ZIP 在 desktop/release/
 MemoSync 由 [Kanna](https://github.com/jakemor/kanna) 分叉而来，运行以下智能体：
 - 通过 Agent SDK 运行 [Claude Code](https://github.com/anthropics/claude-agent-sdk-typescript)；
 - 通过 `codex app-server` 运行 [Codex](https://developers.openai.com/codex/app-server/)；
-- [Pi](https://github.com/badlogic/pi-mono)。
+- [Pi](https://github.com/badlogic/pi-mono)；
+- [OpenCode](https://github.com/anomalyco/opencode)，通过 `opencode serve` 运行。
 
 服务商预设和引擎发现移植自 [Magpie](https://github.com/yetone/magpie)，服务商图标来自 [Lobe Icons](https://github.com/lobehub/lobe-icons)。许可证见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 

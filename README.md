@@ -26,7 +26,7 @@ https://github.com/user-attachments/assets/488a1e41-5a01-4c01-ac76-5c37b8e764f0
 
 ---
 
-Coding agents keep memory: `CLAUDE.md` files, notes they extract, lessons from earlier sessions. You rarely see what is in it, what the agent took into this task, or whether it followed it. MemoSync is a local workbench for Claude Code, Codex and Pi that puts that memory on screen.
+Coding agents keep memory: `CLAUDE.md` files, notes they extract, lessons from earlier sessions. You rarely see what is in it, what the agent took into this task, or whether it followed it. MemoSync is a local workbench for Claude Code, Codex, Pi and OpenCode that puts that memory on screen.
 
 - Every change to memory waits for your review.
 - Before each turn, you confirm what goes in.
@@ -149,6 +149,7 @@ An **engine** is the agent that does the work. **Access** is how it reaches a mo
 | **Claude Code** | Your installed `claude`; from source, the copy bundled with the Agent SDK if you have none | Your sign-in, or an API connection that speaks the Anthropic API or OpenAI Chat |
 | **Codex** | Your installed `codex` (required) | Your sign-in, or an API connection that speaks the OpenAI Responses API or OpenAI Chat |
 | **Pi** | Built into MemoSync; the Mac app uses your installed `pi` | An API connection that speaks OpenAI Chat or Responses |
+| **OpenCode** | Your installed `opencode`, 1.17.4 or newer | Your OpenCode sign-in, or an API connection that speaks the Anthropic API, OpenAI Responses or OpenAI Chat |
 
 When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code and Codex through a local gateway on `127.0.0.1`; the engine card says **via translation**. The engine never sees your key.
 
@@ -164,7 +165,7 @@ When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code a
 
 Engines on an API connection run in a separate profile under `~/.memosync/data/cli-profiles`, so your own `~/.claude` and `~/.codex` are never read or changed. Keys are stored in `~/.memosync/data/credentials.json`, readable only by you, and are never sent back to the browser.
 
-MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card. If a version is too old, the engine card shows an **Upgrade** button.
+MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card. When a version is too old and MemoSync recognises how it was installed, the engine card shows an **Upgrade** button.
 
 ## Everyday controls
 
@@ -244,7 +245,7 @@ The server code is in `src/server/`:
 
 The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
-The Mac app is developed and packaged on macOS, for that machine's architecture only:
+The Mac app bundles its runtime and uses your locally installed agents. It is developed and packaged on macOS, for that machine's architecture only:
 
 ```bash
 bun run desktop:install       # once
@@ -257,7 +258,8 @@ bun run desktop:package:mac   # DMG and ZIP in desktop/release/
 MemoSync started as a fork of [Kanna](https://github.com/jakemor/kanna). It runs:
 - [Claude Code](https://github.com/anthropics/claude-agent-sdk-typescript) through the Agent SDK;
 - [Codex](https://developers.openai.com/codex/app-server/) through `codex app-server`;
-- [Pi](https://github.com/badlogic/pi-mono).
+- [Pi](https://github.com/badlogic/pi-mono);
+- [OpenCode](https://github.com/anomalyco/opencode) through `opencode serve`.
 
 Provider presets and engine discovery are adapted from [Magpie](https://github.com/yetone/magpie). Provider marks come from [Lobe Icons](https://github.com/lobehub/lobe-icons). Licenses are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

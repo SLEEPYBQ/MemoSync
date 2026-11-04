@@ -1,6 +1,7 @@
 import { t, useI18n } from "../i18n"
 import { useEffect, useState } from "react"
 import { PROVIDERS, type ProviderCatalogEntry } from "../../shared/types"
+import { useModelAccessStore } from "../model-access/modelAccess"
 
 const FALLBACK_PROVIDERS = PROVIDERS.filter((provider) => provider.id === "claude")
 let cached: ProviderCatalogEntry[] | null = null
@@ -26,11 +27,12 @@ function fetchProviders(): Promise<ProviderCatalogEntry[]> {
 
 export function useServerProviders(): ProviderCatalogEntry[] {
   useI18n()
+  const liveProviders = useModelAccessStore(state => state.snapshot?.providers)
   const [providers, setProviders] = useState(cached ?? FALLBACK_PROVIDERS)
   useEffect(() => {
     let alive = true
     void fetchProviders().then((value) => { if (alive) setProviders(value) })
     return () => { alive = false }
   }, [])
-  return providers
+  return liveProviders ?? providers
 }

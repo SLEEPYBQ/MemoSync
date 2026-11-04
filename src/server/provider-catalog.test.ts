@@ -36,15 +36,15 @@ describe("provider catalog normalization", () => {
       contextWindow: "1m",
     })
 
-    // Legacy tiers below "high" no longer exist for DeepSeek — stored prefs
-    // holding one fall back to the default.
+    // Preserve requested efforts here; the launch boundary constrains them to
+    // the current model's capabilities, including dynamic CLI metadata.
     expect(normalizeClaudeModelOptions("deepseek-v4-flash", {
       claude: {
         reasoningEffort: "medium" as never,
         contextWindow: "1m",
       },
     })).toMatchObject({
-      reasoningEffort: "high",
+      reasoningEffort: "medium",
     })
   })
 
@@ -105,7 +105,7 @@ describe("provider catalog normalization", () => {
   })
 
   test("normal deployments expose both engines, while isolated GLM exposes its configured Codex model", () => {
-    expect(deployedProviders({}).map((provider) => provider.id)).toEqual(["claude", "codex", "pi"])
+    expect(deployedProviders({}).map((provider) => provider.id)).toEqual(["claude", "codex", "pi", "opencode"])
     const codex = deployedProviders({ MEMOSYNC_ISOLATE_CLI: "1", GLM_API_KEY: "test", MEMOSYNC_CODEX_MODEL: "glm-5.3" }).find((provider) => provider.id === "codex")
     expect(codex?.defaultModel).toBe("glm-5.3")
     expect(codex?.models.map((model) => model.id)).toEqual(["glm-5.3"])

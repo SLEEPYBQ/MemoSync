@@ -2,7 +2,7 @@ import type { UiTextFields, UiTextReference } from "./ui-copy"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "pi"
+export type AgentProvider = "claude" | "codex" | "pi" | "opencode"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -126,7 +126,12 @@ export interface ProviderModelOption {
   connectionId?: string
   id: string
   label: string
+  /** Concrete wire ID reported by the CLI; `id` remains its invocation value. */
+  resolvedModel?: string
   supportsEffort: boolean
+  /** Exact levels advertised by this engine. An empty list means no effort parameter. */
+  reasoningEfforts?: readonly string[]
+  defaultReasoningEffort?: string
   aliases?: readonly string[]
   contextWindowOptions?: readonly ProviderContextWindowOption[]
   supportsMaxReasoningEffort?: boolean
@@ -139,6 +144,15 @@ export interface ProviderModelOption {
 export interface ProviderEffortOption {
   id: string
   label: string
+}
+
+/** Keep a supported choice, otherwise use the model's declared default. */
+export function resolveModelReasoningEffort(model: ProviderModelOption | undefined, requested: string): string | undefined {
+  if (model?.supportsEffort === false || model?.reasoningEfforts?.length === 0) return undefined
+  const levels = model?.reasoningEfforts
+  if (!levels || levels.includes(requested)) return requested
+  if (model.defaultReasoningEffort && levels.includes(model.defaultReasoningEffort)) return model.defaultReasoningEffort
+  return levels.includes("high") ? "high" : levels[0]
 }
 
 export interface ProviderContextWindowOption {
@@ -171,8 +185,8 @@ export const PI_REASONING_OPTIONS = [
   { id: "max", label: "Max" },
 ] as const satisfies readonly ProviderEffortOption[]
 
-export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"]
-export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"]
+export type ClaudeReasoningEffort = (typeof CLAUDE_REASONING_OPTIONS)[number]["id"] | "low" | "medium" | "xhigh"
+export type CodexReasoningEffort = (typeof CODEX_REASONING_OPTIONS)[number]["id"] | "none" | "max" | "ultra"
 export type PiReasoningEffort = (typeof PI_REASONING_OPTIONS)[number]["id"]
 export type ClaudeContextWindow = "200k" | "1m"
 export type ServiceTier = "fast"
@@ -194,10 +208,14 @@ export interface PiModelOptions {
   reasoningEffort: PiReasoningEffort
 }
 
+/** OpenCode exposes no effort or plan controls; use ModelOptions.connectionId. */
+export type OpencodeModelOptions = Record<string, never>
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   pi: PiModelOptions
+  opencode: OpencodeModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -210,6 +228,7 @@ export type ChatProviderPreferences = {
   claude: ProviderPreference<ClaudeModelOptions>
   codex: ProviderPreference<CodexModelOptions>
   pi: ProviderPreference<PiModelOptions>
+  opencode: ProviderPreference<OpencodeModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -238,11 +257,11 @@ export const DEFAULT_PI_MODEL_OPTIONS = {
 } as const satisfies PiModelOptions
 
 export function isClaudeReasoningEffort(value: unknown): value is ClaudeReasoningEffort {
-  return CLAUDE_REASONING_OPTIONS.some((option) => option.id === value)
+  return ["low", "medium", "high", "xhigh", "max"].includes(value as string)
 }
 
 export function isCodexReasoningEffort(value: unknown): value is CodexReasoningEffort {
-  return CODEX_REASONING_OPTIONS.some((option) => option.id === value)
+  return ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"].includes(value as string)
 }
 
 export function isPiReasoningEffort(value: unknown): value is PiReasoningEffort {
@@ -292,11 +311,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         label: "V4 Flash",
         supportsEffort: true,
         vendor: "DeepSeek",
-        aliases: [
-          "fable",
-          "haiku",
-          "claude-haiku-4-5-20251001",
-        ],
+        reasoningEfforts: ["high", "max"],
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
       },
@@ -304,6 +319,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "deepseek-v4-flash-vision-exp",
         label: "V4 Vision",
         supportsEffort: true,
+        reasoningEfforts: ["high", "max"],
         vendor: "DeepSeek",
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
@@ -312,6 +328,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "deepseek-v4-pro",
         label: "V4 Pro",
         supportsEffort: true,
+        reasoningEfforts: ["high", "max"],
         vendor: "DeepSeek",
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
@@ -323,6 +340,7 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
         id: "glm-5.3-flash",
         label: "GLM-5.3 Flash",
         supportsEffort: true,
+        reasoningEfforts: ["high", "max"],
         vendor: "GLM",
         contextWindowOptions: [CLAUDE_CONTEXT_WINDOW_OPTIONS[1]],
         supportsMaxReasoningEffort: true,
@@ -377,6 +395,10 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
     ],
     efforts: [...PI_REASONING_OPTIONS],
   },
+  {
+    id: "opencode", label: "OpenCode", defaultModel: "",
+    supportsPlanMode: false, models: [], efforts: [],
+  },
 ]
 
 export function getProviderCatalog(provider: AgentProvider): ProviderCatalogEntry {
@@ -406,13 +428,15 @@ export function normalizeProviderModelId(
 }
 
 export function normalizeClaudeModelId(modelId?: string, fallbackModelId = DEFAULT_DEEPSEEK_MODEL_ID): string {
-  return normalizeProviderModelId("claude", modelId, fallbackModelId)
+  // CLI account catalogs and custom connections add IDs at runtime. Preferences
+  // retain those IDs; only the server's current catalog decides availability.
+  return modelId?.trim() || fallbackModelId
 }
 
 export function normalizeCodexModelId(modelId?: string, fallbackModelId = "gpt-5.5"): string {
   // Custom Responses providers supply their model catalog at runtime. Preserve
   // those IDs in preferences; the server validates them against its catalog.
-  return getProviderModelMatch("codex", modelId)?.id ?? (modelId?.trim() || fallbackModelId)
+  return modelId?.trim() || fallbackModelId
 }
 
 // Pi accepts any non-empty Model Registry model id verbatim — the catalog is
@@ -453,6 +477,8 @@ export function resolveClaudeApiModelId(modelId: string, contextWindow?: ClaudeC
   // Catalog vendors (DeepSeek, GLM) keep their bare id; the server decides
   // per-vendor whether the `[1m]` selector applies (buildClaudeSdkRuntimeOptions).
   if (modelId.startsWith("deepseek-") || modelId.startsWith("glm-")) return modelId
+  // An engine's own id can already name its window (claude-fable-5-1[1m]).
+  if (modelId.includes("[")) return modelId
   return contextWindow === "1m" ? `${modelId}[1m]` : modelId
 }
 
@@ -589,6 +615,7 @@ export interface AppSettingsPatch {
     claude?: Partial<ProviderPreference<ClaudeModelOptions>>
     codex?: Partial<ProviderPreference<CodexModelOptions>>
     pi?: Partial<ProviderPreference<PiModelOptions>>
+    opencode?: Partial<ProviderPreference<OpencodeModelOptions>>
   }
   memory?: Partial<MemorySettings>
   memoryPreview?: Partial<MemoryPreviewSettings>

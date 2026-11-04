@@ -3,12 +3,15 @@
 import type { ApiConnection, ConnectionEndpoint, ConnectionModel, EngineId, ExecutableStatus } from "../../shared/model-access"
 import { compatibleEndpointForEngine, connectionSupport } from "../../shared/model-access"
 import { gatewayEndpoint } from "./gateway"
+import type { OpencodeConfig } from "../opencode-server"
+import { join } from "node:path"
 import type { PiConnection } from "../pi-agent"
 import { isCliIsolationEnabled, prepareProfileDir } from "../provider-runtime"
 import { executableLauncher } from "./executables"
 import type { ExecutableLauncher } from "./launcher"
 import { connectionNeedsKey, getModelAccessService, ModelAccessService, validateConnection } from "./service"
-import { executableEnvironment, type RuntimeEnv } from "./legacy"
+import { cleanConnectionEnv, executableEnvironment, type RuntimeEnv } from "./legacy"
+export { cleanConnectionEnv } from "./legacy"
 
 export interface EngineRuntime {
   engine: EngineId
@@ -19,6 +22,7 @@ export interface EngineRuntime {
   isolated: boolean
   connectionId?: string
   piConnection?: PiConnection
+  opencodeConfig?: OpencodeConfig
   /** How to start a Codex executable: a JS entry needs a runtime even on a GUI's node-less PATH. */
   launcher?: ExecutableLauncher
 }
@@ -28,14 +32,6 @@ export interface EngineRuntime {
 const resolved = new WeakMap<object, EngineRuntime>()
 export function runtimeForEnv(env?: RuntimeEnv) { return env ? resolved.get(env) : undefined }
 export function rememberRuntime(runtime: EngineRuntime) { resolved.set(runtime.env, runtime); return runtime }
-
-export function cleanConnectionEnv(base: RuntimeEnv): Record<string, string | undefined> {
-  const env = { ...base }
-  for (const key of Object.keys(env)) {
-    if (/^(ANTHROPIC_|CLAUDE_|CODEX_|OPENAI_|CHATGPT_)/.test(key) || key === "CLAUDECODE" || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET)$/.test(key) || key === "MEMOSYNC_CODEX_API_KEY") delete env[key]
-  }
-  return env
-}
 
 export function claudeConnectionEnv(base: RuntimeEnv, endpoint: ConnectionEndpoint, key: string | undefined, model: ConnectionModel, connectionId?: string) {
   const env = cleanConnectionEnv(base)
@@ -101,7 +97,7 @@ export async function resolveEngineRuntime(input: {
     const env = cleanConnectionEnv(base)
     if (base.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = base.CLAUDE_CONFIG_DIR
     if (base.CODEX_HOME) env.CODEX_HOME = base.CODEX_HOME
-    return withLauncher({ engine: input.engine, executable, env, args: input.engine === "codex" ? ["app-server"] : [], model: (input.engine === "codex" ? base.CODEX_MODEL : undefined) || input.model || (input.engine === "claude" ? "sonnet" : "gpt-5.5"), isolated: false })
+    return withLauncher({ engine: input.engine, executable, env, args: input.engine === "codex" ? ["app-server"] : [], model: input.model || (input.engine === "codex" ? base.CODEX_MODEL : undefined) || (input.engine === "opencode" ? service.getSnapshot().engines.opencode?.accountDefaultModel || "" : service.accountModels(input.engine)?.defaultModel || (input.engine === "claude" ? "sonnet" : "gpt-5.5")), isolated: false })
   }
   const connection: ApiConnection | undefined = service.connection(access.connectionId)
   if (!connection) throw new Error("connection-missing")
@@ -142,8 +138,35 @@ export async function resolveEngineRuntime(input: {
     if (model.contextWindow) { config.model_context_window = model.contextWindow; config.model_auto_compact_token_limit = Math.floor(model.contextWindow * 0.8) }
     if (model.supportsReasoning !== undefined) config.model_supports_reasoning_summaries = model.supportsReasoning
     runtime.args = ["app-server", ...Object.entries(config).flatMap(([k, v]) => ["-c", `${k}=${JSON.stringify(v)}`])]
+  } else if (input.engine === "opencode") {
+    for (const name of Object.keys(runtime.env)) if (name.startsWith("OPENCODE_")) delete runtime.env[name]
+    const profile = prepareProfileDir("opencode", profileEnv)
+    for (const kind of ["CONFIG", "DATA", "CACHE", "STATE"]) runtime.env[`XDG_${kind}_HOME`] = join(profile, kind.toLowerCase())
+    runtime.env.OPENCODE_DISABLE_PROJECT_CONFIG = "1"
+    runtime.env.MEMOSYNC_MODEL_API_KEY = key
+    runtime.opencodeConfig = buildOpencodeProviderConfig(endpoint, model)
   } else {
     runtime.piConnection = { provider: connection.presetId === "openrouter" || connection.id === "env-openrouter" ? "openrouter" : "custom", baseUrl: endpoint.baseUrl, apiKey: key || "", protocol: endpoint.protocol === "openai-responses" ? "openai-responses" : "openai-chat", contextWindow: model.contextWindow, maxOutputTokens: model.maxOutputTokens }
   }
   return withLauncher(runtime)
+}
+
+/** Model IDs remain verbatim inside the fixed MemoSync provider namespace. */
+export function buildOpencodeProviderConfig(endpoint: ConnectionEndpoint, model: ConnectionModel): OpencodeConfig {
+  const npm = { "openai-chat": "@ai-sdk/openai-compatible", "openai-responses": "@ai-sdk/openai", "anthropic-messages": "@ai-sdk/anthropic" }[endpoint.protocol]
+  const anthropic = endpoint.protocol === "anthropic-messages"
+  // The Anthropic SDK appends /messages; connection URLs are roots without /v1.
+  const root = endpoint.baseUrl.replace(/\/+$/, "")
+  const baseURL = anthropic ? (root.endsWith("/v1") ? root : `${root}/v1`) : endpoint.baseUrl
+  const credential = anthropic && endpoint.authHeader !== "x-api-key" ? "authToken" : "apiKey"
+  return {
+    provider: { memosync: { name: "MemoSync", npm,
+      options: { baseURL, [credential]: "{env:MEMOSYNC_MODEL_API_KEY}" },
+      models: { [model.id]: { name: model.label || model.id, tool_call: true,
+        limit: { context: model.contextWindow ?? 200_000, output: model.maxOutputTokens ?? 16_000 },
+        reasoning: model.supportsReasoning ?? false, attachment: model.supportsImages ?? false,
+      } },
+    } },
+    enabled_providers: ["memosync"], model: `memosync/${model.id}`, small_model: `memosync/${model.id}`,
+  }
 }

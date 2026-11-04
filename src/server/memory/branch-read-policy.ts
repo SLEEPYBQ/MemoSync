@@ -33,6 +33,18 @@ export function isProjectBranchPath(path: unknown, projectRoot: string, cwd = pr
   } catch { return false }
 }
 
+/** OpenCode permission patterns can be search expressions or relative to the
+ * Git worktree, so check the actual tool arguments against the selected project.
+ */
+export function isOpencodeBranchRead(name: string, input: Record<string, unknown>, projectRoot: string): boolean {
+  if (!["read", "grep", "glob", "list"].includes(name)) return false
+  if (name === "read") return typeof input.filePath === "string" && isProjectBranchPath(input.filePath, projectRoot)
+  if (!isProjectBranchPath(input.path, projectRoot)) return false
+  const cwd = typeof input.path === "string" ? resolve(projectRoot, input.path) : projectRoot
+  if (name === "glob" && !isProjectBranchPath(input.pattern, projectRoot, cwd)) return false
+  return true
+}
+
 /** Match Pi's path normalization and read-tool filename fallbacks before checking
  * realpath. Otherwise a missing ASCII name could select an outside curly/NFD link.
  */

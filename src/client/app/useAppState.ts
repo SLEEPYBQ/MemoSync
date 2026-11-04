@@ -81,7 +81,7 @@ function sameStringArray(left: readonly string[] | undefined, right: readonly st
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
-function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: ProviderCatalogEntry[] | null | undefined) {
+export function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: ProviderCatalogEntry[] | null | undefined) {
   if (left === right) return true
   if (!left || !right) return false
   if (left.length !== right.length) return false
@@ -104,7 +104,12 @@ function sameProviders(left: ProviderCatalogEntry[] | null | undefined, right: P
         return Boolean(otherModel)
           && model.id === otherModel.id
           && model.label === otherModel.label
+          && model.resolvedModel === otherModel.resolvedModel
           && model.supportsEffort === otherModel.supportsEffort
+          && sameStringArray(model.reasoningEfforts, otherModel.reasoningEfforts)
+          && model.defaultReasoningEffort === otherModel.defaultReasoningEffort
+          && model.connectionId === otherModel.connectionId
+          && model.vendor === otherModel.vendor
           && model.supportsMaxReasoningEffort === otherModel.supportsMaxReasoningEffort
           && sameStringArray(model.aliases, otherModel.aliases)
           && (model.contextWindowOptions?.length ?? 0) === (otherModel.contextWindowOptions?.length ?? 0)
@@ -331,7 +336,7 @@ function readLegacyBrowserSettingsPatch(): AppSettingsPatch | null {
   }
 
   const chatPreferencesState = readPersistedZustandState(LEGACY_CHAT_PREFERENCES_STORAGE_KEY)
-  if (chatPreferencesState?.defaultProvider === "last_used" || chatPreferencesState?.defaultProvider === "claude" || chatPreferencesState?.defaultProvider === "codex") {
+  if (chatPreferencesState?.defaultProvider === "last_used" || chatPreferencesState?.defaultProvider === "claude" || chatPreferencesState?.defaultProvider === "codex" || chatPreferencesState?.defaultProvider === "opencode") {
     patch.defaultProvider = chatPreferencesState.defaultProvider
   }
   if (chatPreferencesState?.providerDefaults && typeof chatPreferencesState.providerDefaults === "object") {
@@ -578,6 +583,10 @@ export function composerStateFromSendOptions(options?: {
       },
       planMode: false,
     }
+  }
+
+  if (options?.provider === "opencode" && options.model) {
+    return { provider: "opencode", model: options.model, ...(connectionId ? { connectionId } : {}), modelOptions: {}, planMode: false }
   }
 
   return null

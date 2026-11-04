@@ -38,7 +38,7 @@ describe("settings registry and section rendering", () => {
       notifications: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" part="notifications" />),
       about: renderToStaticMarkup(<GeneralSection state={generalState} appVersion="1.0.0" part="about" />),
       memory: memoryHtml(),
-      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} defaultExpanded={["claude", "codex", "pi"]} />),
+      providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} defaultExpanded={["claude", "codex", "pi", "opencode"]} />),
       skills: renderToStaticMarkup(<SkillsSection state={{ connectionStatus: "connected", socket: { command: async () => ({ skills: [] }) } as never }} />),
       keybindings: renderToStaticMarkup(<KeybindingsSection state={{ keybindings: null, socket: { command: async () => ({}) } as never }} />),
       changelog: "",
@@ -57,8 +57,8 @@ describe("settings registry and section rendering", () => {
   test("engines start collapsed; a deep link opens only the engine holding its row", () => {
     const render = (hash?: string) => renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} hash={hash} />)
     const collapsed = render()
-    for (const id of ["claudeDefaults", "codexDefaults", "piDefaults"]) expect(collapsed).not.toContain(`id="${id}"`)
-    expect(collapsed.match(/aria-expanded="false" aria-controls="engine-details-/g)?.length).toBe(3)
+    for (const id of ["claudeDefaults", "codexDefaults", "piDefaults", "opencodeDefaults"]) expect(collapsed).not.toContain(`id="${id}"`)
+    expect(collapsed.match(/aria-expanded="false" aria-controls="engine-details-/g)?.length).toBe(4)
     const linked = render("#codexDefaults")
     expect(linked).toContain('id="codexDefaults"')
     expect(linked).not.toContain('id="claudeDefaults"')

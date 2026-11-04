@@ -1,4 +1,4 @@
-import { BRANCH_READ_DENIAL, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
+import { BRANCH_READ_DENIAL, isOpencodeBranchRead, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
 export { isReadOnlyBranchCommand } from './branch-read-policy'
 import type { ParentLaunch } from './parent-launch'
 import { toClaudeMemoryMcpServer } from './claude-adapter'
@@ -8,6 +8,7 @@ import Ajv, { type ValidateFunction } from "ajv"
 import { randomUUID } from "node:crypto"
 import type { AgentProvider, CodexReasoningEffort, ServiceTier } from "../../shared/types"
 import { normalizePiReasoningEffort } from "../../shared/types"
+import { OpencodeAgentManager } from "../opencode-agent"
 import { CodexAppServerManager } from "../codex-app-server"
 import type { HarnessTurn } from "../harness-types"
 import { MISSING_PI_CONNECTION_MESSAGE, PiAgentManager, resolvePiConnection, type PiConnection } from "../pi-agent"
@@ -72,13 +73,14 @@ export interface MemoryBranch {
   /** First-turn branches share empty history; later branches fork real history. */
   readonly mode: "fork" | "empty-history"
   ask(prompt: string, options?: MemoryBranchAskOptions): Promise<Record<string, unknown>>
-  dispose(): void
+  dispose(): void | Promise<void>
 }
 
 /** Injectable transports keep lifecycle tests offline and independent of auth. */
 export interface MemoryBranchDependencies {
   claudeQuery?: typeof query
   codexManager?: Pick<CodexAppServerManager, "startSession" | "startTurn" | "stopSession">
+  opencodeManager?: Pick<OpencodeAgentManager, "startTurn" | "closeChat" | "deleteSession">
   piManager?: Pick<PiAgentManager, "startTurn" | "closeChat">
   resolvePiConnection?: () => Promise<PiConnection | null>
 }
@@ -169,6 +171,8 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   const mode = input.parentSessionToken ? "fork" : "empty-history"
   const runClaude = dependencies.claudeQuery ?? query
   const codex = dependencies.codexManager ?? new CodexAppServerManager()
+  const ownedOpencode = dependencies.opencodeManager ? undefined : new OpencodeAgentManager()
+  const opencode = dependencies.opencodeManager ?? ownedOpencode!
   const pi = dependencies.piManager ?? new PiAgentManager()
   const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
   const source = input.parentLaunch
@@ -177,11 +181,12 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     : source ? { ...source, options: { ...source.options } } as ParentLaunch : undefined
   if (parent && parent.provider !== input.provider) throw new Error("Memory branch parent engine mismatch")
   input = { ...input, parentLaunch: parent, model: parent?.provider === "codex" ? parent.turn.model : parent?.options.model ?? input.model,
-    effort: parent?.provider === "codex" ? parent.turn.effort : parent?.options.effort ?? input.effort }
-  let runtime = input.runtime ?? (parent?.provider === "codex" ? parent.session.runtime : undefined) ?? runtimeForEnv(input.subprocessEnv)
+    effort: parent?.provider === "codex" ? parent.turn.effort : (parent && "effort" in parent.options ? parent.options.effort : undefined) ?? input.effort }
+  let runtime = input.runtime ?? (parent?.provider === "codex" ? parent.session.runtime : parent?.provider === "opencode" ? parent.options.runtime : undefined) ?? runtimeForEnv(input.subprocessEnv)
   let piConnection = parent?.provider === "pi" ? parent.options.connection ?? undefined : runtime?.piConnection
   let sessionToken: string | null = null
   let disposed = false
+  let opencodeCleanup: Promise<void> | undefined
   let sessionUnavailable = false
   let requestGeneration = 0
   let codexConnected = false
@@ -201,8 +206,19 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   }
 
   const dispose = () => {
+    if (disposed) return opencodeCleanup
     disposed = true
     activeController?.abort(new Error("Memory branch disposed"))
+    if (input.provider === "opencode") {
+      opencodeCleanup = (async () => {
+        try {
+          await activeTurn?.interrupt().catch(() => {})
+          if (sessionToken) await opencode.deleteSession(id, sessionToken, { cwd: input.localPath, model: input.model, runtime, agent: "memosync-branch" })
+        } finally { opencode.closeChat(id); closeTransport(); await ownedOpencode?.dispose() }
+      })()
+      void opencodeCleanup.catch(() => {})
+      return opencodeCleanup
+    }
     closeTransport()
   }
 
@@ -371,6 +387,50 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     return parseMemoryBranchJson(text)
   }
 
+  async function askOpencode(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
+    runtime ??= await resolveEngineRuntime({ engine: "opencode", model: input.model, env: input.subprocessEnv })
+    const branchRuntime = rememberRuntime({ ...runtime, env: { ...runtime.env, RIPGREP_CONFIG_PATH: "" } })
+    const admitted = new Set<string>()
+    activeTurn = await opencode.startTurn({
+      chatId: id, cwd: input.localPath, content: prompt, model: input.model,
+      runtime: branchRuntime, signal: controller.signal,
+      systemPrompt: input.parentLaunch?.provider === "opencode" ? input.parentLaunch.options.systemPrompt : undefined,
+      sessionToken: sessionToken ?? input.parentSessionToken,
+      forkSession: !sessionToken && Boolean(input.parentSessionToken),
+      agent: "memosync-branch",
+      onPermissionRequest: async (request, tool) => {
+        if (!tool || request.permission !== tool.name || !isOpencodeBranchRead(tool.name, tool.input, input.localPath)) return false
+        const callID = request.tool?.callID ?? request.id
+        if (admitted.has(callID)) return true
+        if (admitted.size >= budget.maxToolCalls) return false
+        admitted.add(callID)
+        return true
+      },
+      onToolRequest: async () => ({ error: "Memory branches cannot request user input." }),
+    })
+    let text = "", completed = false, visibleSteps = 0
+    const observed = new Set<string>()
+    for await (const event of activeTurn.stream) {
+      controller.signal.throwIfAborted()
+      if (event.type === "session_token" && event.sessionToken) {
+        if (event.sessionToken === input.parentSessionToken || (sessionToken && sessionToken !== event.sessionToken)) throw new Error("Memory branch did not obtain an independent OpenCode session")
+        sessionToken = event.sessionToken
+      }
+      if (event.type !== "transcript" || !event.entry) continue
+      if (event.entry.kind === "tool_call" && !observed.has(event.entry.tool.toolId)) {
+        observed.add(event.entry.tool.toolId); visibleSteps++
+      }
+      if (event.entry.kind === "assistant_text") { text = event.entry.text; visibleSteps++ }
+      if (visibleSteps > budget.maxTurns) await interruptForBudget(`Memory branch exceeded its ${budget.maxTurns}-step observable OpenCode budget`)
+      if (event.entry.kind === "result") {
+        if (event.entry.isError || event.entry.subtype !== "success") throw new Error(`Memory branch failed: ${event.entry.result || event.entry.subtype}`)
+        completed = true
+      }
+    }
+    if (!completed) throw new Error("Memory branch ended without a completed turn")
+    return parseMemoryBranchJson(text)
+  }
+
   async function askCodex(prompt: string, options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
     if (!codexConnected) {
       // Keep endpoint/model/argv, but prevent rg from invoking an ambient --pre helper.
@@ -475,6 +535,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
       const attempt = async (text: string, requestOptions: MemoryBranchAskOptions, requestLimits: MemoryBranchBudget) => validateBranchOutput(await Promise.race([
         input.provider === "codex" ? askCodex(text, requestOptions, controller, requestLimits)
           : input.provider === "pi" ? askPi(text, requestOptions, controller, requestLimits)
+          : input.provider === "opencode" ? askOpencode(text, requestOptions, controller, requestLimits)
             : askClaude(text, requestOptions, controller, requestLimits),
         aborted,
       ]), options.schema)

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
 import { MemoryService } from "./memory"
@@ -70,7 +71,7 @@ async function advance(ms: number) {
   }
   await Bun.sleep(10)
 }
-async function harness(provider: "claude" | "codex" = "claude", slowClose = false, overrides: Partial<ConstructorParameters<typeof AgentCoordinator>[0]> = {}) {
+async function harness(provider: "claude" | "codex" | "opencode" = "claude", slowClose = false, overrides: Partial<ConstructorParameters<typeof AgentCoordinator>[0]> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "memosync-idle-"))
   const store = new EventStore(join(dir, "events"))
   await store.initialize()
@@ -80,6 +81,8 @@ async function harness(provider: "claude" | "codex" = "claude", slowClose = fals
   const prompts: string[] = []
   const tokens: Array<string | null> = []
   let closes = 0
+  let opencodeLive = false
+  let opencodePending = false
   let codexLive = false
   let codexPending = false
   let branchWork = deferred()
@@ -98,6 +101,18 @@ async function harness(provider: "claude" | "codex" = "claude", slowClose = fals
         sendPrompt: async (_content, context) => { prompts.push(context!.promptId!) },
       }
     },
+    opencodeManager: {
+      hasSession: () => opencodeLive,
+      hasPendingWork: () => opencodePending,
+      startTurn: async (args: any) => {
+        tokens.push(args.sessionToken); opencodeLive = true; opencodePending = true
+        const queue = new Queue(); sessions.push(queue)
+        queue.push({ type: "session_token", sessionToken: "saved-token" })
+        return { provider: "opencode", stream: queue, interrupt: async () => {}, close: () => { opencodePending = false; queue.close() } }
+      },
+      closeChat: () => { if (opencodeLive) { opencodeLive = false; closes++ } },
+      dispose() { opencodeLive = false },
+    } as never,
     codexManager: {
       hasSession: () => codexLive,
       hasPendingWork: () => codexPending,
@@ -113,14 +128,22 @@ async function harness(provider: "claude" | "codex" = "claude", slowClose = fals
     createMemoryBranch: () => ({ id: "branch", mode: "fork", sessionToken: "branch-token", dispose() {}, async ask() { await branchWork.promise; return {} } }),
     ...overrides,
   })
-  cleanups.push(async () => { sessions.forEach(q => q.close()); await coordinator.shutdownRuntime(); rmSync(dir, { recursive: true, force: true }) })
-  const send = () => coordinator.send({ type: "chat.send", chatId: chat.id, provider, content: "test", model: provider === "claude" ? "deepseek-v4-pro" : "gpt-5.4" })
+  if (provider === "opencode") {
+    const service = await new ModelAccessService({ dataDir: join(dir, "model-access"), env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
+      resolveExecutable: async engine => engine === "opencode" ? { state: "ready", path: process.execPath } : { state: "missing" },
+    }).initialize()
+    const connection = await service.saveConnection({ name: "fake", endpoints: [{ protocol: "openai-chat", baseUrl: "http://127.0.0.1:9" }], models: [{ id: "m" }] })
+    await service.setEngine("opencode", { access: { mode: "connection", connectionId: connection.id } })
+    setModelAccessService(service)
+  }
+  cleanups.push(async () => { if (provider === "opencode") setModelAccessService(undefined); sessions.forEach(q => q.close()); await coordinator.shutdownRuntime(); rmSync(dir, { recursive: true, force: true }) })
+  const send = () => coordinator.send({ type: "chat.send", chatId: chat.id, provider, content: "test", model: provider === "claude" ? "deepseek-v4-pro" : provider === "opencode" ? "m" : "gpt-5.4" })
   const finish = async () => {
     const queue = sessions.at(-1)!
     queue.push({ type: "session_token", sessionToken: "saved-token" })
     queue.push({ type: "transcript", promptIds: provider === "claude" ? [prompts.at(-1)!] : undefined,
       entry: { _id: crypto.randomUUID(), createdAt: Date.now(), kind: "result", subtype: "success", isError: false, durationMs: 1, result: "done" } })
-    if (provider === "codex") { codexPending = false; queue.close() }
+    if (provider !== "claude") { codexPending = false; opencodePending = false; queue.close() }
     await until(() => !coordinator.activeTurns.has(chat.id))
     await Bun.sleep(10)
   }
@@ -129,6 +152,20 @@ async function harness(provider: "claude" | "codex" = "claude", slowClose = fals
 }
 
 describe("idle provider sessions", () => {
+  test("OpenCode closes at 30 idle minutes, resumes its token and closes on shutdown", async () => {
+    const h = await harness("opencode")
+    await h.send()
+    await advance(TIMEOUT * 2)
+    expect(h.closes()).toBe(0)
+    await h.finish()
+    await advance(TIMEOUT)
+    expect(h.closes()).toBe(1)
+    await h.send()
+    expect(h.tokens).toEqual([null, "saved-token"])
+    await h.finish()
+    await h.coordinator.shutdownRuntime()
+  })
+
   for (const provider of ["claude", "codex"] as const) {
     test(`${provider} closes at 30 idle minutes and the next send resumes the saved token`, async () => {
       const h = await harness(provider)

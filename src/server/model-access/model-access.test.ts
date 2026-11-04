@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
-import { ModelAccessService } from "./service"
+import { ModelAccessService, setModelAccessService } from "./service"
+import { deployedProviders, normalizeServerModel } from "../provider-catalog"
 import { fakeExecutableResolver } from "./test-fixtures"
 import { resolveEngineRuntime } from "./runtime"
 import { legacyConnections } from "./legacy"
@@ -11,6 +12,7 @@ import type { ExecutableStatus } from "../../shared/model-access"
 import type { UpgradeRunner } from "./upgrade"
 import { createExecutableResolver } from "./resolver"
 import { readSdkInstallation } from "./sdk-installation"
+import type { EngineModelReader, EngineModels } from "./engine-models"
 
 const dirs: string[] = []
 function fixture(env: Record<string, string> = {}) {
@@ -470,4 +472,302 @@ describe("upgrading an engine's CLI", () => {
     await expect(service.upgradeExecutable("claude")).rejects.toThrow("engine-upgrade-unavailable")
     await expect(service.upgradeExecutable("nope" as never)).rejects.toThrow("engine-setup-invalid")
   })
+})
+
+test("a signed-in engine lists the models it reports, and keeps them for the next launch", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "memosync-engine-models-")); dirs.push(dataDir)
+  const home = mkdtempSync(join(tmpdir(), "memosync-engine-models-home-")); dirs.push(home)
+  mkdirSync(join(home, ".codex"))
+  writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify({ tokens: {} }))
+  writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: {} }))
+  const resolveExecutable = (async () => ({ state: "ready", path: "/bin/fake", version: "1.0.0" })) as never
+  const reads: string[] = []
+  const service = await new ModelAccessService({
+    dataDir,
+    env: { HOME: home },
+    resolveExecutable,
+    readEngineModels: async (engine) => {
+      reads.push(engine)
+      return engine === "codex"
+        ? { models: [{ id: "gpt-live", label: "GPT Live", supportsEffort: true }], defaultModel: "gpt-live" }
+        : null
+    },
+  }).initialize()
+  for (let tries = 0; tries < 100 && !service.accountModels("codex"); tries++) await Bun.sleep(5)
+  expect(reads.sort()).toEqual(["claude", "codex"])
+  expect(service.accountModels("codex")?.models.map(model => model.id)).toEqual(["gpt-live"])
+  // A failed read leaves the engine on its fallback list rather than an empty one.
+  expect(service.accountModels("claude")).toBeUndefined()
+
+  setModelAccessService(service)
+  try {
+    const codex = deployedProviders().find(provider => provider.id === "codex")!
+    expect(codex.models.map(model => model.id)).toEqual(["gpt-live"])
+    expect(codex.defaultModel).toBe("gpt-live")
+    expect(normalizeServerModel("codex", "gpt-5.5")).toBe("gpt-live")
+    expect(deployedProviders().find(provider => provider.id === "claude")!.models.map(model => model.id)).toContain("sonnet")
+  } finally { setModelAccessService(undefined) }
+
+  const nextLaunch = await new ModelAccessService({ dataDir, env: { HOME: home }, resolveExecutable }).initialize()
+  expect(nextLaunch.accountModels("codex")?.defaultModel).toBe("gpt-live")
+})
+
+test("an engine that isn't signed in isn't asked for its models", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "memosync-engine-models-")); dirs.push(dataDir)
+  const reads: string[] = []
+  const service = await new ModelAccessService({
+    dataDir,
+    env: { HOME: dataDir, MEMOSYNC_ISOLATE_CLI: "1" },
+    resolveExecutable: (async () => ({ state: "ready", path: "/bin/fake", version: "1.0.0" })) as never,
+    readEngineModels: async (engine) => { reads.push(engine); return null },
+  }).initialize()
+  await Bun.sleep(20)
+  expect(service.getSnapshot().engines.codex.ready).toBe(false)
+  expect(reads).toEqual([])
+})
+
+describe("scoped account-model cache", () => {
+  const accountEngines = ["claude", "codex"] as const
+  type AccountEngine = typeof accountEngines[number]
+  type PersistedCache = { version: number; engines: Record<AccountEngine, { scope: string; value: EngineModels }> }
+
+  function catalog(engine: AccountEngine): EngineModels {
+    return {
+      models: [
+        { id: `${engine}-reasoning`, label: `${engine} Reasoning`, resolvedModel: `${engine}-resolved`, supportsEffort: true, aliases: [`${engine}-resolved`], reasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "medium" },
+        { id: `${engine}-fast`, label: `${engine} Fast`, supportsEffort: false, aliases: [], reasoningEfforts: [] },
+      ],
+      defaultModel: `${engine}-fast`,
+    }
+  }
+
+  function writeAccountConfig(engine: AccountEngine, directory: string) {
+    mkdirSync(directory, { recursive: true })
+    if (engine === "claude") {
+      writeFileSync(join(directory, ".credentials.json"), JSON.stringify({ claudeAiOauth: {} }))
+      writeFileSync(join(directory, ".claude.json"), JSON.stringify({ oauthAccount: {} }))
+      writeFileSync(join(directory, "settings.json"), "{}")
+    } else {
+      writeFileSync(join(directory, "auth.json"), JSON.stringify({ tokens: {} }))
+      writeFileSync(join(directory, "config.toml"), 'model = "synthetic"\n')
+    }
+  }
+
+  function accountFixture() {
+    const root = mkdtempSync(join(tmpdir(), "ma-account-cache-")); dirs.push(root)
+    const home = join(root, "home")
+    const dataDir = join(root, "data")
+    mkdirSync(dataDir)
+    for (const engine of accountEngines) writeAccountConfig(engine, join(home, `.${engine}`))
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ oauthAccount: {} }))
+    const executable: Record<AccountEngine, ExecutableStatus> = {
+      claude: { state: "ready", path: join(root, "claude"), version: "1.0.0" },
+      codex: { state: "ready", path: join(root, "codex"), version: "1.0.0" },
+    }
+    for (const engine of accountEngines) writeFileSync(executable[engine].path!, "synthetic executable metadata; never run\n")
+    const env: Record<string, string> = { HOME: home, PATH: root }
+    const open = (readEngineModels: EngineModelReader = async () => null) => new ModelAccessService({
+      dataDir, env, readEngineModels, readLegacyPi: async () => null,
+      resolveExecutable: async engine => engine === "pi" ? { state: "not-needed" } : engine === "opencode" ? { state: "missing" } : { ...executable[engine] },
+    }).initialize()
+    return { root, home, dataDir, env, executable, open, cacheFile: join(dataDir, "engine-models.json") }
+  }
+
+  // Injected readers only await promises controlled by these tests. One event-loop
+  // turn drains their continuations, including publications that should be ignored.
+  const settleReads = () => new Promise<void>(resolve => setImmediate(resolve))
+  function deferred<T>() {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>(done => { resolve = done })
+    return { promise, resolve }
+  }
+  async function seedCache(f: ReturnType<typeof accountFixture>) {
+    const service = await f.open(async engine => catalog(engine))
+    await settleReads()
+    for (const engine of accountEngines) expect(service.accountModels(engine)).toEqual(catalog(engine))
+    return service
+  }
+  function touchMetadata(file: string) {
+    const before = statSync(file)
+    utimesSync(file, before.atime, new Date(before.mtimeMs + 60_000))
+  }
+
+  test("a restart restores labels, aliases, effort metadata and a non-first default even when discovery fails", async () => {
+    const f = accountFixture()
+    await seedCache(f)
+    const persisted = readFileSync(f.cacheFile, "utf8")
+    const reads: AccountEngine[] = []
+    const reopened = await f.open(async engine => { reads.push(engine); throw new Error("synthetic offline discovery") })
+    for (const engine of accountEngines) expect(reopened.accountModels(engine)).toEqual(catalog(engine))
+    await settleReads()
+    expect(reads.sort()).toEqual([...accountEngines])
+    for (const engine of accountEngines) expect(reopened.accountModels(engine)).toEqual(catalog(engine))
+    expect(readFileSync(f.cacheFile, "utf8")).toBe(persisted)
+  })
+
+  const invalidCaches: [string, (cache: PersistedCache) => unknown][] = [
+    ["null root", () => null],
+    ["obsolete unscoped format", () => ({ codex: catalog("codex") })],
+    ["unsupported version", cache => ({ ...cache, version: 1 })],
+    ["non-object engines", cache => ({ ...cache, engines: [] })],
+    ["null engine entry", cache => { (cache.engines as Record<string, unknown>).codex = null; return cache }],
+    ["non-string scope", cache => { (cache.engines.codex as unknown as Record<string, unknown>).scope = 1; return cache }],
+    ["empty model list", cache => { cache.engines.codex.value.models = []; return cache }],
+    ["non-array model list", cache => { (cache.engines.codex.value as unknown as Record<string, unknown>).models = {}; return cache }],
+    ["null model", cache => { cache.engines.codex.value.models[0] = null as never; return cache }],
+    ["blank model id", cache => { cache.engines.codex.value.models[0]!.id = " "; return cache }],
+    ["control character in model id", cache => { cache.engines.codex.value.models[0]!.id = "injected\nmodel"; return cache }],
+    ["missing model label", cache => { delete (cache.engines.codex.value.models[0] as unknown as Record<string, unknown>).label; return cache }],
+    ["non-boolean effort support", cache => { (cache.engines.codex.value.models[0] as unknown as Record<string, unknown>).supportsEffort = "yes"; return cache }],
+    ["non-string alias", cache => { cache.engines.codex.value.models[0]!.aliases = [42] as never; return cache }],
+    ["non-array reasoning efforts", cache => { cache.engines.codex.value.models[0]!.reasoningEfforts = "high" as never; return cache }],
+    ["invalid default effort", cache => { cache.engines.codex.value.models[0]!.defaultReasoningEffort = ""; return cache }],
+    ["duplicate model ids", cache => { cache.engines.codex.value.models[1]!.id = cache.engines.codex.value.models[0]!.id; return cache }],
+    ["default model absent from list", cache => { cache.engines.codex.value.defaultModel = "removed"; return cache }],
+  ]
+  for (const [name, corrupt] of [["malformed JSON", undefined], ...invalidCaches] as const) {
+    test(`${name} in the optional cache does not block startup or rediscovery`, async () => {
+      const f = accountFixture()
+      await seedCache(f)
+      // Start with real matching scopes so a schema regression cannot be hidden
+      // by rejecting an unrelated account's otherwise valid cache.
+      const persisted = JSON.parse(readFileSync(f.cacheFile, "utf8")) as PersistedCache
+      writeFileSync(f.cacheFile, corrupt ? JSON.stringify(corrupt(persisted)) : '{"version":2,')
+      let recover = false
+      const reads: AccountEngine[] = []
+      const reopened = await f.open(async engine => { reads.push(engine); return recover ? catalog(engine) : null })
+      await settleReads()
+      expect(reopened.getSnapshot().engines.codex.ready).toBe(true)
+      expect(reopened.accountModels("codex")).toBeUndefined()
+      expect(reads.sort()).toEqual([...accountEngines])
+      recover = true
+      await reopened.refreshExecutables()
+      await settleReads()
+      for (const engine of accountEngines) expect(reopened.accountModels(engine)).toEqual(catalog(engine))
+      expect(JSON.parse(readFileSync(f.cacheFile, "utf8")).engines.codex.value).toEqual(catalog("codex"))
+    })
+  }
+
+  for (const engine of accountEngines) {
+    const configKey = engine === "claude" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME"
+    const authName = engine === "claude" ? ".credentials.json" : "auth.json"
+    const changes: [string, (f: ReturnType<typeof accountFixture>) => void][] = [
+      ["HOME changes while the explicit config directory stays the same", f => { f.env.HOME = join(f.root, "other-home"); mkdirSync(f.env.HOME) }],
+      ["the config directory changes", f => { f.env[configKey] = join(f.root, "other-config"); writeAccountConfig(engine, f.env[configKey]!) }],
+      ["auth file metadata changes with identical contents", f => { touchMetadata(join(f.home, `.${engine}`, authName)) }],
+      ["the auth file is replaced with identical contents and mtime", f => {
+        const file = join(f.home, `.${engine}`, authName)
+        const before = statSync(file)
+        const replacement = join(f.root, "replacement-auth")
+        writeFileSync(replacement, readFileSync(file))
+        utimesSync(replacement, before.atime, before.mtime)
+        renameSync(replacement, file)
+      }],
+      ["the executable path changes", f => { const path = join(f.root, "replacement-cli"); writeFileSync(path, "synthetic replacement executable\n"); f.executable[engine].path = path }],
+      ["the executable version changes behind a stable path", f => { f.executable[engine].version = "2.0.0" }],
+      ["the executable file metadata changes", f => { touchMetadata(f.executable[engine].path!) }],
+      ...(engine === "claude"
+        ? [
+          ["the OAuth account metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".claude.json")) }],
+          ["settings metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".claude", "settings.json")) }],
+        ] as [string, (f: ReturnType<typeof accountFixture>) => void][]
+        : [["config metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".codex", "config.toml")) }]] as [string, (f: ReturnType<typeof accountFixture>) => void][]),
+    ]
+    for (const [name, change] of changes) {
+      test(`${engine} does not reuse the cached account catalog when ${name}`, async () => {
+        const f = accountFixture()
+        // Pin the config directory for the HOME case, otherwise both scope
+        // components would change and a missing HOME check could go unnoticed.
+        if (name.startsWith("HOME")) f.env[configKey] = join(f.home, `.${engine}`)
+        await seedCache(f)
+        change(f)
+        const reopened = await f.open()
+        await settleReads()
+        expect(reopened.getSnapshot().engines[engine].ready).toBe(true)
+        expect(reopened.accountModels(engine)).toBeUndefined()
+        expect(JSON.parse(readFileSync(f.cacheFile, "utf8")).engines[engine]).toBeUndefined()
+        if (!name.startsWith("HOME")) {
+          const other = engine === "claude" ? "codex" : "claude"
+          expect(reopened.accountModels(other)).toEqual(catalog(other))
+        }
+      })
+    }
+
+    test(`${engine} discards a discovery result if auth changes before it resolves without another refresh`, async () => {
+      const f = accountFixture()
+      const pending = deferred<EngineModels | null>()
+      const service = await f.open(async current => current === engine ? pending.promise : null)
+      const revision = service.revision
+      touchMetadata(join(f.home, `.${engine}`, authName))
+      pending.resolve(catalog(engine))
+      await settleReads()
+      expect(service.accountModels(engine)).toBeUndefined()
+      expect(service.revision).toBe(revision)
+      expect(existsSync(f.cacheFile)).toBe(false)
+    })
+
+    for (const staleFirst of [true, false]) {
+      test(`${engine} ignores an older discovery generation resolving ${staleFirst ? "before" : "after"} its replacement`, async () => {
+        const f = accountFixture()
+        const older = deferred<EngineModels | null>()
+        const newer = deferred<EngineModels | null>()
+        let reads = 0
+        const service = await f.open(async current => current !== engine ? null : ++reads === 1 ? older.promise : newer.promise)
+        await service.refreshExecutables()
+        expect(reads).toBe(2)
+        const revision = service.revision
+        const obsolete = { models: [{ id: "obsolete", label: "Obsolete", supportsEffort: false }], defaultModel: "obsolete" }
+        if (staleFirst) {
+          older.resolve(obsolete)
+          await settleReads()
+          expect(service.accountModels(engine)).toBeUndefined()
+          expect(service.revision).toBe(revision)
+          expect(existsSync(f.cacheFile)).toBe(false)
+        }
+        newer.resolve(catalog(engine))
+        await settleReads()
+        expect(service.accountModels(engine)).toEqual(catalog(engine))
+        const persisted = readFileSync(f.cacheFile, "utf8")
+        if (!staleFirst) {
+          older.resolve(obsolete)
+          await settleReads()
+        }
+        expect(service.accountModels(engine)).toEqual(catalog(engine))
+        expect(service.revision).toBe(revision + 1)
+        expect(readFileSync(f.cacheFile, "utf8")).toBe(persisted)
+        expect(persisted).not.toContain("obsolete")
+      })
+    }
+  }
+
+  for (const fast of accountEngines) {
+    test(`${fast} publishes, notifies and persists while the other engine is still pending`, async () => {
+      const f = accountFixture()
+      const slow = fast === "claude" ? "codex" : "claude"
+      const pending = { claude: deferred<EngineModels | null>(), codex: deferred<EngineModels | null>() }
+      const service = await f.open(engine => pending[engine].promise)
+      const publications: string[][] = []
+      const off = service.onChange(() => { publications.push(accountEngines.filter(engine => Boolean(service.accountModels(engine)))) })
+      try {
+        pending[fast].resolve(catalog(fast))
+        await settleReads()
+        expect(service.accountModels(fast)).toEqual(catalog(fast))
+        expect(service.accountModels(slow)).toBeUndefined()
+        expect(publications).toEqual([[fast]])
+        const intermediate = JSON.parse(readFileSync(f.cacheFile, "utf8"))
+        expect(intermediate.engines[fast].value).toEqual(catalog(fast))
+        expect(intermediate.engines[slow]).toBeUndefined()
+        const reopened = await f.open()
+        expect(reopened.accountModels(fast)).toEqual(catalog(fast))
+        expect(reopened.accountModels(slow)).toBeUndefined()
+        pending[slow].resolve(catalog(slow))
+        await settleReads()
+        for (const engine of accountEngines) {
+          expect(service.accountModels(engine)).toEqual(catalog(engine))
+          expect(JSON.parse(readFileSync(f.cacheFile, "utf8")).engines[engine].value).toEqual(catalog(engine))
+        }
+        expect(publications).toEqual([[fast], [...accountEngines]])
+      } finally { off() }
+    })
+  }
 })

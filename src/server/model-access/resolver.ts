@@ -75,6 +75,8 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
           if (!version) return { state: "broken", detail: "--version did not return a semantic version" }
           if (engine === "claude" && minimumVersion && !meetsMinimumVersion(version, minimumVersion))
             return { state: "incompatible", version, belowMinimum: true, detail: `Claude ${version} is below the SDK minimum ${minimumVersion}` }
+          if (engine === "opencode" && minimumVersion && !meetsMinimumVersion(version, minimumVersion))
+            return { state: "incompatible", version, belowMinimum: true, detail: `OpenCode ${version} is below the minimum ${minimumVersion}` }
           if (engine === "codex") {
             const capability = await runExecutableProbe(launcher, ["app-server", "--help"], env, timeoutMs)
             if (!capability.ok) return { state: "incompatible", version, detail: `Codex app-server is unavailable: ${capability.detail}` }
@@ -101,7 +103,7 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
       try { sdk = sdkInstallation() }
       catch (error) { return { state: "broken", detail: `Claude Agent SDK: ${errorDetail(error)}` } }
     }
-    const minimumVersion = engine === "pi" ? PI_SDK_MINIMUM : sdk?.minimumVersion
+    const minimumVersion = engine === "pi" ? PI_SDK_MINIMUM : engine === "opencode" ? "1.17.4" : sdk?.minimumVersion
     const expand = (file: string) => resolve(file.startsWith("~/") && (env.HOME || env.USERPROFILE)
       ? join((env.HOME || env.USERPROFILE)!, file.slice(2)) : file)
     if (setup?.executablePath != null) {

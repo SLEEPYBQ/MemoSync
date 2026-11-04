@@ -1,5 +1,6 @@
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from '../codex-app-server'
+import type { StartOpencodeTurnArgs } from '../opencode-agent'
 import type { StartPiTurnArgs } from '../pi-agent'
 import type { MemoryToolSpec } from './tools'
 
@@ -18,4 +19,8 @@ export interface PiParentLaunch {
   provider: 'pi'
   options: Pick<StartPiTurnArgs, 'model' | 'effort' | 'connection' | 'toolNames' | 'memorySpecs' | 'modelCard' | 'systemPrompt'>
 }
-export type ParentLaunch = ClaudeParentLaunch | CodexParentLaunch | PiParentLaunch
+export interface OpencodeParentLaunch {
+  provider: 'opencode'
+  options: Pick<StartOpencodeTurnArgs, 'model' | 'runtime' | 'systemPrompt' | 'memorySpecs'>
+}
+export type ParentLaunch = ClaudeParentLaunch | CodexParentLaunch | PiParentLaunch | OpencodeParentLaunch

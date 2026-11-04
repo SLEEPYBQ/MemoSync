@@ -1,5 +1,6 @@
 import { diffSidebarIndex, indexSidebarData, type SidebarIndex } from "../shared/sidebar-patch"
 import type { ModelAccessService } from "./model-access/service"
+import { deployedProviders } from "./provider-catalog"
 import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
 import type { ServerWebSocket } from "bun"
 import { readFile } from "node:fs/promises"
@@ -129,6 +130,7 @@ const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
   engines: {
     claude: { engine: "claude", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
     codex: { engine: "codex", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    opencode: { engine: "opencode", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
     pi: { engine: "pi", setup: { access: { mode: "account" } }, executable: { state: "not-needed" }, ready: false, problem: "connection-missing" },
   },
 }
@@ -556,6 +558,7 @@ export function createWsRouter({
         },
         planMode: false,
       },
+      opencode: { model: "", modelOptions: {}, planMode: false },
       pi: {
         model: DEFAULT_PI_MODEL,
         modelOptions: {
@@ -604,6 +607,7 @@ export function createWsRouter({
           ...patch.providerDefaults?.codex?.modelOptions,
         },
       },
+      opencode: { ...snapshot.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: {}, planMode: false },
       pi: {
         ...snapshot.providerDefaults.pi,
         ...patch.providerDefaults?.pi,
@@ -878,7 +882,7 @@ export function createWsRouter({
         v: PROTOCOL_VERSION,
         type: "snapshot",
         id,
-        snapshot: { type: "model-access", data: modelAccess?.getSnapshot() ?? EMPTY_MODEL_ACCESS_SNAPSHOT },
+        snapshot: { type: "model-access", data: { ...(modelAccess?.getSnapshot() ?? EMPTY_MODEL_ACCESS_SNAPSHOT), providers: deployedProviders() } },
       }
     }
 

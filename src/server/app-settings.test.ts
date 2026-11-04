@@ -37,6 +37,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     },
     defaultProvider: "last_used",
     providerDefaults: {
+      opencode: { model: "", modelOptions: {}, planMode: false },
       claude: {
         model: "deepseek-v4-flash",
         modelOptions: {
@@ -149,6 +150,25 @@ describe("readAppSettingsSnapshot", () => {
 })
 
 describe("AppSettingsManager", () => {
+  test("native account IDs and advertised effort levels survive saving and reopening", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new AppSettingsManager(filePath)
+    try {
+      await manager.initialize()
+      for (const model of ["haiku", "fable", "claude-fable-5-1[1m]", "claude-opus-4-8"]) {
+        await manager.writePatch({ providerDefaults: { claude: { model, modelOptions: { reasoningEffort: "max", contextWindow: "1m" } } } })
+        await manager.reload()
+        const preference = (await readAppSettingsSnapshot(filePath)).providerDefaults.claude
+        expect(preference.model).toBe(model)
+        expect(preference.modelOptions.reasoningEffort).toBe("max")
+      }
+      await manager.writePatch({ providerDefaults: { codex: { model: "gpt-live", modelOptions: { reasoningEffort: "ultra", fastMode: false } } } })
+      expect((await readAppSettingsSnapshot(filePath)).providerDefaults.codex).toMatchObject({ model: "gpt-live", modelOptions: { reasoningEffort: "ultra", fastMode: false } })
+    } finally {
+      manager.dispose()
+    }
+  })
+
   test("creates a settings file with normalized defaults", async () => {
     const filePath = await createTempFilePath()
     const manager = new AppSettingsManager(filePath)
