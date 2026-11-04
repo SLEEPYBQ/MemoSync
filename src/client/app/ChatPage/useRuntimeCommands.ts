@@ -9,22 +9,27 @@ export function useRuntimeCommands(socket: AppSocket, chatId: string | null, eng
   const owner = useMemo(() => ({}), [chatId, engine, connected])
   const currentOwner = useRef(owner)
   currentOwner.current = owner
-  const [read, setRead] = useState<{ owner: object; catalog: ChatCommandCatalog } | null>(null)
+  const snapshotRef = useRef(snapshot)
+  snapshotRef.current = snapshot
+  const [read, setRead] = useState<{ owner: object; catalog: ChatCommandCatalog; source: ChatCommandCatalog | undefined } | null>(null)
   const [activity, setActivity] = useState<{ owner: object; kind: "loading" | "executing" } | null>(null)
   const [failure, setFailure] = useState<{ owner: object; message: string } | null>(null)
   const requestVersion = useRef(0)
-  const cached = read?.owner === owner ? read.catalog : null
-  const latest = cached && (!snapshot || cached.revision > snapshot.revision) ? cached : snapshot
+  // An RPC fills the gap until the next authoritative snapshot. Retirement
+  // may reset the catalog revision; never compare it against an older runtime.
+  const cached = read?.owner === owner && read.source === snapshot ? read.catalog : null
+  const latest = cached ?? snapshot
   const catalog = connected && (!latest?.runtime || latest.runtime.engine === engine) ? latest ?? null : null
 
   const refresh = useCallback(async (force = true) => {
     if (!chatId || !connected) return
     const version = ++requestVersion.current
+    const source = snapshotRef.current
     setActivity({ owner, kind: "loading" })
     try {
       const next = await socket.command<ChatCommandCatalog>({ type: "chat.readCommandCatalog", chatId, refresh: force })
       if (currentOwner.current === owner && requestVersion.current === version) {
-        setRead({ owner, catalog: next })
+        if (snapshotRef.current === source) setRead({ owner, catalog: next, source })
         setFailure(null)
       }
     } catch (err) {
