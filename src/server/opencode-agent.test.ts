@@ -121,6 +121,38 @@ function lifecycleFixture(holdHistory = false, sameParent = false) {
     },
   }
 }
+test('native session rules must be confirmed before policy application and prompt dispatch', async () => {
+  const f = lifecycleFixture(), applied = journal<string>()
+  const turn = await f.start({ executionPolicy: { engine: 'opencode', permission: 'ask' }, onExecutionPolicyApplied: async id => { applied.push(id!) } })
+  expect(applied.values).toEqual(['ses_created'])
+  const update = await f.notices.waitFor(n => n.method === 'PATCH')
+  expect(update.body).toEqual({ permission: [{ permission: '*', pattern: '*', action: 'ask' }] })
+  await f.notices.waitFor(n => n.path?.endsWith('/prompt_async') === true)
+  await turn.interrupt()
+
+  const rejected = lifecycleFixture()
+  rejected.runtime.env.FAKE_OC_REJECT_POLICY = '1'
+  let confirmed = false
+  await expect(rejected.start({ executionPolicy: { engine: 'opencode', permission: 'deny' }, onExecutionPolicyApplied: async () => { confirmed = true } })).rejects.toThrow('did not confirm')
+  expect(confirmed).toBe(false)
+  expect(rejected.notices.values.some(n => n.path?.endsWith('/prompt_async'))).toBe(false)
+})
+
+test('duplicate native permissions prompt once and an expired reply is rejected', async () => {
+  const f = lifecycleFixture(), answer = deferred<boolean>(), entered = deferred<void>()
+  let current = true, calls = 0
+  const turn = await f.start({ isPolicyCurrent: () => current, onPermissionRequest: async () => { calls++; entered.resolve(); return answer.promise } })
+  const event = { type: 'permission.asked', properties: { id: 'permission-1', sessionID: 'ses_created', permission: 'bash', patterns: ['*'], always: [], metadata: { command: 'synthetic' } } }
+  await f.post('/test/events', [event, event])
+  await entered.promise
+  current = false
+  answer.resolve(true)
+  const reply = await f.notices.waitFor(n => n.path === '/permission/permission-1/reply')
+  expect(reply.body).toMatchObject({ reply: 'reject' })
+  expect(calls).toBe(1)
+  await turn.interrupt()
+})
+
 function collectTurn(turn: HarnessTurn) {
   const events = journal<HarnessEvent>()
   const done = (async () => { for await (const event of turn.stream) events.push(event) })()

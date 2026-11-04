@@ -923,7 +923,8 @@ export function createWsRouter({
               memoryRecordMessages: deriveMemoryRecordTranscript(allMessages),
             }
           },
-          agent.getStreamingAssistantTexts()
+          agent.getStreamingAssistantTexts(),
+          agent.getHarnessSnapshot?.(topic.chatId)
         ),
       },
     }
@@ -1842,6 +1843,16 @@ export function createWsRouter({
           if (!chat) throw new Error("Chat not found")
           const page = store.getMessagesPageBefore(command.chatId, command.beforeCursor, command.limit)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: page })
+          return
+        }
+        case "harness.getCapabilities": {
+          const result = agent.getEngineCapabilities(command.engine)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
+          return
+        }
+        case "chat.setExecutionPolicy": {
+          const result = await agent.setExecutionPolicy(command)
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.respondTool": {

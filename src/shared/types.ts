@@ -1,4 +1,5 @@
 import type { UiTextFields, UiTextReference } from "./ui-copy"
+import type { ChatHarnessSnapshot } from "./harness-capabilities"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
@@ -1646,6 +1647,7 @@ export type HydratedTranscriptMessage =
   | ({ id: string; messageId?: string; hidden?: boolean } & HydratedToolCall)
 
 export interface ChatRuntime {
+  harness?: ChatHarnessSnapshot
   memoryDisabled: boolean
   chatId: string
   projectId: string
