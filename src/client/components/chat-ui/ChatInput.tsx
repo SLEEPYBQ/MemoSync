@@ -390,7 +390,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const uploadedAttachments = attachments.filter((attachment) => attachment.status === "uploaded")
   const hasPendingUploads = attachments.some((attachment) => attachment.status === "uploading")
   const hasTextToSend = value.trim().length > 0
-  const canSubmit = value.trim().length > 0 || uploadedAttachments.length > 0
+  const commandInProgress = commandCatalog?.operation?.status === "running" || commandCatalog?.operation?.status === "busy"
+  const canSubmit = !commandInProgress && (value.trim().length > 0 || uploadedAttachments.length > 0)
   const orderedAttachments = [...attachments].sort((left, right) => {
     if (left.kind === right.kind) return 0
     return left.kind === "image" ? -1 : 1
@@ -1043,7 +1044,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 onRefresh={onReadCommands}
                 onExecute={onExecuteCommand}
                 onCancel={onCancelCommand}
-                onInsert={applySlashCommand}
+                onInsert={name => {
+                  setValue(current => `/${name} ${/^\/\S*$/.test(current) ? "" : current}`)
+                  textareaRef.current?.focus()
+                }}
               /> : null}
               <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <ChatPreferenceControls
