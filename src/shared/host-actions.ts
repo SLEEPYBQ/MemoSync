@@ -34,7 +34,7 @@ export interface HostActionReceipt {
   cancellation: "none" | "requested" | "confirmed"
   target?: { workspaceRef: string; path: string }
   observedContent?: HostSnapshotVersion
-  /** A stopped delivery can later gain this old-operation fact without being re-delivered. */
+  /** Recorded only for an exact snapshot under a still-valid admission. */
   presented?: { at: number; viewInstanceId: string; fileVersion: string; digest: string }
   reason?: string
   expiresAt?: number

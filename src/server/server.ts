@@ -20,6 +20,7 @@ import {
 import type { ShareMode } from "../shared/share"
 import type { AgentProvider, ChatAttachment } from "../shared/types"
 import { AgentCoordinator } from "./agent"
+import { HarnessPolicyService } from "./harness-policy"
 import { AppSettingsManager } from "./app-settings"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
@@ -59,7 +60,7 @@ import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter, type ClientState } from "./ws-router"
-import { HostActionService, type HostActionAdmissionPolicy } from "./host-actions"
+import { HostActionService } from "./host-actions"
 import { realpathSync } from "node:fs"
 
 const MAX_UPLOAD_FILES = 50
@@ -143,8 +144,6 @@ export function createAuditAdmission(args: {
 }
 
 export interface StartMemoSyncServerOptions {
-  /** Inject the runtime policy service's captured revisions and admission check. */
-  hostActionPolicy?: HostActionAdmissionPolicy
   port?: number
   host?: string
   openBrowser?: boolean
@@ -434,9 +433,10 @@ async function startLockedMemoSyncServer(
     const route = memoryCapture.routeProposal.bind(memoryCapture)
     memoryCapture.routeProposal = (raw, input) => branchMemory.run(input, () => route(raw, input))
   }
+  const harnessPolicies = new HarnessPolicyService()
   const hostActions = new HostActionService({
     dataDir: store.dataDir,
-    policy: options.hostActionPolicy,
+    policy: harnessPolicies,
     workspaceStillCurrent: lease => {
       const chat = store.getChat(lease.chatId)
       const project = store.getProject(lease.workspaceRef)
@@ -446,6 +446,7 @@ async function startLockedMemoSyncServer(
   })
   onStartupCleanup(() => hostActions.close())
   const activeAgent = new AgentCoordinator({
+    harnessPolicies,
     hostActions,
     store,
     memory,

@@ -6,6 +6,8 @@ import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:f
 import os from "node:os"
 import path from "node:path"
 import { HOST_ACTION_CAPABILITY, HOST_ACTION_TOOL_NAMES, type HostActionServerEvent, type HostNativeToolContext } from "../shared/host-actions"
+import { HarnessPolicyService, defaultExecutionPolicy } from "./harness-policy"
+import type { PolicyCallScope } from "../shared/harness-capabilities"
 import { HostActionService, MAX_HOST_SNAPSHOT_BYTES, boundedDiskSnapshot, dispatchHostAction, hostActionToolSpecs } from "./host-actions"
 
 const cleanups: (() => Promise<unknown>)[] = []
@@ -16,7 +18,7 @@ function deferred() {
   return { resolve, promise }
 }
 const native: HostNativeToolContext = { engineInstanceId: "engine-1", nativeSessionId: "native-session-1", nativeTurnId: "native-turn-1", nativeToolCallId: "call-1" }
-async function fixture(options: Partial<ConstructorParameters<typeof HostActionService>[0]> = {}) {
+async function fixture(options: Partial<ConstructorParameters<typeof HostActionService>[0]> = {}, policyScope?: PolicyCallScope) {
   const temp = await mkdtemp(path.join(os.tmpdir(), "memosync-host-actions-"))
   const root = await realpath(temp)
   cleanups.push(() => rm(root, { recursive: true, force: true }))
@@ -24,13 +26,13 @@ async function fixture(options: Partial<ConstructorParameters<typeof HostActionS
   await mkdir(workspace)
   await writeFile(path.join(workspace, "README.md"), "# Frozen\nsecond line\n")
   const dataDir = path.join(root, "data")
-  const service = new HostActionService({ dataDir, ...options })
+  const service = new HostActionService({ dataDir, policy: { capture: () => ({ policyRevision: 1, capabilityRevision: 1 }), allows: () => true }, ...options })
   cleanups.push(() => service.close())
   const connection = {}
   const events: HostActionServerEvent[] = []
   let eligible = true
   const binding = service.bind(connection, [HOST_ACTION_CAPABILITY], event => { events.push(event); return true }, chatId => eligible && chatId === "chat-1")
-  const scope = { chatId: "chat-1", admittedTurnId: "turn-1", workspaceRef: "project-1", workspaceRoot: workspace, targetClientId: binding.clientId }
+  const scope = { chatId: "chat-1", admittedTurnId: "turn-1", workspaceRef: "project-1", workspaceRoot: workspace, targetClientId: binding.clientId, policyScope }
   const lease = service.captureAdmission(scope)!
   const open = (args: Record<string, unknown> = { path: "README.md" }, call = native) => service.openFile(lease, call, args)
   const requests = () => events.filter(event => event.type === "host.action.requested")
@@ -125,7 +127,7 @@ describe("HostActionService", () => {
     expect(f.requests()).toHaveLength(0)
   })
 
-  test("cancel after send leaves outcome unknown; late exact ACK records only the old fact", async () => {
+  test("cancel after send leaves outcome unknown; stale ACK cannot confirm presentation", async () => {
     const f = await fixture()
     const receipt = await f.open()
     const snapshot = f.service.readSnapshot(f.connection, receipt.operationId)
@@ -134,8 +136,8 @@ describe("HostActionService", () => {
     const fresh = f.service.captureAdmission({ ...f.scope, admittedTurnId: "turn-2" })!
     f.service.replay(f.connection)
     expect(f.requests()).toHaveLength(1)
-    const late = f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "old-tab", fileVersion: snapshot.version, digest: snapshot.digest })
-    expect(late).toMatchObject({ status: "presented", delivery: "stopped", cancellation: "requested" })
+    expect(() => f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "old-tab", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
+    expect(f.service.statusForClient(f.connection, receipt.operationId)).toMatchObject({ status: "unknown", delivery: "stopped", cancellation: "requested" })
     expect(f.requests()).toHaveLength(1)
     const newReceipt = await f.service.openFile(fresh, { ...native, nativeToolCallId: "new-call" }, { path: "README.md" })
     expect(newReceipt.operationId).not.toBe(receipt.operationId)
@@ -178,7 +180,7 @@ describe("HostActionService", () => {
     now = 151
     f.service.replay(resumed)
     expect(f.service.statusForClient(resumed, receipt.operationId)).toMatchObject({ status: "unknown", delivery: "stopped" })
-    expect(f.service.presented(resumed, { operationId: receipt.operationId, viewInstanceId: "late-after-expiry", fileVersion: snapshot.version, digest: snapshot.digest })).toMatchObject({ status: "presented", delivery: "stopped" })
+    expect(() => f.service.presented(resumed, { operationId: receipt.operationId, viewInstanceId: "late-after-expiry", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
     expect(events.filter(e => e.type === "host.action.requested")).toHaveLength(1)
   })
 
@@ -276,8 +278,8 @@ describe("HostActionService", () => {
     restarted.replay(connection)
     expect(events).toHaveLength(0)
     expect(restarted.statusForClient(connection, receipt.operationId).status).toBe("unknown")
-    expect(await restarted.openFile(f.lease, native, { path: "README.md" })).toMatchObject({ operationId: receipt.operationId, status: "unknown" })
-    expect(restarted.presented(connection, { operationId: receipt.operationId, viewInstanceId: "rendered-before-restart", fileVersion: snapshot.version, digest: snapshot.digest }).status).toBe("presented")
+    expect(await restarted.openFile(f.lease, native, { path: "README.md" })).toMatchObject({ status: "unavailable" })
+    expect(() => restarted.presented(connection, { operationId: receipt.operationId, viewInstanceId: "rendered-before-restart", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
     expect(events.filter(e => e.type === "host.action.requested")).toHaveLength(0)
   })
 
@@ -309,6 +311,83 @@ describe("HostActionService", () => {
       { path: "README.md", targetClientId: "model-chosen" },
     ]
     for (const [i, args] of inputs.entries()) expect((await f.open(args, { ...native, nativeToolCallId: `invalid-${i}` })).status).toBe("rejected")
+    expect(f.requests()).toHaveLength(0)
+  })
+})
+
+
+describe("host actions with the production execution policy service", () => {
+  test.each(["pi", "codex"] as const)("%s readonly UI admission retains exact policy scope and revokes synchronously", async engine => {
+    const policy = new HarnessPolicyService()
+    const initial = defaultExecutionPolicy(engine)
+    const version = engine === "pi" ? "1.5.0" : "0.166.0-alpha.5.1"
+    const scope = policy.beginTurn("chat-1", initial, 1, "turn-1", version)
+    const f = await fixture({ policy }, scope)
+    expect(f.lease.policyRevision).toBe(1)
+    expect(Object.isFrozen(f.lease.policyScope)).toBe(true)
+    const receipt = await f.open()
+    const snapshot = f.service.readSnapshot(f.connection, receipt.operationId)
+    const strict = engine === "pi" ? { engine, toolGate: "read-only" as const }
+      : { engine, sandbox: "read-only" as const, approvalPolicy: "never" as const, approvalsReviewer: "user" as const }
+    policy.request("chat-1", strict, 1, true)
+    expect(f.lease.signal.aborted).toBe(true)
+    expect(f.service.statusForClient(f.connection, receipt.operationId).status).toBe("unknown")
+    expect(() => f.service.readSnapshot(f.connection, receipt.operationId)).toThrow("no longer deliverable")
+    expect(() => f.service.presented(f.connection, { operationId: receipt.operationId, viewInstanceId: "stale", fileVersion: snapshot.version, digest: snapshot.digest })).toThrow("no longer valid")
+    expect((await f.open()).status).toBe("unavailable")
+    expect(f.service.statusForTool(f.lease, receipt.operationId).status).toBe("unavailable")
+    policy.nativeRuntimeRetired("chat-1", engine)
+    const nextScope = policy.beginTurn("chat-1", strict, 2, "turn-2", version)
+    for (const name of Object.values(HOST_ACTION_TOOL_NAMES)) expect(policy.admit(nextScope, name)).toBe("allow")
+    const next = f.service.captureAdmission({ ...f.scope, admittedTurnId: "turn-2", policyScope: nextScope })!
+    expect(next.policyRevision).toBe(2)
+    const opened = await f.service.openFile(next, native, { path: "README.md" })
+    expect(opened.status).toBe("accepted")
+    expect(f.service.statusForTool(next, receipt.operationId).status).toBe("unavailable")
+    // UI rendering may complete after the native stream ends, under this exact epoch.
+    policy.endTurn(nextScope)
+    const currentSnapshot = f.service.readSnapshot(f.connection, opened.operationId)
+    expect(f.service.presented(f.connection, { operationId: opened.operationId, viewInstanceId: "readonly", fileVersion: currentSnapshot.version, digest: currentSnapshot.digest }).status).toBe("presented")
+  })
+
+  test("a policy change during a paused read aborts the captured lease before returning", async () => {
+    const policy = new HarnessPolicyService()
+    const scope = policy.beginTurn("chat-1", { engine: "pi", toolGate: "allow" }, 1, "turn-1", "1.5.0")
+    const entered = deferred(), release = deferred()
+    const f = await fixture({ policy, readSnapshot: async (...args) => { entered.resolve(); await release.promise; return boundedDiskSnapshot(...args) } }, scope)
+    const pending = f.open()
+    await entered.promise
+    policy.request("chat-1", { engine: "pi", toolGate: "read-only" }, 1, true)
+    expect(f.lease.signal.aborted).toBe(true)
+    release.resolve()
+    expect(await pending).toMatchObject({ status: "cancelled", cancellation: "confirmed" })
+    expect(f.requests()).toHaveLength(0)
+  })
+
+  test.each(["claude", "opencode", "pi", "codex"] as const)("%s cannot use unavailable or unverified host capabilities", async engine => {
+    const policy = new HarnessPolicyService()
+    const scope = policy.beginTurn("chat-1", defaultExecutionPolicy(engine), 1, "turn-1", engine === "claude" ? "2.1.241" : engine === "opencode" ? "1.19.5" : "unknown")
+    const f = await fixture({ policy }, scope)
+    expect((await f.open()).status).toBe("unavailable")
+    expect(f.requests()).toHaveLength(0)
+  })
+
+  test("capability revisions cannot refresh a previously captured admission", async () => {
+    const policy = new HarnessPolicyService()
+    const scope = policy.beginTurn("chat-1", defaultExecutionPolicy("pi"), 1, "turn-1", "1.5.0")
+    const f = await fixture({ policy }, scope)
+    const receipt = await f.open()
+    policy.observeRuntime(scope, "unverified")
+    policy.observeRuntime(scope, "1.5.0")
+    expect((await f.open()).status).toBe("unavailable")
+    expect(() => f.service.readSnapshot(f.connection, receipt.operationId)).toThrow("no longer deliverable")
+    expect(f.requests()).toHaveLength(1)
+  })
+
+  test("without an admission policy the service fails closed", async () => {
+    const f = await fixture({ policy: undefined })
+    expect(f.lease).toBeUndefined()
+    expect((await f.open()).status).toBe("unavailable")
     expect(f.requests()).toHaveLength(0)
   })
 })

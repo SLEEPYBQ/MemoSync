@@ -1325,7 +1325,6 @@ export function createWsRouter({
           if (!Array.isArray(command.capabilities) || (command.resumeToken !== undefined && typeof command.resumeToken !== "string")) throw new Error("Invalid host client handshake")
           // The socket has passed the server's normal WS authentication. Neither model nor
           // client picks a clientId. A private server-issued token resumes the same window.
-          hostActions.disconnect(ws)
           const result = hostActions.bind(ws, command.capabilities,
             event => { try { return sockets.has(ws) && send(ws, event).status !== 0 } catch { return false } },
             chatId => sockets.has(ws) && [...ws.data.subscriptions.values()].some(topic => topic.type === "chat" && topic.chatId === chatId),
@@ -1636,7 +1635,7 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
-          const result = await agent.send(command, hostActions?.originatingClient(ws, command.chatId))
+          const result = await agent.send(command, hostActions?.originatingClient(ws))
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)
             : null

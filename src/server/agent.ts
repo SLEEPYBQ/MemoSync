@@ -337,6 +337,7 @@ interface StartTurnArgs {
   /** Transport-owned identity; never read this from the model/client command body. */
   hostClientId?: string
   hostAdmission?: HostAdmissionLease
+  policyScope?: PolicyCallScope
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
   /**
@@ -482,6 +483,7 @@ interface ClaudeSessionState {
 
 interface AgentCoordinatorArgs {
   hostActions?: HostActionService
+  harnessPolicies?: HarnessPolicyService
   store: EventStore
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
@@ -1677,7 +1679,7 @@ export class AgentCoordinator {
   private readonly hostActions?: HostActionService
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
-  private readonly harnessPolicies = new HarnessPolicyService()
+  private readonly harnessPolicies: HarnessPolicyService
   private readonly policyScopes = new Map<string, PolicyCallScope>()
   private readonly policyApprovals = new Map<string, PolicyCallScope>()
   private readonly policyChanges = new Set<string>()
@@ -1827,6 +1829,7 @@ export class AgentCoordinator {
 
   constructor(args: AgentCoordinatorArgs) {
     this.hostActions = args.hostActions
+    this.harnessPolicies = args.harnessPolicies ?? new HarnessPolicyService()
     this.store = args.store
     this.onStateChange = args.onStateChange
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
@@ -3730,13 +3733,6 @@ export class AgentCoordinator {
     // Hold the reservation across every await below (preview pass, engine boot)
     // until the turn hands off to pendingPreviews (parked) or activeTurns (booted).
     const reservation = this.reserveStartup(args)
-    if (this.hostActions) {
-      const hostProject = this.store.getProject(chat.projectId)
-      if (hostProject) args.hostAdmission = this.hostActions.captureAdmission({
-        chatId: args.chatId, admittedTurnId: logicalTurnId, workspaceRef: chat.projectId,
-        workspaceRoot: hostProject.localPath, targetClientId: args.hostClientId,
-      })
-    }
     const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
     // PREVIOUS turn's injection.
@@ -3746,6 +3742,20 @@ export class AgentCoordinator {
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
     try {
+    // Freeze execution and host admission together, before runtime/memory startup awaits.
+    if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
+    const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
+    this.harnessPolicies.ensure(args.chatId, selectedPolicy.policy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
+    args.policyScope = this.harnessPolicies.beginTurn(args.chatId, selectedPolicy.policy, selectedPolicy.revision, logicalTurnId,
+      this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
+    this.policyScopes.set(args.chatId, args.policyScope)
+    if (this.hostActions) {
+      const hostProject = this.store.getProject(chat.projectId)
+      if (hostProject) args.hostAdmission = this.hostActions.captureAdmission({
+        chatId: args.chatId, admittedTurnId: logicalTurnId, workspaceRef: chat.projectId,
+        workspaceRoot: hostProject.localPath, targetClientId: args.hostClientId, policyScope: args.policyScope,
+      })
+    }
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
       const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
       if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
@@ -3879,7 +3889,10 @@ export class AgentCoordinator {
       // either way those guard the chat, so releasing the reservation is safe.
       // The detached preview continuation owns (and releases) the reservation
       // it was handed — the early-return above must not release it here.
-      if (!reservationHandedOff) this.settleStartupReservation(args.chatId, reservation)
+      if (!reservationHandedOff) {
+        if (!this.activeTurns.has(args.chatId)) this.endPolicyTurn(args.chatId, logicalTurnId)
+        this.settleStartupReservation(args.chatId, reservation)
+      }
     }
   }
 
@@ -5879,14 +5892,14 @@ export class AgentCoordinator {
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
     const executionPolicy = selectedPolicy.policy
     const legacyExecution = !chat.executionPolicyVersion
-    this.harnessPolicies.ensure(args.chatId, executionPolicy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
-    const policyScope = this.harnessPolicies.beginTurn(args.chatId, executionPolicy, selectedPolicy.revision, args.turnId!, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
-    this.policyScopes.set(args.chatId, policyScope)
+    const policyScope = args.policyScope
+    if (!policyScope || !this.harnessPolicies.isCurrent(policyScope) || policyScope.policyRevision !== selectedPolicy.revision) throw new Error("Stale execution policy admission")
+    this.harnessPolicies.observeRuntime(policyScope, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
     await this.store.setExecutionPolicyState?.(args.chatId, this.harnessPolicies.state(args.chatId, args.provider))
     const isPolicyCurrent = () => !this.policyChanges.has(args.chatId) && this.harnessPolicies.isCurrent(policyScope)
     const onExecutionPolicyApplied = async (nativeSessionId?: string) => {
       if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
-      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
         .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(executionPolicy))
       // Unknown runtimes and legacy unrestricted policies never gain an invented proof.
       if (!choice || choice.availability !== "available") return

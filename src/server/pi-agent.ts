@@ -529,6 +529,9 @@ export class PiAgentManager {
     const existing = this.sessions.get(chatId)
     if (!existing) return
     this.sessions.delete(chatId)
+    existing.memoryInvoke = null
+    existing.beforeToolCall = undefined
+    existing.isPolicyCurrent = () => false
     void existing.session.abort().catch(() => {})
     existing.session.dispose()
   }
@@ -589,6 +592,10 @@ export class PiAgentManager {
     if (existing && connectionUnchanged && existing.cwd === args.cwd
       && existing.definitionsKey === definitionsKey && !args.forkSession) {
       if (args.beforeToolCall && !existing.session.agent) throw new Error("Pi tool gating is unavailable in this SDK runtime")
+      // Retire old dispatch and finish aborting before replacing any turn-owned hooks.
+      existing.memoryInvoke = null
+      if (existing.session.isStreaming) await existing.session.abort()
+      args.signal?.throwIfAborted()
       await setConnectionKey(existing.modelRuntime, args.connection)
       args.signal?.throwIfAborted()
       existing.beforeToolCall = args.beforeToolCall
@@ -609,6 +616,9 @@ export class PiAgentManager {
 
     if (existing) {
       this.sessions.delete(args.chatId)
+      existing.memoryInvoke = null
+      existing.beforeToolCall = undefined
+      existing.isPolicyCurrent = () => false
       if (existing.session.isStreaming) await existing.session.abort()
       existing.session.dispose()
       // Rebind definitions around the native history, even if an in-process

@@ -12,6 +12,7 @@ import {
   type HostActionServerEvent, type HostFileSnapshot, type HostNativeToolContext,
 } from "../shared/host-actions"
 import type { MemoryToolSpec } from "./memory/tools"
+import type { PolicyCallScope } from "../shared/harness-capabilities"
 
 export const MAX_HOST_SNAPSHOT_BYTES = 256 * 1024
 const openInput = z.object({
@@ -28,6 +29,8 @@ export interface HostAdmissionScope {
   workspaceRef: string
   workspaceRoot: string
   targetClientId?: string
+  /** Coordinator-owned execution epoch, captured before startup awaits. */
+  policyScope?: Readonly<PolicyCallScope>
 }
 /** Synchronously captured before startup/tool awaits. Native metadata is added at callback entry. */
 export interface HostAdmissionLease extends Readonly<HostAdmissionScope> {
@@ -43,6 +46,7 @@ export interface HostActionAdmissionPolicy {
   capture(scope: Readonly<HostAdmissionScope>): { policyRevision: number; capabilityRevision: number }
   /** Re-check the exact captured revisions/scope, never rebind to a new revision. */
   allows(lease: HostAdmissionLease): boolean
+  onRevoked?(listener: (chatId: string, reason: string) => void): () => void
 }
 interface Operation {
   receipt: HostActionReceipt
@@ -136,6 +140,7 @@ export class HostActionService {
   private readonly now: () => number
   private readonly ttlMs: number
   private readonly policy: HostActionAdmissionPolicy
+  private readonly unsubscribePolicy?: () => void
   private readonly readDisk: typeof boundedDiskSnapshot
   private readonly expiryTimer: ReturnType<typeof setInterval>
   private closing?: Promise<void>
@@ -146,7 +151,8 @@ export class HostActionService {
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, retry_key TEXT UNIQUE NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL); CREATE INDEX IF NOT EXISTS operations_status ON operations(status); CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL)")
     this.now = options.now ?? Date.now
     this.ttlMs = options.ttlMs ?? 60_000
-    this.policy = options.policy ?? { capture: () => ({ policyRevision: 1, capabilityRevision: 1 }), allows: () => true }
+    this.policy = options.policy ?? { capture: () => { throw new Error("Host admission policy unavailable") }, allows: () => false }
+    this.unsubscribePolicy = this.policy.onRevoked?.((chatId, reason) => this.revokeChat(chatId, reason))
     this.readDisk = options.readSnapshot ?? boundedDiskSnapshot
     // Live native admission cannot be restored after a server restart. Preserve ambiguity.
     for (const op of this.pending()) {
@@ -163,11 +169,13 @@ export class HostActionService {
       const row = this.db.query("SELECT id, token FROM clients WHERE token = ?").get(resumeToken) as { id: string; token: string } | null
       if (!row) throw new Error("Invalid host client resume token")
       client = this.clients.get(row.id) ?? { clientId: row.id, resumeToken: row.token, capable: true }
+      if (client.connection && client.connection !== connection) throw new Error("Host client is still bound to a live window")
     } else {
       client = { clientId: randomUUID(), resumeToken: randomUUID(), capable: true }
       this.db.query("INSERT INTO clients VALUES (?, ?)").run(client.clientId, client.resumeToken)
     }
-    // Rebinding revokes the old socket's authority immediately.
+    // Replace a socket's previous binding only after validating the requested identity.
+    this.disconnect(connection)
     Object.assign(client, { connection, send, eligible, capable: true })
     this.clients.set(client.clientId, client)
     return { clientId: client.clientId, resumeToken: client.resumeToken }
@@ -180,9 +188,11 @@ export class HostActionService {
   clientId(connection: object): string | undefined {
     return [...this.clients.values()].find(client => client.connection === connection)?.clientId
   }
-  originatingClient(connection: object, chatId?: string): string | undefined {
+  originatingClient(connection: object): string | undefined {
     const client = [...this.clients.values()].find(client => client.connection === connection)
-    return client?.capable && chatId && client.eligible?.(chatId) ? client.clientId : undefined
+    // Authentication/binding establishes origin, even before a new chat has an id.
+    // Subscription eligibility is checked for each actual delivery and retrieval.
+    return client?.capable ? client.clientId : undefined
   }
 
   captureAdmission(scope: HostAdmissionScope): HostAdmissionLease | undefined {
@@ -194,7 +204,8 @@ export class HostActionService {
       if (!rootStat.isDirectory()) return undefined
       const generation = (this.generations.get(scope.chatId) ?? 0) + 1
       this.generations.set(scope.chatId, generation)
-      const capturedScope = Object.freeze({ ...scope, workspaceRoot: root })
+      const capturedScope = Object.freeze({ ...scope, workspaceRoot: root,
+        ...(scope.policyScope ? { policyScope: Object.freeze({ ...scope.policyScope }) } : {}) })
       const revisions = this.policy.capture(capturedScope)
       if (![revisions.policyRevision, revisions.capabilityRevision].every(value => Number.isSafeInteger(value) && value >= 0)) return undefined
       const controller = new AbortController()
@@ -269,6 +280,7 @@ export class HostActionService {
   /** Capture trusted native fields and arguments synchronously, before the first await. */
   openFile(lease: HostAdmissionLease | undefined, native: HostNativeToolContext | undefined, raw: unknown, signal?: AbortSignal): Promise<HostActionReceipt> {
     if (!lease || !native?.engineInstanceId || !native.nativeSessionId || !native.nativeToolCallId) return Promise.resolve(this.unavailable("Trusted native tool correlation is unavailable"))
+    if (!this.valid(lease) || signal?.aborted) return Promise.resolve(this.unavailable("Admission is stale or policy no longer allows it"))
     const bound = Object.freeze({ ...native })
     const parsed = openInput.safeParse(raw)
     if (!parsed.success) return Promise.resolve({ operationId: "", status: "rejected", delivery: "not-sent", cancellation: "none", reason: "Invalid open_file arguments" })
@@ -368,7 +380,7 @@ export class HostActionService {
   statusForTool(lease: HostAdmissionLease | undefined, operationId: string): HostActionReceipt {
     this.expire()
     const op = this.get(operationId)
-    return lease && this.valid(lease) && op?.lease.chatId === lease.chatId && op.lease.workspaceRef === lease.workspaceRef
+    return lease && this.valid(lease) && op?.lease.leaseId === lease.leaseId
       ? this.receipt(op) : this.unavailable("Operation unavailable in this chat")
   }
   readSnapshot(connection: object, operationId: string): HostFileSnapshot {
@@ -390,9 +402,10 @@ export class HostActionService {
       || input.fileVersion !== op.snapshot.version || input.digest !== op.snapshot.digest
       || !op.snapshotRetrieved || op.receipt.delivery === "not-sent") throw new Error("Invalid snapshot presentation receipt")
     if (op.receipt.presented) return this.receipt(op)
-    if (op.receipt.status === "accepted" && (!this.liveLease(op) || !this.pathStillSafe(op))) this.stop(op, "Admission or workspace path changed before acknowledgement")
-    // This ACK is only an old operation fact, including after cancel/expiry/new generation.
-    // It does not restore a lease, invoke deliver, or navigate any client.
+    if (op.receipt.status !== "accepted" || !this.liveLease(op) || !this.pathStillSafe(op)) {
+      if (op.receipt.status === "accepted") this.stop(op, "Admission or workspace path changed before acknowledgement")
+      throw new Error("Host admission is no longer valid for acknowledgement")
+    }
     op.receipt = { ...op.receipt, status: "presented", observedContent: op.request.snapshot,
       presented: { at: this.now(), viewInstanceId: input.viewInstanceId, fileVersion: input.fileVersion, digest: input.digest } }
     this.save(op)
@@ -402,6 +415,7 @@ export class HostActionService {
   close(): Promise<void> {
     if (this.closing) return this.closing
     clearInterval(this.expiryTimer)
+    this.unsubscribePolicy?.()
     for (const chatId of this.leases.keys()) this.revokeChat(chatId, "Host service stopped")
     this.clients.clear()
     this.closing = Promise.allSettled([...this.inflight.values()]).then(() => { this.db.close() })
