@@ -6,6 +6,8 @@ import { z } from 'zod';
 import type { MemoryService } from './index';
 import type { CaptureService } from './capture';
 import type { MemoryItem } from './types';
+import { planMemoryInjection } from './injection';
+import { semanticHash, type MemoryView } from './view';
 
 /** Per-turn context threaded into a tool handler. */
 export interface MemoryToolContext {
@@ -13,10 +15,11 @@ export interface MemoryToolContext {
   projectId?: string;
   /** Active conversation/session id (provenance for proposed memories). */
   sessionId?: string;
-  /** Current user-visible turn; required by Claude's turn-local capture ledger. */
+  /** Current user-visible turn, shared by every engine's capture channels. */
   turn?: number;
-  /** Engine executing the tool; only Claude review capture enables the ledger. */
   engine?: string;
+  /** Immutable server grant captured from the context admitted to this turn. */
+  memoryView?: MemoryView;
   /** Server-confirmed working memory for this turn; omitted by legacy callers. */
   allowedMemoryIds?: readonly string[];
 }
@@ -25,6 +28,7 @@ export interface MemoryToolContext {
 export interface MemoryToolResult {
   text: string;
   isError?: boolean;
+  receipts?: Array<{ memoryId: string; version: number; viewRevision: string; contentDigest: string }>;
 }
 
 /** An engine-neutral tool definition. `schema` is a Zod raw shape (object props). */
@@ -124,6 +128,13 @@ export function buildMemoryToolSpecs(
               if (outcome.created.length) opts?.onProposed?.(outcome.created);
               const item = outcome.created[0]!;
               const revisionNote = outcome.revisions > 0 ? ' as a revision proposal' : '';
+              const persisted = memory.store.getById(item.id);
+              if (persisted?.status === 'active') {
+                return { text: `Stored [${persisted.id} v${persisted.version}]${revisionNote} — accepted and active under the current review policy.` };
+              }
+              if (persisted?.status !== 'candidate') {
+                return { text: `Proposal [${item.id}] is ${persisted?.status ?? 'unavailable'}; it is not active.` };
+              }
               return {
                 text: `Proposed [${item.id}]${revisionNote} — it now awaits the user's review; it is NOT active yet, so do not cite it.`,
               };
@@ -142,6 +153,12 @@ export function buildMemoryToolSpecs(
                 };
               }
               opts?.onProposed?.(outcome.pending, { resurfaced: true });
+              const persisted = outcome.pending.map(item => memory.store.getById(item.id));
+              if (persisted.some(item => item?.status !== 'candidate')) {
+                return { text: persisted.map((item, index) => item
+                  ? `[${item.id} v${item.version}] is ${item.status}.`
+                  : `[${outcome.pending[index]!.id}] is unavailable.`).join(' ') };
+              }
               return {
                 text: `Already proposed earlier as [${outcome.pending.map((m) => m.id).join('], [')}] and still awaiting the user's review — its review card has been shown again in this chat. It is NOT active yet, so do not cite it.`,
               };
@@ -153,14 +170,15 @@ export function buildMemoryToolSpecs(
                   .filter((id): id is string => Boolean(id)),
               )];
               const idText = ids.length ? ` as [${ids.join('], [')}]` : '';
-              const hasPending = outcome.sameTurnDuplicates.some(({ status }) => status === 'candidate');
+              const statusNote = ids.map(id => `[${id}] is ${memory.store.getById(id)?.status ?? 'unavailable'}.`).join(' ');
               const pendingItems = ids
                 .map((id) => memory.store.getById(id))
                 .filter((item): item is MemoryItem => item?.status === 'candidate');
               return {
                 text:
                   `Already handled earlier this turn${idText}; no duplicate card or reinforcement was recorded.` +
-                  (hasPending && opts?.pendingCandidateTiming === 'next_turn'
+                  (statusNote ? ` ${statusNote}` : '') +
+                  (pendingItems.length > 0 && opts?.pendingCandidateTiming === 'next_turn'
                     ? ` ${pendingCandidateReviewTiming(pendingItems, ctx.sessionId)} It is NOT active yet, so do not cite it.`
                     : ''),
               };
@@ -182,23 +200,59 @@ export function buildMemoryToolSpecs(
         'Load as many or as few as you judge necessary.',
       schema: {
         ids: z.array(z.string()).describe('memory ids to expand, e.g. ["M-07", "M-12"]'),
+        expectedVersion: z.number().int().positive().optional().describe('Expected content version for a single id.'),
+        expectedVersions: z.record(z.string(), z.number().int().positive()).optional(),
+        expectedViewRevision: z.string().optional().describe('Expected semantic view revision; the server turn grant also applies.'),
       },
       handler(args, ctx) {
-        const ids = Array.isArray(args.ids) ? args.ids.filter((x): x is string => typeof x === 'string') : [];
+        const ids = Array.isArray(args.ids) ? [...new Set(args.ids.filter((x): x is string => typeof x === 'string'))] : [];
         if (!ids.length) return { text: 'Provide at least one memory id.', isError: true };
-        const loaded: string[] = [];
-        const parts: string[] = [];
-        for (const id of ids) {
-          if (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id)) continue;
-          const m = memory.store.getById(id);
-          if (!m || m.status !== 'active') continue;
-          memory.store.recordUse(id, { actor: 'agent', sessionId: ctx.sessionId, via: 'detail_load', detailLoaded: true });
-          loaded.push(id);
-          parts.push(`[${m.id}] (${m.scope} · ${m.type}) ${m.content}\n${m.detail ?? '(no additional detail — the short form is the whole memory)'}`);
+        if (args.expectedVersion !== undefined && ids.length !== 1) {
+          return { text: 'expectedVersion requires a single id; use expectedVersions for multiple ids.', isError: true };
         }
-        if (!loaded.length) return { text: 'No matching active memories for those ids.' };
-        memory.logger.event({ type: 'memory.detail_load', sessionId: ctx.sessionId, ids: loaded });
-        return { text: parts.join('\n\n') };
+        return memory.db.transaction((): MemoryToolResult => {
+          const grant = ctx.memoryView;
+          if (!grant) {
+            return { text: 'VIEW_CHANGED: a versioned server turn grant is required; refresh Working Memory.', isError: true };
+          }
+          if (grant.projectId !== ctx.projectId || grant.chatId !== ctx.sessionId) {
+            return { text: 'VIEW_CHANGED: the turn grant belongs to a different scope.', isError: true };
+          }
+          const current = planMemoryInjection({ memory, projectId: ctx.projectId, chatId: ctx.sessionId,
+            restrictToIds: grant?.selectedIds.slice() ?? ctx.allowedMemoryIds?.slice(),
+          });
+          const allowed = new Set(current.injectedMemories.map(item => item.id));
+          const parts: string[] = [];
+          const loaded: string[] = [];
+          const receipts: NonNullable<MemoryToolResult['receipts']> = [];
+          let failed = false;
+          for (const id of ids) {
+            if (!allowed.has(id) || (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id))) continue;
+            const m = memory.store.getById(id)!;
+            const expectedVersions = args.expectedVersions as Record<string, unknown> | undefined;
+            const expected = expectedVersions?.[id] ?? args.expectedVersion ?? grant?.versions[id];
+            if ((grant && grant.versions[id] !== m.version) || (expected !== undefined && expected !== m.version)) {
+              parts.push(`[${id}] VERSION_CHANGED: refresh Working Memory before loading details.`);
+              failed = true;
+              continue;
+            }
+            if ((grant && grant.revision !== current.view.revision) ||
+                (args.expectedViewRevision !== undefined && args.expectedViewRevision !== current.view.revision)) {
+              parts.push(`[${id}] VIEW_CHANGED: refresh Working Memory before loading details.`);
+              failed = true;
+              continue;
+            }
+            const receipt = { memoryId: id, version: m.version, viewRevision: current.view.revision,
+              contentDigest: semanticHash([m.content, m.detail ?? null]) };
+            memory.store.recordUse(id, { actor: 'agent', sessionId: ctx.sessionId, turn: ctx.turn, via: 'detail_load', detailLoaded: true });
+            loaded.push(id);
+            receipts.push(receipt);
+            parts.push(`[${m.id} v${m.version}] (${m.scope} · ${m.type}) ${m.content}\n${m.detail ?? '(no additional detail — the short form is the whole memory)'}\nReceipt: ${JSON.stringify(receipt)}`);
+          }
+          if (loaded.length) memory.logger.event({ type: 'memory.detail_load', sessionId: ctx.sessionId, ids: loaded });
+          return { text: parts.join('\n\n') || 'No matching active memories for those ids.',
+            ...(failed ? { isError: true } : {}), receipts };
+        })();
       },
     },
   ];
@@ -213,5 +267,6 @@ export async function dispatchMemoryTool(
 ): Promise<MemoryToolResult> {
   const spec = specs.find((s) => s.name === name);
   if (!spec) return { text: `Unknown memory tool: ${name}`, isError: true };
-  return spec.handler(args, ctx);
+  // Snapshot getter-backed contexts before any routing await can advance turns.
+  return spec.handler(args, { ...ctx });
 }

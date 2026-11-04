@@ -7,6 +7,7 @@ import { openMemoryDb } from './db';
 import { MemoryFile } from './MemoryFile';
 import { MemoryStore } from './MemoryStore';
 import { looksLikeSecret } from './secrets';
+import { semanticHash } from './view';
 import type { ActorMeta, MemoryItem } from './types';
 
 function normalizeContent(s: string): string {
@@ -144,54 +145,61 @@ export class MemoryService {
   ): { created: string[]; skipped: number } {
     const isPersonal = target.scope === 'personal';
     const projectId = isPersonal ? undefined : target.projectId;
-    // Actives AND pending candidates — a retried import must not duplicate
-    // the candidates its first attempt already committed.
-    const liveByNorm = new Set(
-      [
-        ...this.store.list({ scope: target.scope, projectId, status: 'active' }),
-        ...this.store.list({ scope: target.scope, projectId, status: 'candidate' }),
-      ].map((m) => normalizeContent(m.content)),
-    );
-    const created: string[] = [];
-    let skipped = 0;
-    for (const raw of text.split('\n')) {
-      const line = raw.trim();
-      if (!line.startsWith('- ')) continue;
-      // Strip a leading [anchor] if the source mimics our format.
-      const content = line.replace(/^- (\[[^\]]*\]\s*)?/, '').trim();
-      if (!content) continue;
-      if (liveByNorm.has(normalizeContent(content))) {
-        skipped += 1;
-        continue;
-      }
-      liveByNorm.add(normalizeContent(content)); // dedupe within the import too
-      const item = this.store.create(
-        {
-          content,
-          scope: target.scope,
-          projectId,
-          type: 'fact',
-          status: 'candidate',
-          evidenceClass: 'user_stated',
-          sensitive: looksLikeSecret(content),
-        },
-        meta,
+    if (!isPersonal && !projectId) throw new Error('A project import requires a project owner.');
+    const outcome = this.db.transaction(() => {
+      // Actives AND pending candidates — a retried import must not duplicate
+      // the candidates its first attempt already committed.
+      const liveByNorm = new Set(
+        [
+          ...this.store.list({ scope: target.scope, projectId, status: 'active' }),
+          ...this.store.list({ scope: target.scope, projectId, status: 'candidate' }),
+        ].map((m) => normalizeContent(m.content)),
       );
-      this.logger.event({
-        type: 'memory.propose',
-        sessionId: meta.sessionId,
-        id: item.id,
-        memType: item.type,
-        scope: item.scope,
-        via: 'md_import',
-      });
-      created.push(item.id);
-    }
-    if (created.length) {
-      if (isPersonal) this.writePersonalProjection();
-      else this.writeProjectProjection(projectId!);
-    }
-    return { created, skipped };
+      const created: string[] = [];
+      let skipped = 0;
+      for (const raw of text.split('\n')) {
+        const line = raw.trim();
+        if (!line.startsWith('- ')) continue;
+        // Strip a leading [anchor] if the source mimics our format.
+        const content = line.replace(/^- (\[[^\]]*\]\s*)?/, '').trim();
+        if (!content) continue;
+        const operationKey = `md_import:${semanticHash([target.scope, projectId ?? null, normalizeContent(content)])}`;
+        if (this.store.getCaptureOperation(operationKey)) {
+          skipped++;
+          continue;
+        }
+        if (liveByNorm.has(normalizeContent(content)) || this.store.wasMemorySuppressed(content, target)) {
+          skipped += 1;
+          continue;
+        }
+        liveByNorm.add(normalizeContent(content)); // dedupe within the import too
+        const item = this.store.create(
+          {
+            content,
+            scope: target.scope,
+            projectId,
+            type: 'fact',
+            status: 'candidate',
+            evidenceClass: 'user_stated',
+            sensitive: looksLikeSecret(content),
+          },
+          meta,
+        );
+        this.store.recordCaptureOperation(operationKey, 'md_import', item.id);
+        this.logger.event({
+          type: 'memory.propose',
+          sessionId: meta.sessionId,
+          id: item.id,
+          memType: item.type,
+          scope: item.scope,
+          via: 'md_import',
+        });
+        created.push(item.id);
+      }
+      return { created, skipped };
+    }).immediate();
+    if (outcome.created.length) this.syncProjection(projectId);
+    return outcome;
   }
 
   close(): void {
