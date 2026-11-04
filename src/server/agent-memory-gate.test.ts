@@ -194,7 +194,7 @@ interface Harness {
   cleanup: () => void
 }
 
-type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds"> & { promptSeq?: number; promptId?: string }
+type ClaudePromptContext = Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string }
 
 function createHarness(
   opts: {
@@ -1411,8 +1411,8 @@ describe("memory preview gate (coordinator)", () => {
 
       expect(h.sessionStarts).toHaveLength(1)
       expect(h.promptContexts).toEqual([
-        { turn: 1, engine: "claude", promptSeq: 1, promptId: expect.any(String), allowedMemoryIds: ["M-01"] },
-        { turn: 2, engine: "claude", promptSeq: 2, promptId: expect.any(String), allowedMemoryIds: ["M-01"] },
+        { turn: 1, engine: "claude", promptSeq: 1, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }) },
+        { turn: 2, engine: "claude", promptSeq: 2, promptId: expect.any(String), allowedMemoryIds: ["M-01"], memoryView: expect.objectContaining({ versions: { "M-01": 1 }, selectedIds: ["M-01"] }) },
       ])
     } finally {
       h.cleanup()
@@ -5354,7 +5354,7 @@ describe("memory on/off turn controls", () => {
     } finally { events.close(); h.cleanup() }
   })
 
-  for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} injects memory in system and scopes tool dispatch`, async () => {
+  for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} delivers memory as prompt context and scopes tool dispatch`, async () => {
     const s = services()
     const dir = mkdtempSync(join(tmpdir(), "opencode-memory-gate-"))
     const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
@@ -5376,11 +5376,12 @@ describe("memory on/off turn controls", () => {
       const excluded = h.memory.store.create({ content: "Unselected detail", detail: "MUST NOT DISCLOSE", scope: "project", projectId: "other-project", type: "fact" }, { actor: "system" })
       await h.coordinator.send({ ...send, provider: "opencode", content: "Remember that I prefer pnpm" })
       expect(turnArgs.content).toBe("Remember that I prefer pnpm")
+      expect(turnArgs.systemPrompt).toBeUndefined()
       if (mode === "off") {
-        expect(turnArgs.systemPrompt).toBeUndefined()
+        expect(turnArgs.memoryContext).toBeUndefined()
         expect(turnArgs.memoryDispatch).toBeUndefined()
       } else {
-        expect(turnArgs.systemPrompt).toContain(item.content)
+        expect(turnArgs.memoryContext).toContain(item.content)
         expect(turnArgs.memorySpecs.map((spec: any) => spec.name).includes("propose_memory")).toBe(mode === "on")
         expect((await turnArgs.memoryDispatch("load_memory_detail", { ids: [item.id] })).isError).not.toBe(true)
         const blocked = await turnArgs.memoryDispatch("load_memory_detail", { ids: [excluded.id] })

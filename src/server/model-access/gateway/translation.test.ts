@@ -199,7 +199,7 @@ test("Responses custom and namespaced tools preserve interleaved input, call ide
   expect(next.messages[1]).toEqual({ role: "tool", tool_call_id: "call_1", content: "Applied" })
 })
 
-test("system and developer instructions become one leading system message, later ones a reminder", () => {
+test("unverified backends use leading system/reminder fallback with explicit diagnostics", () => {
   // Claude Code appends turn-level system messages; Codex sends developer messages. GLM rejects both forms.
   const claude = parseRequest("anthropic", { model: "m", system: "Global instructions", messages: [{ role: "user", content: [{ type: "text", text: "Question" }] }, { role: "system", content: "Turn instructions" }] })
   expect(encodeChat(claude).messages).toEqual([{ role: "system", content: "Global instructions\n\nTurn instructions" }, { role: "user", content: "Question" }])
@@ -213,4 +213,5 @@ test("system and developer instructions become one leading system message, later
     { role: "system", content: "Base\n\nDev" }, { role: "user", content: "Hi" }, { role: "assistant", content: "Hello" },
     { role: "user", content: "<system-reminder>\nContext changed\n</system-reminder>" },
   ])
+  expect(codex.diagnostics).toContainEqual({ code: "instruction_role_changed", path: "messages[4].role", message: "Backend instruction support is unverified; later instructions were downgraded to a user reminder" })
 })
