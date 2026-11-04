@@ -18,6 +18,7 @@ import { buildMemoryGraph } from "../lib/memoryGraph"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
+import { NativeMemoryImportDialog } from "../components/memory/NativeMemoryImportDialog"
 import { MemorySettingsBanner } from "../components/memory/MemorySettingsBanner"
 import { SCOPE_ICONS, scopeRingClasses, SCOPES } from "../components/memory/ScopeBadge"
 import { TransferMemoryDialog, type TransferInitialTarget } from "../components/memory/TransferMemoryDialog"
@@ -144,6 +145,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const hasFocusedReview = Boolean(overlay?.focusedReview)
   const sections = memoryBoardSectionVisibility()
   const [creating, setCreating] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
@@ -658,6 +660,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             </div>
             {sections.searchAndCreate ? <MemoryLegendButton /> : null}
             {sections.searchAndCreate ? (
+              <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                {t("nativeMemory:entry")}
+              </Button>
+            ) : null}
+            {sections.searchAndCreate ? (
               <Button variant="default" size="sm" onClick={() => setCreating((v) => !v)}>
                 <Plus className="size-4" /> {t("board:newMemory")}</Button>
             ) : null}
@@ -1050,6 +1057,12 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
         </div>
       </div>
 
+      <NativeMemoryImportDialog
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        projectId={lens.kind === "project" ? lens.id : undefined}
+        onChanged={async () => { await loadAll(); overlay?.onChanged?.() }}
+      />
       {transferRequest ? (
         <TransferMemoryDialog
           item={transferRequest.item}
