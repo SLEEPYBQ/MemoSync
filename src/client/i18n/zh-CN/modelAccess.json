@@ -141,5 +141,8 @@
   "defaults": "默认设置",
   "keyMissingFix": "在下面编辑这个连接，填上密钥。",
   "protocolFix": "在下面换一个兼容的连接。",
+  "accountIsolated": "这次是隔离模式启动的，不会读取你本机的登录。请改用 API 连接，或正常打开 MemoSync。",
+  "piVersionUnsupported": "MemoSync 暂时只支持 Pi 0.73.x，还不支持你装的这个版本。",
+  "unsupportedVersionStatus": "版本不支持",
   "signedOutShort": "还没有登录"
 }

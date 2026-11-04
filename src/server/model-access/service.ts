@@ -22,8 +22,10 @@ function accountSignedIn(engine: EngineId, env: RuntimeEnv) {
   const home = env.HOME || homedir()
   if (engine === "pi") return false
   // Read only the CLI's sign-in metadata. Never probe Keychain or prompt for access.
+  const claudeDir = env.CLAUDE_CONFIG_DIR || join(home, ".claude")
+  // A custom CLAUDE_CONFIG_DIR moves .claude.json along with the credentials.
   const paths = engine === "codex" ? [join(env.CODEX_HOME || join(home, ".codex"), "auth.json")]
-    : [join(env.CLAUDE_CONFIG_DIR || join(home, ".claude"), ".credentials.json"), join(home, ".claude.json")]
+    : [join(claudeDir, ".credentials.json"), env.CLAUDE_CONFIG_DIR ? join(claudeDir, ".claude.json") : join(home, ".claude.json")]
   return paths.some(path => {
     if (!existsSync(path)) return false
     try {
@@ -169,8 +171,9 @@ export class ModelAccessService {
         else if (!compatibleEndpointForEngine(engine, c)) problem = "connection-protocol-unsupported"
         else if (connectionNeedsKey(c) && !(await this.getKey(c.id))) problem = "connection-key-missing"
       } else if (engine === "pi") problem = "connection-missing"
-      else if (this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR || !accountSignedIn(engine, this.env)) problem = "account-signed-out"
-      return [engine, { engine, setup, executable, ready: !problem, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}) }] as const
+      const accountIsolated = setup.access.mode === "account" && engine !== "pi" && Boolean(this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR)
+      if (!problem && setup.access.mode === "account" && engine !== "pi" && (accountIsolated || !accountSignedIn(engine, this.env))) problem = "account-signed-out"
+      return [engine, { engine, setup, executable, ready: !problem, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}), ...(accountIsolated && problem === "account-signed-out" ? { accountIsolated: true } : {}) }] as const
     }))
     this.statuses = Object.fromEntries(entries) as Record<EngineId, EngineStatus>
     this.changed()
