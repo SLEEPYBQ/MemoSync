@@ -411,7 +411,7 @@ Please check the latest error first.`,
     expect(updatedRows[0]?.id).toBe("tool-group:tool-1")
   })
 
-  test("groups long-term review Steps 1 and 3 but keeps Working Memory separate", () => {
+  test("keeps candidate and saved-memory review ordered without a transfer stage", () => {
     const timestamp = new Date().toISOString()
     const messages: HydratedTranscriptMessage[] = [
       {
@@ -460,17 +460,21 @@ Please check the latest error first.`,
     expect(html).toContain("canonical saved memories together")
     expect(html).toContain("Working Memory remains the separate next step")
     expect(html).not.toContain("Prepare Memories for This Turn")
-    expect(html.indexOf("Step 1 · Review New Memory Candidates")).toBeLessThan(
-      html.indexOf("Step 3 · Review Suggested Changes to Existing Memories"),
+    expect(html).toContain("Review New Memory Candidates")
+    expect(html).toContain("Review Suggested Changes to Existing Memories")
+    expect(html.indexOf("Review New Memory Candidates")).toBeLessThan(
+      html.indexOf("Review Suggested Changes to Existing Memories"),
     )
-    expect(html.indexOf("Step 3 · Review Suggested Changes to Existing Memories")).toBeLessThan(
+    expect(html.indexOf("Review Suggested Changes to Existing Memories")).toBeLessThan(
       html.indexOf("Working Memory for This Turn"),
     )
     expect(html).toContain("Working Memory for This Turn")
-    expect(html).not.toContain("Step 2 · Transfer Suggestions")
+    expect(html).not.toMatch(/Step [123]/)
+    expect(html).toContain("Transfer suggestions appear only when relevant memories are found")
+    expect(html).not.toContain("Transfer Suggestions")
   })
 
-  test("keeps the memory-changes-review row id stable while Step 2 arrives", () => {
+  test("keeps the memory-changes-review row id stable while transfer arrives", () => {
     const timestamp = new Date().toISOString()
     const proposal: HydratedTranscriptMessage = {
       id: "proposal-stable",
