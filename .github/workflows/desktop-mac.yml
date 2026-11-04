@@ -10,6 +10,8 @@ on:
       - "bun.lock"
       - "bunfig.toml"
       - ".bun-version"
+      - "vite.config.ts"
+      - "vite.export-viewer.config.ts"
       - "src/server/server.ts"
       - "src/server/cli.ts"
       - "src/server/model-access/launcher.ts"
