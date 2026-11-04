@@ -37,7 +37,7 @@ function stripProjectionComments(text: string): string {
     .join("\n")
 }
 
-export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: string[]) => void }) {
+export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (newCandidateIds?: string[]) => void; embedded?: boolean }) {
   useI18n()
   const [files, setFiles] = useState<FileEntry[] | null>(null)
   const [selectedKey, setSelectedKey] = useState<string>("personal")
@@ -113,11 +113,11 @@ export function MarkdownSyncCard({ onSynced }: { onSynced?: (newCandidateIds?: s
   }
 
   return (
-    <section className="memory-ui @container mb-6 rounded-xl border border-border bg-card p-3">
+    <section className={cn("memory-ui @container p-3", !embedded && "mb-6 rounded-xl bg-card shadow-card")}>
       <div className="flex flex-wrap items-center gap-2">
-        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <span className="text-sm font-semibold text-foreground">{t("memory:memoryFiles")}</span>
-        <span className="text-[11px] text-muted-foreground">{t("memory:generatedExportEditMemoriesInTheApp")}</span>
+        {embedded ? null : <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />}
+        {embedded ? null : <span className="text-sm font-semibold text-foreground">{t("memory:memoryFiles")}</span>}
+        <span className="text-xs text-muted-foreground">{t("memory:generatedExportEditMemoriesInTheApp")}</span>
       </div>
 
       {/* One file per scope: Personal plus every project — all sessions of a

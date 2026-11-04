@@ -2,7 +2,7 @@ import type { ComponentProps, ReactNode } from "react"
 import type { LucideIcon } from "lucide-react"
 import { cn } from "../../lib/utils"
 
-export const MEMORY_CARD = "memory-ui memory-card @container min-w-0 rounded-xl border border-border bg-card p-[clamp(0.75rem,3%,1rem)] text-sm leading-relaxed"
+export const MEMORY_CARD = "memory-ui memory-card @container min-w-0 rounded-xl border border-transparent bg-card p-[clamp(0.75rem,3%,1rem)] shadow-card text-sm leading-relaxed"
 export const MEMORY_INNER = "min-w-0 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40"
 export const MEMORY_FOOTER = "flex flex-wrap items-center justify-end gap-2"
 

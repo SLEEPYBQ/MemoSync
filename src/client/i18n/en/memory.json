@@ -440,5 +440,11 @@
   "proposedCount_other": "{{count}} proposed",
   "suggestedCount_one": "{{count}} suggested",
   "suggestedCount_other": "{{count}} suggested",
-  "violatedCount": "{{count}} violated"
+  "violatedCount": "{{count}} violated",
+  "modeOff": "Off",
+  "modeReview": "Ask",
+  "modeAuto": "Auto",
+  "modeOffDescription": "This chat doesn't use or learn memories.",
+  "modeReviewDescription": "Asks you before using or saving memories each turn.",
+  "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board."
 }

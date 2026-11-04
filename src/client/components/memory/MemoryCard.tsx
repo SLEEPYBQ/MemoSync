@@ -61,7 +61,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
           : undefined
       }
       className={cn(
-        "memory-ui @container min-w-0 rounded-xl border p-3 transition-colors",
+        "memory-ui group/card @container relative min-w-0 rounded-xl border p-3 transition-colors",
         variant === "candidate" ? "border-cand-border bg-cand-surface" : scopeCardClasses(item.scope),
         onClick && "cursor-pointer",
         draggable && "active:cursor-grabbing",
@@ -78,7 +78,8 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {freshness ? <Chip className={FRESHNESS_CLASSES[freshness]}>{freshness}</Chip> : null}
         <Chip className="font-mono">{item.id}</Chip>
-        <ScopeBadge scope={item.scope} />
+        {/* In a column the scope is already said by where the card sits. */}
+        {variant === "candidate" ? <ScopeBadge scope={item.scope} /> : null}
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}
         {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</span> : null}
         {item.lastTraceLabel ? (
@@ -95,7 +96,12 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         </p>
       ) : null}
       {footer ? (
-        <div className="mt-2 flex flex-wrap items-center justify-end gap-1.5" onClick={handleFooterClick}>
+        <div
+          className={variant === "scoped"
+            ? "absolute right-1.5 top-1.5 flex items-center gap-1 rounded-lg bg-card opacity-0 transition-opacity focus-within:opacity-100 group-hover/card:opacity-100"
+            : "mt-2 flex flex-wrap items-center justify-end gap-1.5"}
+          onClick={handleFooterClick}
+        >
           {footer}
         </div>
       ) : null}
