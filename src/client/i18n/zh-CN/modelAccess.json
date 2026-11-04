@@ -109,7 +109,7 @@
   "changePath": "更改程序路径…",
   "choosePath": "指定路径",
   "resetPath": "改回自动查找",
-  "copyCommand": "复制安装命令",
+  "copyCommand": "复制命令",
   "copyFailed": "复制失败，请手动选中命令复制。",
   "accountAccessDescription": "用你在这个命令行工具里已经登录的账号。",
   "connectionAccessDescription": "用你保存的 API 连接（地址和密钥）。",
@@ -142,7 +142,11 @@
   "keyMissingFix": "在下面编辑这个连接，填上密钥。",
   "protocolFix": "在下面换一个兼容的连接。",
   "accountIsolated": "这次是隔离模式启动的，不会读取你本机的登录。请改用 API 连接，或正常打开 MemoSync。",
-  "piVersionUnsupported": "MemoSync 暂时只支持 Pi 0.73.x，还不支持你装的这个版本。",
+  "piVersionUnsupported": "MemoSync 目前只支持 Pi 1.x，还不支持你装的这个版本。",
   "unsupportedVersionStatus": "版本不支持",
+  "executableTooOld": "这个版本太旧，MemoSync 用不了。",
+  "upgrade": "升级",
+  "upgrading": "正在升级…",
+  "upgradeFailed": "升级没有完成。你可以自己运行上面的命令。",
   "signedOutShort": "还没有登录"
 }

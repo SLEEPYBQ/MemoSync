@@ -249,7 +249,7 @@ bun run desktop:package:mac
 Finder 中使用“打开”。当前尚未配置发布签名和公证。
 
 桌面版需要本机已安装 Claude Code 和 Codex CLI。Pi 必须在本机安装为
-`@mariozechner/pi-coding-agent` 的兼容 `0.73.x` 版本（至少 `0.73.1`）；这样
+`@earendil-works/pi-coding-agent` 的 `1.x` 版本（至少 `1.3.0`）；这样
 桌面载荷不会包含智能体实现，同时保留 Pi 的扩展兼容 SDK 边界。如果自动发现不到，
 可以在引擎设置中填写可执行文件路径。
 

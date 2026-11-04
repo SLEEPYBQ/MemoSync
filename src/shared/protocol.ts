@@ -154,6 +154,7 @@ export type ClientCommand =
   | { type: "modelAccess.setExecutablePath"; engine: EngineId; executablePath: string | null }
   | { type: "modelAccess.testConnection"; connection: ApiConnectionInput | { connectionId: string }; engine?: EngineId; model?: string }
   | { type: "modelAccess.refreshExecutables" }
+  | { type: "modelAccess.upgradeExecutable"; engine: EngineId }
   | { type: "chat.getPreview"; chatId: string }
   | { type: "chat.setMemoryDisabled"; chatId: string; disabled: boolean }
   | {

@@ -49,9 +49,10 @@ export async function executableLauncher(file: string, env: ExecutableEnvironmen
   const name = `${runtime}${process.platform === "win32" ? ".exe" : ""}`
   const candidates = [join(dirname(resolve(file)), name), join(dirname(target), name)]
   // npm globals in a version manager point into lib/node_modules, while that
-  // version's runtime is in bin. Stay within a bounded set of ancestors.
+  // version's runtime is in bin, seven levels above Pi's dist/bundle/cli.js.
+  // Stay within a bounded set of ancestors.
   let parent = dirname(target)
-  for (let depth = 0; depth < 6; depth++) {
+  for (let depth = 0; depth < 7; depth++) {
     const next = dirname(parent)
     if (next === parent) break
     candidates.push(join(parent, "bin", name))

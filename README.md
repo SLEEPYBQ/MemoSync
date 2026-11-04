@@ -252,8 +252,8 @@ confirm opening an app downloaded from the internet; use the Finder Open action
 if needed. Release signing and notarization are not configured yet.
 
 Desktop agent discovery requires installed local CLIs for Claude Code and
-Codex. Pi must be installed locally as `@mariozechner/pi-coding-agent` in the
-compatible `0.73.x` line (at least `0.73.1`); this keeps the desktop payload
+Codex. Pi must be installed locally as `@earendil-works/pi-coding-agent` in the
+`1.x` line (at least `1.3.0`); this keeps the desktop payload
 free of agent implementations while retaining Pi's extension-compatible SDK
 boundary. Configure executable paths in the Engine settings when discovery
 cannot find an installation.

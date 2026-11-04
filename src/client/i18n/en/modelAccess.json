@@ -109,7 +109,7 @@
   "changePath": "Change path…",
   "choosePath": "Choose a path",
   "resetPath": "Use automatic discovery",
-  "copyCommand": "Copy install command",
+  "copyCommand": "Copy command",
   "copyFailed": "Could not copy. Select and copy the command.",
   "accountAccessDescription": "Use your existing CLI sign-in.",
   "connectionAccessDescription": "Use the endpoint and key from a saved connection.",
@@ -142,7 +142,11 @@
   "keyMissingFix": "Edit this connection below to add a key.",
   "protocolFix": "Choose a compatible connection below.",
   "accountIsolated": "This run is isolated from your own CLI sign-ins. Use an API connection, or open MemoSync normally.",
-  "piVersionUnsupported": "This Pi version isn’t supported yet. MemoSync works with Pi 0.73.x for now.",
+  "piVersionUnsupported": "This Pi version isn’t supported yet. MemoSync works with Pi 1.x for now.",
   "unsupportedVersionStatus": "Unsupported version",
+  "executableTooOld": "This version is too old for MemoSync.",
+  "upgrade": "Upgrade",
+  "upgrading": "Upgrading…",
+  "upgradeFailed": "The upgrade didn’t finish. You can run the command yourself.",
   "signedOutShort": "Not signed in"
 }

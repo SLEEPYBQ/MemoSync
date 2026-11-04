@@ -189,6 +189,7 @@ const modelAccessErrorKeys = {
   "connection-key-missing": "errors:modelAccess_connection-key-missing",
   "connection-protocol-unsupported": "errors:modelAccess_connection-protocol-unsupported",
   "engine-setup-invalid": "errors:modelAccess_engine-setup-invalid",
+  "engine-upgrade-unavailable": "errors:modelAccess_engine-upgrade-unavailable",
   "model-unavailable": "errors:modelAccess_model-unavailable",
   "account-signed-out": "errors:modelAccess_account-signed-out",
   "executable-missing": "errors:modelAccess_executable-missing",
