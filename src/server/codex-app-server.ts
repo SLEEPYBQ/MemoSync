@@ -103,7 +103,10 @@ interface PendingTurn {
   resolved: boolean
   completionInProgress: boolean
   bufferedNotifications: ServerNotification[]
+  bufferedRequests: ServerRequest[]
+  ready: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  isPolicyCurrent?: () => boolean
   onApprovalRequest?: (
     request:
       | {
@@ -134,8 +137,7 @@ interface SessionContext {
   lastStderrLine: string | null
   closed: boolean
   subprocessEnv?: Record<string, string | undefined>
-  externalToolsDisabled?: boolean
-  toolsDisabled?: boolean
+  launchKey: string
   developerInjectionUnsupported?: boolean
 }
 
@@ -153,6 +155,7 @@ export interface StartCodexSessionArgs {
   dynamicTools?: DynamicToolFunctionSpec[]
   /** Memory branches inspect the shared workspace without changing it. */
   sandbox?: "read-only" | "workspace-write" | "danger-full-access"
+  executionPolicy?: Extract<import("../shared/harness-capabilities").NativeExecutionPolicy, { engine: "codex" }>
   subprocessEnv?: Record<string, string | undefined>
   /** Memory retries must fail if their child disappeared instead of losing its analysis. */
   allowResumeFallback?: boolean
@@ -172,6 +175,9 @@ export interface StartCodexTurnArgs {
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
+  executionPolicy?: StartCodexSessionArgs["executionPolicy"]
+  isPolicyCurrent?: () => boolean
+  onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
   /** Append host/memory context as a native developer item before starting this turn. */
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
@@ -882,11 +888,18 @@ export class CodexAppServerManager {
       if (pending?.cancelled) throw new Error("Codex session stopped")
       args.signal?.throwIfAborted()
     }
+    // Reuse only the same native runtime and capability surface. The digest
+    // includes credential/profile identity without exposing it in diagnostics.
+    const launchKey = createHash('sha256').update(JSON.stringify({
+      cwd: args.cwd, runtime: args.runtime, env: args.subprocessEnv,
+      model: args.model, serviceTier: args.serviceTier, dynamicTools: args.dynamicTools ?? [],
+      sandbox: args.sandbox, policy: args.executionPolicy,
+      externalToolsDisabled: Boolean(args.disableExternalTools), toolsDisabled: Boolean(args.disableTools),
+    })).digest('hex')
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
-      && (!args.disableExternalTools || existing.externalToolsDisabled)
-      && (!args.disableTools || existing.toolsDisabled)
-      && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
+    if (existing && !existing.closed && !args.pendingForkSessionToken
+      && (!args.sessionToken || args.sessionToken === existing.sessionToken)
+      && existing.launchKey === launchKey) {
       return existing.sessionToken
     }
 
@@ -907,6 +920,7 @@ export class CodexAppServerManager {
       lastStderrLine: null,
       closed: false,
       subprocessEnv: args.subprocessEnv,
+      launchKey,
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
@@ -996,8 +1010,9 @@ export class CodexAppServerManager {
       model: resolveCodexModel(args.model, args.subprocessEnv),
       cwd: args.cwd,
       serviceTier,
-      approvalPolicy: "never",
-      sandbox: args.sandbox ?? "danger-full-access",
+      approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+      ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+      sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       dynamicTools: args.dynamicTools ?? [],
@@ -1011,8 +1026,9 @@ export class CodexAppServerManager {
         model: resolveCodexModel(args.model, args.subprocessEnv),
         cwd: args.cwd,
         serviceTier,
-        approvalPolicy: "never",
-        sandbox: args.sandbox ?? "danger-full-access",
+        approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+        ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+        sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
         persistExtendedHistory: false,
         dynamicTools: args.dynamicTools ?? [],
       } satisfies ThreadForkParams)
@@ -1024,8 +1040,9 @@ export class CodexAppServerManager {
           model: resolveCodexModel(args.model, args.subprocessEnv),
           cwd: args.cwd,
           serviceTier,
-          approvalPolicy: "never",
-          sandbox: args.sandbox ?? "danger-full-access",
+          approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+          ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+          sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
           persistExtendedHistory: false,
           dynamicTools: args.dynamicTools ?? [],
         } satisfies ThreadResumeParams)
@@ -1041,8 +1058,6 @@ export class CodexAppServerManager {
     }
 
     context.sessionToken = response.thread.id
-    context.externalToolsDisabled = args.disableExternalTools === true || args.disableTools === true
-    context.toolsDisabled = args.disableTools === true
     return context.sessionToken
   }
 
@@ -1074,8 +1089,11 @@ export class CodexAppServerManager {
       resolved: false,
       completionInProgress: false,
       bufferedNotifications: [],
+      bufferedRequests: [],
+      ready: false,
       onToolRequest: args.onToolRequest,
       onApprovalRequest: args.onApprovalRequest,
+      isPolicyCurrent: args.isPolicyCurrent,
       onDynamicToolCall: args.onDynamicToolCall,
     }
     context.pendingTurn = pendingTurn
@@ -1126,7 +1144,8 @@ export class CodexAppServerManager {
             text_elements: [],
           },
         ],
-        approvalPolicy: "never",
+        approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+        ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
         model: resolveCodexModel(args.model, context.subprocessEnv),
         effort: args.effort,
         serviceTier: args.serviceTier ?? null,
@@ -1142,10 +1161,14 @@ export class CodexAppServerManager {
         },
       } satisfies TurnStartParams)
       pendingTurn.turnId = response.turn.id
+      if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
+      if (args.onExecutionPolicyApplied) await args.onExecutionPolicyApplied(context.sessionToken ?? undefined)
+      pendingTurn.ready = true
+      for (const request of pendingTurn.bufferedRequests.splice(0)) void this.handleServerRequest(context, request)
       if (context.pendingTurn === pendingTurn && !pendingTurn.resolved) {
         const buffered = pendingTurn.bufferedNotifications.splice(0)
         for (const notification of buffered) {
-          if (this.notificationTurnId(notification) !== pendingTurn.turnId) continue
+          if (this.notificationTurnId(notification) && this.notificationTurnId(notification) !== pendingTurn.turnId) continue
           void this.handleNotification(context, notification)
           if (context.pendingTurn !== pendingTurn || pendingTurn.resolved) break
         }
@@ -1357,6 +1380,16 @@ export class CodexAppServerManager {
       return
     }
 
+    if (!pendingTurn.ready && !pendingTurn.resolved) {
+      pendingTurn.bufferedRequests.push(request)
+      return
+    }
+    if (pendingTurn.isPolicyCurrent?.() === false || ("threadId" in request.params && request.params.threadId !== context.sessionToken) || ("turnId" in request.params && request.params.turnId !== pendingTurn.turnId)) {
+      this.writeMessage(context, { id: request.id, error: { message: "Stale native request" } })
+      return
+    }
+    const isCurrent = () => context.pendingTurn === pendingTurn && !pendingTurn.resolved && !context.closed && pendingTurn.isPolicyCurrent?.() !== false
+
     if (request.method === "item/tool/requestUserInput") {
       const questions = toAskUserQuestionItems(request.params)
       const toolId = request.params.itemId
@@ -1383,7 +1416,7 @@ export class CodexAppServerManager {
       const result = await pendingTurn.onToolRequest(toolRequest)
       this.writeMessage(context, {
         id: request.id,
-        result: toToolRequestUserInputResponse(result, request.params.questions),
+        result: toToolRequestUserInputResponse(isCurrent() ? result : {}, request.params.questions),
       })
       return
     }
@@ -1500,7 +1533,7 @@ export class CodexAppServerManager {
       this.writeMessage(context, {
         id: request.id,
         result: {
-          decision,
+          decision: isCurrent() ? decision : "decline",
         } satisfies CommandExecutionRequestApprovalResponse,
       })
       return
@@ -1514,7 +1547,7 @@ export class CodexAppServerManager {
     this.writeMessage(context, {
       id: request.id,
       result: {
-        decision,
+        decision: isCurrent() ? decision : "decline",
       } satisfies FileChangeRequestApprovalResponse,
     })
   }
@@ -1552,6 +1585,10 @@ export class CodexAppServerManager {
     const notificationThreadId = this.notificationThreadId(notification)
     if (notificationThreadId && context.sessionToken && notificationThreadId !== context.sessionToken) return
     const notificationTurnId = this.notificationTurnId(notification)
+    if (!pendingTurn.ready) {
+      pendingTurn.bufferedNotifications.push(notification)
+      return
+    }
     if (notificationTurnId) {
       if (pendingTurn.turnId === null) {
         pendingTurn.bufferedNotifications.push(notification)

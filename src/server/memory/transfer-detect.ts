@@ -10,6 +10,7 @@
 import { memoryTransferSchema } from './branch-schemas';
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
+import { compileMemoryView } from './view';
 import type { SessionClockEntry } from './maintenance';
 import type { MemoryItem, MemoryScope } from './types';
 import type { TransferDecoding, TransferEncoding, TransferService } from './transfer';
@@ -43,6 +44,7 @@ export interface TransferTaskContext extends TransferSourceContext {
   taskText: string;
   /** Prior turns only; taskText is supplied separately. */
   recentContext?: string;
+  policyKey?: string;
 }
 
 export interface TransferTaskResult {
@@ -351,10 +353,7 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
       ...(ctx.projectId ? memory.store.list({ scope: 'project', projectId: ctx.projectId, status: 'active' }) : []),
       ...(ctx.sessionId ? memory.store.list({ scope: 'session', sessionId: ctx.sessionId, status: 'active' }) : []),
     ];
-    const key = items
-      .map((item) => `${item.id}:${item.version}:${item.scope}:${item.projectId ?? ''}:${item.sessionId ?? ''}`)
-      .sort()
-      .join('|');
+    const key = compileMemoryView(memory, items, items, ctx.projectId, ctx.sessionId).revision;
     return { items, key };
   }
 
@@ -368,7 +367,9 @@ export function createTransferDetectService(opts: TransferDetectOptions): Transf
     return {
       input: { task: ctx.taskText, memories: target.items, sources, projectId: ctx.projectId, projectTitle: ctx.projectTitle },
       key: JSON.stringify({ task: ctx.taskText, projectId: ctx.projectId, projectTitle: ctx.projectTitle,
-        target: target.key, sources: sources.map((source) => [source.item.id, source.item.version, source.profileKey]) }),
+        policyKey: ctx.policyKey ?? '', target: target.key,
+        sourceView: compileMemoryView(memory, sources.map(source => source.item), [], ctx.projectId, ctx.sessionId).revision,
+        sources: sources.map((source) => [source.item.id, source.item.version, source.profileKey]) }),
       targetKey: target.key,
     };
   }

@@ -16,6 +16,7 @@
 // OUT — they move every turn, while a real use already changes quiet evidence.
 import type { LlmJsonCaller } from './deepseek';
 import type { MemoryService } from './index';
+import { compileMemoryView } from './view';
 import type { MemoryItem } from './types';
 import { shareMergeContext, type SessionClockEntry } from './maintenance';
 
@@ -204,6 +205,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       sessionId: ctx.sessionId ?? '',
       taskText: ctx.taskText ?? '',
       policyKey: ctx.policyKey ?? '',
+      viewRevision: compileMemoryView(memory, pool, pool, ctx.projectId, ctx.sessionId).revision,
       items: pool
         .map((item) => ({
           id: item.id,

@@ -535,11 +535,13 @@ describe('parent launch snapshots', () => {
     const options = { model: 'parent-model', effort: 'high' as const, tools: ['Read', 'Bash', 'Write', 'WebFetch'],
       systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: 'parent memory block' },
       settingSources: ['user', 'project', 'local'] as ('user' | 'project' | 'local')[],
-      permissionMode: 'acceptEdits' as const, settings: { permissions: { allow: ['Write', 'Bash', 'mcp__memory__*'] } } }
+      permissionMode: 'bypassPermissions' as const, settings: { permissions: { allow: ['Write', 'Bash', 'mcp__memory__*'] } } }
     const branch = createMemoryBranch({ ...base, parentLaunch: { provider: 'claude', options, memorySpecs: [] } }, fake)
     await branch.ask('Inspect', { schema: { type: 'object' } })
     const launched = fake.calls[0].options!
-    for (const key of ['model', 'effort', 'tools', 'systemPrompt', 'settingSources', 'permissionMode'] as const) expect(launched[key]).toEqual(options[key])
+    for (const key of ['model', 'effort', 'tools', 'systemPrompt', 'settingSources'] as const) expect(launched[key]).toEqual(options[key])
+    expect(launched.permissionMode).toBe('default')
+    expect(launched.allowDangerouslySkipPermissions).toBe(false)
     expect(launched.outputFormat).toBeUndefined()
     expect(launched.settings).toMatchObject({ disableAllHooks: true, permissions: options.settings.permissions })
     expect(fake.calls[0].prompt).toStartWith('You are an isolated MemoSync')

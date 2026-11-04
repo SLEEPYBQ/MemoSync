@@ -139,7 +139,7 @@ describe("coordinator provider branches", () => {
     await until(() => h.disposed.includes("audit"))
     expect(h.calls.map(call => call.purpose).sort()).toEqual(["audit", "candidate"])
     expect(h.created.every(branch => branch.parentSessionToken === "parent-after-turn")).toBe(true)
-    expect(h.created.every(branch => branch.model === "glm-5.3-flash")).toBe(true)
+    expect(h.created.every(branch => branch.model === (h.mainOptions[0]!.engineRuntime as { model: string }).model)).toBe(true)
     expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(false)
     h.candidate.resolve({ candidates: [{ proposalId: "C:1", content: "Use Bun for project scripts", type: "constraint", scope: "project", abstractionLevel: "contextual", sensitive: false, route: "new" }] })
     await until(() => h.store.getMessages(h.chat.id).some(entry => entry.kind === "memory_candidates"))

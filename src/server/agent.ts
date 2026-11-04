@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto'
 import { CaptureQueue, type CaptureJob } from './memory/capture-queue'
-import type { ParentLaunch, ClaudeParentLaunch } from './memory/parent-launch'
+import { snapshotParentLaunch, type ParentLaunch, type ClaudeParentLaunch } from './memory/parent-launch'
+import type { NativeExecutionPolicy, PolicyCallScope } from '../shared/harness-capabilities'
+import { HarnessPolicyService, defaultExecutionPolicy, executionPolicyKey, isMemoryTool, isNativeExecutionPolicy } from './harness-policy'
+import { lastEngineExecutable } from './model-access/executables'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -303,6 +306,7 @@ export function resolveTurnMemoryState(
 }
 
 interface StartTurnArgs {
+  approvedMemoryViewRevision?: string
   connectionId?: string
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
@@ -354,6 +358,13 @@ interface StartupReservation {
 }
 
 interface ActiveTurn {
+  engineRuntime?: EngineRuntime
+  parentLaunch?: ParentLaunch
+  analysisPolicyKey?: string
+  projectId?: string
+  localPath?: string
+  sessionToken?: string | null
+  expectedUses?: ExpectedMemoryUse[]
   memoryState: TurnMemoryState
   chatId: string
   provider: AgentProvider
@@ -402,7 +413,17 @@ interface ActiveTurn {
   injectedIds: string[]
 }
 
+interface ClaudeExecutionControl {
+  permissionMode: Extract<NativeExecutionPolicy, { engine: "claude" }>["permissionMode"]
+  isCurrent: () => boolean
+  canUseMemory?: (name: string) => boolean
+  approve: (name: string, input: Record<string, unknown>, requestId: string) => Promise<boolean>
+  onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onApplied: () => Promise<void>
+}
+
 interface ClaudeSessionHandle {
+  setExecutionControl?: (control: ClaudeExecutionControl | undefined) => void
   parentLaunch?: ClaudeParentLaunch
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
@@ -516,6 +537,7 @@ interface AgentCoordinatorArgs {
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
+    executionControl?: ClaudeExecutionControl
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     memory?: MemoryService | null
     /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
@@ -552,6 +574,7 @@ interface PostTurnMemoryPassArgs {
   /** Launch of the completed turn; detached passes must never use the next turn. */
   parentLaunch?: ParentLaunch
   engineRuntime?: EngineRuntime
+  analysisPolicyKey?: string
   memoryState?: TurnMemoryState
   chatId: string
   projectId?: string
@@ -1374,6 +1397,8 @@ const DETAIL_NUDGE =
   "Some active memories are marked [+detail]: their one-line form is a headline, not the full rule. Call load_memory_detail on any [+detail] memory that touches this task BEFORE acting on it."
 
 export async function startClaudeSession(args: {
+  /** Test seam: production always uses the SDK query factory. */
+  queryFn?: typeof query
   localPath: string
   model: string
   effort?: string
@@ -1381,6 +1406,7 @@ export async function startClaudeSession(args: {
   sessionToken: string | null
   forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  executionControl?: ClaudeExecutionControl
   memory?: MemoryService | null
   /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
   capture?: CaptureService | null
@@ -1397,6 +1423,8 @@ export async function startClaudeSession(args: {
    * coordinator appends the transcript review card. */
   onMemoryProposal?: (created: MemoryItem[]) => void
 }): Promise<ClaudeSessionHandle> {
+  let executionControl = args.executionControl
+  let currentPlanMode = args.planMode
   const toolOriginResolver = new ClaudeToolOriginResolver()
   const echoesPromptIds = !process.env.CLAUDE_EXECUTABLE
   const outboundOrigins = new ClaudeOutboundOriginTracker(echoesPromptIds)
@@ -1444,10 +1472,10 @@ export async function startClaudeSession(args: {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
 
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
-      return {
-        behavior: "allow",
-        updatedInput: input,
-      }
+      const control = executionControl
+      const allowed = !control || control.isCurrent() && await control.approve(toolName, input, options.toolUseID)
+      if (!allowed || control && (executionControl !== control || !control.isCurrent())) return { behavior: "deny", message: "Execution approval denied or expired" }
+      return { behavior: "allow", updatedInput: input }
     }
 
     const tool = normalizeToolCall({
@@ -1463,7 +1491,10 @@ export async function startClaudeSession(args: {
       }
     }
 
-    const result = await args.onToolRequest({ tool })
+    const control = executionControl
+    if (control && !control.isCurrent()) return { behavior: "deny", message: "Stale native question" }
+    const result = await (control?.onToolRequest ?? args.onToolRequest)({ tool })
+    if (control && (executionControl !== control || !control.isCurrent())) return { behavior: "deny", message: "Stale native question reply" }
 
     if (tool.toolKind === "ask_user_question") {
       const record = result && typeof result === "object" ? result as Record<string, unknown> : {}
@@ -1508,8 +1539,13 @@ export async function startClaudeSession(args: {
     effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
     resume: args.sessionToken ?? undefined,
     forkSession: args.forkSession,
-    permissionMode: args.planMode ? "plan" : "acceptEdits",
+    permissionMode: args.planMode ? "plan" : executionControl?.permissionMode ?? "acceptEdits",
     canUseTool,
+    hooks: {
+      PreToolUse: [{ hooks: [async () => executionControl && !executionControl.isCurrent()
+        ? { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: "Execution policy changed or turn ended" } }
+        : {}] }],
+    },
     // Body text streams into ChatRuntime.streamingText as it is written —
     // without this the reply pops in whole at turn end (the DeepSeek
     // Anthropic-compatible endpoint streams SSE like the real one).
@@ -1520,7 +1556,11 @@ export async function startClaudeSession(args: {
       : undefined,
     mcpServers: memorySpecs.length
       ? {
-          memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
+          memory: toClaudeMemoryMcpServer(memorySpecs.map(spec => ({ ...spec, handler: (input, context) => {
+            if (executionControl && !executionControl.isCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
+            if (executionControl?.canUseMemory?.(spec.name) === false) return { text: "Memory access is disabled", isError: true }
+            return spec.handler(input, context)
+          } })), memoryToolContext),
         }
       : undefined,
     settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
@@ -1541,10 +1581,11 @@ export async function startClaudeSession(args: {
       env: launchOptions.env, pathToClaudeCodeExecutable: launchOptions.pathToClaudeCodeExecutable,
     },
   }
-  const q = query({ prompt: promptQueue, options: launchOptions })
+  const q = (args.queryFn ?? query)({ prompt: promptQueue, options: launchOptions })
 
   return {
     provider: "claude",
+    setExecutionControl: (control) => { executionControl = control },
     echoesPromptIds,
     parentLaunch,
     stream: createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {
@@ -1564,6 +1605,15 @@ export async function startClaudeSession(args: {
       content: string,
       context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string },
     ) => {
+      // This control request is a native acknowledgement, unlike enqueueing a prompt.
+      // Reapply every turn, including reused Queries and plan -> execute transitions.
+      if (executionControl) {
+        const control = executionControl
+        if (!control.isCurrent()) throw new Error("Stale execution policy turn")
+        await q.setPermissionMode(currentPlanMode ? "plan" : control.permissionMode)
+        if (executionControl !== control || !control.isCurrent()) throw new Error("Stale execution policy acknowledgement")
+        if (!currentPlanMode) await control.onApplied()
+      }
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
@@ -1596,8 +1646,10 @@ export async function startClaudeSession(args: {
       parentLaunch.options.model = selected
     },
     setPermissionMode: async (planMode: boolean) => {
-      await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
-      parentLaunch.options.permissionMode = planMode ? "plan" : "acceptEdits"
+      const mode = planMode ? "plan" : executionControl?.permissionMode ?? "acceptEdits"
+      await q.setPermissionMode(mode)
+      currentPlanMode = planMode
+      parentLaunch.options.permissionMode = mode
     },
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
@@ -1622,6 +1674,7 @@ interface PendingMemoryPreview {
   memories: MemoryItem[]
   /** Expected-use text is generated server-side and scoped to this revision. */
   expectedUseById: Map<string, string>
+  assertCurrentView?: () => void
   proposalsId?: string
   transferId?: string
   checkupId?: string
@@ -1643,6 +1696,13 @@ export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
+  private readonly harnessPolicies = new HarnessPolicyService()
+  private readonly policyScopes = new Map<string, PolicyCallScope>()
+  private readonly policyApprovals = new Map<string, PolicyCallScope>()
+  private readonly policyChanges = new Set<string>()
+  private readonly interactionQueues = new Map<string, Promise<unknown>>()
+  private readonly respondingTools = new Set<string>()
+  private readonly questionToolIds = new Map<string, string>()
   private readonly codexManager: CodexAppServerManager
   private readonly opencodeManager: OpencodeAgentManager
   private readonly piManager: PiAgentManager
@@ -1908,7 +1968,7 @@ export class AgentCoordinator {
     if (!this.memoryBranches) return
     const hostStarted = performance.now()
     this.disposeMemoryBranches(args.chatId)
-    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content }
+    const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
     const candidate = this.capture?.buildBranchPrompt?.(captureInput)
     const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
     const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
@@ -1944,9 +2004,28 @@ export class AgentCoordinator {
     return JSON.stringify(this.getMemorySettings())
   }
 
+  private memoryAnalysisPolicyKey(chatId: string, engine: AgentProvider): string {
+    const selected = this.executionPolicyFor(chatId, engine)
+    return JSON.stringify([this.memoryPolicyKey(), executionPolicyKey(selected.policy), selected.revision])
+  }
+
+  private memoryViewGuard(args: StartTurnArgs): () => void {
+    const key = () => {
+      const chat = this.store.requireChat(args.chatId)
+      return JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider),
+        chat.memoryDisabled, this.memory && planMemoryInjection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId }).view.revision])
+    }
+    const approved = key()
+    return () => {
+      if (key() !== approved) throw new Error('Working memory changed during review. Reopen preparation to review the updated items.')
+    }
+  }
+
   private memoryBranchRequest(args: StartTurnArgs, request: BranchRequest): BranchRequest {
     const chat = this.store.requireChat(args.chatId)
-    return { ...request, viewKey: JSON.stringify({ policy: this.memoryPolicyKey(), task: args.memoryUserText ?? args.content,
+    const view = this.memory ? planMemoryInjection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId }).view : undefined
+    return { ...request, viewKey: JSON.stringify({ policy: this.memoryAnalysisPolicyKey(args.chatId, args.provider), task: args.memoryUserText ?? args.content,
+      viewRevision: view?.revision,
       projectId: chat.projectId, chatId: args.chatId, disabled: chat.memoryDisabled,
       store: [...this.memoryBranchSnapshot()].sort(([a], [b]) => a.localeCompare(b)),
       declined: (this.memory?.store.list() ?? []).filter(item => this.memory!.store.getKv(`transfer_declined:${item.id}:${chat.projectId ?? args.chatId}`)).map(item => item.id).sort(),
@@ -2007,8 +2086,10 @@ export class AgentCoordinator {
     this.workingBranches.get(args.chatId)?.dispose()
     const branch = this.newMemoryBranch(args, "working-memory")
     this.workingBranches.set(args.chatId, branch)
+    const assertCurrentView = this.memoryViewGuard(args)
     const input = { task: args.memoryUserText ?? args.content, memories, mandatoryIds }
     const raw = await branch.ask(buildWorkingMemoryBranchPrompt(input), { schema: memoryStageSchema("working-memory") })
+    assertCurrentView()
     const result = parseWorkingMemoryBranchResult(raw, input)
     const expected = new Map(result.expectedUses.map(use => [use.id, use.expectedUse]))
     return result.relevant.map(item => ({ ...item, expectedUse: expected.get(item.id) }))
@@ -2106,6 +2187,7 @@ export class AgentCoordinator {
       const authoritativeExpectedUses = command.decision === "go_on"
         ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
         : []
+      if (command.decision === 'go_on') pending.assertCurrentView?.()
 
       handedOff = true
       pending.respond(
@@ -2153,6 +2235,7 @@ export class AgentCoordinator {
     const pending = this.pendingPreviews.get(input.chatId)
     const branch = this.workingBranches.get(input.chatId)
     if (!pending?.published || pending.previewId !== input.previewId || !branch) throw new Error("No matching working-memory branch")
+    pending.assertCurrentView?.()
     const selected = new Set(input.selectedIds)
     const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
     const branchInput = { task: pending.task, memories: pending.memories, mandatoryIds }
@@ -2162,6 +2245,7 @@ export class AgentCoordinator {
       buildWorkingMemoryBranchPrompt(branchInput),
     ].join('\n\n'), { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
     if (this.pendingPreviews.get(input.chatId) !== pending) throw new Error("Working-memory preview changed during revision")
+    pending.assertCurrentView?.()
     const result = parseWorkingMemoryBranchResult(raw, branchInput)
     for (const use of result.expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
     return { selectedIds: result.relevant.map(item => item.id), reply: typeof raw.reply === "string" ? raw.reply : "Updated working memory for this task." }
@@ -2648,20 +2732,24 @@ export class AgentCoordinator {
     }
   }
 
-  private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs): void {
-    args.engineRuntime ??= this.sessionRuntimes.get(args.chatId)
-    args.parentLaunch ??= this.parentLaunches.get(args.chatId)
+  private launchPostTurnMemoryPasses(args: PostTurnMemoryPassArgs, active: ActiveTurn): void {
     if (args.memoryState?.memoryActive === false) return
-    const active = this.activeTurns.get(args.chatId)
-    if (this.memoryBranches && active) {
+    // The source is the completed turn, even if cancellation or persistence
+    // awaits have already allowed a successor to enter activeTurns.
+    args.engineRuntime ??= active.engineRuntime
+    args.parentLaunch ??= active.parentLaunch
+    args.analysisPolicyKey ??= active.analysisPolicyKey
+    args.projectId = active.projectId
+    if (this.memoryBranches) {
       args.injectedMemories = active.memoryPlan?.injectedMemories.map(item => ({ ...item }))
-      args.expectedUses = this.turnExpectedUses.get(args.chatId)
+      args.expectedUses = active.expectedUses
       args.model = active.model
       args.effort = active.effort
       args.serviceTier = active.serviceTier
       const messages = this.store.getMessages(args.chatId)
       const start = messages.findIndex(message => message._id === args.turnId)
-      const turnMessages = start >= 0 ? messages.slice(start + 1) : []
+      const nextTurn = start >= 0 ? messages.findIndex((message, index) => index > start && message.kind === 'user_prompt') : -1
+      const turnMessages = start >= 0 ? messages.slice(start + 1, nextTurn < 0 ? undefined : nextTurn) : []
       args.executionText = turnMessages.filter(message => message.kind === "tool_call" || message.kind === "tool_result")
         .map(message => JSON.stringify(message)).join("\n")
       args.executionTools = turnMessages.flatMap(message => {
@@ -2669,9 +2757,8 @@ export class AgentCoordinator {
         if (message.kind === "tool_result") return [{ toolId: message.toolId, text: typeof message.content === "string" ? message.content : JSON.stringify(message.content) }]
         return []
       })
-      const chat = this.store.getChat(args.chatId)
-      args.sessionToken = chat?.sessionToken
-      args.localPath = chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined
+      args.sessionToken = active.sessionToken
+      args.localPath = active.localPath
     }
     void this.trackMemoryWork(args.chatId, () => this.runPostTurnMemoryPasses(args)).catch((error) => {
       this.reportBackgroundError?.(`[memory-post-turn] chat ${args.chatId}: ${error instanceof Error ? error.message : String(error)}`)
@@ -2716,10 +2803,11 @@ export class AgentCoordinator {
   private captureInvalidReason(job: CaptureJob<DurableCaptureInput>): string | undefined {
     const chat = this.store.getChat(job.chatId)
     const finished = job.payload.finished
-    if (!chat || this.closedChats.has(job.chatId)) return 'chat-unavailable'
+    if (!chat || chat.deletedAt || this.closedChats.has(job.chatId)) return 'chat-unavailable'
     if (chat.projectId !== job.projectId || !this.store.getProject(chat.projectId) || this.store.getProject(chat.projectId)?.localPath !== finished.localPath) return 'scope-changed'
     const settings = this.getMemorySettings()
     if (chat.memoryDisabled || !settings.enabled || !settings.learn || settings.control !== 'auto' || this.memoryPolicyKey() !== job.payload.policyKey) return 'memory-disabled-or-policy-changed'
+    if (finished.analysisPolicyKey !== this.memoryAnalysisPolicyKey(job.chatId, finished.engine as AgentProvider)) return 'execution-policy-changed'
     if (!this.store.getMessages(job.chatId).some(message => message._id === job.turnId)) return 'original-turn-unavailable'
   }
 
@@ -2767,7 +2855,7 @@ export class AgentCoordinator {
             signal.throwIfAborted()
             const invalidAfterResolve = this.captureInvalidReason(current)
             if (invalidAfterResolve) { queue.finish(current, 'skipped', invalidAfterResolve); continue }
-            const input = { projectId: current.projectId, sessionId: chatId, turn: current.turnNumber, engine: finished.engine, userText: finished.userText, signal }
+            const input = { projectId: current.projectId, sessionId: chatId, turn: current.turnNumber, engine: finished.engine, userText: finished.userText, policyKey: finished.analysisPolicyKey, signal }
             this.memory?.logger.event({ type: 'memory.latency', sessionId: chatId, turnId: current.turnId, stage: 'automatic-capture', segment: 'queue_wait', durationMs: Date.now() - current.enqueuedAt })
             if (current.status === 'pending') {
               if (!queue.transition(current, 'pending', 'running')) continue
@@ -2938,10 +3026,9 @@ export class AgentCoordinator {
           let outcome: TraceOutcome | null = null
           let tracedVia: "fork" | "sidecar" = "sidecar"
           if (this.memoryBranches) {
-            const chat = this.store.requireChat(args.chatId)
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
-            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? chat.sessionToken, args.parentLaunch)
+            const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? null, args.parentLaunch, true, args.turnId)
             const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
@@ -3517,10 +3604,11 @@ export class AgentCoordinator {
   }
 
   private isEngineStartBlocked(chatId: string) {
-    return this.runtimeStopping || this.closedChats.has(chatId)
+    return this.runtimeStopping || this.closedChats.has(chatId) || this.policyChanges.has(chatId)
   }
 
   async closeChat(chatId: string) {
+    this.endPolicyTurn(chatId)
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
@@ -4014,6 +4102,7 @@ export class AgentCoordinator {
         turn: ctx.turnNumber,
         engine: args.provider,
         userText: args.memoryUserText ?? args.content,
+        policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
         signal: prep?.cancellation.signal,
       }
       const branches = this.branchPreparations.get(args.chatId)
@@ -4463,6 +4552,7 @@ export class AgentCoordinator {
       sessionId: args.chatId,
       projectTitle: ctx.project.title,
       taskText: args.memoryUserText ?? args.content,
+      policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
       recentContext: this.recentConversationDigest(args.chatId),
     }
     let searched = false
@@ -4810,7 +4900,7 @@ export class AgentCoordinator {
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled" | "reopen_proposals" | "reopen_transfer"; checkupId: string }> {
     const checkupId = options?.checkupId ?? crypto.randomUUID()
     const reuseParent = Boolean(options?.reuseParent)
-    const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content }
+    const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
     const runState = {
       checkupId,
       proposalsId: options?.proposalsId,
@@ -5251,6 +5341,7 @@ export class AgentCoordinator {
     pending: PendingMemoryPreview,
     selectedIds: string[],
   ): Promise<ExpectedMemoryUse[]> {
+    pending.assertCurrentView?.()
     const allowed = new Set(pending.memoryIds)
     const selected = [...new Set(selectedIds)].filter((id) => allowed.has(id))
     if (this.memoryBranches) {
@@ -5295,6 +5386,7 @@ export class AgentCoordinator {
         )
       }
     }
+    pending.assertCurrentView?.()
     return selected.flatMap((id) => {
       const expectedUse = pending.expectedUseById.get(id)
       return expectedUse ? [{ id, expectedUse }] : []
@@ -5332,6 +5424,7 @@ export class AgentCoordinator {
       task: args.memoryUserText ?? args.content,
       memories: ctx.injected,
       expectedUseById: new Map(),
+      assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
@@ -5479,7 +5572,7 @@ export class AgentCoordinator {
           // M incorporates Candidate decisions while T is still being reviewed.
           void (proposalsRun ?? Promise.resolve()).then(() => {
             if (this.cancelledDuringPreview.has(args.chatId)) return
-            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content }
+            const checkupCtx = { projectId: ctx.project.id, sessionId: args.chatId, taskText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
             const request = this.memoryCheckup?.buildBranchPrompt?.(checkupCtx, args.memoryUserText ?? args.content)
               ?? this.memoryCheckup?.buildForkPrompt?.(checkupCtx)
             return this.continueMemoryBranch(args.chatId, "changes", "Candidate review", request?.dependencyKey ?? "", request)
@@ -5630,6 +5723,7 @@ export class AgentCoordinator {
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected,
             expectedUseById: new Map(),
+            assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
             proposalsId,
             transferId,
             checkupId,
@@ -5868,6 +5962,9 @@ export class AgentCoordinator {
         || this.isEngineStartBlocked(args.chatId)) return
       this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
+      if (this.memoryBranches && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
+        memory: this.memory, projectId: ctx.chat.projectId, chatId: args.chatId, restrictToIds: [...selected],
+      }).view.revision
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
         .filter((use) => selected.has(use.id) && typeof use.expectedUse === "string" && use.expectedUse.trim())
         .map((use) => ({ id: use.id, expectedUse: use.expectedUse.trim().slice(0, 220) }))
@@ -5956,6 +6053,8 @@ export class AgentCoordinator {
     if (reservation) reservation.controller = startController
     this.engineStartAbortControllers.set(args.chatId, startController)
     let bootedActive: ActiveTurn | undefined
+    let admitTurn!: () => void
+    const turnReady = new Promise<void>(resolve => { admitTurn = resolve })
     let turn: HarnessTurn
     try {
     this.disposeMemoryBranches(args.chatId)
@@ -5980,25 +6079,67 @@ export class AgentCoordinator {
             restrictToIds: turnRestriction,
           })
         : null
-    const injectedIdsAtBoot = turnMemoryPlan?.injectedMemories.map((m) => m.id) ?? []
-
-    const onToolRequest = async (request: HarnessToolRequest): Promise<unknown> => {
-      const active = this.activeTurns.get(args.chatId)
-      if (!active) {
-        throw new Error("Chat turn ended unexpectedly")
-      }
-
-      active.status = "waiting_for_user"
-      this.emitStateChange(args.chatId)
-
-      return await new Promise<unknown>((resolve) => {
-        active.pendingTool = {
-          toolUseId: request.tool.toolId,
-          tool: request.tool,
-          resolve,
-        }
-      })
+    if (args.approvedMemoryViewRevision && args.approvedMemoryViewRevision !== turnMemoryPlan?.view.revision) {
+      throw new Error('Working memory changed after approval. Reopen preparation to review the updated view.')
     }
+    const injectedIdsAtBoot = turnMemoryPlan?.injectedMemories.map((m) => m.id) ?? []
+    if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
+    const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
+    const executionPolicy = selectedPolicy.policy
+    const legacyExecution = !chat.executionPolicyVersion
+    this.harnessPolicies.ensure(args.chatId, executionPolicy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
+    const policyScope = this.harnessPolicies.beginTurn(args.chatId, executionPolicy, selectedPolicy.revision, args.turnId!, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+    this.policyScopes.set(args.chatId, policyScope)
+    await this.store.setExecutionPolicyState?.(args.chatId, this.harnessPolicies.state(args.chatId, args.provider))
+    const isPolicyCurrent = () => !this.policyChanges.has(args.chatId) && this.harnessPolicies.isCurrent(policyScope)
+    const onExecutionPolicyApplied = async (nativeSessionId?: string) => {
+      if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
+      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+        .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(executionPolicy))
+      // Unknown runtimes and legacy unrestricted policies never gain an invented proof.
+      if (!choice || choice.availability !== "available") return
+      const state = this.harnessPolicies.applied(policyScope, nativeSessionId)
+      if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
+      if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
+      this.emitStateChange(args.chatId)
+    }
+    const canUseMemory = (name: string) => {
+      const settings = this.getMemorySettings()
+      const live = this.store.getChat(args.chatId)
+      return !memoryDisabledForTurn && !!live && !live.deletedAt && !live.memoryDisabled && settings.enabled
+        && (!name.endsWith('propose_memory') || (settings.learn && args.memoryState?.learnActive !== false))
+    }
+    const requestNativeApproval = async (name: string, input: Record<string, unknown>, requestId?: string) => {
+      await turnReady
+      return this.requestExecutionApproval(policyScope, name, input, requestId)
+    }
+    const authorizeHostTool = async (name: string, input: Record<string, unknown>, requestId?: string) => {
+      await turnReady
+      if (!isPolicyCurrent() || this.activeTurns.get(args.chatId)?.turnId !== policyScope.turnId) return false
+      if (legacyExecution) return true
+      const decision = this.harnessPolicies.admit(policyScope, name)
+      if (decision === "deny") return false
+      if (decision === "allow") return true
+      return requestNativeApproval(name, input, requestId)
+    }
+
+    const onToolRequest = (request: HarnessToolRequest): Promise<unknown> => this.queuePolicyInteraction(policyScope, async () => {
+      await turnReady
+      const active = this.activeTurns.get(args.chatId)
+      if (!isPolicyCurrent() || !active || active.turnId !== policyScope.turnId || active.pendingTool) {
+        return { cancelled: true, error: "Native question expired" }
+      }
+      const tool = this.bindPolicyQuestion(policyScope, request.tool)
+      this.policyApprovals.set(tool.toolId, policyScope)
+      active.status = "waiting_for_user"
+      try {
+        const result = await new Promise<unknown>(resolve => {
+          active.pendingTool = { toolUseId: tool.toolId, tool, resolve }
+          this.emitStateChange(args.chatId)
+        })
+        return isPolicyCurrent() ? result : { cancelled: true, error: "Native question expired" }
+      } finally { this.policyApprovals.delete(tool.toolId) }
+    })
 
     if (args.provider === "claude") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
@@ -6015,6 +6156,18 @@ export class AgentCoordinator {
         planMode: args.planMode,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
+        executionControl: {
+          permissionMode: executionPolicy.engine === "claude" ? executionPolicy.permissionMode : "default",
+          isCurrent: isPolicyCurrent,
+          canUseMemory,
+          approve: async (name, input, requestId) => {
+            if (!isPolicyCurrent() || executionPolicy.engine !== "claude") return false
+            if (legacyExecution || isMemoryTool(name)) return true
+            return executionPolicy.permissionMode !== "dontAsk" && await requestNativeApproval(name, input, requestId)
+          },
+          onToolRequest,
+          onApplied: () => onExecutionPolicyApplied(),
+        },
         onToolRequest,
         projectId: chat.projectId,
         memoryEnabled: !memoryDisabledForTurn,
@@ -6091,6 +6244,8 @@ export class AgentCoordinator {
       }
       const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
+            if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
+            if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6111,6 +6266,9 @@ export class AgentCoordinator {
           forkSession: Boolean(chat.pendingForkSessionToken),
           memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
           memoryDispatch: piMemoryDispatch, onToolRequest,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "opencode" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied,
+          onPermissionRequest: request => requestNativeApproval(request.permission, { ...request }, request.id),
           onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         }
         turn = await this.opencodeManager.startTurn(opencodeLaunch)
@@ -6130,6 +6288,9 @@ export class AgentCoordinator {
         connection,
         memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
         memoryDispatch: piMemoryDispatch,
+        beforeToolCall: async (name, input) => await authorizeHostTool(name, input) && isPolicyCurrent() ? undefined : { block: true, reason: "Execution approval denied or expired" },
+        isPolicyCurrent,
+        onExecutionPolicyApplied,
         onLaunch: (launch) => this.parentLaunches.set(args.chatId, launch),
       }
       this.parentLaunches.set(args.chatId, { provider: "pi", options: { model: piLaunch.model, effort: piLaunch.effort, connection, memorySpecs: piLaunch.memorySpecs, toolNames: piLaunch.toolNames } })
@@ -6219,6 +6380,8 @@ export class AgentCoordinator {
       }
       const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
+            if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
+            if (!canUseMemory(name)) return { text: "Memory access is disabled", isError: true }
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6240,6 +6403,7 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
+        executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
       }
       this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
       const sessionToken = await this.codexManager.startSession(codexLaunch)
@@ -6269,6 +6433,9 @@ export class AgentCoordinator {
           serviceTier: args.serviceTier,
           planMode: args.planMode,
           onToolRequest,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied,
+          onApprovalRequest: async request => await requestNativeApproval(request.kind === "command_execution" ? "commandExecution" : "fileChange", { ...request.params }, `${typeof request.requestId}:${request.requestId}`) && isPolicyCurrent() ? "accept" : "decline",
           developerInstructions: codexMemoryBlock || undefined,
           onDynamicToolCall,
         })
@@ -6297,7 +6464,15 @@ export class AgentCoordinator {
       return
     }
 
+    const parentLaunch = this.parentLaunches.get(args.chatId)
     const active: ActiveTurn = {
+      engineRuntime: args.engineRuntime ? structuredClone(args.engineRuntime) : undefined,
+      parentLaunch: parentLaunch ? snapshotParentLaunch(parentLaunch) : undefined,
+      analysisPolicyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
+      projectId: chat.projectId,
+      localPath: project.localPath,
+      sessionToken: chat.sessionToken,
+      expectedUses: this.turnExpectedUses.get(args.chatId)?.map(use => ({ ...use })),
       memoryState: args.memoryState ?? { control: "review", memoryActive: true, learnActive: true },
       chatId: args.chatId,
       provider: args.provider,
@@ -6331,10 +6506,18 @@ export class AgentCoordinator {
     }
     this.activeTurns.set(args.chatId, active)
     bootedActive = active
+    admitTurn()
     } catch (error) {
+      const scope = this.policyScopes.get(args.chatId)
+      if (scope) {
+        const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
+        if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
+      }
       if ((args.provider === "pi" || args.provider === "opencode") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
       throw error
     } finally {
+      admitTurn()
+      if (!bootedActive) this.endPolicyTurn(args.chatId, args.turnId)
       if (this.engineStartAbortControllers.get(args.chatId) === startController) {
         this.engineStartAbortControllers.delete(args.chatId)
       }
@@ -6589,6 +6772,7 @@ export class AgentCoordinator {
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
+    executionControl?: ClaudeExecutionControl
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     projectId?: string
     /** false = "proceed without memory": boot/reboot the session without the memory block/tools. */
@@ -6606,15 +6790,12 @@ export class AgentCoordinator {
     const memoryEnabled = args.memoryEnabled ?? true
     const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model })
     const subprocessEnv = engineRuntime.env
-    const runtimeEnv = engineRuntime.env
-    // Endpoint, credentials and profile belong to the subprocess. setModel()
-    // cannot migrate any of them when the user switches vendors.
-    const providerRuntimeKey = String(Bun.hash(JSON.stringify([
-      runtimeEnv.ANTHROPIC_BASE_URL ?? "official",
-      runtimeEnv.ANTHROPIC_API_KEY, runtimeEnv.ANTHROPIC_AUTH_TOKEN,
-      runtimeEnv.CLAUDE_CONFIG_DIR, engineRuntime.executable.path, engineRuntime.connectionId,
-      engineRuntime.isolated ? engineRuntime.model : undefined, runtimeEnv.CLAUDE_CODE_MAX_CONTEXT_TOKENS,
-    ])))
+    // Endpoint, credentials, profile and native limits belong to the process.
+    // Account-mode model changes may use setModel; every other launch field
+    // (including output/context limits and executable identity) must match.
+    const providerRuntimeKey = captureRuntimeFingerprint({
+      ...engineRuntime, model: engineRuntime.isolated ? engineRuntime.model : '',
+    })
 
     // What forces a session rebuild (REDESIGN D1): enabled/disabled flips,
     // and tools flips. Skills-mode content changes deliberately do
@@ -6669,6 +6850,7 @@ export class AgentCoordinator {
         sessionToken: resumeToken,
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
+        executionControl: args.executionControl,
         memory: memoryEnabled ? this.memory : null,
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
@@ -6744,6 +6926,8 @@ export class AgentCoordinator {
       this.claudeSessions.set(args.chatId, session)
       session.pump = this.runClaudeSession(session)
     } else {
+      // Query callbacks outlive the boot turn; replace every turn's dispatch context.
+      session.session.setExecutionControl?.(args.executionControl)
       if (session.model !== args.model) {
         await session.session.setModel(args.model)
         session.model = args.model
@@ -6754,6 +6938,7 @@ export class AgentCoordinator {
       }
     }
 
+    session.session.setExecutionControl?.(args.executionControl)
     session.memoryState = args.memoryState
     return {
       provider: "claude",
@@ -6764,6 +6949,139 @@ export class AgentCoordinator {
       interrupt: session.session.interrupt,
       close: () => {},
     }
+  }
+
+  private executionPolicyFor(chatId: string, engine: AgentProvider) {
+    const chat = this.store.requireChat(chatId)
+    return chat.executionPolicies?.[engine] ?? { policy: defaultExecutionPolicy(engine, !chat.executionPolicyVersion), revision: 1 }
+  }
+
+  getHarnessSnapshot(chatId: string, engine?: AgentProvider) {
+    const chat = this.store.getChat(chatId)
+    if (!chat || chat.deletedAt) return undefined
+    if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
+    const selected = this.executionPolicyFor(chatId, engine ?? chat.provider ?? "claude")
+    return this.harnessPolicies.snapshot(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[selected.policy.engine], this.harnessRuntimeVersion(selected.policy.engine, lastEngineExecutable(selected.policy.engine)?.version))
+  }
+
+  private harnessRuntimeVersion(engine: AgentProvider, version?: string) {
+    return engine === "pi" && process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1" ? "1.5.0" : version
+  }
+
+  getEngineCapabilities(engine: AgentProvider) {
+    if (!["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    return this.harnessPolicies.registry.snapshot(engine, this.harnessRuntimeVersion(engine, lastEngineExecutable(engine)?.version))
+  }
+
+  async setExecutionPolicy(command: Extract<ClientCommand, { type: "chat.setExecutionPolicy" }>) {
+    if (!isNativeExecutionPolicy(command.policy)) throw new Error("Invalid execution policy")
+    const chat = this.store.requireChat(command.chatId)
+    if (chat.deletedAt) throw new Error("Chat deleted")
+    if (chat.provider && chat.provider !== command.policy.engine) throw new Error("Execution policy engine does not match the chat")
+    if (this.policyChanges.has(command.chatId)) throw new Error("Execution policy change in progress")
+    const selected = this.executionPolicyFor(command.chatId, command.policy.engine)
+    this.harnessPolicies.snapshot(command.chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[command.policy.engine], this.harnessRuntimeVersion(command.policy.engine, lastEngineExecutable(command.policy.engine)?.version))
+    const running = this.activeTurns.has(command.chatId) || this.engineStartAbortControllers.has(command.chatId) || this.drainingStreams.has(command.chatId)
+      || this.parentLaunches.has(command.chatId) // An idle native runtime may still own background subprocesses.
+    const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
+    this.policyChanges.add(command.chatId)
+    this.cancelAutomaticCapture(command.chatId, 'execution-policy-changed')
+    this.cancelAudits(command.chatId)
+    this.disposeMemoryBranches(command.chatId)
+    this.abortEngineStart(command.chatId)
+    // Revocation is synchronous; persistence and native interruption follow it.
+    this.emitStateChange(command.chatId)
+    try {
+      await this.store.setExecutionPolicyState(command.chatId, state, true)
+      if (running || this.startingChats.has(command.chatId)) await this.cancel(command.chatId, { skipPostTurnMemoryPasses: true })
+      const session = this.claudeSessions.get(command.chatId)
+      if (session) await this.retireClaudeSession(session, "session_rebuild")
+      await this.codexManager.stopSession(command.chatId)
+      this.piManager.closeChat(command.chatId)
+      await this.opencodeManager.closeChat(command.chatId)
+      this.parentLaunches.delete(command.chatId)
+      const retired = this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
+      await this.store.setExecutionPolicyState(command.chatId, retired)
+      return retired
+    } catch (error) {
+      this.releasePolicyInteraction(command.chatId)
+      throw error
+    } finally {
+      this.policyChanges.delete(command.chatId)
+      this.emitStateChange(command.chatId)
+    }
+  }
+
+  private bindPolicyQuestion(scope: PolicyCallScope, tool: HarnessToolRequest["tool"]): HarnessToolRequest["tool"] {
+    const key = `${scope.chatId}:${scope.engine}:${scope.generation}:${tool.toolId}`
+    let toolId = this.questionToolIds.get(key)
+    if (!toolId) {
+      toolId = `native-question:${scope.generation}:${crypto.randomUUID()}`
+      this.questionToolIds.set(key, toolId)
+    }
+    return { ...tool, toolId }
+  }
+
+  private bindPolicyEntry(scope: PolicyCallScope, entry: TranscriptEntry): TranscriptEntry {
+    if (entry.kind === "tool_call" && (entry.tool.toolKind === "ask_user_question" || entry.tool.toolKind === "exit_plan_mode")) {
+      return { ...entry, tool: this.bindPolicyQuestion(scope, entry.tool as HarnessToolRequest["tool"]) }
+    }
+    if (entry.kind === "tool_result") {
+      const toolId = this.questionToolIds.get(`${scope.chatId}:${scope.engine}:${scope.generation}:${entry.toolId}`)
+      if (toolId) return { ...entry, toolId }
+    }
+    return entry
+  }
+
+  private queuePolicyInteraction<T>(scope: PolicyCallScope, run: () => Promise<T>): Promise<T> {
+    const previous = this.interactionQueues.get(scope.chatId) ?? Promise.resolve()
+    const task = previous.catch(() => {}).then(run)
+    this.interactionQueues.set(scope.chatId, task)
+    void task.finally(() => { if (this.interactionQueues.get(scope.chatId) === task) this.interactionQueues.delete(scope.chatId) }).catch(() => {})
+    return task
+  }
+
+  private releasePolicyInteraction(chatId: string) {
+    const active = this.activeTurns.get(chatId)
+    if (active?.pendingTool && this.policyApprovals.has(active.pendingTool.toolUseId)) {
+      const pending = active.pendingTool
+      active.pendingTool = null
+      pending.resolve({ cancelled: true, error: "Execution request expired" })
+    }
+  }
+
+  private endPolicyTurn(chatId: string, turnId?: string, release = true) {
+    const scope = this.policyScopes.get(chatId)
+    if (!scope || turnId && scope.turnId !== turnId) return
+    this.harnessPolicies.endTurn(scope)
+    if (release) this.releasePolicyInteraction(chatId)
+    for (const key of this.questionToolIds.keys()) if (key.startsWith(`${scope.chatId}:${scope.engine}:${scope.generation}:`)) this.questionToolIds.delete(key)
+    this.policyScopes.delete(chatId)
+  }
+
+  private async requestExecutionApproval(scope: PolicyCallScope, name: string, input: Record<string, unknown>, requestId: string = crypto.randomUUID()): Promise<boolean> {
+    return this.queuePolicyInteraction(scope, async () => {
+      if (!this.harnessPolicies.isCurrent(scope)) return false
+      const active = this.activeTurns.get(scope.chatId)
+      if (!active || active.turnId !== scope.turnId || active.pendingTool) return false
+      const toolId = `approval:${scope.generation}:${requestId}:${crypto.randomUUID()}`
+      const question = `Allow ${name} once?\n${JSON.stringify(input, null, 2)}`
+      const tool = normalizeToolCall({ toolName: "AskUserQuestion", toolId, input: { questions: [{ question, header: "Execution approval", options: [{ label: "Allow once", description: "Authorize only this native request." }, { label: "Deny", description: "Reject this native request." }], multiSelect: false }] } }) as HarnessToolRequest["tool"]
+      this.policyApprovals.set(toolId, Object.freeze({ ...scope, requestId }))
+      await this.store.appendMessage(scope.chatId, timestamped({ kind: "tool_call", tool }))
+      if (!this.harnessPolicies.isCurrent(scope) || this.activeTurns.get(scope.chatId) !== active) { this.policyApprovals.delete(toolId); return false }
+      active.status = "waiting_for_user"
+      const result = await new Promise<unknown>(resolve => {
+        active.pendingTool = { toolUseId: toolId, tool, resolve }
+        this.emitStateChange(scope.chatId)
+      })
+      this.policyApprovals.delete(toolId)
+      const answers = result && typeof result === "object" ? (result as { answers?: Record<string, unknown> }).answers : undefined
+      const answer = answers?.[question]
+      const approved = answer === "Allow once" || (Array.isArray(answer) && answer.length === 1 && answer[0] === "Allow once")
+      return approved && this.harnessPolicies.isCurrent(scope) && this.activeTurns.get(scope.chatId) === active
+    })
   }
 
   async setMemoryDisabled(chatId: string, disabled: boolean) {
@@ -6972,6 +7290,8 @@ export class AgentCoordinator {
           const launch = this.parentLaunches.get(session.chatId)
           if (launch) this.sessionLaunches.set(`claude:${event.sessionToken}`, launch)
           session.sessionToken = event.sessionToken
+          const tokenOwner = this.activeTurns.get(session.chatId)
+          if (tokenOwner?.provider === 'claude' && tokenOwner.claudePromptSeq === promptSeq) tokenOwner.sessionToken = event.sessionToken
           await this.store.setSessionToken(session.chatId, event.sessionToken)
           this.emitStateChange(session.chatId)
           continue
@@ -7001,6 +7321,8 @@ export class AgentCoordinator {
           // result/interrupted also sweep it in case no final text arrived.
           this.clearStreamingAssistantText(session.chatId)
         }
+        const policyScope = this.policyScopes.get(session.chatId)
+        if (policyScope) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "compact_boundary" && (active?.memoryState ?? session.memoryState)?.memoryActive !== false) {
@@ -7077,7 +7399,7 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(session.chatId)
             const chat = this.store.getChat(session.chatId)
-            this.launchPostTurnMemoryPasses({
+            if (!active.cancelRequested) this.launchPostTurnMemoryPasses({
               chatId: session.chatId,
               projectId: chat?.projectId,
               engine: "claude",
@@ -7090,10 +7412,11 @@ export class AgentCoordinator {
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
               claudeSessionToken: chat?.sessionToken,
-              localPath: chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined,
-            })
+              localPath: active.localPath,
+            }, active)
           }
-          this.activeTurns.delete(session.chatId)
+          this.endPolicyTurn(session.chatId, active.turnId)
+          if (this.activeTurns.get(session.chatId) === active) this.activeTurns.delete(session.chatId)
           if (!active.cancelRequested) {
             // Starting the next queued message can fail (project dir gone after
             // a container rebuild, engine reboot failure). Without this guard
@@ -7148,6 +7471,7 @@ export class AgentCoordinator {
         if (active.cancelRequested && !active.cancelRecorded) {
           await this.store.recordTurnCancelled(session.chatId)
         }
+        this.endPolicyTurn(session.chatId, active.turnId)
         this.activeTurns.delete(session.chatId)
       }
       session.session.close()
@@ -7186,6 +7510,7 @@ export class AgentCoordinator {
         if (active.cancelRequested) break
 
         if (event.type === "session_token" && event.sessionToken) {
+          active.sessionToken = event.sessionToken
           const launch = this.parentLaunches.get(active.chatId)
           if (launch) this.sessionLaunches.set(`${active.provider}:${event.sessionToken}`, launch)
           await this.store.setSessionToken(active.chatId, event.sessionToken)
@@ -7211,6 +7536,8 @@ export class AgentCoordinator {
           // the final entry — a snapshot must never show the text twice.
           this.clearStreamingAssistantText(active.chatId)
         }
+        const policyScope = this.policyScopes.get(active.chatId)
+        if (policyScope && policyScope.turnId === active.turnId) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(active.chatId, event.entry)
         if (event.entry.kind === "assistant_text") {
           const counted = this.recordMemoryCitations(event.entry.text, active.chatId, active.memoryState)
@@ -7229,7 +7556,7 @@ export class AgentCoordinator {
           } else if (!active.cancelRequested) {
             await this.store.recordTurnFinished(active.chatId)
             const chat = this.store.getChat(active.chatId)
-            this.launchPostTurnMemoryPasses({
+            if (!active.cancelRequested) this.launchPostTurnMemoryPasses({
               chatId: active.chatId,
               projectId: chat?.projectId,
               engine: active.provider,
@@ -7241,16 +7568,17 @@ export class AgentCoordinator {
               memoryState: active.memoryState,
               memoryDisabled: active.memoryDisabled,
               injectedIds: [...active.injectedIds],
-            })
+            }, active)
           }
           // Remove from activeTurns as soon as the result arrives so the UI
           // transitions to idle immediately. The stream may still be open
           // (e.g. background tasks), but the user should be able to send
           // new messages without having to hit stop first.
-          this.activeTurns.delete(active.chatId)
+          this.endPolicyTurn(active.chatId, active.turnId)
+          if (this.activeTurns.get(active.chatId) === active) this.activeTurns.delete(active.chatId)
           // Track the still-open stream so the UI can show a draining
           // indicator and the user can stop background tasks.
-          this.drainingStreams.set(active.chatId, { turn: active.turn })
+          if (!active.cancelRequested) this.drainingStreams.set(active.chatId, { turn: active.turn })
         }
 
         this.emitStateChange(active.chatId)
@@ -7282,10 +7610,11 @@ export class AgentCoordinator {
       // We may have already been removed by result handling or cancel(),
       // and a new turn may have started for the same chatId.
       if (this.activeTurns.get(active.chatId) === active) {
+        this.endPolicyTurn(active.chatId, active.turnId)
         this.activeTurns.delete(active.chatId)
       }
-      // Stream has fully ended — no longer draining.
-      this.drainingStreams.delete(active.chatId)
+      // A predecessor must not clear a successor's draining stream.
+      if (this.drainingStreams.get(active.chatId)?.turn === active.turn) this.drainingStreams.delete(active.chatId)
       this.emitStateChange(active.chatId)
 
       if (active.postToolFollowUp && !active.cancelRequested) {
@@ -7547,6 +7876,7 @@ export class AgentCoordinator {
       skipPostTurnMemoryPasses?: boolean
     },
   ) {
+    this.endPolicyTurn(chatId, undefined, false)
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind
@@ -7686,9 +8016,8 @@ export class AgentCoordinator {
           content: result,
         })
       )
-      if (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode") {
-        pendingTool.resolve(result)
-      }
+      // Release all native waiters; their frozen policy scopes now deny replies.
+      pendingTool.resolve(result)
     }
 
     await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
@@ -7723,7 +8052,7 @@ export class AgentCoordinator {
         memoryState: active.memoryState,
         memoryDisabled: true,
         injectedIds: [],
-      })
+      }, active)
     }
     logClaudeSteer("cancel_active_turn_deleted", {
       chatId,
@@ -7771,52 +8100,65 @@ export class AgentCoordinator {
     }
 
     const pending = active.pendingTool
+    const approvalScope = this.policyApprovals.get(command.toolUseId)
+    if (approvalScope && (!this.harnessPolicies.isCurrent(approvalScope) || active.turnId !== approvalScope.turnId)) {
+      throw new Error("Stale execution approval")
+    }
     if (pending.toolUseId !== command.toolUseId) {
       throw new Error("Tool response does not match active request")
     }
 
-    await this.store.appendMessage(
-      command.chatId,
-      timestamped({
-        kind: "tool_result",
-        toolId: command.toolUseId,
-        content: command.result,
-      })
-    )
+    const responseKey = `${command.chatId}:${command.toolUseId}`
+    if (this.respondingTools.has(responseKey)) throw new Error("Tool response already in progress")
+    this.respondingTools.add(responseKey)
+    try {
+      await this.store.appendMessage(
+        command.chatId,
+        timestamped({
+          kind: "tool_result",
+          toolId: command.toolUseId,
+          content: command.result,
+        })
+      )
 
-    active.pendingTool = null
-    active.status = "running"
-
-    if (pending.tool.toolKind === "exit_plan_mode") {
-      const result = (command.result ?? {}) as {
-        confirmed?: boolean
-        clearContext?: boolean
-        message?: string
+      if (this.activeTurns.get(command.chatId) !== active || active.pendingTool !== pending || (approvalScope && !this.harnessPolicies.isCurrent(approvalScope))) {
+        throw new Error("Stale tool response")
       }
-      if (result.confirmed && result.clearContext) {
-        await this.store.setSessionToken(command.chatId, null)
-        await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+      active.status = "running"
+
+      if (pending.tool.toolKind === "exit_plan_mode") {
+        const result = (command.result ?? {}) as {
+          confirmed?: boolean
+          clearContext?: boolean
+          message?: string
+        }
+        if (result.confirmed && result.clearContext) {
+          await this.store.setSessionToken(command.chatId, null)
+          await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+        }
+
+        if (active.provider === "codex") {
+          active.postToolFollowUp = result.confirmed
+            ? {
+                content: result.message
+                  ? `Proceed with the approved plan. Additional guidance: ${result.message}`
+                  : "Proceed with the approved plan.",
+                planMode: false,
+              }
+            : {
+                content: result.message
+                  ? `Revise the plan using this feedback: ${result.message}`
+                  : "Revise the plan using this feedback.",
+                planMode: true,
+              }
+        }
       }
 
-      if (active.provider === "codex") {
-        active.postToolFollowUp = result.confirmed
-          ? {
-              content: result.message
-                ? `Proceed with the approved plan. Additional guidance: ${result.message}`
-                : "Proceed with the approved plan.",
-              planMode: false,
-            }
-          : {
-              content: result.message
-                ? `Revise the plan using this feedback: ${result.message}`
-                : "Revise the plan using this feedback.",
-              planMode: true,
-            }
-      }
-    }
+      if (this.activeTurns.get(command.chatId) !== active || active.pendingTool !== pending || approvalScope && !this.harnessPolicies.isCurrent(approvalScope)) throw new Error("Stale tool response")
+      active.pendingTool = null
+      pending.resolve(command.result)
 
-    pending.resolve(command.result)
-
-    this.emitStateChange(command.chatId)
+      this.emitStateChange(command.chatId)
+    } finally { this.respondingTools.delete(responseKey) }
   }
 }

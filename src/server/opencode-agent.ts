@@ -65,6 +65,9 @@ export interface StartOpencodeTurnArgs {
   signal?: AbortSignal
   memorySpecs?: MemoryToolSpec[]
   memoryDispatch?: OpencodeMemoryDispatch
+  executionPolicy?: Extract<import('../shared/harness-capabilities').NativeExecutionPolicy, { engine: 'opencode' }>
+  isPolicyCurrent?: () => boolean
+  onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
   onToolRequest?: (request: HarnessToolRequest) => Promise<unknown>
   onPermissionRequest?: (request: PermissionRequest, tool?: { name: string; input: Record<string, unknown> }) => Promise<boolean>
   agent?: 'memosync-branch'
@@ -137,7 +140,7 @@ export class OpencodeAgentManager {
   }
 
   private async ensureServer(args: StartOpencodeTurnArgs, runtime: EngineRuntime): Promise<ChatServer> {
-    const key = createHash('sha256').update(JSON.stringify([args.cwd, runtime.executable.path, runtime.env, runtime.opencodeConfig, args.agent, (args.memorySpecs ?? []).map(s => [s.name, s.description, s.schema])])).digest('hex')
+    const key = createHash('sha256').update(JSON.stringify([args.cwd, runtime, args.agent, args.executionPolicy, (args.memorySpecs ?? []).map(s => [s.name, s.description, s.schema])])).digest('hex')
     const previous = this.chats.get(args.chatId)
     if (previous?.key === key && !previous.closed) return previous
     if (previous) { this.chats.delete(args.chatId); await this.stop(previous) }
@@ -147,7 +150,7 @@ export class OpencodeAgentManager {
     try {
       const { createOpencodeClient } = await loadSdk()
       server = await startOpencodeServer({ executable: runtime.executable.path!, cwd: args.cwd, env: runtime.env, signal: args.signal,
-        config: { ...runtime.opencodeConfig, permission: { '*': 'allow' },
+        config: { ...runtime.opencodeConfig, permission: { '*': args.executionPolicy?.permission ?? 'allow' },
           agent: { 'memosync-branch': OPENCODE_BRANCH_AGENT }, ...(mcp ? { mcp: { memosync: mcp.config } } : {}),
         },
       })
@@ -220,6 +223,15 @@ export class OpencodeAgentManager {
         if (args.agent) unclaimedAnalysisSession = sessionID
       }
       if (!sessionID) throw new Error('OpenCode did not return a session identifier')
+      // Existing/forked sessions carry their own rules; server defaults alone
+      // cannot establish the effective permission of a resumed session.
+      if (args.executionPolicy) {
+        const updated = await chat.client.session.update({ sessionID, permission: [{ permission: '*', pattern: '*', action: args.executionPolicy.permission }] }, { ...options, throwOnError: true })
+        const rules = updated.data?.permission
+        if (updated.data?.id !== sessionID || rules?.length !== 1 || rules[0]?.permission !== '*' || rules[0]?.pattern !== '*' || rules[0]?.action !== args.executionPolicy.permission) throw new Error('OpenCode did not confirm the requested session permission rules')
+        if (args.isPolicyCurrent?.() === false) throw new Error('Stale execution policy acknowledgement')
+        await args.onExecutionPolicyApplied?.(sessionID)
+      }
       // Fork copies can emit old message events after the fork HTTP response.
       // Snapshot their IDs before prompting, so inherited text cannot become this
       // turn's answer when a denied read ends the prompt without new text.
@@ -246,7 +258,7 @@ export class OpencodeAgentManager {
     const parts = new Map<string, Part>()
     const pendingDeltas = new Map<string, string[]>()
     const calls = new Set<string>(), results = new Set<string>(), completedParts = new Set<string>(), usages = new Set<string>()
-    const questions = new Set<string>()
+    const questions = new Set<string>(), permissions = new Set<string>()
     let questionQueue = Promise.resolve()
     const transcript = (value: Parameters<typeof entry>[0]) => queue.push({ type: 'transcript', entry: entry(value) })
     const finalize = (message = '', isError = false, cancel = false) => {
@@ -363,11 +375,14 @@ export class OpencodeAgentManager {
           break
         }
         case 'permission.asked': {
+          if (permissions.has(event.properties.id)) break
+          permissions.add(event.properties.id)
           void (async () => {
             const part = [...parts.values()].find(part => part.type === 'tool' && part.callID === event.properties.tool?.callID)
             const tool = part?.type === 'tool' ? { name: part.tool, input: record(part.state.input) } : undefined
-            const allowed = args.agent && args.onPermissionRequest ? await args.onPermissionRequest(event.properties, tool) : false
+            const allowed = args.onPermissionRequest ? await args.onPermissionRequest(event.properties, tool) : false
             if (finished) return
+            const current = args.isPolicyCurrent?.() ?? true
             if (!allowed && !args.agent) {
               const toolId = event.properties.tool?.callID ?? event.properties.id
               if (!results.has(toolId)) {
@@ -375,7 +390,7 @@ export class OpencodeAgentManager {
                 transcript({ kind: 'tool_result', toolId, isError: true, content: `OpenCode permission rejected: ${event.properties.permission}` })
               }
             }
-            await chat.client.permission.reply({ requestID: event.properties.id, reply: allowed ? 'once' : 'reject' }, { throwOnError: true, signal: AbortSignal.timeout(3000) })
+            await chat.client.permission.reply({ requestID: event.properties.id, reply: allowed && current ? 'once' : 'reject' }, { throwOnError: true, signal: AbortSignal.timeout(3000) })
           })().catch(() => { void abort('OpenCode permission reply failed') })
           break
         }
@@ -399,7 +414,7 @@ export class OpencodeAgentManager {
                 const value = record(answer).answers ?? answer
                 return Array.isArray(value) ? value.map(String) : typeof value === 'string' ? [value] : []
               })
-              if (response.error || response.cancelled || !answers.some(a => a.length)) await chat.client.question.reject({ requestID: request.id }, { throwOnError: true, signal: AbortSignal.timeout(3000) })
+              if (args.isPolicyCurrent?.() === false || response.error || response.cancelled || !answers.some(a => a.length)) await chat.client.question.reject({ requestID: request.id }, { throwOnError: true, signal: AbortSignal.timeout(3000) })
               else await chat.client.question.reply({ requestID: request.id, answers }, { throwOnError: true, signal: AbortSignal.timeout(3000) })
             } catch {
               if (!finished) {
@@ -421,6 +436,7 @@ export class OpencodeAgentManager {
       const slash = runtime.model.indexOf('/')
       return slash > 0 ? { providerID: runtime.model.slice(0, slash), modelID: runtime.model.slice(slash + 1) } : undefined
     })()
+    if (args.isPolicyCurrent?.() === false) { await abort(); throw new Error('Stale execution policy turn') }
     const promptParts: Array<{ type: 'text'; text: string }> = []
     if (args.memoryContext) promptParts.push({ type: 'text', text: args.memoryContext })
     promptParts.push({ type: 'text', text: args.content })

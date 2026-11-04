@@ -1,6 +1,6 @@
 import { BRANCH_READ_DENIAL, isOpencodeBranchRead, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
 export { isReadOnlyBranchCommand } from './branch-read-policy'
-import type { ParentLaunch } from './parent-launch'
+import { snapshotParentLaunch, type ParentLaunch } from './parent-launch'
 import { toClaudeMemoryMcpServer } from './claude-adapter'
 import { rememberRuntime, resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "../model-access/runtime"
 import { query, type Options, type Query } from "@anthropic-ai/claude-agent-sdk"
@@ -180,9 +180,7 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   const pi = dependencies.piManager ?? new PiAgentManager()
   const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
   const source = input.parentLaunch
-  const parent: ParentLaunch | undefined = source?.provider === "codex"
-    ? { provider: "codex", session: { ...source.session }, turn: { ...source.turn } }
-    : source ? { ...source, options: { ...source.options } } as ParentLaunch : undefined
+  const parent = source ? snapshotParentLaunch(source) : undefined
   if (parent && parent.provider !== input.provider) throw new Error("Memory branch parent engine mismatch")
   input = { ...input, parentLaunch: parent, model: parent?.provider === "codex" ? parent.turn.model : parent?.options.model ?? input.model,
     effort: parent?.provider === "codex" ? parent.turn.effort : (parent && "effort" in parent.options ? parent.options.effort : undefined) ?? input.effort }
@@ -260,6 +258,10 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
         tools: [...READ_TOOLS, "Bash"],
         settingSources: [],
         ...parent?.options,
+        // Review forks keep the parent's prompt/tool schemas, but never its
+        // execution privilege. All reads still pass through the branch gate.
+        permissionMode: "default",
+        allowDangerouslySkipPermissions: false,
         resume: sessionToken ?? input.parentSessionToken ?? undefined,
         forkSession: !sessionToken && Boolean(input.parentSessionToken),
         abortController: controller,
