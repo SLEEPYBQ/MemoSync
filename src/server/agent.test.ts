@@ -1652,18 +1652,36 @@ describe("AgentCoordinator codex integration", () => {
 
     await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "exit_plan_mode")
 
-    await coordinator.respondTool({
-      type: "chat.respondTool",
+    const receiptId = coordinator.getPendingTool("chat-1")!.toolUseId
+    expect(receiptId).not.toBe("exit-1")
+    expect(store.messages).toContainEqual(expect.objectContaining({
+      kind: "tool_call",
+      tool: expect.objectContaining({ toolId: receiptId, toolKind: "exit_plan_mode" }),
+    }))
+    const response = {
+      type: "chat.respondTool" as const,
       chatId: "chat-1",
-      toolUseId: "exit-1",
+      toolUseId: receiptId,
       result: {
         confirmed: true,
         clearContext: true,
         message: "Use the fast path",
       },
-    })
+    }
+    // The synthetic native id is not the policy-scoped id shown to the client.
+    await expect(coordinator.respondTool({ ...response, toolUseId: "exit-1" }))
+      .rejects.toThrow("Tool response does not match active request")
+    expect(coordinator.getPendingTool("chat-1")?.toolUseId).toBe(receiptId)
+    expect(store.chat.sessionToken).toBe("thread-1")
+    expect(store.messages.some((entry) => entry.kind === "context_cleared")).toBe(false)
+    expect(startTurnCalls).toHaveLength(1)
+
+    await coordinator.respondTool(response)
 
     await waitFor(() => store.turnFinishedCount === 1)
+    expect(store.messages.filter((entry) => entry.kind === "tool_result")).toEqual([
+      expect.objectContaining({ toolId: receiptId, content: response.result }),
+    ])
 
     expect(startTurnCalls).toEqual([
       { content: "plan this", planMode: true },
@@ -1743,9 +1761,10 @@ describe("AgentCoordinator codex integration", () => {
     })
 
     await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "ask_user_question")
+    const receiptId = coordinator.getPendingTool("chat-1")!.toolUseId
     await coordinator.cancel("chat-1")
 
-    const discardedResult = store.messages.find((entry) => entry.kind === "tool_result" && entry.toolId === "question-1")
+    const discardedResult = store.messages.find((entry) => entry.kind === "tool_result" && entry.toolId === receiptId)
     expect(discardedResult).toBeDefined()
     if (!discardedResult || discardedResult.kind !== "tool_result") {
       throw new Error("missing discarded ask-user-question result")
@@ -2208,9 +2227,10 @@ describe("AgentCoordinator codex integration", () => {
     })
 
     await waitFor(() => coordinator.getPendingTool("chat-1")?.toolKind === "exit_plan_mode")
+    const receiptId = coordinator.getPendingTool("chat-1")!.toolUseId
     await coordinator.cancel("chat-1")
 
-    const discardedResult = store.messages.find((entry) => entry.kind === "tool_result" && entry.toolId === "exit-1")
+    const discardedResult = store.messages.find((entry) => entry.kind === "tool_result" && entry.toolId === receiptId)
     expect(discardedResult).toBeDefined()
     if (!discardedResult || discardedResult.kind !== "tool_result") {
       throw new Error("missing discarded exit-plan result")

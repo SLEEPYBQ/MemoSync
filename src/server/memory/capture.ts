@@ -367,11 +367,11 @@ export function createCaptureService(opts: {
   const MAX_TURN_LEDGERS = 256;
 
   const observationFingerprint = (candidate: ValidatedCandidate, input: ProposalInput): string => {
-    // Deliberately exact after the same case/whitespace normalization used by
-    // dismissal fingerprints, while keeping Scope because a memory state is
-    // (Content, Scope). Fuzzy matching here could erase a real update or
+    // Deliberately exact after whitespace normalization, retaining case-sensitive
+    // paths and code. Scope is part of a memory's identity (Content, Scope).
+    // Fuzzy matching here could erase a real update or
     // conflict; semantic rewrites still go through the Router below.
-    const normalized = candidate.content.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
+    const normalized = candidate.content.trim().replace(/\s+/g, ' ');
     const owner = ownerFor(candidate, input);
     return createHash('sha256').update(JSON.stringify([owner.scope, owner.projectId ?? null, owner.sessionId ?? null, normalized])).digest('hex');
   };

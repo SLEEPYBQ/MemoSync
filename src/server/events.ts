@@ -1,4 +1,5 @@
 import type { UiTextReference } from "../shared/ui-copy"
+import type { ExecutionPolicyState, NativeExecutionPolicy } from "../shared/harness-capabilities"
 import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
@@ -18,6 +19,10 @@ export interface ChatRecord {
   unread: boolean
   provider: AgentProvider | null
   memoryDisabled?: boolean
+  /** Missing on existing chats: retain their explicit legacy execution behavior. */
+  executionPolicyVersion?: 1
+  executionPolicies?: Partial<Record<AgentProvider, { policy: NativeExecutionPolicy; revision: number }>>
+  executionPolicyStates?: Partial<Record<AgentProvider, ExecutionPolicyState>>
   planMode: boolean
   sessionToken: string | null
   pendingForkSessionToken?: string | null
@@ -73,9 +78,12 @@ export type ChatEvent =
       at: number
     }
   | { v: 2; type: "chat_memory_disabled_set"; timestamp: number; chatId: string; disabled: boolean }
+  | { v: 2; type: "chat_execution_policy_set"; timestamp: number; chatId: string; policy: NativeExecutionPolicy; revision: number }
+  | { v: 2; type: "chat_execution_policy_state_set"; timestamp: number; chatId: string; state: ExecutionPolicyState; executionPolicyVersion?: 1 }
   | {
       v: 2
       type: "chat_created"
+      executionPolicyVersion?: 1
       timestamp: number
       chatId: string
       projectId: string

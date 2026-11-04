@@ -211,6 +211,51 @@ describe("Codex developer context delivery", () => {
 })
 
 describe("CodexAppServerManager", () => {
+  test.each(["start", "resume", "fork"] as const)("native %s and turn acknowledge the explicit sandbox and user reviewer", async mode => {
+    let acknowledged = false
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (["thread/start", "thread/resume", "thread/fork"].includes(message.method)) process.writeServerMessage({ id: message.id, result: { thread: { id: "native" } } })
+      if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn", status: "inProgress" } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const executionPolicy = { engine: "codex", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" } as const
+    try {
+      await manager.startSession({ chatId: "policy", cwd: "/tmp", model: "synthetic", runtime: explicitRuntime, executionPolicy, sessionToken: mode === "resume" ? "prior" : null, pendingForkSessionToken: mode === "fork" ? "prior" : null })
+      const request = child.messages.find((m: any) => m.method === `thread/${mode}`) as any
+      expect(request.params).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" })
+      expect(acknowledged).toBe(false)
+      await manager.startTurn({ chatId: "policy", model: "synthetic", content: "synthetic", planMode: true, executionPolicy, isPolicyCurrent: () => true, onToolRequest: async () => ({}), onExecutionPolicyApplied: async () => { acknowledged = true } })
+      expect(acknowledged).toBe(true)
+      const turn = child.messages.find((m: any) => m.method === "turn/start") as any
+      expect(turn.params).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "user", collaborationMode: { mode: "plan" } })
+    } finally { await manager.stopAll() }
+  })
+
+  test("a native approval reply is declined when its policy expires during the await", async () => {
+    let current = true
+    let release!: (decision: "accept") => void
+    let asked!: () => void
+    const requested = new Promise<void>(resolve => { asked = resolve })
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") process.writeServerMessage({ id: message.id, result: { thread: { id: "native" } } })
+      if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn", status: "inProgress" } } })
+      if (message.id === "approval" && message.result) process.writeServerMessage({ method: "turn/completed", params: { threadId: "native", turn: { id: "turn", status: "completed", error: null } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({ chatId: "stale", cwd: "/tmp", model: "synthetic", runtime: explicitRuntime, sessionToken: null })
+      const turn = await manager.startTurn({ chatId: "stale", model: "synthetic", content: "synthetic", planMode: false, isPolicyCurrent: () => current, onToolRequest: async () => ({}), onApprovalRequest: () => { asked(); return new Promise(resolve => { release = resolve }) } })
+      child.writeServerMessage({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: "native", turnId: "turn", itemId: "command", command: "synthetic" } })
+      await requested
+      current = false
+      release("accept")
+      await collectStream(turn.stream)
+      expect(child.messages.find((m: any) => m.id === "approval")).toMatchObject({ result: { decision: "decline" } })
+    } finally { await manager.stopAll() }
+  })
+
   test.each(["notification-first", "request-first"])("dynamic tool records are deduplicated (%s)", async (order) => {
     let calls = 0
     const process = new FakeCodexProcess((message, child) => {
@@ -2152,6 +2197,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2242,6 +2288,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2330,6 +2377,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2417,6 +2465,7 @@ describe("CodexAppServerManager", () => {
             cwd: "/tmp/project",
           },
         })
+      } else if (message.id === "approval-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
