@@ -1,5 +1,5 @@
-import type { UiTextFields, UiTextReference } from "./ui-copy"
 import type { ChatHarnessSnapshot } from "./harness-capabilities"
+import type { UiTextFields, UiTextReference } from "./ui-copy"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 

@@ -1,5 +1,5 @@
-import type { SidebarPatch } from "./sidebar-patch"
 import type { SetExecutionPolicyCommand } from "./harness-capabilities"
+import type { SidebarPatch } from "./sidebar-patch"
 import type { UiTextReference } from "./ui-copy"
 import type { ApiConnectionInput, EngineId, EngineSetup, ModelAccessSnapshot } from "./model-access"
 import type {

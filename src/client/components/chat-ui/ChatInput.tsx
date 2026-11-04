@@ -33,6 +33,8 @@ import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } fro
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
 import { ChatPreferenceControls } from "./ChatPreferenceControls"
+import { ExecutionPolicyControl } from "./ExecutionPolicyControl"
+import type { ChatHarnessSnapshot, NativeExecutionPolicy } from "../../../shared/harness-capabilities"
 import { ContextWindowMeter } from "./ContextWindowMeter"
 import { AttachmentFileCard, AttachmentImageCard } from "../messages/AttachmentCard"
 import { AttachmentPreviewModal } from "../messages/AttachmentPreviewModal"
@@ -155,6 +157,8 @@ interface Props {
   previousPrompt?: string | null
   /** Slash commands/skills the engine reported (system_init) — powers the "/" autocomplete. */
   slashCommands?: string[]
+  harness?: ChatHarnessSnapshot
+  onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
   /** Extra chips rendered in the preference-controls row (e.g. the landing page's project picker). */
   leadingControls?: React.ReactNode
 }
@@ -237,6 +241,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   contextWindowSnapshot = null,
   previousPrompt = null,
   slashCommands = [],
+  harness,
+  onExecutionPolicyChange,
   leadingControls = null,
 }, forwardedRef) {
   useI18n()
@@ -1021,6 +1027,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   onPlanModeChange={setEffectivePlanMode}
                   includePlanMode={showPlanMode}
                 />
+                {chatId && harness && harness.capabilities.engine === selectedProvider && onExecutionPolicyChange ? (
+                  <ExecutionPolicyControl chatId={chatId} snapshot={harness} disabled={disabled} onChange={onExecutionPolicyChange} />
+                ) : null}
               </div>
               {activeContextWindow ? (
                 <div className="flex shrink-0 items-center px-1">

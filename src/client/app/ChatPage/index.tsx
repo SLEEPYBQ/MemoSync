@@ -1088,6 +1088,13 @@ export function ChatPage() {
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}
         slashCommands={availableSlashCommands}
+        harness={state.runtime?.harness}
+        onExecutionPolicyChange={state.activeChatId ? (policy, expectedRevision) => state.socket.command({
+          type: "chat.setExecutionPolicy",
+          chatId: state.activeChatId!,
+          policy,
+          expectedRevision,
+        }) : undefined}
         onSubmit={handleChatSubmit}
         isRunning={state.isProcessing || hasPendingMemoryPreview(state.messages)}
         onSendOldestQueued={state.queuedMessages[0] ? () => { void state.handleSteerQueuedMessage(state.queuedMessages[0]!.id) } : undefined}
