@@ -38,6 +38,7 @@ export interface MemoryBlockOptions {
   memories: MemoryItem[];
   /** Whether the load_memory_detail tool is registered (default true). */
   tools?: boolean;
+  viewRevision?: string;
   /** Unresolved conflicts among the snapshot items (deduped pairs). */
   conflicts?: MemoryConflictPair[];
 }
@@ -56,6 +57,7 @@ export function buildMemoryBlock(opts: MemoryBlockOptions): string {
 
   const parts: string[] = [];
   parts.push('# Memory (MemoSync)');
+  if (opts.viewRevision) parts.push(`Memory view: ${opts.viewRevision}`);
   parts.push(
     'You have a persistent, user-controlled memory that spans sessions. ' +
       'The snapshot below lists every memory active at session start, as one-line SHORT forms. ' +
@@ -96,7 +98,7 @@ export function buildMemoryBlock(opts: MemoryBlockOptions): string {
 
 /** One line of a per-turn memory delta. */
 export interface MemoryDeltaEntry {
-  kind: 'added' | 'edited' | 'removed';
+  kind: 'added' | 'edited' | 'removed' | 'view_changed';
   id: string;
   /** Current version (added/edited). */
   version?: number;
@@ -110,6 +112,7 @@ export interface MemoryDeltaEntry {
 
 export interface MemoryDeltaBlockOptions {
   entries: MemoryDeltaEntry[];
+  viewRevision?: string;
   /** Ids injected but excluded for THIS turn only (preview-gate edit). */
   ignoreForTurn?: string[];
 }
@@ -122,9 +125,10 @@ export interface MemoryDeltaBlockOptions {
 export function buildMemoryDeltaBlock(opts: MemoryDeltaBlockOptions): string {
   const { entries, ignoreForTurn } = opts;
   const hasIgnores = Boolean(ignoreForTurn?.length);
-  if (entries.length === 0 && !hasIgnores) return '';
+  if (entries.length === 0 && !hasIgnores && !opts.viewRevision) return '';
 
   const parts: string[] = [];
+  if (opts.viewRevision) parts.push(`Memory view: ${opts.viewRevision}. This view supersedes earlier relation, conflict and eligibility information.`);
   if (entries.length > 0) {
     parts.push(
       'Memory changes since last turn (authoritative — these supersede the session-start snapshot and any earlier change notes; same id → highest version wins):',
@@ -138,6 +142,8 @@ export function buildMemoryDeltaBlock(opts: MemoryDeltaBlockOptions): string {
         parts.push(`- [${e.id}] (no longer in the active set)`);
       } else if (e.kind === 'added') {
         parts.push(`- [${e.id} v${e.version ?? 1}] (added) ${e.line ?? ''}${conflictSuffix}`);
+      } else if (e.kind === 'view_changed') {
+        parts.push(`- [${e.id} v${e.version ?? 1}] (view changed) ${e.line ?? ''}${conflictSuffix || ' — no unresolved conflicts in this view'}`);
       } else {
         parts.push(
           `- [${e.id} v${e.version ?? 1}] (edited, v${e.fromVersion ?? 1}→v${e.version ?? 1}) ${e.line ?? ''}${conflictSuffix}`,

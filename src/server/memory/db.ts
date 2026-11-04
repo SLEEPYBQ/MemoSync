@@ -111,10 +111,31 @@ CREATE TABLE IF NOT EXISTS dismissed_candidate_fingerprints (
   memory_id TEXT PRIMARY KEY,
   fingerprint TEXT NOT NULL,
   dismissed_at TEXT NOT NULL,
-  sensitive INTEGER NOT NULL DEFAULT 0  -- immutable privacy evidence for this dismissal
+  sensitive INTEGER NOT NULL DEFAULT 0, -- immutable privacy evidence for this dismissal
+  scope TEXT,                         -- NULL = legacy owner unknown, conservatively global
+  owner_id TEXT                       -- project/session owner; NULL for personal
 );
 CREATE INDEX IF NOT EXISTS idx_dismissed_candidate_fingerprint
   ON dismissed_candidate_fingerprints(fingerprint);
+
+-- Durable identities contain hashes/ids only, never proposal bodies. No FK:
+-- sensitive erasure must leave retry suppression intact.
+CREATE TABLE IF NOT EXISTS memory_capture_operations (
+  operation_key TEXT PRIMARY KEY,
+  turn_key TEXT NOT NULL,
+  memory_id TEXT,
+  committed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_capture_turn ON memory_capture_operations(turn_key, memory_id);
+
+CREATE TABLE IF NOT EXISTS memory_revocations (
+  memory_id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  owner_id TEXT,
+  revoked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_memory_revocations_fingerprint ON memory_revocations(fingerprint);
 
 CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
@@ -152,6 +173,19 @@ export function applySchema(db: Database): void {
   const dismissalColumns = new Set(
     (db.query(`PRAGMA table_info(dismissed_candidate_fingerprints)`).all() as Array<{ name: string }>).map((c) => c.name),
   );
+  if (!dismissalColumns.has('scope')) {
+    db.exec(`ALTER TABLE dismissed_candidate_fingerprints ADD COLUMN scope TEXT`);
+  }
+  if (!dismissalColumns.has('owner_id')) {
+    db.exec(`ALTER TABLE dismissed_candidate_fingerprints ADD COLUMN owner_id TEXT`);
+  }
+  if (!dismissalColumns.has('scope') || !dismissalColumns.has('owner_id')) {
+    // A missing legacy row has no provable owner; keep its suppression global.
+    db.exec(`UPDATE dismissed_candidate_fingerprints
+                SET scope = (SELECT scope FROM memories WHERE id = memory_id),
+                    owner_id = (SELECT CASE scope WHEN 'project' THEN project_id WHEN 'session' THEN session_id ELSE NULL END
+                                  FROM memories WHERE id = memory_id)`);
+  }
   if (!dismissalColumns.has('sensitive')) {
     db.exec(`ALTER TABLE dismissed_candidate_fingerprints ADD COLUMN sensitive INTEGER NOT NULL DEFAULT 0`);
   }

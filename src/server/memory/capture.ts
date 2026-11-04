@@ -63,7 +63,7 @@ export interface CaptureOutcome {
    * candidate-status target): nothing new was created, but the waiting card
    * deserves to resurface where the user is. */
   pending: MemoryItem[];
-  /** Observations this Claude review turn already handled through another
+  /** Observations this turn already handled through another
    * capture channel. They count as dropped, but are separated from dismissal
    * so tool receipts never misreport why nothing was stored. */
   sameTurnDuplicates?: Array<{ memoryId?: string; status?: MemoryItem['status'] }>;
@@ -188,6 +188,12 @@ must arbitrate which one holds. Name the id in targetId. Both surface, flagged.
 - "duplicate-in-batch": the candidate restates an EARLIER candidate in this same batch (same fact, \
 no new information). Counted once, not surfaced twice.
 
+Scope and owner are part of a claim. A "reinforces" target must cover the candidate's scope \
+(personal covers project/session; project covers sessions in that project) and belong to the \
+applicable project/session owner. A session memory cannot absorb a project or personal claim, \
+and a project memory cannot absorb a personal claim. Route these broader claims "new" without \
+widening the stored memory. An "updates" target must have the same scope and owner as the candidate.
+
 Every candidate gets exactly ONE route. There is NO discard verdict: do not judge importance, \
 breadth, or worthiness — that is the user's call at review time. When in doubt between "new" and \
 anything else, choose "new".
@@ -264,15 +270,16 @@ function buildCaptureUserPrompt(input: CaptureInput): string {
 }
 
 function buildRoutingUserPrompt(
-  candidates: ValidatedCandidate[],
-  existing: Array<Pick<MemoryItem, 'id' | 'content'>>,
+  candidates: Array<ValidatedCandidate & Pick<MemoryItem, 'projectId' | 'sessionId'>>,
+  existing: Array<Pick<MemoryItem, 'id' | 'content' | 'scope' | 'projectId' | 'sessionId'>>,
   dismissed: string[],
 ): string {
   const candidateList = candidates.map((c, index) => ({ index, ...c }));
   const parts = [
     `Candidates:\n${JSON.stringify(candidateList, null, 2)}`,
-    `Existing memories (id + content, personal + this project, active + pending review):\n` +
-      `${JSON.stringify(existing.map((m) => ({ id: m.id, content: m.content })), null, 2)}`,
+    `Existing memories (id + content + scope/owner, personal + this project + this session, active + pending review):\n` +
+      `${JSON.stringify(existing.map(({ id, content, scope, projectId, sessionId }) =>
+        ({ id, content, scope, projectId, sessionId })), null, 2)}`,
   ];
   if (dismissed.length > 0) {
     parts.push(
@@ -283,11 +290,12 @@ function buildRoutingUserPrompt(
   return parts.join('\n\n');
 }
 
-/** Existing memory short-list fed to the routing pass: personal + project(projectId), active + candidate. */
+/** Routing short-list: personal + this project + this session, active + candidate. */
 function existingShortList(
   memory: MemoryService,
   projectId: string | undefined,
-): Array<Pick<MemoryItem, 'id' | 'content'>> {
+  sessionId?: string,
+): MemoryItem[] {
   return [
     ...memory.store.list({ scope: 'personal', status: 'active' }),
     ...memory.store.list({ scope: 'personal', status: 'candidate' }),
@@ -297,14 +305,20 @@ function existingShortList(
           ...memory.store.list({ scope: 'project', projectId, status: 'candidate' }),
         ]
       : []),
+    ...(sessionId ? [
+      ...memory.store.list({ scope: 'session', sessionId, status: 'active' }),
+      ...memory.store.list({ scope: 'session', sessionId, status: 'candidate' }),
+    ] : []),
   ];
 }
 
 /** Recent non-sensitive dismissed cards (revealed negative preference), newest first. */
-function recentDismissed(memory: MemoryService, limit = 8): string[] {
+function recentDismissed(memory: MemoryService, input: ProposalInput, limit = 8): string[] {
   return memory.store
     .list({ status: 'discarded' })
-    .filter((m) => !m.sensitive)
+    .filter(m => !m.sensitive && (m.scope === 'personal' ||
+      (m.scope === 'project' && m.projectId === input.projectId) ||
+      (m.scope === 'session' && m.sessionId === input.sessionId)))
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, limit)
     .map((m) => m.content);
@@ -315,9 +329,14 @@ export function createCaptureService(opts: {
   callJson: LlmJsonCaller;
 }): CaptureService {
   const { memory, callJson } = opts;
+  const ownerFor = (candidate: ValidatedCandidate, input: ProposalInput) => ({
+    scope: candidate.scope === 'project' && !input.projectId ? 'session' as const : candidate.scope,
+    projectId: candidate.scope === 'project' ? input.projectId : undefined,
+    sessionId: candidate.scope === 'session' || (candidate.scope === 'project' && !input.projectId) ? input.sessionId : undefined,
+  });
   const filterExactDismissals = (
-    candidates: ValidatedCandidate[],
-  ): ValidatedCandidate[] => candidates.filter((candidate) => !memory.store.wasCandidateDismissed(candidate.content));
+    candidates: ValidatedCandidate[], input: ProposalInput,
+  ): ValidatedCandidate[] => candidates.filter(candidate => !memory.store.wasMemorySuppressed(candidate.content, ownerFor(candidate, input)));
 
   function branchSnapshot(input: PromptCaptureInput): { input: CandidateBranchInput; items: MemoryItem[]; key: string } {
     const items = [
@@ -325,7 +344,7 @@ export function createCaptureService(opts: {
       ...(input.projectId ? memory.store.list({ scope: 'project', projectId: input.projectId }) : []),
       ...memory.store.list({ scope: 'session', sessionId: input.sessionId }),
     ].filter((item) => item.status === 'active' || item.status === 'candidate').sort((a, b) => a.id.localeCompare(b.id));
-    const dismissed = recentDismissed(memory);
+    const dismissed = recentDismissed(memory, input);
     return {
       input: { task: input.userText, memories: items, dismissed },
       items,
@@ -342,20 +361,19 @@ export function createCaptureService(opts: {
     settle: (result: TurnObservationClaimResult) => void;
   };
   type TurnCaptureLedger = {
-    observations: Map<string, TurnObservationResolution>;
-    handledMemoryIds: Set<string>;
     inFlight: Map<string, TurnObservationClaim>;
   };
   const turnCaptureLedgers = new Map<string, TurnCaptureLedger>();
   const MAX_TURN_LEDGERS = 256;
 
-  const observationFingerprint = (candidate: ValidatedCandidate): string => {
+  const observationFingerprint = (candidate: ValidatedCandidate, input: ProposalInput): string => {
     // Deliberately exact after the same case/whitespace normalization used by
     // dismissal fingerprints, while keeping Scope because a memory state is
     // (Content, Scope). Fuzzy matching here could erase a real update or
     // conflict; semantic rewrites still go through the Router below.
     const normalized = candidate.content.trim().replace(/\s+/g, ' ').toLocaleLowerCase('en-US');
-    return createHash('sha256').update(`${candidate.scope}\u0000${normalized}`).digest('hex');
+    const owner = ownerFor(candidate, input);
+    return createHash('sha256').update(JSON.stringify([owner.scope, owner.projectId ?? null, owner.sessionId ?? null, normalized])).digest('hex');
   };
 
   const turnLedgerFor = (input: {
@@ -364,7 +382,6 @@ export function createCaptureService(opts: {
     engine?: string;
   }): TurnCaptureLedger | null => {
     if (
-      input.engine !== 'claude' ||
       !input.sessionId ||
       !Number.isInteger(input.turn)
     ) {
@@ -379,8 +396,6 @@ export function createCaptureService(opts: {
       return existing;
     }
     const created: TurnCaptureLedger = {
-      observations: new Map(),
-      handledMemoryIds: new Set(),
       inFlight: new Map(),
     };
     turnCaptureLedgers.set(key, created);
@@ -422,6 +437,10 @@ export function createCaptureService(opts: {
   ): Promise<CaptureOutcome> {
     input.signal?.throwIfAborted();
     const turnLedger = turnLedgerFor(input);
+    const turnKey = input.sessionId && Number.isInteger(input.turn)
+      ? createHash('sha256').update(JSON.stringify([input.sessionId, input.turn])).digest('hex') : null;
+    const operationKey = (fingerprint: string) => createHash('sha256').update(`${turnKey}:${fingerprint}`).digest('hex');
+    const resolved = new Map<string, TurnObservationResolution>();
     const sameTurnDuplicates: NonNullable<CaptureOutcome['sameTurnDuplicates']> = [];
     const routableCandidates: ValidatedCandidate[] = [];
     const candidateFingerprints: string[] = [];
@@ -450,18 +469,18 @@ export function createCaptureService(opts: {
       }
     };
     for (const candidate of gateCandidates) {
-      const fingerprint = observationFingerprint(candidate);
+      const fingerprint = observationFingerprint(candidate, input);
+      const persisted = turnKey ? memory.store.getCaptureOperation(operationKey(fingerprint)) : null;
+      if (persisted) {
+        duplicateFromResolution(persisted);
+        continue;
+      }
       if (!turnLedger) {
         routableCandidates.push(candidate);
         candidateFingerprints.push(fingerprint);
         continue;
       }
       while (true) {
-        const previous = turnLedger.observations.get(fingerprint);
-        if (previous) {
-          duplicateFromResolution(previous);
-          break;
-        }
         if (ownedClaims.has(fingerprint)) {
           // Exact repeats inside one extraction batch share this invocation's
           // claim. Resolve their receipt after the owner persists.
@@ -505,7 +524,7 @@ export function createCaptureService(opts: {
 
         return outcome;
       }
-    const existing = branchRouting?.existing ?? existingShortList(memory, input.projectId);
+    const existing = branchRouting?.existing ?? existingShortList(memory, input.projectId, input.sessionId);
     // Content snapshot at gate time: routing verdicts (targetId) refer to THIS
     // text. If a target moves during the LLM await (a user edit, another
     // turn), the verdict no longer applies to what's stored.
@@ -517,9 +536,9 @@ export function createCaptureService(opts: {
     } : await callJson({
       system: ROUTING_SYSTEM,
       user: buildRoutingUserPrompt(
-        routableCandidates,
+        routableCandidates.map(candidate => ({ ...candidate, ...ownerFor(candidate, input) })),
         existing,
-        recentDismissed(memory),
+        recentDismissed(memory, input),
       ),
       signal: input.signal,
     });
@@ -553,34 +572,61 @@ export function createCaptureService(opts: {
       const fingerprint = candidateFingerprints[index]!;
       const rememberObservation = (memoryId?: string) => {
         const resolution = memoryId ? { memoryId } : {};
-        turnLedger?.observations.set(fingerprint, resolution);
-        if (memoryId) turnLedger?.handledMemoryIds.add(memoryId);
-        const claim = ownedClaims.get(fingerprint);
-        if (claim && turnLedger?.inFlight.get(fingerprint) === claim) {
-          turnLedger.inFlight.delete(fingerprint);
-          ownedClaims.delete(fingerprint);
-          claim.settle({ status: 'completed', resolution });
-        }
+        resolved.set(fingerprint, resolution);
+        if (turnKey) memory.store.recordCaptureOperation(operationKey(fingerprint), turnKey, memoryId);
       };
+      // Revalidate inside the write transaction after the Router await. Another
+      // service/process can have committed the same operation or a dismissal.
+      const persisted = turnKey ? memory.store.getCaptureOperation(operationKey(fingerprint)) : null;
+      if (persisted) {
+        resolved.set(fingerprint, persisted);
+        duplicateFromResolution(persisted);
+        dropped++;
+        return;
+      }
+      const owner = ownerFor(candidate, input);
+      if ((owner.scope === 'session' && !owner.sessionId) ||
+          memory.store.wasMemorySuppressed(candidate.content, owner)) {
+        rememberObservation();
+        dropped++;
+        return;
+      }
       // A missing/malformed decision defaults to "new" — the gate has no
       // silent-drop path (D4): losing a verdict must not lose the observation.
       const decision = decisionByIndex.get(index) ?? { route: 'new' as Route, targetId: null };
-      const target = decision.targetId ? memory.store.getById(decision.targetId) : null;
+      const exact = memory.store.list({ scope: owner.scope, projectId: owner.projectId, sessionId: owner.sessionId })
+        .find(item => !existing.some(snapshot => snapshot.id === item.id) &&
+          (item.status === 'active' || item.status === 'candidate') &&
+          observationFingerprint({ ...candidate, content: item.content }, input) === fingerprint);
+      const target = exact ?? (decision.targetId ? memory.store.getById(decision.targetId) : null);
       // CAS: a verdict only binds when the target still says what the gate
       // saw. A hallucinated id, an archived target, or one the user rewrote
       // during the await degrades the route to "new" — the observation matched
       // OLD text, so as far as the store is concerned it is new information.
-      const targetFresh = Boolean(
+      const targetOwned = target && (target.scope === 'personal' ||
+        (target.scope === 'project' && Boolean(input.projectId) && target.projectId === input.projectId) ||
+        (target.scope === 'session' && Boolean(input.sessionId) && target.sessionId === input.sessionId));
+      const targetFresh = Boolean(targetOwned && (exact || (
         target &&
           (target.status === 'active' || target.status === 'candidate') &&
           target.content === contentAtGate.get(target.id) &&
-          (!branchRouting || branchRouting.existing.some((snapshot) => snapshot.id === target.id && snapshot.version === target.version && snapshot.scope === target.scope)),
-      );
+          existing.some(snapshot => snapshot.id === target.id && snapshot.version === target.version &&
+            snapshot.status === target.status && snapshot.scope === target.scope &&
+            snapshot.projectId === target.projectId && snapshot.sessionId === target.sessionId)
+      )));
 
-      let route = decision.route;
+      let route = exact ? 'reinforces' as Route : decision.route;
       if ((route === 'reinforces' || route === 'updates' || route === 'conflicts') && !targetFresh) {
         route = 'new';
       }
+      // A fresh same-text target can still be too narrow. Keep the proposal's
+      // scope/owner instead of silently losing its wider applicability. Updates
+      // also cannot move a claim between scopes through revision acceptance.
+      if (route === 'reinforces' && !(target!.scope === owner.scope || target!.scope === 'personal' ||
+          (target!.scope === 'project' && owner.scope === 'session'))) {
+        route = 'new';
+      }
+      if (route === 'updates' && target!.scope !== owner.scope) route = 'new';
 
       if (route === 'reinforces-dismissed' || route === 'duplicate-in-batch') {
         rememberObservation();
@@ -592,7 +638,8 @@ export function createCaptureService(opts: {
         // A semantic rewrite had to reach the Router for correctness. Once it
         // resolves to a memory already handled by any channel this turn, the
         // ledger suppresses only the repeated mutation/callback.
-        if (turnLedger?.handledMemoryIds.has(target!.id)) {
+        if ((turnKey && memory.store.wasCapturedThisTurn(turnKey, target!.id)) ||
+            [...resolved.values()].some(resolution => resolution.memoryId === target!.id)) {
           sameTurnDuplicates.push({ memoryId: target!.id, status: target!.status });
           rememberObservation(target!.id);
           dropped++;
@@ -682,7 +729,7 @@ export function createCaptureService(opts: {
     });
 
     for (const fingerprint of localDuplicateFingerprints) {
-      duplicateFromResolution(turnLedger?.observations.get(fingerprint) ?? {});
+      duplicateFromResolution(resolved.get(fingerprint) ?? {});
     }
 
     return {
@@ -698,8 +745,16 @@ export function createCaptureService(opts: {
       ...(sameTurnDuplicates.length ? { sameTurnDuplicates } : {}),
     };
     };
-    const outcome = persistRoutedOutcome();
-
+    const outcome = memory.db.transaction(persistRoutedOutcome).immediate();
+    // Publish in-memory claims only after the durable operation and mutations commit.
+    for (const [fingerprint, resolution] of resolved) {
+      const claim = ownedClaims.get(fingerprint);
+      if (claim && turnLedger?.inFlight.get(fingerprint) === claim) {
+        turnLedger.inFlight.delete(fingerprint);
+        ownedClaims.delete(fingerprint);
+        claim.settle({ status: 'completed', resolution });
+      }
+    }
     return outcome;
     } catch (error) {
       releaseOwnedClaims();
@@ -719,7 +774,7 @@ export function createCaptureService(opts: {
       const snapshot = branchSnapshot(input);
       if (snapshot.key !== dependencyKey) throw new Error('Candidate branch inputs changed before persistence');
       const parsed = parseCandidateBranchResult(raw, snapshot.input);
-      const filtered = parsed.filter((candidate) => !memory.store.wasCandidateDismissed(candidate.content));
+      const filtered = parsed.filter(candidate => !memory.store.wasMemorySuppressed(candidate.content, ownerFor(candidate, input)));
       const decisions = new Map(filtered.map((candidate) => [candidate, {
         route: candidate.route,
         targetId: candidate.targetId ?? null,
@@ -782,7 +837,7 @@ export function createCaptureService(opts: {
 
         // Exact repeats of dismissed candidates are dropped locally via the
         // normalized fingerprint before the gate runs.
-        const gateCandidates = filterExactDismissals(validated);
+        const gateCandidates = filterExactDismissals(validated, input);
         const exactDismissalDrops = validated.length - gateCandidates.length;
         if (gateCandidates.length === 0) {
           return terminal(
@@ -857,7 +912,7 @@ export function createCaptureService(opts: {
           else malformed++;
         }
         const validated = validatedAll;
-        const gateCandidates = filterExactDismissals(validated);
+        const gateCandidates = filterExactDismissals(validated, input);
         const exactDismissalDrops = validated.length - gateCandidates.length;
         if (gateCandidates.length === 0) {
           return terminal({ ...empty, proposed: rawCandidates.length, dropped: malformed + exactDismissalDrops });
@@ -935,7 +990,7 @@ export function createCaptureService(opts: {
         // Explicit user requests carry user_stated evidence unless pass-1
         // named a stronger class.
         for (const v of validated) if (!v.evidenceClass) v.evidenceClass = 'user_stated';
-        const gateCandidates = filterExactDismissals(validated);
+        const gateCandidates = filterExactDismissals(validated, input);
         const exactDismissalDrops = validated.length - gateCandidates.length;
         if (gateCandidates.length === 0) {
           const outcome = { ...empty, proposed: rawCandidates.length, dropped: malformed + exactDismissalDrops };
@@ -997,7 +1052,7 @@ export function createCaptureService(opts: {
         return outcome;
       };
 
-      if (memory.store.wasCandidateDismissed(candidate.content)) {
+      if (memory.store.wasMemorySuppressed(candidate.content, ownerFor(candidate, input))) {
         return terminal({
           created: [],
           proposed: 1,

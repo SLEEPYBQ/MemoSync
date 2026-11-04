@@ -40,6 +40,8 @@ import { createMaintenanceService } from "./memory/maintenance"
 import { createRelevanceService } from "./memory/relevance"
 import { createReviseInjectionService } from "./memory/revise-injection"
 import { handleMemoryRequest } from "./memory/routes"
+import { NativeMemoryDiscovery } from "./memory/native-discovery"
+import { NativeMemoryImportService, createNativeSemanticExtractor } from "./memory/native-import"
 import { createSanitizeService } from "./memory/sanitize"
 import { createTraceService } from "./memory/trace"
 import { createTransferService } from "./memory/transfer"
@@ -358,6 +360,19 @@ async function startLockedMemoSyncServer(
     return { provider, localPath, model: runtime.model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime.env, runtime }
   } })
   const memoryLlm = branchMemory.callJson
+  const nativeMemoryHome = homedir()
+  const nativeMemory = new NativeMemoryImportService({
+    memory,
+    discovery: new NativeMemoryDiscovery(nativeMemoryHome, () => [
+      { id: "personal", label: "Personal engine memory", path: nativeMemoryHome, owner: { scope: "personal" } },
+      ...store.listProjects().map(project => ({
+        id: `project:${project.id}`, label: project.title, path: project.localPath,
+        owner: { scope: "project" as const, projectId: project.id },
+      })),
+    ]),
+    semanticExtractor: createNativeSemanticExtractor(memoryLlm),
+    isClaimSuppressed: (content, exactOwner) => memory.store.wasMemorySuppressed(content, exactOwner),
+  })
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
   // route degrades to a verbatim proposal without it.
   const memoryTransfer = createTransferService({ callJson: memoryLlm })
@@ -657,6 +672,7 @@ async function startLockedMemoSyncServer(
           const memoryResponse = await branchMemory.run(
             url.pathname.startsWith("/api/memories") ? await memoryRequestContext(req, url) : {},
             () => handleMemoryRequest(req, url, memory, {
+            nativeMemory,
             transfer: memoryTransfer,
             sanitize: memorySanitize,
             maintenance: memoryMaintenance,

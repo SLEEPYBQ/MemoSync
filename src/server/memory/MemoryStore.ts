@@ -164,6 +164,9 @@ export class MemoryStore {
       ).get(id)) {
         throw new Error(`Memory id was already used by a dismissed candidate: ${id}`);
       }
+      if (this.db.query('SELECT 1 FROM memory_capture_operations WHERE memory_id = ?').get(id)) {
+        throw new Error(`Memory id was already used by a committed operation: ${id}`);
+      }
       const now = new Date().toISOString();
       this.db
         .query(
@@ -285,8 +288,8 @@ export class MemoryStore {
   private recordCandidateDismissal(existing: MemoryItem): void {
     this.db.query(
       `INSERT INTO dismissed_candidate_fingerprints
-         (memory_id, fingerprint, dismissed_at, sensitive)
-       VALUES (?, ?, ?, ?)
+         (memory_id, fingerprint, dismissed_at, sensitive, scope, owner_id)
+       VALUES (?, ?, ?, ?, ?, ?)
        ON CONFLICT(memory_id) DO UPDATE SET
          dismissed_at = excluded.dismissed_at,
          sensitive = MAX(dismissed_candidate_fingerprints.sensitive, excluded.sensitive)`,
@@ -295,6 +298,8 @@ export class MemoryStore {
       this.candidateFingerprint(existing.content),
       new Date().toISOString(),
       existing.sensitive ? 1 : 0,
+      existing.scope,
+      existing.scope === 'project' ? existing.projectId ?? null : existing.scope === 'session' ? existing.sessionId ?? null : null,
     );
   }
 
@@ -358,6 +363,19 @@ export class MemoryStore {
     if (protectedDecision) throw new CandidateDismissalTransitionError();
   }
 
+  /** Called inside the same transaction as the status write, including History rollback. */
+  private syncMemoryRevocation(existing: MemoryItem, nextStatus: MemoryStatus | undefined): void {
+    if (nextStatus === 'archived') {
+      this.db.query(`INSERT OR IGNORE INTO memory_revocations
+        (memory_id, fingerprint, scope, owner_id, revoked_at) VALUES (?, ?, ?, ?, ?)`)
+        .run(existing.id, this.candidateFingerprint(existing.content), existing.scope,
+          existing.scope === 'project' ? existing.projectId ?? null : existing.scope === 'session' ? existing.sessionId ?? null : null,
+          new Date().toISOString());
+    } else if (existing.status === 'archived' && nextStatus === 'active') {
+      this.db.query('DELETE FROM memory_revocations WHERE memory_id = ?').run(existing.id);
+    }
+  }
+
   private updateWithCandidateDecision(
     id: string,
     patch: Partial<MemoryItem>,
@@ -388,6 +406,7 @@ export class MemoryStore {
     }
 
       if (sets.length === 0) return existing;
+      this.syncMemoryRevocation(existing, patch.status);
 
     sets.push('updated_at = $updated_at');
     params.$updated_at = new Date().toISOString();
@@ -580,10 +599,43 @@ export class MemoryStore {
   }
 
   /** Exact, whitespace/case-normalized rejection check without retaining text. */
-  wasCandidateDismissed(content: string): boolean {
-    return Boolean(this.db.query(
+  wasCandidateDismissed(content: string, owner?: { scope: MemoryScope; projectId?: string; sessionId?: string }): boolean {
+    const fingerprint = this.candidateFingerprint(content);
+    if (!owner) return Boolean(this.db.query(
       'SELECT 1 FROM dismissed_candidate_fingerprints WHERE fingerprint = ?',
-    ).get(this.candidateFingerprint(content)));
+    ).get(fingerprint));
+    const ownerId = owner.scope === 'project' ? owner.projectId ?? null : owner.scope === 'session' ? owner.sessionId ?? null : null;
+    return Boolean(this.db.query(`SELECT 1 FROM dismissed_candidate_fingerprints
+      WHERE fingerprint = ? AND (scope IS NULL OR (scope = ? AND owner_id IS ?))`)
+      .get(fingerprint, owner.scope, ownerId));
+  }
+
+  /** Shared negative-decision policy for capture and external Markdown import. */
+  wasMemorySuppressed(content: string, owner: { scope: MemoryScope; projectId?: string; sessionId?: string }): boolean {
+    if (this.wasCandidateDismissed(content, owner)) return true;
+    const fingerprint = this.candidateFingerprint(content);
+    const ownerId = owner.scope === 'project' ? owner.projectId ?? null : owner.scope === 'session' ? owner.sessionId ?? null : null;
+    if (this.db.query(`SELECT 1 FROM memory_revocations WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
+      .get(fingerprint, owner.scope, ownerId)) return true;
+    // Read compatibility for archived rows written before revocation receipts.
+    return this.list({ scope: owner.scope, projectId: owner.projectId, sessionId: owner.sessionId, status: 'archived' })
+      .some(item => this.candidateFingerprint(item.content) === fingerprint);
+  }
+
+  getCaptureOperation(key: string): { memoryId?: string } | null {
+    const row = this.db.query('SELECT memory_id FROM memory_capture_operations WHERE operation_key = ?')
+      .get(key) as { memory_id: string | null } | null;
+    return row ? (row.memory_id ? { memoryId: row.memory_id } : {}) : null;
+  }
+
+  recordCaptureOperation(key: string, turnKey: string, memoryId?: string): void {
+    this.db.query(`INSERT INTO memory_capture_operations (operation_key, turn_key, memory_id, committed_at)
+      VALUES (?, ?, ?, ?)`).run(key, turnKey, memoryId ?? null, new Date().toISOString());
+  }
+
+  wasCapturedThisTurn(turnKey: string, memoryId: string): boolean {
+    return Boolean(this.db.query('SELECT 1 FROM memory_capture_operations WHERE turn_key = ? AND memory_id = ?')
+      .get(turnKey, memoryId));
   }
 
   /**
@@ -625,20 +677,27 @@ export class MemoryStore {
 
   /** Lift recoverable non-sensitive suppression so the knowledge may be proposed again. */
   unmuteProposal(memoryId: string): boolean {
-    const evidence = this.candidateDismissalEvidence(memoryId);
-    const existing = this.getById(memoryId);
-    if (evidence?.sensitive || existing?.sensitive) {
-      throw new CandidateDismissalTransitionError('A sensitive dismissal is permanent and cannot be unmuted.');
-    }
-    if (evidence && existing && existing.status !== 'discarded') {
-      throw new CandidateDismissalTransitionError(
-        'Candidate dismissal evidence cannot be lifted from a non-discarded legacy row.',
-      );
-    }
-    const res = this.db
-      .query('DELETE FROM dismissed_candidate_fingerprints WHERE memory_id = ?')
-      .run(memoryId);
-    return res.changes > 0;
+    return this.db.transaction(() => {
+      const evidence = this.candidateDismissalEvidence(memoryId);
+      const existing = this.getById(memoryId);
+      if (evidence?.sensitive || existing?.sensitive) {
+        throw new CandidateDismissalTransitionError('A sensitive dismissal is permanent and cannot be unmuted.');
+      }
+      if (evidence && existing && existing.status !== 'discarded') {
+        throw new CandidateDismissalTransitionError(
+          'Candidate dismissal evidence cannot be lifted from a non-discarded legacy row.',
+        );
+      }
+      const res = this.db
+        .query('DELETE FROM dismissed_candidate_fingerprints WHERE memory_id = ?')
+        .run(memoryId);
+      if (res.changes > 0) {
+        // Explicit unmuting starts a new import attempt; turn-local capture
+        // identities still suppress replays of already handled turns.
+        this.db.query("DELETE FROM memory_capture_operations WHERE turn_key = 'md_import' AND memory_id = ?").run(memoryId);
+      }
+      return res.changes > 0;
+    })();
   }
 
   /**
@@ -1157,6 +1216,7 @@ export class MemoryStore {
       changes[field] = { before, after };
     }
       if (Object.keys(patch).length === 0) return existing;
+      this.syncMemoryRevocation(existing, target.snapshot.status);
 
     const sets: string[] = ['updated_at = $updated_at'];
     const params: Record<string, Bind> = { $id: id, $updated_at: new Date().toISOString() };
@@ -1213,6 +1273,30 @@ export class MemoryStore {
          VALUES (?, ?, ?)`,
       )
       .run(sourceId, targetId, type);
+  }
+
+  /** Canonical semantic edges, including endpoint eligibility; excludes usage counters. */
+  getViewRelations(ids: readonly string[]): string[][] {
+    const selected = new Set(ids);
+    const rows = this.db.query(`
+      SELECT r.source_id, r.target_id, r.relation_type,
+             s.status AS source_status, s.scope AS source_scope,
+             s.project_id AS source_project, s.session_id AS source_session,
+             t.status AS target_status, t.scope AS target_scope,
+             t.project_id AS target_project, t.session_id AS target_session
+        FROM memory_relations r
+        JOIN memories s ON s.id = r.source_id
+        JOIN memories t ON t.id = r.target_id
+       ORDER BY r.source_id, r.target_id, r.relation_type
+    `).all() as Array<Record<string, string | null>>;
+    return [...new Map(rows
+      .filter(row => selected.has(row.source_id!) || selected.has(row.target_id!))
+      .map(row => {
+        const edge = [row.source_id!, row.target_id!, row.relation_type!,
+          row.source_status!, row.source_scope!, row.source_project ?? '', row.source_session ?? '',
+          row.target_status!, row.target_scope!, row.target_project ?? '', row.target_session ?? ''];
+        return [JSON.stringify(edge), edge] as const;
+      })).values()];
   }
 
   getRelations(id: string): MemoryRelation[] {
@@ -1346,7 +1430,9 @@ export class MemoryStore {
     const rows = this.db.query(
       `SELECT id FROM memories
        UNION ALL
-       SELECT memory_id AS id FROM dismissed_candidate_fingerprints`,
+       SELECT memory_id AS id FROM dismissed_candidate_fingerprints
+       UNION ALL
+       SELECT memory_id AS id FROM memory_capture_operations WHERE memory_id IS NOT NULL`,
     ).all() as Array<{ id: string }>;
     let max = 0;
     for (const { id } of rows) {
