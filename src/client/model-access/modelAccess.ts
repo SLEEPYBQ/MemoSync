@@ -24,7 +24,7 @@ export function incompatibleConnectionMessage(engine: EngineId) {
 export function engineProblemMessage(status: EngineStatus) {
   if (status.ready) return t("modelAccess:ready")
   if (status.accountIsolated) return t("modelAccess:accountIsolated")
-  if (status.problem === "executable-incompatible" && status.executable.belowMinimum) return t("modelAccess:executableTooOld")
+  if (status.problem === "executable-incompatible" && status.executable?.belowMinimum) return t("modelAccess:executableTooOld")
   if (status.engine === "pi" && status.problem === "executable-incompatible") return t("modelAccess:piVersionUnsupported")
   const messages = {
     "executable-missing": "modelAccess:executableMissing",
