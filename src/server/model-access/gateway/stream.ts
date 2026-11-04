@@ -3,6 +3,8 @@
 // interleaved calls, usage, and the two client event encoders.
 import { CustomInputStream, customInput, type ToolMapping } from "./custom-tool"
 import { GatewayError, object, type Target, type Wire } from "./request"
+import type { TranslationDiagnostic } from "./capabilities"
+import { CHAT_USAGE_NORMALIZER, normalizeChatUsage, type ChatUsage } from "./usage"
 
 export async function* readSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
   const reader = body.getReader()
@@ -32,9 +34,19 @@ export async function* readSSE(body: ReadableStream<Uint8Array>): AsyncGenerator
 
 type Event = { kind: "text" | "thinking" | "args"; text: string }
   | { kind: "tool"; id: string; name: string }
-  | { kind: "usage"; usage: Usage }
+  | { kind: "usage"; usage: ChatUsage }
   | { kind: "stop"; reason: string }
-interface Usage { input: number; output: number; cached: number; reasoning: number }
+
+export interface GatewayPath {
+  mode: "gateway"
+  engine: "claude" | "codex"
+  provider: "openai" | "deepseek" | "unknown"
+  connectionId?: string
+  sourceProtocol: "anthropic-messages" | "openai-responses"
+  upstreamProtocol: "openai-chat"
+  model: string
+  normalizer: typeof CHAT_USAGE_NORMALIZER
+}
 interface Call { index: number; id: string; name: string; args: string; emitted: boolean }
 interface ClientItem { kind: "text" | "thinking" | "tool"; id: string; name?: string; callId?: string; text: string }
 export class ChatDecoder {
@@ -95,11 +107,7 @@ export class ChatDecoder {
         this.finished = true
       }
     }
-    if (b.usage) {
-      const u = b.usage
-      const number = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0
-      out.push({ kind: "usage", usage: { input: number(u.prompt_tokens), output: number(u.completion_tokens), cached: number(u.prompt_tokens_details?.cached_tokens), reasoning: number(u.completion_tokens_details?.reasoning_tokens) } })
-    }
+    if (b.usage) out.push({ kind: "usage", usage: normalizeChatUsage(b.usage) })
     return out
   }
 }
@@ -112,23 +120,46 @@ export class ClientEncoder {
   private current?: ClientItem
   private pendingTool?: ClientItem
   private deferred: { kind: "text" | "thinking"; text: string }[] = []
-  private usage: Usage = { input: 0, output: 0, cached: 0, reasoning: 0 }
+  private usage: ChatUsage = normalizeChatUsage()
   private stop = "stop"
   private hasTools = false
   private customStream = new CustomInputStream()
   private events: Wire[] = []
   result?: Wire
-  constructor(readonly target: Target, readonly model: string, readonly tools: Record<string, ToolMapping> = {}) { this.id = `${target === "anthropic" ? "msg" : "resp"}_${crypto.randomUUID()}` }
+  constructor(readonly target: Target, readonly model: string, readonly tools: Record<string, ToolMapping> = {}, readonly translation?: { path: GatewayPath; diagnostics: TranslationDiagnostic[] }) { this.id = `${target === "anthropic" ? "msg" : "resp"}_${crypto.randomUUID()}` }
   private send(type: string, value: Wire = {}) { this.events.push({ type, ...(this.target === "responses" ? { sequence_number: this.seq++ } : {}), ...value }) }
   drain(): Wire[] { const out = this.events; this.events = []; return out }
   private get index() { return this.output.length }
-  private antUsage() { return { input_tokens: Math.max(0, this.usage.input - this.usage.cached), output_tokens: this.usage.output, cache_read_input_tokens: this.usage.cached, cache_creation_input_tokens: 0 } }
+  private metadata() {
+    const missing = ["input", "output"].filter(k => this.usage[k as "input" | "output"] === undefined)
+    return {
+      path: this.translation?.path ?? { mode: "gateway", engine: this.target === "anthropic" ? "claude" : "codex", provider: "unknown", sourceProtocol: this.target === "anthropic" ? "anthropic-messages" : "openai-responses", upstreamProtocol: "openai-chat", model: this.model, normalizer: CHAT_USAGE_NORMALIZER },
+      diagnostics: this.translation?.diagnostics ?? [], usage: this.usage,
+      // Protocols require numeric input/output counters even when not measured.
+      // Cache/reasoning fields remain absent; consumers must consult provenance
+      // before treating the required wire placeholders as observations.
+      wirePlaceholders: this.target === "responses" && missing.length ? [...missing, "total"] : missing,
+      ...(this.target === "anthropic" ? { inputProjection: "total-less-reported-cache" } : {}),
+    }
+  }
+  private antUsage() {
+    const u = this.usage
+    const cached = u.cached ?? 0, write = u.cacheWrite ?? 0
+    const consistent = u.input === undefined || cached + write <= u.input
+    return {
+      input_tokens: consistent ? Math.max(0, (u.input ?? cached + write) - cached - write) : u.input,
+      output_tokens: u.output ?? 0,
+      ...(consistent && u.cached !== undefined ? { cache_read_input_tokens: u.cached } : {}),
+      ...(consistent && u.cacheWrite !== undefined ? { cache_creation_input_tokens: u.cacheWrite } : {}),
+    }
+  }
   private response(status: string): Wire {
-    return { id: this.id, object: "response", created_at: this.created, status, model: this.model, output: [...this.output], error: null, incomplete_details: null,
-      usage: { input_tokens: this.usage.input, output_tokens: this.usage.output, total_tokens: this.usage.input + this.usage.output, input_tokens_details: { cached_tokens: this.usage.cached }, output_tokens_details: { reasoning_tokens: this.usage.reasoning } } }
+    const u = this.usage
+    return { id: this.id, object: "response", created_at: this.created, status, model: this.model, output: [...this.output], error: null, incomplete_details: null, memosync: this.metadata(),
+      usage: { input_tokens: u.input ?? 0, output_tokens: u.output ?? 0, total_tokens: (u.input ?? 0) + (u.output ?? 0), input_tokens_details: { ...(u.cached !== undefined ? { cached_tokens: u.cached } : {}), ...(u.cacheWrite !== undefined ? { cache_write_tokens: u.cacheWrite } : {}) }, output_tokens_details: { ...(u.reasoning !== undefined ? { reasoning_tokens: u.reasoning } : {}) } } }
   }
   start() {
-    if (this.target === "anthropic") this.send("message_start", { message: { id: this.id, type: "message", role: "assistant", model: this.model, content: [], stop_reason: null, stop_sequence: null, usage: this.antUsage() } })
+    if (this.target === "anthropic") this.send("message_start", { message: { id: this.id, type: "message", role: "assistant", model: this.model, content: [], stop_reason: null, stop_sequence: null, usage: this.antUsage(), memosync: this.metadata() } })
     else {
       this.send("response.created", { response: this.response("in_progress") })
       this.send("response.in_progress", { response: this.response("in_progress") })
@@ -248,9 +279,9 @@ export class ClientEncoder {
     this.close()
     if (this.target === "anthropic") {
       const reason = this.stop === "length" ? "max_tokens" : this.stop === "content_filter" ? "refusal" : this.hasTools ? "tool_use" : "end_turn"
-      this.send("message_delta", { delta: { stop_reason: reason, stop_sequence: null }, usage: this.antUsage() })
+      this.send("message_delta", { delta: { stop_reason: reason, stop_sequence: null }, usage: this.antUsage(), memosync: this.metadata() })
       this.send("message_stop")
-      this.result = { id: this.id, type: "message", role: "assistant", model: this.model, content: this.output, stop_reason: reason, stop_sequence: null, usage: this.antUsage() }
+      this.result = { id: this.id, type: "message", role: "assistant", model: this.model, content: this.output, stop_reason: reason, stop_sequence: null, usage: this.antUsage(), memosync: this.metadata() }
     } else {
       const incomplete = ["length", "content_filter"].includes(this.stop)
       this.result = this.response(incomplete ? "incomplete" : "completed")

@@ -75,7 +75,187 @@ async function collectStream(stream: AsyncIterable<any>) {
   return items
 }
 
+describe("Codex developer context delivery", () => {
+  const session = { chatId: "context", cwd: "/tmp", model: "gpt-6-astra", sessionToken: null, runtime: explicitRuntime }
+  const turnArgs = { chatId: session.chatId, model: session.model, content: "USER", effort: "high" as const, planMode: false, onToolRequest: async () => ({}) }
+  function fixture(inject?: (message: any, child: FakeCodexProcess) => void) {
+    let turns = 0
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") process.writeServerMessage({ id: message.id, result: { thread: { id: "native-history" } } })
+      if (message.method === "thread/inject_items") {
+        if (inject) inject(message, process)
+        else process.writeServerMessage({ id: message.id, result: {} })
+      }
+      if (message.method === "turn/start") {
+        const id = `turn-${++turns}`
+        process.writeServerMessage({ id: message.id, result: { turn: { id, status: "inProgress" } } })
+        process.writeServerMessage({ method: "turn/completed", params: { threadId: "native-history", turn: { id, status: "completed", error: null } } })
+      }
+    })
+    return { child, manager: new CodexAppServerManager({ spawnProcess: () => child as never }) }
+  }
+
+  test("consecutive memory snapshots use independent developer items and retain native mode settings", async () => {
+    const { child, manager } = fixture()
+    try {
+      await manager.startSession(session)
+      for (const [index, memory] of ["MEMORY_A", "MEMORY_B"].entries()) {
+        const turn = await manager.startTurn({ ...turnArgs, developerInstructions: memory, planMode: index === 1 })
+        await collectStream(turn.stream)
+      }
+      const messages = child.messages as any[]
+      expect(messages.filter(m => m.method === "thread/start")).toHaveLength(1)
+      // Never override configured developer instructions on thread creation.
+      expect(messages.find(m => m.method === "thread/start").params).not.toHaveProperty("developerInstructions")
+      const sequence = messages.filter(m => ["thread/inject_items", "turn/start"].includes(m.method))
+      expect(sequence.map(m => m.method)).toEqual(["thread/inject_items", "turn/start", "thread/inject_items", "turn/start"])
+      for (const [index, memory] of ["MEMORY_A", "MEMORY_B"].entries()) {
+        expect(sequence[index * 2].params).toEqual({ threadId: "native-history", items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: memory }] }] })
+        expect(sequence[index * 2 + 1].params).toMatchObject({
+          threadId: "native-history", input: [{ type: "text", text: "USER" }], model: session.model, effort: "high",
+          collaborationMode: { mode: index ? "plan" : "default", settings: { model: session.model, reasoning_effort: null, developer_instructions: null } },
+        })
+      }
+      // Memory is independent of any catalog-supplied collaboration override.
+      expect(sequence.filter(m => m.method === "turn/start").every(m => !JSON.stringify(m).includes("MEMORY_"))).toBe(true)
+    } finally { await manager.stopAll() }
+  })
+
+  test("an idle-boundary reservation waits for injection acknowledgement and rejects concurrent starts", async () => {
+    let acknowledge!: () => void, entered!: () => void
+    const injecting = new Promise<void>(resolve => { entered = resolve })
+    const { child, manager } = fixture((message, process) => {
+      acknowledge = () => process.writeServerMessage({ id: message.id, result: {} })
+      entered()
+    })
+    try {
+      await manager.startSession(session)
+      const starting = manager.startTurn({ ...turnArgs, developerInstructions: "MEMORY" })
+      await injecting
+      expect(manager.hasPendingWork(session.chatId)).toBe(true)
+      await expect(manager.startTurn({ ...turnArgs, developerInstructions: "OTHER" })).rejects.toThrow("already running")
+      expect(child.messages.filter((m: any) => m.method === "thread/inject_items")).toHaveLength(1)
+      expect(child.messages.some((m: any) => m.method === "turn/start")).toBe(false)
+      acknowledge()
+      await collectStream((await starting).stream)
+      expect(manager.hasPendingWork(session.chatId)).toBe(false)
+    } finally { await manager.stopAll() }
+  })
+
+  test.each(["unsupported-method", "0.9x"])("%s uses a visible user-input fallback without replacing native instructions", async compatibility => {
+    const previous = process.env.CODEX_PROTOCOL_COMPAT
+    if (compatibility === "0.9x") process.env.CODEX_PROTOCOL_COMPAT = "0.9x"
+    const { child, manager } = fixture((message, process) => process.writeServerMessage({ id: message.id, error: { code: -32601, message: "Method not found" } }))
+    try {
+      await manager.startSession(session)
+      for (const memory of ["MEMORY_A", "MEMORY_B"]) {
+        const events = await collectStream((await manager.startTurn({ ...turnArgs, developerInstructions: memory })).stream)
+        expect(events.some(e => e.entry?.kind === "status" && e.entry.status.includes("without developer priority"))).toBe(true)
+      }
+      const messages = child.messages as any[]
+      expect(messages.filter(m => m.method === "thread/inject_items")).toHaveLength(compatibility === "0.9x" ? 0 : 1)
+      expect(messages.filter(m => m.method === "turn/start").map(m => m.params.input[0].text)).toEqual(["MEMORY_A\n\nUSER", "MEMORY_B\n\nUSER"])
+      expect(messages.filter(m => m.method === "turn/start").map(m => m.params.collaborationMode)).toEqual([0, 1].map(() => ({
+        mode: compatibility === "0.9x" ? "code" : "default",
+        settings: { model: session.model, reasoning_effort: null, developer_instructions: null },
+      })))
+    } finally {
+      if (previous === undefined) delete process.env.CODEX_PROTOCOL_COMPAT
+      else process.env.CODEX_PROTOCOL_COMPAT = previous
+      await manager.stopAll()
+    }
+  })
+
+  test.each([-32000, -32602])("injection rejection %s prevents turn start and permits a later retry", async code => {
+    let attempts = 0
+    const { child, manager } = fixture((message, process) => process.writeServerMessage(++attempts === 1
+      ? { id: message.id, error: { code, message: "Injection rejected" } }
+      : { id: message.id, result: {} }))
+    try {
+      await manager.startSession(session)
+      await expect(manager.startTurn({ ...turnArgs, developerInstructions: "MEMORY" })).rejects.toThrow("Injection rejected")
+      expect(child.messages.some((m: any) => m.method === "turn/start")).toBe(false)
+      expect(manager.hasPendingWork(session.chatId)).toBe(false)
+      await collectStream((await manager.startTurn({ ...turnArgs, developerInstructions: "MEMORY" })).stream)
+      expect(attempts).toBe(2)
+    } finally { await manager.stopAll() }
+  })
+
+  test("cancellation during injection never dispatches turn/start", async () => {
+    let entered!: () => void
+    const injecting = new Promise<void>(resolve => { entered = resolve })
+    const { child, manager } = fixture(() => entered())
+    const controller = new AbortController()
+    try {
+      await manager.startSession(session)
+      const starting = manager.startTurn({ ...turnArgs, developerInstructions: "MEMORY", signal: controller.signal })
+      const rejected = starting.catch(error => error)
+      await injecting
+      controller.abort()
+      expect(await rejected).toBeInstanceOf(Error)
+      expect(child.killed).toBe(true)
+      expect(child.messages.some((m: any) => m.method === "turn/start")).toBe(false)
+    } finally { await manager.stopAll() }
+  })
+
+  test("a turn without memory leaves the native input unchanged", async () => {
+    const { child, manager } = fixture()
+    try {
+      await manager.startSession(session)
+      await collectStream((await manager.startTurn(turnArgs)).stream)
+      expect(child.messages.some((m: any) => m.method === "thread/inject_items")).toBe(false)
+      expect((child.messages.find((m: any) => m.method === "turn/start") as any).params.input[0].text).toBe("USER")
+    } finally { await manager.stopAll() }
+  })
+})
+
 describe("CodexAppServerManager", () => {
+  test.each(["start", "resume", "fork"] as const)("native %s and turn acknowledge the explicit sandbox and user reviewer", async mode => {
+    let acknowledged = false
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (["thread/start", "thread/resume", "thread/fork"].includes(message.method)) process.writeServerMessage({ id: message.id, result: { thread: { id: "native" } } })
+      if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn", status: "inProgress" } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const executionPolicy = { engine: "codex", approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" } as const
+    try {
+      await manager.startSession({ chatId: "policy", cwd: "/tmp", model: "synthetic", runtime: explicitRuntime, executionPolicy, sessionToken: mode === "resume" ? "prior" : null, pendingForkSessionToken: mode === "fork" ? "prior" : null })
+      const request = child.messages.find((m: any) => m.method === `thread/${mode}`) as any
+      expect(request.params).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" })
+      expect(acknowledged).toBe(false)
+      await manager.startTurn({ chatId: "policy", model: "synthetic", content: "synthetic", planMode: true, executionPolicy, isPolicyCurrent: () => true, onToolRequest: async () => ({}), onExecutionPolicyApplied: async () => { acknowledged = true } })
+      expect(acknowledged).toBe(true)
+      const turn = child.messages.find((m: any) => m.method === "turn/start") as any
+      expect(turn.params).toMatchObject({ approvalPolicy: "on-request", approvalsReviewer: "user", collaborationMode: { mode: "plan" } })
+    } finally { await manager.stopAll() }
+  })
+
+  test("a native approval reply is declined when its policy expires during the await", async () => {
+    let current = true
+    let release!: (decision: "accept") => void
+    let asked!: () => void
+    const requested = new Promise<void>(resolve => { asked = resolve })
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === "initialize") process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === "thread/start") process.writeServerMessage({ id: message.id, result: { thread: { id: "native" } } })
+      if (message.method === "turn/start") process.writeServerMessage({ id: message.id, result: { turn: { id: "turn", status: "inProgress" } } })
+      if (message.id === "approval" && message.result) process.writeServerMessage({ method: "turn/completed", params: { threadId: "native", turn: { id: "turn", status: "completed", error: null } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    try {
+      await manager.startSession({ chatId: "stale", cwd: "/tmp", model: "synthetic", runtime: explicitRuntime, sessionToken: null })
+      const turn = await manager.startTurn({ chatId: "stale", model: "synthetic", content: "synthetic", planMode: false, isPolicyCurrent: () => current, onToolRequest: async () => ({}), onApprovalRequest: () => { asked(); return new Promise(resolve => { release = resolve }) } })
+      child.writeServerMessage({ id: "approval", method: "item/commandExecution/requestApproval", params: { threadId: "native", turnId: "turn", itemId: "command", command: "synthetic" } })
+      await requested
+      current = false
+      release("accept")
+      await collectStream(turn.stream)
+      expect(child.messages.find((m: any) => m.id === "approval")).toMatchObject({ result: { decision: "decline" } })
+    } finally { await manager.stopAll() }
+  })
+
   test.each(["notification-first", "request-first"])("dynamic tool records are deduplicated (%s)", async (order) => {
     let calls = 0
     const process = new FakeCodexProcess((message, child) => {
@@ -2017,6 +2197,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2107,6 +2288,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2195,6 +2377,7 @@ describe("CodexAppServerManager", () => {
             ],
           },
         })
+      } else if (message.id === "req-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {
@@ -2282,6 +2465,7 @@ describe("CodexAppServerManager", () => {
             cwd: "/tmp/project",
           },
         })
+      } else if (message.id === "approval-1" && message.result) {
         child.writeServerMessage({
           method: "turn/completed",
           params: {

@@ -41,6 +41,7 @@ import {
   type ServerNotification,
   type ServerRequest,
   type ThreadItem,
+  type ThreadInjectItemsParams,
   type ThreadResumeParams,
   type ThreadResumeResponse,
   type ThreadForkParams,
@@ -102,7 +103,10 @@ interface PendingTurn {
   resolved: boolean
   completionInProgress: boolean
   bufferedNotifications: ServerNotification[]
+  bufferedRequests: ServerRequest[]
+  ready: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  isPolicyCurrent?: () => boolean
   onApprovalRequest?: (
     request:
       | {
@@ -137,6 +141,8 @@ interface SessionContext {
   subprocessEnv?: Record<string, string | undefined>
   externalToolsDisabled?: boolean
   toolsDisabled?: boolean
+  executionPolicyKey?: string
+  developerInjectionUnsupported?: boolean
 }
 
 export interface StartCodexSessionArgs {
@@ -153,6 +159,7 @@ export interface StartCodexSessionArgs {
   dynamicTools?: DynamicToolFunctionSpec[]
   /** Memory branches inspect the shared workspace without changing it. */
   sandbox?: "read-only" | "workspace-write" | "danger-full-access"
+  executionPolicy?: Extract<import("../shared/harness-capabilities").NativeExecutionPolicy, { engine: "codex" }>
   subprocessEnv?: Record<string, string | undefined>
   /** Memory retries must fail if their child disappeared instead of losing its analysis. */
   allowResumeFallback?: boolean
@@ -172,7 +179,10 @@ export interface StartCodexTurnArgs {
   planMode: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
   onApprovalRequest?: PendingTurn["onApprovalRequest"]
-  /** Memory block injected as Codex developer_instructions for this turn. */
+  executionPolicy?: StartCodexSessionArgs["executionPolicy"]
+  isPolicyCurrent?: () => boolean
+  onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
+  /** Append host/memory context as a native developer item before starting this turn. */
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
   outputSchema?: Record<string, unknown>
@@ -248,6 +258,21 @@ function parseJsonLine(line: string): unknown | null {
   } catch {
     return null
   }
+}
+
+class CodexRpcError extends Error {
+  constructor(method: string, error: NonNullable<JsonRpcResponse["error"]>) {
+    super(`${method} failed: ${error.message ?? "Unknown error"}`)
+    this.code = error.code
+  }
+  readonly code?: number
+}
+
+function isUnsupportedDeveloperInjection(error: unknown): boolean {
+  // Only an explicit missing-method response permits the compatibility path.
+  // Busy threads, invalid items and transport failures must never start a turn.
+  return error instanceof CodexRpcError && (error.code === -32601
+    || /unknown (?:method|variant).*thread\/inject_items|method.*thread\/inject_items.*not found/i.test(error.message))
 }
 
 function isRecoverableResumeError(error: unknown): boolean {
@@ -871,6 +896,7 @@ export class CodexAppServerManager {
     if (existing && !existing.closed && existing.cwd === args.cwd && !args.pendingForkSessionToken
       && (!args.disableExternalTools || existing.externalToolsDisabled)
       && (!args.disableTools || existing.toolsDisabled)
+      && existing.executionPolicyKey === JSON.stringify(args.executionPolicy)
       && JSON.stringify(runtimeForEnv(existing.subprocessEnv)) === JSON.stringify(args.runtime)) {
       return existing.sessionToken
     }
@@ -893,6 +919,7 @@ export class CodexAppServerManager {
       lastStderrLine: null,
       closed: false,
       subprocessEnv: args.subprocessEnv,
+      executionPolicyKey: JSON.stringify(args.executionPolicy),
     }
     this.sessions.set(args.chatId, context)
     this.attachListeners(context)
@@ -982,8 +1009,9 @@ export class CodexAppServerManager {
       model: resolveCodexModel(args.model, args.subprocessEnv),
       cwd: args.cwd,
       serviceTier,
-      approvalPolicy: "never",
-      sandbox: args.sandbox ?? "danger-full-access",
+      approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+      ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+      sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
       experimentalRawEvents: false,
       persistExtendedHistory: false,
       dynamicTools: args.dynamicTools ?? [],
@@ -997,8 +1025,9 @@ export class CodexAppServerManager {
         model: resolveCodexModel(args.model, args.subprocessEnv),
         cwd: args.cwd,
         serviceTier,
-        approvalPolicy: "never",
-        sandbox: args.sandbox ?? "danger-full-access",
+        approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+        ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+        sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
         persistExtendedHistory: false,
         dynamicTools: args.dynamicTools ?? [],
       } satisfies ThreadForkParams)
@@ -1010,8 +1039,9 @@ export class CodexAppServerManager {
           model: resolveCodexModel(args.model, args.subprocessEnv),
           cwd: args.cwd,
           serviceTier,
-          approvalPolicy: "never",
-          sandbox: args.sandbox ?? "danger-full-access",
+          approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+          ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
+          sandbox: args.executionPolicy?.sandbox ?? args.sandbox ?? "danger-full-access",
           persistExtendedHistory: false,
           dynamicTools: args.dynamicTools ?? [],
         } satisfies ThreadResumeParams)
@@ -1029,6 +1059,7 @@ export class CodexAppServerManager {
     context.sessionToken = response.thread.id
     context.externalToolsDisabled = args.disableExternalTools === true || args.disableTools === true
     context.toolsDisabled = args.disableTools === true
+    context.executionPolicyKey = JSON.stringify(args.executionPolicy)
     return context.sessionToken
   }
 
@@ -1060,8 +1091,11 @@ export class CodexAppServerManager {
       resolved: false,
       completionInProgress: false,
       bufferedNotifications: [],
+      bufferedRequests: [],
+      ready: false,
       onToolRequest: args.onToolRequest,
       onApprovalRequest: args.onApprovalRequest,
+      isPolicyCurrent: args.isPolicyCurrent,
       onDynamicToolCall: args.onDynamicToolCall,
     }
     context.pendingTurn = pendingTurn
@@ -1076,16 +1110,44 @@ export class CodexAppServerManager {
         stopForAbort()
         args.signal.throwIfAborted()
       }
+      // pendingTurn reserves the idle boundary across both RPCs. A second
+      // startTurn cannot inject into this thread while either request is pending.
+      let content = args.content
+      if (args.developerInstructions) {
+        if (!context.developerInjectionUnsupported && !codexProtocolCompat09x()) {
+          try {
+            await this.sendRequest(context, "thread/inject_items", {
+              threadId: context.sessionToken ?? "",
+              items: [{ type: "message", role: "developer", content: [{ type: "input_text", text: args.developerInstructions }] }],
+            } satisfies ThreadInjectItemsParams)
+          } catch (error) {
+            if (!isUnsupportedDeveloperInjection(error)) throw error
+            context.developerInjectionUnsupported = true
+          }
+        }
+        if (context.developerInjectionUnsupported || codexProtocolCompat09x()) {
+          // 0.92–0.94 and servers explicitly missing inject_items retain native
+          // instructions/history. User text is a visible priority downgrade;
+          // collaboration settings are not a reliable developer channel.
+          content = `${args.developerInstructions}\n\n${args.content}`
+          queue.push({ type: "transcript", entry: timestamped({
+            kind: "status",
+            status: "This Codex version does not support native developer injection. Memory context is included in user input for this turn without developer priority. Upgrade Codex to enable developer injection.",
+          }) })
+        }
+      }
+      args.signal?.throwIfAborted()
       const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
         input: [
           {
             type: "text",
-            text: args.content,
+            text: content,
             text_elements: [],
           },
         ],
-        approvalPolicy: "never",
+        approvalPolicy: args.executionPolicy?.approvalPolicy ?? "never",
+        ...(args.executionPolicy ? { approvalsReviewer: args.executionPolicy.approvalsReviewer } : {}),
         model: resolveCodexModel(args.model, context.subprocessEnv),
         effort: args.effort,
         serviceTier: args.serviceTier ?? null,
@@ -1095,15 +1157,20 @@ export class CodexAppServerManager {
           settings: {
             model: resolveCodexModel(args.model, context.subprocessEnv),
             reasoning_effort: null,
-            developer_instructions: args.developerInstructions ?? null,
+            // Preserve native mode instructions, including model-catalog overrides.
+            developer_instructions: null,
           },
         },
       } satisfies TurnStartParams)
       pendingTurn.turnId = response.turn.id
+      if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
+      if (args.onExecutionPolicyApplied) await args.onExecutionPolicyApplied(context.sessionToken ?? undefined)
+      pendingTurn.ready = true
+      for (const request of pendingTurn.bufferedRequests.splice(0)) void this.handleServerRequest(context, request)
       if (context.pendingTurn === pendingTurn && !pendingTurn.resolved) {
         const buffered = pendingTurn.bufferedNotifications.splice(0)
         for (const notification of buffered) {
-          if (this.notificationTurnId(notification) !== pendingTurn.turnId) continue
+          if (this.notificationTurnId(notification) && this.notificationTurnId(notification) !== pendingTurn.turnId) continue
           void this.handleNotification(context, notification)
           if (context.pendingTurn !== pendingTurn || pendingTurn.resolved) break
         }
@@ -1297,7 +1364,7 @@ export class CodexAppServerManager {
     if (!pending) return
     context.pendingRequests.delete(response.id)
     if (response.error) {
-      pending.reject(new Error(`${pending.method} failed: ${response.error.message ?? "Unknown error"}`))
+      pending.reject(new CodexRpcError(pending.method, response.error))
       return
     }
     pending.resolve(response.result)
@@ -1314,6 +1381,16 @@ export class CodexAppServerManager {
       })
       return
     }
+
+    if (!pendingTurn.ready && !pendingTurn.resolved) {
+      pendingTurn.bufferedRequests.push(request)
+      return
+    }
+    if (pendingTurn.isPolicyCurrent?.() === false || ("threadId" in request.params && request.params.threadId !== context.sessionToken) || ("turnId" in request.params && request.params.turnId !== pendingTurn.turnId)) {
+      this.writeMessage(context, { id: request.id, error: { message: "Stale native request" } })
+      return
+    }
+    const isCurrent = () => context.pendingTurn === pendingTurn && !pendingTurn.resolved && !context.closed && pendingTurn.isPolicyCurrent?.() !== false
 
     if (request.method === "item/tool/requestUserInput") {
       const questions = toAskUserQuestionItems(request.params)
@@ -1341,7 +1418,7 @@ export class CodexAppServerManager {
       const result = await pendingTurn.onToolRequest(toolRequest)
       this.writeMessage(context, {
         id: request.id,
-        result: toToolRequestUserInputResponse(result, request.params.questions),
+        result: toToolRequestUserInputResponse(isCurrent() ? result : {}, request.params.questions),
       })
       return
     }
@@ -1464,7 +1541,7 @@ export class CodexAppServerManager {
       this.writeMessage(context, {
         id: request.id,
         result: {
-          decision,
+          decision: isCurrent() ? decision : "decline",
         } satisfies CommandExecutionRequestApprovalResponse,
       })
       return
@@ -1478,7 +1555,7 @@ export class CodexAppServerManager {
     this.writeMessage(context, {
       id: request.id,
       result: {
-        decision,
+        decision: isCurrent() ? decision : "decline",
       } satisfies FileChangeRequestApprovalResponse,
     })
   }
@@ -1516,6 +1593,10 @@ export class CodexAppServerManager {
     const notificationThreadId = this.notificationThreadId(notification)
     if (notificationThreadId && context.sessionToken && notificationThreadId !== context.sessionToken) return
     const notificationTurnId = this.notificationTurnId(notification)
+    if (!pendingTurn.ready) {
+      pendingTurn.bufferedNotifications.push(notification)
+      return
+    }
     if (notificationTurnId) {
       if (pendingTurn.turnId === null) {
         pendingTurn.bufferedNotifications.push(notification)

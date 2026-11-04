@@ -62,7 +62,7 @@
   "chooseOpenDestination": "Choose open destination",
   "modelCatalogUnavailable": "Model catalog unavailable",
   "addAProjectToGetStarted": "Add a project to get started",
-  "stoppedWhatWentWrongYourNextMessageCorrectsTheAgent": "Stopped. What went wrong? Your next message corrects the agent — anything worth remembering is caught at Step 1.",
+  "stoppedWhatWentWrongYourNextMessageCorrectsTheAgent": "Stopped. What went wrong? Your next message corrects the agent. Anything worth remembering will appear in candidate memory review.",
   "loadingMoreMessages": "Loading more messages...",
   "dropUpTo": "Drop up to ",
   "files": " files",

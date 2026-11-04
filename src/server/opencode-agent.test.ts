@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { normalizeToolCall } from '../shared/tools'
-import { OpencodeAgentManager, translateOpencodeTool } from './opencode-agent'
+import { OPENCODE_SYSTEM_PROMPT, OpencodeAgentManager, translateOpencodeTool } from './opencode-agent'
 import type { HarnessEvent, HarnessTurn } from './harness-types'
 import { createMemoryBranch } from './memory/branch-runtime'
 import { isOpencodeBranchRead } from './memory/branch-read-policy'
@@ -121,6 +121,38 @@ function lifecycleFixture(holdHistory = false, sameParent = false) {
     },
   }
 }
+test('native session rules must be confirmed before policy application and prompt dispatch', async () => {
+  const f = lifecycleFixture(), applied = journal<string>()
+  const turn = await f.start({ executionPolicy: { engine: 'opencode', permission: 'ask' }, onExecutionPolicyApplied: async id => { applied.push(id!) } })
+  expect(applied.values).toEqual(['ses_created'])
+  const update = await f.notices.waitFor(n => n.method === 'PATCH')
+  expect(update.body).toEqual({ permission: [{ permission: '*', pattern: '*', action: 'ask' }] })
+  await f.notices.waitFor(n => n.path?.endsWith('/prompt_async') === true)
+  await turn.interrupt()
+
+  const rejected = lifecycleFixture()
+  rejected.runtime.env.FAKE_OC_REJECT_POLICY = '1'
+  let confirmed = false
+  await expect(rejected.start({ executionPolicy: { engine: 'opencode', permission: 'deny' }, onExecutionPolicyApplied: async () => { confirmed = true } })).rejects.toThrow('did not confirm')
+  expect(confirmed).toBe(false)
+  expect(rejected.notices.values.some(n => n.path?.endsWith('/prompt_async'))).toBe(false)
+})
+
+test('duplicate native permissions prompt once and an expired reply is rejected', async () => {
+  const f = lifecycleFixture(), answer = deferred<boolean>(), entered = deferred<void>()
+  let current = true, calls = 0
+  const turn = await f.start({ isPolicyCurrent: () => current, onPermissionRequest: async () => { calls++; entered.resolve(); return answer.promise } })
+  const event = { type: 'permission.asked', properties: { id: 'permission-1', sessionID: 'ses_created', permission: 'bash', patterns: ['*'], always: [], metadata: { command: 'synthetic' } } }
+  await f.post('/test/events', [event, event])
+  await entered.promise
+  current = false
+  answer.resolve(true)
+  const reply = await f.notices.waitFor(n => n.path === '/permission/permission-1/reply')
+  expect(reply.body).toMatchObject({ reply: 'reject' })
+  expect(calls).toBe(1)
+  await turn.interrupt()
+})
+
 function collectTurn(turn: HarnessTurn) {
   const events = journal<HarnessEvent>()
   const done = (async () => { for await (const event of turn.stream) events.push(event) })()
@@ -135,6 +167,42 @@ const marker = (id: string) => [
   { type: 'message.part.updated', properties: { part: { id, sessionID: 'ses_created', messageID: 'assistant', type: 'text', text: '' } } },
   { type: 'message.part.delta', properties: { sessionID: 'ses_created', messageID: 'assistant', partID: id, field: 'text', delta: id } },
 ]
+
+test.each([undefined, 'CUSTOM_STABLE_SYSTEM'])('changing OpenCode memory uses prompt parts with stable system and native session (%s)', async systemPrompt => {
+  const f = lifecycleFixture(), launches: any[] = []
+  let token: string | undefined
+  for (const [index, memoryContext] of ['MEMORY_A', 'MEMORY_B', undefined].entries()) {
+    const content = `TURN_${index}`
+    const turn = await f.start({ systemPrompt, memoryContext, content, sessionToken: token, onLaunch: launch => launches.push(launch) })
+    const { events, done } = collectTurn(turn)
+    const request = await f.notices.waitFor(n => n.path?.endsWith('/prompt_async') === true && JSON.stringify(n.body).includes(content))
+    const body = request.body as any
+    expect(body.system).toBe(systemPrompt ?? OPENCODE_SYSTEM_PROMPT)
+    expect(body.parts).toEqual([
+      ...(memoryContext ? [{ type: 'text', text: memoryContext }] : []),
+      { type: 'text', text: content },
+    ])
+    expect(JSON.stringify(body.system)).not.toContain('MEMORY_')
+    expect(request.path).toBe('/session/ses_created/prompt_async')
+    await f.post('/test/events', [
+      { type: 'message.updated', properties: { info: { id: `reply-${index}`, sessionID: 'ses_created', role: 'assistant', time: { created: 1 } } } },
+      { type: 'message.part.updated', properties: { part: { id: `text-${index}`, sessionID: 'ses_created', messageID: `reply-${index}`, type: 'text', text: `reply ${index}`, time: { start: 1, end: 2 } } } },
+      { type: 'session.idle', properties: { sessionID: 'ses_created' } },
+    ])
+    await done
+    expect(events.values.at(-1)?.entry).toMatchObject({ kind: 'result', subtype: 'success' })
+    token = events.values.find(e => e.type === 'session_token')?.sessionToken
+    expect(token).toBe('ses_created')
+  }
+  expect(f.notices.values.filter(n => n.path === '/session')).toHaveLength(1)
+  expect(f.notices.values.filter(n => n.path === '/session/ses_created/message')).toHaveLength(3)
+  expect(f.notices.values.filter(n => n.method === 'DELETE' || n.path?.endsWith('/fork'))).toHaveLength(0)
+  expect(launches).toHaveLength(3)
+  for (const launch of launches) {
+    expect(launch.options.systemPrompt).toBe(systemPrompt ?? OPENCODE_SYSTEM_PROMPT)
+    expect(launch.options).not.toHaveProperty('memoryContext')
+  }
+}, 10_000)
 
 for (const firstAnswer of ['reply', 'cancelled', 'throw'] as const) test(`questions serialize user callbacks through ${firstAnswer} acknowledgement and deduplicate request IDs`, async () => {
   const f = lifecycleFixture(), invoked = journal<string>(), first = deferred<unknown>(), second = deferred<unknown>()

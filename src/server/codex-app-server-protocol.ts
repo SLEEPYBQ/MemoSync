@@ -43,6 +43,7 @@ export interface ThreadStartParams {
   cwd?: string | null
   serviceTier?: ServiceTier | null
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted" | null
+  approvalsReviewer?: "user" | "auto_review" | null
   sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null
   experimentalRawEvents: boolean
   persistExtendedHistory: boolean
@@ -56,6 +57,7 @@ export interface ThreadResumeParams {
   cwd?: string | null
   serviceTier?: ServiceTier | null
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted" | null
+  approvalsReviewer?: "user" | "auto_review" | null
   sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null
   persistExtendedHistory: boolean
   dynamicTools?: DynamicToolFunctionSpec[] | null
@@ -68,6 +70,7 @@ export interface ThreadForkParams {
   cwd?: string | null
   serviceTier?: ServiceTier | null
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted" | null
+  approvalsReviewer?: "user" | "auto_review" | null
   sandbox?: "read-only" | "workspace-write" | "danger-full-access" | null
   ephemeral?: boolean
   persistExtendedHistory: boolean
@@ -108,12 +111,23 @@ export interface TurnStartParams {
   threadId: string
   input: CodexUserInput[]
   approvalPolicy?: "never" | "on-request" | "on-failure" | "untrusted" | null
+  approvalsReviewer?: "user" | "auto_review" | null
   model?: string | null
   effort?: ReasoningEffort | null
   serviceTier?: ServiceTier | null
   collaborationMode?: CollaborationMode | null
   /** JSON Schema for the final assistant response; applies to this turn only. */
   outputSchema?: Record<string, unknown> | null
+}
+
+/** Experimental native history injection; only valid while the thread is idle. */
+export interface ThreadInjectItemsParams {
+  threadId: string
+  items: Array<{
+    type: "message"
+    role: "developer"
+    content: Array<{ type: "input_text"; text: string }>
+  }>
 }
 
 export interface TurnInterruptParams {

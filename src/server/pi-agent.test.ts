@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { z } from "zod"
+import type { MemoryToolSpec } from "./memory/tools"
 import {
   buildRegistryModel,
   extractPiToolResultContent,
@@ -75,6 +77,146 @@ const startupArgs = {
   effort: "medium" as const, sessionToken: null, forkSession: false, toolNames: [],
   connection: { provider: "custom" as const, baseUrl: "https://example.test/v1", apiKey: "test-key" },
 }
+
+describe("Pi execution gates", () => {
+  test("a policy expiring during a native extension hook blocks dispatch", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "pi-policy-")); tempDirs.push(dataDir)
+    const entered = deferred(), nativeGate = deferred()
+    let current = true, checks = 0
+    const session = { ...fakeSession(), agent: { beforeToolCall: async () => { entered.resolve(); await nativeGate.promise; return undefined } } }
+    const sdk = fakeSdk({ create: async () => session })
+    const manager = new PiAgentManager({ dataDir, loadModels: async () => [], loadSdk: async () => sdk as never })
+    try {
+      await manager.startTurn({ ...startupArgs, beforeToolCall: async () => { checks++; return undefined }, isPolicyCurrent: () => current })
+      const hook = session.agent.beforeToolCall as (context: unknown, signal?: AbortSignal) => Promise<unknown>
+      const result = hook({ toolCall: { name: "bash" }, args: { command: "synthetic" } })
+      await entered.promise
+      current = false
+      nativeGate.resolve()
+      expect(await result).toMatchObject({ block: true })
+      expect(checks).toBe(1)
+    } finally { manager.dispose() }
+  })
+
+  test("a reused SDK session without a native tool hook cannot claim gated execution", async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), "pi-no-gate-")); tempDirs.push(dataDir)
+    const session = fakeSession(), sdk = fakeSdk({ create: async () => session })
+    const manager = new PiAgentManager({ dataDir, loadModels: async () => [], loadSdk: async () => sdk as never })
+    try {
+      const first = await manager.startTurn(startupArgs)
+      await collectEvents(first.stream)
+      const denied = await manager.startTurn({ ...startupArgs, beforeToolCall: async () => undefined })
+      const events = await collectEvents(denied.stream)
+      expect(events.at(-1)?.entry).toMatchObject({ kind: "result", isError: true, result: expect.stringContaining("tool gating is unavailable") })
+      expect(session.calls.prompts).toBe(1)
+    } finally { manager.dispose() }
+  })
+})
+
+describe("Pi stable definitions", () => {
+  const spec = (): MemoryToolSpec => ({ name: "memory_probe", description: "Read memory", schema: {
+    selection: z.enum(["alpha", "beta"]),
+    options: z.object({ detail: z.string().min(2).describe("Detail key") }).strict(),
+  }, handler: async () => ({ text: "unused handler" }) })
+
+  test.each(["system", "description", "enum", "nested-schema", "required", "additional-properties"] as const)("changed %s rebuilds the session with current definitions", async change => {
+    const created: any[] = [], sessions: any[] = []
+    const sdk = { ...fakeSdk(), createAgentSession: async (options: any) => {
+      const session = { ...fakeSession(), sessionFile: undefined, agent: {} }
+      created.push(options); sessions.push(session)
+      return { session }
+    } }
+    const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [] })
+    const first = spec(), second = spec()
+    if (change === "description") second.description = "Read the current selected memory"
+    if (change === "enum") second.schema = { ...second.schema, selection: z.enum(["alpha", "gamma"]) }
+    if (change === "nested-schema") second.schema = { ...second.schema, options: z.object({ detail: z.string().min(5).describe("Updated detail key") }).strict() }
+    if (change === "required") second.schema = { ...second.schema, selection: z.enum(["alpha", "beta"]).optional() }
+    if (change === "additional-properties") second.schema = { ...second.schema, options: z.object({ detail: z.string().min(2).describe("Detail key") }).loose() }
+    try {
+      await collectEvents((await manager.startTurn({ ...startupArgs, systemPrompt: "SYSTEM_A", memorySpecs: [first] })).stream)
+      await collectEvents((await manager.startTurn({ ...startupArgs, systemPrompt: change === "system" ? "SYSTEM_B" : "SYSTEM_A", memorySpecs: [second] })).stream)
+      expect(created).toHaveLength(2)
+      expect(sessions[0].calls.disposals).toBe(1)
+      expect(sessions[1].calls.prompts).toBe(1)
+      if (change === "system") {
+        expect((await sessions[1].agent.transformContext([{ role: "system", content: "native prompt" }]))[0].content).toBe("SYSTEM_B")
+      } else {
+        const previous = created[0].customTools[0], current = created[1].customTools[0]
+        expect({ description: current.description, parameters: current.parameters }).not.toEqual({ description: previous.description, parameters: previous.parameters })
+      }
+    } finally { manager.dispose() }
+  })
+
+  test("equivalent definitions retain the session and rebind dispatch and tool gates", async () => {
+    const created: any[] = []
+    const session = { ...fakeSession(), agent: {} as any }
+    const sdk = { ...fakeSdk(), createAgentSession: async (options: any) => { created.push(options); return { session } } }
+    const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => [] })
+    const base = { ...startupArgs, systemPrompt: "STABLE" }
+    try {
+      await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()], memoryDispatch: async () => ({ text: "turn one" }) })).stream)
+      const execute = created[0].customTools[0].execute
+      expect(await execute("call-1", {}, undefined)).toMatchObject({ content: [{ text: "turn one" }] })
+      await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()], memoryDispatch: async () => ({ text: "turn two" }),
+        beforeToolCall: async () => ({ block: true, reason: "current gate" }) })).stream)
+      expect(created).toHaveLength(1)
+      expect(await execute("call-2", {}, undefined)).toMatchObject({ content: [{ text: "turn two" }] })
+      expect(await session.agent.beforeToolCall({ toolCall: { name: "write" }, args: {} })).toMatchObject({ reason: "current gate" })
+      await collectEvents((await manager.startTurn({ ...base, memorySpecs: [spec()] })).stream)
+      await expect(execute("call-3", {}, undefined)).rejects.toThrow("not available for this turn")
+      expect(created).toHaveLength(1)
+    } finally { manager.dispose() }
+  })
+
+  test("installed Pi sends updated system/schema while preserving native history across rebuilds", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "pi-context-wire-")); tempDirs.push(root)
+    const requests: any[] = []
+    const server = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+      const body = await request.json() as any
+      requests.push(body)
+      const chunk = (content: string, finish: string | null) => `data: ${JSON.stringify({ id: "local-fixture", object: "chat.completion.chunk", model: body.model,
+        choices: [{ index: 0, delta: { role: "assistant", content }, finish_reason: finish }] })}\n\n`
+      return new Response(chunk("LOCAL_REPLY", null) + chunk("", "stop") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
+    } })
+    const manager = new PiAgentManager({ dataDir: path.join(root, "pi"), loadModels: async () => [] })
+    const connection = { provider: "custom" as const, baseUrl: `http://127.0.0.1:${server.port}/v1`, apiKey: "synthetic-local-only" }
+    let token: string | null = null
+    async function run(systemPrompt: string, memorySpec: MemoryToolSpec, content: string) {
+      const events = await collectEvents((await manager.startTurn({ ...startupArgs, cwd: root, connection, content, sessionToken: token,
+        systemPrompt, memorySpecs: [memorySpec], signal: AbortSignal.timeout(15_000) })).stream)
+      expect(events.filter(e => e.entry?.kind === "result").at(-1)?.entry).toMatchObject({ isError: false })
+      token = events.find(e => e.type === "session_token")?.sessionToken ?? null
+      expect(token).toBeTruthy()
+    }
+    try {
+      await run("SYSTEM_A", spec(), "TURN_ONE")
+      const previousToken = token
+      const updated = spec()
+      updated.description = "SCHEMA_B"
+      updated.schema = { ...updated.schema, selection: z.enum(["gamma", "delta"]) }
+      await run("SYSTEM_B", updated, "TURN_TWO")
+      expect(token).toBe(previousToken)
+      await run("SYSTEM_B", { ...updated, handler: async () => ({ text: "new handler" }) }, "TURN_THREE")
+      expect(token).toBe(previousToken)
+      expect(requests).toHaveLength(3)
+      const systems = requests.map(r => r.messages.filter((m: any) => ["system", "developer"].includes(m.role)))
+      expect(JSON.stringify(systems[0])).toContain("SYSTEM_A")
+      expect(JSON.stringify(systems[1])).toContain("SYSTEM_B")
+      expect(JSON.stringify(systems[1])).not.toContain("SYSTEM_A")
+      expect(systems[2]).toEqual(systems[1])
+      expect(JSON.stringify(requests[0].tools)).toContain("alpha")
+      expect(JSON.stringify(requests[1].tools)).toContain("SCHEMA_B")
+      expect(JSON.stringify(requests[1].tools)).toContain("gamma")
+      expect(JSON.stringify(requests[1].tools)).not.toContain("alpha")
+      expect(requests[2].tools).toEqual(requests[1].tools)
+      const history = (r: any) => r.messages.filter((m: any) => !["system", "developer"].includes(m.role))
+      expect(history(requests[1]).slice(0, history(requests[0]).length)).toEqual(history(requests[0]))
+      expect(history(requests[2]).slice(0, history(requests[1]).length)).toEqual(history(requests[1]))
+      expect(JSON.stringify(history(requests[1]))).toContain("LOCAL_REPLY")
+    } finally { manager.dispose(); server.stop(true) }
+  }, 30_000)
+})
 
 describe("Pi startup cancellation", () => {
   test("pre-aborted startup never loads the SDK", async () => {
@@ -548,7 +690,9 @@ test('memory forks pin effective metadata and system prompt, and refresh their t
     const messages = await session.agent.transformContext([{ role: 'system', content: 'reloaded project prompt', timestamp: 1 }])
     expect(messages[0].content).toBe('parent frozen prompt')
     expect(await session.agent.beforeToolCall({ toolCall: { name: 'write' }, args: {} })).toMatchObject({ block: true })
+    expect(recorded.options.systemPrompt).toBe('parent frozen prompt')
     const next = await manager.startTurn({ ...startupArgs, model: 'model', effort: 'high', modelCard: card,
+      systemPrompt: 'parent frozen prompt',
       beforeToolCall: async () => ({ block: true, reason: 'zero reads left' }) })
     await collectEvents(next.stream)
     expect(await session.agent.beforeToolCall({ toolCall: { name: 'read' }, args: {} })).toMatchObject({ block: true, reason: 'zero reads left' })

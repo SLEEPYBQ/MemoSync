@@ -1,4 +1,5 @@
 import type { PiParentLaunch } from './memory/parent-launch'
+import { createHash } from 'node:crypto'
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineExecutable } from "./model-access/executables"
@@ -163,6 +164,13 @@ function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+/** Compare JSON definitions, never Zod internals or dispatch function identities. */
+function definitionJson(value: unknown): string {
+  return JSON.stringify(value, (_key, item) => item && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b)))
+    : item)
 }
 
 /**
@@ -437,6 +445,8 @@ export interface StartPiTurnArgs {
    * The list is part of the session-reuse key.
    */
   beforeToolCall?: (name: string, args: Record<string, unknown>) => Promise<{ block?: boolean; reason?: string } | undefined>
+  onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
+  isPolicyCurrent?: () => boolean
   outputSchema?: Record<string, unknown>
   toolNames?: readonly string[]
   /**
@@ -458,12 +468,13 @@ interface PiChatSession {
   connectionProvider: LlmProviderKind
   connectionBaseUrl: string
   connectionProtocol?: PiConnection["protocol"]
-  /** Sorted memory-tool names baked into the session at creation. */
-  toolNamesKey: string
+  /** Stable system and complete native tool definitions fixed at creation. */
+  definitionsKey: string
   modelCardKey: string
   outputSchema?: Record<string, unknown>
   supportsStructuredOutput?: boolean
   beforeToolCall?: StartPiTurnArgs["beforeToolCall"]
+  isPolicyCurrent?: () => boolean
   /** Per-turn dispatch target; null when memory is disabled for the turn. */
   memoryInvoke: StartPiTurnArgs["memoryDispatch"] | null
 }
@@ -552,7 +563,22 @@ export class PiAgentManager {
   private async openSession(args: StartPiTurnArgs & { connection: PiConnection; modelCard?: RegistryModelCard }): Promise<PiChatSession> {
     args.signal?.throwIfAborted()
     const builtinToolNames = args.toolNames ?? PI_TOOL_NAMES
-    const toolNamesKey = [...builtinToolNames, ...(args.memorySpecs ?? []).map((spec) => spec.name)].sort().join(",")
+    const memorySpecs = args.memorySpecs ?? []
+    const chatSessionHolder: { session?: PiChatSession } = {}
+    const memoryTools = toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal, callId) => {
+      const current = chatSessionHolder.session
+      const invoke = current?.memoryInvoke
+      if (!invoke || signal?.aborted) return { text: "Memory tools are not available for this turn.", isError: true }
+      const native = current && callId ? Object.freeze({ engineInstanceId: current.hostEngineInstanceId,
+        nativeSessionId: current.session.sessionId, nativeToolCallId: callId }) : undefined
+      return invoke(name, toolArgs, signal, native)
+    })
+    const definitionsKey = createHash("sha256").update(definitionJson({
+      systemPrompt: args.systemPrompt,
+      builtinTools: [...builtinToolNames].sort(),
+      memoryTools: memoryTools.map(({ name, description, parameters }) => ({ name, description, parameters }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    })).digest("hex")
 
     const modelCardKey = JSON.stringify({ card: args.modelCard, wireEffort: args.effort === "max" || args.effort === "xhigh" ? args.effort : undefined })
     const existing = this.sessions.get(args.chatId)
@@ -561,10 +587,12 @@ export class PiAgentManager {
       && existing.connectionBaseUrl === args.connection.baseUrl
       && existing.connectionProtocol === args.connection.protocol
     if (existing && connectionUnchanged && existing.cwd === args.cwd
-      && existing.toolNamesKey === toolNamesKey && !args.forkSession) {
+      && existing.definitionsKey === definitionsKey && !args.forkSession) {
+      if (args.beforeToolCall && !existing.session.agent) throw new Error("Pi tool gating is unavailable in this SDK runtime")
       await setConnectionKey(existing.modelRuntime, args.connection)
       args.signal?.throwIfAborted()
       existing.beforeToolCall = args.beforeToolCall
+      existing.isPolicyCurrent = args.isPolicyCurrent
       if (existing.model !== args.model || existing.modelCardKey !== modelCardKey) {
         await existing.session.setModel(this.resolveModel(existing.modelRuntime, args.connection, args.model, args.modelCard, args.effort))
         args.signal?.throwIfAborted()
@@ -581,7 +609,14 @@ export class PiAgentManager {
 
     if (existing) {
       this.sessions.delete(args.chatId)
+      if (existing.session.isStreaming) await existing.session.abort()
       existing.session.dispose()
+      // Rebind definitions around the native history, even if an in-process
+      // caller omitted the token it already received on the previous turn.
+      if (connectionUnchanged && existing.cwd === args.cwd && !args.forkSession) {
+        args = { ...args, sessionToken: args.sessionToken ?? existing.session.sessionFile ?? null }
+      }
+      args.signal?.throwIfAborted()
     }
 
     // All state is MemoSync-owned: in-memory credentials/settings, sessions
@@ -622,11 +657,8 @@ export class PiAgentManager {
         ? SessionManager.open(args.sessionToken, this.sessionsDir, args.cwd)
         : SessionManager.create(args.cwd, this.sessionsDir)
 
-    const memorySpecs = args.memorySpecs ?? []
-    // The invoker is intentionally stable: the ToolDefinition closes over the
-    // chat session's mutable `memoryInvoke`, which each startTurn re-binds to
-    // that turn's dispatch context (or clears when memory is disabled).
-    const chatSessionHolder: { session?: PiChatSession } = {}
+    // Tool definitions close over the mutable invoker, so each reused turn
+    // rebinds dispatch without changing the session identity.
     const customTools: ToolDefinition[] | undefined = (() => {
       const defs: ToolDefinition[] = []
       // Shell commands spawned by the bash tool run with a scrubbed
@@ -638,18 +670,7 @@ export class PiAgentManager {
           spawnHook: (context: BashSpawnContext) => ({ ...context, env: scrubPiShellEnv(context.env) }),
         }) as unknown as ToolDefinition)
       }
-      if (memorySpecs.length > 0) {
-        defs.push(...toPiToolDefinitions(memorySpecs, async (name, toolArgs, signal, callId) => {
-          const current = chatSessionHolder.session
-          const invoke = current?.memoryInvoke
-          if (!invoke || signal?.aborted) {
-            return { text: "Memory tools are not available for this turn.", isError: true }
-          }
-          const native = current && callId ? Object.freeze({ engineInstanceId: current.hostEngineInstanceId,
-            nativeSessionId: current.session.sessionId, nativeToolCallId: callId }) : undefined
-          return invoke(name, toolArgs, signal, native)
-        }))
-      }
+      defs.push(...memoryTools)
       return defs.length > 0 ? defs : undefined
     })()
 
@@ -681,12 +702,17 @@ export class PiAgentManager {
       connectionProvider: args.connection.provider,
       connectionBaseUrl: args.connection.baseUrl,
       connectionProtocol: args.connection.protocol,
-      toolNamesKey,
+      definitionsKey,
       modelCardKey,
       supportsStructuredOutput: args.modelCard?.supportsStructuredOutput,
       hostEngineInstanceId: crypto.randomUUID(),
       memoryInvoke: null,
       beforeToolCall: args.beforeToolCall,
+      isPolicyCurrent: args.isPolicyCurrent,
+    }
+    if (args.beforeToolCall && !session.agent) {
+      session.dispose()
+      throw new Error("Pi tool gating is unavailable in this SDK runtime")
     }
     if (session.agent) {
       if (args.systemPrompt !== undefined) {
@@ -697,9 +723,12 @@ export class PiAgentManager {
       }
       const previousToolHook = session.agent.beforeToolCall
       session.agent.beforeToolCall = async (context, signal) => {
-        const denied = await chatSession.beforeToolCall?.(context.toolCall.name, context.args as Record<string, unknown>)
+        const gate = chatSession.beforeToolCall, current = chatSession.isPolicyCurrent
+        const denied = await gate?.(context.toolCall.name, context.args as Record<string, unknown>)
         if (denied?.block) return denied
-        return previousToolHook?.(context, signal)
+        const nativeResult = await previousToolHook?.(context, signal)
+        if (gate !== chatSession.beforeToolCall || current?.() === false) return { block: true, reason: "Execution policy changed or turn ended" }
+        return nativeResult
       }
       const previousPayloadHook = session.agent.onPayload
       session.agent.onPayload = async (payload, model) => {
@@ -765,7 +794,7 @@ export class PiAgentManager {
       args.onLaunch?.({ provider: "pi", options: {
         model: args.model, effort: args.effort, connection: args.connection,
         toolNames: args.toolNames ?? PI_TOOL_NAMES, memorySpecs: args.memorySpecs,
-        modelCard, systemPrompt: chatSession.session.systemPrompt,
+        modelCard, systemPrompt: args.systemPrompt ?? chatSession.session.systemPrompt,
       } })
     } catch (error) {
       args.signal?.throwIfAborted()
@@ -783,6 +812,9 @@ export class PiAgentManager {
     const turnDispatch = args.memoryDispatch
     chatSession.memoryInvoke = turnDispatch ?? null
     chatSession.outputSchema = args.outputSchema
+    await args.onExecutionPolicyApplied?.(session.sessionFile ?? undefined)
+    args.signal?.throwIfAborted()
+    if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
     const queue = new AsyncQueue<HarnessEvent>()
     const startedAt = Date.now()
 

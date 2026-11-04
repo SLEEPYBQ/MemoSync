@@ -18,6 +18,8 @@ import {
   createEmptyState,
 } from "./events"
 import { resolveLocalPath } from "./paths"
+import type { ExecutionPolicyState, NativeExecutionPolicy } from "../shared/harness-capabilities"
+import { isExecutionPolicyState, isNativeExecutionPolicy } from "./harness-policy"
 
 const COMPACTION_THRESHOLD_BYTES = 2 * 1024 * 1024
 const TRANSCRIPT_METADATA_TAIL_BYTES = 256 * 1024
@@ -125,6 +127,8 @@ function getReplayEventPriority(event: StoreEvent) {
       return 1
     case "chat_renamed":
     case "chat_provider_set":
+    case "chat_execution_policy_set":
+    case "chat_execution_policy_state_set":
     case "chat_memory_disabled_set":
     case "chat_plan_mode_set":
       return 2
@@ -257,6 +261,10 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
       return hasChatId()
     case "chat_provider_set":
       return hasChatId() && (event.provider === "claude" || event.provider === "codex" || event.provider === "pi" || event.provider === "opencode")
+    case "chat_execution_policy_set":
+      return hasChatId() && isNativeExecutionPolicy(event.policy) && Number.isSafeInteger(event.revision) && Number(event.revision) > 0
+    case "chat_execution_policy_state_set":
+      return hasChatId() && isExecutionPolicyState(event.state)
     case "chat_memory_disabled_set":
       return hasChatId() && typeof event.disabled === "boolean"
     case "chat_plan_mode_set":
@@ -716,6 +724,7 @@ export class EventStore {
           unread: false,
           provider: null,
           memoryDisabled: false,
+          ...(event.executionPolicyVersion ? { executionPolicyVersion: event.executionPolicyVersion } : {}),
           planMode: false,
           sessionToken: null,
           pendingForkSessionToken: null,
@@ -760,6 +769,26 @@ export class EventStore {
         if (!chat) break
         chat.provider = event.provider
         chat.updatedAt = event.timestamp
+        break
+      }
+      case "chat_execution_policy_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (chat) {
+          chat.executionPolicies ??= {}
+          chat.executionPolicies[event.policy.engine] = { policy: structuredClone(event.policy), revision: event.revision }
+          chat.updatedAt = event.timestamp
+        }
+        break
+      }
+      case "chat_execution_policy_state_set": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (chat && (chat.executionPolicies?.[event.state.desired.engine]?.revision ?? 0) <= event.state.desiredRevision) {
+          chat.executionPolicies ??= {}
+          chat.executionPolicyStates ??= {}
+          chat.executionPolicies[event.state.desired.engine] = { policy: structuredClone(event.state.desired), revision: event.state.desiredRevision }
+          chat.executionPolicyStates[event.state.desired.engine] = structuredClone(event.state)
+          if (event.executionPolicyVersion === 1) chat.executionPolicyVersion = 1
+        }
         break
       }
       case "chat_memory_disabled_set": {
@@ -1142,6 +1171,7 @@ export class EventStore {
       projectId,
       title: "New Chat",
       titleUiText: { code: "newChat" },
+      executionPolicyVersion: 1,
     }
     await this.append(this.chatsLogPath, event)
     return this.state.chatsById.get(chatId)!
@@ -1164,10 +1194,14 @@ export class EventStore {
       projectId: sourceChat.projectId,
       title: getForkedChatTitle(sourceChat.title),
       titleUiText: getForkedChatTitleUiText(sourceChat),
+      executionPolicyVersion: sourceChat.executionPolicyVersion,
     }
     await this.append(this.chatsLogPath, createEvent)
     await this.setChatProvider(chatId, sourceChat.provider)
     await this.setPlanMode(chatId, sourceChat.planMode)
+    for (const selected of Object.values(sourceChat.executionPolicies ?? {})) {
+      await this.setExecutionPolicy(chatId, selected.policy, selected.revision)
+    }
     await this.setMemoryDisabled(chatId, sourceChat.memoryDisabled ?? false)
     await this.setPendingForkSessionToken(chatId, sourceSessionToken)
 
@@ -1307,6 +1341,22 @@ export class EventStore {
       provider,
     }
     await this.append(this.chatsLogPath, event)
+  }
+
+  async setExecutionPolicy(chatId: string, policy: NativeExecutionPolicy, revision: number) {
+    this.requireChat(chatId)
+    if (!isNativeExecutionPolicy(policy) || !Number.isSafeInteger(revision) || revision < 1) throw new Error("Invalid execution policy")
+    await this.append(this.chatsLogPath, {
+      v: STORE_VERSION, type: "chat_execution_policy_set", timestamp: Date.now(), chatId, policy: structuredClone(policy), revision,
+    } satisfies ChatEvent)
+  }
+
+  async setExecutionPolicyState(chatId: string, state: ExecutionPolicyState, optIn = false) {
+    this.requireChat(chatId)
+    if (!isExecutionPolicyState(state)) throw new Error("Invalid execution policy state")
+    await this.append(this.chatsLogPath, {
+      v: STORE_VERSION, type: "chat_execution_policy_state_set", timestamp: Date.now(), chatId, state: structuredClone(state), ...(optIn ? { executionPolicyVersion: 1 as const } : {}),
+    } satisfies ChatEvent)
   }
 
   async setMemoryDisabled(chatId: string, disabled: boolean) {
