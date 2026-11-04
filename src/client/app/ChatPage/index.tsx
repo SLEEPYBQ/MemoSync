@@ -33,6 +33,7 @@ import type { AppState } from "../useAppState"
 import { getNextMeasuredInputHeight, getTranscriptPaddingBottom } from "../useAppState"
 import { hasPendingMemoryPreview } from "../derived"
 import { ChatInputDock } from "./ChatInputDock"
+import type { ChatHarnessSnapshot } from "../../../shared/harness-capabilities"
 import { ChatTranscriptViewport } from "./ChatTranscriptViewport"
 import { TerminalWorkspaceShell } from "./TerminalWorkspaceShell"
 import { useChatPageSidebarActions, EMPTY_DIFF_SNAPSHOT } from "./useChatPageSidebarActions"
@@ -1088,6 +1089,14 @@ export function ChatPage() {
         availableProviders={state.availableProviders}
         contextWindowSnapshot={contextWindowSnapshot}
         slashCommands={availableSlashCommands}
+        harness={state.runtime?.harness}
+        onReadHarness={state.activeChatId ? engine => state.socket.command<ChatHarnessSnapshot>({ type: "chat.readHarness", chatId: state.activeChatId!, engine }) : undefined}
+        onExecutionPolicyChange={state.activeChatId ? (policy, expectedRevision) => state.socket.command({
+          type: "chat.setExecutionPolicy",
+          chatId: state.activeChatId!,
+          policy,
+          expectedRevision,
+        }) : undefined}
         onSubmit={handleChatSubmit}
         isRunning={state.isProcessing || hasPendingMemoryPreview(state.messages)}
         onSendOldestQueued={state.queuedMessages[0] ? () => { void state.handleSteerQueuedMessage(state.queuedMessages[0]!.id) } : undefined}

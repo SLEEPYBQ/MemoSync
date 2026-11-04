@@ -3,6 +3,9 @@ import type { ChatCommandCatalog, ExecuteRuntimeCommand } from '../shared/runtim
 import { CommandRegistry, type NativeCommandRuntime } from './command-registry'
 import { createClaudeCommandRuntime, supportsClaudeInputReplay } from './native-command-drivers'
 import { compileContext, contextIdentity, HOST_CONTRACT } from './context-compiler'
+import type { NativeExecutionPolicy, PolicyCallScope } from '../shared/harness-capabilities'
+import { HarnessPolicyService, defaultExecutionPolicy, executionPolicyKey, isMemoryTool, isNativeExecutionPolicy } from './harness-policy'
+import { lastEngineExecutable } from './model-access/executables'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
@@ -404,8 +407,17 @@ interface ActiveTurn {
   injectedIds: string[]
 }
 
+interface ClaudeExecutionControl {
+  permissionMode: Extract<NativeExecutionPolicy, { engine: "claude" }>["permissionMode"]
+  isCurrent: () => boolean
+  approve: (name: string, input: Record<string, unknown>, requestId: string) => Promise<boolean>
+  onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  onApplied: () => Promise<void>
+}
+
 interface ClaudeSessionHandle {
   commandRuntime?: NativeCommandRuntime
+  setExecutionControl?: (control: ClaudeExecutionControl | undefined) => void
   parentLaunch?: ClaudeParentLaunch
   provider: "claude"
   stream: AsyncIterable<HarnessEvent>
@@ -517,6 +529,7 @@ interface AgentCoordinatorArgs {
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
+    executionControl?: ClaudeExecutionControl
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     memory?: MemoryService | null
     /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
@@ -1372,6 +1385,8 @@ const DETAIL_NUDGE =
   "Some active memories are marked [+detail]: their one-line form is a headline, not the full rule. Call load_memory_detail on any [+detail] memory that touches this task BEFORE acting on it."
 
 export async function startClaudeSession(args: {
+  /** Test seam: production always uses the SDK query factory. */
+  queryFn?: typeof query
   localPath: string
   model: string
   effort?: string
@@ -1379,6 +1394,7 @@ export async function startClaudeSession(args: {
   sessionToken: string | null
   forkSession: boolean
   onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
+  executionControl?: ClaudeExecutionControl
   memory?: MemoryService | null
   /** Routing gate for agent-proposed memories; enables the propose_memory tool. */
   capture?: CaptureService | null
@@ -1395,6 +1411,8 @@ export async function startClaudeSession(args: {
    * coordinator appends the transcript review card. */
   onMemoryProposal?: (created: MemoryItem[]) => void
 }): Promise<ClaudeSessionHandle> {
+  let executionControl = args.executionControl
+  let currentPlanMode = args.planMode
   const toolOriginResolver = new ClaudeToolOriginResolver()
   const echoesPromptIds = !process.env.CLAUDE_EXECUTABLE
   const outboundOrigins = new ClaudeOutboundOriginTracker(echoesPromptIds)
@@ -1444,10 +1462,10 @@ export async function startClaudeSession(args: {
   const canUseTool: CanUseTool = async (toolName, input, options) => {
     if (nativeControlInput) return { behavior: 'deny', message: 'Native context control does not authorize tool execution.' }
     if (toolName !== "AskUserQuestion" && toolName !== "ExitPlanMode") {
-      return {
-        behavior: "allow",
-        updatedInput: input,
-      }
+      const control = executionControl
+      const allowed = !control || control.isCurrent() && await control.approve(toolName, input, options.toolUseID)
+      if (!allowed || control && (executionControl !== control || !control.isCurrent())) return { behavior: "deny", message: "Execution approval denied or expired" }
+      return { behavior: "allow", updatedInput: input }
     }
 
     const tool = normalizeToolCall({
@@ -1463,7 +1481,10 @@ export async function startClaudeSession(args: {
       }
     }
 
-    const result = await args.onToolRequest({ tool })
+    const control = executionControl
+    if (control && !control.isCurrent()) return { behavior: "deny", message: "Stale native question" }
+    const result = await (control?.onToolRequest ?? args.onToolRequest)({ tool })
+    if (control && (executionControl !== control || !control.isCurrent())) return { behavior: "deny", message: "Stale native question reply" }
 
     if (tool.toolKind === "ask_user_question") {
       const record = result && typeof result === "object" ? result as Record<string, unknown> : {}
@@ -1508,8 +1529,13 @@ export async function startClaudeSession(args: {
     effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
     resume: args.sessionToken ?? undefined,
     forkSession: args.forkSession,
-    permissionMode: args.planMode ? "plan" : "acceptEdits",
+    permissionMode: args.planMode ? "plan" : executionControl?.permissionMode ?? "acceptEdits",
     canUseTool,
+    hooks: {
+      PreToolUse: [{ hooks: [async () => executionControl && !executionControl.isCurrent()
+        ? { hookSpecificOutput: { hookEventName: "PreToolUse" as const, permissionDecision: "deny" as const, permissionDecisionReason: "Execution policy changed or turn ended" } }
+        : {}] }],
+    },
     // Body text streams into ChatRuntime.streamingText as it is written —
     // without this the reply pops in whole at turn end (the DeepSeek
     // Anthropic-compatible endpoint streams SSE like the real one).
@@ -1521,7 +1547,10 @@ export async function startClaudeSession(args: {
       : undefined,
     mcpServers: memorySpecs.length
       ? {
-          memory: toClaudeMemoryMcpServer(memorySpecs, memoryToolContext),
+          memory: toClaudeMemoryMcpServer(memorySpecs.map(spec => ({ ...spec, handler: (input, context) => {
+            if (executionControl && !executionControl.isCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
+            return spec.handler(input, context)
+          } })), memoryToolContext),
         }
       : undefined,
     settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
@@ -1542,7 +1571,7 @@ export async function startClaudeSession(args: {
       env: launchOptions.env, pathToClaudeCodeExecutable: launchOptions.pathToClaudeCodeExecutable,
     },
   }
-  const q = query({ prompt: promptQueue, options: launchOptions })
+  const q = (args.queryFn ?? query)({ prompt: promptQueue, options: launchOptions })
   const controls = createClaudeCommandRuntime({ query: q, session: () => args.sessionToken ?? '',
     version: engineRuntime.executable.version ?? 'unknown', acknowledgesInputs: supportsClaudeInputReplay(engineRuntime.executable.version ?? ''),
     push: (content, uuid, shouldQuery) => {
@@ -1558,6 +1587,7 @@ export async function startClaudeSession(args: {
   return {
     provider: "claude",
     commandRuntime: controls.runtime,
+    setExecutionControl: (control) => { executionControl = control },
     echoesPromptIds,
     parentLaunch,
     stream: { async *[Symbol.asyncIterator]() { try { yield* nativeStream } finally { controls.dispose() } } },
@@ -1576,6 +1606,15 @@ export async function startClaudeSession(args: {
       context?: Pick<MemoryToolContext, "turn" | "engine" | "allowedMemoryIds" | "memoryView"> & { promptSeq?: number; promptId?: string },
     ) => {
       nativeControlInput = false
+      // This control request is a native acknowledgement, unlike enqueueing a prompt.
+      // Reapply every turn, including reused Queries and plan -> execute transitions.
+      if (executionControl) {
+        const control = executionControl
+        if (!control.isCurrent()) throw new Error("Stale execution policy turn")
+        await q.setPermissionMode(currentPlanMode ? "plan" : control.permissionMode)
+        if (executionControl !== control || !control.isCurrent()) throw new Error("Stale execution policy acknowledgement")
+        if (!currentPlanMode) await control.onApplied()
+      }
       activeMemoryToolTurn = context?.turn
       activeMemoryToolEngine = context?.engine
       activeMemoryToolIds = context?.allowedMemoryIds
@@ -1608,8 +1647,10 @@ export async function startClaudeSession(args: {
       parentLaunch.options.model = selected
     },
     setPermissionMode: async (planMode: boolean) => {
-      await q.setPermissionMode(planMode ? "plan" : "acceptEdits")
-      parentLaunch.options.permissionMode = planMode ? "plan" : "acceptEdits"
+      const mode = planMode ? "plan" : executionControl?.permissionMode ?? "acceptEdits"
+      await q.setPermissionMode(mode)
+      currentPlanMode = planMode
+      parentLaunch.options.permissionMode = mode
     },
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
@@ -1656,6 +1697,13 @@ export const IDLE_SESSION_TIMEOUT_MS = 30 * 60_000
 export class AgentCoordinator {
   private readonly store: EventStore
   private readonly onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
+  private readonly harnessPolicies = new HarnessPolicyService()
+  private readonly policyScopes = new Map<string, PolicyCallScope>()
+  private readonly policyApprovals = new Map<string, PolicyCallScope>()
+  private readonly policyChanges = new Set<string>()
+  private readonly interactionQueues = new Map<string, Promise<unknown>>()
+  private readonly respondingTools = new Set<string>()
+  private readonly questionToolIds = new Map<string, string>()
   private readonly codexManager: CodexAppServerManager
   private readonly opencodeManager: OpencodeAgentManager
   private readonly piManager: PiAgentManager
@@ -3467,11 +3515,12 @@ export class AgentCoordinator {
   }
 
   private isEngineStartBlocked(chatId: string) {
-    return this.runtimeStopping || this.closedChats.has(chatId)
+    return this.runtimeStopping || this.closedChats.has(chatId) || this.policyChanges.has(chatId)
   }
 
   async closeChat(chatId: string) {
     this.commandRegistry.unbind(chatId)
+    this.endPolicyTurn(chatId)
     this.cancelIdleClose(chatId)
     this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
@@ -5887,6 +5936,8 @@ export class AgentCoordinator {
     if (reservation) reservation.controller = startController
     this.engineStartAbortControllers.set(args.chatId, startController)
     let bootedActive: ActiveTurn | undefined
+    let admitTurn!: () => void
+    const turnReady = new Promise<void>(resolve => { admitTurn = resolve })
     let turn: HarnessTurn
     try {
     this.disposeMemoryBranches(args.chatId)
@@ -5912,24 +5963,57 @@ export class AgentCoordinator {
           })
         : null
     const injectedIdsAtBoot = turnMemoryPlan?.injectedMemories.map((m) => m.id) ?? []
-
-    const onToolRequest = async (request: HarnessToolRequest): Promise<unknown> => {
-      const active = this.activeTurns.get(args.chatId)
-      if (!active) {
-        throw new Error("Chat turn ended unexpectedly")
-      }
-
-      active.status = "waiting_for_user"
+    if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
+    const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
+    const executionPolicy = selectedPolicy.policy
+    const legacyExecution = !chat.executionPolicyVersion
+    this.harnessPolicies.ensure(args.chatId, executionPolicy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
+    const policyScope = this.harnessPolicies.beginTurn(args.chatId, executionPolicy, selectedPolicy.revision, args.turnId!, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+    this.policyScopes.set(args.chatId, policyScope)
+    await this.store.setExecutionPolicyState?.(args.chatId, this.harnessPolicies.state(args.chatId, args.provider))
+    const isPolicyCurrent = () => !this.policyChanges.has(args.chatId) && this.harnessPolicies.isCurrent(policyScope)
+    const onExecutionPolicyApplied = async (nativeSessionId?: string) => {
+      if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
+      const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version))
+        .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(executionPolicy))
+      // Unknown runtimes and legacy unrestricted policies never gain an invented proof.
+      if (!choice || choice.availability !== "available") return
+      const state = this.harnessPolicies.applied(policyScope, nativeSessionId)
+      if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
+      if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
       this.emitStateChange(args.chatId)
-
-      return await new Promise<unknown>((resolve) => {
-        active.pendingTool = {
-          toolUseId: request.tool.toolId,
-          tool: request.tool,
-          resolve,
-        }
-      })
     }
+    const requestNativeApproval = async (name: string, input: Record<string, unknown>, requestId?: string) => {
+      await turnReady
+      return this.requestExecutionApproval(policyScope, name, input, requestId)
+    }
+    const authorizeHostTool = async (name: string, input: Record<string, unknown>, requestId?: string) => {
+      await turnReady
+      if (!isPolicyCurrent() || this.activeTurns.get(args.chatId)?.turnId !== policyScope.turnId) return false
+      if (legacyExecution) return true
+      const decision = this.harnessPolicies.admit(policyScope, name)
+      if (decision === "deny") return false
+      if (decision === "allow") return true
+      return requestNativeApproval(name, input, requestId)
+    }
+
+    const onToolRequest = (request: HarnessToolRequest): Promise<unknown> => this.queuePolicyInteraction(policyScope, async () => {
+      await turnReady
+      const active = this.activeTurns.get(args.chatId)
+      if (!isPolicyCurrent() || !active || active.turnId !== policyScope.turnId || active.pendingTool) {
+        return { cancelled: true, error: "Native question expired" }
+      }
+      const tool = this.bindPolicyQuestion(policyScope, request.tool)
+      this.policyApprovals.set(tool.toolId, policyScope)
+      active.status = "waiting_for_user"
+      try {
+        const result = await new Promise<unknown>(resolve => {
+          active.pendingTool = { toolUseId: tool.toolId, tool, resolve }
+          this.emitStateChange(args.chatId)
+        })
+        return isPolicyCurrent() ? result : { cancelled: true, error: "Native question expired" }
+      } finally { this.policyApprovals.delete(tool.toolId) }
+    })
 
     if (args.provider === "claude") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
@@ -5946,6 +6030,17 @@ export class AgentCoordinator {
         planMode: args.planMode,
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
+        executionControl: {
+          permissionMode: executionPolicy.engine === "claude" ? executionPolicy.permissionMode : "default",
+          isCurrent: isPolicyCurrent,
+          approve: async (name, input, requestId) => {
+            if (!isPolicyCurrent() || executionPolicy.engine !== "claude") return false
+            if (legacyExecution || isMemoryTool(name)) return true
+            return executionPolicy.permissionMode !== "dontAsk" && await requestNativeApproval(name, input, requestId)
+          },
+          onToolRequest,
+          onApplied: () => onExecutionPolicyApplied(),
+        },
         onToolRequest,
         projectId: chat.projectId,
         memoryEnabled: !memoryDisabledForTurn,
@@ -6022,6 +6117,7 @@ export class AgentCoordinator {
       }
       const piMemoryDispatch = piMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
+            if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
             return dispatchMemoryTool(piMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6042,6 +6138,9 @@ export class AgentCoordinator {
           forkSession: Boolean(chat.pendingForkSessionToken),
           memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
           memoryDispatch: piMemoryDispatch, onToolRequest,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "opencode" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied,
+          onPermissionRequest: request => requestNativeApproval(request.permission, { ...request }, request.id),
           onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         }
         turn = await this.opencodeManager.startTurn(opencodeLaunch)
@@ -6061,6 +6160,9 @@ export class AgentCoordinator {
         connection,
         memorySpecs: piMemorySpecs.length ? piMemorySpecs : undefined,
         memoryDispatch: piMemoryDispatch,
+        beforeToolCall: async (name, input) => await authorizeHostTool(name, input) && isPolicyCurrent() ? undefined : { block: true, reason: "Execution approval denied or expired" },
+        isPolicyCurrent,
+        onExecutionPolicyApplied,
         onLaunch: (launch) => this.parentLaunches.set(args.chatId, launch),
       }
       this.parentLaunches.set(args.chatId, { provider: "pi", options: { model: piLaunch.model, effort: piLaunch.effort, connection, memorySpecs: piLaunch.memorySpecs, toolNames: piLaunch.toolNames } })
@@ -6150,6 +6252,7 @@ export class AgentCoordinator {
       }
       const onDynamicToolCall = codexMemorySpecs.length && !memoryDisabledForTurn
         ? async (name: string, toolArgs: Record<string, unknown>) => {
+            if (!isPolicyCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
             const r = await dispatchMemoryTool(codexMemorySpecs, name, toolArgs, {
               projectId: chat.projectId,
               sessionId: args.chatId,
@@ -6171,6 +6274,7 @@ export class AgentCoordinator {
         sessionToken: chat.sessionToken,
         pendingForkSessionToken: chat.pendingForkSessionToken,
         dynamicTools: codexMemorySpecs.length ? toCodexDynamicTools(codexMemorySpecs) : undefined,
+        executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
       }
       this.parentLaunches.set(args.chatId, { provider: "codex", session: { model: codexLaunch.model, serviceTier: codexLaunch.serviceTier, dynamicTools: codexLaunch.dynamicTools, runtime: codexLaunch.runtime }, turn: { model: args.model, effort: args.effort as any, serviceTier: args.serviceTier, planMode: args.planMode, developerInstructions: codexMemoryBlock || undefined } })
       const sessionToken = await this.codexManager.startSession(codexLaunch)
@@ -6200,6 +6304,9 @@ export class AgentCoordinator {
           serviceTier: args.serviceTier,
           planMode: args.planMode,
           onToolRequest,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied,
+          onApprovalRequest: async request => await requestNativeApproval(request.kind === "command_execution" ? "commandExecution" : "fileChange", { ...request.params }, `${typeof request.requestId}:${request.requestId}`) && isPolicyCurrent() ? "accept" : "decline",
           developerInstructions: codexMemoryBlock || undefined,
           onDynamicToolCall,
         })
@@ -6262,10 +6369,18 @@ export class AgentCoordinator {
     }
     this.activeTurns.set(args.chatId, active)
     bootedActive = active
+    admitTurn()
     } catch (error) {
+      const scope = this.policyScopes.get(args.chatId)
+      if (scope) {
+        const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
+        if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
+      }
       if ((args.provider === "pi" || args.provider === "opencode") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
       throw error
     } finally {
+      admitTurn()
+      if (!bootedActive) this.endPolicyTurn(args.chatId, args.turnId)
       if (this.engineStartAbortControllers.get(args.chatId) === startController) {
         this.engineStartAbortControllers.delete(args.chatId)
       }
@@ -6520,6 +6635,7 @@ export class AgentCoordinator {
     planMode: boolean
     sessionToken: string | null
     forkSession: boolean
+    executionControl?: ClaudeExecutionControl
     onToolRequest: (request: HarnessToolRequest) => Promise<unknown>
     projectId?: string
     /** false = "proceed without memory": boot/reboot the session without the memory block/tools. */
@@ -6600,6 +6716,7 @@ export class AgentCoordinator {
         sessionToken: resumeToken,
         forkSession: args.forkSession,
         onToolRequest: args.onToolRequest,
+        executionControl: args.executionControl,
         memory: memoryEnabled ? this.memory : null,
         capture: memoryEnabled && args.learnEnabled !== false ? this.capture : null,
         projectId: args.projectId,
@@ -6675,6 +6792,8 @@ export class AgentCoordinator {
       this.claudeSessions.set(args.chatId, session)
       session.pump = this.runClaudeSession(session)
     } else {
+      // Query callbacks outlive the boot turn; replace every turn's dispatch context.
+      session.session.setExecutionControl?.(args.executionControl)
       if (session.model !== args.model) {
         await session.session.setModel(args.model)
         session.model = args.model
@@ -6685,6 +6804,7 @@ export class AgentCoordinator {
       }
     }
 
+    session.session.setExecutionControl?.(args.executionControl)
     session.memoryState = args.memoryState
     return {
       provider: "claude",
@@ -6695,6 +6815,136 @@ export class AgentCoordinator {
       interrupt: session.session.interrupt,
       close: () => {},
     }
+  }
+
+  private executionPolicyFor(chatId: string, engine: AgentProvider) {
+    const chat = this.store.requireChat(chatId)
+    return chat.executionPolicies?.[engine] ?? { policy: defaultExecutionPolicy(engine, !chat.executionPolicyVersion), revision: 1 }
+  }
+
+  getHarnessSnapshot(chatId: string, engine?: AgentProvider) {
+    const chat = this.store.getChat(chatId)
+    if (!chat || chat.deletedAt) return undefined
+    if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
+    const selected = this.executionPolicyFor(chatId, engine ?? chat.provider ?? "claude")
+    return this.harnessPolicies.snapshot(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[selected.policy.engine], this.harnessRuntimeVersion(selected.policy.engine, lastEngineExecutable(selected.policy.engine)?.version))
+  }
+
+  private harnessRuntimeVersion(engine: AgentProvider, version?: string) {
+    return engine === "pi" && process.env.MEMOSYNC_EXTERNAL_AGENTS !== "1" ? "1.5.0" : version
+  }
+
+  getEngineCapabilities(engine: AgentProvider) {
+    if (!["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    return this.harnessPolicies.registry.snapshot(engine, this.harnessRuntimeVersion(engine, lastEngineExecutable(engine)?.version))
+  }
+
+  async setExecutionPolicy(command: Extract<ClientCommand, { type: "chat.setExecutionPolicy" }>) {
+    if (!isNativeExecutionPolicy(command.policy)) throw new Error("Invalid execution policy")
+    const chat = this.store.requireChat(command.chatId)
+    if (chat.deletedAt) throw new Error("Chat deleted")
+    if (chat.provider && chat.provider !== command.policy.engine) throw new Error("Execution policy engine does not match the chat")
+    if (this.policyChanges.has(command.chatId)) throw new Error("Execution policy change in progress")
+    const selected = this.executionPolicyFor(command.chatId, command.policy.engine)
+    this.harnessPolicies.snapshot(command.chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[command.policy.engine], this.harnessRuntimeVersion(command.policy.engine, lastEngineExecutable(command.policy.engine)?.version))
+    const running = this.activeTurns.has(command.chatId) || this.engineStartAbortControllers.has(command.chatId) || this.drainingStreams.has(command.chatId)
+      || this.parentLaunches.has(command.chatId) // An idle native runtime may still own background subprocesses.
+    const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
+    this.policyChanges.add(command.chatId)
+    this.abortEngineStart(command.chatId)
+    // Revocation is synchronous; persistence and native interruption follow it.
+    this.emitStateChange(command.chatId)
+    try {
+      await this.store.setExecutionPolicyState(command.chatId, state, true)
+      if (running || this.startingChats.has(command.chatId)) await this.cancel(command.chatId, { skipPostTurnMemoryPasses: true })
+      const session = this.claudeSessions.get(command.chatId)
+      if (session) await this.retireClaudeSession(session, "session_rebuild")
+      await this.codexManager.stopSession(command.chatId)
+      this.piManager.closeChat(command.chatId)
+      await this.opencodeManager.closeChat(command.chatId)
+      this.parentLaunches.delete(command.chatId)
+      const retired = this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
+      await this.store.setExecutionPolicyState(command.chatId, retired)
+      return retired
+    } catch (error) {
+      this.releasePolicyInteraction(command.chatId)
+      throw error
+    } finally {
+      this.policyChanges.delete(command.chatId)
+      this.emitStateChange(command.chatId)
+    }
+  }
+
+  private bindPolicyQuestion(scope: PolicyCallScope, tool: HarnessToolRequest["tool"]): HarnessToolRequest["tool"] {
+    const key = `${scope.chatId}:${scope.engine}:${scope.generation}:${tool.toolId}`
+    let toolId = this.questionToolIds.get(key)
+    if (!toolId) {
+      toolId = `native-question:${scope.generation}:${crypto.randomUUID()}`
+      this.questionToolIds.set(key, toolId)
+    }
+    return { ...tool, toolId }
+  }
+
+  private bindPolicyEntry(scope: PolicyCallScope, entry: TranscriptEntry): TranscriptEntry {
+    if (entry.kind === "tool_call" && (entry.tool.toolKind === "ask_user_question" || entry.tool.toolKind === "exit_plan_mode")) {
+      return { ...entry, tool: this.bindPolicyQuestion(scope, entry.tool as HarnessToolRequest["tool"]) }
+    }
+    if (entry.kind === "tool_result") {
+      const toolId = this.questionToolIds.get(`${scope.chatId}:${scope.engine}:${scope.generation}:${entry.toolId}`)
+      if (toolId) return { ...entry, toolId }
+    }
+    return entry
+  }
+
+  private queuePolicyInteraction<T>(scope: PolicyCallScope, run: () => Promise<T>): Promise<T> {
+    const previous = this.interactionQueues.get(scope.chatId) ?? Promise.resolve()
+    const task = previous.catch(() => {}).then(run)
+    this.interactionQueues.set(scope.chatId, task)
+    void task.finally(() => { if (this.interactionQueues.get(scope.chatId) === task) this.interactionQueues.delete(scope.chatId) }).catch(() => {})
+    return task
+  }
+
+  private releasePolicyInteraction(chatId: string) {
+    const active = this.activeTurns.get(chatId)
+    if (active?.pendingTool && this.policyApprovals.has(active.pendingTool.toolUseId)) {
+      const pending = active.pendingTool
+      active.pendingTool = null
+      pending.resolve({ cancelled: true, error: "Execution request expired" })
+    }
+  }
+
+  private endPolicyTurn(chatId: string, turnId?: string, release = true) {
+    const scope = this.policyScopes.get(chatId)
+    if (!scope || turnId && scope.turnId !== turnId) return
+    this.harnessPolicies.endTurn(scope)
+    if (release) this.releasePolicyInteraction(chatId)
+    for (const key of this.questionToolIds.keys()) if (key.startsWith(`${scope.chatId}:${scope.engine}:${scope.generation}:`)) this.questionToolIds.delete(key)
+    this.policyScopes.delete(chatId)
+  }
+
+  private async requestExecutionApproval(scope: PolicyCallScope, name: string, input: Record<string, unknown>, requestId: string = crypto.randomUUID()): Promise<boolean> {
+    return this.queuePolicyInteraction(scope, async () => {
+      if (!this.harnessPolicies.isCurrent(scope)) return false
+      const active = this.activeTurns.get(scope.chatId)
+      if (!active || active.turnId !== scope.turnId || active.pendingTool) return false
+      const toolId = `approval:${scope.generation}:${requestId}:${crypto.randomUUID()}`
+      const question = `Allow ${name} once?\n${JSON.stringify(input, null, 2)}`
+      const tool = normalizeToolCall({ toolName: "AskUserQuestion", toolId, input: { questions: [{ question, header: "Execution approval", options: [{ label: "Allow once", description: "Authorize only this native request." }, { label: "Deny", description: "Reject this native request." }], multiSelect: false }] } }) as HarnessToolRequest["tool"]
+      this.policyApprovals.set(toolId, Object.freeze({ ...scope, requestId }))
+      await this.store.appendMessage(scope.chatId, timestamped({ kind: "tool_call", tool }))
+      if (!this.harnessPolicies.isCurrent(scope) || this.activeTurns.get(scope.chatId) !== active) { this.policyApprovals.delete(toolId); return false }
+      active.status = "waiting_for_user"
+      const result = await new Promise<unknown>(resolve => {
+        active.pendingTool = { toolUseId: toolId, tool, resolve }
+        this.emitStateChange(scope.chatId)
+      })
+      this.policyApprovals.delete(toolId)
+      const answers = result && typeof result === "object" ? (result as { answers?: Record<string, unknown> }).answers : undefined
+      const answer = answers?.[question]
+      const approved = answer === "Allow once" || (Array.isArray(answer) && answer.length === 1 && answer[0] === "Allow once")
+      return approved && this.harnessPolicies.isCurrent(scope) && this.activeTurns.get(scope.chatId) === active
+    })
   }
 
   async setMemoryDisabled(chatId: string, disabled: boolean) {
@@ -6941,6 +7191,8 @@ export class AgentCoordinator {
           // result/interrupted also sweep it in case no final text arrived.
           this.clearStreamingAssistantText(session.chatId)
         }
+        const policyScope = this.policyScopes.get(session.chatId)
+        if (policyScope) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(session.chatId, event.entry)
         const active = this.activeTurns.get(session.chatId)
         if (event.entry.kind === "compact_boundary" && (active?.memoryState ?? session.memoryState)?.memoryActive !== false) {
@@ -7034,6 +7286,7 @@ export class AgentCoordinator {
               localPath: chat?.projectId ? this.store.getProject(chat.projectId)?.localPath : undefined,
             })
           }
+          this.endPolicyTurn(session.chatId, active.turnId)
           this.activeTurns.delete(session.chatId)
           if (!active.cancelRequested) {
             // Starting the next queued message can fail (project dir gone after
@@ -7089,6 +7342,7 @@ export class AgentCoordinator {
         if (active.cancelRequested && !active.cancelRecorded) {
           await this.store.recordTurnCancelled(session.chatId)
         }
+        this.endPolicyTurn(session.chatId, active.turnId)
         this.activeTurns.delete(session.chatId)
       }
       session.session.close()
@@ -7152,6 +7406,8 @@ export class AgentCoordinator {
           // the final entry — a snapshot must never show the text twice.
           this.clearStreamingAssistantText(active.chatId)
         }
+        const policyScope = this.policyScopes.get(active.chatId)
+        if (policyScope && policyScope.turnId === active.turnId) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(active.chatId, event.entry)
         if (event.entry.kind === "assistant_text") {
           const counted = this.recordMemoryCitations(event.entry.text, active.chatId, active.memoryState)
@@ -7189,6 +7445,7 @@ export class AgentCoordinator {
           // transitions to idle immediately. The stream may still be open
           // (e.g. background tasks), but the user should be able to send
           // new messages without having to hit stop first.
+          this.endPolicyTurn(active.chatId, active.turnId)
           this.activeTurns.delete(active.chatId)
           // Track the still-open stream so the UI can show a draining
           // indicator and the user can stop background tasks.
@@ -7224,6 +7481,7 @@ export class AgentCoordinator {
       // We may have already been removed by result handling or cancel(),
       // and a new turn may have started for the same chatId.
       if (this.activeTurns.get(active.chatId) === active) {
+        this.endPolicyTurn(active.chatId, active.turnId)
         this.activeTurns.delete(active.chatId)
       }
       // Stream has fully ended — no longer draining.
@@ -7494,6 +7752,7 @@ export class AgentCoordinator {
       if (operation) await this.commandRegistry.cancel(chatId, operation.id)
       return
     }
+    this.endPolicyTurn(chatId, undefined, false)
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)
     // Drop any half-written streaming reply right away — the engine unwind
@@ -7633,9 +7892,8 @@ export class AgentCoordinator {
           content: result,
         })
       )
-      if (active.provider === "codex" && pendingTool.tool.toolKind === "exit_plan_mode") {
-        pendingTool.resolve(result)
-      }
+      // Release all native waiters; their frozen policy scopes now deny replies.
+      pendingTool.resolve(result)
     }
 
     await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
@@ -7718,52 +7976,65 @@ export class AgentCoordinator {
     }
 
     const pending = active.pendingTool
+    const approvalScope = this.policyApprovals.get(command.toolUseId)
+    if (approvalScope && (!this.harnessPolicies.isCurrent(approvalScope) || active.turnId !== approvalScope.turnId)) {
+      throw new Error("Stale execution approval")
+    }
     if (pending.toolUseId !== command.toolUseId) {
       throw new Error("Tool response does not match active request")
     }
 
-    await this.store.appendMessage(
-      command.chatId,
-      timestamped({
-        kind: "tool_result",
-        toolId: command.toolUseId,
-        content: command.result,
-      })
-    )
+    const responseKey = `${command.chatId}:${command.toolUseId}`
+    if (this.respondingTools.has(responseKey)) throw new Error("Tool response already in progress")
+    this.respondingTools.add(responseKey)
+    try {
+      await this.store.appendMessage(
+        command.chatId,
+        timestamped({
+          kind: "tool_result",
+          toolId: command.toolUseId,
+          content: command.result,
+        })
+      )
 
-    active.pendingTool = null
-    active.status = "running"
-
-    if (pending.tool.toolKind === "exit_plan_mode") {
-      const result = (command.result ?? {}) as {
-        confirmed?: boolean
-        clearContext?: boolean
-        message?: string
+      if (this.activeTurns.get(command.chatId) !== active || active.pendingTool !== pending || (approvalScope && !this.harnessPolicies.isCurrent(approvalScope))) {
+        throw new Error("Stale tool response")
       }
-      if (result.confirmed && result.clearContext) {
-        await this.store.setSessionToken(command.chatId, null)
-        await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+      active.status = "running"
+
+      if (pending.tool.toolKind === "exit_plan_mode") {
+        const result = (command.result ?? {}) as {
+          confirmed?: boolean
+          clearContext?: boolean
+          message?: string
+        }
+        if (result.confirmed && result.clearContext) {
+          await this.store.setSessionToken(command.chatId, null)
+          await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
+        }
+
+        if (active.provider === "codex") {
+          active.postToolFollowUp = result.confirmed
+            ? {
+                content: result.message
+                  ? `Proceed with the approved plan. Additional guidance: ${result.message}`
+                  : "Proceed with the approved plan.",
+                planMode: false,
+              }
+            : {
+                content: result.message
+                  ? `Revise the plan using this feedback: ${result.message}`
+                  : "Revise the plan using this feedback.",
+                planMode: true,
+              }
+        }
       }
 
-      if (active.provider === "codex") {
-        active.postToolFollowUp = result.confirmed
-          ? {
-              content: result.message
-                ? `Proceed with the approved plan. Additional guidance: ${result.message}`
-                : "Proceed with the approved plan.",
-              planMode: false,
-            }
-          : {
-              content: result.message
-                ? `Revise the plan using this feedback: ${result.message}`
-                : "Revise the plan using this feedback.",
-              planMode: true,
-            }
-      }
-    }
+      if (this.activeTurns.get(command.chatId) !== active || active.pendingTool !== pending || approvalScope && !this.harnessPolicies.isCurrent(approvalScope)) throw new Error("Stale tool response")
+      active.pendingTool = null
+      pending.resolve(command.result)
 
-    pending.resolve(command.result)
-
-    this.emitStateChange(command.chatId)
+      this.emitStateChange(command.chatId)
+    } finally { this.respondingTools.delete(responseKey) }
   }
 }

@@ -38,7 +38,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
         cancel() { streams.delete(stream) },
       }), { headers: { 'content-type': 'text/event-stream' } })
     }
-    const body = request.method === 'POST' ? await request.json().catch(() => null) : undefined
+    const body = ['POST', 'PATCH'].includes(request.method) ? await request.json().catch(() => null) : undefined
     if (/^\/question\/[^/]+\/(reply|reject)$/.test(path)) {
       const gate = deferred<void>()
       answers.set(path.split('/')[2]!, gate)
@@ -47,6 +47,7 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
       return Response.json(true)
     }
     await notify({ kind: 'request', path, method: request.method, body })
+    if (request.method === 'PATCH' && path === '/session/ses_created') return Response.json({ id: 'ses_created', permission: process.env.FAKE_OC_REJECT_POLICY ? [] : (body as { permission?: unknown })?.permission })
     if (path === '/session') return Response.json({ id: 'ses_created' })
     if (path.endsWith('/fork')) return Response.json({ id: process.env.FAKE_OC_SAME_PARENT ? 'ses_parent' : 'ses_fork' })
     if (request.method === 'DELETE') { await deletion.promise; return Response.json(true) }

@@ -1,3 +1,4 @@
+import type { ChatHarnessSnapshot } from "./harness-capabilities"
 import type { UiTextFields, UiTextReference } from "./ui-copy"
 import type { ChatCommandCatalog } from "./runtime-commands"
 export const STORE_VERSION = 2 as const
@@ -1649,6 +1650,7 @@ export type HydratedTranscriptMessage =
 export interface ChatRuntime {
   /** Read-only facts for this live native session; historical system_init is not an executable catalog. */
   commandCatalog?: ChatCommandCatalog
+  harness?: ChatHarnessSnapshot
   memoryDisabled: boolean
   chatId: string
   projectId: string

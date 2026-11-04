@@ -5,6 +5,7 @@ import { ChatInput, type ChatInputHandle } from "../../components/chat-ui/ChatIn
 import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { AppState } from "../useAppState"
 import type { AgentProvider } from "../../../shared/types"
+import type { ChatHarnessSnapshot, NativeExecutionPolicy } from "../../../shared/harness-capabilities"
 
 interface ChatInputDockProps {
   inputRef: RefObject<HTMLDivElement | null>
@@ -21,6 +22,9 @@ interface ChatInputDockProps {
   availableProviders: AppState["availableProviders"]
   contextWindowSnapshot: ContextWindowSnapshot | null
   slashCommands: string[]
+  harness?: ChatHarnessSnapshot
+  onExecutionPolicyChange?: (policy: NativeExecutionPolicy, expectedRevision: number) => Promise<unknown>
+  onReadHarness?: (engine: AgentProvider) => Promise<ChatHarnessSnapshot>
   onSubmit: AppState["handleSend"]
   onCancel: () => void
   onSendOldestQueued?: () => void
@@ -46,6 +50,9 @@ export const ChatInputDock = memo(function ChatInputDock({
   availableProviders,
   contextWindowSnapshot,
   slashCommands,
+  harness,
+  onExecutionPolicyChange,
+  onReadHarness,
   onSubmit,
   onCancel,
   onSendOldestQueued,
@@ -90,6 +97,9 @@ export const ChatInputDock = memo(function ChatInputDock({
           contextWindowSnapshot={contextWindowSnapshot}
           previousPrompt={previousPrompt}
           slashCommands={slashCommands}
+          harness={harness}
+          onExecutionPolicyChange={onExecutionPolicyChange}
+          onReadHarness={onReadHarness}
         />
       </div>
     </div>

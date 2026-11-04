@@ -1,3 +1,4 @@
+import type { SetExecutionPolicyCommand } from "./harness-capabilities"
 import type { SidebarPatch } from "./sidebar-patch"
 import type { RuntimeCatalogCommand } from "./runtime-commands"
 export type * from "./runtime-commands"
@@ -98,6 +99,9 @@ export interface TerminalTailResult {
 
 export type ClientCommand =
   | RuntimeCatalogCommand
+  | SetExecutionPolicyCommand
+  | { type: "harness.getCapabilities"; engine: AgentProvider }
+  | { type: "chat.readHarness"; chatId: string; engine: AgentProvider }
   | { type: "project.open"; localPath: string }
   | { type: "project.create"; localPath: string; title: string }
   | { type: "project.rename"; projectId: string; title: string }
