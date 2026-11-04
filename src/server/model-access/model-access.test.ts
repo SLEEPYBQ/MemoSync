@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { ModelAccessService } from "./service"
@@ -9,6 +9,8 @@ import { legacyConnections } from "./legacy"
 import { testEndpoint } from "./test-connection"
 import type { ExecutableStatus } from "../../shared/model-access"
 import type { UpgradeRunner } from "./upgrade"
+import { createExecutableResolver } from "./resolver"
+import { readSdkInstallation } from "./sdk-installation"
 
 const dirs: string[] = []
 function fixture(env: Record<string, string> = {}) {
@@ -342,6 +344,7 @@ describe("upgrading an engine's CLI", () => {
     const prefix = join(dir, "prefix")
     mkdirSync(join(prefix, "bin"), { recursive: true })
     writeFileSync(join(prefix, "bin/npm"), "#!/bin/sh\n", { mode: 0o755 })
+    writeFileSync(join(prefix, "bin/node"), "#!/bin/sh\n", { mode: 0o755 })
     const entry = join(prefix, "lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js")
     mkdirSync(dirname(entry), { recursive: true })
     writeFileSync(entry, "#!/bin/sh\n", { mode: 0o755 })
@@ -350,13 +353,13 @@ describe("upgrading an engine's CLI", () => {
       dataDir: join(dir, "data"), env: { HOME: dir, PATH: "/fixture/none" }, readLegacyPi: async () => null, runUpgrade: run,
       resolveExecutable: async engine => engine === "pi" ? installed : { state: "ready", path: "/fixture/cli" },
     }).initialize()
-    return { service, setInstalled: (next: ExecutableStatus) => { installed = next } }
+    return { service, entry: realpathSync(entry), setInstalled: (next: ExecutableStatus) => { installed = next } }
   }
 
   test("the snapshot offers what would run, shows it running, then re-detects", async () => {
     let finish!: (result: { ok: boolean; output: string }) => void
     const ran: string[][] = []
-    const { service, setInstalled } = await fixtureWithOldPi(step => {
+    const { service, entry, setInstalled } = await fixtureWithOldPi(step => {
       ran.push(step.args)
       return new Promise(resolve => { finish = resolve })
     })
@@ -367,7 +370,7 @@ describe("upgrading an engine's CLI", () => {
     expect(service.getSnapshot().engines.pi.upgrade).toEqual({ state: "running" })
     // A second click while it runs starts nothing.
     await service.upgradeExecutable("pi")
-    expect(ran).toEqual([["update", "self"]])
+    expect(ran).toEqual([[entry, "update", "self"]])
 
     setInstalled({ state: "ready", path: "/fixture/pi", version: "1.5.0" })
     const changed = new Promise<void>(resolve => { const off = service.onChange(() => { off(); resolve() }) })
@@ -391,6 +394,75 @@ describe("upgrading an engine's CLI", () => {
     expect(service.getSnapshot().engines.pi.upgrade).toEqual({ state: "failed", detail: "pi update self\nEACCES" })
     await service.refreshExecutables()
     expect(service.getSnapshot().engines.pi.upgrade).toBeUndefined()
+  })
+
+  test("two requests at once start one upgrade", async () => {
+    let finish!: (result: { ok: boolean; output: string }) => void
+    let runs = 0
+    const { service } = await fixtureWithOldPi(() => {
+      runs += 1
+      return new Promise(resolve => { finish = resolve })
+    })
+    await Promise.all([service.upgradeExecutable("pi"), service.upgradeExecutable("pi")])
+    expect(runs).toBe(1)
+    finish({ ok: true, output: "" })
+  })
+
+  test("a refused request releases the engine", async () => {
+    const { service } = await fixtureWithOldPi(async () => ({ ok: true, output: "" }))
+    await expect(service.upgradeExecutable("claude")).rejects.toThrow("engine-upgrade-unavailable")
+    expect(service.getSnapshot().engines.claude.upgrade).toBeUndefined()
+    await expect(service.upgradeExecutable("claude")).rejects.toThrow("engine-upgrade-unavailable")
+  })
+
+  // The real resolver, and a launcher that doesn't change when its release does:
+  // Claude's ~/.claude/local wrapper, or Pi's installer launcher once it has been probed.
+  async function fixtureWithStableLauncher(run: UpgradeRunner) {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), "ma-upgrade-"))); dirs.push(dir)
+    const version = join(dir, "version")
+    writeFileSync(version, "2.0.0 (Claude Code)\n")
+    const sdkDir = join(dir, "node_modules/@anthropic-ai/claude-agent-sdk")
+    mkdirSync(sdkDir, { recursive: true })
+    writeFileSync(join(sdkDir, "sdk.mjs"), "")
+    writeFileSync(join(sdkDir, "package.json"), JSON.stringify({ claudeCodeVersion: "2.5.0" }))
+    const launcher = join(dir, ".claude/local/claude")
+    mkdirSync(dirname(launcher), { recursive: true })
+    writeFileSync(launcher, `#!/bin/sh\ncat '${version}'\n`, { mode: 0o755 })
+    const resolver = createExecutableResolver({ knownDirectories: async () => [], sdkInstallation: () => readSdkInstallation(join(sdkDir, "sdk.mjs")), probeTimeoutMs: 2000 })
+    const service = await new ModelAccessService({
+      dataDir: join(dir, "data"), env: { HOME: dir, PATH: "/usr/bin:/bin", CLAUDE_EXECUTABLE: launcher }, readLegacyPi: async () => null,
+      runUpgrade: run, resolveExecutable: resolver.resolveEngineExecutable, invalidateExecutables: resolver.refreshExecutables,
+    }).initialize()
+    return { service, version }
+  }
+
+  test("an upgrade behind an unchanged launcher is seen when it finishes", async () => {
+    let version = ""
+    const { service, version: file } = await fixtureWithStableLauncher(async () => {
+      writeFileSync(version, "2.6.0 (Claude Code)\n")
+      return { ok: true, output: "" }
+    })
+    version = file
+    expect(service.getSnapshot().engines.claude.executable).toMatchObject({ state: "incompatible", version: "2.0.0", upgradeCommand: "claude update" })
+    const done = new Promise<void>(resolve => {
+      const off = service.onChange(() => {
+        const claude = service.getSnapshot().engines.claude
+        if (claude.upgrade || claude.executable.version === "2.0.0") return
+        off(); resolve()
+      })
+    })
+    await service.upgradeExecutable("claude")
+    await Promise.race([done, Bun.sleep(3000)])
+    expect(service.getSnapshot().engines.claude.executable).toMatchObject({ state: "ready", version: "2.6.0" })
+  })
+
+  test("Detect again sees a command the user ran by hand, while routine refreshes keep their probes", async () => {
+    const { service, version } = await fixtureWithStableLauncher(async () => ({ ok: true, output: "" }))
+    writeFileSync(version, "2.6.0 (Claude Code)\n")
+    await service.refreshExecutables()
+    expect(service.getSnapshot().engines.claude.executable.version).toBe("2.0.0")
+    await service.refreshExecutables({ reprobe: true })
+    expect(service.getSnapshot().engines.claude.executable).toMatchObject({ state: "ready", version: "2.6.0" })
   })
 
   test("an installation that can't be upgraded is refused, whatever the client asks", async () => {

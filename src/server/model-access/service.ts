@@ -6,12 +6,12 @@ import { getDataDir, getLlmProviderFilePath } from "../../shared/branding"
 import { connectionSupport, compatibleEndpointForEngine, ENGINE_PROTOCOLS, type ApiConnection, type ApiConnectionInput, type EngineId, type EngineSetup, type EngineStatus, type ModelAccessSnapshot } from "../../shared/model-access"
 import type { LlmProviderSnapshot } from "../../shared/types"
 import { normalizeLlmProviderSnapshot } from "../llm-provider"
-import { resolveEngineExecutable } from "./executables"
+import { refreshExecutables as invalidateExecutableProbes, resolveEngineExecutable } from "./executables"
 import { executableEnvironment, legacyConnections, legacyEngineSetup, LEGACY_PI_ID, type RuntimeEnv } from "./legacy"
 import { CONNECTION_PRESETS } from "./presets"
 import { atomicJson, FileCredentialStore, readJson, type CredentialStore, type ModelAccessData } from "./storage"
 import { testEndpoint } from "./test-connection"
-import { runUpgradePlan, upgradePlan, type UpgradeRunner } from "./upgrade"
+import { runUpgradePlan, upgradePlan, type UpgradePlan, type UpgradeRunner } from "./upgrade"
 
 export function connectionNeedsKey(connection: Pick<ApiConnection, "presetId" | "endpoints">) {
   return !CONNECTION_PRESETS.find(p => p.id === connection.presetId)?.noKey && !connection.endpoints.every(e => {
@@ -69,13 +69,15 @@ export class ModelAccessService {
   private statuses = {} as Record<EngineId, EngineStatus>
   private readonly upgrades = new Map<EngineId, NonNullable<EngineStatus["upgrade"]>>()
   private readonly runUpgrade?: UpgradeRunner
+  private readonly invalidateExecutables: () => void
   revision = 0
   private listeners = new Set<() => void>()
   private pending: Promise<unknown> = Promise.resolve()
-  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; runUpgrade?: UpgradeRunner; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
+  constructor(args: { dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; runUpgrade?: UpgradeRunner; invalidateExecutables?: () => void; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
     this.env = args.env ?? process.env
     this.resolveExecutable = args.resolveExecutable ?? resolveEngineExecutable
     this.runUpgrade = args.runUpgrade
+    this.invalidateExecutables = args.invalidateExecutables ?? invalidateExecutableProbes
     this.dataDir = args.dataDir ?? getDataDir(this.env.HOME || homedir(), this.env)
     this.credentials = args.credentials ?? new FileCredentialStore(this.dataDir)
     this.readLegacyPi = args.readLegacyPi ?? (async () => normalizeLlmProviderSnapshot(readJson(getLlmProviderFilePath(this.env.HOME || homedir(), this.env), null)))
@@ -168,25 +170,39 @@ export class ModelAccessService {
   async upgradeExecutable(engine: EngineId) {
     if (!engines.includes(engine)) throw new Error("engine-setup-invalid")
     if (this.upgrades.get(engine)?.state === "running") return
+    // Claimed before the first await: two tabs can ask at once, and two package
+    // managers working on one install can leave it missing.
+    this.upgrades.set(engine, { state: "running" })
     const env = executableEnvironment(this.env)
-    const upgrade = await upgradePlan(engine, this.statuses[engine].executable, env)
-    if (!upgrade) throw new Error("engine-upgrade-unavailable")
+    const upgrade = await upgradePlan(engine, this.statuses[engine].executable, env).catch(() => undefined)
+    if (!upgrade) {
+      this.clearUpgrade(engine)
+      throw new Error("engine-upgrade-unavailable")
+    }
     this.setUpgrade(engine, { state: "running" })
-    void runUpgradePlan(upgrade, env, this.runUpgrade)
+    void this.finishUpgrade(engine, upgrade, env)
+  }
+  private async finishUpgrade(engine: EngineId, upgrade: UpgradePlan, env: ReturnType<typeof executableEnvironment>) {
+    const result = await runUpgradePlan(upgrade, env, this.runUpgrade)
       .catch(error => ({ ok: false as const, detail: error instanceof Error ? error.message : String(error) }))
-      .then(async result => {
-        this.upgrades.delete(engine)
-        await this.refreshExecutables()
-        if (!result.ok) this.setUpgrade(engine, { state: "failed", detail: result.detail })
-      })
-      .catch(() => {})
+    this.clearUpgrade(engine)
+    // A launcher can stay byte-identical while the release behind it changes.
+    await this.refreshExecutables({ reprobe: true }).catch(() => this.changed())
+    if (!result.ok) this.setUpgrade(engine, { state: "failed", detail: result.detail })
+  }
+  private clearUpgrade(engine: EngineId) {
+    this.upgrades.delete(engine)
+    const { upgrade: _cleared, ...status } = this.statuses[engine]
+    this.statuses = { ...this.statuses, [engine]: status }
   }
   private setUpgrade(engine: EngineId, upgrade: NonNullable<EngineStatus["upgrade"]>) {
     this.upgrades.set(engine, upgrade)
     this.statuses = { ...this.statuses, [engine]: { ...this.statuses[engine], upgrade } }
     this.changed()
   }
-  async refreshExecutables() {
+  /** `reprobe` is for when the installation may have changed: an upgrade, or the user asking to look again. */
+  async refreshExecutables(options: { reprobe?: boolean } = {}) {
+    if (options.reprobe) this.invalidateExecutables()
     this.legacyPi = await this.readLegacyPi().catch(() => null)
     // A failure stays on screen until the next look at the installation.
     for (const [engine, upgrade] of this.upgrades) if (upgrade.state === "failed") this.upgrades.delete(engine)

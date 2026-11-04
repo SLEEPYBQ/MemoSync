@@ -1325,7 +1325,7 @@ export function createWsRouter({
           else if (command.type === "modelAccess.setEngine" && modelAccess.setEngine) await modelAccess.setEngine(command.engine, command.setup)
           else if (command.type === "modelAccess.setExecutablePath" && modelAccess.setExecutablePath) await modelAccess.setExecutablePath(command.engine, command.executablePath)
           else if (command.type === "modelAccess.testConnection" && modelAccess.testConnection) result = await modelAccess.testConnection(command.connection, command.engine, command.model)
-          else if (command.type === "modelAccess.refreshExecutables" && modelAccess.refreshExecutables) result = await modelAccess.refreshExecutables()
+          else if (command.type === "modelAccess.refreshExecutables" && modelAccess.refreshExecutables) result = await modelAccess.refreshExecutables({ reprobe: true })
           else if (command.type === "modelAccess.upgradeExecutable" && modelAccess.upgradeExecutable) await modelAccess.upgradeExecutable(command.engine)
           else throw new Error("model-access-unavailable")
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
