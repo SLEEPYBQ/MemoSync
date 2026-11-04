@@ -39,7 +39,7 @@ export function chatCapabilities(endpoint: ConnectionEndpoint, model: string): C
     promptCacheKey: modern || /^gpt-4(?:o|\.1)(?:-|$)/.test(model),
     // The locked SDK and current API docs disagree on the spelling of memory
     // retention. Only forward the verified 24h policy on the documented models.
-    promptCacheRetention: extendedRetention || major > 5 || (major === 5 && minor >= 5) ? ["24h"] : [],
+    promptCacheRetention: extendedRetention ? ["24h"] : [],
     implicitCacheOptions: major > 5 || (major === 5 && minor >= 6),
   }
 }
