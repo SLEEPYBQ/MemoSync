@@ -546,7 +546,7 @@ export class NativeInventory {
         header = parseRolloutHeader(row.text);
       return source.engine === unit.engine &&
         source.namespace === unit.namespace &&
-        source.relativePath?.startsWith("rollout_summaries/") &&
+        /^rollout_summaries[\\/]/.test(source.relativePath ?? "") &&
         header.valid &&
         threadIds.includes(header.metadata.thread_id!) &&
         unit.evidenceThreadIds.includes(header.metadata.thread_id!)

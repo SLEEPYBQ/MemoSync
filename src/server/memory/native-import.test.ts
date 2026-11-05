@@ -1064,7 +1064,8 @@ describe("durable refinement with no paid test calls", () => {
     expect(finished.state).toBe("completed");
     expect(finished.batches[0]!.attempts).toBe(3);
     expect(finished.batches[0]!.usage!.inputTokens).toBe(7);
-    expect(finished.input.unitIds).toHaveLength(1);
+    expect(finished.input.unitIds).toHaveLength(2);
+    expect(finished.batches.flatMap((b) => b.unitIds)).toHaveLength(1);
   });
   it("cancels inflight work and resumes explicitly without saving stale results", async () => {
     service.close();

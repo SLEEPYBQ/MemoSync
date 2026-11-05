@@ -205,7 +205,8 @@ export class NativeRefinementService {
     );
     const job: NativeRefineJob = {
       jobId: randomUUID(),
-      input: { ...input, unitIds: ids },
+      // The full selection is kept so review can offer the units a sample left out.
+      input: { ...input },
       state: "queued",
       batches: [],
       createdAt: new Date().toISOString(),
