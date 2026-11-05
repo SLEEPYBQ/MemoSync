@@ -487,6 +487,34 @@ test('WS draft commands, harness subscription, promotion and discard use the ord
   } finally { router.dispose(); await f.cleanup() }
 })
 
+test('a draft shared by two windows survives until the last one leaves', async () => {
+  const f = await preparationFixture('pi', undefined, true)
+  const router = createWsRouter({ store: f.store, agent: f.agent, terminals: { onEvent: () => () => {} } as never,
+    keybindings: { onChange: () => () => {} } as never, refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: 'Fixture', updateManager: null })
+  const socket = () => { const sent: any[] = []; return { sent, data: { subscriptions: new Map(), protectedDraftChatIds: new Set() }, send(text: string) { sent.push(JSON.parse(text)); return text.length } } }
+  const a = socket(), b = socket(), c = socket()
+  let seq = 0
+  const command = async (ws: ReturnType<typeof socket>, payload: any) => {
+    const id = `command-${++seq}`
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: 'command', id, command: payload }))
+    return ws.sent.find(message => message.id === id)
+  }
+  try {
+    for (const ws of [a, b, c]) router.handleOpen(ws as never)
+    const draft = (await command(a, { type: 'chat.ensureDraft', projectId: f.project.id })).result.chatId
+    expect((await command(b, { type: 'chat.ensureDraft', projectId: f.project.id })).result.chatId).toBe(draft)
+    expect(await command(a, { type: 'chat.discardDraft', chatId: draft })).toMatchObject({ type: 'ack' })
+    expect(f.store.getChat(draft)).not.toBeNull()
+    expect(await command(b, { type: 'chat.discardDraft', chatId: draft })).toMatchObject({ type: 'ack' })
+    expect(f.store.getChat(draft)).toBeNull()
+    // A window that disconnects releases its hold too.
+    const next = (await command(c, { type: 'chat.ensureDraft', localPath: f.project.localPath })).result.chatId
+    router.handleClose(c as never)
+    for (let i = 0; i < 50 && f.store.getChat(next); i++) await new Promise(r => setTimeout(r, 10))
+    expect(f.store.getChat(next)).toBeNull()
+  } finally { router.dispose(); await f.cleanup() }
+})
+
 test('sending a draft while preparation is pending waits and reuses that exact session', async () => {
   const gate = deferred(), f = await preparationFixture('pi', gate.promise, true)
   try {

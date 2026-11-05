@@ -457,6 +457,8 @@ export function createWsRouter({
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
 }: CreateWsRouterArgs) {
+  /** Sockets whose landing composer holds each hidden draft chat. */
+  const draftHolders = new Map<string, Set<ServerWebSocket<ClientState>>>()
   const sockets = new Set<ServerWebSocket<ClientState>>()
   const dirtySnapshotSockets = new Set<ServerWebSocket<ClientState>>()
   const pendingSnapshotRetryTimers = new Map<ServerWebSocket<ClientState>, ReturnType<typeof setTimeout>>()
@@ -1598,10 +1600,21 @@ export function createWsRouter({
             await ensureProjectDirectory(command.localPath)
           } else if (typeof command.projectId !== "string") throw new Error("Invalid projectId")
           const result = await store.ensureDraft(command)
+          const holders = draftHolders.get(result.chatId) ?? new Set()
+          holders.add(ws)
+          draftHolders.set(result.chatId, holders)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           return
         }
         case "chat.discardDraft": {
+          // Composers in other windows can share this draft; the last one out discards it.
+          const holders = draftHolders.get(command.chatId)
+          holders?.delete(ws)
+          if (holders?.size) {
+            send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
+            return
+          }
+          draftHolders.delete(command.chatId)
           await agent.discardDraft(command.chatId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           await broadcastFilteredSnapshots({ includeSidebar: true, includeLocalProjects: true, chatIds: new Set([command.chatId]) })
@@ -2040,6 +2053,11 @@ export function createWsRouter({
       sockets.add(ws)
     },
     handleClose(ws: ServerWebSocket<ClientState>) {
+      for (const [chatId, holders] of draftHolders) {
+        if (!holders.delete(ws) || holders.size) continue
+        draftHolders.delete(chatId)
+        void agent.discardDraft(chatId).catch(() => {})
+      }
       hostActions?.disconnect(ws)
       sockets.delete(ws)
       dirtySnapshotSockets.delete(ws)

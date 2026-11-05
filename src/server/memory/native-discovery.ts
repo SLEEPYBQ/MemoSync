@@ -753,7 +753,7 @@ export class NativeMemoryDiscovery {
                     `${sep}extensions${sep}ad_hoc${sep}notes${sep}`,
                   )
                 ? "correction"
-                : (/(?:^|\/)(?:memory_summary|MEMORY)\.md$/.test(
+                : (/(?:^|[\\/])(?:memory_summary|MEMORY)\.md$/.test(
                       candidate.path,
                     ) &&
                       candidate.engine === "claude") ||
@@ -766,7 +766,7 @@ export class NativeMemoryDiscovery {
                     ? "evidence"
                     : candidate.engine === "codex" &&
                         candidate.namespace === "v2" &&
-                        !candidate.path.includes("/rollout_summaries/")
+                        !candidate.path.includes(`${sep}rollout_summaries${sep}`)
                       ? "navigation"
                       : "units";
           let metadata: Record<string, unknown> | undefined;
