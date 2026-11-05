@@ -163,6 +163,7 @@ export function normalizeClaudePreference(value?: {
     modelOptions: {
       reasoningEffort: normalizedEffort,
       contextWindow,
+      ...(value?.modelOptions?.ultracode === true ? { ultracode: true } : {}),
     },
     planMode: Boolean(value?.planMode),
   }
@@ -330,6 +331,7 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
   if (left.provider === "claude" && right.provider === "claude") {
     return left.modelOptions.reasoningEffort === right.modelOptions.reasoningEffort
       && left.modelOptions.contextWindow === right.modelOptions.contextWindow
+      && Boolean(left.modelOptions.ultracode) === Boolean(right.modelOptions.ultracode)
   }
 
   if (left.provider === "codex" && right.provider === "codex") {

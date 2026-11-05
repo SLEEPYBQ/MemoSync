@@ -3,11 +3,15 @@ import type { ExecutionPolicyState, NativeExecutionPolicy } from "../shared/harn
 import type { AgentProvider, ProjectSummary, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 
 export interface ProjectRecord extends ProjectSummary {
+  /** Created for a home composer; not an opened project yet. */
+  draftOnly?: boolean
   sidebarTitle?: string
   deletedAt?: number
 }
 
 export interface ChatRecord {
+  /** Disposable home composer, excluded from every chat listing. */
+  draft?: boolean
   id: string
   projectId: string
   title: string
@@ -55,6 +59,12 @@ export type ProjectEvent = {
   projectId: string
   localPath: string
   title: string
+  draftOnly?: boolean
+} | {
+  v: 2
+  type: "project_draft_discarded"
+  timestamp: number
+  projectId: string
 } | {
   v: 2
   type: "project_sidebar_renamed"
@@ -69,6 +79,8 @@ export type ProjectEvent = {
 }
 
 export type ChatEvent =
+  | { v: 2; type: "chat_promoted"; timestamp: number; chatId: string }
+  | { v: 2; type: "chat_draft_discarded"; timestamp: number; chatId: string }
   | {
       v: 2
       type: "chat_last_message_at_set"
@@ -83,6 +95,7 @@ export type ChatEvent =
   | {
       v: 2
       type: "chat_created"
+      draft?: boolean
       executionPolicyVersion?: 1
       timestamp: number
       chatId: string

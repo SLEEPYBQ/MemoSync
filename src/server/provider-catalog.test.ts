@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { resolveClaudeApiModelId } from "../shared/types"
 import {
   SERVER_PROVIDERS,
@@ -17,6 +21,9 @@ describe("provider catalog normalization", () => {
   })
 
   test("maps legacy Claude effort into shared DeepSeek model options", () => {
+    expect(normalizeClaudeModelOptions("opus", { claude: { ultracode: true } }).ultracode).toBe(true)
+    expect(normalizeClaudeModelOptions("opus", undefined, "ultracode").ultracode).toBe(true)
+    expect(normalizeClaudeModelOptions("opus")).not.toHaveProperty("ultracode")
     expect(normalizeClaudeModelOptions("deepseek-v4-pro", undefined, "max")).toEqual({
       reasoningEffort: "max",
       contextWindow: "1m",
@@ -109,5 +116,26 @@ describe("provider catalog normalization", () => {
     const codex = deployedProviders({ MEMOSYNC_ISOLATE_CLI: "1", GLM_API_KEY: "test", MEMOSYNC_CODEX_MODEL: "glm-5.3" }).find((provider) => provider.id === "codex")
     expect(codex?.defaultModel).toBe("glm-5.3")
     expect(codex?.models.map((model) => model.id)).toEqual(["glm-5.3"])
+  })
+})
+
+describe("account model fallback", () => {
+  test("a remembered connection model never launches on the signed-in account", async () => {
+    const home = mkdtempSync(join(tmpdir(), "memosync-account-model-"))
+    const service = await new ModelAccessService({
+      dataDir: join(home, "data"), env: { HOME: home, DEEPSEEK_API_KEY: "synthetic" }, readLegacyPi: async () => null,
+      resolveExecutable: async () => ({ state: "missing" }),
+    }).initialize()
+    await service.setEngine("claude", { access: { mode: "account" } })
+    setModelAccessService(service)
+    try {
+      const catalog = deployedProviders().find(provider => provider.id === "claude")!
+      expect(catalog.models.some(model => model.id === "deepseek-v4-flash")).toBe(true)
+      expect(normalizeServerModel("claude", "deepseek-v4-flash")).toBe(catalog.defaultModel)
+      expect(normalizeServerModel("claude", "opus")).toBe("opus")
+    } finally {
+      setModelAccessService(undefined)
+      rmSync(home, { recursive: true, force: true })
+    }
   })
 })

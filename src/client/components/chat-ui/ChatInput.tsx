@@ -1,9 +1,9 @@
 import { FirstRunCallout } from "../../model-access/FirstRunCallout"
 import { useModelAccessStore, type AccessModelOptions } from "../../model-access/modelAccess"
-import { httpUiError } from "../../i18n/uiText"
+import { httpUiError, translateUiText } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
 import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { ArrowUp, Paperclip, Plus } from "lucide-react"
+import { ArrowUp, ListTodo, Loader2, Paperclip, Plus, X } from "lucide-react"
 import { hasFileDragTypes } from "../../app/ChatPage/utils"
 import {
   type AgentProvider,
@@ -25,9 +25,9 @@ import { useAppSettingsStore } from "../../stores/appSettingsStore"
 import { cn, generateUUID } from "../../lib/utils"
 import { isImeComposingKeyEvent } from "../../lib/imeKeys"
 import { matchSlashCommands, SLASH_POPUP_MAX_HEIGHT_PX, slashPopupMaxHeightPx } from "../../lib/slashCommands"
-import type { ChatCommandCatalog, RuntimeCommand } from "../../../shared/runtime-commands"
-import { RuntimeCommandControl } from "./RuntimeCommandControl"
-import { resolveRuntimeSlash, runtimeCommandToken } from "../../lib/runtimeCommands"
+import { runtimeCommandSelectionKey, type ChatCommandCatalog, type RuntimeCommand, type RuntimeCommandSelection } from "../../../shared/runtime-commands"
+import { SlashCommandMenu } from "./SlashCommandMenu"
+import { isSlashInput, resolveRuntimeSlash, runtimeCatalogSettling, runtimeCommandToken } from "../../lib/runtimeCommands"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
 import { runRetainedDraftSubmission } from "./chatDraftSubmission"
@@ -145,6 +145,8 @@ interface Props {
   disabled: boolean
   canCancel?: boolean
   chatId?: string | null
+  /** The chat that serves native commands and Mode when the composer has none of its own. */
+  nativeChatId?: string | null
   /**
    * Persistence key for the TEXT draft, when it should differ from chatId — the
    * landing composer has no chatId yet but must still keep typed text across
@@ -162,6 +164,7 @@ interface Props {
   commandCatalog?: ChatCommandCatalog | null
   commandBusy?: boolean
   commandError?: string | null
+  onPrepareCommands?: (selection: RuntimeCommandSelection) => void
   onReadCommands?: () => Promise<unknown>
   onExecuteCommand?: (command: RuntimeCommand, args?: string) => Promise<unknown>
   onCancelCommand?: () => Promise<unknown>
@@ -233,6 +236,16 @@ function getEffectiveComposerState(
     }
 }
 
+export function composerModelOptions(state: ComposerState): AccessModelOptions {
+  let options: AccessModelOptions
+  if (state.provider === "claude") options = { claude: { ...state.modelOptions } }
+  else if (state.provider === "pi") options = { pi: { ...state.modelOptions } }
+  else if (state.provider === "codex") options = { codex: { ...state.modelOptions } }
+  else options = {}
+  if (state.connectionId) options.connectionId = state.connectionId
+  return options
+}
+
 const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSubmit,
   onLayoutChange,
@@ -242,6 +255,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   disabled,
   canCancel,
   chatId,
+  nativeChatId,
   draftKey,
   projectId,
   inputElementRef,
@@ -253,6 +267,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   commandCatalog,
   commandBusy,
   commandError,
+  onPrepareCommands,
   onReadCommands,
   onExecuteCommand,
   onCancelCommand,
@@ -277,6 +292,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     resetChatComposerFromProvider,
   } = useChatPreferencesStore()
   const composerChatId = chatId ?? NEW_CHAT_COMPOSER_ID
+  const runtimeChatId = chatId ?? nativeChatId ?? null
   // Text-draft persistence key: chatId for a real chat, or an explicit draftKey
   // for the landing composer (which has no chatId yet) so typed text survives
   // navigation (BUG LAND-1).
@@ -345,19 +361,33 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     ? { ...baseProviderPrefs, connectionId: engineAccess.connectionId, model: engineAccess.defaultModel ?? modelAccess?.connections.find(c => c.id === engineAccess.connectionId)?.models[0]?.id ?? baseProviderPrefs.model }
     : baseProviderPrefs
   const selectedProvider = providerLocked ? activeProvider : composerState.provider
-  const harnessOwner = `${chatId ?? ""}:${selectedProvider}`
+  const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
+  const showPlanMode = providerConfig?.supportsPlanMode ?? false
+  // Claude lists Plan among its modes; other engines switch it with /plan, as Codex does.
+  const planSlash = showPlanMode && selectedProvider !== "claude"
+  const commandSelection: RuntimeCommandSelection = {
+    provider: selectedProvider,
+    model: providerPrefs.model,
+    modelOptions: composerModelOptions(providerPrefs),
+    planMode: showPlanMode ? providerPrefs.planMode : false,
+  }
+  const commandSelectionKey = runtimeCommandSelectionKey(commandSelection)
+  useEffect(() => {
+    if (runtimeChatId) onPrepareCommands?.(commandSelection)
+  }, [runtimeChatId, commandSelectionKey, onPrepareCommands])
+  const harnessOwner = `${runtimeChatId ?? ""}:${selectedProvider}`
   const harnessOwnerRef = useRef(harnessOwner)
   harnessOwnerRef.current = harnessOwner
   const [engineHarness, setEngineHarness] = useState<{ owner: string; snapshot: ChatHarnessSnapshot } | null>(null)
   const matchingHarness = harness?.capabilities.engine === selectedProvider ? harness : engineHarness?.owner === harnessOwner ? engineHarness.snapshot : undefined
   useEffect(() => {
-    if (!chatId || !onReadHarness || matchingHarness) return
+    if (!runtimeChatId || !onReadHarness || matchingHarness) return
     let cancelled = false
     void onReadHarness(selectedProvider).then(snapshot => {
       if (!cancelled && harnessOwnerRef.current === harnessOwner && snapshot?.capabilities.engine === selectedProvider) setEngineHarness({ owner: harnessOwner, snapshot })
     }).catch(() => {})
     return () => { cancelled = true }
-  }, [chatId, selectedProvider, harnessOwner, matchingHarness, onReadHarness])
+  }, [runtimeChatId, selectedProvider, harnessOwner, matchingHarness, onReadHarness])
   async function changeExecutionPolicy(policy: NativeExecutionPolicy, revision: number) {
     try {
       await onExecutionPolicyChange?.(policy, revision)
@@ -368,8 +398,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       }
     }
   }
-  const providerConfig = availableProviders.find((provider) => provider.id === selectedProvider) ?? availableProviders[0]
-  const showPlanMode = providerConfig?.supportsPlanMode ?? false
   const activeContextWindow = useMemo(() => {
     if (providerPrefs.provider !== "claude") {
       return contextWindowSnapshot
@@ -526,6 +554,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     } as ComposerState))
   }
 
+  function setUltracode(ultracode: boolean) {
+    updateComposerState((state) => {
+      if (state.provider !== "claude") return state
+      const { ultracode: _previous, ...modelOptions } = state.modelOptions
+      return { ...state, modelOptions: ultracode ? { ...modelOptions, ultracode: true } : modelOptions }
+    })
+  }
+
   function setClaudeContextWindow(contextWindow: ClaudeContextWindow) {
     updateComposerState(
       (state) => state.provider !== "claude"
@@ -666,6 +702,11 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   }), [enqueueFiles, setValue])
 
   async function handleSubmit(steer?: boolean) {
+    if (planSlash && value.trim() === "/plan") {
+      toggleEffectivePlanMode()
+      setValue("")
+      return
+    }
     if (!canSubmit || hasPendingUploads || submissionRef.current) return
 
     const submission = {}
@@ -676,17 +717,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     const nextValue = value
     const previousAttachments = attachmentsRef.current
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
-    let modelOptions: AccessModelOptions
-    if (providerPrefs.provider === "claude") {
-      modelOptions = { claude: { ...providerPrefs.modelOptions } }
-    } else if (providerPrefs.provider === "pi") {
-      modelOptions = { pi: { ...providerPrefs.modelOptions } }
-    } else if (providerPrefs.provider === "opencode") {
-      modelOptions = {}
-    } else {
-      modelOptions = { codex: { ...providerPrefs.modelOptions } }
-    }
-    if (providerPrefs.connectionId) modelOptions.connectionId = providerPrefs.connectionId
+    const modelOptions = composerModelOptions(providerPrefs)
     const submitOptions = {
       steer,
       provider: selectedProvider,
@@ -702,7 +733,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     await runRetainedDraftSubmission({
       submit: async () => {
         if (onExecuteCommand) {
-          const invocation = resolveRuntimeSlash(nextValue, matchingCatalog)
+          // A slash command typed while the engine is still starting waits for its list instead of failing.
+          let catalog = catalogRef.current
+          if (isSlashInput(nextValue) && runtimeChatId && commandCatalog !== undefined) {
+            const deadline = Date.now() + 30_000
+            while (runtimeCatalogSettling(catalogRef.current) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 150))
+            catalog = catalogRef.current
+          }
+          const invocation = resolveRuntimeSlash(nextValue, catalog)
           if (invocation) {
             if (attachmentsForSubmit.length) throw new Error(t("commands:noAttachments"))
             await onExecuteCommand(invocation.command, invocation.args)
@@ -729,29 +767,55 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     if (submissionRef.current === submission) submissionRef.current = null
   }
 
-  const matchingCatalog = commandCatalog?.runtime?.engine === selectedProvider ? commandCatalog : null
+  const matchingCatalog = commandCatalog?.selectionKey
+    ? commandCatalog.selectionKey === commandSelectionKey ? commandCatalog : null
+    : commandCatalog?.runtime?.engine === selectedProvider ? commandCatalog : null
+  const catalogRef = useRef(matchingCatalog)
+  catalogRef.current = matchingCatalog
   // A successful empty discovery is authoritative. Only legacy callers without
   // a registry prop use the supplied list; no provider-wide cache is consulted.
   const effectiveSlashCommands = commandCatalog === undefined ? slashCommands
-    : matchingCatalog?.commands.status === "ready" ? matchingCatalog.commands.items.map(command => runtimeCommandToken(command, matchingCatalog.commands.items)) : []
+    : [...(matchingCatalog?.commands.status === "ready" ? matchingCatalog.commands.items.map(command => runtimeCommandToken(command, matchingCatalog.commands.items)) : []),
+      ...(planSlash && !matchingCatalog?.commands.items.some(command => command.name === "plan") ? ["plan"] : [])]
   const slashMatch = slashDismissed ? null : matchSlashCommands(value, effectiveSlashCommands)
+  // Typing "/" before the native list arrives shows its loading or failure state instead of nothing.
+  const slashPending = !slashMatch && !slashDismissed && commandCatalog !== undefined && Boolean(runtimeChatId)
+    && /^\/\S*$/.test(value) && matchingCatalog?.commands.status !== "ready"
   const activeSlashIndex = slashMatch ? Math.min(slashIndex, slashMatch.matches.length - 1) : 0
   const slashListRef = useRef<HTMLDivElement>(null)
+  const slashPopupRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     slashListRef.current?.children[activeSlashIndex]?.scrollIntoView({ block: "nearest" })
   }, [activeSlashIndex])
   // The popup opens upward — cap it to the space above the composer so it
   // never clips off the viewport top (the landing page centers the composer).
-  const slashOpen = slashMatch !== null
+  const slashOpen = slashMatch !== null || slashPending
   const [slashListMaxHeight, setSlashListMaxHeight] = useState(SLASH_POPUP_MAX_HEIGHT_PX)
   useLayoutEffect(() => {
     if (!slashOpen) return
-    const anchor = slashListRef.current?.parentElement
+    const anchor = slashPopupRef.current?.parentElement
     if (!anchor) return
     setSlashListMaxHeight(slashPopupMaxHeightPx(anchor.getBoundingClientRect().top))
   }, [slashOpen])
 
+  const [dismissedCommandStatus, setDismissedCommandStatus] = useState<string | null>(null)
+  const operation = matchingCatalog?.operation
+  const commandStatus = (() => {
+    if (operation && (operation.status === "running" || operation.status === "busy"))
+      return { key: operation.id, tone: "running" as const, text: operation.phase === "restoring" ? t("commands:restoring") : t("commands:running") }
+    if (commandError && dismissedCommandStatus !== commandError) return { key: commandError, tone: "error" as const, text: translateUiText(commandError) }
+    if (operation && (operation.status === "failed" || operation.status === "cancelled") && dismissedCommandStatus !== operation.id)
+      return { key: operation.id, tone: "error" as const, text: operation.status === "cancelled" ? t("commands:cancelled") : operation.reason || t("commands:failed") }
+    return null
+  })()
+
   function applySlashCommand(command: string) {
+    if (planSlash && command === "plan") {
+      toggleEffectivePlanMode()
+      setValue("")
+      textareaRef.current?.focus()
+      return
+    }
     const next = `/${command} `
     setValue(next)
     textareaRef.current?.focus()
@@ -762,6 +826,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     // send — sending mid-composition strands the committed text in the DOM
     // after React clears state), Esc cancels the candidate (not the turn).
     if (isImeComposingKeyEvent(event.nativeEvent)) return
+
+    if (slashPending && event.key === "Escape") {
+      event.preventDefault()
+      setSlashDismissed(true)
+      return
+    }
 
     if (slashMatch) {
       const active = slashMatch.matches[activeSlashIndex]
@@ -963,32 +1033,25 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                 </div>
               </ScrollArea>
             ) : null}
-            {slashMatch ? (
-              <div
+            {slashOpen ? <div ref={slashPopupRef} className="contents">
+              <SlashCommandMenu
                 ref={slashListRef}
-                style={{ maxHeight: slashListMaxHeight }}
-                className="absolute bottom-full left-2 right-2 z-20 mb-2 overflow-y-auto rounded-2xl border border-border bg-background shadow-lg"
-              >
-                {slashMatch.matches.map((command, i) => (
-                  <button
-                    key={command}
-                    type="button"
-                    // pointerdown (not click) so the textarea keeps focus
-                    onPointerDown={(event) => {
-                      event.preventDefault()
-                      applySlashCommand(command)
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-2 px-3 py-2 text-left text-sm",
-                      i === activeSlashIndex ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60",
-                    )}
-                  >
-                    <span className="shrink-0">/{command}</span>
-                    <span className="truncate text-xs text-muted-foreground">{matchingCatalog?.commands.items.find(item => runtimeCommandToken(item, matchingCatalog.commands.items) === command)?.description}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
+                catalog={commandCatalog === undefined ? undefined : matchingCatalog}
+                matches={slashMatch?.matches ?? null}
+                activeIndex={activeSlashIndex}
+                maxHeight={slashListMaxHeight}
+                busy={commandBusy}
+                onPick={applySlashCommand}
+                hostCommands={planSlash ? { plan: { description: providerPrefs.planMode ? t("harness:planOff") : t("harness:planSlash"), icon: ListTodo } } : undefined}
+                onRetry={onReadCommands ? () => { void onReadCommands() } : undefined}
+              />
+            </div> : null}
+            {commandStatus ? <div role={commandStatus.tone === "error" ? "alert" : "status"} className={cn("flex items-center gap-2 px-4 pt-2.5 text-xs", commandStatus.tone === "error" ? "text-destructive" : "text-muted-foreground")}>
+              {commandStatus.tone === "running" ? <Loader2 aria-hidden className="size-3.5 shrink-0 animate-spin motion-reduce:animate-none" /> : null}
+              <span className="min-w-0 flex-1 truncate" title={commandStatus.text}>{commandStatus.text}</span>
+              {commandStatus.tone === "running" && onCancelCommand ? <button type="button" onClick={() => { void onCancelCommand() }} className="shrink-0 rounded px-1.5 py-0.5 hover:bg-muted">{t("common:cancel")}</button>
+                : <button type="button" aria-label={t("common:dismiss")} onClick={() => setDismissedCommandStatus(commandStatus.key)} className="shrink-0 rounded p-0.5 hover:bg-muted"><X aria-hidden className="size-3" /></button>}
+            </div> : null}
             <Textarea
               ref={setTextareaRefs}
               placeholder={t("chat:buildSomething")}
@@ -1034,21 +1097,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
               </label>
               {/* Stays outside the scrolling chips: the memory state must always be in view. */}
               <MemoryToggle chatId={chatId} />
-              {chatId && onReadCommands && onExecuteCommand && onCancelCommand ? <RuntimeCommandControl
-                key={`${chatId}:${selectedProvider}`}
-                chatId={chatId}
-                catalog={matchingCatalog}
-                busy={commandBusy}
-                error={commandError}
-                disabled={disabled}
-                onRefresh={onReadCommands}
-                onExecute={onExecuteCommand}
-                onCancel={onCancelCommand}
-                onInsert={name => {
-                  setValue(current => `/${name} ${/^\/\S*$/.test(current) ? "" : current}`)
-                  textareaRef.current?.focus()
-                }}
-              /> : null}
               <div className="flex min-w-0 flex-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 <ChatPreferenceControls
                   className="ml-auto w-max md:justify-end"
@@ -1070,6 +1118,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                     switch (change.type) {
                       case "claudeReasoningEffort":
                         setReasoningEffort(change.effort)
+                        setUltracode(false)
+                        break
+                      case "ultracode":
+                        setUltracode(change.ultracode)
                         break
                       case "codexReasoningEffort":
                         setReasoningEffort(change.effort)
@@ -1093,12 +1145,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
                   }}
                   planMode={providerPrefs.planMode}
                   onPlanModeChange={setEffectivePlanMode}
-                  includePlanMode={showPlanMode}
+                  includePlanMode={false}
                 />
-                {chatId && matchingHarness && onExecutionPolicyChange ? (
-                  <ExecutionPolicyControl chatId={chatId} snapshot={matchingHarness} disabled={disabled} onChange={changeExecutionPolicy} />
-                ) : null}
               </div>
+              {planSlash && providerPrefs.planMode ? (
+                <button type="button" onClick={() => setEffectivePlanMode(false)} aria-label={t("harness:planOff")} title={t("harness:planOn")}
+                  className="group flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[13px] text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <ListTodo aria-hidden className="size-3.5" />{t("harness:plan")}<X aria-hidden className="size-3 text-muted-foreground group-hover:text-foreground" />
+                </button>
+              ) : null}
+              {runtimeChatId && matchingHarness && onExecutionPolicyChange ? (
+                <ExecutionPolicyControl chatId={runtimeChatId} snapshot={matchingHarness} disabled={disabled} onChange={changeExecutionPolicy}
+                  planMode={showPlanMode ? providerPrefs.planMode : false} onPlanModeChange={showPlanMode ? setEffectivePlanMode : undefined} />
+              ) : null}
               {activeContextWindow ? (
                 <div className="flex shrink-0 items-center px-1">
                   <ContextWindowMeter usage={activeContextWindow} />

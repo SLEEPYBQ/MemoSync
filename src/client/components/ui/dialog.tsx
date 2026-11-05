@@ -31,6 +31,9 @@ const sizeClasses = {
   lg: "max-w-lg",
 }
 
+/** True inside a modal dialog, whose scroll lock would otherwise swallow wheel events in portaled menus. */
+export const InsideDialogContext = React.createContext(false)
+
 const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content> & {
@@ -57,7 +60,7 @@ const DialogContent = React.forwardRef<
         className,
       )}
     >
-      {children}
+      <InsideDialogContext.Provider value>{children}</InsideDialogContext.Provider>
       {showClose ? <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-focus/60 focus:ring-offset-1 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
         <X className="h-4 w-4" />
         <span className="sr-only">{t("common:close")}</span>

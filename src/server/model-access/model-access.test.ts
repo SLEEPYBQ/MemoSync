@@ -592,6 +592,20 @@ describe("scoped account-model cache", () => {
     utimesSync(file, before.atime, new Date(before.mtimeMs + 60_000))
   }
 
+  test("Claude Code rewriting .claude.json keeps the model list until the account changes", async () => {
+    const f = accountFixture()
+    const account = (accountUuid: string, numStartups: number) => writeFileSync(join(f.home, ".claude.json"), JSON.stringify({ numStartups, oauthAccount: { accountUuid } }))
+    account("account-a", 1)
+    const service = await seedCache(f)
+    account("account-a", 2)
+    touchMetadata(join(f.home, ".claude.json"))
+    expect(service.accountModels("claude")).toEqual(catalog("claude"))
+    writeFileSync(join(f.home, ".claude.json"), '{"numStartups":3,"oauth')
+    expect(service.accountModels("claude")).toEqual(catalog("claude"))
+    account("account-b", 3)
+    expect(service.accountModels("claude")).toBeUndefined()
+  })
+
   test("a restart restores labels, aliases, effort metadata and a non-first default even when discovery fails", async () => {
     const f = accountFixture()
     await seedCache(f)
@@ -668,7 +682,7 @@ describe("scoped account-model cache", () => {
       ["the executable file metadata changes", f => { touchMetadata(f.executable[engine].path!) }],
       ...(engine === "claude"
         ? [
-          ["the OAuth account metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".claude.json")) }],
+          ["the OAuth account changes", (f: ReturnType<typeof accountFixture>) => { writeFileSync(join(f.home, ".claude.json"), JSON.stringify({ oauthAccount: { accountUuid: "another-account" } })) }],
           ["settings metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".claude", "settings.json")) }],
         ] as [string, (f: ReturnType<typeof accountFixture>) => void][]
         : [["config metadata changes", (f: ReturnType<typeof accountFixture>) => { touchMetadata(join(f.home, ".codex", "config.toml")) }]] as [string, (f: ReturnType<typeof accountFixture>) => void][]),

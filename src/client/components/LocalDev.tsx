@@ -21,7 +21,11 @@ import { useNavigate } from "react-router-dom"
 import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
 import { PageHeader } from "../app/PageHeader"
-import type { SocketStatus } from "../app/socket"
+import type { AppSocket, SocketStatus } from "../app/socket"
+import { useLandingDraft } from "../app/useLandingDraft"
+import { useRuntimeCommands } from "../app/ChatPage/useRuntimeCommands"
+import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../stores/chatPreferencesStore"
+import type { ChatHarnessSnapshot } from "../../shared/harness-capabilities"
 import type { AppState } from "../app/useAppState"
 import { copyTextToClipboard } from "../lib/clipboard"
 import { getPathBasename } from "../lib/formatters"
@@ -43,6 +47,7 @@ interface LocalDevProps {
   newProjectOpen: boolean
   onNewProjectOpenChange: (open: boolean) => void
   onCreateProject: (project: { mode: "new" | "existing"; localPath: string; title: string }) => Promise<void>
+  socket: AppSocket
   onSend: AppState["handleSend"]
   availableProviders: AppState["availableProviders"]
   /** localPath → projectId for projects the server already knows (enables attachment uploads pre-send). */
@@ -282,6 +287,7 @@ export function LocalDevContent({
   newProjectOpen,
   onNewProjectOpenChange,
   onCreateProject,
+  socket,
   onSend,
   availableProviders,
   projectIdByPath,
@@ -296,6 +302,9 @@ export function LocalDevContent({
   const [pickedPath, setPickedPath] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
+  const { draft, runtime } = useLandingDraft(socket, selectedPath, isConnected)
+  const draftChatId = draft?.chatId ?? null
+  const commands = useRuntimeCommands(socket, draftChatId, runtime?.provider ?? null, isConnected, runtime?.commandCatalog)
   const machineName = snapshot?.machine.displayName ?? t("chat:thisMachine")
 
   const { summary, attentionCount } = useLandingMemorySummary(isConnected)
@@ -402,11 +411,27 @@ export function LocalDevContent({
                 key="landing"
                 onSubmit={(value, options) => {
                   if (!selectedPath) return Promise.reject(new Error(t("chat:openAProjectFirst")))
-                  return onSend(value, { ...options, projectLocalPath: selectedPath })
+                  return onSend(value, { ...options, projectLocalPath: selectedPath, draft: draft ?? undefined })
                 }}
                 disabled={!selectedPath}
                 chatId={null}
+                nativeChatId={draftChatId}
                 draftKey="landing"
+                commandCatalog={draftChatId ? commands.catalog : undefined}
+                commandBusy={commands.busy}
+                commandError={commands.error}
+                onPrepareCommands={commands.prepare}
+                onReadCommands={commands.refresh}
+                onExecuteCommand={draftChatId ? async (command, args) => {
+                  await commands.execute(command, args)
+                  const preferences = useChatPreferencesStore.getState()
+                  preferences.initializeComposerForChat(draftChatId, { sourceState: preferences.getComposerState(NEW_CHAT_COMPOSER_ID) })
+                  navigate(`/chat/${draftChatId}`)
+                } : undefined}
+                onCancelCommand={commands.cancel}
+                harness={runtime?.harness}
+                onReadHarness={draftChatId ? engine => socket.command<ChatHarnessSnapshot>({ type: "chat.readHarness", chatId: draftChatId, engine }) : undefined}
+                onExecutionPolicyChange={draftChatId ? (policy, expectedRevision) => socket.command({ type: "chat.setExecutionPolicy", chatId: draftChatId, policy, expectedRevision }) : undefined}
                 projectId={selectedPath ? projectIdByPath[selectedPath] ?? null : null}
                 inputElementRef={composerElementRef}
                 activeProvider={null}

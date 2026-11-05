@@ -99,6 +99,8 @@ The audit is a model judgment and can be wrong.
 - Open an item to edit it, read its history, or archive it.
 - **Memory files** keeps a Markdown copy for other tools, and imports an existing `CLAUDE.md` as candidates for review.
 
+**Import memory**, at the top of the board, brings in what Claude Code and Codex already remember. A model you pick splits their notes into short items, sorted into personal preferences and project memory. Nothing is saved until you review it. Later imports propose only what changed, and anything you remove stays under **Removed**, where you can bring it back.
+
 **The Memory Record**, on the right of every chat, logs each turn: what was proposed, selected, cited, stopped and audited. It survives context compaction, so you and the agent can still refer back to it.
 
 ### Automatic
@@ -112,7 +114,7 @@ Reviewing every turn pays off when memory matters, and is too much for a quick q
 
 ### Mac app
 
-Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest), `arm64` for Apple silicon or `x64` for Intel, and drag MemoSync to Applications.
+Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) and drag MemoSync to Applications. The app runs on Apple silicon Macs; on an Intel Mac, run it [from source](#from-source).
 
 The app isn't notarized yet, so macOS blocks it the first time. Try to open it, then go to **System Settings → Privacy & Security** and choose **Open Anyway**.
 
@@ -174,8 +176,10 @@ MemoSync finds `claude` and `codex` on your `PATH` and in the usual install fold
 - **+** to attach files, or drag them in;
 - the **Memory** menu: **Off** applies to this chat, while **Ask** and **Auto** set the control mode below;
 - the engine and the model;
-- reasoning effort;
-- Plan Mode, where the agent proposes a plan and waits for you before it acts.
+- reasoning effort, plus **Ultracode** on Claude models that support it;
+- the **Mode** menu: how much the agent may do without asking, and Plan Mode, where it proposes a plan and waits for you before it acts.
+
+Type `/` in the message box for the engine's own commands and skills. Both work before the first message.
 
 **In Settings → Memory:**
 
@@ -216,6 +220,8 @@ Everything MemoSync stores lives under `~/.memosync/data/` on your machine:
 - a local usage log of how the memory features are used.
 
 Nothing is uploaded by MemoSync. Your model provider does receive the conversation, the selected memories and the project context the agent reads.
+
+Importing reads the memory folders of Claude Code and Codex without changing them. Refining sends the selected memory to the model you pick, in a one-off session with no tools that leaves nothing in the engine's own history.
 
 The agent and its terminals run as your user, with access to your files. Profile isolation separates configuration, not the filesystem.
 

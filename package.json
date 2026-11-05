@@ -1,7 +1,7 @@
 {
   "name": "memosync",
   "type": "module",
-  "version": "0.42.0",
+  "version": "0.43.0",
   "description": "MemoSync — co-manage your coding agent's memory: review what it keeps, choose what it uses, audit how it used it",
   "license": "MIT",
   "keywords": [
@@ -34,7 +34,7 @@
     "build": "bun run build:client && bun run build:export-viewer",
     "build:client": "vite build",
     "build:export-viewer": "vite build --config vite.export-viewer.config.ts",
-    "desktop:dev": "bun run desktop/prepare.ts && bun --cwd desktop run dev",
+    "desktop:dev": "bun run desktop/prepare.ts && bun run --cwd desktop dev",
     "desktop:install": "bun install --cwd desktop --frozen-lockfile",
     "desktop:package:mac": "bun run desktop/package-mac.ts",
     "desktop:smoke": "bun run desktop/prepare.ts && bun test desktop/runtime.test.ts --timeout 30000",

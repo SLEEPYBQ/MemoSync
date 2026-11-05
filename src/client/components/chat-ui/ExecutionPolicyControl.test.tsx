@@ -5,6 +5,7 @@ import { ExecutionPolicyControl, executionPolicyKey } from "./ExecutionPolicyCon
 
 function snapshot(effective: NativeExecutionPolicy | null, desired: NativeExecutionPolicy): ChatHarnessSnapshot {
   return {
+    nativeRuntime: effective ? "present" : "absent",
     capabilities: { engine: desired.engine, revision: 1, capabilities: [], executionPolicies: [] },
     policy: {
       desired,
@@ -27,11 +28,52 @@ describe("execution permission state", () => {
     expect(html).not.toContain("Full access")
   })
 
-  test("no native acknowledgement does not present the desired mode as effective", () => {
+  test("before startup the composer shows the selected launch configuration", () => {
     const desired: NativeExecutionPolicy = { engine: "claude", permissionMode: "acceptEdits" }
     const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={snapshot(null, desired)} onChange={async () => undefined} />)
-    expect(html).toContain("Not confirmed")
-    expect(html).not.toContain("Accept file edits")
+    expect(html).toContain("Accept edits")
+    expect(html).not.toContain("Not confirmed")
+    expect(html).not.toContain("Waiting to apply")
+  })
+
+  test("a prepared session with no earlier policy shows the selection without a warning", () => {
+    const desired: NativeExecutionPolicy = { engine: "pi", toolGate: "ask" }
+    const prepared = snapshot(null, desired)
+    prepared.nativeRuntime = "present"
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={prepared} onChange={async () => undefined} />)
+    expect(html).toContain("Ask before tool use")
+    expect(html).not.toContain("Not confirmed")
+    expect(html).not.toContain("Waiting to apply")
+  })
+
+  test("an admitted native turn retains its real pending state", () => {
+    const desired: NativeExecutionPolicy = { engine: "claude", permissionMode: "acceptEdits" }
+    const starting = snapshot(null, desired)
+    starting.nativeRuntime = "starting"
+    starting.policy.boundaries[0]!.turnId = "turn-starting"
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={starting} onChange={async () => undefined} />)
+    expect(html).toContain("Starting the native session")
+    expect(html).toContain("Accept edits")
+  })
+
+  test("a closed runtime cannot keep a historical policy on the composer", () => {
+    const previous: NativeExecutionPolicy = { engine: "claude", permissionMode: "default" }
+    const desired: NativeExecutionPolicy = { engine: "claude", permissionMode: "acceptEdits" }
+    const closed = snapshot(previous, desired)
+    closed.nativeRuntime = "absent"
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={closed} onChange={async () => undefined} />)
+    expect(html).toContain("Accept edits")
+    expect(html).not.toContain("Ask when needed")
+    expect(html).not.toContain("Waiting to apply")
+  })
+
+  test("a rejected launch keeps its error status visible", () => {
+    const desired: NativeExecutionPolicy = { engine: "claude", permissionMode: "acceptEdits" }
+    const rejected = snapshot(null, desired)
+    rejected.policy.status = "rejected"
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={rejected} onChange={async () => undefined} />)
+    expect(html).toContain("Accept edits")
+    expect(html).toContain("Rejected")
   })
 
   test("Pi advertises its tool boundary in the composer label", () => {

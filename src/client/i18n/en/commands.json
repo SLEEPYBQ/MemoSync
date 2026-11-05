@@ -5,7 +5,10 @@
   "skills": "Skills",
   "connectors": "Connectors",
   "refresh": "Refresh native capabilities",
-  "notReady": "Commands become available after this chat starts a native session. Start a conversation, then refresh this menu.",
+  "preparing": "Loading native tools…",
+  "refreshRequired": "Refresh required",
+  "configured": "Configured",
+  "notReady": "Native tools are not ready. Refresh and try again.",
   "discoveryUnavailable": "The native runtime has not confirmed this list. Refresh to check again.",
   "compactUnavailable": "Context compaction is not verified for this runtime.",
   "noCommands": "This session reported no commands.",
@@ -37,5 +40,10 @@
   "loadFailed": "Could not load native capabilities.",
   "executeFailed": "Could not complete the native command.",
   "unknownCommand": "This command is not available in the current native session. Open Tools to see supported commands.",
-  "noAttachments": "Native commands do not accept these attachments. Remove the attachments before running the command."
+  "noAttachments": "Native commands do not accept these attachments. Remove the attachments before running the command.",
+  "prepareFailed": "Couldn't start the native session",
+  "retry": "Retry",
+  "search": "Search",
+  "noMatches": "No matches",
+  "ambiguousCommand": "Several commands are named /{{name}}. Pick one from the / menu."
 }

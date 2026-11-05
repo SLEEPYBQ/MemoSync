@@ -126,6 +126,7 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_created":
       return 1
     case "chat_renamed":
+    case "chat_promoted":
     case "chat_provider_set":
     case "chat_execution_policy_set":
     case "chat_execution_policy_state_set":
@@ -152,9 +153,12 @@ function getReplayEventPriority(event: StoreEvent) {
     case "chat_last_message_at_set":
       return 9
     case "chat_deleted":
+    case "chat_draft_discarded":
     case "chat_archived":
     case "chat_unarchived":
       return 10
+    case "project_draft_discarded":
+      return 11
   }
 }
 
@@ -244,15 +248,20 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
   switch (event.type) {
     case "project_opened":
       return isString(event.projectId) && isString(event.localPath) && isString(event.title)
+        && (event.draftOnly === undefined || typeof event.draftOnly === "boolean")
     case "project_sidebar_renamed":
       return isString(event.projectId) && isNullableString(event.title)
     case "project_removed":
+    case "project_draft_discarded":
       return isString(event.projectId)
     case "chat_created":
       return hasChatId() && isString(event.projectId) && isString(event.title)
+        && (event.draft === undefined || typeof event.draft === "boolean")
     case "chat_renamed":
       return hasChatId() && isString(event.title)
     case "chat_deleted":
+    case "chat_promoted":
+    case "chat_draft_discarded":
     case "chat_archived":
     case "chat_unarchived":
     case "turn_started":
@@ -404,6 +413,7 @@ export class EventStore {
     await this.replayLogs()
     await this.hydrateChatMetadataFromTranscripts()
     await this.loadSidebarProjectOrder()
+    await this.cleanupDrafts()
     if (!(await this.hasLegacyTranscriptData()) && await this.shouldCompact()) {
       await this.compact()
     }
@@ -687,6 +697,7 @@ export class EventStore {
           id: event.projectId,
           localPath,
           title: event.title,
+          ...(event.draftOnly ? { draftOnly: true } : {}),
           createdAt: event.timestamp,
           updatedAt: event.timestamp,
         }
@@ -700,6 +711,14 @@ export class EventStore {
         project.deletedAt = event.timestamp
         project.updatedAt = event.timestamp
         this.state.projectIdsByPath.delete(project.localPath)
+        break
+      }
+      case "project_draft_discarded": {
+        const project = this.state.projectsById.get(event.projectId)
+        if (!project?.draftOnly) break
+        if ([...this.state.chatsById.values()].some(chat => chat.projectId === project.id && !chat.deletedAt)) break
+        this.state.projectsById.delete(project.id)
+        if (this.state.projectIdsByPath.get(project.localPath) === project.id) this.state.projectIdsByPath.delete(project.localPath)
         break
       }
       case "project_sidebar_renamed": {
@@ -717,6 +736,7 @@ export class EventStore {
       const chat = {
           id: event.chatId,
           projectId: event.projectId,
+          ...(event.draft ? { draft: true } : {}),
           title: event.title,
           ...(event.titleUiText ? { titleUiText: event.titleUiText } : {}),
           createdAt: event.timestamp,
@@ -732,6 +752,27 @@ export class EventStore {
           lastTurnOutcome: null,
         }
         this.state.chatsById.set(chat.id, chat)
+        // Explicit chat creation also opens a project previously used only by a composer.
+        if (!event.draft) this.promoteDraftProject(event.projectId, event.timestamp)
+        break
+      }
+      case "chat_promoted": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat?.draft || chat.deletedAt) break
+        delete chat.draft
+        chat.updatedAt = event.timestamp
+        this.promoteDraftProject(chat.projectId, event.timestamp)
+        break
+      }
+      case "chat_draft_discarded": {
+        const chat = this.state.chatsById.get(event.chatId)
+        if (!chat?.draft) break
+        this.state.chatsById.delete(chat.id)
+        this.state.queuedMessagesByChatId.delete(chat.id)
+        this.legacyMessagesByChatId.delete(chat.id)
+        this.deleteCachedTranscript(chat.id)
+        this.pendingRecencyStamps.delete(chat.id)
+        this.chatsWithRecencyStamp.delete(chat.id)
         break
       }
       case "chat_renamed": {
@@ -1031,12 +1072,14 @@ export class EventStore {
     return result
   }
 
+  /** Caller owns the write chain; also used by conditional draft transitions. */
+  private async writeEvent(filePath: string, event: StoreEvent) {
+    await appendFile(filePath, `${JSON.stringify(event)}\n`, "utf8")
+    this.applyEvent(event)
+  }
+
   private append<TEvent extends StoreEvent>(filePath: string, event: TEvent) {
-    const payload = `${JSON.stringify(event)}\n`
-    return this.enqueueWrite(async () => {
-      await appendFile(filePath, payload, "utf8")
-      this.applyEvent(event)
-    })
+    return this.enqueueWrite(() => this.writeEvent(filePath, event))
   }
 
   private transcriptPath(chatId: string) {
@@ -1077,28 +1120,114 @@ export class EventStore {
   }
 
   async openProject(localPath: string, title?: string) {
-    const normalized = resolveLocalPath(localPath)
-    const existingId = this.state.projectIdsByPath.get(normalized)
-    if (existingId) {
-      const existing = this.state.projectsById.get(existingId)
-      if (existing && !existing.deletedAt) {
-        return existing
+    return this.enqueueWrite(async () => {
+      const normalized = resolveLocalPath(localPath)
+      const existingId = this.state.projectIdsByPath.get(normalized)
+      if (existingId) {
+        const existing = this.state.projectsById.get(existingId)
+        if (existing && !existing.deletedAt && !existing.draftOnly) {
+          return existing
+        }
       }
-    }
 
-    const hiddenProject = [...this.state.projectsById.values()]
-      .find((project) => project.localPath === normalized && project.deletedAt)
-    const projectId = hiddenProject?.id ?? crypto.randomUUID()
-    const event: ProjectEvent = {
-      v: STORE_VERSION,
-      type: "project_opened",
-      timestamp: Date.now(),
-      projectId,
-      localPath: normalized,
-      title: title?.trim() || path.basename(normalized) || normalized,
+      const hiddenProject = [...this.state.projectsById.values()]
+        .find((project) => project.localPath === normalized && project.deletedAt)
+      const projectId = existingId ?? hiddenProject?.id ?? crypto.randomUUID()
+      const event: ProjectEvent = {
+        v: STORE_VERSION,
+        type: "project_opened",
+        timestamp: Date.now(),
+        projectId,
+        localPath: normalized,
+        title: title?.trim() || path.basename(normalized) || normalized,
+      }
+      await this.writeEvent(this.projectsLogPath, event)
+      return this.state.projectsById.get(projectId)!
+    })
+  }
+
+  private promoteDraftProject(projectId: string, timestamp: number) {
+    const project = this.state.projectsById.get(projectId)
+    if (!project?.draftOnly || project.deletedAt) return
+    delete project.draftOnly
+    project.updatedAt = timestamp
+  }
+
+  async ensureDraft(target: { projectId: string } | { localPath: string }) {
+    // Check and creation share the write chain: simultaneous composers get one id.
+    return this.enqueueWrite(async () => {
+      let project
+      if ("projectId" in target) {
+        project = this.getProject(target.projectId)
+        if (!project) throw new Error("Project not found")
+      } else {
+        const localPath = resolveLocalPath(target.localPath)
+        const existingId = this.state.projectIdsByPath.get(localPath)
+        project = existingId ? this.getProject(existingId) : null
+        if (!project) {
+          const projectId = crypto.randomUUID()
+          await this.writeEvent(this.projectsLogPath, {
+            v: STORE_VERSION, type: "project_opened", timestamp: Date.now(),
+            projectId, localPath, title: path.basename(localPath) || localPath, draftOnly: true,
+          })
+          project = this.getProject(projectId)!
+        }
+      }
+      const existing = [...this.state.chatsById.values()]
+        .find(chat => chat.projectId === project.id && chat.draft && !chat.deletedAt)
+      if (existing) return { chatId: existing.id, projectId: project.id }
+      const chatId = crypto.randomUUID()
+      await this.writeEvent(this.chatsLogPath, {
+        v: STORE_VERSION, type: "chat_created", timestamp: Date.now(), chatId,
+        projectId: project.id, title: "New Chat", titleUiText: { code: "newChat" },
+        executionPolicyVersion: 1, draft: true,
+      })
+      return { chatId, projectId: project.id }
+    })
+  }
+
+  async promoteDraft(chatId: string) {
+    return this.enqueueWrite(async () => {
+      const chat = this.requireChat(chatId)
+      if (!this.getProject(chat.projectId)) throw new Error("Project not found")
+      if (!chat.draft) return
+      await this.writeEvent(this.chatsLogPath, {
+        v: STORE_VERSION, type: "chat_promoted", timestamp: Date.now(), chatId,
+      })
+    })
+  }
+
+  private async discardDraftProject(projectId: string) {
+    const project = this.state.projectsById.get(projectId)
+    if (!project?.draftOnly) return
+    if ([...this.state.chatsById.values()].some(chat => chat.projectId === projectId && !chat.deletedAt)) return
+    await this.writeEvent(this.projectsLogPath, {
+      v: STORE_VERSION, type: "project_draft_discarded", timestamp: Date.now(), projectId,
+    })
+  }
+
+  async discardDraft(chatId: string) {
+    return this.enqueueWrite(async () => {
+      const chat = this.state.chatsById.get(chatId)
+      // Promotion and discard contend on the same chain; the winning transition is final.
+      if (!chat?.draft) return false
+      await this.writeEvent(this.chatsLogPath, {
+        v: STORE_VERSION, type: "chat_draft_discarded", timestamp: Date.now(), chatId,
+      })
+      await this.discardDraftProject(chat.projectId)
+      await rm(this.transcriptPath(chatId), { force: true })
+      return true
+    })
+  }
+
+  private async cleanupDrafts() {
+    for (const chat of [...this.state.chatsById.values()]) {
+      if (chat.draft) await this.discardDraft(chat.id)
     }
-    await this.append(this.projectsLogPath, event)
-    return this.state.projectsById.get(projectId)!
+    // A crash can leave a project_opened event without its chat_created event.
+    await this.enqueueWrite(async () => {
+      for (const project of [...this.state.projectsById.values()]) await this.discardDraftProject(project.id)
+    })
   }
 
   async removeProject(projectId: string) {
@@ -1180,7 +1309,7 @@ export class EventStore {
   async forkChat(sourceChatId: string) {
     const sourceChat = this.requireChat(sourceChatId)
     const sourceSessionToken = sourceChat.sessionToken ?? sourceChat.pendingForkSessionToken ?? null
-    if (!sourceChat.provider || !sourceSessionToken) {
+    if (sourceChat.draft || !sourceChat.provider || !sourceSessionToken) {
       throw new Error("Chat cannot be forked")
     }
 
@@ -1300,7 +1429,7 @@ export class EventStore {
     const prunedChatIds: string[] = []
 
     for (const chat of this.state.chatsById.values()) {
-      if (chat.deletedAt || chat.archivedAt || protectedChatIds.has(chat.id)) continue
+      if (chat.draft || chat.deletedAt || chat.archivedAt || protectedChatIds.has(chat.id)) continue
       if (now - chat.createdAt < maxAgeMs) continue
       if (chat.hasMessages) continue
       // Maintenance must neither insert cold transcripts nor refresh LRU order.
@@ -1723,17 +1852,17 @@ export class EventStore {
   }
 
   listProjects() {
-    return [...this.state.projectsById.values()].filter((project) => !project.deletedAt)
+    return [...this.state.projectsById.values()].filter((project) => !project.deletedAt && !project.draftOnly)
   }
 
-  /** Every non-deleted chat (archived included — their titles still label things). */
+  /** Visible non-deleted chats (archived included — their titles still label things). */
   listChats() {
-    return [...this.state.chatsById.values()].filter((chat) => !chat.deletedAt)
+    return [...this.state.chatsById.values()].filter((chat) => !chat.deletedAt && !chat.draft)
   }
 
   listChatsByProject(projectId: string) {
     return [...this.state.chatsById.values()]
-      .filter((chat) => chat.projectId === projectId && !chat.deletedAt && !chat.archivedAt)
+      .filter((chat) => chat.projectId === projectId && !chat.deletedAt && !chat.archivedAt && !chat.draft)
       .sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))
   }
 
@@ -1772,7 +1901,8 @@ export class EventStore {
     return {
       v: STORE_VERSION,
       generatedAt: Date.now(),
-      projects: this.listProjects().map((project) => ({ ...project })),
+      // Persistence includes drafts even though public lists exclude them.
+      projects: [...this.state.projectsById.values()].filter(project => !project.deletedAt).map((project) => ({ ...project })),
       chats: [...this.state.chatsById.values()].map((chat) => ({ ...chat })),
       queuedMessages: [...this.state.queuedMessagesByChatId.entries()]
         .map(([chatId, entries]) => ({

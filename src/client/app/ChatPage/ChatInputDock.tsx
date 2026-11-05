@@ -6,7 +6,7 @@ import type { ContextWindowSnapshot } from "../../lib/contextWindow"
 import type { AppState } from "../useAppState"
 import type { AgentProvider } from "../../../shared/types"
 import type { ChatHarnessSnapshot, NativeExecutionPolicy } from "../../../shared/harness-capabilities"
-import type { ChatCommandCatalog, RuntimeCommand } from "../../../shared/runtime-commands"
+import type { ChatCommandCatalog, RuntimeCommand, RuntimeCommandSelection } from "../../../shared/runtime-commands"
 
 interface ChatInputDockProps {
   inputRef: RefObject<HTMLDivElement | null>
@@ -26,6 +26,7 @@ interface ChatInputDockProps {
   commandCatalog?: ChatCommandCatalog | null
   commandBusy?: boolean
   commandError?: string | null
+  onPrepareCommands?: (selection: RuntimeCommandSelection) => void
   onReadCommands?: () => Promise<unknown>
   onExecuteCommand?: (command: RuntimeCommand, args?: string) => Promise<unknown>
   onCancelCommand?: () => Promise<unknown>
@@ -60,6 +61,7 @@ export const ChatInputDock = memo(function ChatInputDock({
   commandCatalog,
   commandBusy,
   commandError,
+  onPrepareCommands,
   onReadCommands,
   onExecuteCommand,
   onCancelCommand,
@@ -113,6 +115,7 @@ export const ChatInputDock = memo(function ChatInputDock({
           commandCatalog={commandCatalog}
           commandBusy={commandBusy}
           commandError={commandError}
+          onPrepareCommands={onPrepareCommands}
           onReadCommands={onReadCommands}
           onExecuteCommand={onExecuteCommand}
           onCancelCommand={onCancelCommand}

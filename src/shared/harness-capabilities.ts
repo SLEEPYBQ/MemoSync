@@ -58,6 +58,8 @@ export interface ExecutionPolicyState {
 export interface ChatHarnessSnapshot {
   capabilities: EngineCapabilities
   policy: ExecutionPolicyState
+  /** Host-owned native handle/startup evidence; independent of chat activity and saved resume tokens. */
+  nativeRuntime?: "absent" | "starting" | "present"
 }
 
 /** Frozen at admission. Revalidate against the current revision before dispatch/reply. */

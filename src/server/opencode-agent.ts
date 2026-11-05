@@ -205,7 +205,13 @@ export class OpencodeAgentManager {
     }
   }
 
-  async startTurn(args: StartOpencodeTurnArgs): Promise<HarnessTurn> {
+  /** Create/resume the native session and its tools without submitting model work. */
+  async prepareSession(args: Omit<StartOpencodeTurnArgs, 'content'>): Promise<string> {
+    const prepared = await this.initializeSession({ ...args, content: '' }, true)
+    return prepared.sessionID
+  }
+
+  private async initializeSession(args: StartOpencodeTurnArgs, prepareOnly = false) {
     args = { ...args, cwd: await realpath(args.cwd) }
     args.signal?.throwIfAborted()
     if (this.disposed) throw new Error('OpenCode manager disposed')
@@ -228,16 +234,16 @@ export class OpencodeAgentManager {
     chat.initializing = initialization
     const signal = AbortSignal.any([initialization.controller.signal, AbortSignal.timeout(10_000), ...(args.signal ? [args.signal] : [])])
     const options = { signal }
-    let sessionID = args.sessionToken || '', unclaimedAnalysisSession = ''
+    let sessionID = args.sessionToken || (args.forkSession ? '' : chat.sessionID) || '', unclaimedAnalysisSession = ''
     try {
       if (args.forkSession && sessionID) {
         const response = await chat.client.session.fork({ sessionID }, options)
         sessionID = response.data?.id || ''
-        if (args.agent && sessionID !== args.sessionToken) unclaimedAnalysisSession = sessionID
+        if ((args.agent || prepareOnly) && sessionID !== args.sessionToken) unclaimedAnalysisSession = sessionID
       } else if (!sessionID) {
         const response = await chat.client.session.create({ title: args.agent ? 'MemoSync memory analysis' : 'MemoSync' }, options)
         sessionID = response.data?.id || ''
-        if (args.agent) unclaimedAnalysisSession = sessionID
+        if (args.agent || prepareOnly) unclaimedAnalysisSession = sessionID
       }
       if (!sessionID) throw new Error('OpenCode did not return a session identifier')
       // Existing/forked sessions carry their own rules; server defaults alone
@@ -251,7 +257,7 @@ export class OpencodeAgentManager {
       }
       chat.sessionID = sessionID
       const native = this.getCommandRuntime(args.chatId)!
-      const prepared = args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
+      const prepared = prepareOnly ? undefined : args.prepareContext?.({ nativeSession: native.session, nativeInstance: native.instance, version: native.version })
       if (prepared?.text) {
         await chat.client.session.prompt({ sessionID, noReply: true, parts: [{ type: 'text', text: prepared.text }] }, { ...options, throwOnError: true })
         signal.throwIfAborted()
@@ -280,6 +286,11 @@ export class OpencodeAgentManager {
       if (chat.initializing === initialization) chat.initializing = undefined
       initialized()
     }
+    return { chat, runtime, sessionID, systemPrompt }
+  }
+
+  async startTurn(args: StartOpencodeTurnArgs): Promise<HarnessTurn> {
+    const { chat, runtime, sessionID, systemPrompt } = await this.initializeSession(args)
     const queue = new Queue<HarnessEvent>()
     const started = Date.now()
     let finished = false, cancelled = false, output = false, lastError = '', cost = 0

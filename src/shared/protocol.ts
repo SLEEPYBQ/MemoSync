@@ -149,6 +149,10 @@ export type ClientCommand =
       editor?: EditorOpenSettings
     }
   | { type: "chat.create"; projectId: string }
+  /** Ack: { chatId, projectId }. Hidden until chat.send promotes it. */
+  | { type: "chat.ensureDraft"; projectId: string }
+  | { type: "chat.ensureDraft"; localPath: string }
+  | { type: "chat.discardDraft"; chatId: string }
   | { type: "chat.fork"; chatId: string }
   | { type: "chat.rename"; chatId: string; title: string }
   | { type: "chat.archive"; chatId: string }

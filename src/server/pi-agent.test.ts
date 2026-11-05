@@ -78,6 +78,27 @@ const startupArgs = {
   connection: { provider: "custom" as const, baseUrl: "https://example.test/v1", apiKey: "test-key" },
 }
 
+test('preparing Pi loads native resources without a prompt or model registry request, then reuses the session', async () => {
+  let creations = 0, registryRequests = 0
+  const session = { ...fakeSession(), agent: {}, sessionId: 'prepared-pi',
+    promptTemplates: [{ name: 'fixture', description: 'Fixture' }],
+    resourceLoader: { reload: async () => {}, getSkills: () => ({ skills: [] }) } }
+  const sdk = fakeSdk({ create: async () => { creations++; return session } })
+  const manager = new PiAgentManager({ loadSdk: async () => sdk as never, loadModels: async () => { registryRequests++; return [] } })
+  try {
+    await manager.prepareSession(startupArgs)
+    expect(session.calls.prompts).toBe(0)
+    expect(registryRequests).toBe(0)
+    const prepared = manager.getCommandRuntime(startupArgs.chatId)!
+    expect((await prepared.discover()).commands.items.map(c => c.name)).toEqual(['fixture'])
+    const turn = await manager.startTurn(startupArgs)
+    await collectEvents(turn.stream)
+    expect(creations).toBe(1)
+    expect(manager.getCommandRuntime(startupArgs.chatId)!.instance).toBe(prepared.instance)
+    expect(session.calls.prompts).toBe(1)
+  } finally { manager.dispose() }
+})
+
 describe("Pi execution gates", () => {
   test("a policy expiring during a native extension hook blocks dispatch", async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), "pi-policy-")); tempDirs.push(dataDir)

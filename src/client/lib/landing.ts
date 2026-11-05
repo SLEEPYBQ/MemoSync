@@ -4,9 +4,12 @@ import { t } from "../i18n"
 import type { MemoryItem } from "./memoriesApi"
 import { isMemoryScope } from "./memoryCitations"
 
+/** Agents leave throwaway working directories in the history; they stay pickable but are a poor default. */
+const TEMPORARY_PATH = /^(?:\/private)?\/(?:tmp|var\/folders)(?:\/|$)|[\\/]AppData[\\/]Local[\\/]Temp(?:[\\/]|$)/
+
 export function resolveLandingProjectPath(projectPaths: string[], pickedPath: string | null): string | null {
   if (pickedPath && projectPaths.includes(pickedPath)) return pickedPath
-  return projectPaths[0] ?? null
+  return projectPaths.find(path => !TEMPORARY_PATH.test(path)) ?? projectPaths[0] ?? null
 }
 
 export function landingHeadline(projectName: string | null): string {

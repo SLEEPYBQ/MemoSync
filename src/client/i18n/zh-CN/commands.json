@@ -5,7 +5,10 @@
   "skills": "技能",
   "connectors": "连接器",
   "refresh": "刷新原生能力",
-  "notReady": "聊天启动原生会话后，才能获取可用命令。开始对话后可以刷新这个菜单。",
+  "preparing": "正在读取工具…",
+  "refreshRequired": "需要刷新",
+  "configured": "已配置",
+  "notReady": "原生工具尚未准备好，请刷新后重试。",
   "discoveryUnavailable": "原生运行时尚未确认这份列表，可以刷新后重试。",
   "compactUnavailable": "当前运行时的上下文压缩能力尚未验证。",
   "noCommands": "当前会话没有报告可用命令。",
@@ -37,5 +40,10 @@
   "loadFailed": "无法加载原生能力。",
   "executeFailed": "无法完成原生命令。",
   "unknownCommand": "当前原生会话中没有这个命令。可以打开「工具」查看支持的命令。",
-  "noAttachments": "原生命令不接收这些附件，请先移除附件再执行。"
+  "noAttachments": "原生命令不接收这些附件，请先移除附件再执行。",
+  "prepareFailed": "原生会话启动失败",
+  "retry": "重试",
+  "search": "搜索",
+  "noMatches": "没有匹配项",
+  "ambiguousCommand": "有多个命令叫 /{{name}}，请从 / 菜单里选择。"
 }

@@ -1,9 +1,14 @@
 import * as React from "react"
 import * as PopoverPrimitive from "@radix-ui/react-popover"
 import { cn } from "../../lib/utils"
+import { InsideDialogContext } from "./dialog"
 import { FOCUS_FALLBACK_IGNORE_ATTRIBUTE, RESTORE_CHAT_INPUT_FOCUS_EVENT } from "../../app/chatFocusPolicy"
 
-const Popover = PopoverPrimitive.Root
+/** Inside a dialog the popover takes the scroll lock itself, so its own list still scrolls. */
+function Popover({ modal, ...props }: React.ComponentProps<typeof PopoverPrimitive.Root>) {
+  const insideDialog = React.useContext(InsideDialogContext)
+  return <PopoverPrimitive.Root modal={modal ?? insideDialog} {...props} />
+}
 
 const PopoverTrigger = PopoverPrimitive.Trigger
 

@@ -42,7 +42,7 @@ import { createRelevanceService } from "./memory/relevance"
 import { createReviseInjectionService } from "./memory/revise-injection"
 import { handleMemoryRequest } from "./memory/routes"
 import { NativeMemoryDiscovery } from "./memory/native-discovery"
-import { NativeMemoryImportService, createNativeSemanticExtractor } from "./memory/native-import"
+import { NativeMemoryImportService } from "./memory/native-import"
 import { createSanitizeService } from "./memory/sanitize"
 import { createTraceService } from "./memory/trace"
 import { createTransferService } from "./memory/transfer"
@@ -373,10 +373,18 @@ async function startLockedMemoSyncServer(
         id: `project:${project.id}`, label: project.title, path: project.localPath,
         owner: { scope: "project" as const, projectId: project.id },
       })),
-    ]),
-    semanticExtractor: createNativeSemanticExtractor(memoryLlm),
+    ], { claudeConfigDir: process.env.CLAUDE_CONFIG_DIR, codexHome: process.env.CODEX_HOME }),
+    projectHomes: {
+      open: async (localPath, label) => {
+        const existing = store.listProjects().find(project => path.resolve(project.localPath) === path.resolve(localPath))
+        const project = await store.openProject(localPath, label === localPath ? undefined : label)
+        return { projectId: project.id, created: !existing }
+      },
+      remove: projectId => store.removeProject(projectId),
+    },
     isClaimSuppressed: (content, exactOwner) => memory.store.wasMemorySuppressed(content, exactOwner),
   })
+  onStartupCleanup(() => nativeMemory.close())
   // Cross-context transfer judgment (as-is / rewrite / context-bound) — the
   // route degrades to a verbatim proposal without it.
   const memoryTransfer = createTransferService({ callJson: memoryLlm })
@@ -800,6 +808,7 @@ async function startLockedMemoSyncServer(
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())
     await attempt(() => terminals.closeAll())
+    await attempt(() => nativeMemory.close())
     await attempt(() => memory.close())
     await attempt(() => store.compact())
     if (shutdownErrors.length === 1) throw shutdownErrors[0]

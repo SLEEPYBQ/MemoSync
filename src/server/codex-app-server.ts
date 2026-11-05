@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { discoverCodexCommands } from "./native-command-drivers"
 import type { NativeCommandRuntime } from "./command-registry"
+import type { CodexReviewTarget } from "../shared/runtime-commands"
 import { spawn } from "node:child_process"
 import { killProcessTree } from "./process-utils"
 import { randomUUID } from "node:crypto"
@@ -194,6 +195,8 @@ export interface StartCodexTurnArgs {
   onExecutionPolicyApplied?: (nativeSessionId?: string) => Promise<void>
   /** Append host/memory context as a native developer item before starting this turn. */
   nativeSkill?: { name: string; path: string }
+  /** Uses review/start on the current thread and the same correlated turn event stream. */
+  reviewTarget?: CodexReviewTarget
   prepareContext?: PrepareNativeContext
   developerInstructions?: string | null
   onDynamicToolCall?: PendingTurn["onDynamicToolCall"]
@@ -1095,7 +1098,7 @@ export class CodexAppServerManager {
     const pendingTurn: PendingTurn = {
       turnId: null,
       model: resolveCodexModel(args.model, context.subprocessEnv),
-      planMode: args.planMode,
+      planMode: args.reviewTarget ? false : args.planMode,
       queue,
       startedToolIds: new Set(),
       handledDynamicToolIds: new Set(),
@@ -1149,6 +1152,7 @@ export class CodexAppServerManager {
           }
         }
         if (context.developerInjectionUnsupported || codexProtocolCompat09x()) {
+          if (args.reviewTarget) throw new Error('This Codex runtime cannot append the current context before review/start; upgrade Codex to review with this context')
           // 0.92–0.94 and servers explicitly missing inject_items retain native
           // instructions/history. User text is a visible priority downgrade;
           // collaboration settings are not a reliable developer channel.
@@ -1160,7 +1164,12 @@ export class CodexAppServerManager {
         }
       }
       args.signal?.throwIfAborted()
-      const response = await this.sendRequest<TurnStartResponse>(context, "turn/start", {
+      if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
+      const response = args.reviewTarget
+        ? await this.sendRequest<TurnStartResponse & { reviewThreadId: string }>(context, "review/start", {
+          threadId: context.sessionToken ?? "", target: args.reviewTarget, delivery: "inline",
+        })
+        : await this.sendRequest<TurnStartResponse>(context, "turn/start", {
         threadId: context.sessionToken ?? "",
         input: [
           {
@@ -1186,10 +1195,15 @@ export class CodexAppServerManager {
           },
         },
       } satisfies TurnStartParams)
+      if (args.reviewTarget && (!('reviewThreadId' in response) || response.reviewThreadId !== context.sessionToken)) {
+        await this.stopSession(args.chatId)
+        throw new Error('Codex returned a different review thread for an inline review')
+      }
       if (prepared && !contextInjected) prepared.accepted()
       pendingTurn.turnId = response.turn.id
       if (args.isPolicyCurrent?.() === false) throw new Error("Stale execution policy turn")
-      if (args.onExecutionPolicyApplied) await args.onExecutionPolicyApplied(context.sessionToken ?? undefined)
+      // review/start inherits the acknowledged thread policy; it carries no policy update fields.
+      if (!args.reviewTarget && args.onExecutionPolicyApplied) await args.onExecutionPolicyApplied(context.sessionToken ?? undefined)
       pendingTurn.ready = true
       for (const request of pendingTurn.bufferedRequests.splice(0)) void this.handleServerRequest(context, request)
       if (context.pendingTurn === pendingTurn && !pendingTurn.resolved) {
@@ -1800,7 +1814,17 @@ export class CodexAppServerManager {
     }
   }
 
-  private handleItemCompleted(pendingTurn: PendingTurn, notification: ItemCompletedNotification) {
+  private handleItemCompleted(pendingTurn: PendingTurn, notification: Omit<ItemCompletedNotification, 'item'> & {
+    item: ThreadItem | { type: 'enteredReviewMode'; id: string; review: string } | { type: 'exitedReviewMode'; id: string; review: string }
+  }) {
+    // Public review items can carry the final report without any agentMessage item.
+    if (notification.item.type === 'enteredReviewMode' || notification.item.type === 'exitedReviewMode') {
+      const item = notification.item
+      pendingTurn.queue.push({ type: 'transcript', entry: item.type === 'enteredReviewMode'
+        ? timestamped({ kind: 'status', status: `Review started: ${item.review}` })
+        : timestamped({ kind: 'assistant_text', text: item.review }) })
+      return
+    }
     if (notification.item.type === "agentMessage") {
       pendingTurn.queue.push({
         type: "transcript",
