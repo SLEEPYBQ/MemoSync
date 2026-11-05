@@ -58,6 +58,21 @@ describe('runtime command registry', () => {
     await execute(s, entry.id, 'file with spaces')
     expect(s.submissions).toEqual([{ command: entry, args: 'file with spaces' }])
   })
+  test('Codex structured review and host init retain catalog validation and host-client identity', async () => {
+    const review: RuntimeCommand = { ...entry, id: 'native:review', name: 'review', route: 'review-start' }
+    const init: RuntimeCommand = { ...entry, id: 'host:init', name: 'init', namespace: 'host', owner: 'memosync', route: 'host-prompt' }
+    const s = setup({ discover: async () => result([review, init]) })
+    s.registry.unbind('chat')
+    s.registry.bind('chat', { ...s.binding, identity: { ...s.binding.identity, engine: 'codex' } })
+    await execute(s, review.id, 'base main')
+    await execute(s, init.id)
+    expect(s.submissions).toEqual([{ command: review, args: 'base main' }, { command: init, args: '' }])
+    await expect(execute(s, init.id, 'unexpected')).rejects.toThrow('does not accept')
+    const catalog = s.registry.snapshot('chat')
+    s.registry.invalidate('chat')
+    await expect(s.registry.execute({ type: 'chat.executeCommand', chatId: 'chat', runtimeKey: catalog.runtimeKey!, expectedRevision: catalog.revision, commandId: review.id })).rejects.toThrow('changed')
+    s.registry.dispose()
+  })
   test('normal commands retain the server-admitted originating window for their turn', async () => {
     const s = setup()
     let admitted: string | undefined

@@ -1,5 +1,6 @@
 import { connectionGroups, useModelAccessStore } from "../../model-access/modelAccess"
 import { effortLabel } from "../../i18n/labels"
+import { Switch } from "../ui/switch"
 import { t, useI18n } from "../../i18n"
 import { useEffect, useState, type ComponentType, type SVGProps } from "react"
 import { Box, Brain, Gauge, ListTodo, LockOpen, SquareMenu, SquareMinus } from "lucide-react"
@@ -286,6 +287,7 @@ export type ModelOptionChange =
   | { type: "codexReasoningEffort"; effort: CodexReasoningEffort }
   | { type: "piReasoningEffort"; effort: PiReasoningEffort }
   | { type: "fastMode"; fastMode: boolean }
+  | { type: "ultracode"; ultracode: boolean }
 
 interface ChatPreferenceControlsProps {
   availableProviders: ProviderCatalogEntry[]
@@ -305,6 +307,8 @@ interface ChatPreferenceControlsProps {
   planMode?: boolean
   onPlanModeChange?: (planMode: boolean) => void
   includePlanMode?: boolean
+  /** Codex's Standard/Fast choice; surfaces that run one-off calls leave it out. */
+  showSpeedControl?: boolean
   className?: string
 }
 
@@ -331,6 +335,7 @@ export function ChatPreferenceControls({
   planMode = false,
   onPlanModeChange,
   includePlanMode = true,
+  showSpeedControl = true,
   className,
 }: ChatPreferenceControlsProps) {
   useI18n()
@@ -386,6 +391,8 @@ export function ChatPreferenceControls({
   const showEngineProviderPicker = showProviderPicker && availableProviders.length > 1
   const showPlanMode = includePlanMode && providerConfig?.supportsPlanMode && onPlanModeChange
   const claudeModelOptions = selectedProvider === "claude" ? modelOptions as ClaudeModelOptions : null
+  const ultracodeAvailable = selectedProvider === "claude" && nativeEffortOptions.some(effort => effort.id === "xhigh")
+  const ultracode = ultracodeAvailable && Boolean(claudeModelOptions?.ultracode)
   const codexModelOptions = selectedProvider === "codex" ? modelOptions as CodexModelOptions : null
   const contextWindowOptions = providerConfig.models.find((candidate) => candidate.id === shownModel)?.contextWindowOptions ?? []
   const selectedContextWindow = claudeModelOptions?.contextWindow ?? CLAUDE_CONTEXT_WINDOW_OPTIONS[0].id
@@ -542,7 +549,7 @@ export function ChatPreferenceControls({
         trigger={(
           <>
             <Brain className="h-3.5 w-3.5" />
-            <span>{selectedProvider === "pi"
+            <span>{ultracode ? "Ultracode" : selectedProvider === "pi"
               ? effortLabel(PI_REASONING_OPTIONS.find(effort => effort.id === piEffort)?.label ?? piEffort)
               : effortLabel(nativeEffortOptions.find(effort => effort.id === nativeEffort)?.label ?? nativeEffort ?? "")}</span>
           </>
@@ -560,7 +567,7 @@ export function ChatPreferenceControls({
                 label={effortLabel(effort.label)}
               />
             ))
-          : nativeEffortOptions.map(effort => (
+          : <>{nativeEffortOptions.map(effort => (
               <PopoverMenuItem
                 key={effort.id}
                 onClick={() => {
@@ -568,12 +575,16 @@ export function ChatPreferenceControls({
                   if (selectedProvider === "codex" && isCodexReasoningEffort(effort.id)) onModelOptionChange({ type: "codexReasoningEffort", effort: effort.id })
                   close()
                 }}
-                selected={nativeEffort === effort.id}
+                selected={!ultracode && nativeEffort === effort.id}
                 icon={<Brain className="h-4 w-4 text-muted-foreground" />}
                 label={effortLabel(effort.label)}
                 disabled={selectedProvider === "claude" && !selectedModelEntry?.reasoningEfforts && effort.id === "max" && !supportsClaudeMaxReasoningEffort(shownModel)}
               />
             ))}
+            {ultracodeAvailable ? <div className="mt-1 flex items-center gap-3 border-t border-border px-2 pb-1 pt-2">
+              <span className="min-w-0 flex-1"><span className="block text-sm">Ultracode</span><span className="block text-xs text-muted-foreground">{t("chat:ultracodeHint")}</span></span>
+              <Switch aria-label="Ultracode" checked={ultracode} onCheckedChange={next => onModelOptionChange({ type: "ultracode", ultracode: next })} />
+            </div> : null}</>}
       </InputPopover> : null}
 
       {selectedProvider === "claude" && contextWindowOptions.length > 1 ? (
@@ -603,7 +614,7 @@ export function ChatPreferenceControls({
         </InputPopover>
       ) : null}
 
-      {selectedProvider === "codex" ? (
+      {selectedProvider === "codex" && showSpeedControl ? (
         <InputPopover
           trigger={(
             <>

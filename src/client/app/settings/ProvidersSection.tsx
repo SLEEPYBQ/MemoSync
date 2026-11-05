@@ -39,7 +39,9 @@ function modelOptionsPatch(
 ): Partial<ClaudeModelOptions | CodexModelOptions | PiModelOptions> | null {
   switch (change.type) {
     case "claudeReasoningEffort":
-      return provider === "claude" ? { reasoningEffort: change.effort } : null
+      return provider === "claude" ? { reasoningEffort: change.effort, ultracode: false } : null
+    case "ultracode":
+      return provider === "claude" ? { ultracode: change.ultracode } : null
     case "contextWindow":
       return provider === "claude" ? { contextWindow: change.contextWindow } : null
     case "codexReasoningEffort":

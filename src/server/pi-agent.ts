@@ -780,7 +780,21 @@ export class PiAgentManager {
     return chatSession
   }
 
+  /** Initialize resources and tools without dispatching a prompt or refreshing remote model metadata. */
+  async prepareSession(args: Omit<StartPiTurnArgs, "content">): Promise<string | null> {
+    return this.withSessionStart({ ...args, content: "" }, async input => {
+      if (!input.connection) throw new Error(MISSING_PI_CONNECTION_MESSAGE)
+      const modelCard = Object.hasOwn(input, "modelCard") ? input.modelCard : this.loadModels.peek?.(input.connection, input.model)
+      const session = await this.openSession({ ...input, connection: input.connection, modelCard, effort: resolvePiEffort(modelCard, input.effort) })
+      return session.session.sessionFile ?? null
+    })
+  }
+
   async startTurn(args: StartPiTurnArgs): Promise<HarnessTurn> {
+    return this.withSessionStart(args, input => this.startTurnWithSignal(input))
+  }
+
+  private async withSessionStart<T>(args: StartPiTurnArgs, work: (input: StartPiTurnArgs) => Promise<T>): Promise<T> {
     args.signal?.throwIfAborted()
     if (this.disposed) throw new DOMException("Pi manager has been disposed", "AbortError")
     if (this.pendingStarts.has(args.chatId)) this.closeChat(args.chatId)
@@ -793,7 +807,7 @@ export class PiAgentManager {
     controller.signal.addEventListener("abort", stopForAbort, { once: true })
     args.signal?.addEventListener("abort", relayAbort, { once: true })
     try {
-      return await this.startTurnWithSignal({ ...args, signal: controller.signal })
+      return await work({ ...args, signal: controller.signal })
     } finally {
       args.signal?.removeEventListener("abort", relayAbort)
       controller.signal.removeEventListener("abort", stopForAbort)

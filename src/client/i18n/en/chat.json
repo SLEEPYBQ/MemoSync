@@ -72,6 +72,7 @@
   "initGit": "Init Git",
   "aCorrectionIsRequiredToResume": "A correction is required to resume",
   "whatAreWeBuilding": "What are we building?",
+  "ultracodeHint": "Runs parallel subagents and uses your limits quickly",
   "buildSomething": "Build something...",
   "uploadFailed": "Upload failed",
   "openAProjectBeforeUploadingFiles": "Open a project before uploading files.",

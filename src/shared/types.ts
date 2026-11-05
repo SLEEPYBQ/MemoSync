@@ -197,6 +197,8 @@ export interface ClaudeModelOptions {
   connectionId?: string
   reasoningEffort: ClaudeReasoningEffort
   contextWindow: ClaudeContextWindow
+  /** Session switch for xhigh effort plus standing workflow orchestration; not an effort level. */
+  ultracode?: boolean
 }
 
 export interface CodexModelOptions {

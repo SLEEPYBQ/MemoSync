@@ -45,7 +45,7 @@ export function executionPolicyKey(policy: NativeExecutionPolicy): string {
   }
 }
 
-/** Evidence is deliberately narrow. An enum member or an echoed request is not eligibility. */
+/** Selectability is adapter support, not proof of native eligibility or application. */
 export class CapabilityRegistry {
   private revisions = new Map<AgentProvider, { version: string | undefined; revision: number }>()
   snapshot(engine: AgentProvider, version?: string): EngineCapabilities {
@@ -59,11 +59,13 @@ export class CapabilityRegistry {
       ["Ask for native approvals", { engine, permissionMode: "default" }],
       ["Accept file edits", { engine, permissionMode: "acceptEdits" }],
       ["Deny unapproved operations", { engine, permissionMode: "dontAsk" }],
+      ["Bypass permissions", { engine, permissionMode: "bypassPermissions" }],
       ["Automatic reviewer", { engine, permissionMode: "auto" }],
     ] : engine === "codex" ? [
       ["Workspace sandbox, request approval", { engine, approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "workspace-write" }],
       ["Read-only sandbox, no escalation", { engine, approvalPolicy: "never", approvalsReviewer: "user", sandbox: "read-only" }],
       ["Workspace sandbox, automatic reviewer", { engine, approvalPolicy: "on-request", approvalsReviewer: "auto_review", sandbox: "workspace-write" }],
+      ["Full access", { engine, approvalPolicy: "never", approvalsReviewer: "user", sandbox: "danger-full-access" }],
     ] : engine === "pi" ? [
       ["Ask before tools with side effects", { engine, toolGate: "ask" }],
       ["Read tools only", { engine, toolGate: "read-only" }],
@@ -74,13 +76,15 @@ export class CapabilityRegistry {
       ["Allow native tools", { engine, permission: "allow" }],
     ]
     const executionPolicies: ExecutionPolicyChoice[] = policies.map(([label, policy]) => {
-      const ineligible = (policy.engine === "claude" && policy.permissionMode === "auto") || (policy.engine === "codex" && policy.approvalsReviewer === "auto_review")
+      const eligibilitySensitive = (policy.engine === "claude" && policy.permissionMode === "auto") || (policy.engine === "codex" && policy.approvalsReviewer === "auto_review")
       return { id: executionPolicyKey(policy), label, policy, revision,
         executionOwner: engine === "pi" ? "host" : "native-engine",
         boundary: engine === "pi" ? "tool-gating" : engine === "codex" ? "native-sandbox" : "native-permissions",
-        availability: ineligible ? "unavailable" : verified ? "available" : "unknown",
+        availability: "available",
         proof: { version: version ?? "unknown", source: engine === "pi" ? "Pinned @earendil-works/pi-coding-agent 1.5.0 beforeToolCall adapter" : engine === "claude" ? "Claude SDK 0.3.241 Query.setPermissionMode / canUseTool" : engine === "codex" ? "Codex f79b26cc app-server thread/turn policy API" : "OpenCode SDK 1.19.5 session.update permission rules / permission.reply", level: "versioned-api" },
-        ...(ineligible ? { reason: "Runtime/model eligibility and managed requirements have not been verified." } : !verified ? { reason: engine === "pi" ? "This runtime version has not been verified. Tool gating only; no OS sandbox." : "This runtime version has not been verified." } : engine === "pi" ? { reason: "Tool gating only. Shell subprocesses have no OS sandbox." } : {}),
+        reason: [!verified ? `Runtime version ${version ?? "unknown"} differs from the verified baseline; the native API must acknowledge or reject this policy.` : "Native acknowledgement is required before this policy is effective.",
+          eligibilitySensitive ? "Runtime/model eligibility and managed requirements are decided by the native engine." : "",
+          engine === "pi" ? "Tool gating only. Shell subprocesses have no OS sandbox." : ""].filter(Boolean).join(" "),
       }
     })
     const correlated = engine === "pi" || engine === "codex"
@@ -104,6 +108,24 @@ interface RuntimeState {
   uncertainProcesses: boolean
   restartRequired: boolean
   hasRuntime: boolean
+}
+
+/** Remove a retired runtime's acknowledgement without erasing failures or descendant-process uncertainty. */
+function withoutNativeRuntime(state: ExecutionPolicyState): ExecutionPolicyState {
+  const native = state.boundaries.find(b => b.boundary === "native-runtime")
+  const failed = state.status === "rejected" || state.status === "unsupported"
+  const existing = state.boundaries.filter(b => b.boundary === "existing-processes")
+  const uncertain = existing.some(b => b.status === "unknown")
+  return { ...state, effective: null, effectiveRevision: null,
+    status: failed ? state.status : uncertain ? state.status === "unknown" ? "unknown" : "partial" : "pending",
+    reason: failed ? state.reason : uncertain ? "Previously started processes have not confirmed shutdown." : undefined,
+    boundaries: [
+      { boundary: "host-dispatch", status: "pending", revision: state.desiredRevision, effectiveFrom: "next-turn" },
+      { boundary: "native-runtime", status: failed ? state.status : "unknown", revision: null, effectiveFrom: "next-turn",
+        ...(failed && native?.reason ? { reason: native.reason } : {}) },
+      ...existing,
+    ],
+  }
 }
 
 /** Persisted effective values describe the last acknowledgement, never a live process after restart. */
@@ -146,9 +168,10 @@ export class HarnessPolicyService implements HostActionAdmissionPolicy {
     let runtime = this.runtimes.get(id)
     if (!runtime) {
       const uncertainProcesses = persisted?.boundaries.some(b => b.boundary === "existing-processes" && b.status === "unknown") ?? false
-      runtime = { state: { desired: structuredClone(policy), effective: null, desiredRevision: revision, effectiveRevision: null, status: uncertainProcesses ? "unknown" : "pending", reason: persisted?.effective ? "Last native acknowledgement is historical; this runtime must apply the policy again." : undefined, boundaries: [
+      const failure = persisted && (persisted.status === "rejected" || persisted.status === "unsupported") ? persisted : undefined
+      runtime = { state: { desired: structuredClone(policy), effective: null, desiredRevision: revision, effectiveRevision: null, status: failure?.status ?? (uncertainProcesses ? "unknown" : "pending"), reason: failure?.reason, boundaries: [
         { boundary: "host-dispatch", status: "pending", revision, effectiveFrom: "next-turn" },
-        { boundary: "native-runtime", status: "unknown", revision: persisted?.effectiveRevision ?? null, effectiveFrom: "next-turn" },
+        { boundary: "native-runtime", status: failure?.status ?? "unknown", revision: null, effectiveFrom: "next-turn" },
         ...(uncertainProcesses ? [{ boundary: "existing-processes" as const, status: "unknown" as const, revision: null, effectiveFrom: "unknown" as const }] : []),
       ] }, generation: Math.max(0, ...persisted?.boundaries.map(b => b.generation ?? 0) ?? []), blocked: true, uncertainProcesses, restartRequired: false, hasRuntime: false }
       this.runtimes.set(id, runtime)
@@ -160,16 +183,20 @@ export class HarnessPolicyService implements HostActionAdmissionPolicy {
     if (!runtime) throw new Error("Execution policy not initialized")
     return structuredClone(runtime.state)
   }
-  snapshot(chatId: string, policy: NativeExecutionPolicy, revision: number, persisted?: ExecutionPolicyState, version?: string): ChatHarnessSnapshot {
+  snapshot(chatId: string, policy: NativeExecutionPolicy, revision: number, persisted?: ExecutionPolicyState, version?: string, nativeRuntime?: ChatHarnessSnapshot["nativeRuntime"]): ChatHarnessSnapshot {
     const runtime = this.ensure(chatId, policy, revision, persisted)
     if (version && !runtime.hasRuntime) runtime.version = version
-    return { capabilities: this.registry.snapshot(policy.engine, runtime.version), policy: structuredClone(runtime.state) }
+    this.reconcileNativeRuntime(chatId, policy.engine, nativeRuntime)
+    // Reading a snapshot without a native handle must not revoke admission before startup.
+    const state = nativeRuntime && nativeRuntime !== "present" ? withoutNativeRuntime(runtime.state) : runtime.state
+    return { capabilities: this.registry.snapshot(policy.engine, runtime.version), policy: structuredClone(state),
+      ...(nativeRuntime ? { nativeRuntime } : {}) }
   }
   request(chatId: string, policy: NativeExecutionPolicy, expectedRevision: number, active: boolean): ExecutionPolicyState {
     const runtime = this.runtimes.get(this.id(chatId, policy.engine))
     if (!runtime || !Number.isSafeInteger(expectedRevision) || expectedRevision !== runtime.state.desiredRevision) throw new Error("Execution policy revision changed; refresh the chat")
     const choice = this.registry.snapshot(policy.engine, runtime.version).executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(policy))
-    if (!choice || choice.availability !== "available") throw new Error(choice?.reason ?? "Unsupported execution policy")
+    if (!choice || choice.availability === "unavailable") throw new Error(choice?.reason ?? "Unsupported execution policy")
     runtime.generation++
     runtime.hostScope = undefined
     runtime.blocked = true
@@ -187,6 +214,10 @@ export class HarnessPolicyService implements HostActionAdmissionPolicy {
     this.revoke(chatId, "Execution policy changed")
     return structuredClone(runtime.state)
   }
+  /** Finish a requested restart once an asynchronously closing handle has disappeared. */
+  reconcileNativeRuntime(chatId: string, engine: AgentProvider, nativeRuntime?: ChatHarnessSnapshot["nativeRuntime"]) {
+    if (nativeRuntime === "absent" && this.runtimes.get(this.id(chatId, engine))?.restartRequired) this.nativeRuntimeRetired(chatId, engine)
+  }
   /** Known native sessions have retired; descendant-process uncertainty remains a separate fact. */
   nativeRuntimeRetired(chatId: string, engine: AgentProvider): ExecutionPolicyState {
     const runtime = this.runtimes.get(this.id(chatId, engine))
@@ -197,9 +228,7 @@ export class HarnessPolicyService implements HostActionAdmissionPolicy {
     runtime.hasRuntime = false
     runtime.turnId = undefined
     runtime.blocked = true
-    runtime.state.effective = null
-    runtime.state.effectiveRevision = null
-    runtime.state.reason = "Waiting for a fresh native session to acknowledge the requested policy."
+    runtime.state = withoutNativeRuntime(runtime.state)
     return structuredClone(runtime.state)
   }
   beginTurn(chatId: string, policy: NativeExecutionPolicy, revision: number, turnId: string, version?: string): PolicyCallScope {

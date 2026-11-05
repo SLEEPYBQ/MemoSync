@@ -72,6 +72,7 @@
   "initGit": "初始化 Git",
   "aCorrectionIsRequiredToResume": "需要提供纠正说明才能继续",
   "whatAreWeBuilding": "想开发什么？",
+  "ultracodeHint": "自动编排多个子代理，额度消耗很快",
   "buildSomething": "开始开发…",
   "uploadFailed": "上传失败",
   "openAProjectBeforeUploadingFiles": "请先打开项目再上传文件。",

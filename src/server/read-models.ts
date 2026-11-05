@@ -88,7 +88,7 @@ function canForkChat(
   activeStatuses: Map<string, ChatActivityStatus>,
   drainingChatIds: Set<string>,
 ) {
-  if (!chat.provider) return false
+  if (chat.draft || !chat.provider) return false
   if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
   if (activeStatuses.has(chat.id)) return false
   if (drainingChatIds.has(chat.id)) return false
@@ -130,7 +130,7 @@ export function deriveSidebarData(
   const chatsByProjectId = new Map<string, ChatRecord[]>()
   const archivedChatsByProjectId = new Map<string, ChatRecord[]>()
   for (const chat of state.chatsById.values()) {
-    if (chat.deletedAt) continue
+    if (chat.deletedAt || chat.draft) continue
     const targetMap = chat.archivedAt ? archivedChatsByProjectId : chatsByProjectId
     const projectChats = targetMap.get(chat.projectId)
     if (projectChats) {
@@ -141,7 +141,7 @@ export function deriveSidebarData(
   }
 
   const allProjects = [...state.projectsById.values()]
-    .filter((project) => !project.deletedAt)
+    .filter((project) => !project.deletedAt && !project.draftOnly)
   const unorderedProjects = allProjects
     .sort((a, b) => b.updatedAt - a.updatedAt)
   const projectById = new Map(unorderedProjects.map((project) => [project.id, project]))
@@ -214,8 +214,8 @@ export function deriveLocalProjectsSnapshot(
     })
   }
 
-  for (const project of [...state.projectsById.values()].filter((entry) => !entry.deletedAt)) {
-    const chats = [...state.chatsById.values()].filter((chat) => chat.projectId === project.id && !chat.deletedAt && !chat.archivedAt)
+  for (const project of [...state.projectsById.values()].filter((entry) => !entry.deletedAt && !entry.draftOnly)) {
+    const chats = [...state.chatsById.values()].filter((chat) => chat.projectId === project.id && !chat.deletedAt && !chat.archivedAt && !chat.draft)
     const lastOpenedAt = chats.reduce(
       (latest, chat) => Math.max(latest, getSidebarChatSortTimestamp(chat)),
       project.updatedAt

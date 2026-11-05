@@ -1075,6 +1075,7 @@ export function ChatPage() {
         commandCatalog={commands.catalog}
         commandBusy={commands.busy}
         commandError={commands.error}
+        onPrepareCommands={commands.prepare}
         onReadCommands={commands.refresh}
         onExecuteCommand={commands.execute}
         onCancelCommand={commands.cancel}

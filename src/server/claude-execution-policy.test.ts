@@ -5,6 +5,31 @@ import type { EngineRuntime } from "./model-access/runtime"
 const runtime: EngineRuntime = { engine: "claude", model: "synthetic", env: {}, args: [], executable: { state: "ready", version: "2.1.241" }, isolated: true }
 
 describe("persistent Claude Query execution controls", () => {
+  test.each(['default', 'acceptEdits', 'dontAsk', 'auto', 'bypassPermissions'] as const)('launches %s with the bypass flag only when selected', async permissionMode => {
+    let options: any
+    const session = await startClaudeSession({
+      localPath: '/tmp', model: 'synthetic', planMode: false, sessionToken: null, forkSession: false, engineRuntime: runtime,
+      onToolRequest: async () => ({}), executionControl: { permissionMode, isCurrent: () => true, approve: async () => true, onApplied: async () => {}, onToolRequest: async () => ({}) },
+      queryFn: ((args: any) => { options = args.options; return { close() {}, async *[Symbol.asyncIterator]() {} } }) as never,
+    })
+    try {
+      expect(options.permissionMode).toBe(permissionMode)
+      if (permissionMode === 'bypassPermissions') expect(options.allowDangerouslySkipPermissions).toBe(true)
+      else expect(options).not.toHaveProperty('allowDangerouslySkipPermissions')
+    } finally { session.close() }
+  })
+  test("Ultracode launches at xhigh with the session setting on", async () => {
+    let options: any
+    const session = await startClaudeSession({
+      localPath: "/tmp", model: "synthetic", effort: "ultracode", planMode: false, sessionToken: null, forkSession: false, engineRuntime: runtime,
+      onToolRequest: async () => ({}), executionControl: { permissionMode: "default", isCurrent: () => true, approve: async () => true, onApplied: async () => undefined, onToolRequest: async () => ({}) },
+      queryFn: ((args: any) => { options = args.options; return { close() {}, async *[Symbol.asyncIterator]() {} } }) as never,
+    })
+    try {
+      expect(options.effort).toBe("xhigh")
+      expect(options.settings.ultracode).toBe(true)
+    } finally { session.close() }
+  })
   test("rebinds native approval and question callbacks; old awaited replies cannot authorize a new turn", async () => {
     let options: any
     let release!: (value: boolean) => void

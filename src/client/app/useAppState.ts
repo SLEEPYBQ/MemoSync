@@ -1,3 +1,4 @@
+import type { LandingDraft } from "./useLandingDraft"
 import { subscribeModelAccess, type AccessModelOptions } from "../model-access/modelAccess"
 import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
@@ -794,7 +795,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -1769,7 +1770,7 @@ export function useAppState(activeChatId: string | null): AppState {
 
   const handleSend = useCallback(async (
     content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean }
+    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }
   ) => {
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
@@ -1840,7 +1841,9 @@ export function useAppState(activeChatId: string | null): AppState {
 
     try {
       let projectId: string | null = null
-      if (!activeChatId) {
+      const draft = activeChatId ? undefined : options?.draft
+      if (draft) setSelectedProjectId(draft.projectId)
+      if (!activeChatId && !draft) {
         const intent = resolveComposeIntent({
           explicitLocalPath: options?.projectLocalPath ?? null,
           selectedProjectId,
@@ -1862,10 +1865,10 @@ export function useAppState(activeChatId: string | null): AppState {
         }
       }
 
-      const result = await socket.command<{ chatId?: string }>({
+      const sent = await socket.command<{ chatId?: string }>({
         type: "chat.send",
-        chatId: activeChatId ?? undefined,
-        projectId: activeChatId ? undefined : projectId ?? undefined,
+        chatId: activeChatId ?? draft?.chatId,
+        projectId: activeChatId || draft ? undefined : projectId ?? undefined,
         clientTraceId,
         provider: options?.provider,
         content,
@@ -1875,6 +1878,7 @@ export function useAppState(activeChatId: string | null): AppState {
         planMode: options?.planMode,
         memoryDisabled: options?.memoryDisabled,
       })
+      const result = { chatId: sent.chatId ?? draft?.chatId }
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
       setOptimisticProcessing((current) => {

@@ -1,9 +1,73 @@
 import type { Query } from "@anthropic-ai/claude-agent-sdk"
 import type { AgentSession } from "@earendil-works/pi-coding-agent"
 import type { OpencodeClient } from "@opencode-ai/sdk/v2/client"
-import type { RuntimeCommand, RuntimeConnector, RuntimeDiscovery, RuntimeSkill, RuntimeSourceProof } from "../shared/runtime-commands"
+import type { CodexReviewTarget, RuntimeCommand, RuntimeConnector, RuntimeDiscovery, RuntimeSkill, RuntimeSourceProof } from "../shared/runtime-commands"
 import { discovery, type NativeCommandDiscovery, type NativeCommandRuntime } from "./command-registry"
 import { contextIdentity, HOST_CONTRACT } from "./context-compiler"
+
+/** MemoSync's own memory tool servers are host plumbing, not user connectors. */
+const HOST_MCP = { claude: "memory", opencode: "memosync" } as const
+
+/** Same model task as codex-rs/tui/prompt_for_init_command.md, not an init RPC. */
+export const CODEX_INIT_PROMPT = `Generate a file named AGENTS.md that serves as a contributor guide for this repository.
+Before writing, check whether AGENTS.md already exists in the current working directory. If it does, do not overwrite or modify it.
+Your goal is to produce a clear, concise, and well-structured document with descriptive headings and actionable explanations for each section.
+Follow the outline below, but adapt as needed — add sections if relevant, and omit those that do not apply to this project.
+
+Document Requirements
+
+- Title the document "Repository Guidelines".
+- Use Markdown headings (#, ##, etc.) for structure.
+- Keep the document concise. 200-400 words is optimal.
+- Keep explanations short, direct, and specific to this repository.
+- Provide examples where helpful (commands, directory paths, naming patterns).
+- Maintain a professional, instructional tone.
+
+Recommended Sections
+
+Project Structure & Module Organization
+
+- Outline the project structure, including where the source code, tests, and assets are located.
+
+Build, Test, and Development Commands
+
+- List key commands for building, testing, and running locally (e.g., npm test, make build).
+- Briefly explain what each command does.
+
+Coding Style & Naming Conventions
+
+- Specify indentation rules, language-specific style preferences, and naming patterns.
+- Include any formatting or linting tools used.
+
+Testing Guidelines
+
+- Identify testing frameworks and coverage requirements.
+- State test naming conventions and how to run tests.
+
+Commit & Pull Request Guidelines
+
+- Summarize commit message conventions found in the project’s Git history.
+- Outline pull request requirements (descriptions, linked issues, screenshots, etc.).
+
+(Optional) Add other sections if relevant, such as Security & Configuration Tips, Architecture Overview, or Agent-Specific Instructions.`
+
+/** No shell parsing or TUI strings: convert the documented slash arguments into a public target. */
+export function parseCodexReviewTarget(args: string): CodexReviewTarget {
+  const text = args.trim()
+  if (!text || text === 'uncommitted') return { type: 'uncommittedChanges' }
+  const [kind, ...parts] = text.split(/\s+/)
+  if (kind === 'base') {
+    if (parts.length !== 1) throw new Error('Review base requires one branch: /review base <branch>')
+    return { type: 'baseBranch', branch: parts[0]! }
+  }
+  if (kind === 'commit') {
+    if (!parts.length) throw new Error('Review commit requires a commit: /review commit <sha> [title]')
+    return { type: 'commit', sha: parts[0]!, title: parts.slice(1).join(' ') || null }
+  }
+  const instructions = kind === 'custom' ? text.slice(kind.length).trim() : text
+  if (!instructions) throw new Error('Review custom requires instructions')
+  return { type: 'custom', instructions }
+}
 
 function proof(api: string, version: string): RuntimeSourceProof { return { api, version, evidence: "native-response" } }
 /** SDK 0.3.241 / native 2.1.241 baseline and the documented 2.1 CLI input replay API. */
@@ -27,7 +91,7 @@ function connectorState(value: unknown): RuntimeConnector["state"] {
 }
 /** Observe the existing Query stream; never start a second execution loop. */
 export function createClaudeCommandRuntime(args: {
-  query: Pick<Query, "supportedCommands" | "mcpServerStatus"> & { interrupt(): Promise<unknown> }
+  query: Pick<Query, "supportedCommands" | "mcpServerStatus"> & { interrupt(): Promise<unknown>; reloadSkills?: Query['reloadSkills'] }
   session: () => string
   version: string
   acknowledgesInputs: boolean
@@ -35,6 +99,7 @@ export function createClaudeCommandRuntime(args: {
   close: () => void
 }) {
   let alive = true, hasCompact = false
+  const knownSkillNames = new Set<string>()
   let nativeSession = args.session()
   const listeners = new Set<() => void>()
   let pending: { id: string; boundary: boolean; restore: boolean; acknowledged: boolean; resolve(): void; reject(error: Error): void } | undefined
@@ -54,12 +119,21 @@ export function createClaudeCommandRuntime(args: {
     onChanged(listener) { listeners.add(listener); return () => listeners.delete(listener) },
     async discover() {
       const source = proof("Query.supportedCommands()", args.version)
-      const commands = await discover(source, async () => (await args.query.supportedCommands()).map(c => ({ ...command(c.name, c.description, source), arguments: { type: "string" as const, hint: c.argumentHint } })))
+      const commands = await discover<RuntimeCommand>(source, async () => (await args.query.supportedCommands()).map(c => ({ ...command(c.name, c.description, source), arguments: { type: "string" as const, hint: c.argumentHint } })))
+      const skillSource = proof('Query.reloadSkills()', args.version)
+      const skills: RuntimeDiscovery<RuntimeSkill> = args.query.reloadSkills ? await discover(skillSource, async () => {
+        const result = await args.query.reloadSkills!()
+        return result.skills.map(s => ({ id: s.name, name: s.name, description: s.description, discovered: true,
+          loaded: null, enabled: true, source: skillSource }))
+      }) : discovery('unsupported', [], source, 'This runtime does not expose skill identity or current-session instruction loading')
+      if (skills.status === 'ready' && commands.status === 'ready') {
+        for (const skill of skills.items) knownSkillNames.add(skill.name)
+        commands.items = [...commands.items.filter(c => !knownSkillNames.has(c.name)),
+          ...skills.items.map(s => command(s.name, s.description, skillSource, 'native-prompt', true))]
+      }
       hasCompact = commands.status === "ready" && commands.items.some(c => c.name === "compact")
-      // This API mixes builtin slash entries and skills without a discriminator. Do not invent a loaded-skill list.
-      const skills: RuntimeDiscovery<RuntimeSkill> = discovery('unsupported', [], source, 'supportedCommands exposes invocable entries, but cannot prove skill identity or current-session instruction loading')
       const mcpSource = proof("Query.mcpServerStatus()", args.version)
-      const connectors = await discover(mcpSource, async () => (await args.query.mcpServerStatus()).map(s => ({ id: `mcp:${s.name}`, name: s.name, kind: "mcp" as const,
+      const connectors = await discover(mcpSource, async () => (await args.query.mcpServerStatus()).filter(s => s.name !== HOST_MCP.claude).map(s => ({ id: `mcp:${s.name}`, name: s.name, kind: "mcp" as const,
         state: connectorState(s.status), schemaRevision: s.tools ? contextIdentity(s.tools) : undefined, source: mcpSource })))
       return { commands, skills, connectors }
     },
@@ -96,6 +170,7 @@ export function createPiCommandRuntime(session: AgentSession, profile: string, a
   const source = proof("AgentSession.resourceLoader / promptTemplates", version)
   return { instance: crypto.randomUUID(), get session() { return session.sessionId }, version, profile, alive,
     async discover() {
+      await session.resourceLoader.reload?.()
       const skills = session.resourceLoader.getSkills().skills
       const commands = [
         ...session.promptTemplates.map(t => command(t.name, t.description, source)),
@@ -132,7 +207,7 @@ export function createOpencodeCommandRuntime(args: { client: OpencodeClient; ses
       const connectors = await discover<RuntimeConnector>(mcpSource, async () => {
         const response = await args.client.mcp.status()
         if (response.error) throw new Error("mcp.status failed")
-        return Object.entries(response.data ?? {}).map(([name, value]) => ({ id: `mcp:${name}`, name, kind: "mcp", state: connectorState(record(value).status), source: mcpSource }))
+        return Object.entries(response.data ?? {}).filter(([name]) => name !== HOST_MCP.opencode).map(([name, value]) => ({ id: `mcp:${name}`, name, kind: "mcp", state: connectorState(record(value).status), source: mcpSource }))
       })
       return { commands, skills, connectors }
     },
@@ -180,8 +255,18 @@ export async function discoverCodexCommands(request: (method: string, params: un
     } while (cursor)
     return items
   })
-  const commands = skills.status === 'ready' ? skills.items.filter(s => s.enabled !== false && s.id !== s.name).map(s => ({
+  const skillCommands = skills.status === 'ready' ? skills.items.filter(s => s.enabled !== false && s.id !== s.name).map(s => ({
     ...command(`skill:${s.name}`, s.description ?? '', source, 'native-skill', true), nativeSkill: { name: s.name, path: s.id },
   })) : []
-  return { commands: discovery(skills.status, commands, proof("turn/start input:skill (TUI-only commands unsupported)", version)), skills, connectors }
+  const reviewSource: RuntimeSourceProof = { api: 'review/start (inline) + turn events', version, evidence: 'public-api' }
+  const initSource: RuntimeSourceProof = { api: 'MemoSync init prompt via turn/start (Codex TUI init behavior)', version, evidence: 'host-config' }
+  const commands: RuntimeCommand[] = [
+    { ...command('review', 'Review changes using the native reviewer', reviewSource, 'review-start'),
+      arguments: { type: 'string', hint: '[uncommitted | base <branch> | commit <sha> [title] | custom <instructions>]' } },
+    { ...command('init', 'Create AGENTS.md through an initialization turn (MemoSync host command)', initSource, 'host-prompt'),
+      id: 'host:init', namespace: 'host', owner: 'memosync' },
+    ...skillCommands,
+  ]
+  // Independently mapped controls remain usable when skill discovery is unsupported or fails.
+  return { commands: discovery('ready', commands, reviewSource), skills, connectors }
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { createClaudeCommandRuntime, createOpencodeCommandRuntime, createPiCommandRuntime, discoverCodexCommands } from './native-command-drivers'
+import { CODEX_INIT_PROMPT, createClaudeCommandRuntime, createOpencodeCommandRuntime, createPiCommandRuntime, discoverCodexCommands, parseCodexReviewTarget } from './native-command-drivers'
 
 const signal = () => new AbortController().signal
 async function flush() { for (let i = 0; i < 10; i++) await Promise.resolve() }
@@ -37,6 +37,25 @@ describe('public native command protocol fixtures', () => {
     expect((await control.runtime.discover()).commands).toMatchObject({ status: 'ready', items: [] })
     expect(control.runtime.compact).toBeUndefined()
     control.dispose()
+  })
+  test('Claude refreshes native skills without claiming their instructions were loaded', async () => {
+    let skills = [{ name: 'old-skill', description: 'Old skill', argumentHint: '' }]
+    let reloads = 0
+    const control = createClaudeCommandRuntime({ query: {
+      supportedCommands: async () => [{ name: 'compact', description: 'Compact', argumentHint: '' }, { name: 'old-skill', description: 'Old skill', argumentHint: '' }],
+      reloadSkills: async () => { reloads++; return { skills } }, mcpServerStatus: async () => [], interrupt: async () => {},
+    }, session: () => 'native', version: '2.1.318', acknowledgesInputs: true, push() {}, close() {} })
+    try {
+      const initial = await control.runtime.discover()
+      expect(initial.skills.items).toMatchObject([{ name: 'old-skill', discovered: true, loaded: null }])
+      skills = [{ name: 'new-skill', description: 'New skill', argumentHint: '' }]
+      const refreshed = await control.runtime.discover()
+      expect(reloads).toBe(2)
+      expect(refreshed.commands.items.map(c => c.name)).toEqual(['compact', 'new-skill'])
+      expect(refreshed.skills.items).toMatchObject([{ name: 'new-skill', loaded: null }])
+      skills = []
+      expect((await control.runtime.discover()).commands.items.map(c => c.name)).toEqual(['compact'])
+    } finally { control.dispose() }
   })
   test('Claude fails without compact_boundary and native change events invalidate even empty catalogs', async () => {
     let uuid = '', changes = 0
@@ -95,12 +114,27 @@ describe('public native command protocol fixtures', () => {
         : { data: [{ name: 'fixture', authStatus: 'notLoggedIn', tools: {}, secret: 'must-not-leak' }] }
     }, '/temp/project', '0.166.0-alpha.5.1')
     expect(calls).toEqual([['skills/list', { cwds: ['/temp/project'], forceReload: true }], ['mcpServerStatus/list', {}]])
-    expect(found.commands.items).toEqual([])
+    expect(found.commands.items).toMatchObject([{ name: 'review', route: 'review-start', source: { api: 'review/start (inline) + turn events' } },
+      { id: 'host:init', name: 'init', route: 'host-prompt', namespace: 'host', owner: 'memosync' }])
     expect(found.skills.items[0]).toMatchObject({ discovered: true, loaded: null, enabled: false })
     expect(found.connectors.items[0]!.state).toBe('needs-auth')
     expect(JSON.stringify(found)).not.toContain('must-not-leak')
     const old = await discoverCodexCommands(async () => { throw new Error('Method not found') }, '/temp/project', 'old')
     expect(old.skills.status).toBe('unsupported')
     expect(old.connectors.status).toBe('unsupported')
+    expect(old.commands.status).toBe('ready')
+    expect(old.commands.items.map(c => c.name)).toEqual(['review', 'init'])
+  })
+
+  test('Codex review targets use structured public API fields and init preserves existing guidelines', () => {
+    expect(parseCodexReviewTarget('')).toEqual({ type: 'uncommittedChanges' })
+    expect(parseCodexReviewTarget('uncommitted')).toEqual({ type: 'uncommittedChanges' })
+    expect(parseCodexReviewTarget('base main')).toEqual({ type: 'baseBranch', branch: 'main' })
+    expect(parseCodexReviewTarget('commit abc123')).toEqual({ type: 'commit', sha: 'abc123', title: null })
+    expect(parseCodexReviewTarget('commit abc123 Fix bug')).toEqual({ type: 'commit', sha: 'abc123', title: 'Fix bug' })
+    expect(parseCodexReviewTarget('custom Check concurrency')).toEqual({ type: 'custom', instructions: 'Check concurrency' })
+    expect(parseCodexReviewTarget('Check concurrency')).toEqual({ type: 'custom', instructions: 'Check concurrency' })
+    for (const args of ['base', 'base main extra', 'commit', 'custom']) expect(() => parseCodexReviewTarget(args)).toThrow()
+    expect(CODEX_INIT_PROMPT).toContain('If it does, do not overwrite or modify it.')
   })
 })

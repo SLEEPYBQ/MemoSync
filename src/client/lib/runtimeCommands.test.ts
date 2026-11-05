@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { ChatCommandCatalog, RuntimeCommand } from "../../shared/runtime-commands"
-import { resolveRuntimeSlash } from "./runtimeCommands"
+import { resolveRuntimeSlash, runtimeCatalogSettling } from "./runtimeCommands"
 
 const proof = { api: "native.commands", version: "verified", evidence: "native-response" as const }
 const compact: RuntimeCommand = { id: "compact", name: "compact", description: "Compact", namespace: "native", owner: "native-engine", arguments: { type: "string" }, requiresIdle: true, sideEffect: "context-compaction", route: "compact", source: proof, requiredRuntimeVersion: "verified" }
@@ -29,6 +29,25 @@ describe("native command submission", () => {
     expect(resolveRuntimeSlash("/native:compact", both)?.command.id).toBe("compact")
     expect(resolveRuntimeSlash("/skill:compact Keep Foo.ts", both)).toEqual({ command: skill, args: "Keep Foo.ts" })
     expect(() => resolveRuntimeSlash("/compact", both)).toThrow()
+  })
+  test("an unlisted slash command reaches the engine as text instead of failing", () => {
+    expect(resolveRuntimeSlash("/frobnicate now", catalog())).toBeNull()
+    expect(resolveRuntimeSlash("/review", null)).toBeNull()
+    const failed = catalog()
+    failed.commands.status = "failed"
+    expect(resolveRuntimeSlash("/review", failed)).toBeNull()
+  })
+  test("a list that is still loading is waited for; a failed preparation is not", () => {
+    expect(runtimeCatalogSettling(null)).toBe(true)
+    const preparing = catalog()
+    preparing.preparation = { status: "preparing" }
+    expect(runtimeCatalogSettling(preparing)).toBe(true)
+    const unknown = catalog()
+    unknown.commands.status = "unknown"
+    expect(runtimeCatalogSettling(unknown)).toBe(true)
+    unknown.preparation = { status: "error", message: "account-signed-out" }
+    expect(runtimeCatalogSettling(unknown)).toBe(false)
+    expect(runtimeCatalogSettling(catalog())).toBe(false)
   })
   test("ordinary prose and filesystem paths retain the regular message path", () => {
     for (const value of ["Please inspect /compact", "/Users/example/project/File.ts", "Show me the source."]) expect(resolveRuntimeSlash(value, null)).toBeNull()

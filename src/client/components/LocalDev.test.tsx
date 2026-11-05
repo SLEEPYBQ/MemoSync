@@ -27,6 +27,7 @@ function renderEmptyLanding() {
       newProjectOpen: false,
       onNewProjectOpenChange: () => undefined,
       onCreateProject: async () => undefined,
+      socket: { command: async () => ({}), subscribe: () => () => undefined } as never,
       onSend: async () => undefined,
       availableProviders: PROVIDERS,
       projectIdByPath: {},

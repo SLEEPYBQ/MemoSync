@@ -136,6 +136,8 @@ export class CommandRegistry {
     if (typeof command.arguments !== "undefined" && typeof command.arguments !== "string") throw new Error("Command arguments must be a string")
     if ((command.arguments?.length ?? 0) > 32_768) throw new Error("Command arguments are too long")
     if (b.controller || b.busy()) throw new Error("Chat is busy; wait for its native turn to finish")
+    if ((entry.route === 'review-start' || entry.route === 'host-prompt') && b.identity.engine !== 'codex') throw new Error('Command route requires Codex')
+    if (entry.route === 'host-prompt' && (entry.name !== 'init' || command.arguments?.trim())) throw new Error('Init does not accept arguments')
     if (entry.route !== "compact") return b.submit(entry, command.arguments ?? "", hostClientId)
     if (command.arguments?.trim()) throw new Error("Compact does not accept free-form instructions")
     if (!b.native.compact || !b.native.restore) throw new Error("Native compaction or context restoration unsupported")

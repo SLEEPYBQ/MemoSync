@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto'
 import { CaptureQueue, type CaptureJob } from './memory/capture-queue'
 import { snapshotParentLaunch, type ParentLaunch, type ClaudeParentLaunch } from './memory/parent-launch'
-import type { ChatCommandCatalog, ExecuteRuntimeCommand, RuntimeCommand } from '../shared/runtime-commands'
+import { isRuntimeCommandSelection, runtimeCommandSelectionKey, type ChatCommandCatalog, type CodexReviewTarget, type ExecuteRuntimeCommand, type RuntimeCommand, type RuntimeCommandSelection } from '../shared/runtime-commands'
 import { CommandRegistry, type NativeCommandRuntime } from './command-registry'
-import { createClaudeCommandRuntime, supportsClaudeInputReplay } from './native-command-drivers'
+import { CODEX_INIT_PROMPT, createClaudeCommandRuntime, parseCodexReviewTarget, supportsClaudeInputReplay } from './native-command-drivers'
 import { compileContext, contextIdentity, HOST_CONTRACT, renderCompiledContext, type ContextBaseline, type NativeContextTarget, type PreparedNativeContext, type StableToolSchema } from './context-compiler'
 import type { NativeExecutionPolicy, PolicyCallScope } from '../shared/harness-capabilities'
 import { HarnessPolicyService, defaultExecutionPolicy, executionPolicyKey, isMemoryTool, isNativeExecutionPolicy } from './harness-policy'
@@ -313,6 +313,8 @@ export function resolveTurnMemoryState(
 
 interface StartTurnArgs {
   nativeSkill?: { name: string; path: string }
+  nativeReview?: CodexReviewTarget
+  hostPrompt?: string
   approvedMemoryViewRevision?: string
   connectionId?: string
   engineRuntime?: EngineRuntime
@@ -424,6 +426,13 @@ interface ActiveTurn {
   injectedIds: string[]
 }
 
+/** Model-access codes the client can explain; other preparation errors stay generic. */
+const PREPARATION_ERROR_CODES = new Set([
+  "connection-invalid", "connection-missing", "connection-key-missing", "connection-protocol-unsupported",
+  "engine-setup-invalid", "model-unavailable", "account-signed-out", "executable-missing", "executable-broken",
+  "executable-incompatible", "model-access-unavailable", "engine-runtime-mismatch",
+])
+
 interface ClaudeExecutionControl {
   permissionMode: Extract<NativeExecutionPolicy, { engine: "claude" }>["permissionMode"]
   isCurrent: () => boolean
@@ -435,6 +444,7 @@ interface ClaudeExecutionControl {
 
 interface ClaudeSessionHandle {
   commandRuntime?: NativeCommandRuntime
+  initialize?: () => Promise<unknown>
   setExecutionControl?: (control: ClaudeExecutionControl | undefined) => void
   parentLaunch?: ClaudeParentLaunch
   provider: "claude"
@@ -633,6 +643,18 @@ function logClaudeSteer(stage: string, details?: Record<string, unknown>) {
 const STEERED_MESSAGE_PREFIX = `<system-message>
 The user would like to inform you of something while you continue to work. Acknowledge receipt immediately with a text response, then continue with the task at hand, incorporating the user's feedback if needed.
 </system-message>`
+
+interface CommandPreparation {
+  selection: RuntimeCommandSelection
+  key: string
+  policyRevision: number
+  accessRevision?: number
+  memoryKey: string
+  controller: AbortController
+  promise: Promise<void>
+  status: 'preparing' | 'ready' | 'error'
+  message?: string
+}
 
 interface SendMessageOptions {
   provider?: AgentProvider
@@ -1567,10 +1589,11 @@ export async function startClaudeSession(args: {
   const launchOptions = {
     cwd: args.localPath,
     model: sdkRuntime.model,
-    effort: args.effort as "low" | "medium" | "high" | "max" | undefined,
+    effort: (args.effort === "ultracode" ? "xhigh" : args.effort) as "low" | "medium" | "high" | "xhigh" | "max" | undefined,
     resume: args.sessionToken ?? undefined,
     forkSession: args.forkSession,
     permissionMode: args.planMode ? "plan" : executionControl?.permissionMode ?? "acceptEdits",
+    ...(executionControl?.permissionMode === 'bypassPermissions' ? { allowDangerouslySkipPermissions: true } : {}),
     canUseTool,
     hooks: {
       PreToolUse: [{ hooks: [async () => executionControl && !executionControl.isCurrent()
@@ -1600,7 +1623,7 @@ export async function startClaudeSession(args: {
     // (~/.claude/projects/<cwd>/memory/) is a second, uncontrolled
     // read+write channel — observed live: the model wrote MEMORY.md there
     // on a "记住…" request. Flag-level settings outrank user settings.
-    settings: sdkRuntime.settings,
+    settings: args.effort === "ultracode" ? { ...sdkRuntime.settings, ultracode: true } : sdkRuntime.settings,
     pathToClaudeCodeExecutable: engineRuntime.executable.path,
     env: sdkRuntime.env,
   } satisfies import("@anthropic-ai/claude-agent-sdk").Options
@@ -1639,6 +1662,16 @@ export async function startClaudeSession(args: {
   return {
     provider: "claude",
     commandRuntime: controls.runtime,
+    initialize: async () => {
+      const result = await q.initializationResult()
+      // The launch permission is a native control acknowledgement; it does not need a model turn.
+      const control = executionControl
+      if (control && !currentPlanMode && control.isCurrent()) {
+        await q.setPermissionMode(control.permissionMode)
+        if (executionControl === control && control.isCurrent()) await control.onApplied()
+      }
+      return result
+    },
     setExecutionControl: (control) => { executionControl = control },
     echoesPromptIds,
     parentLaunch,
@@ -3426,53 +3459,240 @@ export class AgentCoordinator {
   private readonly contextGenerations = new Map<string, number>()
   private readonly contextEpochs = new Map<string, { session: string; epoch: number }>()
   private readonly commandRegistry = new CommandRegistry(chatId => this.emitStateChange(chatId))
+  private readonly commandPreparations = new Map<string, CommandPreparation>()
+  private readonly commandSelections = new Map<string, RuntimeCommandSelection>()
 
   getCommandCatalog(chatId: string): ChatCommandCatalog {
     const chat = this.store.getChat(chatId)
     const runtime = this.sessionRuntimes.get(chatId)
+    const preparation = this.commandPreparations.get(chatId)
+    const selection = preparation?.selection ?? this.commandSelections.get(chatId)
+    const provider = selection?.provider ?? chat?.provider
+    const describe = (snapshot: ChatCommandCatalog): ChatCommandCatalog => ({ ...snapshot,
+      ...(selection ? { selection, selectionKey: runtimeCommandSelectionKey(selection) } : {}),
+      ...(preparation ? { preparation: { status: preparation.status, message: preparation.message } } : {}),
+    })
     const claude = this.claudeSessions.get(chatId)
-    const native = chat?.provider === 'claude' ? (!claude?.retired ? claude?.session.commandRuntime : undefined)
-      : chat?.provider === 'pi' ? this.piManager.getCommandRuntime?.(chatId)
-      : chat?.provider === 'opencode' ? this.opencodeManager.getCommandRuntime?.(chatId)
-      : chat?.provider === 'codex' ? this.codexManager.getCommandRuntime?.(chatId) : undefined
+    const native = provider === 'claude' ? (!claude?.retired ? claude?.session.commandRuntime : undefined)
+      : provider === 'pi' ? this.piManager.getCommandRuntime?.(chatId)
+      : provider === 'opencode' ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : provider === 'codex' ? this.codexManager.getCommandRuntime?.(chatId) : undefined
     const project = chat ? this.store.getProject(chat.projectId) : undefined
-    if (!chat?.provider || !project || !native || !native.alive()) {
+    if (!chat || !provider || !project || !native || !native.alive() || (preparation && preparation.status !== 'ready')) {
       this.commandRegistry.unbind(chatId)
-      return this.commandRegistry.snapshot(chatId)
+      return describe(this.commandRegistry.snapshot(chatId))
     }
-    const policy = this.getHarnessSnapshot(chatId)?.policy
+    const policy = this.getHarnessSnapshot(chatId, provider)?.policy
     this.commandRegistry.bind(chatId, {
-      identity: { engine: chat.provider, nativeInstance: native.instance, nativeSession: native.session,
+      identity: { engine: provider, nativeInstance: native.instance, nativeSession: native.session,
         policyRevision: policy?.effectiveRevision ?? 0, desiredPolicyRevision: policy?.desiredRevision ?? 1,
         version: native.version, profile: native.profile ?? contextIdentity({ isolated: runtime?.isolated,
           home: runtime?.env.HOME, claude: runtime?.env.CLAUDE_CONFIG_DIR, codex: runtime?.env.CODEX_HOME, xdg: runtime?.env.XDG_CONFIG_HOME }),
-        workspace: project.localPath, mode: contextIdentity({ planMode: chat.planMode, model: runtime?.model, connection: runtime?.connectionId, memoryDisabled: chat.memoryDisabled }) },
+        workspace: project.localPath, mode: contextIdentity({ selection, planMode: selection?.planMode ?? chat.planMode, model: runtime?.model, connection: runtime?.connectionId, memoryDisabled: chat.memoryDisabled }) },
       native, busy: () => this.idleCloseBlocked(chatId),
       restoreText: () => this.prepareCurrentContext(chatId, { nativeSession: native.session, nativeInstance: native.instance, version: native.version }).text,
       contextAccepted: () => this.prepareCurrentContext(chatId, { nativeSession: native.session, nativeInstance: native.instance, version: native.version }).accepted(),
       invalidateContext: () => this.invalidateNativeContext(chatId),
       submit: (entry, args, hostClientId) => this.send({ type: 'chat.send', chatId, content: `${entry.nativeSkill ? `$${entry.nativeSkill.name}` : `/${entry.name}`}${args ? ` ${args}` : ''}`,
-        model: runtime?.model, modelOptions: runtime?.connectionId ? { connectionId: runtime.connectionId } : undefined, planMode: chat.planMode }, hostClientId, entry),
+        provider, model: selection?.model ?? runtime?.model, modelOptions: selection?.modelOptions ?? (runtime?.connectionId ? { connectionId: runtime.connectionId } : undefined), planMode: selection?.planMode ?? chat.planMode }, hostClientId, entry),
     })
     const snapshot = this.commandRegistry.snapshot(chatId)
     if (runtime) snapshot.connectors.items.push({ id: `model:${runtime.connectionId ?? runtime.engine}`, name: runtime.model, kind: 'model-provider',
       state: 'discovered', source: { api: 'EngineRuntime (configured; authentication not probed)', version: native.version, evidence: 'host-config' } })
-    snapshot.connectors.items.push({ id: 'hosted:private', name: 'Provider-hosted connectors', kind: 'hosted-service', state: 'unsupported',
-      source: { api: 'No public hosted connector API bound to this session', version: native.version, evidence: 'public-api' } })
-    return snapshot
+    return describe(snapshot)
   }
 
-  async readCommandCatalog(chatId: string, refresh = false) {
-    this.store.requireChat(chatId)
+  async readCommandCatalog(chatId: string, refresh = false, selection?: RuntimeCommandSelection) {
+    const chat = this.store.requireChat(chatId)
+    if (selection !== undefined) {
+      if (!isRuntimeCommandSelection(selection)) throw new Error('Invalid command runtime selection')
+      if (chat.provider && chat.provider !== selection.provider) throw new Error('Command engine does not match the chat')
+      this.prepareCommandSession(chatId, selection, refresh)
+    }
     const snapshot = this.getCommandCatalog(chatId)
-    if (refresh || snapshot.commands.status === 'unknown') await this.commandRegistry.refresh(chatId)
+    if (snapshot.preparation?.status !== 'preparing' && (refresh || snapshot.commands.status === 'unknown')) await this.commandRegistry.refresh(chatId)
     return this.getCommandCatalog(chatId)
   }
 
+  private commandMemoryKey(chatId: string) {
+    const chat = this.store.requireChat(chatId)
+    return contextIdentity({ memoryDisabled: chat.memoryDisabled, settings: this.getMemorySettings() })
+  }
+
+  private prepareCommandSession(chatId: string, selection: RuntimeCommandSelection, retry: boolean) {
+    if (this.isEngineStartBlocked(chatId)) return
+    const key = runtimeCommandSelectionKey(selection)
+    const policyRevision = this.executionPolicyFor(chatId, selection.provider).revision
+    const accessRevision = getModelAccessService()?.revision
+    const memoryKey = this.commandMemoryKey(chatId)
+    const previous = this.commandPreparations.get(chatId)
+    const same = previous?.key === key && previous.policyRevision === policyRevision && previous.accessRevision === accessRevision && previous.memoryKey === memoryKey
+    if (same && (previous.status === 'preparing' || (previous.status === 'ready' && this.getCommandCatalog(chatId).runtime) || (previous.status === 'error' && !retry))) return
+    // A composer edit cannot rebuild a runtime that owns an ordinary turn or a native operation.
+    const commandStartup = previous && (previous.status === 'preparing' || this.engineStartAbortControllers.get(chatId) === previous.controller)
+    if (this.idleCloseBlocked(chatId) && !commandStartup) return
+    if (this.activeTurns.has(chatId) || this.startingChats.has(chatId) || this.commandRegistry.isRunning(chatId)) return
+    if (!previous && this.commandSelections.get(chatId) && runtimeCommandSelectionKey(this.commandSelections.get(chatId)!) === key && this.getCommandCatalog(chatId).runtime) return
+    previous?.controller.abort()
+    this.commandRegistry.unbind(chatId)
+    this.commandSelections.set(chatId, structuredClone(selection))
+    const record: CommandPreparation = { selection: structuredClone(selection), key, policyRevision, accessRevision, memoryKey,
+      controller: new AbortController(), promise: Promise.resolve(), status: 'preparing' }
+    this.commandPreparations.set(chatId, record)
+    this.cancelIdleClose(chatId)
+    record.promise = (async () => {
+      // The old initializer must finish closing its handles before its replacement can publish.
+      await previous?.promise
+      if (record.controller.signal.aborted || this.commandPreparations.get(chatId) !== record) return
+      this.engineStartAbortControllers.set(chatId, record.controller)
+      try {
+        await this.retireCommandSession(chatId)
+        record.controller.signal.throwIfAborted()
+        await this.initializeCommandSession(chatId, record)
+        record.controller.signal.throwIfAborted()
+        if (this.commandPreparations.get(chatId) !== record) return
+        record.status = 'ready'
+        this.getCommandCatalog(chatId)
+        void this.commandRegistry.refresh(chatId).catch(() => {})
+      } catch (error) {
+        if (!record.controller.signal.aborted && this.commandPreparations.get(chatId) === record) {
+          record.status = 'error'
+          // Only stable model-access codes (e.g. account-signed-out) reach the UI; raw native errors may hold private data.
+          const code = error instanceof Error && PREPARATION_ERROR_CODES.has(error.message) ? error.message : ''
+          record.message = code || 'Native session initialization failed. Check the selected model connection and retry.'
+        }
+        await this.retireCommandSession(chatId).catch(() => {})
+      } finally {
+        if (this.engineStartAbortControllers.get(chatId) === record.controller) this.engineStartAbortControllers.delete(chatId)
+        this.emitStateChange(chatId)
+      }
+    })()
+    this.emitStateChange(chatId)
+  }
+
+  private async settleCommandPreparation(args: StartTurnArgs) {
+    const prepared = this.commandPreparations.get(args.chatId)
+    if (!prepared) return
+    const desired = this.getProviderSettings(prepared.selection.provider, prepared.selection)
+    const same = prepared.selection.provider === args.provider && desired.model === args.model && desired.connectionId === args.connectionId
+      && desired.effort === args.effort && desired.serviceTier === args.serviceTier && desired.planMode === args.planMode
+      && prepared.policyRevision === this.executionPolicyFor(args.chatId, args.provider).revision
+      && prepared.accessRevision === getModelAccessService()?.revision && prepared.memoryKey === this.commandMemoryKey(args.chatId)
+    if (same) await prepared.promise
+    else {
+      await this.cancelCommandPreparation(args.chatId)
+      await this.retireCommandSession(args.chatId)
+    }
+    if ((!same || prepared.status === 'error') && this.commandPreparations.get(args.chatId) === prepared) this.commandPreparations.delete(args.chatId)
+  }
+
+  private cancelCommandPreparation(chatId: string) {
+    const record = this.commandPreparations.get(chatId)
+    if (!record) return
+    record.controller.abort()
+    record.status = 'error'
+    record.message = 'Native session preparation was cancelled. Refresh to retry.'
+    this.commandRegistry.unbind(chatId)
+    return record.promise
+  }
+
+  private async retireCommandSession(chatId: string) {
+    await this.codexManager.stopSession?.(chatId)
+    this.piManager.closeChat?.(chatId)
+    this.opencodeManager.closeChat?.(chatId)
+    const session = this.claudeSessions.get(chatId)
+    if (session && !session.retired) await this.retireClaudeSession(session, 'session_rebuild')
+  }
+
+  private async initializeCommandSession(chatId: string, record: CommandPreparation) {
+    const chat = this.store.requireChat(chatId)
+    const project = this.store.getProject(chat.projectId)
+    if (!project) throw new Error('Project not found')
+    const { selection, controller } = record
+    const signal = controller.signal
+    const settings = this.getProviderSettings(selection.provider, selection)
+    let runtime: EngineRuntime | undefined
+    const runtimeKey = JSON.stringify([selection.provider, settings.model, settings.connectionId, getModelAccessService()?.revision])
+    if (!(selection.provider === 'pi' && this.hasCustomPiConnection)) {
+      runtime = this.runtimeSelections.get(chatId) === runtimeKey ? this.sessionRuntimes.get(chatId) : undefined
+      runtime ??= await resolveEngineRuntime({ engine: selection.provider, model: settings.model, connectionId: settings.connectionId })
+      signal.throwIfAborted()
+      this.sessionRuntimes.set(chatId, runtime)
+      this.runtimeSelections.set(chatId, runtimeKey)
+    }
+    await ensureProjectDirectory(project.localPath)
+    signal.throwIfAborted()
+    const memoryState = resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
+    const memoryEnabled = memoryState.memoryActive
+    const memorySpecs = this.memory ? buildMemoryToolSpecs(this.memory, { capture: memoryState.learnActive ? this.capture : null }) : []
+    const specs = [...memorySpecs, ...(this.hostActions ? hostActionToolSpecs() : [])]
+    const { policy, revision } = this.executionPolicyFor(chatId, selection.provider)
+    this.harnessPolicies.ensure(chatId, policy, revision, chat.executionPolicyStates?.[selection.provider])
+    const scope = this.harnessPolicies.beginTurn(chatId, policy, revision, `command-preparation:${crypto.randomUUID()}`,
+      this.harnessRuntimeVersion(selection.provider, runtime?.executable.version))
+    const isCurrent = () => !signal.aborted && this.commandPreparations.get(chatId) === record && !this.policyChanges.has(chatId)
+      && record.accessRevision === getModelAccessService()?.revision && record.memoryKey === this.commandMemoryKey(chatId) && this.harnessPolicies.isCurrent(scope)
+    const applied = async (sessionID?: string) => {
+      if (!isCurrent()) throw new Error('Stale command preparation')
+      const choice = this.harnessPolicies.registry.snapshot(selection.provider, this.harnessRuntimeVersion(selection.provider, runtime?.executable.version))
+        .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(policy))
+      if (choice?.availability === 'available') {
+        const state = this.harnessPolicies.applied(scope, sessionID)
+        if (state) await this.store.setExecutionPolicyState?.(chatId, state)
+      }
+    }
+    const sessionToken = chat.pendingForkSessionToken ?? chat.sessionToken
+    let preparedToken: string | null | undefined
+    if (selection.provider === 'claude') {
+      const session = await this.startClaudeTurn({ engineRuntime: runtime, chatId, localPath: project.localPath, model: settings.model,
+        effort: settings.effort, planMode: settings.planMode, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken),
+        projectId: chat.projectId, memoryEnabled, learnEnabled: memoryState.learnActive,
+        signal, onToolRequest: async () => ({ cancelled: true }),
+        executionControl: { permissionMode: policy.engine === 'claude' ? policy.permissionMode : 'default', isCurrent,
+          canUseMemory: () => false, approve: async () => false, onToolRequest: async () => ({ cancelled: true }), onApplied: () => applied() },
+      })
+      if (!session) throw new Error('Command preparation cancelled')
+      const handle = this.claudeSessions.get(chatId)!.session
+      const onAbort = () => handle.close()
+      signal.addEventListener('abort', onAbort, { once: true })
+      try { signal.throwIfAborted(); await handle.initialize?.(); signal.throwIfAborted() }
+      finally { signal.removeEventListener('abort', onAbort) }
+    } else if (selection.provider === 'codex') {
+      preparedToken = await this.codexManager.startSession({ chatId, cwd: project.localPath, model: settings.model, serviceTier: settings.serviceTier,
+        runtime, signal, sessionToken: chat.sessionToken, pendingForkSessionToken: chat.pendingForkSessionToken,
+        dynamicTools: specs.length ? toCodexDynamicTools(specs) : undefined,
+        executionPolicy: chat.executionPolicyVersion && policy.engine === 'codex' ? policy : undefined })
+      if (chat.executionPolicyVersion) await applied(preparedToken ?? undefined)
+    } else if (selection.provider === 'pi') {
+      const connection = runtime?.piConnection ?? await this.resolvePiConnectionFn()
+      signal.throwIfAborted()
+      preparedToken = await this.piManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
+        effort: normalizePiModelOptions(undefined, settings.effort).reasoningEffort, connection, signal, sessionToken,
+        forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
+        beforeToolCall: async () => ({ block: true, reason: 'No active model turn' }), isPolicyCurrent: isCurrent })
+    } else {
+      preparedToken = await this.opencodeManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
+        runtime, signal, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
+        executionPolicy: chat.executionPolicyVersion && policy.engine === 'opencode' ? policy : undefined,
+        isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
+    }
+    signal.throwIfAborted()
+    if (!isCurrent()) throw new Error('Stale command preparation')
+    if (preparedToken) {
+      await this.store.setSessionToken(chatId, preparedToken)
+      if (chat.pendingForkSessionToken) await this.store.setPendingForkSessionToken(chatId, null)
+    }
+  }
+
   async executeCommand(command: ExecuteRuntimeCommand, hostClientId?: string) {
-    this.store.requireChat(command.chatId)
+    const chat = this.store.requireChat(command.chatId)
     this.getCommandCatalog(command.chatId)
     this.cancelIdleClose(command.chatId)
+    // A command run from the landing page opens that chat, so its output must have somewhere to show.
+    if (chat.draft) {
+      await this.store.promoteDraft(command.chatId)
+      this.emitStateChange()
+    }
     return await this.commandRegistry.execute(command, hostClientId) as { chatId: string; operationId?: string }
   }
 
@@ -3591,7 +3811,7 @@ export class AgentCoordinator {
 
   private hasIdleSession(chatId: string) {
     const claude = this.claudeSessions.get(chatId)
-    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId))
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId) || this.piManager.getCommandRuntime?.(chatId)?.alive())
   }
 
   private idleCloseBlocked(chatId: string) {
@@ -3632,10 +3852,14 @@ export class AgentCoordinator {
     // No await between checking and retiring: a concurrent send either owns
     // the startup reservation or sees a retired Query and waits for its pump.
     this.commandRegistry.unbind(chatId)
+    this.commandPreparations.delete(chatId)
     this.codexManager.stopSession(chatId)
+    this.piManager.closeChat(chatId)
     this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
     if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
+    await this.retireHarnessPolicyIfAbsent(chatId)
+    this.emitStateChange(chatId)
   }
 
   /** Count underlying work, not the cancellation race that may finish before it. */
@@ -3693,6 +3917,7 @@ export class AgentCoordinator {
 
   private abortEngineStart(chatId: string) {
     this.engineStartAbortControllers.get(chatId)?.abort()
+    void this.cancelCommandPreparation(chatId)
   }
 
   private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
@@ -3786,6 +4011,13 @@ export class AgentCoordinator {
     return this.runtimeStopping || this.closedChats.has(chatId) || this.policyChanges.has(chatId)
   }
 
+  async discardDraft(chatId: string) {
+    // Claim the discard before closing handles. A concurrent send that promoted
+    // first makes this a no-op, so its real session cannot be cancelled here.
+    const discarded = await this.store.discardDraft(chatId)
+    if (discarded) await this.closeChat(chatId)
+  }
+
   async closeChat(chatId: string) {
     this.hostActions?.revokeChat(chatId, "Chat closed")
     this.commandRegistry.unbind(chatId)
@@ -3795,6 +4027,7 @@ export class AgentCoordinator {
     this.cancelAutomaticCapture(chatId)
     this.cancelAudits(chatId)
     this.disposeMemoryBranches(chatId)
+    const commandPreparation = this.commandPreparations.get(chatId)?.promise
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
     if (reservation) {
@@ -3812,10 +4045,14 @@ export class AgentCoordinator {
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
+    await commandPreparation
+    this.commandPreparations.delete(chatId)
+    this.commandSelections.delete(chatId)
     const claudeSession = this.claudeSessions.get(chatId)
     if (claudeSession) {
       await this.retireClaudeSession(claudeSession, "chat_closed")
     }
+    await this.retireHarnessPolicyIfAbsent(chatId)
     this.emitStateChange(chatId)
   }
 
@@ -3834,6 +4071,8 @@ export class AgentCoordinator {
   async shutdownRuntime() {
     this.commandRegistry.dispose()
     this.runtimeStopping = true
+    const commandPreparations = [...this.commandPreparations.values()].map(record => record.promise)
+    for (const chatId of this.commandPreparations.keys()) this.cancelCommandPreparation(chatId)
     for (const chatId of this.auditBranches.keys()) this.cancelAudits(chatId)
     for (const chatId of this.idleCloseTimers.keys()) this.cancelIdleClose(chatId)
     const captureTasks = [...this.automaticCaptures.values()].flatMap(run => run.task ? [run.task] : [])
@@ -3846,6 +4085,9 @@ export class AgentCoordinator {
     this.piManager.dispose()
     await Promise.allSettled([...this.branchCleanups])
     await this.opencodeManager.dispose()
+    await Promise.allSettled(commandPreparations)
+    this.commandPreparations.clear()
+    this.commandSelections.clear()
     this.sessionRuntimes.clear()
     this.runtimeSelections.clear()
     await Promise.all([
@@ -3936,7 +4178,8 @@ export class AgentCoordinator {
         model: !modelConnectionId && entry && !entry.contextWindowOptions?.length
           ? model
           : resolveClaudeApiModelId(model, modelOptions.contextWindow),
-        effort: resolveModelReasoningEffort(entry, modelOptions.reasoningEffort),
+        // Carried as the effort value so changing it rebuilds the session, as any effort change does.
+        effort: modelOptions.ultracode && entry?.reasoningEfforts?.includes("xhigh") ? "ultracode" : resolveModelReasoningEffort(entry, modelOptions.reasoningEffort),
         serviceTier: undefined,
         planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false,
       }
@@ -4022,6 +4265,7 @@ export class AgentCoordinator {
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
+    this.commandSelections.set(chatId, { provider, model: queuedMessage.model, modelOptions: queuedMessage.modelOptions, planMode: queuedMessage.planMode })
     await this.startTurnForChat({
       chatId,
       provider,
@@ -4110,6 +4354,8 @@ export class AgentCoordinator {
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
     try {
+    await this.settleCommandPreparation(args)
+    if (startupCancelled()) return
     // Freeze execution and host admission together, before runtime/memory startup awaits.
     if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
@@ -6300,7 +6546,7 @@ export class AgentCoordinator {
       if (!isPolicyCurrent()) throw new Error("Stale execution policy acknowledgement")
       const choice = this.harnessPolicies.registry.snapshot(args.provider, this.harnessRuntimeVersion(args.provider, args.engineRuntime?.executable.version ?? lastEngineExecutable(args.provider)?.version))
         .executionPolicies.find(c => executionPolicyKey(c.policy) === executionPolicyKey(executionPolicy))
-      // Unknown runtimes and legacy unrestricted policies never gain an invented proof.
+      // Only a native acknowledgement for an adapter-supported policy advances effective state.
       if (!choice || choice.availability !== "available") return
       const state = this.harnessPolicies.applied(policyScope, nativeSessionId)
       if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
@@ -6649,7 +6895,7 @@ export class AgentCoordinator {
         turn = await this.codexManager.startTurn({
           signal: startController.signal,
           chatId: args.chatId,
-          content: buildPromptText(args.content, providerAttachments),
+          content: buildPromptText(args.hostPrompt ?? args.content, providerAttachments),
           model: args.model,
           effort: args.effort as any,
           serviceTier: args.serviceTier,
@@ -6659,6 +6905,7 @@ export class AgentCoordinator {
           isPolicyCurrent, onExecutionPolicyApplied,
           onApprovalRequest: async request => await requestNativeApproval(request.kind === "command_execution" ? "commandExecution" : "fileChange", { ...request.params }, `${typeof request.requestId}:${request.requestId}`) && isPolicyCurrent() ? "accept" : "decline",
           nativeSkill: args.nativeSkill,
+          reviewTarget: args.nativeReview,
           developerInstructions: codexMemoryBlock || undefined,
           prepareContext: target => this.prepareCurrentContext(args.chatId, target, { plan: codexPlan, disabled: memoryDisabledForTurn,
             tools: toCodexDynamicTools(codexMemorySpecs).map(t => ({ name: t.name, description: t.description, schema: t.inputSchema })) }),
@@ -7017,8 +7264,10 @@ export class AgentCoordinator {
     /** Exact turn-only selection confirmed by the gate or interrupt recovery card. */
     restrictMemoryIds?: string[]
     startupReservation?: StartupReservation
+    signal?: AbortSignal
   }): Promise<HarnessTurn | null> {
-    if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
+    const current = () => !args.signal?.aborted && this.startupReservationIsCurrent(args.chatId, args.startupReservation)
+    if (!current()) return null
     let session = this.claudeSessions.get(args.chatId)
     const memoryEnabled = args.memoryEnabled ?? true
     const engineRuntime = args.engineRuntime ?? await resolveEngineRuntime({ engine: "claude", model: args.model })
@@ -7069,11 +7318,11 @@ export class AgentCoordinator {
         resumeToken = null
         await this.store.setSessionToken(args.chatId, null)
       }
-      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
+      if (!current()) return null
       if (session) {
         await this.retireClaudeSession(session, "session_rebuild")
       }
-      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return null
+      if (!current()) return null
 
       const started = await this.startClaudeSessionFn({
         localPath: args.localPath,
@@ -7114,8 +7363,7 @@ export class AgentCoordinator {
             .catch(() => {})
         },
       })
-      if (started.parentLaunch) this.parentLaunches.set(args.chatId, started.parentLaunch)
-      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) {
+      if (!current()) {
         try {
           started.close()
         } catch (error) {
@@ -7125,6 +7373,7 @@ export class AgentCoordinator {
         }
         return null
       }
+      if (started.parentLaunch) this.parentLaunches.set(args.chatId, started.parentLaunch)
       this.refreshClaudeModelCatalog(started)
 
       // Baseline = what the boot block actually baked (full set, ignoring any
@@ -7187,6 +7436,7 @@ export class AgentCoordinator {
 
   private executionPolicyFor(chatId: string, engine: AgentProvider) {
     const chat = this.store.requireChat(chatId)
+    this.harnessPolicies.reconcileNativeRuntime(chatId, engine, this.harnessNativeRuntime(chatId, engine))
     return chat.executionPolicies?.[engine] ?? { policy: defaultExecutionPolicy(engine, !chat.executionPolicyVersion), revision: 1 }
   }
 
@@ -7195,8 +7445,34 @@ export class AgentCoordinator {
     if (!chat || chat.deletedAt) return undefined
     if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
     if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
-    const selected = this.executionPolicyFor(chatId, engine ?? chat.provider ?? "claude")
-    return this.harnessPolicies.snapshot(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[selected.policy.engine], this.harnessRuntimeVersion(selected.policy.engine, lastEngineExecutable(selected.policy.engine)?.version))
+    // Before the first turn, the pushed snapshot follows the engine the composer is preparing.
+    const prepared = this.commandPreparations.get(chatId)?.selection.provider ?? this.commandSelections.get(chatId)?.provider
+    const selected = this.executionPolicyFor(chatId, engine ?? chat.provider ?? prepared ?? "claude")
+    return this.harnessPolicies.snapshot(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[selected.policy.engine], this.harnessRuntimeVersion(selected.policy.engine, lastEngineExecutable(selected.policy.engine)?.version), this.harnessNativeRuntime(chatId, selected.policy.engine))
+  }
+
+  private harnessNativeRuntime(chatId: string, engine: AgentProvider): "absent" | "starting" | "present" {
+    const claude = this.claudeSessions.get(chatId)
+    const native = engine === "claude" ? claude?.session.commandRuntime
+      : engine === "codex" ? this.codexManager.getCommandRuntime?.(chatId)
+      : engine === "opencode" ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : this.piManager.getCommandRuntime?.(chatId)
+    // A retiring Claude pump remains a native handle until it has drained.
+    const present = engine === "claude" ? Boolean(claude?.pump || native?.alive())
+      : native ? native.alive()
+      : engine === "codex" && !this.codexManager.getCommandRuntime ? Boolean(this.codexManager.hasSession?.(chatId))
+      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId)) : false
+    if (present) return "present"
+    return this.engineStartAbortControllers.has(chatId) ? "starting" : "absent"
+  }
+
+  private async retireHarnessPolicyIfAbsent(chatId: string) {
+    const chat = this.store.getChat(chatId)
+    if (!chat?.provider || this.harnessNativeRuntime(chatId, chat.provider) !== "absent") return
+    const selected = this.executionPolicyFor(chatId, chat.provider)
+    this.harnessPolicies.ensure(chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[chat.provider])
+    const state = this.harnessPolicies.nativeRuntimeRetired(chatId, chat.provider)
+    await this.store.setExecutionPolicyState?.(chatId, state)
   }
 
   private harnessRuntimeVersion(engine: AgentProvider, version?: string) {
@@ -7216,8 +7492,7 @@ export class AgentCoordinator {
     if (this.policyChanges.has(command.chatId)) throw new Error("Execution policy change in progress")
     const selected = this.executionPolicyFor(command.chatId, command.policy.engine)
     this.harnessPolicies.snapshot(command.chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[command.policy.engine], this.harnessRuntimeVersion(command.policy.engine, lastEngineExecutable(command.policy.engine)?.version))
-    const running = this.activeTurns.has(command.chatId) || this.engineStartAbortControllers.has(command.chatId) || this.drainingStreams.has(command.chatId)
-      || this.parentLaunches.has(command.chatId) // An idle native runtime may still own background subprocesses.
+    const running = this.harnessNativeRuntime(command.chatId, command.policy.engine) !== "absent"
     const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
     this.policyChanges.add(command.chatId)
     this.cancelAutomaticCapture(command.chatId, 'execution-policy-changed')
@@ -7228,14 +7503,17 @@ export class AgentCoordinator {
     this.emitStateChange(command.chatId)
     try {
       await this.store.setExecutionPolicyState(command.chatId, state, true)
-      if (running || this.startingChats.has(command.chatId)) await this.cancel(command.chatId, { skipPostTurnMemoryPasses: true })
+      if (running || this.activeTurns.has(command.chatId) || this.drainingStreams.has(command.chatId) || this.startingChats.has(command.chatId)) await this.cancel(command.chatId, { skipPostTurnMemoryPasses: true })
       const session = this.claudeSessions.get(command.chatId)
       if (session) await this.retireClaudeSession(session, "session_rebuild")
       await this.codexManager.stopSession(command.chatId)
       this.piManager.closeChat(command.chatId)
       await this.opencodeManager.closeChat(command.chatId)
       this.parentLaunches.delete(command.chatId)
-      const retired = this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
+      // Some adapters stop asynchronously. A remaining live handle is still pending retirement.
+      const retired = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
+        ? this.harnessPolicies.state(command.chatId, command.policy.engine)
+        : this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
       await this.store.setExecutionPolicyState(command.chatId, retired)
       return retired
     } catch (error) {
@@ -7358,14 +7636,32 @@ export class AgentCoordinator {
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(command, chat.provider)
     if (this.commandRegistry.isRunning(chatId)) throw new Error('Native context control is running')
+    if (chat.draft && command.memoryDisabled !== undefined) {
+      await this.store.setMemoryDisabled(chatId, command.memoryDisabled)
+    }
     if (!nativeCommandValidated && command.content.trimStart().startsWith('/')) {
       if (command.attachments?.length) throw new Error('Native commands do not accept attachments')
       const match = command.content.trim().match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
+      const selection: RuntimeCommandSelection = { provider, model: command.model, modelOptions: command.modelOptions, planMode: command.planMode }
+      if (!this.getCommandCatalog(chatId).runtime || command.model || command.modelOptions || command.planMode !== undefined) {
+        await this.readCommandCatalog(chatId, false, selection)
+      }
+      await this.commandPreparations.get(chatId)?.promise
       const catalog = await this.readCommandCatalog(chatId)
       const entry = match && catalog.commands.items.find(item => item.name === match[1])
       if (!entry || !catalog.runtimeKey) throw new Error('Command unavailable in the current native session; refresh its catalog')
+      if (chat.draft) {
+        await this.store.promoteDraft(chatId)
+        this.emitStateChange()
+      }
       return this.executeCommand({ type: 'chat.executeCommand', chatId, runtimeKey: catalog.runtimeKey, expectedRevision: catalog.revision,
         commandId: entry.id, arguments: match?.[2] ?? '' }, hostClientId)
+    }
+    if (chat.draft) {
+      await this.store.promoteDraft(chatId)
+      // Promotion can also open the project: refresh local-project subscribers
+      // as well as chat/sidebar subscribers, including native slash submissions.
+      this.emitStateChange()
     }
     if (
       this.activeTurns.has(chatId)
@@ -7383,12 +7679,16 @@ export class AgentCoordinator {
     }
 
     const settings = this.getProviderSettings(provider, command)
+    this.commandSelections.set(chatId, { provider, model: command.model, modelOptions: command.modelOptions, planMode: command.planMode })
 
     await this.startTurnForChat({
       chatId,
       provider,
       content: command.content,
       nativeSkill: typeof nativeCommandValidated === "object" ? nativeCommandValidated.nativeSkill : undefined,
+      nativeReview: typeof nativeCommandValidated === 'object' && nativeCommandValidated.route === 'review-start'
+        ? parseCodexReviewTarget(command.content.replace(/^\/review(?:\s+|$)/, '')) : undefined,
+      hostPrompt: typeof nativeCommandValidated === 'object' && nativeCommandValidated.route === 'host-prompt' ? CODEX_INIT_PROMPT : undefined,
       attachments: command.attachments ?? [],
       connectionId: settings.connectionId,
       model: settings.model,
@@ -7723,6 +8023,7 @@ export class AgentCoordinator {
         this.activeTurns.delete(session.chatId)
       }
       session.session.close()
+      if (isCurrent) await this.retireHarnessPolicyIfAbsent(session.chatId)
       this.emitStateChange(session.chatId)
     }
   }
@@ -8127,6 +8428,14 @@ export class AgentCoordinator {
     },
   ) {
     this.hostActions?.revokeChat(chatId)
+    if (this.commandPreparations.get(chatId)?.status === 'preparing') {
+      const preparation = this.cancelCommandPreparation(chatId)
+      if (!this.startingChats.has(chatId) && !this.activeTurns.has(chatId)) {
+        await preparation
+        this.emitStateChange(chatId)
+        return
+      }
+    }
     if (this.commandRegistry.isRunning(chatId)) {
       const operation = this.commandRegistry.snapshot(chatId).operation
       if (operation) await this.commandRegistry.cancel(chatId, operation.id)

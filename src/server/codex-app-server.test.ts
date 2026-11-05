@@ -247,7 +247,91 @@ describe("Codex developer context delivery", () => {
   })
 })
 
+describe('Codex native review lifecycle', () => {
+  function fixture(review: (message: any, child: FakeCodexProcess) => void) {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === 'initialize') process.writeServerMessage({ id: message.id, result: {} })
+      if (message.method === 'thread/start') process.writeServerMessage({ id: message.id, result: { thread: { id: 'review-thread' } } })
+      if (message.method === 'review/start') review(message, process)
+      if (message.method === 'thread/inject_items') process.writeServerMessage({ id: message.id, result: {} })
+    })
+    return { child, manager: new CodexAppServerManager({ spawnProcess: () => child as never }) }
+  }
+  const session = { chatId: 'review', cwd: '/tmp', model: 'synthetic', sessionToken: null, runtime: explicitRuntime,
+    executionPolicy: { engine: 'codex', approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: 'workspace-write' } as const }
+  const turnArgs = { chatId: 'review', model: 'synthetic', content: '/review', planMode: false, reviewTarget: { type: 'baseBranch', branch: 'main' } as const,
+    executionPolicy: session.executionPolicy, onToolRequest: async () => ({}) }
+
+  test.each(['completed', 'failed', 'interrupted'] as const)('review/start correlates pre-ACK events and settles as %s', async status => {
+    let policyAcks = 0
+    const { child, manager } = fixture((message, process) => {
+      const notify = (threadId: string, turnId: string, item: any) => process.writeServerMessage({ method: 'item/completed', params: { threadId, turnId, item } })
+      notify('other-thread', 'review-turn', { type: 'agentMessage', id: 'wrong-thread', text: 'WRONG THREAD' })
+      notify('review-thread', 'old-turn', { type: 'agentMessage', id: 'old', text: 'OLD TURN' })
+      notify('review-thread', 'review-turn', { type: 'enteredReviewMode', id: 'start', review: 'against main' })
+      notify('review-thread', 'review-turn', { type: 'exitedReviewMode', id: 'report', review: 'Fixture review report' })
+      process.writeServerMessage({ method: 'turn/completed', params: { threadId: 'review-thread', turn: { id: 'review-turn', status, error: status === 'failed' ? { message: 'Native reviewer rejected' } : null } } })
+      process.writeServerMessage({ id: message.id, result: { turn: { id: 'review-turn', status: 'inProgress' }, reviewThreadId: 'review-thread' } })
+    })
+    try {
+      await manager.startSession(session)
+      const turn = await manager.startTurn({ ...turnArgs, developerInstructions: 'CURRENT CONTEXT', onExecutionPolicyApplied: async () => { policyAcks++ } })
+      const events = await collectStream(turn.stream)
+      const messages = child.messages as any[]
+      expect(messages.filter(m => ['thread/inject_items', 'review/start', 'turn/start'].includes(m.method)).map(m => m.method)).toEqual(['thread/inject_items', 'review/start'])
+      expect(messages.find(m => m.method === 'review/start').params).toEqual({ threadId: 'review-thread', delivery: 'inline', target: { type: 'baseBranch', branch: 'main' } })
+      expect(events.find(e => e.entry?.kind === 'assistant_text')?.entry.text).toBe('Fixture review report')
+      expect(JSON.stringify(events)).not.toContain('WRONG THREAD')
+      expect(JSON.stringify(events)).not.toContain('OLD TURN')
+      expect(events.at(-1).entry).toMatchObject({ kind: 'result', subtype: status === 'completed' ? 'success' : status === 'failed' ? 'error' : 'cancelled', isError: status === 'failed' })
+      expect(policyAcks).toBe(0)
+      expect(manager.hasPendingWork('review')).toBe(false)
+    } finally { await manager.stopAll() }
+  })
+
+  test('review blocks overlapping turns and cancellation interrupts the matching native turn', async () => {
+    const { child, manager } = fixture((message, process) => process.writeServerMessage({ id: message.id, result: { turn: { id: 'active-review', status: 'inProgress' }, reviewThreadId: 'review-thread' } }))
+    try {
+      await manager.startSession(session)
+      const turn = await manager.startTurn(turnArgs)
+      expect(manager.hasPendingWork('review')).toBe(true)
+      await expect(manager.startTurn(turnArgs)).rejects.toThrow('already running')
+      await turn.interrupt()
+      expect((child.messages.find((m: any) => m.method === 'turn/interrupt') as any).params).toEqual({ threadId: 'review-thread', turnId: 'active-review' })
+      expect(child.killed).toBe(true)
+      expect(await collectStream(turn.stream)).not.toContainEqual(expect.objectContaining({ entry: expect.objectContaining({ subtype: 'success' }) }))
+    } finally { await manager.stopAll() }
+  })
+
+  test('native review rejection is surfaced without a turn/start fallback or policy widening', async () => {
+    const { child, manager } = fixture((message, process) => process.writeServerMessage({ id: message.id, error: { code: -32601, message: 'Managed requirements: review disabled' } }))
+    try {
+      await manager.startSession(session)
+      await expect(manager.startTurn(turnArgs)).rejects.toThrow('Managed requirements: review disabled')
+      expect((child.messages as any[]).filter(m => m.method === 'review/start')).toHaveLength(1)
+      expect((child.messages as any[]).some(m => m.method === 'turn/start')).toBe(false)
+      expect(manager.hasPendingWork('review')).toBe(false)
+    } finally { await manager.stopAll() }
+  })
+})
+
 describe("CodexAppServerManager", () => {
+  test.each(['start', 'resume', 'fork'] as const)('full access passes never + danger-full-access through thread/%s and the next turn', async mode => {
+    const child = new FakeCodexProcess((message, process) => {
+      if (message.method === 'initialize') process.writeServerMessage({ id: message.id, result: {} })
+      if (['thread/start', 'thread/resume', 'thread/fork'].includes(message.method)) process.writeServerMessage({ id: message.id, result: { thread: { id: 'full-access' } } })
+      if (message.method === 'turn/start') process.writeServerMessage({ id: message.id, result: { turn: { id: 'turn', status: 'inProgress' } } })
+    })
+    const manager = new CodexAppServerManager({ spawnProcess: () => child as never })
+    const executionPolicy = { engine: 'codex', approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access' } as const
+    try {
+      await manager.startSession({ chatId: 'full', cwd: '/tmp', model: 'synthetic', runtime: explicitRuntime, executionPolicy,
+        sessionToken: mode === 'resume' ? 'prior' : null, pendingForkSessionToken: mode === 'fork' ? 'prior' : null })
+      expect((child.messages.find((m: any) => m.method === `thread/${mode}`) as any).params).toMatchObject({ approvalPolicy: 'never', approvalsReviewer: 'user', sandbox: 'danger-full-access' })
+      await manager.startTurn({ chatId: 'full', model: 'synthetic', content: 'fixture', planMode: false, executionPolicy, onToolRequest: async () => ({}) })
+      expect((child.messages.find((m: any) => m.method === 'turn/start') as any).params).toMatchObject({ approvalPolicy: 'never', approvalsReviewer: 'user' })
+    } finally { await manager.stopAll() }
+  })
   test.each(["start", "resume", "fork"] as const)("native %s and turn acknowledge the explicit sandbox and user reviewer", async mode => {
     let acknowledged = false
     const child = new FakeCodexProcess((message, process) => {

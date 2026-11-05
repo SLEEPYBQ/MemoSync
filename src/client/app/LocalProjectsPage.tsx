@@ -29,6 +29,7 @@ export function LocalProjectsPage() {
           state.closeAddProjectModal()
         }}
         onCreateProject={state.handleCreateProject}
+        socket={state.socket}
         onSend={state.handleSend}
         availableProviders={state.availableProviders}
         projectIdByPath={projectIdByPath}

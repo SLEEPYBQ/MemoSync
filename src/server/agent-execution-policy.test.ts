@@ -20,13 +20,18 @@ async function setup(onStart?: (args: StartPiTurnArgs) => Promise<void>) {
   await store.setChatProvider(chat.id, "pi")
   let launch!: StartPiTurnArgs
   let finish!: () => void
+  let nativeLive = false
   const turn: HarnessTurn = {
     provider: "pi", interrupt: async () => { finish() }, close: () => { finish?.() },
     stream: { async *[Symbol.asyncIterator]() { await new Promise<void>(resolve => { finish = resolve }) } },
   }
   const coordinator = new AgentCoordinator({
     store, onStateChange() {}, resolvePiConnection: async () => ({ provider: "openrouter", baseUrl: "http://127.0.0.1:1", apiKey: "synthetic" }),
-    piManager: { startTurn: async (args: StartPiTurnArgs) => { launch = args; await onStart?.(args); return turn }, closeChat() {}, dispose() {} } as never,
+    piManager: {
+      startTurn: async (args: StartPiTurnArgs) => { launch = args; await onStart?.(args); nativeLive = !args.signal?.aborted; return turn },
+      getCommandRuntime: () => nativeLive ? { alive: () => nativeLive } : undefined,
+      closeChat() { nativeLive = false }, dispose() { nativeLive = false },
+    } as never,
     codexManager: { async stopSession() {}, async stopAll() {} } as never,
     opencodeManager: { closeChat() {}, dispose() {} } as never,
   })
@@ -37,7 +42,15 @@ async function setup(onStart?: (args: StartPiTurnArgs) => Promise<void>) {
     const policyScope = (coordinator as any).harnessPolicies.beginTurn(chat.id, policy.policy, policy.revision, turnId, "1.5.0")
     return (coordinator as any).bootEngineTurn({ chatId: chat.id, provider: "pi", model: "synthetic", effort: "none", planMode: false, attachments: [], content: "synthetic turn", turnId, policyScope }, { chat, project, turnNumber: 1, memoryDisabledForTurn: true })
   }
-  return { store, coordinator, chat, boot, launch: () => launch }
+  const finishTurn = async () => {
+    finish()
+    for (let i = 0; i < 100; i++) {
+      if (!coordinator.activeTurns.has(chat.id)) return
+      await Bun.sleep(1)
+    }
+    throw new Error("Turn did not finish")
+  }
+  return { store, coordinator, chat, boot, finishTurn, launch: () => launch }
 }
 async function pending(coordinator: AgentCoordinator, chatId: string) {
   for (let i = 0; i < 100; i++) {
@@ -61,6 +74,63 @@ describe("coordinator execution policy", () => {
     expect(reloaded.requireChat(chat.id).executionPolicyStates?.pi).toMatchObject({ effectiveRevision: 1, effective: { engine: "pi", toolGate: "ask" } })
     const restored = new AgentCoordinator({ store: reloaded, onStateChange() {} })
     expect(restored.getHarnessSnapshot(chat.id)?.policy).toMatchObject({ status: "pending", effective: null, effectiveRevision: null })
+  })
+
+  test("snapshots use native handles rather than saved tokens or host activity, and closing clears the acknowledgement", async () => {
+    const { coordinator, store, chat, boot, launch, finishTurn } = await setup()
+    await store.setSessionToken(chat.id, "saved-native-session")
+    ;(coordinator as any).parentLaunches.set(chat.id, { provider: "pi" })
+    ;(coordinator as any).startingChats.set(chat.id, "preparing")
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "absent", policy: { effective: null, status: "pending" } })
+    ;(coordinator as any).startingChats.delete(chat.id)
+    ;(coordinator as any).parentLaunches.delete(chat.id)
+
+    await boot()
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "present", policy: { effective: null } })
+    await launch().onExecutionPolicyApplied?.("native-session")
+    await finishTurn()
+    expect(coordinator.activeTurns.has(chat.id)).toBe(false)
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "present", policy: { status: "applied", effectiveRevision: 1 } })
+
+    await coordinator.closeChat(chat.id)
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "absent", policy: { status: "pending", effective: null, effectiveRevision: null } })
+    expect(store.requireChat(chat.id).sessionToken).toBe("saved-native-session")
+    expect(store.requireChat(chat.id).executionPolicyStates?.pi).toMatchObject({ status: "pending", effective: null, effectiveRevision: null })
+  })
+
+  test("changing an idle native handle retains descendant-process uncertainty", async () => {
+    const { coordinator, chat, boot, launch, finishTurn } = await setup()
+    await boot()
+    await launch().onExecutionPolicyApplied?.("native-session")
+    await finishTurn()
+    // Parent-launch metadata can be absent while the adapter still owns a session.
+    ;(coordinator as any).parentLaunches.delete(chat.id)
+    const state = await coordinator.setExecutionPolicy({ type: "chat.setExecutionPolicy", chatId: chat.id, policy: { engine: "pi", toolGate: "read-only" }, expectedRevision: 1 })
+    expect(state).toMatchObject({ status: "partial", effective: null, effectiveRevision: null })
+    expect(state.boundaries).toContainEqual(expect.objectContaining({ boundary: "existing-processes", status: "unknown" }))
+    expect(coordinator.getHarnessSnapshot(chat.id)?.nativeRuntime).toBe("absent")
+  })
+
+  test("a closing native handle keeps its old acknowledgement until it disappears, then the next turn can apply the policy", async () => {
+    const { coordinator, chat, boot, launch, finishTurn } = await setup()
+    await boot()
+    await launch().onExecutionPolicyApplied?.("old-native")
+    await finishTurn()
+    const manager = (coordinator as any).piManager
+    const closeChat = manager.closeChat
+    manager.closeChat = () => {}
+    try {
+      const pending = await coordinator.setExecutionPolicy({ type: "chat.setExecutionPolicy", chatId: chat.id, policy: { engine: "pi", toolGate: "read-only" }, expectedRevision: 1 })
+      expect(pending).toMatchObject({ status: "partial", desiredRevision: 2, effectiveRevision: 1 })
+      expect(coordinator.getHarnessSnapshot(chat.id)?.nativeRuntime).toBe("present")
+    } finally {
+      manager.closeChat = closeChat
+      manager.closeChat(chat.id)
+    }
+    // Admission must reconcile completed retirement even without an intervening UI read.
+    await boot()
+    await launch().onExecutionPolicyApplied?.("fresh-native")
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "present", policy: { status: "partial", effectiveRevision: 2 } })
   })
 
   test("approval contains arguments and authorizes only one call; duplicate replies are rejected", async () => {
@@ -115,13 +185,14 @@ describe("coordinator execution policy", () => {
     const { coordinator, chat, boot, launch } = await setup(async () => { entered(); await gate })
     const starting = boot()
     await ready
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "starting", policy: { effective: null, effectiveRevision: null } })
     const changed = coordinator.setExecutionPolicy({ type: "chat.setExecutionPolicy", chatId: chat.id, policy: { engine: "pi", toolGate: "read-only" }, expectedRevision: 1 })
     expect(launch().signal?.aborted).toBe(true)
     await changed
     release()
     await starting
     expect(coordinator.activeTurns.has(chat.id)).toBe(false)
-    expect(coordinator.getHarnessSnapshot(chat.id)?.policy.status).toBe("partial")
+    expect(coordinator.getHarnessSnapshot(chat.id)).toMatchObject({ nativeRuntime: "absent", policy: { status: "partial", effective: null, effectiveRevision: null } })
   })
 
   test("WS exposes verified capabilities and acknowledges desired policy before native application", async () => {

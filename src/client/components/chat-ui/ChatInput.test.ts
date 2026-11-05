@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { TooltipProvider } from "../ui/tooltip"
 import { PROVIDERS } from "../../../shared/types"
-import { ChatInput, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
+import { ChatInput, composerModelOptions, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
+import { isRuntimeCommandSelection } from "../../../shared/runtime-commands"
 
 function createClipboardItem(args: {
   kind?: string
@@ -17,6 +18,21 @@ function createClipboardItem(args: {
     getAsFile: () => args.file ?? null,
   }
 }
+
+describe("native preparation options", () => {
+  test("composer options are valid native preparation requests without losing connection or engine flags", () => {
+    const choices = [
+      { provider: "claude", model: "claude-model", modelOptions: { reasoningEffort: "high", contextWindow: "1m" }, connectionId: "example-connection", planMode: true },
+      { provider: "codex", model: "codex-model", modelOptions: { reasoningEffort: "high", fastMode: true }, connectionId: "example-connection", planMode: false },
+    ] as const
+    for (const choice of choices) {
+      const modelOptions = composerModelOptions(choice)
+      expect(isRuntimeCommandSelection({ provider: choice.provider, model: choice.model, modelOptions, planMode: choice.planMode })).toBe(true)
+      expect(modelOptions.connectionId).toBe("example-connection")
+      expect(modelOptions[choice.provider]).toEqual(choice.modelOptions)
+    }
+  })
+})
 
 describe("createUploadFormData", () => {
   test("includes byte sizes for Unicode and empty files", async () => {

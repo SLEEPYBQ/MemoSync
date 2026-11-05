@@ -166,10 +166,16 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   // back to the catalog default.
   if (provider === "opencode") return model?.trim() || catalog.defaultModel
   if (provider === "pi") return normalizePiModelId(model, catalog.defaultModel)
-  const match = model && catalog.models.find((candidate) => candidate.id === model || candidate.aliases?.includes(model))
+  // A user who chose their account runs its own models. A connection's ids stay in the catalog for
+  // its picker, but launching one on the account fails, so a remembered one falls back. Without an
+  // explicit choice, old chats still pick their vendor from the model name in resolveEngineRuntime.
+  const access = getModelAccessService()
+  const accountModels = catalog.models.filter(candidate => !candidate.connectionId)
+  const runnable = access?.hasExplicitSetup(provider) && access.setup(provider).access.mode === "account" && accountModels.length ? accountModels : catalog.models
+  const match = model && runnable.find((candidate) => candidate.id === model || candidate.aliases?.includes(model))
   if (match) return match.id
   const normalizedModel = normalizeProviderModelId(provider, model, catalog.defaultModel)
-  if (catalog.models.some((candidate) => candidate.id === normalizedModel)) {
+  if (runnable.some((candidate) => candidate.id === normalizedModel)) {
     return normalizedModel
   }
   return catalog.defaultModel
@@ -189,6 +195,7 @@ export function normalizeClaudeModelOptions(
         ? legacyEffort
         : DEFAULT_CLAUDE_MODEL_OPTIONS.reasoningEffort,
     contextWindow: normalizeClaudeContextWindow(model, modelOptions?.claude?.contextWindow as ClaudeContextWindow | undefined),
+    ...(modelOptions?.claude?.ultracode === true || legacyEffort === "ultracode" ? { ultracode: true } : {}),
   }
 }
 

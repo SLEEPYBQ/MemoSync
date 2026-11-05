@@ -1,6 +1,6 @@
-import { existsSync, realpathSync, statSync } from "node:fs"
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { probeOpencodeAccount, type OpencodeAccountResult } from "./opencode-account"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
 import { getDataDir, getLlmProviderFilePath } from "../../shared/branding"
@@ -101,6 +101,34 @@ function fileSignature(file: string): unknown[] | undefined {
   }
 }
 
+const claudeAccounts = new Map<string, { stamp: string; signature: unknown[] }>()
+/**
+ * Every running Claude Code rewrites .claude.json, so its metadata changes constantly and would
+ * throw the model list away. On macOS the sign-in itself is in the Keychain, which leaves this
+ * file's account id as the only sign of a different login. Only a hash of that id is kept.
+ */
+function claudeAccountSignature(file: string): unknown[] | undefined {
+  const path = resolve(file)
+  const known = claudeAccounts.get(path)
+  try {
+    const stat = statSync(path, { bigint: true })
+    const stamp = `${stat.ino}:${stat.size}:${stat.mtimeNs}`
+    if (known?.stamp === stamp) return known.signature
+    let account: { accountUuid?: unknown; emailAddress?: unknown } | undefined
+    try { account = (JSON.parse(readFileSync(path, "utf8")) as { oauthAccount?: typeof account }).oauthAccount } catch (error) {
+      // Caught mid-write: nothing says the account changed.
+      if (error instanceof SyntaxError && known) return known.signature
+      throw error
+    }
+    const id = account?.accountUuid ?? account?.emailAddress
+    const signature = [path, id ? createHash("sha256").update(String(id)).digest("hex") : "no-account"]
+    claudeAccounts.set(path, { stamp, signature })
+    return signature
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? [path, "missing"] : undefined
+  }
+}
+
 const engines: EngineId[] = ["claude", "codex", "pi", "opencode"]
 export function validateConnection(input: ApiConnectionInput): Omit<ApiConnection, "id" | "keySource"> {
   if (!input || typeof input.name !== "string" || !input.name.trim() || input.name.length > 200 || !Array.isArray(input.endpoints) || !input.endpoints.length || !Array.isArray(input.models)) throw new Error("connection-invalid")
@@ -166,9 +194,10 @@ export class ModelAccessService {
     const home = resolve(this.env.HOME || homedir())
     const directory = resolve(engine === "claude" ? this.env.CLAUDE_CONFIG_DIR || join(home, ".claude") : this.env.CODEX_HOME || join(home, ".codex"))
     const files = engine === "claude"
-      ? [join(directory, ".credentials.json"), this.env.CLAUDE_CONFIG_DIR ? join(directory, ".claude.json") : join(home, ".claude.json"), join(directory, "settings.json")]
+      ? [join(directory, ".credentials.json"), join(directory, "settings.json")]
       : [join(directory, "auth.json"), join(directory, "config.toml")]
     const signatures = [status.executable.path, ...files].map(fileSignature)
+    if (engine === "claude") signatures.push(claudeAccountSignature(this.env.CLAUDE_CONFIG_DIR ? join(directory, ".claude.json") : join(home, ".claude.json")))
     if (signatures.some(signature => signature === undefined)) return
     return JSON.stringify([engine, home, directory, status.executable.version, signatures])
   }

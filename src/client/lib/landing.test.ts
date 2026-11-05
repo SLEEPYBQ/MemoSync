@@ -56,3 +56,11 @@ describe("summarizeMemoriesForLanding", () => {
     })
   })
 })
+
+describe("default landing project", () => {
+  test("skips throwaway directories but keeps them as a last resort", () => {
+    expect(resolveLandingProjectPath(["/private/tmp", "/var/folders/a/T/work", "/Users/me/app"], null)).toBe("/Users/me/app")
+    expect(resolveLandingProjectPath(["/private/tmp"], null)).toBe("/private/tmp")
+    expect(resolveLandingProjectPath(["/private/tmp", "/Users/me/app"], "/private/tmp")).toBe("/private/tmp")
+  })
+})
