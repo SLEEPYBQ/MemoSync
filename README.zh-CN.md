@@ -115,7 +115,7 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex、Pi 和
 
 ### Mac 应用
 
-从 [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) 下载 DMG（Apple 芯片选 `arm64`，Intel 选 `x64`），把 MemoSync 拖进“应用程序”。
+从 [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) 下载 DMG，把 MemoSync 拖进“应用程序”。应用只支持 Apple 芯片的 Mac；Intel Mac 请[从源码运行](#从源码运行)。
 
 应用还没有经过 Apple 公证，第一次打开会被 macOS 拦下。先尝试打开一次，再到**系统设置 → 隐私与安全性**，点**仍要打开**。
 

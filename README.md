@@ -114,7 +114,7 @@ Reviewing every turn pays off when memory matters, and is too much for a quick q
 
 ### Mac app
 
-Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest), `arm64` for Apple silicon or `x64` for Intel, and drag MemoSync to Applications.
+Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) and drag MemoSync to Applications. The app runs on Apple silicon Macs; on an Intel Mac, run it [from source](#from-source).
 
 The app isn't notarized yet, so macOS blocks it the first time. Try to open it, then go to **System Settings → Privacy & Security** and choose **Open Anyway**.
 
