@@ -14,6 +14,7 @@
   <img alt="Local-first" src="https://img.shields.io/badge/data-local--first-2ea44f.svg" />
   <a href="https://github.com/yzfly/awesome-context-engineering"><img alt="Mentioned in Awesome Context Engineering" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Context%20Engineering-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
   <a href="https://github.com/0xWelt/Awesome-Vibe-Coding"><img alt="Mentioned in Awesome Vibe Coding" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Vibe%20Coding-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
+  <a href="https://github.com/TeleAI-UAGI/Awesome-Agent-Memory"><img alt="Mentioned in Awesome Agent Memory" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agent%20Memory-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
 </p>
 
 <p align="center">
