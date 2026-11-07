@@ -90,6 +90,19 @@ describe("execution permission state", () => {
     expect(html).not.toContain("Partly applied")
   })
 
+  test("a new turn awaiting acknowledgement keeps the clock despite unconfirmed processes", () => {
+    const full: NativeExecutionPolicy = { engine: "codex", approvalPolicy: "never", approvalsReviewer: "user", sandbox: "danger-full-access" }
+    const waiting = snapshot(full, full)
+    waiting.nativeRuntime = "present"
+    waiting.policy.status = "partial"
+    waiting.policy.boundaries = [
+      { boundary: "native-runtime", status: "pending", revision: 2, effectiveFrom: "next-turn", turnId: "turn-2" },
+      { boundary: "existing-processes", status: "unknown", revision: null, effectiveFrom: "unknown" },
+    ]
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={waiting} onChange={async () => undefined} />)
+    expect(html).toContain("Partly applied")
+  })
+
   test("Pi advertises its tool boundary in the composer label", () => {
     const policy: NativeExecutionPolicy = { engine: "pi", toolGate: "read-only" }
     const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={snapshot(policy, policy)} onChange={async () => undefined} />)

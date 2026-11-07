@@ -128,7 +128,8 @@ export function ExecutionPolicyControl({ chatId, snapshot, disabled, onChange, p
   // "Partial" with the selection in effect only means older processes are unconfirmed; the menu explains
   // that, and a clock beside a mode that already applies would read as still waiting.
   const showsWaiting = (!configuringLaunch || hasProblem) && policy.status !== "applied"
-    && !(policy.status === "partial" && effectiveKey === desiredKey)
+    && !(policy.status === "partial" && effectiveKey === desiredKey
+      && policy.boundaries.every(boundary => boundary.boundary === "existing-processes" || boundary.status === "applied"))
   const processBoundaries = policy.boundaries.filter(boundary => boundary.boundary === "existing-processes" && boundary.status !== "applied")
 
   async function choose(next: NativeExecutionPolicy) {

@@ -1789,7 +1789,8 @@ export function useAppState(activeChatId: string | null): AppState {
         setCommandError(null)
         return
       } catch (error) {
-        // The composer shows a rejected send beside the message box.
+        // The composer shows a rejected send beside the message box; clear any older page banner.
+        setCommandError(null)
         throw error
       }
     }
@@ -1913,7 +1914,9 @@ export function useAppState(activeChatId: string | null): AppState {
         error: error instanceof Error ? error.message : String(error),
       })
       sendToStartingProfilesRef.current.delete(clientTraceId)
-      // The composer shows a rejected send beside the message box; a page-level copy would repeat it.
+      // The composer shows a rejected send beside the message box; a page-level copy would repeat it,
+      // and an older page banner would sit beside it unrelated.
+      setCommandError(null)
       throw error
     }
   }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, pendingMemoryPreview, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket, getLocale()])
