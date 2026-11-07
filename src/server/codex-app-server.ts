@@ -293,7 +293,9 @@ function isUnsupportedDeveloperInjection(error: unknown): boolean {
 function isRecoverableResumeError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase()
   if (!message.includes("thread/resume")) return false
-  return ["not found", "missing thread", "no such thread", "unknown thread", "does not exist"].some((snippet) =>
+  // A thread that never ran a turn has no rollout on disk yet, so it has no
+  // history to lose. This happens when a draft chat changes permission mode.
+  return ["not found", "no rollout found", "missing thread", "no such thread", "unknown thread", "does not exist"].some((snippet) =>
     message.includes(snippet)
   )
 }
