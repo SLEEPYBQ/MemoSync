@@ -125,6 +125,11 @@ export function ExecutionPolicyControl({ chatId, snapshot, disabled, onChange, p
   const shownPolicy = configuringLaunch || startingRuntime ? policy.desired : policy.effective
   const displayLabel = planSelected ? t("harness:plan") : configuringLaunch || startingRuntime ? executionPolicyLabel(policy.desired) : currentLabel
   const DisplayIcon = planSelected ? ListTodo : shownPolicy ? policyIcon(shownPolicy) : Hand
+  // "Partial" with the selection in effect only means older processes are unconfirmed; the menu explains
+  // that, and a clock beside a mode that already applies would read as still waiting.
+  const showsWaiting = (!configuringLaunch || hasProblem) && policy.status !== "applied"
+    && !(policy.status === "partial" && effectiveKey === desiredKey
+      && policy.boundaries.every(boundary => boundary.boundary === "existing-processes" || boundary.status === "applied"))
   const processBoundaries = policy.boundaries.filter(boundary => boundary.boundary === "existing-processes" && boundary.status !== "applied")
 
   async function choose(next: NativeExecutionPolicy) {
@@ -161,7 +166,7 @@ export function ExecutionPolicyControl({ chatId, snapshot, disabled, onChange, p
       <button type="button" aria-label={t("harness:permissions")} disabled={disabled} className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2 text-[13px] text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50">
         {saving || startingRuntime ? <Loader2 aria-hidden className="size-3.5 animate-spin motion-reduce:animate-none" /> : <DisplayIcon aria-hidden className="size-3.5" />}
         <span className="max-w-32 truncate">{displayLabel}</span>
-        {startingRuntime ? <span className="sr-only">{t("harness:starting")}</span> : (!configuringLaunch || hasProblem) && policy.status !== "applied" ? <Clock3 aria-label={policyStatusLabel(policy.status)} className="size-3 text-muted-foreground/70" /> : null}
+        {startingRuntime ? <span className="sr-only">{t("harness:starting")}</span> : showsWaiting ? <Clock3 aria-label={policyStatusLabel(policy.status)} className="size-3 text-muted-foreground/70" /> : null}
       </button>
     </PopoverTrigger>
     <PopoverContent align="end" collisionPadding={12}
