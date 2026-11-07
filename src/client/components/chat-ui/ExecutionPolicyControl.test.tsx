@@ -76,6 +76,20 @@ describe("execution permission state", () => {
     expect(html).toContain("Rejected")
   })
 
+  test("an applied mode with unconfirmed older processes shows no waiting clock", () => {
+    const full: NativeExecutionPolicy = { engine: "codex", approvalPolicy: "never", approvalsReviewer: "user", sandbox: "danger-full-access" }
+    const partial = snapshot(full, full)
+    partial.nativeRuntime = "present"
+    partial.policy.status = "partial"
+    partial.policy.boundaries = [
+      { boundary: "native-runtime", status: "applied", revision: 2, effectiveFrom: "next-turn" },
+      { boundary: "existing-processes", status: "unknown", revision: null, effectiveFrom: "unknown" },
+    ]
+    const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={partial} onChange={async () => undefined} />)
+    expect(html).toContain("Full access")
+    expect(html).not.toContain("Partly applied")
+  })
+
   test("Pi advertises its tool boundary in the composer label", () => {
     const policy: NativeExecutionPolicy = { engine: "pi", toolGate: "read-only" }
     const html = renderToStaticMarkup(<ExecutionPolicyControl chatId="chat-a" snapshot={snapshot(policy, policy)} onChange={async () => undefined} />)
