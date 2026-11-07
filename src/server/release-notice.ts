@@ -9,6 +9,9 @@ export const RELEASE_REPO = "SLEEPYBQ/MemoSync"
 export const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${RELEASE_REPO}/releases/latest`
 const RELEASE_PAGE_PREFIX = `https://github.com/${RELEASE_REPO}/releases/`
 const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000
+// Tick often and let the cache decide, so a restart just before the cache
+// expires still checks within about an hour of expiry, not a full interval later.
+const TICK_MS = 60 * 60 * 1000
 const CACHE_FILE_NAME = "release-check.json"
 const FETCH_TIMEOUT_MS = 10_000
 const VERSION_TAG = /^v?\d+(\.\d+){1,3}$/
@@ -82,7 +85,7 @@ export class ReleaseNotice {
 
   start() {
     void this.check()
-    this.timer ??= setInterval(() => { void this.check() }, CHECK_INTERVAL_MS)
+    this.timer ??= setInterval(() => { void this.check() }, TICK_MS)
     this.timer.unref?.()
   }
 

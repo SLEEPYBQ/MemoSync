@@ -47,14 +47,14 @@ describe("ReleaseNotice", () => {
     dataDir = undefined
   })
 
-  async function setup(options: { now: number; fetch: () => Promise<LatestRelease | null>; cache?: unknown }) {
+  async function setup(options: { now: number | (() => number); fetch: () => Promise<LatestRelease | null>; cache?: unknown }) {
     dataDir = await mkdtemp(path.join(tmpdir(), "memosync-release-"))
     if (options.cache) await writeFile(path.join(dataDir, "release-check.json"), JSON.stringify(options.cache))
     let fetches = 0
     const notice = new ReleaseNotice({
       currentVersion: "0.43.1",
       dataDir,
-      now: () => options.now,
+      now: typeof options.now === "function" ? options.now : () => options.now as number,
       fetchLatestRelease: () => {
         fetches += 1
         return options.fetch()
@@ -83,6 +83,29 @@ describe("ReleaseNotice", () => {
     await notice.check()
     expect(fetches()).toBe(0)
     expect(notice.getSnapshot().latestVersion).toBe("0.44.0")
+  })
+
+  test("a restart just before the cache expires checks GitHub once it does", async () => {
+    let now = 12 * HOUR - 60_000
+    const { notice, fetches } = await setup({
+      now: () => now,
+      fetch: async () => ({ version: "0.45.0", url: RELEASE_URL }),
+      cache: { checkedAt: 0, latest: LATEST },
+    })
+    await notice.check()
+    expect(fetches()).toBe(0)
+    expect(notice.getSnapshot().latestVersion).toBe("0.44.0")
+
+    // The next hourly tick lands after expiry and picks up the newer release.
+    now += HOUR
+    await notice.check()
+    expect(fetches()).toBe(1)
+    expect(notice.getSnapshot().latestVersion).toBe("0.45.0")
+
+    // Further ticks inside the fresh window stay off the network.
+    now += HOUR
+    await notice.check()
+    expect(fetches()).toBe(1)
   })
 
   test("a failed check is silent and keeps the last known release", async () => {
