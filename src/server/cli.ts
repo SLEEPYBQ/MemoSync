@@ -25,7 +25,7 @@ const result = await runCli(argv, {
   version: VERSION,
   bunVersion: Bun.version,
   startServer: async (options) => {
-    const started = await startMemoSyncServer(options)
+    const started = await startMemoSyncServer({ ...options, releaseCheck: true })
     if (started.updateManager && options.update) {
       started.updateManager.onChange((snapshot) => {
         if (snapshot.status !== "restart_pending") return

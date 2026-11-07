@@ -43,6 +43,7 @@ input.on("line", (line) => {
       previewOrigin: "",
       appOrigin: "",
       allowSignOut: false,
+      releaseCheck: true,
     })
     if (stopping) {
       if (shutdownTimer) clearTimeout(shutdownTimer)

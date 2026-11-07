@@ -355,6 +355,7 @@ function AppLayout({ settingsLocation, settingsBackground }: { settingsLocation:
       onHideProject={handleSidebarHideProject}
       onReorderProjectGroups={handleSidebarReorderProjectGroups}
       updateSnapshot={state.updateSnapshot}
+      releaseNotice={state.releaseNotice}
       onOpenChangelog={handleOpenChangelog}
       onOpenMemoryBoard={handleOpenMemoryBoardFromSidebar}
     />
@@ -389,6 +390,7 @@ function AppLayout({ settingsLocation, settingsBackground }: { settingsLocation:
     state.sidebarOpen,
     state.sidebarReady,
     state.updateSnapshot,
+    state.releaseNotice,
   ])
 
   useEffect(() => {

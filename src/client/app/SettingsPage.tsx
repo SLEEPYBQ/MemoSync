@@ -1,7 +1,7 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
-import { Info, Loader2, LogOut, Menu, Search, X } from "lucide-react"
+import { ArrowUpRight, Info, Loader2, LogOut, Menu, Search, X } from "lucide-react"
 import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
 import { getKeybindingsFilePathDisplay, SDK_CLIENT_APP, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import { getResolvedKeybindings } from "../lib/keybindings"
@@ -22,7 +22,8 @@ import {
   type ChangelogStatus,
   type GithubRelease,
 } from "./settings/ChangelogSection"
-import { getKeybindingsSubtitle, SettingsActionButton, SettingsGroup, SettingsGroups, SettingsRow } from "./settings/shared"
+import { getKeybindingsSubtitle, SETTINGS_INLINE_ACTION_CLASS, SettingsActionButton, SettingsGroup, SettingsGroups, SettingsRow } from "./settings/shared"
+import { getReleaseNotice } from "./releaseNotice"
 import { useSettingsRowHashScroll } from "./settings/useSettingsRowHashScroll"
 
 export { resolveSettingsSectionId } from "./settings/registry"
@@ -73,6 +74,7 @@ export function SettingsPage() {
   const machineName = state.localProjects?.machine.displayName ?? t("common:unavailable")
   const projectCount = state.localProjects?.projects.length ?? 0
   const appVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
+  const availableRelease = getReleaseNotice(state.releaseNotice)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
   useSettingsRowHashScroll(location.hash, !isConnecting, selectedPage)
@@ -352,7 +354,20 @@ export function SettingsPage() {
                   <SettingsGroups>
                     {SELF_UPDATE_ENABLED ? <GeneralSection state={state} appVersion={appVersion} part="about" /> : null}
                     <SettingsGroup>
-                      <SettingsRow title={t("settings:aboutVersion")} description={null}>
+                      <SettingsRow
+                        title={t("settings:aboutVersion")}
+                        description={availableRelease ? (
+                          <a
+                            href={availableRelease.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className={cn(SETTINGS_INLINE_ACTION_CLASS, "inline-flex items-center gap-0.5")}
+                          >
+                            {t("settings:releaseAvailable", { version: availableRelease.version })}
+                            <ArrowUpRight aria-hidden="true" className="size-3.5" />
+                          </a>
+                        ) : null}
+                      >
                         <span className="font-mono text-[13px] tabular-nums text-muted-foreground">{appVersion}</span>
                       </SettingsRow>
                       <SettingsRow title={t("settings:aboutMachine")} description={null}>

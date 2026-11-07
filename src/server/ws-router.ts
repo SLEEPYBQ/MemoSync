@@ -36,6 +36,8 @@ import { deriveChatPreview, deriveChatSnapshot, deriveLocalProjectsSnapshot, der
 import { writeStandaloneTranscriptExport } from "./standalone-export"
 import { TerminalManager } from "./terminal-manager"
 import type { UpdateManager } from "./update-manager"
+import type { ReleaseNotice } from "./release-notice"
+import { EMPTY_RELEASE_NOTICE } from "./release-notice"
 
 const DEFAULT_CHAT_RECENT_LIMIT = 200
 const DROPPED_SNAPSHOT_RETRY_MS = 10
@@ -154,6 +156,8 @@ interface CreateWsRouterArgs {
   getDiscoveredProjects: () => DiscoveredProject[]
   machineDisplayName: string
   updateManager: UpdateManager | null
+  /** Newer-release notice; optional so tests and embedded servers can omit it. */
+  releaseNotice?: ReleaseNotice | null
   /** The port this app itself serves on — excluded from local-server discovery
    * so the panel doesn't "discover" MemoSync itself. */
   getSelfPort?: () => number
@@ -452,6 +456,7 @@ export function createWsRouter({
   getDiscoveredProjects,
   machineDisplayName,
   updateManager,
+  releaseNotice = null,
   modelAccess,
   getSelfPort,
   listLocalHttpServersFn = listLocalHttpServers,
@@ -705,6 +710,9 @@ export function createWsRouter({
     if (topic.type === "update") {
       return Boolean(filter.includeUpdate)
     }
+    if (topic.type === "release-notice") {
+      return false
+    }
     if (topic.type === "keybindings") {
       return Boolean(filter.includeKeybindings)
     }
@@ -865,6 +873,15 @@ export function createWsRouter({
             reloadRequestedAt: null,
           },
         },
+      }
+    }
+
+    if (topic.type === "release-notice") {
+      return {
+        v: PROTOCOL_VERSION,
+        type: "snapshot",
+        id,
+        snapshot: { type: "release-notice", data: releaseNotice?.getSnapshot() ?? EMPTY_RELEASE_NOTICE },
       }
     }
 
@@ -1304,6 +1321,18 @@ export function createWsRouter({
         const signature = JSON.stringify(envelope.snapshot)
         if (snapshotSignatures.get(id) === signature) continue
         snapshotSignatures.set(id, signature)
+        send(ws, envelope)
+      }
+    }
+  }) ?? (() => {})
+
+  const disposeReleaseNoticeEvents = releaseNotice?.onChange(() => {
+    for (const ws of sockets) {
+      for (const [id, topic] of ws.data.subscriptions.entries()) {
+        if (topic.type !== "release-notice") continue
+        const envelope = createEnvelope(id, topic)
+        if (envelope.type !== "snapshot") continue
+        ensureSnapshotSignatures(ws).set(id, JSON.stringify(envelope.snapshot))
         send(ws, envelope)
       }
     }
@@ -2139,6 +2168,7 @@ export function createWsRouter({
       disposeAppSettingsEvents()
       disposeModelAccessEvents?.()
       disposeUpdateEvents()
+      disposeReleaseNoticeEvents()
     },
   }
 }

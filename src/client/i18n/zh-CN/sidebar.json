@@ -62,5 +62,7 @@
   "pendingCandidates_one": "{{count}} 条候选记忆等待审阅",
   "pendingCandidates_other": "{{count}} 条候选记忆等待审阅",
   "pendingSensitive_one": "{{count}} 条敏感提议在记忆看板等你确认",
-  "pendingSensitive_other": "{{count}} 条敏感提议在记忆看板等你确认"
+  "pendingSensitive_other": "{{count}} 条敏感提议在记忆看板等你确认",
+  "newVersionAvailable": "新版本 {{version}} 已发布",
+  "skipThisVersion": "跳过此版本"
 }

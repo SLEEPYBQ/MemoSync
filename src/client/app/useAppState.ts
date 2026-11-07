@@ -7,7 +7,7 @@ import { useShallow } from "zustand/react/shallow"
 import { DISPLAY_NAME, SELF_UPDATE_ENABLED } from "../../shared/branding"
 import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
-import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type UserPromptEntry } from "../../shared/types"
+import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type ReleaseNoticeSnapshot, type UserPromptEntry } from "../../shared/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
 import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
@@ -744,6 +744,7 @@ export interface AppState {
   sidebarData: SidebarData
   localProjects: LocalProjectsSnapshot | null
   updateSnapshot: UpdateSnapshot | null
+  releaseNotice: ReleaseNoticeSnapshot | null
   chatSnapshot: ChatSnapshot | null
   chatDiffSnapshot: ChatDiffSnapshot | null
   keybindings: KeybindingsSnapshot | null
@@ -846,6 +847,7 @@ export function useAppState(activeChatId: string | null): AppState {
   const [optimisticSidebarProjectOrder, setOptimisticSidebarProjectOrder] = useState<string[] | null>(null)
   const [localProjects, setLocalProjects] = useState<LocalProjectsSnapshot | null>(null)
   const [updateSnapshot, setUpdateSnapshot] = useState<UpdateSnapshot | null>(null)
+  const [releaseNotice, setReleaseNotice] = useState<ReleaseNoticeSnapshot | null>(null)
   const [chatSnapshot, setChatSnapshot] = useState<ChatSnapshot | null>(null)
   const [olderHistoryEntries, setOlderHistoryEntries] = useState<TranscriptEntry[]>([])
   const [isHistoryLoading, setIsHistoryLoading] = useState(false)
@@ -956,6 +958,10 @@ export function useAppState(activeChatId: string | null): AppState {
       setUpdateSnapshot(snapshot)
       setCommandError(null)
     })
+  }, [socket])
+
+  useEffect(() => {
+    return socket.subscribe<ReleaseNoticeSnapshot>({ type: "release-notice" }, setReleaseNotice)
   }, [socket])
 
   useEffect(() => {
@@ -2375,6 +2381,7 @@ export function useAppState(activeChatId: string | null): AppState {
     sidebarData: resolvedSidebarData,
     localProjects,
     updateSnapshot,
+    releaseNotice,
     chatSnapshot,
     chatDiffSnapshot,
     keybindings,

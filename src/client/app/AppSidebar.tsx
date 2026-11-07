@@ -1,9 +1,9 @@
 import { chatTitle } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
-import { BrainCircuit, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
+import { BrainCircuit, CircleArrowUp, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import type { KeybindingsSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
+import type { KeybindingsSnapshot, ReleaseNoticeSnapshot, SidebarChatRow, SidebarData, UpdateSnapshot } from "../../shared/types"
 import { LivingBrandIcon, SidebarRevealButton, useBrandName } from "../components/BrandMark"
 import { ChatRow } from "../components/chat-ui/sidebar/ChatRow"
 import { LocalProjectsSection } from "../components/chat-ui/sidebar/LocalProjectsSection"
@@ -27,6 +27,7 @@ import {
   shouldShowSidebarNumberJumpHints,
 } from "./sidebarNumberJump"
 import type { SocketStatus } from "./socket"
+import { getReleaseNotice, useDismissedRelease } from "./releaseNotice"
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "memosync:sidebar-width"
 /** How close to the window's left edge the pointer must come to reveal a collapsed sidebar. */
@@ -99,6 +100,7 @@ interface AppSidebarProps {
   onHideProject: (projectId: string) => void
   onReorderProjectGroups: (projectIds: string[]) => void
   updateSnapshot: UpdateSnapshot | null
+  releaseNotice?: ReleaseNoticeSnapshot | null
   onOpenChangelog: () => void
   onOpenMemoryBoard: () => void
 }
@@ -131,6 +133,7 @@ function AppSidebarImpl({
   onHideProject,
   onReorderProjectGroups,
   updateSnapshot,
+  releaseNotice = null,
   onOpenChangelog,
   onOpenMemoryBoard,
 }: AppSidebarProps) {
@@ -513,6 +516,8 @@ function AppSidebarImpl({
     ? updateSnapshot.latestVersion === `${updateSnapshot.currentVersion}-dev`
     : false
   const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
+  const { dismissedVersion, dismiss: dismissRelease } = useDismissedRelease()
+  const release = getReleaseNotice(releaseNotice, dismissedVersion)
 
   return (
     <>
@@ -706,6 +711,28 @@ function AppSidebarImpl({
         </div>
 
         <div className="space-y-0.5 border-t border-border/60 p-2">
+          {release ? (
+            <div data-release-notice className={cn(SIDEBAR_ROW_CLASS, "gap-1 pl-2.5 pr-1")}>
+              <a
+                href={release.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-[13px] text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <CircleArrowUp aria-hidden="true" className="h-4 w-4 shrink-0 text-logo" />
+                <span className="truncate">{t("sidebar:newVersionAvailable", { version: release.version })}</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => dismissRelease(release.version)}
+                aria-label={t("sidebar:skipThisVersion")}
+                title={t("sidebar:skipThisVersion")}
+                className="inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/[0.05] hover:text-foreground dark:hover:bg-white/[0.08]"
+              >
+                <X aria-hidden="true" className="size-3.5" />
+              </button>
+            </div>
+          ) : null}
           {(
             <button
               type="button"
