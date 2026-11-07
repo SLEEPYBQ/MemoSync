@@ -249,6 +249,12 @@ describe("compareVersions", () => {
     expect(compareVersions("0.3.0", "0.3.1")).toBe(-1)
     expect(compareVersions("1.0.0", "0.9.9")).toBe(1)
   })
+
+  test("compares release tags numerically and ignores the v prefix", () => {
+    expect(compareVersions("0.43.1", "v0.43.1")).toBe(0)
+    expect(compareVersions("0.43.9", "v0.43.10")).toBe(-1)
+    expect(compareVersions("0.43", "0.43.0")).toBe(0)
+  })
 })
 
 describe("classifyInstallVersionFailure", () => {

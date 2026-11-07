@@ -670,6 +670,12 @@ export interface UpdateSnapshot {
   reloadRequestedAt: number | null
 }
 
+/** A newer GitHub release than the running app, or nulls when there is none. */
+export interface ReleaseNoticeSnapshot {
+  latestVersion: string | null
+  releaseUrl: string | null
+}
+
 export type UpdateInstallErrorCode =
   | "version_not_live_yet"
   | "install_failed"

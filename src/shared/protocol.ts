@@ -25,6 +25,7 @@ import type {
   StandaloneTranscriptAttachmentMode,
   StandaloneTranscriptExportResult,
   UpdateSnapshot,
+  ReleaseNoticeSnapshot,
 } from "./types"
 
 export type { EditorPreset }
@@ -60,6 +61,7 @@ export type SubscriptionTopic =
   | { type: "sidebar"; patches?: boolean }
   | { type: "local-projects" }
   | { type: "update" }
+  | { type: "release-notice" }
   | { type: "keybindings" }
   | { type: "app-settings" }
   | { type: "chat"; chatId: string; recentLimit?: number }
@@ -310,6 +312,7 @@ export type ServerSnapshot =
   | { type: "sidebar-patch"; data: SidebarPatch }
   | { type: "local-projects"; data: LocalProjectsSnapshot }
   | { type: "update"; data: UpdateSnapshot }
+  | { type: "release-notice"; data: ReleaseNoticeSnapshot }
   | { type: "keybindings"; data: KeybindingsSnapshot }
   | { type: "app-settings"; data: AppSettingsSnapshot }
   | { type: "model-access"; data: ModelAccessSnapshot }

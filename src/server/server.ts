@@ -7,7 +7,7 @@ import { uiJson } from "../shared/ui-copy"
 import { stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
-import { APP_NAME, LOG_PREFIX, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
+import { APP_NAME, APP_VERSION, LOG_PREFIX, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
 import {
   isolatedPreviewTarget,
   isPreviewHostForm,
@@ -57,6 +57,7 @@ import { deployedProviders, getServerProviderCatalog } from "./provider-catalog"
 import { loadRegistryModels } from "./registry-models"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
+import { ReleaseNotice } from "./release-notice"
 import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload, resolveExistingProjectUpload } from "./uploads"
 import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
@@ -183,6 +184,9 @@ export interface StartMemoSyncServerOptions {
     fetchLatestVersion: (packageName: string) => Promise<string>
     installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   }
+  /** Check GitHub for a newer release and notify the UI. Off by default so
+   * tests and embedded servers never reach the network. */
+  releaseCheck?: boolean
 }
 
 export async function cleanupFailedMemoSyncStartup(args: {
@@ -348,6 +352,9 @@ async function startLockedMemoSyncServer(
       installVersion: options.update.installVersion,
       devMode: runtimeProfile === "dev",
       })
+    : null
+  const releaseNotice = options.releaseCheck
+    ? new ReleaseNotice({ currentVersion: APP_VERSION, dataDir: store.dataDir })
     : null
   // Post-turn memory passes run on the selected CLI runtime when available.
   const branchMemory = createBranchJsonCaller({ resolve: async context => {
@@ -524,6 +531,7 @@ async function startLockedMemoSyncServer(
     getDiscoveredProjects: () => discoveredProjects,
     machineDisplayName,
     updateManager,
+    releaseNotice,
     // Thunk: actualPort is assigned when Bun.serve binds, later in this fn.
     getSelfPort: () => actualPort,
   })
@@ -783,11 +791,14 @@ async function startLockedMemoSyncServer(
       .then(() => router.broadcastSnapshots())
   }, STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS)
   onStartupCleanup(() => clearInterval(staleEmptyChatPruneInterval))
+  releaseNotice?.start()
+  onStartupCleanup(() => releaseNotice?.stop())
   activeAgent.recoverAutomaticCaptures()
   void activeAgent.drainOrphanedQueues()
 
   const shutdown = async () => {
     clearInterval(staleEmptyChatPruneInterval)
+    releaseNotice?.stop()
     const shutdownErrors: unknown[] = []
     const attempt = async (action: () => void | Promise<void>) => {
       try {

@@ -210,5 +210,6 @@
   "memoryControlDescription": "每轮由你确认记忆，还是交给智能体自己处理。",
   "memoryControlReviewDescription": "记忆改动和本轮用哪些记忆，都等你确认后智能体才开始。",
   "memoryControlAutoDescription": "智能体自己查看记忆索引、按需读取。不敏感的改动直接生效、可以撤销，敏感的留在记忆看板等你确认，审查只在发现违反时提醒。",
-  "whenReviewingEachTurn": "每轮确认时"
+  "whenReviewingEachTurn": "每轮确认时",
+  "releaseAvailable": "{{version}} 已发布"
 }

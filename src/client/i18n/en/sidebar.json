@@ -62,5 +62,7 @@
   "pendingCandidates_one": "{{count}} proposed memory waiting for your review",
   "pendingCandidates_other": "{{count}} proposed memories waiting for your review",
   "pendingSensitive_one": "{{count}} sensitive proposal waiting on the Memory Board",
-  "pendingSensitive_other": "{{count}} sensitive proposals waiting on the Memory Board"
+  "pendingSensitive_other": "{{count}} sensitive proposals waiting on the Memory Board",
+  "newVersionAvailable": "Version {{version}} available",
+  "skipThisVersion": "Skip this version"
 }
