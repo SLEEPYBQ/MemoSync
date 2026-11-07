@@ -862,14 +862,18 @@ describe("CodexAppServerManager", () => {
     expect((process.messages[2] as any).method).toBe("thread/start")
   })
 
-  test("falls back to thread/start when thread/resume is recoverably missing", async () => {
+  test.each([
+    "thread/resume failed: thread not found",
+    // Codex writes a rollout only on the first turn; a draft chat's thread has none.
+    "no rollout found for thread id 01a1b4fe-94d6-7142-90d1-909ea0ed2358",
+  ])("falls back to thread/start when thread/resume is recoverably missing: %s", async (resumeError) => {
     const process = new FakeCodexProcess((message, child) => {
       if (message.method === "initialize") {
         child.writeServerMessage({ id: message.id, result: { userAgent: "codex-test" } })
       } else if (message.method === "thread/resume") {
         child.writeServerMessage({
           id: message.id,
-          error: { message: "thread/resume failed: thread not found" },
+          error: { message: resumeError },
         })
       } else if (message.method === "thread/start") {
         child.writeServerMessage({
