@@ -96,3 +96,10 @@ describe('memory request context', () => {
     expect(await memoryRequestContext(request, new URL(request.url))).toEqual({ sessionId: undefined, projectId: undefined });
   });
 });
+
+it('chooses the configured or latest provider when a board operation has no chat', async () => {
+  const { selectBoardMemoryProvider } = await import('./branch-caller');
+  expect(selectBoardMemoryProvider('codex', [{ provider: 'claude', updatedAt: 20 }])).toBe('codex');
+  expect(selectBoardMemoryProvider('last_used', [{ provider: 'claude', updatedAt: 10 }, { provider: 'codex', updatedAt: 20 }])).toBe('codex');
+  expect(selectBoardMemoryProvider('last_used', [])).toBe('claude');
+});

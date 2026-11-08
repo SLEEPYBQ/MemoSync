@@ -159,5 +159,6 @@
   "modelAccess_model-access-storage-unreadable": "Model access settings could not be read.",
   "modelAccess_model-access-storage-write-failed": "Model access settings could not be saved.",
   "modelAccess_model-access-operation-failed": "The model access operation failed.",
-  "modelAccess_engine-runtime-mismatch": "The inherited engine runtime does not match."
+  "modelAccess_engine-runtime-mismatch": "The inherited engine runtime does not match.",
+  "serverTopicInitializationAgentFailed": "The topic initialization agent failed. Check the selected agent and its connection, then retry."
 }

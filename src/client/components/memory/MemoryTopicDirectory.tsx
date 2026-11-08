@@ -2,7 +2,7 @@ import { useEffect, useState } from "react"
 import { Pencil, Plus, Trash2 } from "lucide-react"
 import { normalizeTopicName } from "../../../shared/memory-topics"
 import { t, useI18n } from "../../i18n"
-import { memoriesApi, type MemoryTopic } from "../../lib/memoriesApi"
+import { memoriesApi, type MemoryTopic, type TopicInitializationPreview } from "../../lib/memoriesApi"
 import type { TopicFilter } from "../../lib/memoryTopics"
 import { refreshMemoryTopics, useMemoryTopicStore } from "../../stores/memoryTopicStore"
 import { cn } from "../../lib/utils"
@@ -16,6 +16,10 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   const topics = useMemoryTopicStore(s => s.topics)
   const error = useMemoryTopicStore(s => s.error)
   const load = useMemoryTopicStore(s => s.load)
+  const [initializationModel, setInitializationModel] = useState<{ provider: string; model: string; available: boolean } | null>(null)
+  const [modelError, setModelError] = useState(false)
+  const [initialization, setInitialization] = useState<TopicInitializationPreview | null>(null)
+  const [initializationResult, setInitializationResult] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
   const [parentId, setParentId] = useState("")
   const [moving, setMoving] = useState<MemoryTopic | null>(null)
@@ -25,6 +29,11 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   useEffect(() => { void load() }, [load])
+  async function loadInitializationModel() {
+    try { setInitializationModel(await memoriesApi.topicInitializationModel()); setModelError(false) }
+    catch { setModelError(true) }
+  }
+  useEffect(() => { void loadInitializationModel() }, [])
   async function mutate(kind: "rename" | "delete") {
     const topic = kind === "rename" ? editing : deleting
     if (!topic || busy) return
@@ -54,6 +63,24 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
       setName("")
       setParentId("")
       onSelect(topic.id)
+    } catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
+    finally { setBusy(false) }
+  }
+  async function previewInitialization() {
+    if (busy) return
+    setBusy(true); setActionError(null); setInitializationResult(null)
+    await loadInitializationModel()
+    try { setInitialization(await memoriesApi.previewTopicInitialization()) }
+    catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
+    finally { setBusy(false) }
+  }
+  async function applyInitialization() {
+    if (!initialization || busy) return
+    setBusy(true); setActionError(null)
+    try {
+      const result = await memoriesApi.applyTopicInitialization(initialization.id)
+      setInitialization(null); setInitializationResult(t("memory:initializationResult", { topics: result.topicsCreated, memories: result.memoriesAssigned }))
+      await refreshMemoryTopics()
     } catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
     finally { setBusy(false) }
   }
@@ -95,6 +122,19 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   return <section className="shrink-0 border-t border-border p-2" aria-label={t("memory:topics")}>
     <div className="flex items-center justify-between px-2"><h3 className="py-1 text-xs font-medium text-muted-foreground">{t("memory:topics")}</h3>
       <Button variant="ghost" size="icon-sm" aria-label={t("memory:createTopic")} title={t("memory:createTopic")} onClick={() => { setCreating(true); setEditing(null); setDeleting(null); setName(""); setActionError(null) }}><Plus className="size-4" /></Button></div>
+    <Button variant="ghost" size="sm" disabled={busy} onClick={() => void previewInitialization()}>{t("memory:initializeTopics")}</Button>
+    <p className="px-2 text-xs text-muted-foreground" aria-live="polite">
+      {initializationModel ? t("memory:initializationModel", { provider: initializationModel.provider, model: initializationModel.model }) : t(modelError ? "memory:initializationModelUnavailable" : "memory:initializationModelLoading")}
+      {initializationModel && !initializationModel.available ? ` ${t("memory:initializationModelCheck")}` : ""}
+    </p>
+    {initializationResult ? <p role="status" className="text-xs">{initializationResult}</p> : null}
+    {initialization ? <div className="my-2 space-y-2 rounded-md border border-border p-2 text-xs">
+      <p>{t("memory:initializationReview")}</p>
+      <div className="max-h-48 overflow-auto space-y-1">{initialization.topics.map(topic => <p key={topic.key}>{topic.parentKey ? `${initialization.topics.find(parent => parent.key === topic.parentKey)?.name} / ` : ""}<strong>{topic.name}</strong></p>)}</div>
+      <div className="max-h-48 overflow-auto space-y-1">{initialization.assignments.map(assignment => <p key={assignment.memoryId}>{initialization.memories.find(item => item.id === assignment.memoryId)?.content} → {initialization.topics.find(topic => topic.key === assignment.topicKey)?.name}</p>)}</div>
+      <p>{t("memory:initializationUnclassified", { count: initialization.memories.length - initialization.assignments.length })}</p>
+      <div className="flex gap-1"><Button size="sm" disabled={busy} onClick={() => void applyInitialization()}>{t("memory:initializationApply")}</Button><Button variant="ghost" size="sm" disabled={busy} onClick={() => setInitialization(null)}>{t("common:cancel")}</Button></div>
+    </div> : null}
     {creating ? <form className="mb-2 space-y-2" onSubmit={event => { event.preventDefault(); void createTopic() }}>
       {parentSelect()}
       <input autoFocus aria-label={t("memory:topicName")} value={name} onChange={event => setName(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm" />

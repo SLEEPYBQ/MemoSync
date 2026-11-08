@@ -9,6 +9,7 @@ const serverKeys = {
   "projectNotFound": "errors:serverProjectNotFound",
   "chatNotFound": "errors:serverChatNotFound",
   "unavailable": "errors:serverUnavailable",
+  "topicInitializationAgentFailed": "errors:serverTopicInitializationAgentFailed",
   "invalidJson": "errors:serverInvalidJson",
   "invalidEnvelope": "errors:serverInvalidEnvelope",
   "unauthorized": "errors:serverUnauthorized",

@@ -20,9 +20,12 @@ import type { TransferService } from './transfer';
 import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
 import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType, TopicAssignmentResult } from './types';
 import type { UsePlanService } from './use-plan';
+import type { TopicInitializationService } from './topic-initialization';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
+  topicInitialization?: TopicInitializationService;
+  topicInitializationModel?: () => Promise<{ provider: string; model: string; available: boolean }>;
   nativeMemory?: NativeMemoryImportService;
   transfer?: TransferService | null;
   sanitize?: SanitizeService | null;
@@ -121,6 +124,23 @@ export async function handleMemoryRequest(
 
   try {
     // User classifications deliberately bypass content editing and accepting.
+    if (pathname === '/api/memories/topics/initialize/model') {
+      if (req.method !== 'GET') return fail(405, 'METHOD_NOT_ALLOWED', 'use GET');
+      if (!services.topicInitializationModel) return fail(503, 'UNAVAILABLE', 'Topic initialization unavailable');
+      return ok(await services.topicInitializationModel());
+    }
+    if (pathname === '/api/memories/topics/initialize/preview') {
+      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
+      if (!services.topicInitialization) return fail(503, 'UNAVAILABLE', 'Topic initialization unavailable');
+      return ok(await services.topicInitialization.preview());
+    }
+    if (pathname === '/api/memories/topics/initialize/apply') {
+      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
+      if (!services.topicInitialization) return fail(503, 'UNAVAILABLE', 'Topic initialization unavailable');
+      const body = await readBody(req);
+      if (typeof body.id !== 'string' || !body.id) throw new RouteError(400, 'BAD_REQUEST', 'Preview ID required');
+      return ok(await services.topicInitialization.apply(body.id));
+    }
     if (pathname === '/api/memories/topics') {
       if (req.method === 'GET') return ok(memory.store.listTopics());
       if (req.method === 'POST') {

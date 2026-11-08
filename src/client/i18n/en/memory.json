@@ -486,5 +486,14 @@
   "exampleWorkflowTwo": "Record verification after completing a task",
   "parentTopic": "Parent topic",
   "rootTopic": "Top level",
-  "moveTopic": "Move topic"
+  "moveTopic": "Move topic",
+  "initializeTopics": "Initialize topics",
+  "initializationReview": "Agent suggestions (preview only):",
+  "initializationUnclassified": "{{count}} remain unclassified",
+  "initializationApply": "Apply suggestions",
+  "initializationResult": "Created {{topics}} topics and classified {{memories}} memories.",
+  "initializationModel": "Initialization uses: {{provider}} · {{model}}",
+  "initializationModelUnavailable": "Could not read the initialization model. Check connection settings.",
+  "initializationModelLoading": "Loading initialization model…",
+  "initializationModelCheck": "Model runtime unavailable. Check connection settings."
 }

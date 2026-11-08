@@ -159,5 +159,6 @@
   "modelAccess_model-access-storage-unreadable": "无法读取模型访问设置。",
   "modelAccess_model-access-storage-write-failed": "无法保存模型访问设置。",
   "modelAccess_model-access-operation-failed": "模型访问操作失败。",
-  "modelAccess_engine-runtime-mismatch": "继承的引擎运行配置不匹配。"
+  "modelAccess_engine-runtime-mismatch": "继承的引擎运行配置不匹配。",
+  "serverTopicInitializationAgentFailed": "主题初始化的 Agent 调用失败，请检查所选 Agent 及其连接后重试。"
 }

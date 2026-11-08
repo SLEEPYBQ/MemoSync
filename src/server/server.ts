@@ -33,7 +33,7 @@ import { KeybindingsManager } from "./keybindings"
 import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { MemoryService } from "./memory"
-import { createBranchJsonCaller, memoryRequestContext } from "./memory/branch-caller"
+import { createBranchJsonCaller, memoryRequestContext, selectBoardMemoryProvider, type MemoryReasoningContext } from "./memory/branch-caller"
 import { createCaptureService } from "./memory/capture"
 import { createCheckupService } from "./memory/checkup"
 import { createRevisionService } from "./memory/evolution"
@@ -41,6 +41,7 @@ import { createMaintenanceService } from "./memory/maintenance"
 import { createRelevanceService } from "./memory/relevance"
 import { createReviseInjectionService } from "./memory/revise-injection"
 import { handleMemoryRequest } from "./memory/routes"
+import { createTopicInitializationService } from "./memory/topic-initialization"
 import { NativeMemoryDiscovery } from "./memory/native-discovery"
 import { NativeMemoryImportService } from "./memory/native-import"
 import { createSanitizeService } from "./memory/sanitize"
@@ -357,15 +358,19 @@ async function startLockedMemoSyncServer(
     ? new ReleaseNotice({ currentVersion: APP_VERSION, dataDir: store.dataDir })
     : null
   // Post-turn memory passes run on the selected CLI runtime when available.
-  const branchMemory = createBranchJsonCaller({ resolve: async context => {
+  const memoryBranchChoice = (context: MemoryReasoningContext) => {
     const chat = context.sessionId ? store.getChat(context.sessionId) : undefined
     const project = store.getProject(context.projectId ?? chat?.projectId ?? "")
     const current = context.sessionId ? agent?.memoryRuntimeChoice(context.sessionId) : undefined
-    const provider = current?.provider ?? chat?.provider ?? "claude"
+    const provider = current?.provider ?? chat?.provider ?? selectBoardMemoryProvider(appSettings.getSnapshot().defaultProvider, store.listChats())
     const messages = chat ? store.getMessages(chat.id) : []
     const lastInit = messages.filter(message => message.kind === "system_init").at(-1)
     const model = current?.model ?? lastInit?.model ?? appSettings.getSnapshot().providerDefaults[provider].model
       ?? getServerProviderCatalog(provider).defaultModel
+    return { chat, project, current, provider, model }
+  }
+  const branchMemory = createBranchJsonCaller({ resolve: async context => {
+    const { chat, project, current, provider, model } = memoryBranchChoice(context)
     const localPath = project?.localPath ?? process.cwd()
     const runtime = current?.runtime ?? await resolveEngineRuntime({ engine: provider, model })
     return { provider, localPath, model: runtime.model, parentSessionToken: chat?.sessionToken ?? null, subprocessEnv: runtime.env, runtime }
@@ -422,6 +427,7 @@ async function startLockedMemoSyncServer(
       .sort((a, b) => b.createdAt - a.createdAt)
       .map((c) => ({ id: c.id, startedAt: new Date(c.createdAt).toISOString() }))
   }
+  const topicInitialization = createTopicInitializationService({ memory, callJson: memoryLlm })
   const memoryMaintenance = createMaintenanceService({
         memory,
         // Enables the redundant-pair merge action (LLM-drafted merge proposals).
@@ -713,6 +719,16 @@ async function startLockedMemoSyncServer(
             transfer: memoryTransfer,
             sanitize: memorySanitize,
             maintenance: memoryMaintenance,
+            topicInitialization,
+            topicInitializationModel: async () => {
+              const { provider, model } = memoryBranchChoice({})
+              try {
+                const runtime = await resolveEngineRuntime({ engine: provider, model })
+                return { provider, model: runtime.model, available: true }
+              } catch {
+                return { provider, model, available: false }
+              }
+            },
             reviseInjection: memoryReviseInjection,
             usePlan: memoryUsePlan,
             revision: memoryRevision,

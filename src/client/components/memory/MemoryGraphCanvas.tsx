@@ -432,10 +432,13 @@ export function MemoryGraphCanvas({
     return () => canvas.removeEventListener("wheel", onWheel)
   }, [zoomBy])
 
+  const lastPointerMovedRef = useRef(false)
   const dragRef = useRef<{ kind: "pan" | "node"; node?: SimNode; startX: number; startY: number; moved: boolean; viewX: number; viewY: number } | null>(null)
 
   const handlePointerDown = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (event.button !== 0) return
     event.currentTarget.setPointerCapture(event.pointerId)
+    lastPointerMovedRef.current = false
     const node = nodeAt(event.clientX, event.clientY)
     dragRef.current = { kind: node ? "node" : "pan", node: node ?? undefined, startX: event.clientX, startY: event.clientY, moved: false, viewX: viewRef.current.x, viewY: viewRef.current.y }
   }
@@ -490,8 +493,14 @@ export function MemoryGraphCanvas({
       drag.node.fy = null
       simulationRef.current?.alphaTarget(0)
     }
-    if (!drag.moved && drag.node?.item) onSelectMemory(drag.node.item.id)
-    else if (!drag.moved && drag.node) onSelectNode?.(drag.node.id)
+    lastPointerMovedRef.current = drag.moved
+  }
+
+  const handleDoubleClick = (event: React.MouseEvent<HTMLCanvasElement>) => {
+    if (lastPointerMovedRef.current) return
+    const node = nodeAt(event.clientX, event.clientY)
+    if (node?.item) onSelectMemory(node.item.id)
+    else if (node) onSelectNode?.(node.id)
   }
 
   const handleFit = () => {
@@ -513,6 +522,7 @@ export function MemoryGraphCanvas({
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onDoubleClick={handleDoubleClick}
         onPointerCancel={() => { dragRef.current = null }}
         onPointerLeave={() => {
           if (dragRef.current) return

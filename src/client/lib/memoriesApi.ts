@@ -90,7 +90,18 @@ export interface MemoryTopicAssignment {
   results: Array<{ id: string; status: "success" | "failed" | "unprocessed"; error?: string }>
 }
 
+export interface TopicInitializationPreview {
+  id: string
+  topics: Array<{ key: string; name: string; parentKey: string | null }>
+  assignments: Array<{ memoryId: string; topicKey: string }>
+  memories: Array<{ id: string; content: string }>
+}
+
 export const memoriesApi = {
+  topicInitializationModel: () => fetch('/api/memories/topics/initialize/model', { cache: 'no-store' }).then(r => unwrap<{ provider: string; model: string; available: boolean }>(r)),
+  previewTopicInitialization: () => fetch('/api/memories/topics/initialize/preview', { method: 'POST' }).then(r => unwrap<TopicInitializationPreview>(r)),
+  applyTopicInitialization: (id: string) => fetch('/api/memories/topics/initialize/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) }).then(r => unwrap<{ topicsCreated: number; memoriesAssigned: number }>(r)),
+
   topics: () => fetch("/api/memories/topics").then((r) => unwrap<MemoryTopic[]>(r)),
 
   createTopic: (name: string, parentId: string | null = null) => fetch("/api/memories/topics", {

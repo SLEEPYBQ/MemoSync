@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createMemoryBranch, type MemoryBranchInput } from './branch-runtime';
 import type { LlmJsonCaller } from './deepseek';
+import type { AgentProvider, DefaultProviderPreference } from '../../shared/types';
 
 export interface MemoryReasoningContext { sessionId?: string; projectId?: string }
 
@@ -42,4 +43,10 @@ export async function memoryRequestContext(req: Request, url: URL): Promise<Memo
     sessionId: firstString(body.chatId, body.sessionId, body.targetSessionId, url.searchParams.get('sessionId')),
     projectId: firstString(body.targetProjectId, body.projectId, url.searchParams.get('projectId')),
   };
+}
+
+/** Resolve a Board action without attaching another conversation's history. */
+export function selectBoardMemoryProvider(preference: DefaultProviderPreference, chats: Array<{ provider?: AgentProvider | null; updatedAt: number; lastMessageAt?: number | null }>): AgentProvider {
+  if (preference !== 'last_used') return preference;
+  return [...chats].filter(chat => chat.provider).sort((a, b) => (b.lastMessageAt ?? b.updatedAt) - (a.lastMessageAt ?? a.updatedAt))[0]?.provider ?? 'claude';
 }

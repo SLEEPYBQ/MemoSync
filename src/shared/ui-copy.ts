@@ -7,6 +7,7 @@ export const SERVER_UI_COPY = {
   "projectNotFound": "Project not found",
   "chatNotFound": "Chat not found",
   "unavailable": "Unavailable",
+  "topicInitializationAgentFailed": "Topic initialization agent failed. Check the selected agent and its connection, then retry.",
   "invalidJson": "Invalid JSON",
   "invalidEnvelope": "Invalid envelope",
   "unauthorized": "Unauthorized",

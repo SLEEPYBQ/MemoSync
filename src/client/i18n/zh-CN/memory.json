@@ -486,5 +486,14 @@
   "exampleWorkflowTwo": "完成任务后记录验证结果",
   "parentTopic": "上级主题",
   "rootTopic": "顶层主题",
-  "moveTopic": "移动主题"
+  "moveTopic": "移动主题",
+  "initializeTopics": "初始化主题",
+  "initializationReview": "Agent 建议（仅预览，不会自动写入）：",
+  "initializationUnclassified": "{{count}} 条保持未分类",
+  "initializationApply": "确认应用",
+  "initializationResult": "已创建 {{topics}} 个主题，归类 {{memories}} 条记忆。",
+  "initializationModel": "初始化使用：{{provider}} · {{model}}",
+  "initializationModelUnavailable": "无法读取初始化模型，请检查连接设置。",
+  "initializationModelLoading": "正在读取初始化模型…",
+  "initializationModelCheck": "模型运行环境不可用，请检查连接设置。"
 }
