@@ -495,5 +495,8 @@
   "initializationModel": "Initialization uses: {{provider}} · {{model}}",
   "initializationModelUnavailable": "Could not read the initialization model. Check connection settings.",
   "initializationModelLoading": "Loading initialization model…",
-  "initializationModelCheck": "Model runtime unavailable. Check connection settings."
+  "initializationModelCheck": "Model runtime unavailable. Check connection settings.",
+  "collapseTopic": "Collapse {{name}}",
+  "expandTopic": "Expand {{name}}",
+  "dragTopic": "Drag {{name}} onto a topic, or All topics for root"
 }

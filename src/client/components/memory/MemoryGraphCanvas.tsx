@@ -500,7 +500,11 @@ export function MemoryGraphCanvas({
     if (lastPointerMovedRef.current) return
     const node = nodeAt(event.clientX, event.clientY)
     if (node?.item) onSelectMemory(node.item.id)
-    else if (node) onSelectNode?.(node.id)
+    else if (node) {
+      autoFitRef.current = true
+      onSelectNode?.(node.id)
+      requestDraw()
+    }
   }
 
   const handleFit = () => {

@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react"
-import { Pencil, Plus, Trash2 } from "lucide-react"
+import { ChevronDown, ChevronRight, GripVertical, Pencil, Plus, Trash2 } from "lucide-react"
 import { normalizeTopicName } from "../../../shared/memory-topics"
 import { t, useI18n } from "../../i18n"
 import { memoriesApi, type MemoryTopic, type TopicInitializationPreview } from "../../lib/memoriesApi"
-import type { TopicFilter } from "../../lib/memoryTopics"
+import { canMoveTopic, type TopicFilter } from "../../lib/memoryTopics"
 import { refreshMemoryTopics, useMemoryTopicStore } from "../../stores/memoryTopicStore"
 import { cn } from "../../lib/utils"
 import { Button } from "../ui/button"
@@ -26,6 +26,9 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   const [editing, setEditing] = useState<MemoryTopic | null>(null)
   const [deleting, setDeleting] = useState<MemoryTopic | null>(null)
   const [name, setName] = useState("")
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
+  const [draggedId, setDraggedId] = useState<string | null>(null)
+  const [dropTarget, setDropTarget] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   useEffect(() => { void load() }, [load])
@@ -100,17 +103,35 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   function openMove(topic: MemoryTopic) {
     setMoving(topic); setParentId(topic.parentId ?? ""); setEditing(null); setDeleting(null); setCreating(false); setActionError(null)
   }
-  async function moveTopic() {
-    if (!moving || busy) return
+  async function moveTopicTo(id: string, nextParentId: string | null) {
+    if (busy || !canMoveTopic(topics, id, nextParentId)) return
+    if ((topics.find(topic => topic.id === id)?.parentId ?? null) === nextParentId) { setMoving(null); return }
     setBusy(true); setActionError(null)
-    try { await memoriesApi.moveTopic(moving.id, parentId || null); setMoving(null); await refreshMemoryTopics() }
-    catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
+    try {
+      await memoriesApi.moveTopic(id, nextParentId)
+      setMoving(null)
+      if (nextParentId) setCollapsed(previous => { const next = new Set(previous); next.delete(nextParentId); return next })
+      await refreshMemoryTopics()
+    } catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
     finally { setBusy(false) }
+  }
+  function dropOn(event: React.DragEvent, nextParentId: string | null) {
+    event.preventDefault(); event.stopPropagation()
+    const id = draggedId
+    setDraggedId(null); setDropTarget(null)
+    if (id) void moveTopicTo(id, nextParentId)
+  }
+  function allowDrop(event: React.DragEvent, nextParentId: string | null) {
+    event.stopPropagation()
+    if (!draggedId || busy || !canMoveTopic(topics, draggedId, nextParentId)) return
+    event.preventDefault()
+    event.dataTransfer.dropEffect = "move"
+    setDropTarget(nextParentId ?? "root")
   }
   function parentSelect() {
     return <select aria-label={t("memory:parentTopic")} value={parentId} onChange={event => setParentId(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
       <option value="">{t("memory:rootTopic")}</option>
-      {topics.filter(topic => topic.id !== moving?.id).map(topic => <option key={topic.id} value={topic.id}>{topicPath(topic)}</option>)}
+      {topics.filter(topic => !moving || canMoveTopic(topics, moving.id, topic.id)).map(topic => <option key={topic.id} value={topic.id}>{topicPath(topic)}</option>)}
     </select>
   }
   function row(value: string, label: string, count?: number) {
@@ -118,6 +139,38 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
       className={cn("flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs", selected === value ? "bg-muted font-medium" : "hover:bg-muted/60")}>
       <span className="truncate">{label}</span>{count !== undefined ? <span className="ml-auto tabular-nums text-muted-foreground">{count}</span> : null}
     </button>
+  }
+  function renderChildren(parent: string | null, depth: number): React.ReactNode {
+    return topics.filter(topic => (topic.parentId ?? null) === parent)
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(topic => {
+        const hasChildren = topics.some(child => child.parentId === topic.id)
+        const expanded = !collapsed.has(topic.id)
+        return <div key={topic.id}>
+          <ContextMenu>
+            <ContextMenuTrigger asChild><div className={cn("flex items-center rounded-md", dropTarget === topic.id && "bg-primary/15 ring-1 ring-primary")}
+              style={{ paddingLeft: depth * 12 }} onDragOver={event => allowDrop(event, topic.id)}
+              onDragLeave={() => setDropTarget(null)} onDrop={event => dropOn(event, topic.id)}>
+              {hasChildren ? <button type="button" aria-expanded={expanded} aria-label={t(expanded ? "memory:collapseTopic" : "memory:expandTopic", { name: topic.name })}
+                className="shrink-0 p-1" onClick={() => setCollapsed(previous => { const next = new Set(previous); if (expanded) next.add(topic.id); else next.delete(topic.id); return next })}>
+                {expanded ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
+              </button> : <span className="w-5 shrink-0" />}
+              <span draggable={!busy} title={t("memory:dragTopic", { name: topic.name })} aria-label={t("memory:dragTopic", { name: topic.name })}
+                className="cursor-grab touch-none text-muted-foreground active:cursor-grabbing"
+                onDragStart={event => { event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", topic.id); setDraggedId(topic.id) }}
+                onDragEnd={() => { setDraggedId(null); setDropTarget(null) }}><GripVertical className="size-3.5" /></span>
+              {row(topic.id, topic.name, topic.count)}
+              <Button variant="ghost" size="icon-sm" aria-label={t("memory:moveTopic")} title={t("memory:moveTopic")} onClick={() => openMove(topic)}>↳</Button>
+              <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:renameTopic", { name: topic.name })}
+                onClick={() => { setEditing(topic); setDeleting(null); setName(topic.name); setActionError(null) }}><Pencil className="size-3" /></Button>
+              <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:deleteTopic", { name: topic.name })}
+                onClick={() => { setDeleting(topic); setEditing(null); setActionError(null); void load() }}><Trash2 className="size-3" /></Button>
+            </div></ContextMenuTrigger>
+            <ContextMenuContent><ContextMenuItem disabled={busy} onSelect={() => openMove(topic)}>{t("memory:moveTopic")}</ContextMenuItem></ContextMenuContent>
+          </ContextMenu>
+          {hasChildren && expanded ? renderChildren(topic.id, depth + 1) : null}
+        </div>
+      })
   }
   return <section className="shrink-0 border-t border-border p-2" aria-label={t("memory:topics")}>
     <div className="flex items-center justify-between px-2"><h3 className="py-1 text-xs font-medium text-muted-foreground">{t("memory:topics")}</h3>
@@ -141,21 +194,14 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
       <div className="flex gap-1"><Button type="submit" size="sm" disabled={busy || !normalizeTopicName(name)}>{t("common:create")}</Button><Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>{t("common:cancel")}</Button></div>
     </form> : null}
     <div className="max-h-64 overflow-y-auto">
-      <div className="flex">{row("all", t("memory:allTopics"))}</div>
+      <div className={cn("flex rounded-md", dropTarget === "root" && "bg-primary/15 ring-1 ring-primary")}
+        onDragOver={event => allowDrop(event, null)} onDragLeave={() => setDropTarget(null)} onDrop={event => dropOn(event, null)}>
+        {row("all", t("memory:allTopics"))}
+      </div>
       <div className="flex">{row("unclassified", t("memory:unclassified"))}</div>
-      {[...topics].sort((a, b) => topicPath(a).localeCompare(topicPath(b))).map(topic => <ContextMenu key={topic.id}>
-        <ContextMenuTrigger asChild><div className="flex items-center">
-        {row(topic.id, topicPath(topic), topic.count)}
-        <Button variant="ghost" size="icon-sm" aria-label={t("memory:moveTopic")} title={t("memory:moveTopic")} onClick={() => openMove(topic)}>↳</Button>
-        <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:renameTopic", { name: topic.name })}
-          onClick={() => { setEditing(topic); setDeleting(null); setName(topic.name); setActionError(null) }}><Pencil className="size-3" /></Button>
-        <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:deleteTopic", { name: topic.name })}
-          onClick={() => { setDeleting(topic); setEditing(null); setActionError(null); void load() }}><Trash2 className="size-3" /></Button>
-      </div></ContextMenuTrigger>
-        <ContextMenuContent><ContextMenuItem disabled={busy} onSelect={() => openMove(topic)}>{t("memory:moveTopic")}</ContextMenuItem></ContextMenuContent>
-      </ContextMenu>)}
+      {renderChildren(null, 0)}
     </div>
-    {moving ? <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); void moveTopic() }}>
+    {moving ? <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); if (moving) void moveTopicTo(moving.id, parentId || null) }}>
       <p className="text-xs">{t("memory:moveTopic")}: {topicPath(moving)}</p>{parentSelect()}
       <div className="flex gap-1"><Button type="submit" size="sm" disabled={busy}>{t("common:save")}</Button><Button type="button" variant="ghost" size="sm" onClick={() => setMoving(null)}>{t("common:cancel")}</Button></div>
     </form> : null}

@@ -24,6 +24,22 @@ export function filterTopicMemories(items: MemoryItem[], filters: {
   })
 }
 
+/** A topic can be moved to the root or beneath a topic outside its own subtree. */
+export function canMoveTopic(topics: Array<{ id: string; parentId?: string | null }>, id: string, parentId: string | null): boolean {
+  if (!topics.some(topic => topic.id === id)) return false
+  const byId = new Map(topics.map(topic => [topic.id, topic]))
+  const visited = new Set<string>()
+  let current = parentId
+  while (current) {
+    if (current === id || visited.has(current)) return false
+    visited.add(current)
+    const topic = byId.get(current)
+    if (!topic) return false
+    current = topic.parentId ?? null
+  }
+  return true
+}
+
 /** Keep receipts from completed chunks and stop after transport failure. A created
  * topic is addressed by ID for all later chunks and retries. */
 export async function assignMemoryTopics(

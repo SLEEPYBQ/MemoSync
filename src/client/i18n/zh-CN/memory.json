@@ -495,5 +495,8 @@
   "initializationModel": "初始化使用：{{provider}} · {{model}}",
   "initializationModelUnavailable": "无法读取初始化模型，请检查连接设置。",
   "initializationModelLoading": "正在读取初始化模型…",
-  "initializationModelCheck": "模型运行环境不可用，请检查连接设置。"
+  "initializationModelCheck": "模型运行环境不可用，请检查连接设置。",
+  "collapseTopic": "折叠{{name}}",
+  "expandTopic": "展开{{name}}",
+  "dragTopic": "拖动{{name}}到主题上，或拖到全部主题移至根目录"
 }

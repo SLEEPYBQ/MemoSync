@@ -34,3 +34,19 @@ test("persistent directory renders empty topics and affected-count deletion cont
   expect(html).toContain("Delete Empty topic")
   initial.topics = original
 })
+
+test("topic directory presents nested topics with collapse and drag controls", () => {
+  const state = useMemoryTopicStore.getInitialState()
+  const original = state.topics
+  try {
+    state.topics = [
+      { id: "parent", name: "Parent", count: 0, parentId: null },
+      { id: "child", name: "Child", count: 0, parentId: "parent" },
+    ]
+    const html = renderToStaticMarkup(<MemoryTopicDirectory selected="all" onSelect={() => {}} />)
+    expect(html).toContain('aria-expanded="true"')
+    expect(html).toContain('aria-label="Collapse Parent"')
+    expect(html).toContain('draggable="true"')
+    expect(html).toContain('>Child</span>')
+  } finally { state.topics = original }
+})

@@ -46,3 +46,18 @@ describe("user memory topics", () => {
     expect(result.topicId).toBe("stable")
   })
 })
+
+test("topic moves reject cycles and preserve root moves", async () => {
+  const { canMoveTopic } = await import("./memoryTopics")
+  const topics = [
+    { id: "a", parentId: null },
+    { id: "b", parentId: "a" },
+    { id: "c", parentId: "b" },
+    { id: "d", parentId: null },
+  ]
+  expect(canMoveTopic(topics, "a", "c")).toBe(false)
+  expect(canMoveTopic(topics, "a", "a")).toBe(false)
+  expect(canMoveTopic(topics, "b", "d")).toBe(true)
+  expect(canMoveTopic(topics, "b", null)).toBe(true)
+  expect(canMoveTopic(topics, "b", "missing")).toBe(false)
+})
