@@ -66,3 +66,18 @@ describe("buildMemoryGraph", () => {
     expect(memoryNodeRadius(100000)).toBeLessThanOrEqual(9)
   })
 })
+
+test('focused topic graph preserves its immediate parent and omits higher ancestors', async () => {
+  const { buildTopicGraph } = await import('./memoryGraph')
+  const topics = [
+    { id: 'a', name: 'A', parentId: null },
+    { id: 'b', name: 'B', parentId: 'a' },
+    { id: 'c', name: 'C', parentId: 'b' },
+    { id: 'd', name: 'D', parentId: 'c' },
+  ]
+  const graph = buildTopicGraph([memory({ id: 'M-1', topicId: 'c' })], topics, { root: 'You', unclassified: 'Unclassified' }, 'c')
+  expect(graph.nodes.map(node => node.id)).toEqual(['topic:b', 'topic:c', 'M-1', 'topic:d'])
+  expect(graph.edges).toContainEqual({ source: 'topic:b', target: 'topic:c', kind: 'structure' })
+  expect(graph.edges).toContainEqual({ source: 'topic:c', target: 'topic:d', kind: 'structure' })
+  expect(graph.nodes.some(node => node.id === 'root')).toBe(false)
+})

@@ -236,7 +236,7 @@ export function MemoryGraphCanvas({
           node.x - node.radius * 0.38, node.y - node.radius * 0.42, node.radius * 0.06,
           node.x + node.radius * 0.12, node.y + node.radius * 0.16, node.radius * 1.18,
         )
-        sphere.addColorStop(0, "#ffffff")
+        sphere.addColorStop(0, node.kind === "root" ? "#f7bd57" : "#ffffff")
         sphere.addColorStop(0.24, color)
         sphere.addColorStop(1, color)
         context.shadowColor = color

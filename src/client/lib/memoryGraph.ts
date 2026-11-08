@@ -116,7 +116,8 @@ export function buildTopicGraph(
   labels: { root: string; unclassified: string },
   selected: string,
 ) {
-  const nodes: MemoryGraphNode[] = [{ id: MEMORY_GRAPH_ROOT_ID, kind: 'root', scope: null, label: labels.root, radius: 13 }]
+  const parentId = topics.find(topic => topic.id === selected)?.parentId ?? null
+  const nodes: MemoryGraphNode[] = parentId ? [] : [{ id: MEMORY_GRAPH_ROOT_ID, kind: 'root', scope: null, label: labels.root, radius: 13 }]
   const edges: MemoryGraphEdge[] = []
   const groups = [{ id: 'unclassified', name: labels.unclassified, parentId: null }, ...topics]
   const included = new Set([selected])
@@ -126,10 +127,11 @@ export function buildTopicGraph(
     for (const topic of groups) if (topic.parentId && included.has(topic.parentId) && !included.has(topic.id)) { included.add(topic.id); changed = true }
   }
   for (const topic of groups) {
-    if (selected !== 'all' && !included.has(topic.id)) continue
+    if (selected !== 'all' && !included.has(topic.id) && topic.id !== parentId) continue
     const id = `topic:${topic.id}`
     nodes.push({ id, kind: 'hub', scope: null, label: topic.name, radius: 10 })
-    edges.push({ source: topic.parentId && (selected === 'all' || included.has(topic.parentId)) ? `topic:${topic.parentId}` : MEMORY_GRAPH_ROOT_ID, target: id, kind: 'structure' })
+    if (topic.id !== parentId) edges.push({ source: topic.parentId && (selected === 'all' || included.has(topic.parentId) || topic.parentId === parentId) ? `topic:${topic.parentId}` : MEMORY_GRAPH_ROOT_ID, target: id, kind: 'structure' })
+    if (topic.id === parentId) continue
     for (const item of items) {
       if ((item.topicId ?? 'unclassified') !== topic.id || (item.status !== 'active' && item.status !== 'candidate')) continue
       nodes.push({ id: item.id, kind: 'memory', scope: item.scope, label: item.content, radius: Math.max(6, memoryNodeRadius(item.usageCount)), item, candidate: item.status === 'candidate' })

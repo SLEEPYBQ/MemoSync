@@ -7,6 +7,7 @@ import type { TopicFilter } from "../../lib/memoryTopics"
 import { refreshMemoryTopics, useMemoryTopicStore } from "../../stores/memoryTopicStore"
 import { cn } from "../../lib/utils"
 import { Button } from "../ui/button"
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem } from "../ui/context-menu"
 
 export function MemoryTopicDirectory({ selected, onSelect }: {
   selected: TopicFilter; onSelect: (topic: TopicFilter) => void
@@ -69,6 +70,9 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
     }
     return names.join(" / ")
   }
+  function openMove(topic: MemoryTopic) {
+    setMoving(topic); setParentId(topic.parentId ?? ""); setEditing(null); setDeleting(null); setCreating(false); setActionError(null)
+  }
   async function moveTopic() {
     if (!moving || busy) return
     setBusy(true); setActionError(null)
@@ -99,14 +103,17 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
     <div className="max-h-64 overflow-y-auto">
       <div className="flex">{row("all", t("memory:allTopics"))}</div>
       <div className="flex">{row("unclassified", t("memory:unclassified"))}</div>
-      {[...topics].sort((a, b) => topicPath(a).localeCompare(topicPath(b))).map(topic => <div key={topic.id} className="flex items-center">
+      {[...topics].sort((a, b) => topicPath(a).localeCompare(topicPath(b))).map(topic => <ContextMenu key={topic.id}>
+        <ContextMenuTrigger asChild><div className="flex items-center">
         {row(topic.id, topicPath(topic), topic.count)}
-        <Button variant="ghost" size="icon-sm" aria-label={t("memory:moveTopic")} title={t("memory:moveTopic")} onClick={() => { setMoving(topic); setParentId(topic.parentId ?? ""); setEditing(null); setDeleting(null); setCreating(false) }}>↳</Button>
+        <Button variant="ghost" size="icon-sm" aria-label={t("memory:moveTopic")} title={t("memory:moveTopic")} onClick={() => openMove(topic)}>↳</Button>
         <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:renameTopic", { name: topic.name })}
           onClick={() => { setEditing(topic); setDeleting(null); setName(topic.name); setActionError(null) }}><Pencil className="size-3" /></Button>
         <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:deleteTopic", { name: topic.name })}
           onClick={() => { setDeleting(topic); setEditing(null); setActionError(null); void load() }}><Trash2 className="size-3" /></Button>
-      </div>)}
+      </div></ContextMenuTrigger>
+        <ContextMenuContent><ContextMenuItem disabled={busy} onSelect={() => openMove(topic)}>{t("memory:moveTopic")}</ContextMenuItem></ContextMenuContent>
+      </ContextMenu>)}
     </div>
     {moving ? <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); void moveTopic() }}>
       <p className="text-xs">{t("memory:moveTopic")}: {topicPath(moving)}</p>{parentSelect()}
