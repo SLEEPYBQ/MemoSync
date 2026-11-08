@@ -54,3 +54,11 @@ it('validates topic requests before creating a topic or modifying anything', asy
   expect((await call('GET', '/topics')).data).toEqual([]);
   expect((await call('POST', '/topics/assign', { ids: ['a'], topicId: 'deleted' })).status).toBe(404);
 });
+it('creates and moves child topics without allowing cycles', async () => {
+  const root = (await call('POST', '/topics', { name: 'Root' })).data;
+  const child = (await call('POST', '/topics', { name: 'Child', parentId: root.id })).data;
+  expect(child.parentId).toBe(root.id);
+  expect((await call('PATCH', `/topics/${root.id}`, { parentId: child.id })).status).toBe(409);
+  expect((await call('DELETE', `/topics/${root.id}`)).status).toBe(409);
+  expect((await call('PATCH', `/topics/${child.id}`, { parentId: null })).data.parentId).toBeNull();
+});

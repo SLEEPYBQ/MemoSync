@@ -483,5 +483,8 @@
   "exampleTestOne": "修改功能后运行相关测试",
   "exampleTestTwo": "修复问题前先复现问题",
   "exampleWorkflowOne": "提交前检查改动",
-  "exampleWorkflowTwo": "完成任务后记录验证结果"
+  "exampleWorkflowTwo": "完成任务后记录验证结果",
+  "parentTopic": "上级主题",
+  "rootTopic": "顶层主题",
+  "moveTopic": "移动主题"
 }

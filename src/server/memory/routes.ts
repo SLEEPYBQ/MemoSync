@@ -126,7 +126,8 @@ export async function handleMemoryRequest(
       if (req.method === 'POST') {
         const b = await readBody(req);
         if (typeof b.name !== 'string') throw new RouteError(400, 'BAD_REQUEST', 'Topic name is required');
-        return ok(memory.store.createTopic(b.name));
+        if (b.parentId !== undefined && b.parentId !== null && (typeof b.parentId !== 'string' || !b.parentId)) throw new RouteError(400, 'BAD_REQUEST', 'Invalid parentId');
+        return ok(memory.store.createTopic(b.name, (b.parentId as string | null | undefined) ?? null));
       }
       return fail(405, 'METHOD_NOT_ALLOWED', 'use GET or POST');
     }
@@ -170,7 +171,11 @@ export async function handleMemoryRequest(
       const id = decodeURIComponent(topicMatch[1]);
       if (req.method === 'PATCH') {
         const b = await readBody(req);
-        if (typeof b.name !== 'string') throw new RouteError(400, 'BAD_REQUEST', 'Topic name is required');
+        if ('parentId' in b && !('name' in b)) {
+          if (b.parentId !== null && (typeof b.parentId !== 'string' || !b.parentId)) throw new RouteError(400, 'BAD_REQUEST', 'Invalid parentId');
+          return ok(memory.store.moveTopic(id, b.parentId as string | null, UI_ACTOR));
+        }
+        if (typeof b.name !== 'string' || 'parentId' in b) throw new RouteError(400, 'BAD_REQUEST', 'Provide a name or parentId');
         return ok(memory.store.renameTopic(id, b.name, UI_ACTOR));
       }
       if (req.method === 'DELETE') return ok(memory.store.deleteTopic(id, UI_ACTOR));

@@ -93,12 +93,16 @@ export interface MemoryTopicAssignment {
 export const memoriesApi = {
   topics: () => fetch("/api/memories/topics").then((r) => unwrap<MemoryTopic[]>(r)),
 
-  createTopic: (name: string) => fetch("/api/memories/topics", {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  createTopic: (name: string, parentId: string | null = null) => fetch("/api/memories/topics", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, parentId }),
   }).then((r) => unwrap<MemoryTopic>(r)),
 
   renameTopic: (id: string, name: string) => fetch(`/api/memories/topics/${encodeURIComponent(id)}`, {
     method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  }).then((r) => unwrap<MemoryTopic>(r)),
+
+  moveTopic: (id: string, parentId: string | null) => fetch(`/api/memories/topics/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ parentId }),
   }).then((r) => unwrap<MemoryTopic>(r)),
 
   deleteTopic: (id: string) => fetch(`/api/memories/topics/${encodeURIComponent(id)}`, {

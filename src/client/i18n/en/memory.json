@@ -483,5 +483,8 @@
   "exampleTestOne": "Run relevant tests after changing a feature",
   "exampleTestTwo": "Reproduce a problem before fixing it",
   "exampleWorkflowOne": "Review changes before committing",
-  "exampleWorkflowTwo": "Record verification after completing a task"
+  "exampleWorkflowTwo": "Record verification after completing a task",
+  "parentTopic": "Parent topic",
+  "rootTopic": "Top level",
+  "moveTopic": "Move topic"
 }

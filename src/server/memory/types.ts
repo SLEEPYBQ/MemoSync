@@ -134,6 +134,7 @@ export interface MemoryEvent {
 
 /** Shared local catalog, including reusable empty topics. */
 export interface MemoryTopic {
+  parentId: string | null;
   id: string;
   name: string;
   count: number;

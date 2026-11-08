@@ -16,6 +16,8 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
   const error = useMemoryTopicStore(s => s.error)
   const load = useMemoryTopicStore(s => s.load)
   const [creating, setCreating] = useState(false)
+  const [parentId, setParentId] = useState("")
+  const [moving, setMoving] = useState<MemoryTopic | null>(null)
   const [editing, setEditing] = useState<MemoryTopic | null>(null)
   const [deleting, setDeleting] = useState<MemoryTopic | null>(null)
   const [name, setName] = useState("")
@@ -45,13 +47,40 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
     setBusy(true)
     setActionError(null)
     try {
-      const topic = await memoriesApi.createTopic(normalizeTopicName(name))
+      const topic = await memoriesApi.createTopic(normalizeTopicName(name), parentId || null)
       await refreshMemoryTopics()
       setCreating(false)
       setName("")
+      setParentId("")
       onSelect(topic.id)
     } catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
     finally { setBusy(false) }
+  }
+  function topicPath(topic: MemoryTopic): string {
+    const names = [topic.name]
+    const seen = new Set([topic.id])
+    let parent = topic.parentId
+    while (parent && !seen.has(parent)) {
+      seen.add(parent)
+      const found = topics.find(item => item.id === parent)
+      if (!found) break
+      names.unshift(found.name)
+      parent = found.parentId
+    }
+    return names.join(" / ")
+  }
+  async function moveTopic() {
+    if (!moving || busy) return
+    setBusy(true); setActionError(null)
+    try { await memoriesApi.moveTopic(moving.id, parentId || null); setMoving(null); await refreshMemoryTopics() }
+    catch (err) { setActionError(err instanceof Error ? err.message : String(err)) }
+    finally { setBusy(false) }
+  }
+  function parentSelect() {
+    return <select aria-label={t("memory:parentTopic")} value={parentId} onChange={event => setParentId(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm">
+      <option value="">{t("memory:rootTopic")}</option>
+      {topics.filter(topic => topic.id !== moving?.id).map(topic => <option key={topic.id} value={topic.id}>{topicPath(topic)}</option>)}
+    </select>
   }
   function row(value: string, label: string, count?: number) {
     return <button type="button" aria-pressed={selected === value} onClick={() => onSelect(value)}
@@ -63,20 +92,26 @@ export function MemoryTopicDirectory({ selected, onSelect }: {
     <div className="flex items-center justify-between px-2"><h3 className="py-1 text-xs font-medium text-muted-foreground">{t("memory:topics")}</h3>
       <Button variant="ghost" size="icon-sm" aria-label={t("memory:createTopic")} title={t("memory:createTopic")} onClick={() => { setCreating(true); setEditing(null); setDeleting(null); setName(""); setActionError(null) }}><Plus className="size-4" /></Button></div>
     {creating ? <form className="mb-2 space-y-2" onSubmit={event => { event.preventDefault(); void createTopic() }}>
+      {parentSelect()}
       <input autoFocus aria-label={t("memory:topicName")} value={name} onChange={event => setName(event.target.value)} className="h-8 w-full rounded-md border border-border bg-background px-2 text-sm" />
       <div className="flex gap-1"><Button type="submit" size="sm" disabled={busy || !normalizeTopicName(name)}>{t("common:create")}</Button><Button type="button" variant="ghost" size="sm" onClick={() => setCreating(false)}>{t("common:cancel")}</Button></div>
     </form> : null}
     <div className="max-h-64 overflow-y-auto">
       <div className="flex">{row("all", t("memory:allTopics"))}</div>
       <div className="flex">{row("unclassified", t("memory:unclassified"))}</div>
-      {topics.map(topic => <div key={topic.id} className="flex items-center">
-        {row(topic.id, topic.name, topic.count)}
+      {[...topics].sort((a, b) => topicPath(a).localeCompare(topicPath(b))).map(topic => <div key={topic.id} className="flex items-center">
+        {row(topic.id, topicPath(topic), topic.count)}
+        <Button variant="ghost" size="icon-sm" aria-label={t("memory:moveTopic")} title={t("memory:moveTopic")} onClick={() => { setMoving(topic); setParentId(topic.parentId ?? ""); setEditing(null); setDeleting(null); setCreating(false) }}>↳</Button>
         <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:renameTopic", { name: topic.name })}
           onClick={() => { setEditing(topic); setDeleting(null); setName(topic.name); setActionError(null) }}><Pencil className="size-3" /></Button>
         <Button variant="ghost" size="icon-sm" disabled={busy} aria-label={t("memory:deleteTopic", { name: topic.name })}
           onClick={() => { setDeleting(topic); setEditing(null); setActionError(null); void load() }}><Trash2 className="size-3" /></Button>
       </div>)}
     </div>
+    {moving ? <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); void moveTopic() }}>
+      <p className="text-xs">{t("memory:moveTopic")}: {topicPath(moving)}</p>{parentSelect()}
+      <div className="flex gap-1"><Button type="submit" size="sm" disabled={busy}>{t("common:save")}</Button><Button type="button" variant="ghost" size="sm" onClick={() => setMoving(null)}>{t("common:cancel")}</Button></div>
+    </form> : null}
     {editing ? <form className="mt-2 space-y-2" onSubmit={event => { event.preventDefault(); void mutate("rename") }}>
       <label className="text-xs">{t("memory:renameTopic", { name: editing.name })}
         <input value={name} onChange={event => setName(event.target.value)} className="mt-1 h-8 w-full rounded-md border border-border bg-background px-2" />

@@ -162,24 +162,25 @@ export class MemoryStore {
   constructor(private db: Database) {}
 
   listTopics(): MemoryTopic[] {
-    return this.db.query(`SELECT t.id, t.name, COUNT(m.id) AS count
+    return this.db.query(`SELECT t.id, t.name, t.parent_id AS parentId, COUNT(m.id) AS count
       FROM memory_topics t LEFT JOIN memories m ON m.topic_id = t.id
       GROUP BY t.id ORDER BY t.name_key, t.id`).all() as MemoryTopic[];
   }
 
   getTopic(id: string): MemoryTopic | null {
-    return this.db.query(`SELECT t.id, t.name,
+    return this.db.query(`SELECT t.id, t.name, t.parent_id AS parentId,
       (SELECT COUNT(*) FROM memories WHERE topic_id = t.id) AS count
       FROM memory_topics t WHERE t.id = ?`).get(id) as MemoryTopic | null;
   }
 
-  createTopic(rawName: string): MemoryTopic {
+  createTopic(rawName: string, parentId: string | null = null): MemoryTopic {
     const name = normalizeTopicName(rawName);
     if (!name) throw new TopicError(400, 'BAD_REQUEST', 'Topic name must not be empty');
     const key = topicNameKey(name);
     return this.db.transaction(() => {
-      this.db.query(`INSERT INTO memory_topics (id, name, name_key) VALUES (?, ?, ?)
-        ON CONFLICT(name_key) DO NOTHING`).run(crypto.randomUUID(), name, key);
+      if (parentId !== null && !this.getTopic(parentId)) throw new TopicError(404, 'NOT_FOUND', 'Parent topic not found');
+      this.db.query(`INSERT INTO memory_topics (id, name, name_key, parent_id) VALUES (?, ?, ?, ?)
+        ON CONFLICT(name_key) DO NOTHING`).run(crypto.randomUUID(), name, key, parentId);
       const row = this.db.query('SELECT id FROM memory_topics WHERE name_key = ?').get(key) as { id: string };
       return this.getTopic(row.id)!;
     }).immediate();
@@ -206,10 +207,46 @@ export class MemoryStore {
     }).immediate();
   }
 
+  moveTopic(id: string, parentId: string | null, meta: ActorMeta): MemoryTopic {
+    return this.db.transaction(() => {
+      const topic = this.getTopic(id);
+      if (!topic) throw new TopicError(404, 'NOT_FOUND', 'Topic not found');
+      if (parentId !== null && !this.getTopic(parentId)) throw new TopicError(404, 'NOT_FOUND', 'Parent topic not found');
+      let parent = parentId;
+      while (parent !== null) {
+        if (parent === id) throw new TopicError(409, 'TOPIC_CYCLE', 'Cannot move a topic into its descendants');
+        parent = this.getTopic(parent)?.parentId ?? null;
+      }
+      if (topic.parentId === parentId) return topic;
+      this.db.query('UPDATE memory_topics SET parent_id = ? WHERE id = ?').run(parentId, id);
+      this.db.query(`INSERT INTO memory_topic_operations (kind, topic_id, actor, created_at, before_parent, after_parent)
+        VALUES ('move', ?, ?, ?, ?, ?)`).run(id, meta.actor, new Date().toISOString(), topic.parentId, parentId);
+      return this.getTopic(id)!;
+    }).immediate();
+  }
+
+  listTopicOperations(): Array<{ id: number; kind: string; topicId: string; actor: string; beforeParent: string | null; afterParent: string | null; undone: number }> {
+    return this.db.query(`SELECT id, kind, topic_id AS topicId, actor, before_parent AS beforeParent,
+      after_parent AS afterParent, undone FROM memory_topic_operations ORDER BY id DESC`).all() as Array<{ id: number; kind: string; topicId: string; actor: string; beforeParent: string | null; afterParent: string | null; undone: number }>;
+  }
+
+  undoTopicOperation(id: number, meta: ActorMeta): MemoryTopic {
+    return this.db.transaction(() => {
+      const op = this.listTopicOperations().find(item => item.id === id);
+      if (!op || op.undone || op.kind !== 'move') throw new TopicError(404, 'NOT_FOUND', 'Operation not available');
+      const topic = this.getTopic(op.topicId);
+      if (!topic || topic.parentId !== op.afterParent || this.db.query('SELECT 1 FROM memory_topic_operations WHERE topic_id = ? AND id > ? LIMIT 1').get(op.topicId, id)) throw new TopicError(409, 'CONFLICT', 'Topic changed after this operation');
+      const result = this.moveTopic(op.topicId, op.beforeParent, meta);
+      this.db.query('UPDATE memory_topic_operations SET undone = 1 WHERE id = ?').run(id);
+      return result;
+    }).immediate();
+  }
+
   deleteTopic(id: string, meta: ActorMeta): { id: string; count: number } {
     return this.db.transaction(() => {
       const topic = this.getTopic(id);
       if (!topic) throw new TopicError(404, 'NOT_FOUND', 'Topic not found');
+      if (this.db.query('SELECT 1 FROM memory_topics WHERE parent_id = ? LIMIT 1').get(id)) throw new TopicError(409, 'TOPIC_HAS_CHILDREN', 'Remove or move child topics first');
       for (const item of this.list({ topicId: id })) {
         this.appendEvent(item.id, 'classify', meta, {
           changes: { userTopic: { before: topic.name, after: null } },
@@ -997,7 +1034,8 @@ export class MemoryStore {
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
       if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      let proposal = this.create({ ...input, status: 'candidate' }, meta);
+      if (target.topicId) proposal = this.assignTopic(proposal.id, target.topicId, meta);
       this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
       return { item: proposal, isRevision: true };
@@ -1208,7 +1246,8 @@ export class MemoryStore {
           || (input.scope === 'session' && (!input.sessionId || target.sessionId !== input.sessionId))) return null;
         targets.push(target);
       }
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      let proposal = this.create({ ...input, status: 'candidate' }, meta);
+      if (targets[0]?.topicId && targets.every(target => target.topicId === targets[0]?.topicId)) proposal = this.assignTopic(proposal.id, targets[0].topicId, meta);
       for (const targetId of targetIds) this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, targets.map((target) => this.revisionSnapshot(target)));
       return proposal;

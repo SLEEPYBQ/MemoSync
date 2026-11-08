@@ -326,9 +326,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   }, [items, selectedId])
 
   const filteredItems = useMemo(() => filterTopicMemories(items, {
-    topic: topicFilter, status: topicStatus, lens, query,
+    topic: topicFilter, status: topicStatus, lens, query, topics,
   }).filter(item => lens.kind === "archived" || topicStatus === "archived" || item.status !== "archived"),
-  [items, topicFilter, topicStatus, lens, query])
+  [items, topicFilter, topicStatus, lens, query, topics])
   const filteredIds = useMemo(() => new Set(filteredItems.map(item => item.id)), [filteredItems])
   const selectedTopicIds = useMemo(() => [...checkedIds].filter(id => filteredIds.has(id)), [checkedIds, filteredIds])
   useEffect(() => {

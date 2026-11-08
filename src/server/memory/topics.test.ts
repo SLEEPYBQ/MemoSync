@@ -142,3 +142,46 @@ it('classification and catalog edits do not renew expired memories', () => {
   store.deleteTopic(topic.id, actor);
   expect(expired()).toContain(item.id);
 });
+
+it('preserves existing assignments while creating and moving nested topics safely', () => {
+  const { db, store } = open();
+  const root = store.createTopic('Root');
+  const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'fact' }, actor);
+  store.assignTopic(item.id, root.id, actor);
+  const child = store.createTopic('Child', root.id);
+  expect(child.parentId).toBe(root.id);
+  expect(() => store.moveTopic(root.id, child.id, actor)).toThrow();
+  expect(() => store.moveTopic(child.id, 'missing', actor)).toThrow();
+  expect(store.moveTopic(child.id, null, actor).parentId).toBeNull();
+  applySchema(db);
+  expect(store.getById(item.id)?.topicId).toBe(root.id);
+  expect(store.getTopic(child.id)?.parentId).toBeNull();
+});
+
+it('inherits topic for revision candidates while respecting later user changes', () => {
+  const { store } = open();
+  const topic = store.createTopic('Synthetic category');
+  const other = store.createTopic('Other category');
+  const original = store.create({ content: 'Synthetic original', scope: 'personal', type: 'fact' }, actor);
+  store.assignTopic(original.id, topic.id, actor);
+  const revision = store.createRevisionProposal({ content: 'Synthetic revision', scope: 'personal', type: 'fact' }, original.id, { actor: 'agent' })!;
+  expect(revision.topicId).toBe(topic.id);
+  expect(revision.status).toBe('candidate');
+  store.assignTopic(revision.id, other.id, actor);
+  expect(store.acceptRevision(revision.id, actor).updated.topicId).toBe(other.id);
+});
+
+it('records and safely undoes topic moves without overwriting later changes', () => {
+  const { store } = open();
+  const root = store.createTopic('Root');
+  const other = store.createTopic('Other');
+  const child = store.createTopic('Child');
+  store.moveTopic(child.id, root.id, actor);
+  const first = store.listTopicOperations()[0];
+  expect(first).toMatchObject({ kind: 'move', topicId: child.id, actor: 'user' });
+  store.moveTopic(child.id, other.id, actor);
+  expect(() => store.undoTopicOperation(first.id, actor)).toThrow();
+  const latest = store.listTopicOperations()[0];
+  store.undoTopicOperation(latest.id, actor);
+  expect(store.getTopic(child.id)?.parentId).toBe(root.id);
+});

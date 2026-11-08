@@ -6,14 +6,20 @@ export type TopicFilter = "all" | "unclassified" | string
 export type TopicStatusFilter = "all" | "active" | "candidate" | "archived"
 
 export function filterTopicMemories(items: MemoryItem[], filters: {
-  topic: TopicFilter; status: TopicStatusFilter; lens: MemoryLens; query: string
+  topic: TopicFilter; status: TopicStatusFilter; lens: MemoryLens; query: string; topics?: Array<{ id: string; parentId: string | null }>
 }): MemoryItem[] {
   const query = filters.query.trim().toLowerCase()
+  const included = new Set([filters.topic])
+  let changed = true
+  while (changed) {
+    changed = false
+    for (const topic of filters.topics ?? []) if (topic.parentId && included.has(topic.parentId) && !included.has(topic.id)) { included.add(topic.id); changed = true }
+  }
   return items.filter(item => {
     if (item.status === "discarded") return false
     if (filters.lens.kind === "archived" ? item.status !== "archived" : !memoryMatchesLens(item, filters.lens)) return false
     if (filters.status !== "all" && item.status !== filters.status) return false
-    if (filters.topic === "unclassified" ? Boolean(item.topicId) : filters.topic !== "all" && item.topicId !== filters.topic) return false
+    if (filters.topic === "unclassified" ? Boolean(item.topicId) : filters.topic !== "all" && (!item.topicId || !included.has(item.topicId))) return false
     return !query || item.content.toLowerCase().includes(query) || (item.detail ?? "").toLowerCase().includes(query)
   })
 }

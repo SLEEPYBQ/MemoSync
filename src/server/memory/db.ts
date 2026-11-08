@@ -178,6 +178,14 @@ export function applySchema(db: Database): void {
       name TEXT NOT NULL,
       name_key TEXT NOT NULL UNIQUE
     )`);
+    const topicColumns = new Set((db.query('PRAGMA table_info(memory_topics)').all() as Array<{ name: string }>).map(column => column.name));
+    if (!topicColumns.has('parent_id')) db.exec('ALTER TABLE memory_topics ADD COLUMN parent_id TEXT REFERENCES memory_topics(id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_memory_topics_parent ON memory_topics(parent_id)');
+    db.exec(`CREATE TABLE IF NOT EXISTS memory_topic_operations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, topic_id TEXT NOT NULL,
+      actor TEXT NOT NULL, created_at TEXT NOT NULL, before_parent TEXT, after_parent TEXT,
+      undone INTEGER NOT NULL DEFAULT 0
+    )`);
     const hasTopicId = (db.query('PRAGMA table_info(memories)').all() as Array<{ name: string }>)
       .some(column => column.name === 'topic_id');
     if (!hasTopicId) {
