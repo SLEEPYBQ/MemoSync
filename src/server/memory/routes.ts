@@ -10,7 +10,7 @@ import type { ExpectedMemoryUse } from '../../shared/types';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
-import { CandidateDismissalTransitionError, RevisionConflictError } from './MemoryStore';
+import { CandidateDismissalTransitionError, RevisionConflictError, TopicError } from './MemoryStore';
 import { rankMemories } from './retrieval';
 import { handleNativeMemoryRequest } from './native-routes';
 import type { NativeMemoryImportService } from './native-import';
@@ -18,7 +18,7 @@ import type { ReviseInjectionService } from './revise-injection';
 import type { SanitizeService } from './sanitize';
 import type { TransferService } from './transfer';
 import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
-import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType } from './types';
+import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryType, TopicAssignmentResult } from './types';
 import type { UsePlanService } from './use-plan';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
@@ -120,6 +120,63 @@ export async function handleMemoryRequest(
   }
 
   try {
+    // User classifications deliberately bypass content editing and accepting.
+    if (pathname === '/api/memories/topics') {
+      if (req.method === 'GET') return ok(memory.store.listTopics());
+      if (req.method === 'POST') {
+        const b = await readBody(req);
+        if (typeof b.name !== 'string') throw new RouteError(400, 'BAD_REQUEST', 'Topic name is required');
+        return ok(memory.store.createTopic(b.name));
+      }
+      return fail(405, 'METHOD_NOT_ALLOWED', 'use GET or POST');
+    }
+    if (pathname === '/api/memories/topics/assign') {
+      if (req.method !== 'POST') return fail(405, 'METHOD_NOT_ALLOWED', 'use POST');
+      const b = await readBody(req);
+      if (!Array.isArray(b.ids) || b.ids.length === 0 || b.ids.length > 500
+        || b.ids.some(id => typeof id !== 'string' || !id.trim())) {
+        throw new RouteError(400, 'BAD_REQUEST', 'ids must contain between 1 and 500 memory IDs');
+      }
+      const hasName = Object.hasOwn(b, 'name');
+      const hasId = Object.hasOwn(b, 'topicId');
+      if (hasName === hasId || (hasName && typeof b.name !== 'string')
+        || (hasId && b.topicId !== null && (typeof b.topicId !== 'string' || !b.topicId))) {
+        throw new RouteError(400, 'BAD_REQUEST', 'Provide either name or topicId (null for unclassified)');
+      }
+      const topicId = hasName ? memory.store.createTopic(b.name as string).id : b.topicId as string | null;
+      if (topicId !== null && !memory.store.getTopic(topicId)) throw new RouteError(404, 'NOT_FOUND', 'Topic not found');
+      const result: TopicAssignmentResult = { topicId, results: [] };
+      let interrupted = false;
+      for (const id of new Set(b.ids as string[])) {
+        if (interrupted) {
+          result.results.push({ id, status: 'unprocessed' });
+          continue;
+        }
+        try {
+          memory.store.assignTopic(id, topicId, UI_ACTOR);
+          result.results.push({ id, status: 'success' });
+        } catch (error) {
+          const known = error instanceof TopicError || error instanceof CandidateDismissalTransitionError;
+          result.results.push({ id, status: 'failed', error: known ? error.message : 'Classification failed; retry this item' });
+          // Each item commits independently. Preserve successes and report
+          // remaining work honestly if the storage layer is unavailable.
+          if (!known) interrupted = true;
+        }
+      }
+      return ok(result);
+    }
+    const topicMatch = pathname.match(/^\/api\/memories\/topics\/([^/]+)$/);
+    if (topicMatch) {
+      const id = decodeURIComponent(topicMatch[1]);
+      if (req.method === 'PATCH') {
+        const b = await readBody(req);
+        if (typeof b.name !== 'string') throw new RouteError(400, 'BAD_REQUEST', 'Topic name is required');
+        return ok(memory.store.renameTopic(id, b.name, UI_ACTOR));
+      }
+      if (req.method === 'DELETE') return ok(memory.store.deleteTopic(id, UI_ACTOR));
+      return fail(405, 'METHOD_NOT_ALLOWED', 'use PATCH or DELETE');
+    }
+
     // GET /api/memories/search?q=&project=&k=
     if (pathname === '/api/memories/search') {
       if (req.method !== 'GET') return fail(405, 'METHOD_NOT_ALLOWED', 'use GET');
@@ -214,7 +271,9 @@ export async function handleMemoryRequest(
         const projectId = url.searchParams.get('projectId') ?? undefined;
         const sessionId = url.searchParams.get('sessionId') ?? undefined;
         const status = url.searchParams.get('status') ?? undefined;
+        const topicFilter = url.searchParams.get('topicId');
         const items = memory.store.list({
+          topicId: topicFilter === 'unclassified' ? null : topicFilter ?? undefined,
           scope: scope as MemoryScope | undefined,
           projectId,
           sessionId,
@@ -1282,6 +1341,7 @@ export async function handleMemoryRequest(
 
     return fail(404, 'NOT_FOUND', `unknown memory route: ${pathname}`);
   } catch (e) {
+    if (e instanceof TopicError) return fail(e.status, e.code, e.message);
     if (e instanceof RouteError) return fail(e.status, e.code, e.message);
     if (e instanceof CandidateDismissalTransitionError) return fail(409, e.code, e.message);
     if (e instanceof RevisionConflictError) return fail(409, e.code, e.message);

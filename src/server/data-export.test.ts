@@ -54,3 +54,39 @@ describe("data export privacy", () => {
     expect(contents.stdout.toString().includes("PRIVATE_")).toBe(full)
   })
 })
+
+test("exports reusable topics, classifications and their history in the memory database", async () => {
+  const { openMemoryDb } = await import('./memory/db')
+  const { MemoryStore } = await import('./memory/MemoryStore')
+  const root = await mkdtemp(path.join(tmpdir(), 'memosync-topic-export-'))
+  tempDirs.push(root)
+  const dataDir = path.join(root, 'data')
+  const outDir = path.join(root, 'out')
+  const db = openMemoryDb(path.join(dataDir, 'memory.sqlite'))
+  const store = new MemoryStore(db)
+  const actor = { actor: 'user' as const }
+  const item = store.create({ content: 'Synthetic export rule', scope: 'personal', type: 'fact' }, actor)
+  const topic = store.createTopic('Synthetic topic')
+  store.createTopic('Synthetic empty topic')
+  store.assignTopic(item.id, topic.id, actor)
+  const expectedTopics = store.listTopics()
+  const expectedItem = store.getById(item.id)
+  const expectedHistory = store.getEvents(item.id)
+  db.close()
+  const result = Bun.spawnSync([process.execPath, script, '--out', outDir], {
+    env: { PATH: process.env.PATH, HOME: root, DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
+  })
+  expect(result.exitCode).toBe(0)
+  const [archive] = await readdir(outDir)
+  const restoredDir = path.join(root, 'restored')
+  await mkdir(restoredDir)
+  const extraction = Bun.spawnSync(['tar', '-xzf', path.join(outDir, archive!), '-C', restoredDir], { stdout: 'pipe', stderr: 'pipe' })
+  expect(extraction.exitCode).toBe(0)
+  const restoredDb = openMemoryDb(path.join(restoredDir, 'memory.sqlite'))
+  try {
+    const restored = new MemoryStore(restoredDb)
+    expect(restored.listTopics()).toEqual(expectedTopics)
+    expect(restored.getById(item.id)).toEqual(expectedItem)
+    expect(restored.getEvents(item.id)).toEqual(expectedHistory)
+  } finally { restoredDb.close() }
+})

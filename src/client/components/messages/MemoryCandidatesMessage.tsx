@@ -2,6 +2,7 @@ import { translateUiText } from "../../i18n/uiText"
 import { memoryScopeLabel } from "../../lib/memoryCitations"
 import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
+import { MemoryTopicControl } from "../memory/MemoryTopicControl"
 import { MemoryBadge } from "../memory/MemoryBadge"
 // Review cards for capture-surfaced memory candidates (SPEC §4.1, §4.10).
 // Rendered in-transcript, one card per candidate the forced capture hook
@@ -626,6 +627,7 @@ export function MemoryCandidateCard({
         </div>
       ) : null}
 
+      <MemoryTopicControl ids={[candidate.id]} topicId={candidate.topicId} topicName={candidate.topicName} disabled={busyState} onChanged={onChanged} />
       <div className="mt-3 flex flex-col items-stretch gap-3 @lg:flex-row @lg:flex-wrap @lg:items-end">
         <ScopeControl value={scope} onValueChange={setScope} disabled={busyState} showConsequence />
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">

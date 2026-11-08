@@ -170,6 +170,23 @@ export function applySchema(db: Database): void {
     db.exec(`ALTER TABLE memories ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
   }
 
+  // One transaction makes migration restart-safe. The new column is the
+  // migration marker: removing a classification must survive subsequent opens.
+  db.transaction(() => {
+    db.exec(`CREATE TABLE IF NOT EXISTS memory_topics (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      name_key TEXT NOT NULL UNIQUE
+    )`);
+    const hasTopicId = (db.query('PRAGMA table_info(memories)').all() as Array<{ name: string }>)
+      .some(column => column.name === 'topic_id');
+    if (!hasTopicId) {
+      db.exec('ALTER TABLE memories ADD COLUMN topic_id TEXT REFERENCES memory_topics(id) ON DELETE SET NULL');
+
+    }
+    db.exec('CREATE INDEX IF NOT EXISTS idx_memories_topic ON memories(topic_id)');
+  }).immediate();
+
   const dismissalColumns = new Set(
     (db.query(`PRAGMA table_info(dismissed_candidate_fingerprints)`).all() as Array<{ name: string }>).map((c) => c.name),
   );

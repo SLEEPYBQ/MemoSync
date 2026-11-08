@@ -26,8 +26,21 @@ const MIN_ZOOM = 0.25
 const MAX_ZOOM = 5
 const LABEL_FONT = '11px -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Segoe UI", "Microsoft YaHei", sans-serif'
 
+/** Stable topic hues keep a group recognizable after renames and refreshes. */
+function topicHue(id: string): number {
+  let hash = 0
+  for (const char of id) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
+  return [12, 35, 70, 145, 185, 215, 265, 310][hash % 8]
+}
+
 function nodeColor(node: MemoryGraphNode, rootColor: string): string {
-  if (node.candidate) return CANDIDATE_COLOR
+  if (node.kind === "root") return "#e7a139"
+  if (node.id === "topic:unclassified") return "#8b79c9"
+  if (node.kind === "hub" && node.id.startsWith("topic:")) return `hsl(${topicHue(node.id.slice(6))} 64% 47%)`
+  if (node.kind === "memory") {
+    if (!node.item?.topicId) return "#7cb7bf"
+    return `hsl(${topicHue(node.item.topicId)} 67% 72%)`
+  }
   return node.scope ? SCOPE_COLORS[node.scope] : rootColor
 }
 
@@ -57,6 +70,8 @@ interface Props {
   highlight: Set<string> | null
   selectedId: string | null
   onSelectMemory: (id: string) => void
+  onSelectNode?: (id: string) => void
+  focusKey?: string
   onHoverMemory?: (id: string) => void
   legend: MemoryGraphLegendEntry[]
   ariaLabel: string
@@ -72,6 +87,8 @@ export function MemoryGraphCanvas({
   highlight,
   selectedId,
   onSelectMemory,
+  onSelectNode,
+  focusKey,
   onHoverMemory,
   legend,
   ariaLabel,
@@ -121,8 +138,15 @@ export function MemoryGraphCanvas({
       (width - padding * 2) / Math.max(1, maxX - minX),
       (height - padding * 2) / Math.max(1, maxY - minY),
     )))
+    const root = simNodes.find(node => node.id === MEMORY_GRAPH_ROOT_ID)
+    if (focusKey === "all" && root) {
+      const centeredZoom = Math.min(k, (width / 2 - padding) / Math.max(1, root.x - minX, maxX - root.x), (height / 2 - padding) / Math.max(1, root.y - minY, maxY - root.y))
+      const zoom = Math.max(MIN_ZOOM, centeredZoom)
+      const largeZoom = Math.min(MAX_ZOOM, zoom * 1.4)
+      return { x: width / 2 - root.x * largeZoom, y: height / 2 - root.y * largeZoom, k: largeZoom }
+    }
     return { x: width / 2 - ((minX + maxX) / 2) * k, y: height / 2 - ((minY + maxY) / 2) * k, k }
-  }, [])
+  }, [focusKey])
 
   const draw = useCallback(() => {
     frameRef.current = null
@@ -208,8 +232,23 @@ export function MemoryGraphCanvas({
         context.strokeStyle = color
         context.stroke()
       } else {
-        context.fillStyle = color
+        const sphere = context.createRadialGradient(
+          node.x - node.radius * 0.38, node.y - node.radius * 0.42, node.radius * 0.06,
+          node.x + node.radius * 0.12, node.y + node.radius * 0.16, node.radius * 1.18,
+        )
+        sphere.addColorStop(0, "#ffffff")
+        sphere.addColorStop(0.24, color)
+        sphere.addColorStop(1, color)
+        context.shadowColor = color
+        context.shadowBlur = node.kind === "memory" ? 8 : 16
+        context.fillStyle = sphere
         context.fill()
+        context.shadowBlur = 0
+        context.beginPath()
+        context.arc(node.x, node.y, node.radius, 0, Math.PI * 2)
+        context.strokeStyle = "rgba(20, 25, 35, 0.22)"
+        context.lineWidth = 1
+        context.stroke()
       }
       if (isSelected || node === hover) {
         context.beginPath()
@@ -264,10 +303,10 @@ export function MemoryGraphCanvas({
         .distance((edge) => {
           if (edge.kind === "relation") return 52
           const target = edge.target as SimNode
-          return target.kind === "memory" ? 30 + target.radius * 2 : 118
+          return target.kind === "memory" ? 55 + target.radius * 2 : 180
         })
         .strength((edge) => (edge.kind === "relation" ? 0.1 : 0.85)))
-      .force("charge", forceManyBody<SimNode>().strength((node) => (node.kind === "memory" ? -34 : -520)))
+      .force("charge", forceManyBody<SimNode>().strength((node) => (node.kind === "memory" ? -70 : -850)))
       .force("collide", forceCollide<SimNode>().radius((node) => node.radius + 3))
       .force("x", forceX<SimNode>(0).strength(0.02))
       .force("y", forceY<SimNode>(0).strength(0.02))
@@ -294,6 +333,11 @@ export function MemoryGraphCanvas({
       simulation.stop()
     }
   }, [structureKey, requestDraw, targetView])
+
+  useEffect(() => {
+    autoFitRef.current = true
+    requestDraw()
+  }, [focusKey, requestDraw])
 
   // Fresh data on the same shape (usage counts, new text) needs no new layout.
   useEffect(() => {
@@ -447,6 +491,7 @@ export function MemoryGraphCanvas({
       simulationRef.current?.alphaTarget(0)
     }
     if (!drag.moved && drag.node?.item) onSelectMemory(drag.node.item.id)
+    else if (!drag.moved && drag.node) onSelectNode?.(drag.node.id)
   }
 
   const handleFit = () => {

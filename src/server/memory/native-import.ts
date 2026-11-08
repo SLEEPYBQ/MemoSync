@@ -174,7 +174,7 @@ export class NativeMemoryImportService {
     return (
       this.db
         .query(
-          "SELECT COALESCE(MAX(seq),0) seq FROM memory_events WHERE memory_id=? AND kind NOT IN ('use','trace')",
+          "SELECT COALESCE(MAX(seq),0) seq FROM memory_events WHERE memory_id=? AND kind NOT IN ('use','trace','classify')",
         )
         .get(id) as { seq: number }
     ).seq;

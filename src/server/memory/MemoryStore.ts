@@ -1,6 +1,7 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { computeMemoryHash } from './hash';
+import { normalizeTopicName, topicNameKey } from '../../shared/memory-topics';
 import type {
   AbstractionLevel,
   ActorMeta,
@@ -15,6 +16,7 @@ import type {
   MemoryStatus,
   MemoryTraceLabel,
   MemoryType,
+  MemoryTopic,
 } from './types';
 
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
@@ -39,6 +41,7 @@ export interface CreateMemoryInput {
 }
 
 export interface MemoryFilter {
+  topicId?: string | null;
   scope?: MemoryScope;
   projectId?: string;
   sessionId?: string;
@@ -65,6 +68,7 @@ interface MemoryRow {
   project_id: string | null;
   session_id: string | null;
   topic: string | null;
+  topic_id: string | null;
   provenance_session_id: string | null;
   provenance_turn: number | null;
   usage_count: number;
@@ -148,8 +152,93 @@ export class RevisionConflictError extends Error {
   }
 }
 
+export class TopicError extends Error {
+  constructor(public readonly status: number, public readonly code: string, message: string) {
+    super(message);
+  }
+}
+
 export class MemoryStore {
   constructor(private db: Database) {}
+
+  listTopics(): MemoryTopic[] {
+    return this.db.query(`SELECT t.id, t.name, COUNT(m.id) AS count
+      FROM memory_topics t LEFT JOIN memories m ON m.topic_id = t.id
+      GROUP BY t.id ORDER BY t.name_key, t.id`).all() as MemoryTopic[];
+  }
+
+  getTopic(id: string): MemoryTopic | null {
+    return this.db.query(`SELECT t.id, t.name,
+      (SELECT COUNT(*) FROM memories WHERE topic_id = t.id) AS count
+      FROM memory_topics t WHERE t.id = ?`).get(id) as MemoryTopic | null;
+  }
+
+  createTopic(rawName: string): MemoryTopic {
+    const name = normalizeTopicName(rawName);
+    if (!name) throw new TopicError(400, 'BAD_REQUEST', 'Topic name must not be empty');
+    const key = topicNameKey(name);
+    return this.db.transaction(() => {
+      this.db.query(`INSERT INTO memory_topics (id, name, name_key) VALUES (?, ?, ?)
+        ON CONFLICT(name_key) DO NOTHING`).run(crypto.randomUUID(), name, key);
+      const row = this.db.query('SELECT id FROM memory_topics WHERE name_key = ?').get(key) as { id: string };
+      return this.getTopic(row.id)!;
+    }).immediate();
+  }
+
+  renameTopic(id: string, rawName: string, meta: ActorMeta): MemoryTopic {
+    const name = normalizeTopicName(rawName);
+    if (!name) throw new TopicError(400, 'BAD_REQUEST', 'Topic name must not be empty');
+    return this.db.transaction(() => {
+      const topic = this.getTopic(id);
+      if (!topic) throw new TopicError(404, 'NOT_FOUND', 'Topic not found');
+      const collision = this.db.query('SELECT id FROM memory_topics WHERE name_key = ? AND id != ?')
+        .get(topicNameKey(name), id);
+      if (collision) throw new TopicError(409, 'TOPIC_EXISTS', 'A topic with this name already exists');
+      if (topic.name === name) return topic;
+      this.db.query('UPDATE memory_topics SET name = ?, name_key = ? WHERE id = ?').run(name, topicNameKey(name), id);
+      for (const item of this.list({ topicId: id })) {
+        this.appendEvent(item.id, 'classify', meta, {
+          changes: { userTopic: { before: topic.name, after: name } },
+          meta: { action: 'rename', topicId: id },
+        });
+      }
+      return this.getTopic(id)!;
+    }).immediate();
+  }
+
+  deleteTopic(id: string, meta: ActorMeta): { id: string; count: number } {
+    return this.db.transaction(() => {
+      const topic = this.getTopic(id);
+      if (!topic) throw new TopicError(404, 'NOT_FOUND', 'Topic not found');
+      for (const item of this.list({ topicId: id })) {
+        this.appendEvent(item.id, 'classify', meta, {
+          changes: { userTopic: { before: topic.name, after: null } },
+          meta: { action: 'delete', previousTopicId: id },
+        });
+      }
+      this.db.query('UPDATE memories SET topic_id = NULL WHERE topic_id = ?').run(id);
+      this.db.query('DELETE FROM memory_topics WHERE id = ?').run(id);
+      return { id, count: topic.count };
+    }).immediate();
+  }
+
+  /** Organization is intentionally outside content versions and rollback. */
+  assignTopic(id: string, topicId: string | null, meta: ActorMeta): MemoryItem {
+    return this.db.transaction(() => {
+      const item = this.getById(id);
+      if (!item) throw new TopicError(404, 'NOT_FOUND', 'Memory not found');
+      this.assertCandidateDecisionTransition(item, {}, 'ordinary');
+      const topic = topicId === null ? null : this.getTopic(topicId);
+      if (topicId !== null && !topic) throw new TopicError(404, 'NOT_FOUND', 'Topic not found');
+      if ((item.topicId ?? null) === topicId) return item;
+      this.db.query('UPDATE memories SET topic_id = ? WHERE id = ?').run(topicId, id);
+      this.appendEvent(id, 'classify', meta, {
+        changes: { userTopic: { before: item.topicName ?? null, after: topic?.name ?? null } },
+        meta: { action: 'assign', previousTopicId: item.topicId ?? null, topicId },
+      });
+      return this.getById(id)!;
+    }).immediate();
+  }
 
   /** sha1-based memory-set hash. */
   static computeHash(items: Array<Pick<MemoryItem, 'id' | 'content'>>): string {
@@ -246,6 +335,11 @@ export class MemoryStore {
     if (filter.status) {
       clauses.push('status = ?');
       params.push(filter.status);
+    }
+    if (filter.topicId === null) clauses.push('topic_id IS NULL');
+    else if (filter.topicId !== undefined) {
+      clauses.push('topic_id = ?');
+      params.push(filter.topicId);
     }
     const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
     // Order numerically by the id's numeric suffix so M-99 precedes M-100.
@@ -979,7 +1073,7 @@ export class MemoryStore {
             AND m.created_at < $boundary
             AND NOT EXISTS (
               SELECT 1 FROM memory_events e
-               WHERE e.memory_id = m.id AND e.kind != 'trace' AND e.ts >= $boundary)
+               WHERE e.memory_id = m.id AND e.kind NOT IN ('trace', 'classify') AND e.ts >= $boundary)
             AND NOT EXISTS (
               SELECT 1 FROM memory_relations r
                 JOIN memories c ON c.id = r.source_id
@@ -1456,6 +1550,8 @@ export class MemoryStore {
       projectId: row.project_id ?? undefined,
       sessionId: row.session_id ?? undefined,
       topic: row.topic ?? undefined,
+      topicId: row.topic_id ?? undefined,
+      topicName: row.topic_id ? this.getTopic(row.topic_id)?.name : undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
       provenanceSessionId: row.provenance_session_id ?? undefined,

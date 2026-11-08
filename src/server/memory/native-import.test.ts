@@ -402,6 +402,26 @@ describe("format inventory and incremental manifest", () => {
 });
 
 describe("reviewed writes, lineage and rollback", () => {
+  it("keeps native import updates and rollback available after user classification", async () => {
+    const first = plan("topic-first");
+    const receipt = await accept(first);
+    const id = receipt.accepted[0]!.memoryId;
+    const catalog = memory.store.createTopic("Synthetic user topic");
+    memory.store.assignTopic(id, catalog.id, { actor: "user" });
+    expect(plan("topic-assigned").plan.items[0]!.disposition).toBe("unchanged");
+    memory.store.renameTopic(catalog.id, "Synthetic renamed topic", { actor: "user" });
+    expect(plan("topic-renamed").plan.items[0]!.disposition).toBe("unchanged");
+    put(topic, "Synthetic revised source for topic compatibility.\n");
+    const next = plan("topic-update");
+    expect(next.plan.items[0]!.disposition).toBe("changed");
+    await accept(next);
+    expect(memory.store.getById(id)!.topicId).toBe(catalog.id);
+    memory.store.deleteTopic(catalog.id, { actor: "user" });
+    expect(service.rollback("topic-update", true).restored).toEqual([id]);
+    expect(memory.store.getById(id)!.topicId).toBeUndefined();
+    expect(memory.store.getById(id)!.content).toBe(first.plan.items[0]!.content);
+  });
+
   it("is durable and idempotent, preserves source bytes, and updates changed units rather than duplicating", async () => {
     const before = readFileSync(topic, "utf8"),
       first = plan("first"),

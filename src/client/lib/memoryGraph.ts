@@ -108,3 +108,27 @@ export function buildMemoryGraph(items: MemoryItem[], labels: MemoryGraphLabels)
 export function memoryGraphStructureKey(graph: { nodes: MemoryGraphNode[]; edges: MemoryGraphEdge[] }): string {
   return `${graph.nodes.map((node) => node.id).join(",")}#${graph.edges.map((edge) => `${edge.source}>${edge.target}`).join(",")}`
 }
+
+/** User topics organize the map independently of memory scope. */
+export function buildTopicGraph(
+  items: MemoryItem[],
+  topics: Array<{ id: string; name: string }>,
+  labels: { root: string; unclassified: string },
+  selected: string,
+) {
+  const nodes: MemoryGraphNode[] = [{ id: MEMORY_GRAPH_ROOT_ID, kind: 'root', scope: null, label: labels.root, radius: 13 }]
+  const edges: MemoryGraphEdge[] = []
+  const groups = [{ id: 'unclassified', name: labels.unclassified }, ...topics]
+  for (const topic of groups) {
+    if (selected !== 'all' && selected !== topic.id) continue
+    const id = `topic:${topic.id}`
+    nodes.push({ id, kind: 'hub', scope: null, label: topic.name, radius: 10 })
+    edges.push({ source: MEMORY_GRAPH_ROOT_ID, target: id, kind: 'structure' })
+    for (const item of items) {
+      if ((item.topicId ?? 'unclassified') !== topic.id || (item.status !== 'active' && item.status !== 'candidate')) continue
+      nodes.push({ id: item.id, kind: 'memory', scope: item.scope, label: item.content, radius: Math.max(6, memoryNodeRadius(item.usageCount)), item, candidate: item.status === 'candidate' })
+      edges.push({ source: id, target: item.id, kind: 'structure' })
+    }
+  }
+  return { nodes, edges }
+}

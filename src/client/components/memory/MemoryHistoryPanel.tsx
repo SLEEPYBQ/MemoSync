@@ -25,6 +25,7 @@ const ACTOR_META: Record<EventActor, { label: string; className: string }> = {
 
 const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
   create: { icon: Sparkles, get label() { return t("memory:created") } },
+  classify: { icon: Pencil, get label() { return t("memory:classifyEvent") } },
   edit: { icon: Pencil, get label() { return t("memory:edited") } },
   rescope: { icon: ArrowLeftRight, get label() { return t("memory:rescoped") } },
   promote: { icon: TrendingUp, get label() { return t("memory:promoted") } },
@@ -49,6 +50,7 @@ const FIELD_LABELS: Record<string, string> = {
   get scope() { return t("memory:fieldScope") },
   get type() { return t("memory:fieldType") },
   get status() { return t("memory:fieldStatus") },
+  get userTopic() { return t("memory:userTopicField") },
   get topic() { return t("memory:fieldTopic") },
   get abstractionLevel() { return t("memory:fieldAbstraction") },
   get projectId() { return t("memory:fieldProject") },

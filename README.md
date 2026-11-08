@@ -275,3 +275,7 @@ Provider presets and engine discovery are adapted from [Magpie](https://github.c
 ## License
 
 [MIT](LICENSE)
+
+### Memory topic examples and local data
+
+The memory board's graph has a **View example** button showing two fictional topics with two example memories each. This example is part of the application and is never added to your library. Your topics and memories are stored in the local MemoSync data directory (`~/.memosync/data`, or `~/.memosync-dev/data` in the development profile). Do not commit or share that directory or exports unless you intend to share their contents.

@@ -13,13 +13,14 @@ import type {
   MemoryScope,
   MemoryStatus,
   MemoryType,
+  MemoryTopic,
 } from "../../server/memory/types"
 import type { ExpectedMemoryUse } from "../../shared/types"
 import { enqueueUsageTelemetry } from "./usageTelemetry"
 import { notifyIfUnauthorized } from "./authGuard"
 import { generateUUID } from "./utils"
 
-export type { AbstractionLevel, MemoryEvent, MemoryItem, MemoryScope, MemoryStatus, MemoryType }
+export type { AbstractionLevel, MemoryEvent, MemoryItem, MemoryScope, MemoryStatus, MemoryType, MemoryTopic }
 
 export interface SearchResultMemory {
   id: string
@@ -83,7 +84,31 @@ function controlOperationId(label: string): string {
   return `control:${label}:${generateUUID()}`
 }
 
+export type TopicAssignmentTarget = { topicId: string | null } | { name: string }
+export interface MemoryTopicAssignment {
+  topicId: string | null
+  results: Array<{ id: string; status: "success" | "failed" | "unprocessed"; error?: string }>
+}
+
 export const memoriesApi = {
+  topics: () => fetch("/api/memories/topics").then((r) => unwrap<MemoryTopic[]>(r)),
+
+  createTopic: (name: string) => fetch("/api/memories/topics", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  }).then((r) => unwrap<MemoryTopic>(r)),
+
+  renameTopic: (id: string, name: string) => fetch(`/api/memories/topics/${encodeURIComponent(id)}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  }).then((r) => unwrap<MemoryTopic>(r)),
+
+  deleteTopic: (id: string) => fetch(`/api/memories/topics/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  }).then((r) => unwrap<{ id: string; count: number }>(r)),
+
+  assignTopic: (body: { ids: string[] } & TopicAssignmentTarget) => fetch("/api/memories/topics/assign", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  }).then((r) => unwrap<MemoryTopicAssignment>(r)),
+
   list: (params: { scope?: string; projectId?: string; sessionId?: string; status?: string } = {}) =>
     fetch(`/api/memories${qs(params)}`).then((r) => unwrap<MemoryItem[]>(r)),
 

@@ -42,6 +42,7 @@ export interface ActorMeta {
 
 export type MemoryEventKind =
   | 'create'
+  | 'classify' // user organization only; not a content version or rollback target
   | 'edit' // content/detail/type/topic/abstraction change
   | 'rescope' // scope change that does not widen reach
   | 'promote' // scope widened: session → project → personal
@@ -72,6 +73,8 @@ export interface MemoryItem {
   status: MemoryStatus;
   projectId?: string; // undefined for personal scope
   sessionId?: string; // undefined if not session-scoped
+  topicId?: string; // user-managed classification, independent of model topic
+  topicName?: string; // current name, resolved from the stable topic ID
   topic?: string; // e.g. "Testing", "Environment"
   createdAt: string; // ISO
   updatedAt: string;
@@ -127,4 +130,16 @@ export interface MemoryEvent {
   changes?: Record<string, { before: unknown; after: unknown }>;
   snapshot?: MemoryItemSnapshot;
   meta?: Record<string, unknown>;
+}
+
+/** Shared local catalog, including reusable empty topics. */
+export interface MemoryTopic {
+  id: string;
+  name: string;
+  count: number;
+}
+
+export interface TopicAssignmentResult {
+  topicId: string | null;
+  results: Array<{ id: string; status: 'success' | 'failed' | 'unprocessed'; error?: string }>;
 }

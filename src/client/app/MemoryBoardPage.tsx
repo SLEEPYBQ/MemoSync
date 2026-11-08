@@ -13,9 +13,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
 import { MemoryExplorer, memoryMatchesLens, type MemoryLens } from "../components/memory/MemoryExplorer"
-import { MemoryGraphCanvas, memoryGraphLegend } from "../components/memory/MemoryGraphCanvas"
-import { buildMemoryGraph } from "../lib/memoryGraph"
+import { MemoryGraphCanvas } from "../components/memory/MemoryGraphCanvas"
+import { buildTopicGraph } from "../lib/memoryGraph"
 import { MemoryCard } from "../components/memory/MemoryCard"
+import { MemoryTopicDirectory } from "../components/memory/MemoryTopicDirectory"
+import { MemoryTopicControl } from "../components/memory/MemoryTopicControl"
+import { filterTopicMemories, type TopicFilter, type TopicStatusFilter } from "../lib/memoryTopics"
+import { useMemoryTopicStore } from "../stores/memoryTopicStore"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
 import { NativeMemoryImportDialog } from "../components/memory/NativeMemoryImportDialog"
@@ -150,6 +154,14 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const [actionError, setActionError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [showTopicExample, setShowTopicExample] = useState(false)
+  const [exampleFilter, setExampleFilter] = useState("all")
+  const [exampleSelected, setExampleSelected] = useState<string | null>(null)
+  const [topicFilter, setTopicFilter] = useState<TopicFilter>("all")
+  const [topicStatus, setTopicStatus] = useState<TopicStatusFilter>("all")
+  const [checkedIds, setCheckedIds] = useState<Set<string>>(() => new Set())
+  const loadTopics = useMemoryTopicStore(s => s.load)
+  const topics = useMemoryTopicStore(s => s.topics)
   // Conflict maintenance (A1): older memories targeted by conflicts_with.
   const [needsAttention, setNeedsAttention] = useState<
     Array<{ memory: MemoryItem; supersededBy: MemoryItem[] }>
@@ -232,7 +244,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
   useEffect(() => {
     void loadAll()
-  }, [loadAll])
+    void loadTopics()
+  }, [loadAll, loadTopics])
 
   const refreshNeedsAttention = useCallback(() => {
     memoriesApi
@@ -294,6 +307,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       void loadAll()
       refreshNeedsAttention()
       refreshOriginTitles()
+      void loadTopics()
     }
     window.addEventListener("focus", refresh)
     const interval = setInterval(() => {
@@ -303,13 +317,35 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       window.removeEventListener("focus", refresh)
       clearInterval(interval)
     }
-  }, [loadAll, refreshNeedsAttention, refreshOriginTitles])
+  }, [loadAll, refreshNeedsAttention, refreshOriginTitles, loadTopics])
 
   // Keep selection valid: if the selected item is archived/removed elsewhere,
   // close the panel instead of pointing at stale data.
   useEffect(() => {
     if (selectedId && !items.some((m) => m.id === selectedId)) setSelectedId(null)
   }, [items, selectedId])
+
+  const filteredItems = useMemo(() => filterTopicMemories(items, {
+    topic: topicFilter, status: topicStatus, lens, query,
+  }).filter(item => lens.kind === "archived" || topicStatus === "archived" || item.status !== "archived"),
+  [items, topicFilter, topicStatus, lens, query])
+  const filteredIds = useMemo(() => new Set(filteredItems.map(item => item.id)), [filteredItems])
+  const selectedTopicIds = useMemo(() => [...checkedIds].filter(id => filteredIds.has(id)), [checkedIds, filteredIds])
+  useEffect(() => {
+    setCheckedIds(current => {
+      const next = new Set([...current].filter(id => filteredIds.has(id)))
+      return next.size === current.size ? current : next
+    })
+  }, [filteredIds])
+  function toggleTopicSelection(id: string) {
+    setCheckedIds(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next })
+  }
+  function topicCheckbox(item: MemoryItem) {
+    return <label className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
+      <input type="checkbox" checked={checkedIds.has(item.id)} onChange={() => toggleTopicSelection(item.id)} aria-label={t("memory:selectTopicMemory", { id: item.id })} />
+      <span className="truncate">{topics.find(topic => topic.id === item.topicId)?.name ?? item.topicName ?? t("memory:unclassified")}</span>
+    </label>
+  }
 
   const boardModel = useMemo(
     () => deriveMemoryBoardModel(items, { query, projectFilter: null }),
@@ -329,8 +365,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // The archived shelf: archiving must not be a one-way door — the items stay
   // visible (collapsed) and restorable, or "archive" is delete with extra steps.
   const archivedItems = useMemo(
-    () => items.filter((m) => m.status === "archived" && matchesQuery(m, query)),
-    [items, query],
+    () => filteredItems.filter((m) => m.status === "archived"),
+    [filteredItems],
   )
   const [restoringId, setRestoringId] = useState<string | null>(null)
   // Muted proposals (dismissal fingerprints): loaded lazily on expand.
@@ -391,33 +427,31 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   }, [candidates.length, location.search, navigate, status])
   useEffect(() => () => window.clearTimeout(flashTimerRef.current), [])
   const boardItemsByScope = useMemo(
-    () => deriveMemoryBoardModel(items.filter((item) => memoryMatchesLens(item, lens)), { query, projectFilter: null }).scopes,
-    [items, lens, query],
+    () => projectMemoryBoardScopes(filteredItems),
+    [filteredItems],
   )
-  const graph = useMemo(() => buildMemoryGraph(items, {
-    root: t("board:graphRoot"),
-    personal: t("common:personal"),
-    projects: originTitles.projects,
-    chats: originTitles.chats,
-    chatProjects,
-  }), [items, originTitles, chatProjects])
-  const graphHighlight = useMemo(() => {
-    if (lens.kind === "all" && !query.trim()) return null
-    const lit = new Set<string>()
-    if (lens.kind === "project") lit.add(`project:${lens.id}`)
-    if (lens.kind === "session") lit.add(`session:${lens.id}`)
-    if (lens.kind === "scope" && lens.scope === "personal") lit.add("personal")
-    for (const node of graph.nodes) {
-      if (lens.kind === "scope" && node.kind === "hub" && node.scope === lens.scope) lit.add(node.id)
-      if (!node.item || !memoryMatchesLens(node.item, lens) || !matchesQuery(node.item, query)) continue
-      lit.add(node.id)
-      if (node.item.scope === "personal") lit.add("personal")
-      if (node.item.scope === "project" && node.item.projectId) lit.add(`project:${node.item.projectId}`)
-      if (node.item.scope === "session" && node.item.sessionId) lit.add(`session:${node.item.sessionId}`)
-    }
-    return lit
-  }, [graph, lens, query])
-  const liveMemoryCount = items.filter((item) => item.status === "active").length
+  const graph = useMemo(() => buildTopicGraph(filteredItems, topics, {
+    root: t("board:graphRoot"), unclassified: t("memory:unclassified"),
+  }, topicFilter), [filteredItems, topics, topicFilter])
+  // Sample content is bundled with the UI only; it is never sent to the memory API.
+  const exampleItems = useMemo(() => {
+    const sample = [
+      ["example-tests", t("memory:exampleTestOne")], ["example-tests", t("memory:exampleTestTwo")],
+      ["example-workflow", t("memory:exampleWorkflowOne")], ["example-workflow", t("memory:exampleWorkflowTwo")],
+    ]
+    return sample.map(([topicId, content], index): MemoryItem => ({
+      id: `example-memory-${index}`, content, topicId, scope: "personal", type: "fact", status: "active",
+      abstractionLevel: "contextual", sensitive: false, createdAt: "", updatedAt: "", usageCount: 0,
+      reinforcedCount: 0, version: 1, citedInCurrentSession: 0,
+    }))
+  }, [getLocale()])
+  const exampleGraph = buildTopicGraph(exampleItems, [
+    { id: "example-tests", name: t("memory:exampleTesting") },
+    { id: "example-workflow", name: t("memory:exampleWorkflow") },
+  ], { root: t("board:graphRoot"), unclassified: t("memory:unclassified") }, exampleFilter)
+  const displayGraph = showTopicExample ? exampleGraph : graph
+  const graphHighlight = null
+  const liveMemoryCount = filteredItems.length
   const relationCount = graph.edges.filter((edge) => edge.kind === "relation").length
   const visibleScopes: MemoryScope[] = lens.kind === "scope"
     ? [lens.scope]
@@ -539,6 +573,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   function renderScopedCard(item: MemoryItem, scope: MemoryScope) {
     return (
       <div key={item.id} onMouseEnter={() => recordBoardHover(item.id)}>
+        {topicCheckbox(item)}
         <MemoryCard
           item={item}
           variant="scoped"
@@ -581,6 +616,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
         className="rounded-xl border border-dashed border-cand-border bg-cand-surface/35 px-3 py-3"
         onMouseEnter={() => recordBoardHover(item.id)}
       >
+        {topicCheckbox(item)}
         <div className="flex items-center justify-between gap-2">
           <span className="text-[11px] font-semibold text-cand-fg">{t("board:proposedDestination")}</span>
           <span className="font-mono text-[11px] text-muted-foreground">{item.id}</span>
@@ -816,7 +852,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             data-memory-board-section="library"
             className="mb-1 grid min-h-[560px] flex-1 grid-rows-[auto_minmax(420px,1fr)] overflow-hidden rounded-2xl bg-card shadow-card @3xl/board:grid-cols-[232px_minmax(0,1fr)] @3xl/board:grid-rows-1"
           >
-            <div className="flex max-h-56 min-h-0 flex-col border-b border-border @3xl/board:max-h-none @3xl/board:border-b-0 @3xl/board:border-r">
+            <div className="flex max-h-80 min-h-0 flex-col overflow-y-auto border-b border-border @3xl/board:max-h-none @3xl/board:border-b-0 @3xl/board:border-r">
               <MemoryExplorer
                 items={items}
                 lens={lens}
@@ -830,13 +866,14 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 mutedCount={muted?.length ?? null}
                 onOpenReview={openReview}
               />
+              <MemoryTopicDirectory selected={topicFilter} onSelect={setTopicFilter} />
             </div>
 
             <div className="flex min-h-0 min-w-0 flex-col">
               <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-3">
-                {lens.kind === "archived" || lens.kind === "muted" || lens.kind === "files" ? (
+                {lens.kind === "archived" || topicStatus === "archived" || lens.kind === "muted" || lens.kind === "files" ? (
                   <h2 className="text-[13px] font-medium text-foreground">
-                    {lens.kind === "archived" ? t("board:archived") : lens.kind === "muted" ? t("board:mutedProposals") : t("memory:memoryFiles")}
+                    {lens.kind === "archived" || topicStatus === "archived" ? t("board:archived") : lens.kind === "muted" ? t("board:mutedProposals") : t("memory:memoryFiles")}
                   </h2>
                 ) : (
                   <SegmentedControl<MemoryBoardView>
@@ -849,8 +886,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     ]}
                   />
                 )}
+                {view === "graph" && lens.kind !== "archived" && lens.kind !== "muted" && lens.kind !== "files" && topicStatus !== "archived" ? <Button variant="ghost" size="sm" onClick={() => { setShowTopicExample(value => !value); setExampleFilter("all"); setExampleSelected(null); setSelectedId(null) }}>
+                  {showTopicExample ? t("memory:exitTopicExample") : t("memory:showTopicExample")}
+                </Button> : null}
                 <p className="ml-auto truncate text-xs tabular-nums text-muted-foreground">
-                  {lens.kind === "archived"
+                  {showTopicExample ? t("board:memoryCount", { count: exampleFilter === "all" ? 4 : exampleItems.filter(item => item.topicId === exampleFilter).length }) : lens.kind === "archived"
                     ? t("board:memoryCount", { count: archivedItems.length })
                     : lens.kind === "muted" || lens.kind === "files"
                       ? null
@@ -860,7 +900,40 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 </p>
               </div>
 
-              {lens.kind === "archived" ? (
+              {lens.kind !== "muted" && lens.kind !== "files" ? (
+                <div className="space-y-2 border-b border-border p-3">
+                  <div className="flex flex-wrap items-center gap-3 text-xs">
+                    <label className="flex items-center gap-2">{t("memory:topicStatusFilter")}
+                      <select value={lens.kind === "archived" ? "archived" : topicStatus} disabled={lens.kind === "archived"}
+                        onChange={event => setTopicStatus(event.target.value as TopicStatusFilter)} className="h-8 rounded-md border border-border bg-background px-2">
+                        <option value="all">{t("memory:topicStatusAll")}</option>
+                        <option value="active">{t("memory:topicStatusActive")}</option>
+                        <option value="candidate">{t("memory:topicStatusCandidate")}</option>
+                        <option value="archived">{t("memory:topicStatusArchived")}</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input type="checkbox" checked={filteredItems.length > 0 && selectedTopicIds.length === filteredItems.length}
+                        disabled={filteredItems.length === 0} onChange={event => setCheckedIds(event.target.checked ? new Set(filteredItems.map(item => item.id)) : new Set())} />
+                      {t("memory:selectFilteredMemories", { count: filteredItems.length })}
+                    </label>
+                    <span>{t("memory:selectedTopicMemories", { count: selectedTopicIds.length })}</span>
+                    {selectedTopicIds.length > 0 ? <Button variant="ghost" size="sm" onClick={() => setCheckedIds(new Set())}>{t("memory:clearTopicSelection")}</Button> : null}
+                  </div>
+                  {selectedTopicIds.length > 0 ? <MemoryTopicControl ids={selectedTopicIds} onChanged={overlay?.onChanged} /> : null}
+                  {view === "graph" && lens.kind !== "archived" && topicStatus !== "archived" ? <details>
+                    <summary className="cursor-pointer text-xs text-muted-foreground">{t("memory:chooseGraphMemories")}</summary>
+                    <div className="mt-2 max-h-40 space-y-1 overflow-y-auto">
+                      {filteredItems.map(item => <label key={item.id} className="flex items-center gap-2 text-xs">
+                        <input type="checkbox" checked={checkedIds.has(item.id)} onChange={() => toggleTopicSelection(item.id)} />
+                        <span className="font-mono">{item.id}</span><span className="truncate">{item.content}</span>
+                      </label>)}
+                    </div>
+                  </details> : null}
+                </div>
+              ) : null}
+
+              {lens.kind === "archived" || topicStatus === "archived" ? (
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">
                   {archivedItems.length > 0 ? (
                 <div className="flex flex-col gap-1.5">
@@ -869,6 +942,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       key={item.id}
                       className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
                     >
+                      {topicCheckbox(item)}
                       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.id}</span>
                       <span className="min-w-0 flex-1 truncate text-muted-foreground">{item.content}</span>
                       {originLabelFor(item) ? (
@@ -949,25 +1023,42 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   />
                 </div>
               ) : view === "graph" ? (
-                <div className="min-h-0 flex-1">
+                <div className="relative min-h-0 flex-1">
+                  {showTopicExample ? <div className="pointer-events-none absolute left-3 top-3 z-[1] max-w-sm rounded-lg bg-card/95 p-2 text-xs shadow-card" role="status">
+                    <strong>{t("memory:topicExampleNotice")}</strong>
+                    {exampleSelected ? <p className="mt-1">{exampleItems.find(item => item.id === exampleSelected)?.content}</p> : null}
+                  </div> : null}
                   <MemoryGraphCanvas
-                    nodes={graph.nodes}
-                    edges={graph.edges}
+                    nodes={displayGraph.nodes}
+                    edges={displayGraph.edges}
                     highlight={graphHighlight}
-                    selectedId={selectedId}
-                    onSelectMemory={setSelectedId}
-                    onHoverMemory={recordBoardHover}
-                    legend={memoryGraphLegend({
-                      personal: t("common:personal"),
-                      project: t("common:project"),
-                      session: t("common:session"),
-                      candidate: t("board:toReview"),
-                    })}
+                    selectedId={showTopicExample ? exampleSelected : selectedId}
+                    onSelectMemory={showTopicExample ? setExampleSelected : setSelectedId}
+                    onSelectNode={(id) => {
+                      if (showTopicExample) {
+                        setExampleSelected(null)
+                        if (id === "root") setExampleFilter("all")
+                        else if (id.startsWith("topic:")) setExampleFilter(id.slice(6))
+                        return
+                      }
+                      setSelectedId(null)
+                      if (id === "root") setTopicFilter("all")
+                      else if (id.startsWith("topic:")) setTopicFilter(id.slice(6))
+                    }}
+                    focusKey={showTopicExample ? exampleFilter : topicFilter}
+                    onHoverMemory={showTopicExample ? undefined : recordBoardHover}
+                    legend={[
+                      { key: "you", label: t("board:graphRoot"), color: "#e7a139" },
+                      { key: "topic", label: t("memory:topics"), color: "#ce6348" },
+                      { key: "unclassified", label: t("memory:unclassified"), color: "#8b79c9" },
+                      { key: "memory", label: t("memory:content"), color: "#7cb7bf" },
+                      { key: "candidate", label: t("board:toReview"), color: "#e0a33a", hollow: true },
+                    ]}
                     ariaLabel={t("board:graphAriaLabel")}
                     zoomInLabel={t("board:zoomIn")}
                     zoomOutLabel={t("board:zoomOut")}
                     fitLabel={t("board:fitGraph")}
-                    emptyHint={liveMemoryCount === 0 && candidates.length === 0 ? t("board:graphEmpty") : undefined}
+                    emptyHint={!showTopicExample && liveMemoryCount === 0 && candidates.length === 0 ? t("board:graphEmpty") : undefined}
                   />
                 </div>
               ) : (

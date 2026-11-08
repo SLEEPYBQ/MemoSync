@@ -55,3 +55,9 @@ vite.config.ts.timestamp-*
 /desktop/build/
 /desktop/release/
 /desktop/node_modules/
+
+# Local MemoSync libraries and SQLite sidecars, if stored inside a checkout
+/.memosync/
+/.memosync-dev/
+/memory.sqlite
+/memory.sqlite-*

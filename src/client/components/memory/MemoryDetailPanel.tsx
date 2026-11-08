@@ -31,6 +31,7 @@ import { Textarea } from "../ui/textarea"
 import { SegmentedControl } from "../ui/segmented-control"
 import { cn } from "../../lib/utils"
 import { Chip, ScopeBadge, SCOPE_ICONS } from "./ScopeBadge"
+import { MemoryTopicControl } from "./MemoryTopicControl"
 import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
 
 const MOVE_SCOPES: MemoryScope[] = ["personal", "project"]
@@ -241,6 +242,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         {tab === "details" ? (
           <div className="mt-3 space-y-4">
+            <MemoryTopicControl ids={[item.id]} topicId={item.topicId} topicName={item.topicName} disabled={busyState || item.status === "discarded"} />
             {item.status === "candidate" ? (
               sensitiveCandidate ? (
                 <div className="rounded-lg border border-cand-border bg-cand-surface/60 p-3">
