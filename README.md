@@ -12,9 +12,10 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
   <img alt="Bun 1.3.5+" src="https://img.shields.io/badge/bun-%E2%89%A51.3.5-f9f1e1.svg" />
   <img alt="Local-first" src="https://img.shields.io/badge/data-local--first-2ea44f.svg" />
-  <a href="https://github.com/yzfly/awesome-context-engineering"><img alt="Mentioned in Awesome Context Engineering" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Context%20Engineering-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
-  <a href="https://github.com/0xWelt/Awesome-Vibe-Coding"><img alt="Mentioned in Awesome Vibe Coding" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Vibe%20Coding-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
+  <a href="https://github.com/kyrolabs/awesome-agents"><img alt="Mentioned in Awesome Agents" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agents-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
   <a href="https://github.com/TeleAI-UAGI/Awesome-Agent-Memory"><img alt="Mentioned in Awesome Agent Memory" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agent%20Memory-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
+  <a href="https://github.com/yzfly/awesome-context-engineering"><img alt="Mentioned in Awesome Context Engineering" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Context%20Engineering-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
+  <a href="https://github.com/0xWelt/Awesome-Agent-Ecosystem"><img alt="Mentioned in Awesome Agent Ecosystem" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agent%20Ecosystem-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
 </p>
 
 <p align="center">
