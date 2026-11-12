@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://baiqiaozhang.cc/memosync/">Website</a>
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://memosync.cc/">Website</a>
 </p>
 
 <p align="center">
