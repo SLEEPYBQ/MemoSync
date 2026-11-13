@@ -244,7 +244,14 @@ export function buildMemoryToolSpecs(
           const receipts: NonNullable<MemoryToolResult['receipts']> = [];
           let failed = false;
           for (const id of ids) {
-            if (!allowed.has(id) || (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id))) continue;
+            if (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id)) continue;
+            if (!allowed.has(id)) {
+              if (grant.selectedIds.includes(id) && grant.revision !== view.revision) {
+                parts.push(`[${id}] VIEW_CHANGED: refresh Working Memory before loading details.`);
+                failed = true;
+              }
+              continue;
+            }
             const m = allowed.get(id)!;
             const expectedVersions = args.expectedVersions as Record<string, unknown> | undefined;
             const expected = expectedVersions?.[id] ?? args.expectedVersion ?? grant?.versions[id];
