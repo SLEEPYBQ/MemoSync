@@ -15,6 +15,7 @@ test('reports a sanitized spawn error when the working directory is missing', as
     }).then(() => null, error => error)
     expect(failure).toBeInstanceOf(OpencodeLaunchError)
     expect(failure.cause).toEqual({ code: 'ENOENT' })
+    expect(failure.launchCause).toEqual({ code: 'ENOENT' })
     expect(failure.problemDetail).toBe('Unable to load OpenCode account configuration.')
   } finally {
     rmSync(cwd, { recursive: true, force: true })
