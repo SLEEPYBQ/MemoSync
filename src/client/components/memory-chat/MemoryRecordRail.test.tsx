@@ -8,6 +8,19 @@ const userPrompt: HydratedTranscriptMessage = {
 }
 
 describe("MemoryRecordRail", () => {
+  test("shows the audit-complete fallback after a correction clears a stale recap", () => {
+    const messages = [userPrompt, {
+      kind: "memory_trace", id: "trace-original", timestamp: "2026-08-17T00:00:00.000Z", turn: 1,
+      labels: [{ id: "M-1", label: "violated" }], summary: "Synthetic stale claim",
+    }, {
+      kind: "memory_trace", id: "trace-corrected", timestamp: "2026-08-17T00:00:01.000Z", turn: 1,
+      labels: [{ id: "M-1", label: "violated", userLabel: "not_applicable" }], summary: undefined,
+    }] as HydratedTranscriptMessage[]
+    const html = renderToStaticMarkup(<MemoryRecordRail chatId="chat-1" messages={messages} />)
+    expect(html).not.toContain("Synthetic stale claim")
+    expect(html).toContain("audit complete")
+  })
+
   test("labels a failed empty Checkup as incomplete instead of nothing needs attention", () => {
     const messages = [userPrompt, {
       kind: "memory_checkup",

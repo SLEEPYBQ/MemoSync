@@ -55,6 +55,10 @@ test("correction controls and record visuals", async () => {
   })
   await page.goto(url)
   const editor = page.locator("#editor")
+  const record = page.locator("#record")
+  const section = (heading: string) => editor.locator("section").filter({ has: page.getByText(heading, { exact: true }) })
+  expect(await section("Violated").getByText("[M-07]").count()).toBe(1)
+  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(1)
   await editor.getByRole("button", { name: "Not right?" }).click()
   await page.locator("#detail").getByText("You corrected 2 of the last 6 verdicts.").waitFor()
   expect(await page.locator("#corrected").getByText("1 corrected").count()).toBe(1)
@@ -110,6 +114,10 @@ test("correction controls and record visuals", async () => {
   await input.fill("  No monetary amounts  ")
   await editor.getByRole("button", { name: "Save" }).click()
   await editor.getByText("You: not applicable this turn").waitFor()
+  expect(await section("Not applicable this turn").getByText("[M-07]").count()).toBe(1)
+  expect(await section("Violated").count()).toBe(0)
+  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(0)
+  expect(await record.getByText("audit complete").count()).toBe(1)
   expect(posts).toEqual([
     { sessionId: "synthetic-chat", turn: 1, label: "not_applicable", note: "No monetary amounts" },
     { sessionId: "synthetic-chat", turn: 1, label: "not_applicable", note: "No monetary amounts" },
@@ -125,6 +133,9 @@ test("correction controls and record visuals", async () => {
   await page.evaluate(() => window.correctionFixture.setStatus("archived"))
   await editor.getByRole("button", { name: "Undo", exact: true }).first().click()
   await editor.getByText("You: not applicable this turn").waitFor({ state: "hidden" })
+  expect(await section("Violated").getByText("[M-07]").count()).toBe(1)
+  expect(await section("Not applicable this turn").count()).toBe(0)
+  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(1)
   expect(posts.at(-1)).toEqual({ sessionId: "synthetic-chat", turn: 1, label: null })
   await page.locator("#detail").getByText("You corrected 2 of the last 6 verdicts.").waitFor()
 }, 30_000)

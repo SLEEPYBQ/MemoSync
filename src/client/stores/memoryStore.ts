@@ -10,6 +10,9 @@ interface MemoryStoreState {
   items: MemoryItem[]
   status: MemoryHydrationStatus
   error: string | null
+  pendingArchiveIds: Record<string, number>
+  beginArchiveChange: (id: string) => void
+  endArchiveChange: (id: string) => void
   loadAll: () => Promise<void>
   upsertLocal: (item: MemoryItem) => void
   removeLocal: (id: string) => void
@@ -22,6 +25,17 @@ export const useMemoryStore = create<MemoryStoreState>()((set) => {
     items: [],
     status: "idle",
     error: null,
+    pendingArchiveIds: {},
+    beginArchiveChange: (id) => set((state) => ({
+      pendingArchiveIds: { ...state.pendingArchiveIds, [id]: (state.pendingArchiveIds[id] ?? 0) + 1 },
+    })),
+    endArchiveChange: (id) => set((state) => {
+      const pendingArchiveIds = { ...state.pendingArchiveIds }
+      const count = (pendingArchiveIds[id] ?? 1) - 1
+      if (count > 0) pendingArchiveIds[id] = count
+      else delete pendingArchiveIds[id]
+      return { pendingArchiveIds }
+    }),
     loadAll: async () => {
       const generation = ++loadGeneration
       const mutations = new Map<string, MemoryItem | null>()
