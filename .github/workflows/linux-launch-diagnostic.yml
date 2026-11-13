@@ -16,14 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         revision:
-          - baseline
           - pr82
         suite:
-          - isolated
           - full
         include:
-          - revision: baseline
-            ref: 6a9e6ab1265debbf9213345a9efaee14977817a9
           - revision: pr82
             ref: c71de03210126947fa55813481832742cfd6835b
     defaults:
@@ -38,6 +34,7 @@ jobs:
           bun-version: 1.3.10
       - run: bun install --frozen-lockfile
       - run: bunx playwright install --with-deps chromium
+      - run: sudo apt-get update && sudo apt-get install -y strace
       - name: Match CI setup
         run: |
           git config --global init.defaultBranch main
@@ -91,7 +88,7 @@ jobs:
               diagnostic('spawn', { pid: child.pid })
             })
             child.on('error', (error: NodeJS.ErrnoException) =>
-              diagnostic('error', { pid: child.pid, code: error.code }))
+              diagnostic('error', { pid: child.pid, code: error.code, syscall: error.syscall, errno: error.errno }))
             child.once('exit', (code, signal) => diagnostic('exit', { pid: child.pid, code, signal }))
             child.stdout?.on('data', chunk => { diagnosticOut += chunk.length })
             child.stderr?.on('data', chunk => { diagnosticErr += chunk.length })
@@ -115,7 +112,9 @@ jobs:
           else
             set -- src/ scripts/analyze-experiment.test.ts
           fi
-          bun test "$@" --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml 2>&1 | tee artifacts/launch-diagnostic.log
+          strace -f -tt -yy -e trace=close,openat,dup,dup2,dup3,fcntl,pipe,pipe2,socketpair,pidfd_open,epoll_ctl,clone,clone3,vfork,wait4,waitid \
+            -o artifacts/spawn-syscalls.log \
+            bun test "$@" --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml 2>&1 | tee artifacts/launch-diagnostic.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
