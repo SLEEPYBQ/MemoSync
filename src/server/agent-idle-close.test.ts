@@ -196,6 +196,38 @@ describe("idle provider sessions", () => {
     expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(true)
   })
 
+  test("shutdown waits for Claude EOF policy persistence after registry removal", async () => {
+    const h = await harness()
+    await h.send()
+    const session = h.coordinator.claudeSessions.get(h.chat.id)!
+    const entered = deferred(), release = deferred()
+    const original = h.store.setExecutionPolicyState.bind(h.store)
+    let persisted = false
+    const write = spyOn(h.store, "setExecutionPolicyState").mockImplementation(async (...args) => {
+      entered.resolve()
+      await release.promise
+      await original(...args)
+      persisted = true
+    })
+    let shutdown: Promise<void> | undefined
+    try {
+      h.sessions.at(-1)!.close()
+      await entered.promise
+      expect(h.coordinator.claudeSessions.has(h.chat.id)).toBe(false)
+      let settled = false
+      shutdown = h.coordinator.shutdownRuntime().then(() => { settled = true })
+      await Bun.sleep(0)
+      expect(settled).toBe(false)
+      release.resolve()
+      await shutdown
+      expect(persisted).toBe(true)
+    } finally {
+      release.resolve()
+      await Promise.all([shutdown ?? Promise.resolve(), session.pump])
+      write.mockRestore()
+    }
+  })
+
   test("queued messages pin the session until removed and restart the full idle wait", async () => {
     const h = await harness()
     await h.send(); await h.finish()
