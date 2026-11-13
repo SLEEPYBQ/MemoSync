@@ -1283,6 +1283,10 @@ export class MemoryStore {
       const target = this.getEvents(id).find((e) => e.seq === toSeq);
       if (!target) throw new Error(`No event ${toSeq} for memory ${id}`);
       if (!target.snapshot) throw new Error(`Event ${toSeq} (${target.kind}) is not a version — cannot roll back to it`);
+      if (target.snapshot.status === 'active' && target.snapshot.expiresAt
+        && Date.parse(target.snapshot.expiresAt) <= Date.now()) {
+        throw new Error('Expiry must be a future date');
+      }
 
     const existing = this.getById(id);
     if (!existing) throw new Error(`Memory not found: ${id}`);

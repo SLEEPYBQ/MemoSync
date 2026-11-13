@@ -756,6 +756,7 @@ export async function handleMemoryRequest(
       const id = decodeURIComponent(transferMatch[1]);
       if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
       const b = await readBody(req);
+      memory.expireDue();
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
       if (typeof b.sourceVersion !== 'number' || !Number.isInteger(b.sourceVersion) || b.sourceVersion < 1) {
@@ -871,6 +872,7 @@ export async function handleMemoryRequest(
           type: source.type,
           topic: source.topic,
           sensitive: source.sensitive,
+          expiresAt: source.expiresAt,
           projectId: targetScope === 'project' ? (b.targetProjectId as string) : undefined,
           sessionId: targetScope === 'session' ? (b.targetSessionId as string) : undefined,
           provenanceSessionId: source.provenanceSessionId,
