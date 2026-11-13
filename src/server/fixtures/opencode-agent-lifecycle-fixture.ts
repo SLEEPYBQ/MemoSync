@@ -11,7 +11,6 @@ const deferred = <T>() => {
   return { promise, resolve }
 }
 const history = deferred<string>()
-const deletion = deferred<void>()
 const answers = new Map<string, ReturnType<typeof deferred<void>>>()
 const streams = new Set<ReadableStreamDefaultController<Uint8Array>>()
 const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
@@ -26,7 +25,6 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
       return Response.json(true)
     }
     if (path === '/test/history') { history.resolve(await request.json() as string); return Response.json(true) }
-    if (path === '/test/delete') { deletion.resolve(); return Response.json(true) }
     if (path.startsWith('/test/answer/')) { answers.get(path.split('/').at(-1)!)?.resolve(); return Response.json(true) }
     if (path === '/event') {
       let stream: ReadableStreamDefaultController<Uint8Array>
@@ -50,7 +48,11 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
     if (request.method === 'PATCH' && path === '/session/ses_created') return Response.json({ id: 'ses_created', permission: process.env.FAKE_OC_REJECT_POLICY ? [] : (body as { permission?: unknown })?.permission })
     if (path === '/session') return Response.json({ id: 'ses_created' })
     if (path.endsWith('/fork')) return Response.json({ id: process.env.FAKE_OC_SAME_PARENT ? 'ses_parent' : 'ses_fork' })
-    if (request.method === 'DELETE') { await deletion.promise; return Response.json(true) }
+    if (request.method === 'DELETE') {
+      const response = await fetch(process.env.FAKE_OC_OBSERVER! + '/deletion')
+      if (!response.ok) throw new Error('Fixture deletion gate unavailable')
+      return Response.json(true)
+    }
     if (path.endsWith('/message')) {
       const outcome = process.env.FAKE_OC_HISTORY === 'hold' ? await history.promise : 'ok'
       return outcome === 'error' ? Response.json({ name: 'FixtureHistoryError' }, { status: 500 }) : Response.json([])

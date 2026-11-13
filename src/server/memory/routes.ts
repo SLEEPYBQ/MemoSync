@@ -6,7 +6,7 @@ import { uiJson } from "../../shared/ui-copy"
 //
 // Envelope matches MemoSync: `{ data }` on success, `{ error: { code, message } }`
 // on failure, so the ported frontend data layer works unchanged.
-import type { ExpectedMemoryUse, MemoryTraceCorrectionEntry } from '../../shared/types';
+import type { ExpectedMemoryUse } from '../../shared/types';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
@@ -21,6 +21,7 @@ import type { TransferService } from './transfer';
 import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
 import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryTraceLabel, MemoryType } from './types';
 import type { UsePlanService } from './use-plan';
+import { flushTraceCorrections, type TraceCorrectionTransport } from './trace-correction-outbox';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
@@ -37,11 +38,7 @@ export interface MemoryRouteServices {
   revision?: RevisionService | null;
 
   auditAdmission?: (input: { chatId: string; memoryId: string }) => string | null;
-  traceCorrection?: {
-    hasChat: (chatId: string) => boolean;
-    cited?: (chatId: string, turn: number, memoryId: string) => boolean | undefined;
-    append: (chatId: string, entry: Omit<MemoryTraceCorrectionEntry, '_id' | 'createdAt'>) => Promise<void>;
-  };
+  traceCorrection?: TraceCorrectionTransport;
   /** Server-held pool for the exact active Working Memory preview. */
   workingMemoryPool?: (input: { chatId: string; previewId: string }) => string[] | null;
   /** Server-authoritative expected-use planner for one exact pending preview. */
@@ -1153,13 +1150,14 @@ export async function handleMemoryRequest(
       if (!services.traceCorrection) throw new RouteError(503, 'NOT_AVAILABLE', 'Audit correction is unavailable');
       if (!services.traceCorrection.hasChat(body.sessionId)) throw new RouteError(409, 'CONFLICT', 'No audit verdict exists for this memory and turn');
       const label = body.label as MemoryTraceLabel | null;
-      const result = memory.store.recordTraceCorrection(id, { sessionId: body.sessionId, turn: body.turn, label, note: body.note as string | undefined, cited: services.traceCorrection.cited?.(body.sessionId, body.turn, id) });
-      for (const projectId of new Set(result.invalidatedIds?.map(candidateId => memory.store.getById(candidateId)?.projectId) ?? [])) {
-        memory.syncProjection(projectId);
-      }
+      const result = memory.store.recordTraceCorrection(id, { sessionId: body.sessionId, turn: body.turn, label, note: body.note as string | undefined, cited: services.traceCorrection.cited?.(body.sessionId, body.turn, id) }, { enqueueTranscript: true });
       if (result.changed) memory.logger.event({ type: 'memory.trace_correction', sessionId: body.sessionId, turn: body.turn, id, auditLabel: result.auditLabel, userLabel: label });
-      await services.traceCorrection.append(body.sessionId, { kind: 'memory_trace_correction', turn: body.turn, memoryId: id, label, ...(label !== null && result.note ? { note: result.note } : {}) });
-      return ok({ ...result, label });
+      try {
+        await flushTraceCorrections(memory, services.traceCorrection);
+      } catch {
+        return ok({ ...result, label, transcriptPending: true }, 202);
+      }
+      return ok({ ...result, label, transcriptPending: false });
     }
 
     // Item: /api/memories/:id  (PATCH | DELETE)

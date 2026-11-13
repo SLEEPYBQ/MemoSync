@@ -98,7 +98,12 @@ interface FixtureNotice { kind: string; origin?: string; path?: string; method?:
 function lifecycleFixture(holdHistory = false, sameParent = false) {
   const root = mkdtempSync(join(tmpdir(), 'opencode-lifecycle-')); roots.push(root)
   const notices = journal<FixtureNotice>()
+  const deletion = deferred<void>()
   const observer = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
+    if (new URL(request.url).pathname === '/deletion') {
+      await deletion.promise
+      return Response.json(true)
+    }
     notices.push(await request.json() as FixtureNotice)
     return Response.json(true)
   } })
@@ -111,6 +116,7 @@ function lifecycleFixture(holdHistory = false, sameParent = false) {
   const manager = new OpencodeAgentManager(); managers.push(manager)
   return {
     root, runtime, manager, notices,
+    releaseDeletion: () => deletion.resolve(),
     async post(path: string, body: unknown = null) {
       const { origin } = await notices.waitFor(n => n.kind === 'ready')
       const response = await fetch(`${origin}${path}`, { method: 'POST', body: JSON.stringify(body) })
@@ -306,7 +312,7 @@ test('a successfully delivered analysis session remains owned by the branch unti
   expect(f.notices.values.filter(n => n.method === 'DELETE')).toEqual([])
   const disposal = branch.dispose()
   await f.notices.waitFor(n => n.method === 'DELETE')
-  await f.post('/test/delete')
+  f.releaseDeletion()
   await disposal
   await f.manager.dispose()
   expect(f.notices.values.filter(n => n.method === 'DELETE').map(n => n.path)).toEqual(['/session/ses_fork'])
@@ -335,7 +341,7 @@ for (const parent of [null, 'ses_parent']) for (const ending of ['cancel', 'bran
     expect(stopped).toBe(false)
     expect(branch.sessionToken).toBeNull()
     // Deletion must reach the server despite the already aborted request signal.
-    await f.post('/test/delete')
+    f.releaseDeletion()
     await managerDisposal
     const error = await failure
     expect(error).toBeInstanceOf(Error)

@@ -149,6 +149,7 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
   const [correctionNote, setCorrectionNote] = useState("")
   const [saving, setSaving] = useState(false)
   const [correctionError, setCorrectionError] = useState<string | null>(null)
+  const [pendingTarget, setPendingTarget] = useState<{ label: MemoryTraceLabel["label"] | null; note?: string } | null>(null)
   const archived = memory?.status === "archived"
   const canCorrect = !renderOptions.readonly && Boolean(chatId) && turn !== undefined && !archived
 
@@ -174,9 +175,13 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
     setCorrectionError(null)
     try {
       const note = correctionNote.trim().slice(0, 300)
-      if (demo) onDemoCorrection(label.id, value ? { userLabel: value, ...(note ? { userNote: note } : {}) } : {})
+      if (demo) {
+        onDemoCorrection(label.id, value ? { userLabel: value, ...(note ? { userNote: note } : {}) } : {})
+        setPendingTarget(null)
+      }
       else {
-        await memoriesApi.correctTrace(label.id, { sessionId: chatId, turn, label: value, ...(value && note ? { note } : {}) })
+        const result = await memoriesApi.correctTrace(label.id, { sessionId: chatId, turn, label: value, ...(value && note ? { note } : {}) })
+        setPendingTarget(result.transcriptPending ? { label: value, ...(value && note ? { note } : {}) } : null)
         void useMemoryStore.getState().loadAll()
       }
       cancelCorrection()
@@ -255,6 +260,8 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
           </div>
         </div> : null}
         {correctionError ? <p className="mt-1 text-[11px] text-destructive">{correctionError}</p> : null}
+        {pendingTarget && ((label.userLabel ?? null) !== pendingTarget.label || (label.userNote ?? undefined) !== pendingTarget.note)
+          ? <p role="status" className="mt-1 text-[11px] text-muted-foreground">{t("memory:correctionSyncPending")}</p> : null}
         {label.userNote ? <p className="mt-0.5 leading-relaxed text-foreground/80">{t("memory:yourNote", { v0: label.userNote })}</p> : null}
         {reason ? <p className={cn("mt-0.5 leading-relaxed text-muted-foreground", (archived || label.userLabel) && "opacity-60")}>{reason}</p> : null}
         {label.label === "violated" && label.cause ? (

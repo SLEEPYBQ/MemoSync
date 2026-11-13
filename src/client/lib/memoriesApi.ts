@@ -89,7 +89,7 @@ export const memoriesApi = {
   correctTrace: (id: string, body: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string }) =>
     fetch(`/api/memories/${encodeURIComponent(id)}/trace-correction`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    }).then((r) => unwrap<{ auditLabel: MemoryTraceLabel; changed: boolean; label: MemoryTraceLabel | null; note?: string }>(r)),
+    }).then((r) => unwrap<{ auditLabel: MemoryTraceLabel; changed: boolean; label: MemoryTraceLabel | null; note?: string; transcriptPending?: boolean }>(r)),
   list: (params: { scope?: string; projectId?: string; sessionId?: string; status?: string } = {}) =>
     fetch(`/api/memories${qs(params)}`).then((r) => unwrap<MemoryItem[]>(r)),
 

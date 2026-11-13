@@ -32,6 +32,7 @@ declare global {
     correctionFixture: {
       item: MemoryItem
       publish: (correction: Correction | null) => void
+      publishHidden: (correction: Correction | null) => void
       setReadonly: (readonly: boolean) => void
       setStatus: (status: "active" | "archived") => void
     }
@@ -40,11 +41,13 @@ declare global {
 
 function Fixture() {
   const [correction, setCorrection] = useState<Correction | null>(null)
+  const [hiddenCorrection, setHiddenCorrection] = useState<Correction | null>(null)
   const [readonly, setReadonly] = useState(false)
   const currentItem = useMemoryStore(state => state.items.find(value => value.id === item.id) ?? item)
   window.correctionFixture = {
     item,
     publish: setCorrection,
+    publishHidden: setHiddenCorrection,
     setReadonly,
     setStatus: status => useMemoryStore.getState().upsertLocal({ ...useMemoryStore.getState().items.find(value => value.id === item.id)!, status }),
   }
@@ -56,15 +59,17 @@ function Fixture() {
     : label) }
   const recordMessages = processTranscriptMessages([
     { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Synthetic task" },
-    { _id: "trace", createdAt: 2, kind: "memory_trace", turn: 1, labels: trace.labels, summary: "Synthetic audit says this was violated." },
-    ...(correction?.label ? [{ _id: "correction", createdAt: 3, kind: "memory_trace_correction", turn: 1, memoryId: item.id, label: correction.label }] : []),
+    { _id: "prompt-2", createdAt: 2, kind: "user_prompt", content: "Another synthetic task" },
+    { _id: "hidden-trace", createdAt: 3, kind: "memory_trace", turn: 2, hidden: true, status: "ok",
+      labels: [{ id: item.id, label: "operational", note: "The response followed the rule." }], summary: "Synthetic audit says this shaped the turn." },
+    ...(hiddenCorrection?.label ? [{ _id: "hidden-correction", createdAt: 4, kind: "memory_trace_correction", turn: 2, memoryId: item.id, label: hiddenCorrection.label, ...(hiddenCorrection.note ? { note: hiddenCorrection.note } : {}) }] : []),
   ] as TranscriptEntry[])
   return (
     <MemoryRouter><TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
       <main className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
         <section id="editor"><TranscriptRenderOptionsProvider value={{ readonly }}><MemoryTraceMessage message={liveTrace} /></TranscriptRenderOptionsProvider></section>
         <section id="corrected"><MemoryTraceMessage message={corrected} /></section>
-        <section id="record"><MemoryRecordRail chatId="synthetic-chat" messages={recordMessages} /></section>
+        <section id="record"><TranscriptRenderOptionsProvider value={{ readonly }}><MemoryRecordRail chatId="synthetic-chat" messages={recordMessages} /></TranscriptRenderOptionsProvider></section>
         <section id="detail" className="rounded-xl border border-border bg-card"><MemoryDetailPanel item={currentItem} allItems={[currentItem]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} /></section>
         <section id="board"><MemoryCard item={currentItem} variant="scoped" /></section>
       </main>

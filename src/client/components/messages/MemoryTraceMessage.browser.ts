@@ -58,7 +58,7 @@ test("correction controls and record visuals", async () => {
   const record = page.locator("#record")
   const section = (heading: string) => editor.locator("section").filter({ has: page.getByText(heading, { exact: true }) })
   expect(await section("Violated").getByText("[M-07]").count()).toBe(1)
-  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(1)
+  expect(await record.getByText("Synthetic audit says this shaped the turn.").count()).toBe(1)
   await editor.getByRole("button", { name: "Not right?" }).click()
   await page.locator("#detail").getByText("You corrected 2 of the last 6 verdicts.").waitFor()
   expect(await page.locator("#corrected").getByText("1 corrected").count()).toBe(1)
@@ -116,8 +116,8 @@ test("correction controls and record visuals", async () => {
   await editor.getByText("You: not applicable this turn").waitFor()
   expect(await section("Not applicable this turn").getByText("[M-07]").count()).toBe(1)
   expect(await section("Violated").count()).toBe(0)
-  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(0)
-  expect(await record.getByText("audit complete").count()).toBe(1)
+  expect(await record.getByText("Synthetic audit says this shaped the turn.").count()).toBe(1)
+  expect(await record.getByText("1 shaped").count()).toBe(1)
   expect(posts).toEqual([
     { sessionId: "synthetic-chat", turn: 1, label: "not_applicable", note: "No monetary amounts" },
     { sessionId: "synthetic-chat", turn: 1, label: "not_applicable", note: "No monetary amounts" },
@@ -135,7 +135,87 @@ test("correction controls and record visuals", async () => {
   await editor.getByText("You: not applicable this turn").waitFor({ state: "hidden" })
   expect(await section("Violated").getByText("[M-07]").count()).toBe(1)
   expect(await section("Not applicable this turn").count()).toBe(0)
-  expect(await record.getByText("Synthetic audit says this was violated.").count()).toBe(1)
+  expect(await record.getByText("Synthetic audit says this shaped the turn.").count()).toBe(1)
   expect(posts.at(-1)).toEqual({ sessionId: "synthetic-chat", turn: 1, label: null })
   await page.locator("#detail").getByText("You corrected 2 of the last 6 verdicts.").waitFor()
+}, 30_000)
+
+test("hidden automatic audit can be corrected, synced and withdrawn from the record", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 1300 } })
+  page.setDefaultTimeout(5_000)
+  type Correction = { label: "violated" | null; note?: string }
+  const posts: Correction[] = []
+  const item = {
+    id: "M-07", content: "Use integer cents for all amounts.", scope: "personal", type: "constraint", status: "active",
+    abstractionLevel: "concrete", sensitive: false, createdAt: "", updatedAt: "", usageCount: 6,
+    reinforcedCount: 0, citedInCurrentSession: 0, version: 1,
+  }
+  await page.route("**/api/**", async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    let data: unknown = {}
+    let status = 200
+    if (path === "/api/fixture-correction") data = null
+    else if (path === "/api/memories" && request.method() === "GET") data = [item]
+    else if (path.endsWith("/history")) data = { memory: item, events: [] }
+    else if (path.endsWith("/trace-correction") && request.method() === "POST") {
+      const body = request.postDataJSON() as Correction
+      posts.push(body)
+      data = { auditLabel: "operational", changed: true, label: body.label, note: body.note, transcriptPending: true }
+      status = 202
+    }
+    await route.fulfill({ status, contentType: "application/json", body: JSON.stringify({ data }) })
+  })
+  await page.goto(url)
+  const record = page.locator("#record")
+  await record.getByText("Synthetic audit says this shaped the turn.").waitFor()
+  expect(await record.getByText("1 shaped").count()).toBe(1)
+  await record.getByRole("button", { name: "Review audit" }).click()
+  const dialog = page.getByRole("dialog")
+  await page.evaluate(() => window.correctionFixture.setReadonly(true))
+  await dialog.getByRole("button", { name: "Not right?" }).waitFor({ state: "hidden" })
+  await page.evaluate(() => window.correctionFixture.setReadonly(false))
+  await dialog.getByRole("button", { name: "Not right?" }).click()
+  await dialog.getByRole("button", { name: "violated", exact: true }).click()
+  await dialog.getByRole("textbox", { name: "Why? Optional. The audit sees this next time." }).fill("The response ignored the rule")
+  await dialog.getByRole("button", { name: "Save" }).click()
+  await dialog.getByText("Correction saved. Updating chat history…").waitFor()
+  expect(await dialog.getByText("Couldn't save the correction", { exact: false }).count()).toBe(0)
+  expect(await record.getByText("1 shaped").count()).toBe(1)
+  await page.evaluate(() => window.correctionFixture.publishHidden({ label: "violated", note: "The response ignored the rule" }))
+  await dialog.getByText("You: violated").waitFor()
+  expect(await dialog.getByText("Correction saved. Updating chat history…").count()).toBe(0)
+  expect(await record.getByText("audit complete").count()).toBe(1)
+  expect(await record.getByText("1 violated").count()).toBe(1)
+  expect(await record.getByText("Synthetic audit says this shaped the turn.").count()).toBe(0)
+
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
+    await dialog.screenshot({ animations: "disabled", path: join(artifacts, `hidden-audit-dialog-${theme}.png`) })
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("dark"))
+  await page.setViewportSize({ width: 390, height: 1000 })
+  await dialog.screenshot({ animations: "disabled", path: join(artifacts, "hidden-audit-dialog-compact.png") })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true)
+  await page.setViewportSize({ width: 1100, height: 1300 })
+
+  await page.evaluate(() => window.correctionFixture.setReadonly(true))
+  await dialog.getByRole("button", { name: "Undo", exact: true }).waitFor({ state: "hidden" })
+  expect(await dialog.getByRole("button", { name: "Not right?" }).count()).toBe(0)
+  await page.evaluate(() => window.correctionFixture.setReadonly(false))
+  item.status = "archived"
+  await page.evaluate(() => window.correctionFixture.setStatus("archived"))
+  await dialog.getByRole("button", { name: "Undo", exact: true }).first().click()
+  await dialog.getByText("Correction saved. Updating chat history…").waitFor()
+  expect(await dialog.getByText("Couldn't save the correction", { exact: false }).count()).toBe(0)
+  await page.evaluate(() => window.correctionFixture.publishHidden(null))
+  await dialog.getByText("You: violated").waitFor({ state: "hidden" })
+  expect(await dialog.getByText("Correction saved. Updating chat history…").count()).toBe(0)
+  expect(await dialog.getByRole("button", { name: "Not right?" }).count()).toBe(0)
+  expect(await record.getByText("Synthetic audit says this shaped the turn.").count()).toBe(1)
+  expect(await record.getByText("1 shaped").count()).toBe(1)
+  expect(posts).toEqual([
+    { sessionId: "synthetic-chat", turn: 2, label: "violated", note: "The response ignored the rule" },
+    { sessionId: "synthetic-chat", turn: 2, label: null },
+  ])
 }, 30_000)
