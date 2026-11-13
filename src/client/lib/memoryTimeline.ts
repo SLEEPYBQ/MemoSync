@@ -36,7 +36,7 @@ export interface RecordCheckupStage {
 
 export interface RecordInjectedStage {
   entryId: string
-  /** Only the ids that actually injected (an EDITED gate narrows the set). */
+  /** Only the ids that actually injected. */
   items: Array<{ id: string; content: string; scope: string }>
 }
 
@@ -178,7 +178,7 @@ export function buildMemoryRecord(
         const t = turnOf(message.turn)
         t.decision = message.decision
         // Dismissed / without-memory / expired gates injected nothing; an
-        // EDITED go_on narrows to the selected subset.
+        // An explicit selection narrows go_on to the selected subset.
         const selected = message.decisionSelectedIds ? new Set(message.decisionSelectedIds) : null
         const injected = message.decision === "go_on"
           ? message.memories.filter((m) => (selected ? selected.has(m.id) : true))

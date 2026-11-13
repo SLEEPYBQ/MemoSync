@@ -4,6 +4,7 @@ import { ReplyMarkdown, WorkingMemorySelectionError } from "./MemoryPreviewMessa
 import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
 
 runMountedRaceSuite("archived working-memory rows and audit controls", new URL("./MemoryPreviewMessage.browser.ts", import.meta.url))
+runMountedRaceSuite("working-memory confirmation disclosure and receipt", new URL("./MemoryConfirmation.browser.ts", import.meta.url))
 
 describe("ReplyMarkdown", () => {
   test("renders Markdown without losing memory citation chips", () => {

@@ -170,6 +170,20 @@ describe("buildMemoryRecord", () => {
     expect(t5.injected).toBeUndefined()
   })
 
+  it("records only the exact selected ids for a confirmed automatic preview", () => {
+    const message = {
+      ...preview(1, [
+        { id: "M-01", content: "Unselected synthetic rule", scope: "personal" },
+        { id: "M-02", content: "Selected synthetic rule", scope: "personal" },
+      ], "go_on", ["M-02"]),
+      decisionAuto: true,
+      decisionAutoReason: "confirmed",
+    } as HydratedTranscriptMessage
+    const record = buildMemoryRecord([message])
+    expect(record.turns[0]!.injected!.items.map(item => item.id)).toEqual(["M-02"])
+    expect(memoryRecordMonitorIds(record)).toEqual(["M-02"])
+  })
+
   it("attributes assistant citations to the latest turn seen and falls back to shaped/quiet pulses", () => {
     const record = buildMemoryRecord([
       prompt("u-1"),

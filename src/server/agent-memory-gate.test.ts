@@ -14,8 +14,9 @@ import { join } from "node:path";
 import { ModelAccessService, setModelAccessService } from "./model-access/service";
 import { AgentCoordinator, resolveTurnMemoryState } from "./agent";
 
-import { type TranscriptEntry } from "../shared/types";
+import { type MemoryPreviewSettings, type TranscriptEntry } from "../shared/types";
 import { MemoryService } from "./memory";
+import { recordMemoryConfirmation } from "./memory/confirmation";
 import { createCaptureService, type CaptureService } from "./memory/capture";
 import type { CheckupService } from "./memory/checkup";
 import type { LlmJsonCaller } from "./memory/deepseek";
@@ -241,7 +242,7 @@ function createHarness(
     afterAppendAuthorized?: (entry: TranscriptEntry) => Promise<void>
     onTurnFailed?: (message: string) => void
     onStateChange?: (chatId?: string) => void
-    previewSettings?: { enabled: boolean; autoProceedWhenEmpty: boolean }
+    previewSettings?: MemoryPreviewSettings
     claudeSessionFileExists?: (localPath: string, token: string) => boolean
   } = {},
 ): Harness {
@@ -910,6 +911,7 @@ describe("memory preview gate (coordinator)", () => {
     const h = createHarness({
       preview: true,
       experimentEvents,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "every_turn" },
       usePlan: {
         plan: async ({ memories }) => memories.map((memory) => ({
           id: memory.id,
@@ -1333,7 +1335,7 @@ describe("memory preview gate (coordinator)", () => {
     }
   })
 
-  test("a failing relevance pass changes nothing: receipt lands, turn proceeds, no hint", async () => {
+  test("a failing relevance pass stays explicit and requires a manual decision", async () => {
     const failing: RelevanceService = {
       assess: async () => {
         throw new Error("LLM down")
@@ -1347,14 +1349,15 @@ describe("memory preview gate (coordinator)", () => {
       const preview = h.store.messages.find((m) => m.kind === "memory_preview") as Extract<TranscriptEntry, { kind: "memory_preview" }>
       // The gate announced a prediction was coming…
       expect(preview.relevancePending).toBe(true)
-      // …so the failure still settles it: an EMPTY relevance entry ends the
-      // card's "picking…" state, and no hint ever reaches the prompt.
+      // Failure ends the pending state without becoming a successful empty selection.
       await waitFor(() => h.store.messages.some((m) => m.kind === "memory_preview_relevance"))
       const rel = h.store.messages.find((m) => m.kind === "memory_preview_relevance") as Extract<
         TranscriptEntry,
         { kind: "memory_preview_relevance" }
       >
       expect(rel.relevant).toEqual([])
+      expect(rel.error).toContain("selection failed")
+      expect(h.prompts).toHaveLength(0)
       h.coordinator.respondMemoryPreview({ chatId: "chat-1", previewId: preview.previewId, decision: "go_on" })
       await waitFor(() => h.prompts.length === 1)
       expect(h.prompts[0]).not.toContain("Possibly relevant")
@@ -1362,6 +1365,43 @@ describe("memory preview gate (coordinator)", () => {
       h.cleanup()
     }
   })
+
+  test("confirmed memories do not auto-start when no selector is available", async () => {
+    const h = createHarness({ preview: true, previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" } })
+    try {
+      const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+      recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+      await waitFor(() => h.coordinator.pendingPreviews.has("chat-1"))
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(h.sessionStarts).toHaveLength(0)
+      expect(h.store.messages.some(message => message.kind === "memory_preview_decision" && message.auto)).toBe(false)
+    } finally { h.cleanup() }
+  })
+
+  for (const fail of [true, false]) {
+    test(`confirmed memories do not auto-start when use planning ${fail ? "fails" : "omits a selected item"}`, async () => {
+      const relevance: RelevanceService = {
+        assess: async (_task, items) => items.map(item => ({ id: item.id, why: "Relevant" })),
+      }
+      const usePlan: UsePlanService = { plan: async () => {
+        if (fail) throw new Error("Synthetic planner failure")
+        return []
+      } }
+      const h = createHarness({ preview: true, relevance, usePlan, previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" } })
+      try {
+        const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+        recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+        await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+        await waitFor(() => h.store.messages.some(message => message.kind === "memory_preview_relevance"))
+        const result = h.store.messages.find(message => message.kind === "memory_preview_relevance") as Extract<TranscriptEntry, { kind: "memory_preview_relevance" }>
+        if (fail) expect(result.error).toBeTruthy()
+        else expect(result.expectedUses).toEqual([])
+        expect(h.sessionStarts).toHaveLength(0)
+        expect(h.coordinator.pendingPreviews.has("chat-1")).toBe(true)
+      } finally { h.cleanup() }
+    })
+  }
 
   test("with a capture service, every turn carries the propose_memory nudge (REDESIGN D3)", async () => {
     const zeroOutcome = {
@@ -3199,6 +3239,69 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
     } finally {
       h.cleanup()
     }
+  })
+
+  test("a reopened preview applies on-change confirmation after its new selection settles", async () => {
+    const checkup: CheckupService = {
+      needsRecompute: () => true,
+      run: async () => ({ suggestions: [{ kind: "staleness", memoryId: "M-01", reason: "Synthetic review" }], cached: false }),
+    }
+    const relevance: RelevanceService = {
+      assess: async (_task, items) => items.map(item => ({ id: item.id, why: "Relevant", expectedUse: "Apply this rule." })),
+    }
+    const h = createHarness({ preview: true, checkup, relevance, previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" } })
+    try {
+      const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+      await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+      const parent = h.store.messages.find(message => message.kind === "memory_checkup") as Extract<TranscriptEntry, { kind: "memory_checkup" }>
+      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "skipped" })
+      await waitFor(() => h.store.messages.some(message => message.kind === "memory_preview_relevance" && message.revision === 0))
+      expect(h.sessionStarts).toHaveLength(0)
+      recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+      await h.coordinator.reopenMemoryPreparation({ chatId: "chat-1", from: "checkup", stageId: parent.checkupId })
+      await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "handled" })
+      await waitFor(() => h.sessionStarts.length === 1)
+      expect(h.store.messages.find(message => message.kind === "memory_preview_update")).toMatchObject({ revision: 1, confirmationMode: "on_change" })
+      expect(h.store.messages.filter(message => message.kind === "memory_preview_decision").at(-1))
+        .toMatchObject({ auto: true, autoReason: "confirmed", selectedIds: [item.id] })
+    } finally { h.cleanup() }
+  })
+
+  test("a delayed old selection cannot decide a reopened preview", async () => {
+    let releaseFirst!: () => void
+    const first = new Promise<void>(resolve => { releaseFirst = resolve })
+    let calls = 0
+    const checkup: CheckupService = {
+      needsRecompute: () => true,
+      run: async () => ({ suggestions: [{ kind: "staleness", memoryId: "M-01", reason: "Synthetic review" }], cached: false }),
+    }
+    const relevance: RelevanceService = {
+      assess: async (_task, items) => {
+        if (++calls === 1) await first
+        return items.map(item => ({ id: item.id, why: "Relevant", expectedUse: "Apply this rule." }))
+      },
+    }
+    const h = createHarness({ preview: true, checkup, relevance, previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" } })
+    try {
+      const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+      recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+      await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+      const parent = h.store.messages.find(message => message.kind === "memory_checkup") as Extract<TranscriptEntry, { kind: "memory_checkup" }>
+      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "skipped" })
+      await waitFor(() => calls === 1)
+      await h.coordinator.reopenMemoryPreparation({ chatId: "chat-1", from: "checkup", stageId: parent.checkupId })
+      await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+      await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "handled" })
+      await waitFor(() => h.sessionStarts.length === 1)
+      releaseFirst()
+      await new Promise(resolve => setTimeout(resolve, 20))
+      expect(h.store.messages.filter(message => message.kind === "memory_preview_relevance")).toMatchObject([{ revision: 1 }])
+      expect(h.store.messages.filter(message => message.kind === "memory_preview_decision")).toHaveLength(1)
+      expect(h.sessionStarts).toHaveLength(1)
+    } finally { releaseFirst(); h.cleanup() }
   })
 
   test("a rejected Checkup fork result falls back to the current sidecar state", async () => {
@@ -5257,7 +5360,8 @@ describe("memory on/off turn controls", () => {
   test("settings and chat changes while parked affect only the next turn, including post-turn passes", async () => {
     const s = services()
     let settings = { enabled: true, learn: true }
-    const h = createHarness({ capture: s.capture, preview: true, getMemorySettings: () => settings })
+    const h = createHarness({ capture: s.capture, preview: true, getMemorySettings: () => settings,
+      previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "every_turn" } })
     try {
       seed(h)
       await h.coordinator.send(send)

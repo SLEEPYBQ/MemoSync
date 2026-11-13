@@ -67,8 +67,8 @@ describe("settings registry and section rendering", () => {
   test("memory-off dims and disables dependents with actionable reasons", () => {
     const html = memoryHtml({ enabled: false })
     expect(html).toContain('aria-label="Use Memory"')
-    expect(html.match(/aria-disabled="true"/g)?.length).toBe(5)
-    expect(html.match(/Turn on Use Memory to change this./g)?.length).toBe(5)
+    expect(html.match(/aria-disabled="true"/g)?.length).toBe(6)
+    expect(html.match(/Turn on Use Memory to change this./g)?.length).toBe(6)
     expect(html).toContain('href="/memory"')
   })
   test("learning-off only disables memory changes, keeping preview usable", () => {
@@ -81,13 +81,21 @@ describe("settings registry and section rendering", () => {
     expect(html.indexOf('id="memoryLearn"')).toBeLessThan(html.indexOf('id="memoryControl"'))
     expect(html).toContain('aria-label="Control"')
     expect(html).toContain("The agent reads the memory index")
-    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) expect(html).not.toContain(`id="${id}"`)
+    for (const id of ["memoryPreview", "memoryConfirmation", "memoryAutoProceed", "memoryChanges"]) expect(html).not.toContain(`id="${id}"`)
     const review = memoryHtml()
     expect(review).toContain("You confirm memory changes")
-    for (const id of ["memoryPreview", "memoryAutoProceed", "memoryChanges"]) expect(review).toContain(`id="${id}"`)
+    for (const id of ["memoryPreview", "memoryConfirmation", "memoryAutoProceed", "memoryChanges"]) expect(review).toContain(`id="${id}"`)
     expect(review.match(/aria-disabled="true"/g)).toBeNull()
     for (const keyword of ["automatic", "review each turn", "控制方式", "自动", "每轮确认"]) {
       expect(SETTINGS_ROWS.memoryControl.keywords).toContain(keyword)
     }
+  })
+  test("confirmation mode follows settings and is disabled when preview is off", () => {
+    const render = (memoryPreview: AppSettingsSnapshot["memoryPreview"]) => renderToStaticMarkup(
+      <MemoryRouter><MemorySettingsGroups settings={{ ...settings, memoryPreview }} mode="ask" save={() => {}} setMode={() => {}} /></MemoryRouter>,
+    )
+    expect(render({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" })).toContain('aria-label="Confirm working memory"')
+    expect(render({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "every_turn" })).toContain('aria-label="Confirm working memory"')
+    expect(render({ enabled: false, autoProceedWhenEmpty: true })).toMatch(/aria-label="Confirm working memory"[^>]*disabled|disabled[^>]*aria-label="Confirm working memory"/)
   })
 })

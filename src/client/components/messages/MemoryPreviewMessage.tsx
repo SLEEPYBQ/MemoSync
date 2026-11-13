@@ -14,10 +14,10 @@ import { MemoryBadge } from "../memory/MemoryBadge"
 // ignore" instruction — the user's model is true at the behavior level, and
 // the audit charges violations against THIS list. None of that machinery is
 // explained here.
-import { useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
 import { CachedMarkdown } from "./CachedMarkdown"
-import { ArrowUp, LibraryBig, Loader2, Plus, X } from "lucide-react"
+import { ArrowUp, ChevronRight, LibraryBig, Loader2, Plus, X } from "lucide-react"
 import { MemoSyncIcon } from "../MemoSyncIcon"
 import type { ExpectedMemoryUse, HydratedTranscriptMessage, MemoryPreviewDecision } from "../../../shared/types"
 import { memoriesApi, recordUiMonitor, recordWorkingMemorySelection } from "../../lib/memoriesApi"
@@ -28,7 +28,7 @@ import { dispatchPreviewDemoDecision, useTranscriptRenderOptions } from "./rende
 import { cn } from "../../lib/utils"
 import { RiseIn } from "../ui/motion-primitives"
 import { Button } from "../ui/button"
-import { MemoryCitationChip } from "./shared"
+import { ExpandableRow, MemoryCitationChip } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryReviewSkeleton } from "./MemoryReviewSkeleton"
 import { ArchiveIconButton, ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
@@ -67,6 +67,28 @@ const SOURCE_LABELS: Record<InjectSource, string | null> = {
 const REVISE_STATUS_WORDS = () => [t("memory:thinking"), t("memory:readingThePool"), t("memory:revisingTheSet")]
 
 const DEFAULT_EXPECTED_USE = "Apply this memory while completing the task."
+
+export function AutomaticMemoryReceipt({ message }: { message: MemoryPreviewHydratedMessage }) {
+  useI18n()
+  const ids = message.decisionSelectedIds ?? []
+  const memories = new Map(message.memories.map(item => [item.id, item]))
+  const uses = new Map((message.decisionExpectedUses ?? []).map(item => [item.id, item.expectedUse]))
+  return <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+    <div className="min-w-0">
+      <ExpandableRow expandedContent={<div className="mt-2 space-y-1.5">
+        {ids.map(id => <div key={id} className="rounded-lg border border-border/70 bg-background/60 px-3 py-2 dark:bg-muted/40">
+          <span>{memories.get(id)?.content ?? id}</span>
+          {uses.get(id) ? <p className="mt-1 text-muted-foreground">{uses.get(id)}</p> : null}
+        </div>)}
+      </div>}>
+        <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+          <LibraryBig className="h-3 w-3" />{t("memory:automaticConfirmed", { count: ids.length })}
+        </span>
+      </ExpandableRow>
+    </div>
+    {ids.map(id => <MemoryCitationChip key={id} id={id} />)}
+  </div>
+}
 
 export function WorkingMemorySelectionError({ error, onRetry, disabled = false }: { error: string; onRetry: () => void; disabled?: boolean }) {
   useI18n()
@@ -124,6 +146,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const [failedPlanningIds, setFailedPlanningIds] = useState<Set<string>>(new Set())
   const [selectionRecovered, setSelectionRecovered] = useState(false)
   const [poolExpanded, setPoolExpanded] = useState(false)
+  const [familiarExpanded, setFamiliarExpanded] = useState(false)
   const suggestionsMergedRef = useRef(false)
   const nextPlanTokenRef = useRef(0)
   const planTokenByIdRef = useRef(new Map<string, number>())
@@ -136,6 +159,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     setFailedPlanningIds(new Set())
     setSelectionRecovered(false)
     setPoolExpanded(false)
+    setFamiliarExpanded(false)
     planTokenByIdRef.current.clear()
   }, [message.refreshVersion])
 
@@ -208,6 +232,12 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const seeding = refreshing || (selection === null && !message.selectionError)
   const archivedIds = useMemo(() => new Set(storedMemories.filter((item) => item.status === "archived" && memoriesById.has(item.id)).map((item) => item.id)), [storedMemories, memoriesById])
   const selectedRowIds = useMemo(() => [...(selection?.keys() ?? [])].filter((id) => memoriesById.has(id)), [selection, memoriesById])
+  const reasonsById = useMemo(() => new Map((message.confirmationReasons ?? []).map(reason => [reason.id, reason])), [message.confirmationReasons])
+  const familiarIds = pending && message.confirmationMode === "on_change" && message.confirmationReasons && !message.selectionError
+    ? selectedRowIds.filter(id => !reasonsById.has(id) && selection?.get(id) !== "manual" && !archivedIds.has(id))
+    : []
+  const familiarSet = new Set(familiarIds)
+  const orderedRowIds = [...selectedRowIds.filter(id => !familiarSet.has(id)), ...familiarIds]
   const injectedIds = useMemo(() => selectedRowIds.filter((id) => !pending || !archivedIds.has(id)), [selectedRowIds, pending, archivedIds])
   const poolRest = useMemo(
     () => message.memories.filter((m) => !selection?.has(m.id)),
@@ -442,6 +472,15 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pending, submitting, message.previewId, injectedIds, seeding, revising, archiveControl.busyId, planningSelected, failedSelected.length])
 
+  if (message.decisionAutoReason === "confirmed") return <AutomaticMemoryReceipt message={message} />
+
+  const familiarDisclosure = familiarIds.length ? <button type="button" aria-expanded={familiarExpanded}
+    className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+    onClick={() => setFamiliarExpanded(value => !value)}>
+    <ChevronRight className={cn("h-3 w-3 transition-transform", familiarExpanded && "rotate-90")} />
+    {t("memory:alreadyConfirmed", { count: familiarIds.length })}
+  </button> : null
+
   const decidedText = message.decision
     ? message.decision === "go_on" && message.decisionAuto
       ? t("memory:proceededAutomaticallyNoMemoryInPlan")
@@ -493,10 +532,12 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 {selectionError ? t("memory:noSelectionIsReadyPickItemsBelowRetryOrExplicitly") : t("memory:workingMemoryIsEmptyPickFromThePoolBelowOr")}
               </p>
             ) : (
-              selectedRowIds.map((id, index) => {
+              orderedRowIds.map((id, index) => {
+                if (familiarSet.has(id) && !familiarExpanded) return null
                 const memory = memoriesById.get(id)!
                 const source = selection?.get(id) ?? "manual"
                 const label = SOURCE_LABELS[source]
+                const reason = reasonsById.get(id)
                 const expectedUse = expectedUsesById.get(id) ?? DEFAULT_EXPECTED_USE
                 const planning = planningIds.has(id)
                 const planningFailed = failedPlanningIds.has(id) || Boolean(message.selectionError && !expectedUsesById.has(id))
@@ -509,7 +550,9 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                   </RiseIn>
                 )
                 return (
-                  <RiseIn key={id} freshAt={pending ? Date.now() : undefined} delay={index * 0.06}>
+                  <Fragment key={id}>
+                  {familiarExpanded && id === familiarIds[0] ? familiarDisclosure : null}
+                  <RiseIn freshAt={pending ? Date.now() : undefined} delay={index * 0.06}>
                     <div className="relative min-w-0 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2 text-sm">
                       <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-x-2 gap-y-2 @2xl:grid-cols-[auto_minmax(0,1fr)_auto]">
                         <MemoryCitationChip id={id} />
@@ -525,6 +568,12 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             className="shrink-0 rounded-md border border-info/40 bg-info/10 px-1.5 py-0.5 text-[11px] leading-4 text-info-foreground dark:text-info-foreground"
                           >
                             {t("memory:viaTransfer")}</MemoryBadge>
+                        ) : null}
+                        {pending && message.confirmationMode === "on_change" && reason && !(reason.reason === "enforced" && source === "attention") ? (
+                          <MemoryBadge className="shrink-0 rounded-md border border-info/25 bg-info/8 px-1.5 py-0.5 text-[11px] leading-4 text-info-foreground">
+                            {reason.reason === "changed" ? t("memory:confirmationChanged", { from: reason.previousVersion, to: reason.version })
+                              : t(reason.reason === "first" ? "memory:confirmationFirst" : reason.reason === "removed" ? "memory:confirmationRemoved" : "memory:confirmationEnforced")}
+                          </MemoryBadge>
                         ) : null}
                         {label ? (
                           <MemoryBadge
@@ -581,9 +630,11 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                       </div>
                     </div>
                   </RiseIn>
+                  </Fragment>
                 )
               })
             )}
+            {!familiarExpanded ? familiarDisclosure : null}
             {message.relevant !== undefined && !selectionError && injectedIds.length > 0 ? (
               <p className="text-[11px] italic text-muted-foreground/70 dark:text-muted-foreground">
                 {t("memory:suggestionsAreAModelPredictionAdjustTheListBeforeStarting")}</p>

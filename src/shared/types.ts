@@ -573,11 +573,20 @@ export interface MemorySettings {
   learn: boolean
 }
 
+export type MemoryConfirmationMode = "on_change" | "every_turn"
+export interface MemoryConfirmationReason {
+  id: string
+  reason: "first" | "changed" | "removed" | "enforced"
+  version: number
+  previousVersion?: number
+}
+
 export interface MemoryPreviewSettings {
   /** Master switch for the per-turn preview gate. */
   enabled: boolean
   /** Auto-proceed (logged as an automatic go_on) when the plan involves no memories. */
   autoProceedWhenEmpty: boolean
+  confirmationMode?: MemoryConfirmationMode
 }
 
 export interface AppSettingsSnapshot {
@@ -1211,6 +1220,7 @@ export interface PreviewAttention {
 export interface MemoryPreviewEntry extends TranscriptEntryBase {
   kind: "memory_preview"
   previewId: string
+  confirmationMode?: MemoryConfirmationMode
   /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   turn?: number
@@ -1247,9 +1257,10 @@ export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
   kind: "memory_preview_decision"
   previewId: string
   decision: MemoryPreviewDecision | "expired"
-  /** True when the system auto-proceeded (empty injected set + setting on). */
+  /** True when the system auto-proceeded. */
   auto?: boolean
-  /** Present when the user EDITED the gate: only these ids injected this turn. */
+  autoReason?: "confirmed"
+  /** The exact ids selected for this turn when explicitly scoped. */
   selectedIds?: string[]
   /** Exact turn-scoped instructions shown in the UI and sent to Claude. */
   expectedUses?: ExpectedMemoryUse[]
@@ -1303,6 +1314,7 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
   relevant: Array<{ id: string; why: string }>
   /** Use Planner output for the initially selected relevant/attention items. */
   expectedUses?: ExpectedMemoryUse[]
+  confirmationReasons?: MemoryConfirmationReason[]
   /** A failed selection is distinct from a successful empty selection. */
   error?: string
   errorUiText?: UiTextReference
@@ -1312,6 +1324,7 @@ export interface MemoryPreviewRelevanceEntry extends TranscriptEntryBase {
 export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
   kind: "memory_preview_update"
   previewId: string
+  confirmationMode?: MemoryConfirmationMode
   /** Legacy transcript metadata; ignored by product runtime. */
   taskId?: string
   revision: number
@@ -1664,7 +1677,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_trace"; labels: Array<MemoryTraceEntry["labels"][number] & { userLabel?: MemoryTraceEntry["labels"][number]["label"]; userNote?: string }>; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_expired"; ids: string[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; selectionErrorUiText?: UiTextReference; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_preview"; previewId: string; confirmationMode?: MemoryConfirmationMode; confirmationReasons?: MemoryConfirmationReason[]; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; selectionErrorUiText?: UiTextReference; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionAutoReason?: "confirmed"; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_checkup"; checkupId: string; openingReviewId?: string; turn?: number; pending?: boolean; waiting?: boolean; suggestions?: MemoryCheckupSuggestionSnapshot[]; failedKinds?: MemoryCheckupKind[]; decision?: MemoryCheckupDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })

@@ -482,8 +482,16 @@
   "violatedCount": "{{count}} violated",
   "modeOff": "Off",
   "modeReview": "Ask",
+  "confirmationFirst": "First in this chat",
+  "confirmationChanged": "v{{from}} → v{{to}} changed",
+  "confirmationRemoved": "Previously removed",
+  "confirmationEnforced": "Enforced",
+  "alreadyConfirmed_one": "Another {{count}} already confirmed",
+  "alreadyConfirmed_other": "Another {{count}} already confirmed",
+  "automaticConfirmed_one": "Working memory · {{count}} item, previously confirmed",
+  "automaticConfirmed_other": "Working memory · {{count}} items, all previously confirmed",
   "modeAuto": "Auto",
   "modeOffDescription": "This chat doesn't use or learn memories.",
-  "modeReviewDescription": "Asks you before using or saving memories each turn.",
+  "modeReviewDescription": "Asks you to review memory changes and working memory when needed.",
   "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board."
 }

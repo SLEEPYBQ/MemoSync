@@ -482,8 +482,16 @@
   "violatedCount": "{{count}} 条已违反",
   "modeOff": "关闭",
   "modeReview": "请求",
+  "confirmationFirst": "本会话首次",
+  "confirmationChanged": "v{{from}} → v{{to}} 已修改",
+  "confirmationRemoved": "此前已移除",
+  "confirmationEnforced": "强制使用",
+  "alreadyConfirmed_one": "另外 {{count}} 条已确认过",
+  "alreadyConfirmed_other": "另外 {{count}} 条已确认过",
+  "automaticConfirmed_one": "工作记忆 · {{count}} 条，均已确认过",
+  "automaticConfirmed_other": "工作记忆 · {{count}} 条，均已确认过",
   "modeAuto": "自动",
   "modeOffDescription": "这个对话不使用，也不学习记忆。",
-  "modeReviewDescription": "每轮使用或保存记忆前都先问你。",
+  "modeReviewDescription": "在需要时请你审阅记忆改动和工作记忆。",
   "modeAutoDescription": "智能体自行使用和保存记忆，你可以事后到记忆页查看。"
 }

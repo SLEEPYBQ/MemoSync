@@ -182,6 +182,11 @@ export const SETTINGS_ROWS = defineRows({
     get title() { return t("settings:memoryPreview") },
     get description() { return t("settings:beforeEachTurnShowWhichMemoriesTheAgentBringsAnd") },
   },
+  memoryConfirmation: {
+    sectionId: "memory",
+    get title() { return t("settings:memoryConfirmation") },
+    get description() { return t("settings:memoryConfirmationDescription") },
+  },
   memoryAutoProceed: {
     sectionId: "memory",
     get title() { return t("settings:autoProceedWhenNoMemoryApplies") },

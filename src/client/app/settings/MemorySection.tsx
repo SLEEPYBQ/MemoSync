@@ -94,6 +94,18 @@ export function MemorySettingsGroups({
                 onCheckedChange={(checked) => save({ memoryPreview: { enabled: checked } })}
               />
             </SettingsRow>
+            <SettingsRow def={SETTINGS_ROWS.memoryConfirmation} disabled={!enabled || settings?.memoryPreview.enabled === false}
+              description={SETTINGS_ROWS.memoryConfirmation.description + (!enabled ? memoryReason : "")} wideControl>
+              <SettingsSelect
+                aria-label={t("settings:memoryConfirmation")}
+                value={settings?.memoryPreview.confirmationMode ?? "on_change"}
+                disabled={!enabled || settings?.memoryPreview.enabled === false}
+                onValueChange={(value) => save({ memoryPreview: { confirmationMode: value as "on_change" | "every_turn" } })}
+              >
+                <SelectItem value="on_change">{t("settings:memoryConfirmationOnChange")}</SelectItem>
+                <SelectItem value="every_turn">{t("settings:memoryConfirmationEveryTurn")}</SelectItem>
+              </SettingsSelect>
+            </SettingsRow>
             <SettingsRow
               def={SETTINGS_ROWS.memoryAutoProceed}
               disabled={!enabled}
