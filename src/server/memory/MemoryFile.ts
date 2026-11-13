@@ -79,6 +79,11 @@ const SECTION_TO_TYPE: Record<string, MemoryType> = {
 const ITEM_RE = /^- \[([^\]]+)\]\s*(.*)$/;
 const ADDITION_RE = /^- (?!\[)\s*(.+)$/;
 
+function expiryDateLabel(expiresAt: string): string {
+  const date = new Date(expiresAt);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 export class MemoryFile {
   constructor(private dataDir: string) {}
 
@@ -165,7 +170,7 @@ export class MemoryFile {
     for (const [section, bucket] of groups) {
       lines.push(`## ${section}`);
       const sorted = [...bucket].sort((a, b) => compareMemoryId(a.id, b.id));
-      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${item.expiresAt.slice(0, 10)})` : ''}`);
+      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${expiryDateLabel(item.expiresAt)})` : ''}`);
       lines.push('');
     }
 
@@ -176,7 +181,7 @@ export class MemoryFile {
       lines.push(PENDING_MARKER);
       lines.push('## Pending review (decide in the app)');
       const sorted = [...pending].sort((a, b) => compareMemoryId(a.id, b.id));
-      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${item.expiresAt.slice(0, 10)})` : ''}`);
+      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${expiryDateLabel(item.expiresAt)})` : ''}`);
       lines.push('');
     }
 
