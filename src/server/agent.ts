@@ -61,7 +61,7 @@ import {
   planMemoryInjection,
   type MemoryInjectionPlan,
 } from "./memory/injection"
-import { compileMemoryView } from "./memory/view"
+import { compileMemoryView, relationLifecycleOverrides } from "./memory/view"
 import type { RelevanceService, RelevantMemory } from "./memory/relevance"
 import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext, type MemoryToolSpec } from "./memory/tools"
 import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memory/trace"
@@ -2117,6 +2117,7 @@ export class AgentCoordinator {
     const initialChat = this.store.requireChat(args.chatId)
     const initialItems = this.memory?.injectedFor(initialChat.projectId, args.chatId) ?? []
     const initialIds = initialItems.map(item => item.id)
+    const initialEventSeq = this.memory?.store.latestEventSeq()
     const initialIdSet = new Set(initialIds)
     const key = () => {
       const chat = this.store.requireChat(args.chatId)
@@ -2135,8 +2136,12 @@ export class AgentCoordinator {
           && current.every(item => item && (item.status === 'archived' || (item.status === 'active' && visibleIds.has(item.id))))) {
           // Reconstruct the approved view with only lifecycle changes reversed.
           const restored = current.map(item => ({ ...item!, status: 'active' as const }))
-          const archivedIds = new Set(current.filter(item => item?.status === 'archived').map(item => item!.id))
-          const revision = compileMemoryView(this.memory, restored, restored, chat.projectId, args.chatId, archivedIds).revision
+          const overrides = relationLifecycleOverrides(this.memory, initialIds, initialEventSeq)
+          const archivedIds = new Set([
+            ...current.filter(item => item?.status === 'archived').map(item => item!.id),
+            ...overrides.archivedAsActive,
+          ])
+          const revision = compileMemoryView(this.memory, restored, restored, chat.projectId, args.chatId, archivedIds, overrides.restoredAsArchived).revision
           const reconstructed = JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider), chat.memoryDisabled, revision])
           if (reconstructed === approved) return
         }

@@ -395,6 +395,14 @@ export class MemoryStore {
     }
   }
 
+  private isExpiredArchive(id: string): boolean {
+    if (this.getById(id)?.status !== 'archived') return false;
+    const event = this.db.query(`SELECT kind FROM memory_events
+      WHERE memory_id = ? AND json_type(changes, '$.status') IS NOT NULL
+      ORDER BY seq DESC LIMIT 1`).get(id) as { kind: MemoryEventKind } | null;
+    return event?.kind === 'expire';
+  }
+
   private updateWithCandidateDecision(
     id: string,
     patch: Partial<MemoryItem>,
@@ -425,8 +433,11 @@ export class MemoryStore {
       changes[key] = { before, after };
     }
 
-      if (sets.length === 0) return existing;
-      this.syncMemoryRevocation(existing, patch.status);
+      const reaffirmArchive = eventKind !== 'expire' && patch.status === 'archived'
+        && existing.status === 'archived' && this.isExpiredArchive(id);
+      if (sets.length === 0 && !reaffirmArchive) return existing;
+      if (reaffirmArchive) changes.status = { before: 'archived', after: 'archived' };
+      if (eventKind !== 'expire') this.syncMemoryRevocation(existing, patch.status);
 
     sets.push('updated_at = $updated_at');
     params.$updated_at = new Date().toISOString();
@@ -662,11 +673,13 @@ export class MemoryStore {
     if (this.wasCandidateDismissed(content, owner)) return true;
     const fingerprint = this.candidateFingerprint(content);
     const ownerId = owner.scope === 'project' ? owner.projectId ?? null : owner.scope === 'session' ? owner.sessionId ?? null : null;
-    if (this.db.query(`SELECT 1 FROM memory_revocations WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
-      .get(fingerprint, owner.scope, ownerId)) return true;
+    const revocations = this.db.query(`SELECT memory_id FROM memory_revocations
+      WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
+      .all(fingerprint, owner.scope, ownerId) as Array<{ memory_id: string }>;
+    if (revocations.some(row => !this.isExpiredArchive(row.memory_id))) return true;
     // Read compatibility for archived rows written before revocation receipts.
     return this.list({ scope: owner.scope, projectId: owner.projectId, sessionId: owner.sessionId, status: 'archived' })
-      .some(item => this.candidateFingerprint(item.content) === fingerprint);
+      .some(item => this.candidateFingerprint(item.content) === fingerprint && !this.isExpiredArchive(item.id));
   }
 
   getCaptureOperation(key: string): { memoryId?: string } | null {

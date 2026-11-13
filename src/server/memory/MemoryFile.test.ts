@@ -54,26 +54,22 @@ describe('MemoryFile', () => {
   });
 
   it('exports active and pending expiry dates in the local calendar', () => {
-    const previousTimezone = process.env.TZ;
-    try {
-      for (const [timezone, expiresAt, date] of [
-        ['America/Los_Angeles', '2026-11-14T07:59:59.999Z', '2026-11-13'],
-        ['Asia/Shanghai', '2026-11-13T16:30:00.000Z', '2026-11-14'],
-        ['UTC', '2026-11-14T07:59:59.999Z', '2026-11-14'],
-      ]) {
-        process.env.TZ = timezone;
-        const active = mem({ id: 'M-01', content: 'Temporary active', expiresAt });
-        const pending = mem({ id: 'M-02', content: 'Temporary pending', status: 'candidate', expiresAt });
-        const permanent = mem({ id: 'M-03', content: 'Permanent' });
-        file.writePersonal([active, permanent], [pending]);
-        const lines = file.readPersonalRaw().split('\n');
-        expect(lines).toContain(`- [M-01] Temporary active (until ${date})`);
-        expect(lines).toContain(`- [M-02] Temporary pending (until ${date})`);
-        expect(lines).toContain('- [M-03] Permanent');
-      }
-    } finally {
-      if (previousTimezone === undefined) delete process.env.TZ;
-      else process.env.TZ = previousTimezone;
+    for (const [timezone, expiresAt, date] of [
+      ['America/Los_Angeles', '2026-11-14T07:59:59.999Z', '2026-11-13'],
+      ['Asia/Shanghai', '2026-11-13T16:30:00.000Z', '2026-11-14'],
+      ['UTC', '2026-11-14T07:59:59.999Z', '2026-11-14'],
+    ]) {
+      const active = mem({ id: 'M-01', content: 'Temporary active', expiresAt });
+      const pending = mem({ id: 'M-02', content: 'Temporary pending', status: 'candidate', expiresAt });
+      const permanent = mem({ id: 'M-03', content: 'Permanent' });
+      const child = Bun.spawnSync([process.execPath, '-e',
+        `import { MemoryFile } from ${JSON.stringify(join(import.meta.dir, 'MemoryFile.ts'))}; new MemoryFile(${JSON.stringify(dir)}).writePersonal(${JSON.stringify([active, permanent])}, ${JSON.stringify([pending])});`,
+      ], { env: { ...process.env, TZ: timezone }, stdout: 'pipe', stderr: 'pipe' });
+      expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+      const lines = file.readPersonalRaw().split('\n');
+      expect(lines).toContain(`- [M-01] Temporary active (until ${date})`);
+      expect(lines).toContain(`- [M-02] Temporary pending (until ${date})`);
+      expect(lines).toContain('- [M-03] Permanent');
     }
   });
 

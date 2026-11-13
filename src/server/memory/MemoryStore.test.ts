@@ -55,6 +55,81 @@ describe('MemoryStore', () => {
     expect(reverted.version).toBe(cleared.version + 1);
   });
 
+  it('does not suppress an expiration until the user explicitly archives it', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const local = new MemoryStore(db);
+    const content = 'Synthetic temporary personal rule';
+    const item = local.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const owner = { scope: 'personal' as const };
+    local.expireDue('2021-01-01T00:00:00.000Z');
+    expect(local.getById(item.id)?.status).toBe('archived');
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(item.id)).toEqual([]);
+    local.update(item.id, { topic: 'Synthetic metadata' }, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    local.archive(item.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    expect(local.getEvents(item.id).at(-1)).toMatchObject({ kind: 'status', changes: { status: { before: 'archived', after: 'archived' } } });
+    const eventCount = local.getEvents(item.id).length;
+    local.archive(item.id, { actor: 'user' });
+    expect(local.getEvents(item.id)).toHaveLength(eventCount);
+    local.update(item.id, { status: 'active', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(item.id)).toEqual([]);
+    local.archive(item.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.close();
+  });
+
+  it('ignores legacy expiration receipts without ignoring separate explicit revocations', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const local = new MemoryStore(db);
+    const content = 'Synthetic project rule';
+    const owner = { scope: 'project' as const, projectId: 'P1' };
+    const expired = local.create({ content, scope: 'project', projectId: 'P1', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    local.archive(expired.id, { actor: 'user' });
+    const statusEvent = local.getEvents(expired.id).at(-1)!;
+    db.query("UPDATE memory_events SET kind = 'expire' WHERE seq = ?").run(statusEvent.seq);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(expired.id)).toHaveLength(1);
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    const otherProject = local.create({ content, scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    local.archive(otherProject.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(local.wasMemorySuppressed(content, { scope: 'project', projectId: 'P2' })).toBe(true);
+    const explicit = local.create({ content, scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    local.archive(explicit.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.query('DELETE FROM memories WHERE id = ?').run(explicit.id);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(explicit.id)).toHaveLength(1);
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.close();
+  });
+
+  it('still suppresses a dismissed candidate matching an expired memory', () => {
+    const content = 'Synthetic dismissed rule';
+    const expired = store.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    store.expireDue('2021-01-01T00:00:00.000Z');
+    expect(store.getById(expired.id)?.status).toBe('archived');
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(false);
+    const candidate = store.create({ content, scope: 'personal', type: 'fact', status: 'candidate' }, { actor: 'agent' });
+    store.dismissCandidate(candidate.id, { actor: 'user' });
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(true);
+  });
+
+  it('honors explicit archived status alongside metadata after expiration', () => {
+    const content = 'Synthetic archived intent';
+    const item = store.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    store.expireDue('2021-01-01T00:00:00.000Z');
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(false);
+    store.update(item.id, { status: 'archived', topic: 'Synthetic' }, { actor: 'user' });
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(true);
+    expect(store.getEvents(item.id).at(-1)).toMatchObject({ kind: 'status', changes: {
+      status: { before: 'archived', after: 'archived' }, topic: { before: null, after: 'Synthetic' },
+    } });
+  });
+
   it('migrates expiry for old memory rows without assigning a deadline', () => {
     const db = new Database(':memory:');
     db.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, scope TEXT NOT NULL, type TEXT NOT NULL,

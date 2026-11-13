@@ -24,6 +24,22 @@ export function semanticHash(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 }
 
+export function relationLifecycleOverrides(
+  memory: MemoryService, visibleIds: readonly string[], eventSeq: number | undefined,
+): { archivedAsActive: Set<string>; restoredAsArchived: Set<string> } {
+  const archivedAsActive = new Set<string>();
+  const restoredAsArchived = new Set<string>();
+  if (eventSeq === undefined) return { archivedAsActive, restoredAsArchived };
+  for (const row of memory.store.getViewRelations(visibleIds)) {
+    for (const [id, status] of [[row[0]!, row[3]!], [row[1]!, row[7]!]]) {
+      const wasArchived = memory.store.wasArchivedAt(id!, eventSeq);
+      if (status === 'archived' && !wasArchived) archivedAsActive.add(id!);
+      if (status === 'active' && wasArchived) restoredAsArchived.add(id!);
+    }
+  }
+  return { archivedAsActive, restoredAsArchived };
+}
+
 export function compileMemoryView(
   memory: MemoryService,
   visible: MemoryItem[],

@@ -51,6 +51,41 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     expect(validateCandidate({ content: 'Test', retentionDays: null })?.retentionDays).toBeUndefined();
   });
 
+  it('routes the same temporary rule again after automatic expiration', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const content = 'Synthetic temporary transport rule';
+    const expired = memory.store.create({ content, scope: 'personal', type: 'constraint', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    memory.store.expireDue();
+    const { call, calls } = stubCaller([{ decisions: [{ index: 0, route: 'new', targetId: null }] }]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const before = Date.now();
+    const outcome = await capture.routeProposal(
+      { content, scope: 'personal', type: 'constraint', retentionDays: 7 },
+      { sessionId: 'synthetic-chat', turn: 2, engine: 'claude' },
+    );
+    expect(calls).toHaveLength(1);
+    expect(outcome!.created).toHaveLength(1);
+    expect(outcome!.created[0]).toMatchObject({ content, status: 'candidate' });
+    expect(Date.parse(outcome!.created[0]!.expiresAt!)).toBeGreaterThanOrEqual(before + 7 * 86400000);
+    expect(memory.store.getById(expired.id)?.status).toBe('archived');
+  });
+
+  it('suppresses an explicitly archived rule without routing again', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const content = 'Synthetic manually archived rule';
+    const archived = memory.store.create({ content, scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    memory.store.archive(archived.id, { actor: 'user' });
+    const { call, calls } = stubCaller([]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const outcome = await capture.routeProposal(
+      { content, scope: 'personal', type: 'constraint', retentionDays: 7 },
+      { sessionId: 'synthetic-chat', turn: 2, engine: 'claude' },
+    );
+    expect(calls).toHaveLength(0);
+    expect(outcome).toMatchObject({ surfaced: 0, dropped: 1 });
+    expect(memory.store.getById(archived.id)?.status).toBe('archived');
+  });
+
   it('preserves a temporary deadline through hook and branch extraction and same-turn retry', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const { call } = stubCaller([
