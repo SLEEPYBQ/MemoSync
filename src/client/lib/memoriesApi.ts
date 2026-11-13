@@ -44,7 +44,7 @@ export interface CreateMemoryBody {
   topic?: string
 }
 
-export type MemoryControlSurface = "board" | "chat_gate"
+export type MemoryControlSurface = "board" | "chat_gate" | "chat_citation" | "chat_audit"
 
 /** GET /api/memories/:id/history response — the per-item version/usage log (option 乙). */
 export interface MemoryHistory {

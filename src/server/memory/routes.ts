@@ -81,10 +81,15 @@ function assertNumber(value: unknown, field: string): void {
   }
 }
 
-function controlSurface(value: unknown): 'board' | 'chat_gate' | undefined {
+function controlSurface(value: unknown): 'board' | 'chat_gate' | undefined;
+function controlSurface(value: unknown, chatArchive: true): 'board' | 'chat_gate' | 'chat_citation' | 'chat_audit' | undefined;
+function controlSurface(value: unknown, chatArchive = false): 'board' | 'chat_gate' | 'chat_citation' | 'chat_audit' | undefined {
   if (value === undefined) return undefined;
   if (value === 'board' || value === 'chat_gate') return value;
-  throw new RouteError(400, 'BAD_REQUEST', 'surface must be board or chat_gate');
+  if (chatArchive && (value === 'chat_citation' || value === 'chat_audit')) return value;
+  throw new RouteError(400, 'BAD_REQUEST', chatArchive
+    ? 'surface must be board, chat_gate, chat_citation or chat_audit'
+    : 'surface must be board or chat_gate');
 }
 
 const ok = <T>(data: T, status = 200): Response => uiJson({ data }, { status });
@@ -1124,10 +1129,15 @@ export async function handleMemoryRequest(
         // Surface is useful telemetry, but it is client-controlled. During the
         // blocking opening Board the durable receipt remains the authority, so
         // F12 cannot claim chat_gate and raw-accept a sensitive draft.
-        const requestedSurface = controlSurface(rawPatch.surface);
+        const requestedSurface = controlSurface(rawPatch.surface, true);
         const blockingBoardReview = requestedSurface === 'board';
         const via = blockingBoardReview ? 'board' : requestedSurface ?? 'ui';
         const { surface: _surface, operationId: _operationId, ...patch } = rawPatch;
+        if ((requestedSurface === 'chat_citation' || requestedSurface === 'chat_audit')
+          && (Object.keys(patch).some(key => key !== 'status')
+            || !(['active', 'archived'].includes(existing.status) && (patch.status === 'active' || patch.status === 'archived')))) {
+          throw new RouteError(400, 'BAD_REQUEST', 'This surface only supports archiving and restoring memories');
+        }
         assertEnum(patch.scope, MEMORY_SCOPES, 'scope');
         assertEnum(patch.type, MEMORY_TYPES, 'type');
         assertEnum(patch.status, MEMORY_STATUSES, 'status');
@@ -1183,7 +1193,8 @@ export async function handleMemoryRequest(
           }
         }
         const accepted = existing.status === 'candidate' && (patch.status as string) === 'active';
-        const controlAction = accepted ? 'accept' : nextScope !== existing.scope ? 'rescope' : 'edit';
+        const controlAction = accepted ? 'accept' : existing.status === 'active' && patch.status === 'archived' ? 'archive'
+          : existing.status === 'archived' && patch.status === 'active' ? 'restore' : nextScope !== existing.scope ? 'rescope' : 'edit';
         // Accepting a REVISION candidate replaces its target(s): activation
         // and the archival(s) commit in ONE transaction (a mid-way failure
         // must never leave both memories active with the candidate spent).

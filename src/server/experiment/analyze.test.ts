@@ -122,6 +122,13 @@ test("Board and chat-gate Control stay separate from Monitoring in analysis", ()
   expect(report.toCsv()).toContain("monitorBoard")
 })
 
+test("citation and audit archive decisions count as other controls", () => {
+  const report = analyzeEvents(["chat_citation", "chat_audit"].map((via) =>
+    JSON.stringify({ type: "memory.decision", action: "archive", id: "M-76", via })))
+  expect(report.totals.controlInteractions).toEqual({ board: 0, chat_gate: 0, other: 2 })
+  expect(report.totals.decisions.archive).toBe(2)
+})
+
 test("keeps historical metadata without merging chats by task or inventing product labels", () => {
   // Stored metadata keys, values and event types below were written by older versions.
   const events = [

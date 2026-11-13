@@ -18,9 +18,11 @@ import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { useMemoryStore } from "../../stores/memoryStore"
 import { recordUiMonitor } from "../../lib/memoriesApi"
 import { MemoryCardCore } from "../memory/MemoryCardCore"
+import { ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
 import { MEMORY_SCOPE_CHIP_CLASSES, isMemoryScope, parseMemoryCitationHref } from "../../lib/memoryCitations"
 import {
   AlertTriangle,
+  Archive,
   ArrowDownToLine,
   CheckLine,
   ChevronRight,
@@ -316,6 +318,8 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
   const { chatId } = useTranscriptChatContext()
   const memory = useMemoryStore((s) => s.items.find((m) => m.id === id))
   const interruptApi = useTurnInterrupt()
+  const { readonly, previewDemo } = useTranscriptRenderOptions()
+  const { archive, restore, busyId, error } = useArchiveMemory("chat_citation", { localOnly: Boolean(previewDemo) || (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo")) })
   const belongsToCurrentTurn = useContext(CurrentTurnMemoryCitationContext)
   // The VISIBLE stop button next to the chip (2026-08-19 evening revision):
   // hover-only was undiscoverable. Same two-step confirm, auto-disarm.
@@ -381,6 +385,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
             MEMORY_BADGE_BASE, "shrink-0 cursor-default whitespace-nowrap align-baseline font-mono",
             MEMORY_SCOPE_CHIP_CLASSES[scope],
             violatedHere && "ring-1 ring-destructive/70",
+            memory.status === "archived" && "opacity-60 line-through decoration-muted-foreground/60",
           )}
         >
           {violatedHere ? <AlertTriangle className="mr-0.5 h-2.5 w-2.5 text-destructive" /> : null}
@@ -395,6 +400,21 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
         {note ? <p className="mb-2 leading-relaxed text-muted-foreground">{note}</p> : null}
         {/* Inspect the canonical memory here; Stop/Confirm stays beside the citation. */}
         <MemoryCardCore item={memory} />
+        {!readonly && (memory.status === "active" || memory.status === "archived") ? (
+          <>
+            <div className="mt-2.5 flex min-w-0 items-center gap-1 border-t border-border/60 pt-2">
+              {memory.status === "active" ? (
+                <button type="button" title={t("memory:archiveEverywhereTitle")} disabled={busyId !== null}
+                  onClick={() => void archive(id).catch(() => {})}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40">
+                  <Archive className="h-3 w-3" /> {t("common:archive")}
+                </button>
+              ) : <ArchivedInline id={id} busy={busyId === id} onUndo={(memoryId) => void restore(memoryId).catch(() => {})}
+                note={interruptApi?.active ? t("memory:archivedAppliesNextTurn") : undefined} />}
+            </div>
+            {error ? <p className="mt-1 text-[11px] text-destructive">{error}</p> : null}
+          </>
+        ) : null}
       </HoverCardContent>
     </HoverCard>
     {interruptApi?.active && belongsToCurrentTurn ? (

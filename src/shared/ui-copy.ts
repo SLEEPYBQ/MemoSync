@@ -46,6 +46,8 @@ export const SERVER_UI_COPY = {
   "requiredField": "{{v0}} is required",
   "requiredFields": "{{v0}} are required",
   "surfaceInvalid": "surface must be board or chat_gate",
+  "surfaceArchiveInvalid": "surface must be board, chat_gate, chat_citation or chat_audit",
+  "surfaceArchiveOnly": "This surface only supports archiving and restoring memories",
   "invalidAction": "action must be add or remove",
   "mutedNotFound": "no muted proposal for {{v0}}",
   "contentScope": "content and scope are required",

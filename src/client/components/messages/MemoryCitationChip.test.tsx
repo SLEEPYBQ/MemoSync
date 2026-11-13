@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { useMemoryStore } from "../../stores/memoryStore"
 import { CurrentTurnMemoryCitationProvider, MemoryCitationChip, TurnInterruptContext } from "./shared"
+import { TranscriptRenderOptionsProvider } from "./render-context"
 
 const ITEM = {
   id: "M-77",
@@ -59,4 +60,12 @@ test("a settled turn gets no visible stop button", () => {
   expect(renderChip({ active: false, currentTurn: true })).not.toContain(
     "Stop the turn over this memory",
   )
+})
+
+test("archived chips are struck through and readonly hides the archive footer", () => {
+  seedInitialItems([{ ...ITEM, status: "archived" }])
+  const html = renderToStaticMarkup(<TranscriptRenderOptionsProvider value={{ readonly: true }}><MemoryCitationChip id="M-77" /></TranscriptRenderOptionsProvider>)
+  expect(html).toContain("line-through")
+  expect(html).not.toContain("Undo")
+  expect(html).not.toContain("Archive: stop using")
 })

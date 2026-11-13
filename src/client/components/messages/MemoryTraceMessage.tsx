@@ -3,7 +3,7 @@ import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { AlertTriangle, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck } from "lucide-react"
+import { AlertTriangle, Archive, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { cn } from "../../lib/utils"
 import { memoriesApi, recordUiMonitor } from "../../lib/memoriesApi"
@@ -12,6 +12,8 @@ import { revealToolEvidence } from "../../lib/toolEvidence"
 import { useTranscriptChatContext, useTranscriptRenderOptions } from "./render-context"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryCitationChip, useEnsureMemoriesLoaded } from "./shared"
+import { ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
+import { useMemoryStore } from "../../stores/memoryStore"
 import {
   useSurfaceExposure,
   useSurfaceViewportVisibility,
@@ -138,6 +140,9 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
   const { chatId } = useTranscriptChatContext()
   const [busy, setBusy] = useState<string | null>(null)
   const [done, setDone] = useState<string | null>(null)
+  const memory = useMemoryStore((state) => state.items.find((item) => item.id === label.id))
+  const demo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo")
+  const archiveControl = useArchiveMemory("chat_audit", { localOnly: demo })
 
   async function act(name: string, run: () => Promise<unknown>, doneText: string) {
     setBusy(name)
@@ -155,12 +160,14 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
   }
 
   const violated = label.label === "violated"
+  const archived = memory?.status === "archived"
+  const canArchive = !renderOptions.readonly && memory?.status === "active"
   // Every row states its reason (2026-08-19 B2): the NA reason is the named
   // missing object; other labels fall back to the audit note.
   const note = label.note ? translateServerUiText(label.noteUiText, label.note) : undefined
   const reason = label.label === "not_applicable" ? (label.missing ?? note) : note
   return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 normal-case tracking-normal">
+    <div className="group/trace grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 normal-case tracking-normal">
       <div className="pt-0.5">
         <TraceStatusMark label={label.label} />
       </div>
@@ -176,12 +183,18 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
             {label.cited ? t("memory:selfReported") : t("memory:auditFound")}
           </span>
         </div>
-        {reason ? <p className="mt-0.5 leading-relaxed text-muted-foreground">{reason}</p> : null}
+        {reason ? <p className={cn("mt-0.5 leading-relaxed text-muted-foreground", archived && "opacity-60")}>{reason}</p> : null}
         {violated && label.cause ? (
-          <p className="mt-0.5 leading-relaxed text-muted-foreground/80">{CAUSE_TEXT[label.cause]}</p>
+          <p className={cn("mt-0.5 leading-relaxed text-muted-foreground/80", archived && "opacity-60")}>{CAUSE_TEXT[label.cause]}</p>
         ) : null}
-        {onJump || violated ? (
+        {onJump || violated || canArchive || (archived && !renderOptions.readonly) ? (
           <div className="mt-2 flex min-h-7 flex-wrap items-center justify-end gap-2">
+            {canArchive ? <button type="button" title={t("memory:archiveEverywhereTitle")} disabled={archiveControl.busyId !== null}
+              onClick={() => void archiveControl.archive(label.id).catch(() => {})}
+              className={cn("inline-flex items-center gap-0.5 rounded-md px-1 py-0.5 text-muted-foreground/80 transition-colors hover:bg-muted hover:text-foreground", !violated && "opacity-0 group-hover/trace:opacity-100 focus-visible:opacity-100")}>
+              <Archive className="h-3 w-3" /> {t("common:archive")}
+            </button> : null}
+            {archived && !renderOptions.readonly ? <div className="min-w-0 flex-1"><ArchivedInline id={label.id} busy={archiveControl.busyId === label.id} onUndo={(id) => void archiveControl.restore(id).catch(() => {})} /></div> : null}
             {onJump ? (
               <button
                 type="button"
@@ -191,7 +204,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
               >
                 <CornerDownRight className="h-3 w-3" /> {t("memory:whereUsed")}</button>
             ) : null}
-            {violated && !renderOptions.readonly ? done ? (
+            {violated && !archived && !renderOptions.readonly ? done ? (
               <span className="text-muted-foreground/80">{translateUiText(done)}</span>
             ) : (
               <>
@@ -235,6 +248,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
             ) : null}
           </div>
         ) : null}
+        {archiveControl.error ? <p className="mt-1 text-[11px] text-destructive">{archiveControl.error}</p> : null}
       </div>
     </div>
   )

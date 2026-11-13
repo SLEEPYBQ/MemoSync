@@ -59,6 +59,7 @@ import {
   planMemoryInjection,
   type MemoryInjectionPlan,
 } from "./memory/injection"
+import { compileMemoryView } from "./memory/view"
 import type { RelevanceService, RelevantMemory } from "./memory/relevance"
 import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext, type MemoryToolSpec } from "./memory/tools"
 import { coerceTraceOutcome, type TraceOutcome, type TraceService } from "./memory/trace"
@@ -2106,7 +2107,11 @@ export class AgentCoordinator {
     return JSON.stringify([this.memoryPolicyKey(), executionPolicyKey(selected.policy), selected.revision])
   }
 
-  private memoryViewGuard(args: StartTurnArgs): () => void {
+  private memoryViewGuard(args: StartTurnArgs, allowArchived = false): () => void {
+    const initialChat = this.store.requireChat(args.chatId)
+    const initialItems = this.memory?.injectedFor(initialChat.projectId, args.chatId) ?? []
+    const initialIds = initialItems.map(item => item.id)
+    const initialIdSet = new Set(initialIds)
     const key = () => {
       const chat = this.store.requireChat(args.chatId)
       return JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider),
@@ -2114,7 +2119,22 @@ export class AgentCoordinator {
     }
     const approved = key()
     return () => {
-      if (key() !== approved) throw new Error('Working memory changed during review. Reopen preparation to review the updated items.')
+      if (key() === approved) return
+      if (allowArchived && this.memory) {
+        const chat = this.store.requireChat(args.chatId)
+        const visible = this.memory.injectedFor(chat.projectId, args.chatId)
+        const current = initialIds.map(id => this.memory!.store.getById(id))
+        const visibleIds = new Set(visible.map(item => item.id))
+        if (visible.every(item => initialIdSet.has(item.id))
+          && current.every(item => item && (item.status === 'archived' || (item.status === 'active' && visibleIds.has(item.id))))) {
+          // Reconstruct the approved view with only lifecycle changes reversed.
+          const restored = current.map(item => ({ ...item!, status: 'active' as const }))
+          const revision = compileMemoryView(this.memory, restored, restored, chat.projectId, args.chatId).revision
+          const reconstructed = JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider), chat.memoryDisabled, revision])
+          if (reconstructed === approved) return
+        }
+      }
+      throw new Error('Working memory changed during review. Reopen preparation to review the updated items.')
     }
   }
 
@@ -2285,6 +2305,10 @@ export class AgentCoordinator {
         ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
         : []
       if (command.decision === 'go_on') pending.assertCurrentView?.()
+      if (command.decision === 'go_on' && this.memory) {
+        const chat = this.store.requireChat(command.chatId)
+        effectiveIds = normalizeMemorySelection({ memory: this.memory, projectId: chat.projectId, chatId: command.chatId, selectedIds: effectiveIds })
+      }
 
       handedOff = true
       pending.respond(
@@ -2292,7 +2316,7 @@ export class AgentCoordinator {
         command.decision === "go_on"
           ? effectiveIds
           : undefined,
-        authoritativeExpectedUses,
+        authoritativeExpectedUses.filter(use => effectiveIds.includes(use.id)),
         command.operationId,
       )
     } catch (error) {
@@ -2333,12 +2357,13 @@ export class AgentCoordinator {
     const branch = this.workingBranches.get(input.chatId)
     if (!pending?.published || pending.previewId !== input.previewId || !branch) throw new Error("No matching working-memory branch")
     pending.assertCurrentView?.()
-    const selected = new Set(input.selectedIds)
+    const liveIds = new Set(this.memory?.injectedFor(this.store.requireChat(input.chatId).projectId, input.chatId).map(item => item.id) ?? [])
+    const selected = new Set(input.selectedIds.filter(id => liveIds.has(id)))
     const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
-    const branchInput = { task: pending.task, memories: pending.memories, mandatoryIds }
+    const branchInput = { task: pending.task, memories: pending.memories.filter(item => liveIds.has(item.id)), mandatoryIds }
     const raw = await branch.ask([
       'The developer is adjusting working memory. Continue in this same branch. Answer questions while preserving the selection; follow instructions about selection with minimal changes. Include a short reply field.',
-      `Current selection: ${JSON.stringify(input.selectedIds)}. Developer message: ${JSON.stringify(input.instruction)}`,
+      `Current selection: ${JSON.stringify([...selected])}. Developer message: ${JSON.stringify(input.instruction)}`,
       buildWorkingMemoryBranchPrompt(branchInput),
     ].join('\n\n'), { schema: memoryStageSchema("working-memory"), budget: { maxTurns: 3, maxToolCalls: 1 } })
     if (this.pendingPreviews.get(input.chatId) !== pending) throw new Error("Working-memory preview changed during revision")
@@ -5873,7 +5898,7 @@ export class AgentCoordinator {
       task: args.memoryUserText ?? args.content,
       memories: ctx.injected,
       expectedUseById: new Map(),
-      assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
+      assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args, true) : undefined,
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
@@ -6172,7 +6197,7 @@ export class AgentCoordinator {
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected,
             expectedUseById: new Map(),
-            assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args) : undefined,
+            assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args, true) : undefined,
             proposalsId,
             transferId,
             checkupId,

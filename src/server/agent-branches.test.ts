@@ -529,6 +529,40 @@ describe('Automatic background candidate learning', () => {
 });
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  it('starts a parked preview with remaining memories after archive, excluding stale selected ids', async () => {
+    const selected: string[] = [];
+    const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply this synthetic rule.' })) }) });
+    try {
+      const other = h.memory.store.create({ content: 'Validate the synthetic charge', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+      selected.push(h.item.id, other.id);
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      h.memory.store.update(h.item.id, { status: 'archived' }, { actor: 'user' });
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: selected });
+      await until(() => h.mainTurns.length === 1);
+      expect(h.mainTurns[0]!.developerInstructions).toContain(other.content);
+      expect(h.mainTurns[0]!.developerInstructions).not.toContain(h.item.content);
+      const decision = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview_decision');
+      expect(decision).toMatchObject({ selectedIds: [other.id] });
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('still rejects a changed surviving memory after another is archived', async () => {
+    const h = await setup();
+    try {
+      const other = h.memory.store.create({ content: 'Synthetic second rule', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      h.memory.store.update(other.id, { status: 'archived' }, { actor: 'user' });
+      h.memory.store.update(h.item.id, { content: 'Changed during review' }, { actor: 'user' });
+      await expect(h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: [h.item.id] })).rejects.toThrow('changed during review');
+      expect(h.mainTurns).toHaveLength(0);
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
   for (const moment of ['before-confirmation', 'during-decision-write'] as const) {
     it(`never boots against a changed semantic view (${moment})`, async () => {
       const h = await setup();
@@ -588,6 +622,22 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       expect(h.mainTurns[0]!.developerInstructions).toContain('Validate the charge before submitting it.');
       await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
     } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('accepts a restored memory with its original expected use in a parked preview', async () => {
+    const h = await setup();
+    try {
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      h.memory.store.update(h.item.id, { status: 'archived' }, { actor: 'user' });
+      h.memory.store.update(h.item.id, { status: 'active' }, { actor: 'user' });
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: [h.item.id] });
+      await until(() => h.mainTurns.length === 1);
+      expect(h.mainTurns[0]!.developerInstructions).toContain(h.item.content);
+      expect(h.mainTurns[0]!.developerInstructions).toContain('Represent the charge amount as integer cents.');
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
   });
 
   it('switching to auto skips C/T/M/W and clears the previous review planner guidance', async () => {

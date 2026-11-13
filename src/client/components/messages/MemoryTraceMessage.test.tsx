@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryTraceMessage } from "./MemoryTraceMessage"
-import { TranscriptChatContextProvider } from "./render-context"
+import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "./render-context"
+import { useMemoryStore } from "../../stores/memoryStore"
+import type { MemoryItem } from "../../lib/memoriesApi"
+
+afterEach(() => { useMemoryStore.getInitialState().items.length = 0 })
 
 // Minimal memory_trace message; only the fields the component reads matter.
 function msg(
@@ -13,6 +17,22 @@ function msg(
 }
 
 describe("MemoryTraceMessage", () => {
+  test("archived violated memories show undo instead of enforcement", () => {
+    useMemoryStore.getInitialState().items.push({ id: "M-76", status: "archived", scope: "personal", content: "A synthetic rule", type: "constraint" } as MemoryItem)
+    const html = renderToStaticMarkup(<TranscriptChatContextProvider value={{ chatId: "chat-1" }}>
+      <MemoryTraceMessage message={msg([{ id: "M-76", label: "violated", cause: "not_followed", note: "Synthetic violation" }])} />
+    </TranscriptChatContextProvider>)
+    expect(html).toContain("Archived. It won&#x27;t be used again.")
+    expect(html).toContain("Undo")
+    expect(html).not.toContain("Enforce this next run")
+  })
+
+  test("active audit rows expose archive except in readonly transcripts", () => {
+    useMemoryStore.getInitialState().items.push({ id: "M-76", status: "active", scope: "personal", content: "A synthetic rule", type: "constraint" } as MemoryItem)
+    const message = msg([{ id: "M-76", label: "operational" }])
+    expect(renderToStaticMarkup(<MemoryTraceMessage message={message} />)).toContain("Archive: stop using this memory in every chat")
+    expect(renderToStaticMarkup(<TranscriptRenderOptionsProvider value={{ readonly: true }}><MemoryTraceMessage message={message} /></TranscriptRenderOptionsProvider>)).not.toContain("Archive: stop using")
+  })
   test("offers Where used for tool-only audit evidence with no inline citation", () => {
     const html = renderToStaticMarkup(<MemoryTraceMessage message={msg([{
       id: "M-31", label: "violated", note: "The tool changed the restricted file.", toolId: "call-edit-31", cause: "not_followed",
