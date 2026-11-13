@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
+import { createRevisionService } from './evolution';
 import { handleMemoryRequest } from './routes';
 
 let dir: string;
@@ -52,6 +53,32 @@ describe('memory routes', () => {
   afterEach(() => {
     memory.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('removes a corrected automatic revision from the canonical collection and projection before broadcasting', async () => {
+    const target = memory.store.create({ content: 'Synthetic original rule', scope: 'project', projectId: 'RenderX', type: 'constraint' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) {
+      memory.store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'chat', turn });
+    }
+    const service = createRevisionService({ memory, callJson: async () => ({ action: 'revise', content: 'Synthetic stale proposal' }) });
+    const [proposal] = await service.scanAndPropose({ sessionId: 'chat', labels: [{ id: target.id, label: 'violated' }] });
+    expect(proposal).toBeDefined();
+    memory.syncProjection('RenderX');
+    const projectionPath = join(dir, 'projects', 'RenderX', 'memories.md');
+    expect(readFileSync(projectionPath, 'utf8')).toContain('Synthetic stale proposal');
+    let broadcast = false;
+    const services = { traceCorrection: { hasChat: () => true, append: async () => {
+      expect(readFileSync(projectionPath, 'utf8')).not.toContain('Synthetic stale proposal');
+      broadcast = true;
+    } } };
+    const response = await call('POST', `/api/memories/${target.id}/trace-correction`, { sessionId: 'chat', turn: 2, label: 'operational' }, services);
+    expect(response!.status).toBe(200);
+    expect((await json(response)).data.invalidatedIds).toEqual([proposal!.id]);
+    expect(broadcast).toBe(true);
+    const collection = (await json(await call('GET', '/api/memories?status=candidate'))).data;
+    expect(collection.map((item: { id: string }) => item.id)).not.toContain(proposal!.id);
+    expect(memory.store.listOpenRevisions('RenderX')).toEqual([]);
+    expect(memory.store.getById(target.id)?.status).toBe('active');
   });
 
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {

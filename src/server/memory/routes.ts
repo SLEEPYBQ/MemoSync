@@ -1135,6 +1135,9 @@ export async function handleMemoryRequest(
       if (!services.traceCorrection.hasChat(body.sessionId)) throw new RouteError(409, 'CONFLICT', 'No audit verdict exists for this memory and turn');
       const label = body.label as MemoryTraceLabel | null;
       const result = memory.store.recordTraceCorrection(id, { sessionId: body.sessionId, turn: body.turn, label, note: body.note as string | undefined, cited: services.traceCorrection.cited?.(body.sessionId, body.turn, id) });
+      for (const projectId of new Set(result.invalidatedIds?.map(candidateId => memory.store.getById(candidateId)?.projectId) ?? [])) {
+        memory.syncProjection(projectId);
+      }
       if (result.changed) memory.logger.event({ type: 'memory.trace_correction', sessionId: body.sessionId, turn: body.turn, id, auditLabel: result.auditLabel, userLabel: label });
       await services.traceCorrection.append(body.sessionId, { kind: 'memory_trace_correction', turn: body.turn, memoryId: id, label, ...(label !== null && result.note ? { note: result.note } : {}) });
       return ok({ ...result, label });
