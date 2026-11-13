@@ -750,6 +750,9 @@ export class MemoryStore {
 
   recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string; invalidatedIds?: string[] } {
     return this.db.transaction(() => {
+      if (input.label !== null && this.getById(id)?.status !== 'active') {
+        throw new TraceCorrectionError(409, 'Only active memories can receive audit corrections');
+      }
       const trace = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace' ORDER BY seq DESC LIMIT 1`)
         .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
       const traceMeta = trace?.meta ? JSON.parse(trace.meta) as TraceCorrectionMeta : undefined;

@@ -81,6 +81,44 @@ describe('memory routes', () => {
     expect(memory.store.getById(target.id)?.status).toBe('active');
   });
 
+  it('rejects a new audit correction after archival without changing history or broadcasting', async () => {
+    const item = memory.store.create({ content: 'Synthetic archived rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    memory.store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 'chat', turn: 1, cited: false });
+    memory.store.recordUse(item.id, { actor: 'agent', sessionId: 'chat', turn: 1, via: 'trace_operational' });
+    memory.store.archive(item.id, { actor: 'user' });
+    const before = memory.store.getById(item.id);
+    const events = memory.store.getEvents(item.id);
+    const transcript: unknown[] = [];
+    const services = { traceCorrection: { hasChat: () => true, append: async (_id: string, entry: unknown) => { transcript.push(entry); } } };
+    const response = await call('POST', `/api/memories/${item.id}/trace-correction`, { sessionId: 'chat', turn: 1, label: 'violated' }, services);
+    expect(response!.status).toBe(409);
+    expect(memory.store.getById(item.id)).toEqual(before);
+    expect(memory.store.getEvents(item.id)).toEqual(events);
+    expect(memory.store.getEvents(item.id).filter(event => event.kind === 'trace_correction')).toEqual([]);
+    expect(transcript).toEqual([]);
+  });
+
+  it('allows withdrawing an earlier correction after archival but rejects repeating it', async () => {
+    const item = memory.store.create({ content: 'Synthetic archived rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1 });
+    const transcript: unknown[] = [];
+    const services = { traceCorrection: { hasChat: () => true, append: async (_id: string, entry: unknown) => { transcript.push(entry); } } };
+    const path = `/api/memories/${item.id}/trace-correction`;
+    const correction = { sessionId: 'chat', turn: 1, label: 'operational' };
+    expect((await call('POST', path, correction, services))!.status).toBe(200);
+    memory.store.archive(item.id, { actor: 'user' });
+    const before = memory.store.getById(item.id);
+    const events = memory.store.getEvents(item.id);
+    expect((await call('POST', path, correction, services))!.status).toBe(409);
+    expect(memory.store.getById(item.id)).toEqual(before);
+    expect(memory.store.getEvents(item.id)).toEqual(events);
+    expect(transcript).toHaveLength(1);
+    expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: null }, services))!.status).toBe(200);
+    expect(memory.store.recentTraceLabels(item.id)).toEqual(['violated']);
+    expect(memory.store.getEvents(item.id).filter(event => event.kind === 'trace_correction')).toHaveLength(2);
+    expect(transcript.at(-1)).toMatchObject({ kind: 'memory_trace_correction', label: null });
+  });
+
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
     const events: unknown[] = [];
     const transcript: unknown[] = [];

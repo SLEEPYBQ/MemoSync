@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
+import { TraceCorrectionError } from './MemoryStore';
 import { createRevisionService } from './evolution';
 import type { DeepSeekJsonRequest, LlmJsonCaller } from './deepseek';
 
@@ -132,7 +133,14 @@ describe('revision service (DG4 propose-fixes drafting)', () => {
     const autoSvc = createRevisionService({ memory, callJson: stubCaller([{ action: 'revise', content: 'Synthetic accepted revision' }]).call });
     const [automatic] = await autoSvc.scanAndPropose({ sessionId: 'chat', labels: [{ id: autoTarget.id, label: 'violated' }] });
     memory.store.acceptRevision(automatic!.id, { actor: 'user' });
-    memory.store.recordTraceCorrection(autoTarget.id, { sessionId: 'chat', turn: 2, label: 'operational' });
+    try {
+      memory.store.recordTraceCorrection(autoTarget.id, { sessionId: 'chat', turn: 2, label: 'operational' });
+      throw new Error('Expected correction to be rejected');
+    } catch (error) {
+      expect(error).toBeInstanceOf(TraceCorrectionError);
+      expect((error as TraceCorrectionError).status).toBe(409);
+      expect((error as TraceCorrectionError).message).toBe('Only active memories can receive audit corrections');
+    }
     expect(memory.store.getById(automatic!.id)?.status).toBe('active');
   });
 
