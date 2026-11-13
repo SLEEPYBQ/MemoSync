@@ -1,4 +1,4 @@
-# Temporary controlled comparison for the Linux spawn failure. Remove after diagnosis.
+# Temporary runtime ownership reproduction, independent of MemoSync and OpenCode.
 name: Linux launch diagnostic
 on:
   pull_request:
@@ -9,115 +9,81 @@ permissions:
   contents: read
 
 jobs:
-  compare:
+  descriptor-ownership:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     strategy:
       fail-fast: false
       matrix:
-        revision:
-          - pr82
-        suite:
-          - full
-        include:
-          - revision: pr82
-            ref: c71de03210126947fa55813481832742cfd6835b
+        runtime: [bun, node]
+        stdio: [standard, extra]
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ matrix.ref }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.10
-      - run: bun install --frozen-lockfile
-      - run: bunx playwright install --with-deps chromium
-      - run: sudo apt-get update && sudo apt-get install -y strace
-      - name: Match CI setup
-        run: |
-          git config --global init.defaultBranch main
-          git config --global user.name ci
-          git config --global user.email ci@example.com
-          git rev-parse HEAD
-          bun --version
-          uname -sm
-      - run: bun run check
-      - name: Apply identical observation-only instrumentation
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("src/server/opencode-server.ts")
-          source = path.read_text()
-          anchor = "  const child = spawn(launcher.command,"
-          assert source.count(anchor) == 1
-          source = "import { existsSync, fstatSync } from 'node:fs'\n" + source
-          before = """
-            const diagnosticStarted = performance.now()
-            const diagnosticName = (value: string) => value.split(/[\\\\/]/).at(-1)
-            const diagnosticFds = () => [0, 1, 2].map(fd => {
-              try {
-                const stat = fstatSync(fd)
-                return { fd, open: true, type: stat.mode & 0o170000 }
-              } catch (error) {
-                return { fd, open: false, code: (error as NodeJS.ErrnoException).code }
-              }
-            })
-            let diagnosticSpawned = false
-            let diagnosticOut = 0
-            let diagnosticErr = 0
-            const diagnostic = (phase: string, extra: Record<string, unknown> = {}) =>
-              console.error('[launch-diagnostic]', JSON.stringify({
-                phase, elapsedMs: Math.round(performance.now() - diagnosticStarted),
-                command: diagnosticName(launcher.command),
-                commandIsCurrentRuntime: launcher.command === process.execPath,
-                input: diagnosticName(args.executable),
-                cwdExists: existsSync(args.cwd),
-                spawned: diagnosticSpawned, stdoutBytes: diagnosticOut, stderrBytes: diagnosticErr,
-                stdio: diagnosticFds(), ...extra,
-              }))
-            diagnostic('before-spawn')
-          """
-          source = source.replace(anchor, before + "\n" + anchor)
-          anchor = "  let closing: Promise<void> | undefined"
-          assert source.count(anchor) == 1
-          after = """
-            child.once('spawn', () => {
-              diagnosticSpawned = true
-              diagnostic('spawn', { pid: child.pid })
-            })
-            child.on('error', (error: NodeJS.ErrnoException) =>
-              diagnostic('error', { pid: child.pid, code: error.code, syscall: error.syscall, errno: error.errno }))
-            child.once('exit', (code, signal) => diagnostic('exit', { pid: child.pid, code, signal }))
-            child.stdout?.on('data', chunk => { diagnosticOut += chunk.length })
-            child.stderr?.on('data', chunk => { diagnosticErr += chunk.length })
-          """
-          source = source.replace(anchor, after + "\n" + anchor)
-          path.write_text(source)
-          fixture = Path("src/server/fixtures/opencode-server-fixture.ts")
-          source = fixture.read_text()
-          anchor = "const server = Bun.serve("
-          assert source.count(anchor) == 1
-          source = source.replace(anchor, "console.error('[fixture-diagnostic] entered HTTP fixture')\n" + anchor)
-          fixture.write_text(source)
-          PY
-      - name: Run unchanged assertions once
-        env:
-          DIAGNOSTIC_SUITE: ${{ matrix.suite }}
+      - name: Write self-contained ownership check
         run: |
           mkdir -p artifacts
-          if [ "$DIAGNOSTIC_SUITE" = isolated ]; then
-            set -- ./src/server/opencode-agent.test.ts
+          cat > artifacts/descriptor-ownership.mjs <<'JS'
+          import assert from 'node:assert/strict'
+          import { spawn } from 'node:child_process'
+          import { openSync, fstatSync, closeSync } from 'node:fs'
+          import { setTimeout as delay } from 'node:timers/promises'
+
+          const mode = process.argv[2]
+          assert.ok(mode === 'standard' || mode === 'extra')
+          async function spawnAndClose() {
+            const child = spawn('/bin/true', [], {
+              stdio: mode === 'extra'
+                ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
+                : ['ignore', 'pipe', 'pipe'],
+            })
+            for (const stream of child.stdio) stream?.resume()
+            const code = await new Promise((resolve, reject) => {
+              child.once('error', reject)
+              child.once('close', resolve)
+            })
+            assert.equal(code, 0)
+          }
+          await spawnAndClose()
+          // These descriptors belong to this caller, not to the finished child.
+          const owned = Array.from({ length: 8 }, () => openSync('/dev/null', 'r'))
+          const collect = globalThis.Bun
+            ? () => Bun.gc(true)
+            : () => global.gc()
+          collect()
+          await delay(20)
+          collect()
+          await delay(20)
+          const closed = []
+          for (const fd of owned) {
+            try { fstatSync(fd) }
+            catch (error) { closed.push({ fd, code: error.code }) }
+          }
+          console.log(JSON.stringify({
+            runtime: process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.versions.node}`,
+            mode, owned, unexpectedlyClosed: closed,
+          }))
+          for (const fd of owned) {
+            try { closeSync(fd) } catch {}
+          }
+          assert.deepEqual(closed, [], 'GC of a completed child must not close caller-owned descriptors')
+          JS
+      - name: Execute one controlled case
+        env:
+          DIAGNOSTIC_RUNTIME: ${{ matrix.runtime }}
+          DIAGNOSTIC_STDIO: ${{ matrix.stdio }}
+        run: |
+          if [ "$DIAGNOSTIC_RUNTIME" = bun ]; then
+            bun artifacts/descriptor-ownership.mjs "$DIAGNOSTIC_STDIO" 2>&1 | tee artifacts/result.log
           else
-            set -- src/ scripts/analyze-experiment.test.ts
+            node --expose-gc artifacts/descriptor-ownership.mjs "$DIAGNOSTIC_STDIO" 2>&1 | tee artifacts/result.log
           fi
-          strace -f -tt -yy -e trace=close,openat,dup,dup2,dup3,fcntl,pipe,pipe2,socketpair,pidfd_open,epoll_ctl,clone,clone3,vfork,wait4,waitid \
-            -o artifacts/spawn-syscalls.log \
-            bun test "$@" --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml 2>&1 | tee artifacts/launch-diagnostic.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: launch-${{ matrix.revision }}-${{ matrix.suite }}
+          name: ownership-${{ matrix.runtime }}-${{ matrix.stdio }}
           path: artifacts/
-          if-no-files-found: warn
