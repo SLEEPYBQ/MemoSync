@@ -82,9 +82,9 @@ export function createRevisionService(opts: {
           if (!target || target.status !== 'active') continue;
           if (memory.store.hasOpenRevision(id)) continue;
 
-          const recent = memory.store.recentTraceLabels(id, streak);
-          if (recent.length < streak) continue;
-          if (!recent.every((l) => l === 'violated')) continue;
+          const traceEvidence = memory.store.recentTraceEvidence(id, streak);
+          if (traceEvidence.length < streak) continue;
+          if (!traceEvidence.every((row) => row.label === 'violated')) continue;
 
           const evidence = `The assistant VIOLATED this memory in its last ${streak} traced turns.`;
           const out = await callJson({
@@ -153,7 +153,7 @@ export function createRevisionService(opts: {
             },
             target.id,
             { actor: 'system', sessionId: input.sessionId, turn: input.turn },
-            { expectedTargetContent: target.content },
+            { expectedTargetContent: target.content, traceEvidence: traceEvidence.map(row => row.seq) },
           );
           if (!proposal) continue;
           created.push(proposal);
