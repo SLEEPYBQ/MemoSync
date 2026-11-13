@@ -7,7 +7,7 @@ import type { MemoryService } from './index';
 import type { CaptureService } from './capture';
 import type { MemoryItem } from './types';
 import { planMemoryInjection } from './injection';
-import { compileMemoryView, semanticHash, type MemoryView } from './view';
+import { compileMemoryView, relationLifecycleOverrides, semanticHash, type MemoryView } from './view';
 
 /** Per-turn context threaded into a tool handler. */
 export interface MemoryToolContext {
@@ -225,10 +225,17 @@ export function buildMemoryToolSpecs(
           let view = current.view;
           if (grant.revision !== view.revision && grant.visibleIds) {
             const visible = memory.injectedFor(ctx.projectId, ctx.sessionId);
-            const restoredIds = new Set(visible.filter(item => !grant.visibleIds!.includes(item.id)
-              && grant.eventSeq !== undefined && memory.store.wasArchivedAt(item.id, grant.eventSeq)).map(item => item.id));
+            const overrides = relationLifecycleOverrides(memory, grant.visibleIds, grant.eventSeq);
+            const restoredIds = new Set([
+              ...visible.filter(item => !grant.visibleIds!.includes(item.id)
+                && grant.eventSeq !== undefined && memory.store.wasArchivedAt(item.id, grant.eventSeq)).map(item => item.id),
+              ...overrides.restoredAsArchived,
+            ]);
             const archived = grant.visibleIds.map(id => memory.store.getById(id)).filter((item): item is MemoryItem => item?.status === 'archived');
-            const archivedIds = new Set(archived.map(item => item.id));
+            const archivedIds = new Set([
+              ...archived.map(item => item.id),
+              ...overrides.archivedAsActive,
+            ]);
             const byId = new Map([...visible, ...archived.map(item => ({ ...item, status: 'active' as const }))].map(item => [item.id, item]));
             const restored = [...grant.visibleIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []), ...visible.filter(item => !grant.visibleIds!.includes(item.id) && !restoredIds.has(item.id))];
             const selected = new Set(grant.selectedIds);

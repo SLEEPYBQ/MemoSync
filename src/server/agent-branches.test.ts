@@ -529,6 +529,29 @@ describe('Automatic background candidate learning', () => {
 });
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  it.each(['archive', 'restore'] as const)('starts a parked preview after outside relation endpoint %s', async lifecycle => {
+    const h = await setup();
+    try {
+      const outside = h.memory.store.create({ content: 'Private synthetic outside rule', detail: 'Private synthetic outside detail', type: 'constraint', scope: 'project', projectId: 'P2' }, { actor: 'user' });
+      h.memory.store.addRelation(h.item.id, outside.id, 'conflicts_with');
+      h.memory.store.addRelation(outside.id, h.item.id, 'conflicts_with');
+      if (lifecycle === 'restore') h.memory.store.archive(outside.id, { actor: 'user' });
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      if (lifecycle === 'archive') h.memory.store.archive(outside.id, { actor: 'user' });
+      else h.memory.store.update(outside.id, { status: 'active' }, { actor: 'user' });
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: [h.item.id] });
+      await until(() => h.mainTurns.length === 1);
+      expect(h.mainTurns[0]!.developerInstructions).toContain(h.item.content);
+      expect(h.mainTurns[0]!.developerInstructions).not.toContain(outside.content);
+      expect(h.mainTurns[0]!.developerInstructions).not.toContain('Private synthetic outside detail');
+      const decision = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview_decision');
+      expect(decision).toMatchObject({ selectedIds: [h.item.id] });
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
   it('starts a parked preview with remaining memories after archive, excluding stale selected ids', async () => {
     const selected: string[] = [];
     const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply this synthetic rule.' })) }) });
