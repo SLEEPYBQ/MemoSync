@@ -1,4 +1,4 @@
-# Temporary runtime ownership reproduction, independent of MemoSync and OpenCode.
+# Temporary compatibility verification against the supported native binary.
 name: Linux launch diagnostic
 on:
   pull_request:
@@ -9,92 +9,31 @@ permissions:
   contents: read
 
 jobs:
-  descriptor-ownership:
+  native-compatibility:
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    strategy:
-      fail-fast: false
-      matrix:
-        runtime: [bun, node]
-        stdio: [standard, extra]
+    timeout-minutes: 10
     defaults:
       run:
         shell: bash
     steps:
+      - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.10
-      - name: Write self-contained ownership check
+      - run: bun install --frozen-lockfile
+      - name: Install pinned native OpenCode outside the repository
+        run: |
+          npm install --prefix "$RUNNER_TEMP/opencode-compat" --no-audit --no-fund opencode-ai@1.19.5
+          "$RUNNER_TEMP/opencode-compat/node_modules/.bin/opencode" --version
+      - name: Run native backend against the scripted local model
         run: |
           mkdir -p artifacts
-          cat > artifacts/descriptor-ownership.mjs <<'JS'
-          import assert from 'node:assert/strict'
-          import { spawn } from 'node:child_process'
-          import { openSync, fstatSync, closeSync } from 'node:fs'
-          import { setTimeout as delay } from 'node:timers/promises'
-
-          const mode = process.argv[2]
-          assert.ok(mode === 'standard' || mode === 'extra')
-          async function spawnAndClose() {
-            const child = spawn('/bin/true', [], {
-              stdio: mode === 'extra'
-                ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
-                : ['ignore', 'pipe', 'pipe'],
-            })
-            for (const stream of child.stdio) stream?.resume()
-            const code = await new Promise((resolve, reject) => {
-              child.once('error', reject)
-              child.once('close', resolve)
-            })
-            assert.equal(code, 0)
-            // Release stream ownership before the native subprocess is collected.
-            await Promise.all(child.stdio.filter(Boolean).map(stream => {
-              if (stream.closed) return
-              return new Promise(resolve => {
-                stream.once('close', resolve)
-                stream.destroy()
-              })
-            }))
-            return child
-          }
-          let finished = await spawnAndClose()
-          // These descriptors belong to this caller, not to the finished child.
-          const owned = Array.from({ length: 8 }, () => openSync('/dev/null', 'r'))
-          const reference = new WeakRef(finished)
-          finished = null
-          const collect = globalThis.Bun
-            ? () => Bun.gc(true)
-            : () => global.gc()
-          collect()
-          await delay(20)
-          collect()
-          await delay(20)
-          const closed = []
-          for (const fd of owned) {
-            try { fstatSync(fd) }
-            catch (error) { closed.push({ fd, code: error.code }) }
-          }
-          console.log(JSON.stringify({
-            runtime: process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.versions.node}`,
-            mode, childCollected: reference.deref() === undefined, owned, unexpectedlyClosed: closed,
-          }))
-          for (const fd of owned) {
-            try { closeSync(fd) } catch {}
-          }
-          assert.deepEqual(closed, [], 'GC of a completed child must not close caller-owned descriptors')
-          JS
-      - name: Execute one controlled case
-        env:
-          DIAGNOSTIC_RUNTIME: ${{ matrix.runtime }}
-          DIAGNOSTIC_STDIO: ${{ matrix.stdio }}
-        run: |
-          if [ "$DIAGNOSTIC_RUNTIME" = bun ]; then
-            bun artifacts/descriptor-ownership.mjs "$DIAGNOSTIC_STDIO" 2>&1 | tee artifacts/result.log
-          else
-            node --expose-gc artifacts/descriptor-ownership.mjs "$DIAGNOSTIC_STDIO" 2>&1 | tee artifacts/result.log
-          fi
+          export MEMOSYNC_OPENCODE_TEST_BIN="$RUNNER_TEMP/opencode-compat/node_modules/.bin/opencode"
+          bun test ./src/server/opencode-agent.integration.test.ts --timeout 30000 \
+            --reporter=junit --reporter-outfile=artifacts/opencode-native.xml \
+            2>&1 | tee artifacts/opencode-native.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: ownership-${{ matrix.runtime }}-${{ matrix.stdio }}
+          name: opencode-native-compatibility
           path: artifacts/
