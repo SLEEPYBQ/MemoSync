@@ -12,6 +12,17 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("suppresses only corrected trace recaps and restores them on withdrawal", () => {
+    const trace = entry({ kind: "memory_trace", turn: 1, labels: [{ id: "M-1", label: "violated" }], summary: "Synthetic audit recap." })
+    const correction = entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-1", label: "not_applicable" })
+    const unrelated = entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-2", label: "operational" })
+    const withdrawal = entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-1", label: null })
+    expect(processTranscriptMessages([trace])[0]).toMatchObject({ summary: "Synthetic audit recap." })
+    expect(processTranscriptMessages([trace, unrelated])[0]).toMatchObject({ summary: "Synthetic audit recap." })
+    expect(processTranscriptMessages([trace, correction])[0]).toMatchObject({ summary: undefined, labels: [{ userLabel: "not_applicable" }] })
+    expect(processTranscriptMessages([trace, correction, withdrawal])[0]).toMatchObject({ summary: "Synthetic audit recap." })
+  })
+
   test("folds corrections into the matching turn, last wins and withdrawal clears", () => {
     const trace = (turn: number) => entry({ kind: "memory_trace", turn, labels: [{ id: "M-1", label: "violated" }] })
     const correction = (turn: number, label: "operational" | "not_applicable" | null, note?: string) =>

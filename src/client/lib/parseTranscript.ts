@@ -268,7 +268,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           status: entry.status,
           errorClass: entry.errorClass,
           dropped: entry.dropped,
-          summary: entry.summary,
+          summary: entry.labels.some(label => Boolean(traceCorrections.get(JSON.stringify([entry.turn, label.id]))?.label)) ? undefined : entry.summary,
           turn: entry.turn,
         })
         break

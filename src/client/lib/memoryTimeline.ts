@@ -205,7 +205,7 @@ export function buildMemoryRecord(
       case "memory_trace": {
         if (message.turn === undefined) break
         const t = turnOf(message.turn)
-        if (message.summary) t.summary = message.summary
+        t.summary = message.summary
         t.audit = {
           entryId: message.id,
           status: message.status,
