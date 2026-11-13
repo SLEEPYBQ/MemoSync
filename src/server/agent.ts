@@ -1940,6 +1940,8 @@ export class AgentCoordinator {
   private readonly cancelledDuringPreview = new Set<string>()
   readonly drainingStreams = new Map<string, { turn: HarnessTurn }>()
   readonly claudeSessions = new Map<string, ClaudeSessionState>()
+  // A stream leaves the active registry before its final policy write finishes.
+  private readonly finalizingClaudeSessions = new Set<ClaudeSessionState>()
   /**
    * In-flight assistant text per chat, accumulated from assistant_delta harness
    * events (DeepSeek/codex agentMessage deltas). Broadcast via ChatRuntime.
@@ -4144,7 +4146,8 @@ export class AgentCoordinator {
     this.runtimeSelections.clear()
     await Promise.all([
       codexCleanup,
-      ...[...this.claudeSessions.values()].map((session) => this.retireClaudeSession(session, "server_shutdown")),
+      ...[...new Set([...this.claudeSessions.values(), ...this.finalizingClaudeSessions])]
+        .map((session) => this.retireClaudeSession(session, "server_shutdown")),
     ])
   }
 
@@ -8102,27 +8105,32 @@ export class AgentCoordinator {
         await this.store.recordTurnFailed(session.chatId, message)
       }
     } finally {
-      // Only clean up if the registry still points at THIS session — a
-      // rebuild (effort change, memory-set change) may already have replaced
-      // it, and deleting unconditionally would tear down the successor.
-      const isCurrent = !session.retired && this.claudeSessions.get(session.chatId) === session
-      // A stream that dies mid-reply (network drop, upstream 5xx) never
-      // yields the assistant_text/result entry that normally retires the
-      // streaming preview — sweep it here or every later snapshot keeps
-      // showing the phantom half-typed reply.
-      if (isCurrent) this.clearStreamingAssistantText(session.chatId)
-      if (isCurrent) this.claudeSessions.delete(session.chatId)
-      const active = this.activeTurns.get(session.chatId)
-      if (isCurrent && active?.provider === "claude") {
-        if (active.cancelRequested && !active.cancelRecorded) {
-          await this.store.recordTurnCancelled(session.chatId)
+      this.finalizingClaudeSessions.add(session)
+      try {
+        // Only clean up if the registry still points at THIS session — a
+        // rebuild (effort change, memory-set change) may already have replaced
+        // it, and deleting unconditionally would tear down the successor.
+        const isCurrent = !session.retired && this.claudeSessions.get(session.chatId) === session
+        // A stream that dies mid-reply (network drop, upstream 5xx) never
+        // yields the assistant_text/result entry that normally retires the
+        // streaming preview — sweep it here or every later snapshot keeps
+        // showing the phantom half-typed reply.
+        if (isCurrent) this.clearStreamingAssistantText(session.chatId)
+        if (isCurrent) this.claudeSessions.delete(session.chatId)
+        const active = this.activeTurns.get(session.chatId)
+        if (isCurrent && active?.provider === "claude") {
+          if (active.cancelRequested && !active.cancelRecorded) {
+            await this.store.recordTurnCancelled(session.chatId)
+          }
+          this.endPolicyTurn(session.chatId, active.turnId)
+          this.activeTurns.delete(session.chatId)
         }
-        this.endPolicyTurn(session.chatId, active.turnId)
-        this.activeTurns.delete(session.chatId)
+        session.session.close()
+        if (isCurrent) await this.retireHarnessPolicyIfAbsent(session.chatId)
+        this.emitStateChange(session.chatId)
+      } finally {
+        this.finalizingClaudeSessions.delete(session)
       }
-      session.session.close()
-      if (isCurrent) await this.retireHarnessPolicyIfAbsent(session.chatId)
-      this.emitStateChange(session.chatId)
     }
   }
 
