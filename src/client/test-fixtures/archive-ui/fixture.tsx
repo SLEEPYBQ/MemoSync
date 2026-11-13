@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { MemoryPreviewMessage } from "../../components/messages/MemoryPreviewMessage"
 import { MemoryTraceMessage } from "../../components/messages/MemoryTraceMessage"
 import { MemoryCitationChip } from "../../components/messages/shared"
+import { useArchiveMemory } from "../../components/memory/archiveMemory"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
@@ -41,6 +42,21 @@ const remote = new URLSearchParams(window.location.search).has("remote")
 const fixtureWindow = window as unknown as { archiveFixtureResponses: number }
 fixtureWindow.archiveFixtureResponses = 0
 
+function MutationControls() {
+  const first = useArchiveMemory("chat_citation")
+  const second = useArchiveMemory("chat_gate")
+  const pending = useMemoryStore(state => state.pendingArchiveIds)
+  return <section id="mutation-controls">
+    <button onClick={() => void first.archive("M-02").catch(() => {})}>First archive</button>
+    <button onClick={() => void second.archive("M-02").catch(() => {})}>Second archive</button>
+    <button onClick={() => void first.restore("M-02").catch(() => {})}>First undo</button>
+    <button onClick={() => void second.archive("M-03").catch(() => {})}>Other archive</button>
+    <output id="pending-m02">{pending["M-02"] ?? 0}</output>
+    <output id="pending-m03">{pending["M-03"] ?? 0}</output>
+    <output id="first-error">{first.error}</output>
+  </section>
+}
+
 function Fixture() {
   const [responses, setResponses] = useState(0)
   return (
@@ -52,6 +68,7 @@ function Fixture() {
           </TranscriptRenderOptionsProvider>
         </section>
         {remote ? <output id="response-count">{responses}</output> : null}
+        {remote ? <MutationControls /> : null}
         <section id="audit"><MemoryTraceMessage message={trace} /></section>
         <section id="readonly"><TranscriptRenderOptionsProvider value={{ readonly: true }}><MemoryCitationChip id="M-01" /></TranscriptRenderOptionsProvider></section>
       </main>

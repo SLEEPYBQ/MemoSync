@@ -5,6 +5,8 @@ import { memoriesApi, type MemoryControlSurface } from "../../lib/memoriesApi"
 import { cn } from "../../lib/utils"
 import { useMemoryStore } from "../../stores/memoryStore"
 
+const mutationTails = new Map<string, Promise<void>>()
+
 export function useArchiveMemory(surface: MemoryControlSurface, options: { localOnly?: boolean } = {}) {
   const [busyId, setBusyId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -13,17 +15,23 @@ export function useArchiveMemory(surface: MemoryControlSurface, options: { local
     useMemoryStore.getState().beginArchiveChange(id)
     setBusyId(id)
     setError(null)
-    try {
+    const previous = mutationTails.get(id) ?? Promise.resolve()
+    const operation = previous.catch(() => {}).then(async () => {
       const item = options.localOnly
         ? useMemoryStore.getState().items.find((memory) => memory.id === id)
         : await memoriesApi.update(id, { status }, { surface })
       if (!item) throw new Error(t("memory:failedToLoadMemories"))
       useMemoryStore.getState().upsertLocal(options.localOnly ? { ...item, status } : item)
+    })
+    mutationTails.set(id, operation)
+    try {
+      await operation
     } catch (err) {
       const message = status === "archived" ? t("memory:couldntArchive") : t("memory:couldntRestore")
       setError(err instanceof Error ? `${message}: ${err.message}` : message)
       throw err
     } finally {
+      if (mutationTails.get(id) === operation) mutationTails.delete(id)
       useMemoryStore.getState().endArchiveChange(id)
       setBusyId(null)
     }
