@@ -2512,6 +2512,79 @@ describe("memory preview gate (coordinator)", () => {
 })
 
 describe("preview settings (coordinator)", () => {
+  for (const initialMode of ["every_turn", "on_change"] as const) {
+    test(`keeps ${initialMode} confirmation for a turn while checkup is parked`, async () => {
+      const settings: MemoryPreviewSettings = { enabled: true, autoProceedWhenEmpty: true, confirmationMode: initialMode }
+      const checkup: CheckupService = {
+        needsRecompute: () => true,
+        run: async () => ({ suggestions: [{ kind: "staleness", memoryId: "M-01", reason: "Synthetic review" }], cached: false }),
+      }
+      const relevance: RelevanceService = {
+        assess: async (_task, items) => items.map(item => ({ id: item.id, why: "Relevant", expectedUse: "Apply this rule." })),
+      }
+      const h = createHarness({ preview: true, checkup, relevance, previewSettings: settings })
+      try {
+        const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+        recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+        await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+        await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+        const parent = h.store.messages.find(message => message.kind === "memory_checkup") as Extract<TranscriptEntry, { kind: "memory_checkup" }>
+        settings.confirmationMode = initialMode === "every_turn" ? "on_change" : "every_turn"
+        await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "skipped" })
+        await waitFor(() => h.store.messages.some(message => message.kind === "memory_preview_relevance"))
+        const preview = h.store.messages.find(message => message.kind === "memory_preview") as Extract<TranscriptEntry, { kind: "memory_preview" }>
+        expect(preview.confirmationMode).toBe(initialMode)
+        if (initialMode === "every_turn") {
+          expect(h.sessionStarts).toHaveLength(0)
+          expect(h.coordinator.pendingPreviews.has("chat-1")).toBe(true)
+        } else {
+          await waitFor(() => h.prompts.length === 1)
+          expect(h.store.messages.find(message => message.kind === "memory_preview_decision"))
+            .toMatchObject({ auto: true, autoReason: "confirmed", selectedIds: [item.id] })
+          h.finishTurn()
+          await waitFor(() => h.store.turnFinishedCount === 1)
+          await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "next task" })
+          await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+          const nextCheckup = h.store.messages.filter(message => message.kind === "memory_checkup").at(-1) as Extract<TranscriptEntry, { kind: "memory_checkup" }>
+          await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: nextCheckup.checkupId, decision: "skipped" })
+          await waitFor(() => h.store.messages.filter(message => message.kind === "memory_preview_relevance").length === 2)
+          const nextPreview = h.store.messages.filter(message => message.kind === "memory_preview").at(-1) as Extract<TranscriptEntry, { kind: "memory_preview" }>
+          expect(nextPreview.confirmationMode).toBe("every_turn")
+          expect(h.coordinator.pendingPreviews.has("chat-1")).toBe(true)
+          expect(h.prompts).toHaveLength(1)
+        }
+      } finally { h.cleanup() }
+    })
+  }
+
+  for (const initialAuto of [false, true]) {
+    test(`keeps empty-selection autoProceedWhenEmpty=${initialAuto} while checkup is parked`, async () => {
+      const settings: MemoryPreviewSettings = { enabled: true, autoProceedWhenEmpty: initialAuto, confirmationMode: "on_change" }
+      const checkup: CheckupService = {
+        needsRecompute: () => true,
+        run: async () => ({ suggestions: [{ kind: "staleness", memoryId: "M-01", reason: "Synthetic review" }], cached: false }),
+      }
+      const relevance: RelevanceService = { assess: async () => [] }
+      const h = createHarness({ preview: true, checkup, relevance, previewSettings: settings })
+      try {
+        h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
+        await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+        await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
+        const parent = h.store.messages.find(message => message.kind === "memory_checkup") as Extract<TranscriptEntry, { kind: "memory_checkup" }>
+        settings.autoProceedWhenEmpty = !initialAuto
+        await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "skipped" })
+        await waitFor(() => h.store.messages.some(message => message.kind === "memory_preview_relevance"))
+        if (initialAuto) {
+          await waitFor(() => h.prompts.length === 1)
+          expect(h.store.messages.find(message => message.kind === "memory_preview_decision")).toMatchObject({ auto: true, selectedIds: [] })
+        } else {
+          expect(h.sessionStarts).toHaveLength(0)
+          expect(h.coordinator.pendingPreviews.has("chat-1")).toBe(true)
+        }
+      } finally { h.cleanup() }
+    })
+  }
+
   test("enabled:false skips the gate entirely — no preview pass, no entries", async () => {
     const h = createHarness({
       preview: true,
@@ -3249,7 +3322,8 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
     const relevance: RelevanceService = {
       assess: async (_task, items) => items.map(item => ({ id: item.id, why: "Relevant", expectedUse: "Apply this rule." })),
     }
-    const h = createHarness({ preview: true, checkup, relevance, previewSettings: { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" } })
+    const settings: MemoryPreviewSettings = { enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" }
+    const h = createHarness({ preview: true, checkup, relevance, previewSettings: settings })
     try {
       const item = h.memory.store.create({ content: "Synthetic rule", scope: "personal", type: "fact" }, { actor: "user" })
       await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
@@ -3259,6 +3333,7 @@ describe("step-one checkup gate (redesign 2026-08-07)", () => {
       await waitFor(() => h.store.messages.some(message => message.kind === "memory_preview_relevance" && message.revision === 0))
       expect(h.sessionStarts).toHaveLength(0)
       recordMemoryConfirmation(h.memory.store, "chat-1", [item], [])
+      settings.confirmationMode = "every_turn"
       await h.coordinator.reopenMemoryPreparation({ chatId: "chat-1", from: "checkup", stageId: parent.checkupId })
       await waitFor(() => h.coordinator.pendingCheckupGates.has("chat-1"))
       await h.coordinator.respondMemoryCheckup({ chatId: "chat-1", checkupId: parent.checkupId, decision: "handled" })

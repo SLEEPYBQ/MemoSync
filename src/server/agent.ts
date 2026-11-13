@@ -322,6 +322,7 @@ interface StartTurnArgs {
   connectionId?: string
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
+  memoryPreviewSettings?: Readonly<Required<MemoryPreviewSettings>>
   chatId: string
   provider: AgentProvider
   content: string
@@ -4385,6 +4386,14 @@ export class AgentCoordinator {
 
     const chat = this.store.requireChat(args.chatId)
     args.memoryState ??= resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
+    if (!args.memoryPreviewSettings) {
+      const settings = this.getMemoryPreviewSettings()
+      args.memoryPreviewSettings = {
+        enabled: settings.enabled,
+        autoProceedWhenEmpty: settings.autoProceedWhenEmpty,
+        confirmationMode: settings.confirmationMode === "every_turn" ? "every_turn" : "on_change",
+      }
+    }
     if (this.activeTurns.has(args.chatId) || this.hasPendingPreviewActivity(args.chatId) || this.startingChats.has(args.chatId)) {
       throw new Error("Chat is already running")
     }
@@ -4526,7 +4535,7 @@ export class AgentCoordinator {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
 
-    const previewSettings = this.getMemoryPreviewSettings()
+    const previewSettings = args.memoryPreviewSettings
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
     // working memory (2026-08-19 C2).
@@ -5929,7 +5938,7 @@ export class AgentCoordinator {
     if (pending.confirmationMode === "on_change") pending.assertCurrentView?.()
     selectedIds = normalizeMemorySelection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId, selectedIds })
     this.emitStateChange(args.chatId)
-    const settings = this.getMemoryPreviewSettings()
+    const settings = args.memoryPreviewSettings!
     const reasonsById = new Set(reasons.map(reason => reason.id))
     const hasExpectedUse = new Set(expectedUses.filter(use => use.expectedUse.trim()).map(use => use.id))
     const snapshotsCurrent = selectedIds.every(id => {
@@ -5960,6 +5969,7 @@ export class AgentCoordinator {
     checkupId?: string
   }) {
     const { args, ctx, previewId, revision } = input
+    const previewSettings = args.memoryPreviewSettings!
     const memoryIds = ctx.injected.map((memory) => memory.id)
     const attentionIds = (this.turnPayAttention.get(args.chatId) ?? []).map((e) => e.id).filter((id) => memoryIds.includes(id))
     const willAssessRelevance = (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
@@ -5975,9 +5985,9 @@ export class AgentCoordinator {
       task: args.memoryUserText ?? args.content,
       memories: ctx.injected,
       expectedUseById: new Map(),
-      confirmationMode: this.getMemoryPreviewSettings().confirmationMode === "every_turn" ? "every_turn" : "on_change",
+      confirmationMode: previewSettings.confirmationMode,
       proposedIds: new Set(willAssessRelevance ? [] : memoryIds),
-      assertCurrentView: this.memoryBranches || this.getMemoryPreviewSettings().confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
+      assertCurrentView: this.memoryBranches || previewSettings.confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
@@ -6063,6 +6073,7 @@ export class AgentCoordinator {
       injected: MemoryItem[]
     },
   ) {
+    const previewSettings = args.memoryPreviewSettings!
     try {
       let gated = false
       // Flipped by the parked respond closure: once a decision claims the
@@ -6244,7 +6255,7 @@ export class AgentCoordinator {
           this.memory!.store.setKv(attentionKey, [])
           this.turnPayAttention.set(args.chatId, queuedEntries)
         }
-        const autoProceed = this.getMemoryPreviewSettings().autoProceedWhenEmpty && ctx.injected.length === 0
+        const autoProceed = previewSettings.autoProceedWhenEmpty && ctx.injected.length === 0
         // Maintenance attention no longer rides the gate (redesign 2026-08-07
         // §3): the step-one checkup container is its one home in the chat
         // flow; the Board keeps the inventory view.
@@ -6263,9 +6274,9 @@ export class AgentCoordinator {
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected,
             expectedUseById: new Map(),
-            confirmationMode: this.getMemoryPreviewSettings().confirmationMode === "every_turn" ? "every_turn" : "on_change",
+            confirmationMode: previewSettings.confirmationMode,
             proposedIds: new Set((this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0 ? [] : memoryIds),
-            assertCurrentView: this.memoryBranches || this.getMemoryPreviewSettings().confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
+            assertCurrentView: this.memoryBranches || previewSettings.confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
             proposalsId,
             transferId,
             checkupId,
@@ -6317,7 +6328,7 @@ export class AgentCoordinator {
           timestamped({
             kind: "memory_preview",
             previewId,
-            confirmationMode: this.pendingPreviews.get(args.chatId)?.confirmationMode ?? (this.getMemoryPreviewSettings().confirmationMode === "every_turn" ? "every_turn" : "on_change"),
+            confirmationMode: this.pendingPreviews.get(args.chatId)?.confirmationMode ?? previewSettings.confirmationMode,
             turn: ctx.turnNumber,
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected.map((m) => ({ id: m.id, content: m.content, scope: m.scope })),
