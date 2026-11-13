@@ -13,6 +13,7 @@ export function useArchiveMemory(surface: MemoryControlSurface, options: { local
   const [error, setError] = useState<string | null>(null)
 
   async function update(id: string, status: "active" | "archived") {
+    useMemoryStore.getState().beginArchiveChange(id)
     setBusyId(id)
     setError(null)
     try {
@@ -26,6 +27,7 @@ export function useArchiveMemory(surface: MemoryControlSurface, options: { local
       setError(err instanceof Error ? `${message}: ${err.message}` : message)
       throw err
     } finally {
+      useMemoryStore.getState().endArchiveChange(id)
       setBusyId(null)
     }
   }

@@ -4,10 +4,13 @@ import { MemoryRouter } from "react-router-dom"
 import { MemoryTraceMessage } from "../../components/messages/MemoryTraceMessage"
 import { MemoryCard } from "../../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../../components/memory/MemoryDetailPanel"
+import { MemoryRecordRail } from "../../components/memory-chat/MemoryRecordRail"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
+import type { TranscriptEntry } from "../../../shared/types"
+import { processTranscriptMessages } from "../../lib/parseTranscript"
 import { i18n } from "../../i18n"
 import "./fixture.css"
 
@@ -51,11 +54,17 @@ function Fixture() {
   const liveTrace = { ...trace, labels: trace.labels.map(label => correction?.label
     ? { ...label, userLabel: correction.label, ...(correction.note ? { userNote: correction.note } : {}) }
     : label) }
+  const recordMessages = processTranscriptMessages([
+    { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Synthetic task" },
+    { _id: "trace", createdAt: 2, kind: "memory_trace", turn: 1, labels: trace.labels, summary: "Synthetic audit says this was violated." },
+    ...(correction?.label ? [{ _id: "correction", createdAt: 3, kind: "memory_trace_correction", turn: 1, memoryId: item.id, label: correction.label }] : []),
+  ] as TranscriptEntry[])
   return (
     <MemoryRouter><TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
       <main className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
         <section id="editor"><TranscriptRenderOptionsProvider value={{ readonly }}><MemoryTraceMessage message={liveTrace} /></TranscriptRenderOptionsProvider></section>
         <section id="corrected"><MemoryTraceMessage message={corrected} /></section>
+        <section id="record"><MemoryRecordRail chatId="synthetic-chat" messages={recordMessages} /></section>
         <section id="detail" className="rounded-xl border border-border bg-card"><MemoryDetailPanel item={currentItem} allItems={[currentItem]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} /></section>
         <section id="board"><MemoryCard item={currentItem} variant="scoped" /></section>
       </main>

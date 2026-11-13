@@ -464,10 +464,10 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   // Four sections in severity order (2026-08-19 B2), all expanded initially
   // (2026-08-20); the two "didn't act" states keep their OWN collapsible
   // header so they never blur together.
-  const violatedRows = message.labels.filter((l) => l.label === "violated")
-  const shapedRows = message.labels.filter((l) => l.label === "operational")
-  const notApplicableRows = message.labels.filter((l) => l.label === "not_applicable")
-  const noEffectRows = message.labels.filter((l) => l.label === "injected_without_effect")
+  const violatedRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "violated")
+  const shapedRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "operational")
+  const notApplicableRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "not_applicable")
+  const noEffectRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "injected_without_effect")
 
   const summaryParts: string[] = []
   if (counts.violated > 0) summaryParts.push(t("memory:traceViolations", { v0: counts.violated }))

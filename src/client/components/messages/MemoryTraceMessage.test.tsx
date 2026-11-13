@@ -20,7 +20,7 @@ function msg(
 }
 
 describe("MemoryTraceMessage", () => {
-  test("corrections follow effective verdict, keep audit section and hide controls in readonly", () => {
+  test("corrections follow effective verdict sections and hide controls in readonly", () => {
     const render = (labels: unknown[], readonly = false) => renderToStaticMarkup(
       <TranscriptChatContextProvider value={{ chatId: "chat-1" }}>
         <TranscriptRenderOptionsProvider value={{ readonly }}><MemoryTraceMessage message={msg(labels as Parameters<typeof msg>[0], { turn: 1 })} /></TranscriptRenderOptionsProvider>
@@ -38,6 +38,21 @@ describe("MemoryTraceMessage", () => {
     expect(toward).not.toContain("Enforce this next run")
     expect(toward).not.toContain("Draft a fix")
     expect(toward).toContain("Cause unclear. Review the memory and reply before taking action.")
+    const grouped = render([
+      { id: "M-1", label: "violated", userLabel: "not_applicable", userNote: "No image" },
+      { id: "M-2", label: "operational", userLabel: "violated" },
+    ])
+    const sections = grouped.match(/<section\b[\s\S]*?<\/section>/g) ?? []
+    expect(sections).toHaveLength(2)
+    const violated = sections.find(section => section.includes(">Violated</span>"))
+    const notApplicable = sections.find(section => section.includes(">Not applicable this turn</span>"))
+    expect(violated).toContain("M-2")
+    expect(violated).not.toContain("M-1")
+    expect(notApplicable).toContain("M-1")
+    expect(notApplicable).not.toContain("M-2")
+    expect(grouped).toContain("1 violated")
+    expect(grouped).toContain("1 not applicable")
+    expect(grouped).not.toContain(">Shaped this turn</span>")
     const readonly = render([{ id: "M-1", label: "violated", userLabel: "operational" }], true)
     expect(readonly).toContain("You:")
     expect(readonly).not.toContain("Not right?")
