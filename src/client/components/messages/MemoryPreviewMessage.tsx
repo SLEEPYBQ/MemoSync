@@ -115,6 +115,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const { chatId } = useParams<{ chatId: string }>()
   const storedMemories = useMemoryStore((state) => state.items)
   const archiveControl = useArchiveMemory("chat_gate", { localOnly: Boolean(previewDemo) })
+  const archivePending = useMemoryStore((state) => message.memories.some((item) => (state.pendingArchiveIds[item.id] ?? 0) > 0))
 
   // selected = injected. null = not seeded yet (waiting for the suggestion
   // pass); a Map so every row remembers WHY it is on the list.
@@ -416,6 +417,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
   function start() {
     if (submitting || seeding || revising || archiveControl.busyId || planningSelected || failedSelected.length) return
+    if (message.memories.some((item) => (useMemoryStore.getState().pendingArchiveIds[item.id] ?? 0) > 0)) return
     // Zero injected = the honest "start with nothing" — same user model,
     // existing server semantics.
     if (injectedIds.length === 0) respond("without_memory")
@@ -440,7 +442,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, submitting, message.previewId, injectedIds, seeding, revising, archiveControl.busyId, planningSelected, failedSelected.length])
+  }, [pending, submitting, message.previewId, injectedIds, seeding, revising, archiveControl.busyId, archivePending, planningSelected, failedSelected.length])
 
   const decidedText = message.decision
     ? message.decision === "go_on" && message.decisionAuto
@@ -715,7 +717,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               {t("memory:dismissTurn")}<kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px] text-muted-foreground">esc</kbd>
             </Button>
 
-            <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || archiveControl.busyId !== null || planningSelected || failedSelected.length > 0} onClick={start}>
+            <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || archiveControl.busyId !== null || archivePending || planningSelected || failedSelected.length > 0} onClick={start}>
               {submitting === "go_on" || submitting === "without_memory" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : null}

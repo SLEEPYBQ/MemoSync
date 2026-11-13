@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client"
-import { MemoryRouter } from "react-router-dom"
+import { useState } from "react"
+import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { MemoryPreviewMessage } from "../../components/messages/MemoryPreviewMessage"
 import { MemoryTraceMessage } from "../../components/messages/MemoryTraceMessage"
 import { MemoryCitationChip } from "../../components/messages/shared"
@@ -36,18 +37,30 @@ const trace = {
   ],
 } as Extract<HydratedTranscriptMessage, { kind: "memory_trace" }>
 
-createRoot(document.getElementById("root")!).render(
-  <MemoryRouter>
+const remote = new URLSearchParams(window.location.search).has("remote")
+const fixtureWindow = window as unknown as { archiveFixtureResponses: number }
+fixtureWindow.archiveFixtureResponses = 0
+
+function Fixture() {
+  const [responses, setResponses] = useState(0)
+  return (
     <TranscriptChatContextProvider value={{ chatId: "fixture-chat" }}>
       <main className="mx-auto flex max-w-3xl flex-col gap-8 p-8">
         <section id="working-memory">
-          <TranscriptRenderOptionsProvider value={{ previewDemo: { reviseReply: "Synthetic reply." } }}>
-            <MemoryPreviewMessage message={preview} onRespond={() => {}} />
+          <TranscriptRenderOptionsProvider value={remote ? {} : { previewDemo: { reviseReply: "Synthetic reply." } }}>
+            <MemoryPreviewMessage message={preview} onRespond={() => { fixtureWindow.archiveFixtureResponses++; setResponses((count) => count + 1) }} />
           </TranscriptRenderOptionsProvider>
         </section>
+        {remote ? <output id="response-count">{responses}</output> : null}
         <section id="audit"><MemoryTraceMessage message={trace} /></section>
         <section id="readonly"><TranscriptRenderOptionsProvider value={{ readonly: true }}><MemoryCitationChip id="M-01" /></TranscriptRenderOptionsProvider></section>
       </main>
     </TranscriptChatContextProvider>
+  )
+}
+
+createRoot(document.getElementById("root")!).render(
+  <MemoryRouter initialEntries={["/chat/fixture-chat"]}>
+    <Routes><Route path="/chat/:chatId" element={<Fixture />} /></Routes>
   </MemoryRouter>,
 )
