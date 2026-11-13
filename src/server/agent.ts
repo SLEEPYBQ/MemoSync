@@ -2129,7 +2129,8 @@ export class AgentCoordinator {
           && current.every(item => item && (item.status === 'archived' || (item.status === 'active' && visibleIds.has(item.id))))) {
           // Reconstruct the approved view with only lifecycle changes reversed.
           const restored = current.map(item => ({ ...item!, status: 'active' as const }))
-          const revision = compileMemoryView(this.memory, restored, restored, chat.projectId, args.chatId).revision
+          const archivedIds = new Set(current.filter(item => item?.status === 'archived').map(item => item!.id))
+          const revision = compileMemoryView(this.memory, restored, restored, chat.projectId, args.chatId, archivedIds).revision
           const reconstructed = JSON.stringify([args.memoryUserText ?? args.content, this.memoryAnalysisPolicyKey(args.chatId, args.provider), chat.memoryDisabled, revision])
           if (reconstructed === approved) return
         }

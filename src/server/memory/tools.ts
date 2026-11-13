@@ -7,7 +7,7 @@ import type { MemoryService } from './index';
 import type { CaptureService } from './capture';
 import type { MemoryItem } from './types';
 import { planMemoryInjection } from './injection';
-import { semanticHash, type MemoryView } from './view';
+import { compileMemoryView, semanticHash, type MemoryView } from './view';
 
 /** Per-turn context threaded into a tool handler. */
 export interface MemoryToolContext {
@@ -221,14 +221,29 @@ export function buildMemoryToolSpecs(
           const current = planMemoryInjection({ memory, projectId: ctx.projectId, chatId: ctx.sessionId,
             restrictToIds: grant?.selectedIds.slice() ?? ctx.allowedMemoryIds?.slice(),
           });
-          const allowed = new Set(current.injectedMemories.map(item => item.id));
+          let admitted = current.injectedMemories;
+          let view = current.view;
+          if (grant.revision !== view.revision && grant.visibleIds) {
+            const visible = memory.injectedFor(ctx.projectId, ctx.sessionId);
+            const archived = grant.visibleIds.map(id => memory.store.getById(id)).filter((item): item is MemoryItem => item?.status === 'archived');
+            const archivedIds = new Set(archived.map(item => item.id));
+            const byId = new Map([...visible, ...archived.map(item => ({ ...item, status: 'active' as const }))].map(item => [item.id, item]));
+            const restored = [...grant.visibleIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []), ...visible.filter(item => !grant.visibleIds!.includes(item.id))];
+            const selected = new Set(grant.selectedIds);
+            const reconstructed = compileMemoryView(memory, restored, restored.filter(item => selected.has(item.id)), ctx.projectId, ctx.sessionId, archivedIds);
+            if (reconstructed.revision === grant.revision) {
+              admitted = restored.filter(item => selected.has(item.id));
+              view = reconstructed;
+            }
+          }
+          const allowed = new Map(admitted.map(item => [item.id, item]));
           const parts: string[] = [];
           const loaded: string[] = [];
           const receipts: NonNullable<MemoryToolResult['receipts']> = [];
           let failed = false;
           for (const id of ids) {
             if (!allowed.has(id) || (ctx.allowedMemoryIds && !ctx.allowedMemoryIds.includes(id))) continue;
-            const m = memory.store.getById(id)!;
+            const m = allowed.get(id)!;
             const expectedVersions = args.expectedVersions as Record<string, unknown> | undefined;
             const expected = expectedVersions?.[id] ?? args.expectedVersion ?? grant?.versions[id];
             if ((grant && grant.versions[id] !== m.version) || (expected !== undefined && expected !== m.version)) {
@@ -236,13 +251,13 @@ export function buildMemoryToolSpecs(
               failed = true;
               continue;
             }
-            if ((grant && grant.revision !== current.view.revision) ||
-                (args.expectedViewRevision !== undefined && args.expectedViewRevision !== current.view.revision)) {
+            if ((grant && grant.revision !== view.revision) ||
+                (args.expectedViewRevision !== undefined && args.expectedViewRevision !== view.revision)) {
               parts.push(`[${id}] VIEW_CHANGED: refresh Working Memory before loading details.`);
               failed = true;
               continue;
             }
-            const receipt = { memoryId: id, version: m.version, viewRevision: current.view.revision,
+            const receipt = { memoryId: id, version: m.version, viewRevision: view.revision,
               contentDigest: semanticHash([m.content, m.detail ?? null]) };
             memory.store.recordUse(id, { actor: 'agent', sessionId: ctx.sessionId, turn: ctx.turn, via: 'detail_load', detailLoaded: true });
             loaded.push(id);

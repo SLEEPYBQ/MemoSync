@@ -22,6 +22,44 @@ afterEach(() => {
 });
 
 describe('memory tools (engine-neutral)', () => {
+  it('honors an exact turn grant for an archived related memory, but not a fresh grant', async () => {
+    const archived = memory.store.create({ content: 'Synthetic rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const unselected = memory.store.create({ content: 'Not selected', detail: 'Unselected secret', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const outside = memory.store.create({ content: 'Other project', detail: 'Out of scope secret', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(archived.id, related.id, 'conflicts_with');
+    memory.store.addRelation(related.id, archived.id, 'conflicts_with');
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S', restrictToIds: [archived.id, related.id] }).view;
+    const specs = buildMemoryToolSpecs(memory);
+    memory.store.archive(archived.id, { actor: 'user' });
+    const result = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id, unselected.id, outside.id], expectedViewRevision: grant.revision }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toContain('Original synthetic detail');
+    expect(result.text).not.toContain('Unselected secret');
+    expect(result.text).not.toContain('Out of scope secret');
+    expect(result.receipts).toEqual([expect.objectContaining({ memoryId: archived.id, version: archived.version, viewRevision: grant.revision })]);
+    const fresh = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    const next = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: fresh });
+    expect(next.text).not.toContain('Original synthetic detail');
+  });
+
+  it.each(['edit', 'rescope', 'relation', 'new-visible'] as const)('rejects an archived grant after an additional %s change', async change => {
+    const archived = memory.store.create({ content: 'Synthetic archived rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(archived.id, related.id, 'conflicts_with');
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.archive(archived.id, { actor: 'user' });
+    if (change === 'edit') memory.store.update(archived.id, { detail: 'Edited synthetic detail' }, { actor: 'user' });
+    if (change === 'rescope') memory.store.update(archived.id, { scope: 'project', projectId: 'P2' }, { actor: 'user' });
+    if (change === 'relation') memory.store.addRelation(related.id, archived.id, 'conflicts_with');
+    if (change === 'new-visible') memory.store.create({ content: 'New synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [archived.id, related.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.text).not.toContain('Original synthetic detail');
+    expect(result.text).not.toContain('Edited synthetic detail');
+    expect(result.text).toContain('VIEW_CHANGED');
+    expect(result.isError).toBe(true);
+  });
+
   it('loads details only for the server-confirmed working set', async () => {
     const selected = memory.store.create({ content: 'Use integer cents', detail: '1250 is USD 12.50.', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const hidden = memory.store.create({ content: 'Hidden rule', detail: 'Unselected details must stay out of context.', scope: 'personal', type: 'fact' }, { actor: 'user' });
