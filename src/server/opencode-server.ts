@@ -22,7 +22,7 @@ export function cleanOpencodeProblemDetail(stderr: string, home = homedir()): st
 }
 
 export class OpencodeLaunchError extends Error {
-  constructor(readonly problemDetail: string, cause?: unknown) { super('account-config-invalid', { cause }) }
+  constructor(readonly problemDetail: string, readonly launchCause?: unknown) { super('account-config-invalid', { cause: launchCause }) }
 }
 
 export interface OpencodeServer {
