@@ -142,11 +142,26 @@ describe('semantic views and detail grants', () => {
     expect(result.receipts).toEqual([]);
   });
 
-  for (const revoke of ['archive', 'exclude', 'rescope', 'deselect', 'wrong-owner'] as const) {
+  test('an unchanged archived memory remains readable with its admitted grant but not a fresh grant', async () => {
+    const a = item('Protected rule.', { detail: 'Synthetic admitted detail.' });
+    const admitted = plan();
+    memory.store.archive(a.id, meta);
+    const specs = buildMemoryToolSpecs(memory);
+    const prior = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [a.id] },
+      { ...context, memoryView: admitted.view, allowedMemoryIds: [a.id] });
+    expect(prior.isError).toBeFalsy();
+    expect(prior.text).toContain(a.detail!);
+    expect(prior.receipts).toEqual([expect.objectContaining({ memoryId: a.id, version: a.version, viewRevision: admitted.view.revision })]);
+    const fresh = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [a.id] },
+      { ...context, memoryView: plan().view, allowedMemoryIds: [a.id] });
+    expect(fresh.text).not.toContain(a.detail!);
+    expect(fresh.receipts).toEqual([]);
+  });
+
+  for (const revoke of ['exclude', 'rescope', 'deselect', 'wrong-owner'] as const) {
     test(`a ${revoke} change denies details from an earlier grant`, async () => {
       const a = item('Protected rule.', { detail: 'Private detail must not leak.' });
       const admitted = plan();
-      if (revoke === 'archive') memory.store.archive(a.id, meta);
       if (revoke === 'exclude') memory.store.setSessionExclusions('chat', [a.id]);
       if (revoke === 'rescope') memory.store.update(a.id, { projectId: 'P2' }, meta);
       const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [a.id] },
