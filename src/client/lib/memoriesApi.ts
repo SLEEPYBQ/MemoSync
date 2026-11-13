@@ -40,6 +40,7 @@ export interface CreateMemoryBody {
   /** Optional — the server defaults manual creations to 'fact'. */
   type?: MemoryType
   status?: MemoryStatus
+  expiresAt?: string | null
   projectId?: string
   sessionId?: string
   topic?: string

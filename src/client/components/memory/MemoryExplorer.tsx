@@ -1,12 +1,14 @@
 // The left rail of the memory screen: search, then every place a memory can live.
-import { Archive, BellOff, ChevronRight, FileText, FolderGit2, Inbox, Layers, MessagesSquare, Search, User } from "lucide-react"
+import { Archive, BellOff, ChevronRight, Clock3, FileText, FolderGit2, Inbox, Layers, MessagesSquare, Search, User } from "lucide-react"
 import { useState, type ComponentType, type ReactNode } from "react"
 import { t, useI18n } from "../../i18n"
 import type { MemoryItem, MemoryScope } from "../../lib/memoriesApi"
 import { cn } from "../../lib/utils"
+import { isExpiringSoon } from "../../lib/memoryExpiry"
 
 export type MemoryLens =
   | { kind: "all" }
+  | { kind: "expiring" }
   | { kind: "scope"; scope: MemoryScope }
   | { kind: "project"; id: string }
   | { kind: "session"; id: string }
@@ -25,6 +27,8 @@ export function memoryMatchesLens(item: MemoryItem, lens: MemoryLens): boolean {
   switch (lens.kind) {
     case "all":
       return true
+    case "expiring":
+      return isExpiringSoon(item)
     case "scope":
       return item.scope === lens.scope
     case "project":
@@ -130,6 +134,7 @@ export function MemoryExplorer({
       </div>
       <div className="min-h-0 flex-1 space-y-px overflow-y-auto px-2 pb-2">
         <Row icon={Layers} label={t("board:allMemories")} count={live.length} active={is({ kind: "all" })} onClick={() => onLensChange({ kind: "all" })} />
+        <Row icon={Clock3} label={t("memory:expiringSoon")} count={count(item => isExpiringSoon(item))} active={is({ kind: "expiring" })} onClick={() => onLensChange({ kind: "expiring" })} />
         <Row
           icon={User}
           label={t("common:personal")}

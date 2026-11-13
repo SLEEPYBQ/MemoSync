@@ -40,7 +40,7 @@ export function compileMemoryView(
   const states = visible.map(item => [
     item.id, item.version, item.content, item.detail ?? null, item.scope,
     item.projectId ?? null, item.sessionId ?? null, item.status, item.type,
-    item.topic ?? null, item.abstractionLevel, item.sensitive, item.evidenceClass ?? null,
+    item.topic ?? null, item.abstractionLevel, item.sensitive, item.evidenceClass ?? null, item.expiresAt ?? null,
   ]);
   const selectedIds = selected.map(item => item.id);
   const signatures = Object.fromEntries(states.map(state => [

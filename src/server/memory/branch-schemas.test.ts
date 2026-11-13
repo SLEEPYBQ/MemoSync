@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test"
 import Ajv from "ajv"
-import { memoryTransferSchema } from "./branch-schemas"
+import { memoryStageSchema, memoryTransferSchema } from "./branch-schemas"
 const ajv = new Ajv({ strict: false, allowUnionTypes: true })
+
+test("candidate retention accepts only the suggested nullable durations", () => {
+  const schema = memoryStageSchema("candidate") as any
+  const validate = ajv.compile(schema.properties.candidates.items.properties.retentionDays)
+  for (const value of [1, 7, 30, null]) expect(validate(value)).toBe(true)
+  for (const value of [0, 2, "7"]) expect(validate(value)).toBe(false)
+})
 
 test("empty source snapshots forbid invented transfers in initial and review replies", () => {
   const initial = ajv.compile(memoryTransferSchema([]))

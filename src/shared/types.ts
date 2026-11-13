@@ -1169,6 +1169,12 @@ export interface MemoryTraceCorrectionEntry extends TranscriptEntryBase {
   note?: string
 }
 
+export interface MemoryExpiredEntry extends TranscriptEntryBase {
+  kind: "memory_expired"
+  ids: string[]
+  turn?: number
+}
+
 export type MemoryPreviewDecision = "go_on" | "dismiss" | "without_memory"
 
 /**
@@ -1520,6 +1526,7 @@ export type TranscriptEntry =
   | MemoryCandidatesEntry
   | MemoryTraceEntry
   | MemoryTraceCorrectionEntry
+  | MemoryExpiredEntry
   | MemoryPreviewEntry
   | MemoryPreviewDecisionEntry
   | MemoryInterruptEntry
@@ -1656,6 +1663,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_trace"; labels: Array<MemoryTraceEntry["labels"][number] & { userLabel?: MemoryTraceEntry["labels"][number]["label"]; userNote?: string }>; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_expired"; ids: string[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; selectionErrorUiText?: UiTextReference; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })

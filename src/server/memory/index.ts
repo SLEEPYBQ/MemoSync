@@ -34,6 +34,7 @@ export class MemoryService {
     this.store = new MemoryStore(this.db);
     this.file = new MemoryFile(opts.dataDir);
     this.logger = opts.logger ?? NoopUsageLogger;
+    this.store.expireDue();
     // The Markdown files are a generated EXPORT of SQLite state (read-only for
     // the user); a startup rebuild simply refreshes them.
     this.rebuildProjections();
@@ -72,6 +73,7 @@ export class MemoryService {
    * session-scoped actives are excludable like everything else.
    */
   injectedFor(projectId?: string, sessionId?: string): MemoryItem[] {
+    this.expireDue();
     const all = [
       ...this.store.list({ scope: 'personal', status: 'active' }),
       ...(projectId ? this.store.list({ scope: 'project', projectId, status: 'active' }) : []),
@@ -80,6 +82,16 @@ export class MemoryService {
     if (!sessionId) return all;
     const excluded = new Set(this.store.getSessionExclusions(sessionId));
     return excluded.size === 0 ? all : all.filter((m) => !excluded.has(m.id));
+  }
+
+  expireDue(now?: string): MemoryItem[] {
+    const expired = this.store.expireDue(now);
+    if (expired.length) {
+      const projects = new Set(expired.filter(item => item.scope === 'project').map(item => item.projectId).filter((id): id is string => Boolean(id)));
+      if (expired.some(item => item.scope === 'personal')) this.syncProjection();
+      for (const projectId of projects) this.syncProjection(projectId);
+    }
+    return expired;
   }
 
   /** Re-materialize the Markdown projection for a scope (call after mutations). */

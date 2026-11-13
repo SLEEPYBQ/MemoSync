@@ -1,6 +1,6 @@
 import { translateUiText } from "../../i18n/uiText"
 import { memoryScopeLabel } from "../../lib/memoryCitations"
-import { t, useI18n } from "../../i18n"
+import { getLocale, t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { MemoryBadge } from "../memory/MemoryBadge"
 // Review cards for capture-surfaced memory candidates (SPEC §4.1, §4.10).
@@ -8,7 +8,7 @@ import { MemoryBadge } from "../memory/MemoryBadge"
 // proposed after a turn. Accept / Edit / Dismiss talk to the memory HTTP API
 // directly and reconcile against the shared memory store.
 import { useEffect, useMemo, useState } from "react"
-import { AlertTriangle, Check, Inbox, Loader2, Pencil, RefreshCw, ShieldCheck, Undo2, X, Zap } from "lucide-react"
+import { AlertTriangle, Check, Clock3, Inbox, Loader2, Pencil, RefreshCw, ShieldCheck, Undo2, X, Zap } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import {
   memoriesApi,
@@ -23,6 +23,7 @@ import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { ScopeControl } from "../memory-chat/ScopeControl"
 import { MemoryLegendButton } from "../memory/MemoryLegend"
+import { MemoryExpiryPicker } from "../memory/MemoryExpiryPicker"
 import { RiseIn, StampIn } from "../ui/motion-primitives"
 import { ExpandableRow, useEnsureMemoriesLoaded } from "./shared"
 import { useTranscriptChatContext, useTranscriptRenderOptions } from "./render-context"
@@ -168,6 +169,13 @@ function ResolvedCandidate({ resolved, id }: { resolved: Exclude<ResolvedState, 
   )
 }
 
+function CandidateExpiryBadge({ expiresAt }: { expiresAt: string }) {
+  const date = new Date(expiresAt)
+  return <span title={date.toLocaleString(getLocale())} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+    <Clock3 className="h-3 w-3" /> {t("memory:keep")}: {date.toLocaleDateString(getLocale())}
+  </span>
+}
+
 /**
  * The post-decision card is still a monitoring surface: what exactly did I
  * just admit? Expand to re-read the accepted text, and "Undo accept" is the
@@ -217,12 +225,12 @@ function AcceptedCandidateCard({
               <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">{candidate.detail}</p>
             ) : null}
             <div className="flex items-center justify-between gap-2">
-              <span className="text-[11px] text-muted-foreground">
+              {!candidate.expiresAt ? <span className="text-[11px] text-muted-foreground">
                 {memoryScopeLabel(candidate.scope)}
                 {candidate.status === "archived" ? t("memory:sinceArchived") : ""}
-              </span>
+              </span> : null}
               {candidate.status === "active" ? (
-                <Button variant="ghost" size="xs" disabled={busy} onClick={() => void handleUndo()}>
+                <Button variant="ghost" size="xs" className="ml-auto" disabled={busy} onClick={() => void handleUndo()}>
                   {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Undo2 className="h-3.5 w-3.5" />}
                   {t("memory:undoAccept")}</Button>
               ) : null}
@@ -235,6 +243,10 @@ function AcceptedCandidateCard({
           <Check aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-foreground" />
           {t("memory:savedAs")}{candidate.id} {t("memory:thisTurnSFocusIsDecidedInWorkingMemory")}</span>
       </ExpandableRow>
+      {candidate.expiresAt ? <div className="ml-6 mt-1 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        <span>{memoryScopeLabel(candidate.scope)}{candidate.status === "archived" ? t("memory:sinceArchived") : ""}</span>
+        <CandidateExpiryBadge expiresAt={candidate.expiresAt} />
+      </div> : null}
     </div>
   )
 }
@@ -293,6 +305,10 @@ function AutoAppliedCard({
         <span className="ml-auto font-mono text-[11px] text-muted-foreground">{candidate.id}</span>
       </div>
       <p className="mt-2 whitespace-pre-wrap text-sm text-foreground">{candidate.content}</p>
+      {candidate.expiresAt ? <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+        <span>{memoryScopeLabel(candidate.scope)}</span>
+        <CandidateExpiryBadge expiresAt={candidate.expiresAt} />
+      </div> : null}
       <div className="mt-2 flex items-center justify-end gap-2">
         {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
         <Button variant="ghost" size="xs" disabled={busy} onClick={() => void handleRevert()}>
@@ -336,6 +352,7 @@ export function MemoryCandidateCard({
 
   const { chatId, projectId } = useTranscriptChatContext()
   const [scope, setScope] = useState<MemoryScope>(isMemoryScope(candidate.scope) ? candidate.scope : "session")
+  const [expiresAt, setExpiresAt] = useState<string | null>(candidate.expiresAt ?? null)
   const [editing, setEditing] = useState(false)
   const [draftContent, setDraftContent] = useState(candidate.content)
   const [draftDetail, setDraftDetail] = useState(candidate.detail ?? "")
@@ -371,6 +388,21 @@ export function MemoryCandidateCard({
     setDraftDetail(candidate.detail ?? "")
   }, [candidate.content, candidate.detail, editing])
 
+  useEffect(() => { setExpiresAt(candidate.expiresAt ?? null) }, [candidate.id, candidate.expiresAt])
+
+  async function changeExpiry(value: string | null) {
+    setExpiresAt(value)
+    setBusy("save")
+    setError(null)
+    try {
+      const updated = await runCandidateMutation(() => memoriesApi.update(candidate.id, { expiresAt: value }, { surface }), onChanged)
+      upsertLocal(updated)
+    } catch (err) {
+      setExpiresAt(candidate.expiresAt ?? null)
+      setError(err instanceof Error ? err.message : t("memory:failedToSave"))
+    } finally { setBusy(null) }
+  }
+
   async function handleAccept() {
     setBusy("accept")
     setError(null)
@@ -398,6 +430,7 @@ export function MemoryCandidateCard({
         return
       }
       const patch = activation.patch
+      patch.expiresAt = expiresAt
       // Apply both edited fields in the same act. An empty detail is explicit:
       // it erases the old value instead of preserving a sensitive original.
       if ((editing || sanitized) && trimmed) {
@@ -628,6 +661,7 @@ export function MemoryCandidateCard({
 
       <div className="mt-3 flex flex-col items-stretch gap-3 @lg:flex-row @lg:flex-wrap @lg:items-end">
         <ScopeControl value={scope} onValueChange={setScope} disabled={busyState} showConsequence />
+        <MemoryExpiryPicker value={expiresAt} onChange={value => void changeExpiry(value)} disabled={busyState} />
         <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2">
           {!editing && candidate.sensitive ? (
             <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleSanitize()}>
@@ -655,6 +689,7 @@ export function MemoryCandidateCard({
           </Button>
         </div>
       </div>
+      {expiresAt ? <p className="mt-1 flex items-center gap-1 text-xs text-cand-fg"><Clock3 className="h-3 w-3" />{t("memory:temporaryMemory")}</p> : null}
       {error ? <p className="mt-2 text-xs text-destructive">{translateUiText(error)}</p> : null}
     </div>
   )

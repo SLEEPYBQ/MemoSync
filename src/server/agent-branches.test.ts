@@ -529,6 +529,107 @@ describe('Automatic background candidate learning', () => {
 });
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  it('carries expiry through a parked preview without injecting the expired rule', async () => {
+    const selected: string[] = [];
+    const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply the rule.' })) }) });
+    try {
+      const later = h.memory.store.create({ content: 'Other synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      h.memory.store.update(h.item.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      selected.push(h.item.id, later.id);
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      h.memory.expireDue('2100-01-01T00:00:00.000Z');
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: selected });
+      await until(() => h.mainTurns.length === 1);
+      expect(h.mainTurns[0]!.developerInstructions).toContain(later.content);
+      expect(h.mainTurns[0]!.developerInstructions).not.toContain(h.item.content);
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('emits a single scoped receipt after a between-turn sweep', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control: 'auto' }) });
+    try {
+      const old = h.memory.store.create({ content: 'Old history', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      h.memory.expireDue();
+      const now = h.memory.store.create({ content: 'Expires now', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      await h.send();
+      await finish(h);
+      const first = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_expired');
+      expect(first).toMatchObject([{ ids: [now.id], turn: 1 }]);
+      expect(first[0]?.kind === 'memory_expired' && first[0].ids).not.toContain(old.id);
+      const next = h.memory.store.create({ content: 'Expires between turns', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      h.memory.store.create({ content: 'Other project expiry', scope: 'project', projectId: 'other-project', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      h.memory.store.create({ content: 'Other chat expiry', scope: 'session', sessionId: 'other-chat', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      h.memory.expireDue();
+      await h.send();
+      await finish(h, 'second');
+      const all = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_expired');
+      expect(all).toMatchObject([{ ids: [now.id] }, { ids: [next.id], turn: 2 }]);
+      await h.send();
+      await finish(h, 'third');
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_expired')).toHaveLength(2);
+    } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('shows an expiry receipt before the review-mode preview', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control: 'review' }) });
+    try {
+      const due = h.memory.store.create({ content: 'Temporary synthetic rule', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview'));
+      const messages = h.store.getMessages(h.chat.id);
+      expect(messages.filter(message => message.kind === 'memory_expired')).toMatchObject([{ ids: [due.id], turn: 1 }]);
+      expect(messages.findIndex(message => message.kind === 'memory_expired')).toBeLessThan(messages.findIndex(message => message.kind === 'memory_preview'));
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('retains the first-chat cursor when appending an expiry receipt fails', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control: 'auto' }) });
+    const append = h.store.appendMessage.bind(h.store);
+    let fail = true;
+    h.store.appendMessage = async (chatId, message) => {
+      if (message.kind === 'memory_expired' && fail) {
+        fail = false;
+        throw new Error('Synthetic receipt failure');
+      }
+      return append(chatId, message);
+    };
+    try {
+      const due = h.memory.store.create({ content: 'Temporary synthetic rule', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      await expect(h.send()).rejects.toThrow('Synthetic receipt failure');
+      expect(h.memory.store.getKv<number>(`expiry_seen:${h.chat.id}`)).toBeLessThan(h.memory.store.latestEventSeq());
+      await h.send();
+      await finish(h);
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_expired')).toMatchObject([{ ids: [due.id], turn: 2 }]);
+    } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('does not start a cancelled turn when expiry receipt persistence is pending', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control: 'auto' }) });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const append = h.store.appendMessage.bind(h.store);
+    h.store.appendMessage = async (chatId, message) => {
+      if (message.kind === 'memory_expired') {
+        entered.resolve();
+        await release.promise;
+      }
+      return append(chatId, message);
+    };
+    try {
+      h.memory.store.create({ content: 'Temporary synthetic rule', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+      const sending = h.send();
+      await entered.promise;
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      release.resolve();
+      await sending;
+      expect(h.mainTurns).toHaveLength(0);
+      expect(h.store.getMessages(h.chat.id).some(message => message.kind === 'interrupted')).toBe(true);
+    } finally { release.resolve(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
   it('starts a parked preview with remaining memories after archive, excluding stale selected ids', async () => {
     const selected: string[] = [];
     const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply this synthetic rule.' })) }) });

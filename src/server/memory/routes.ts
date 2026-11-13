@@ -86,6 +86,15 @@ function assertNumber(value: unknown, field: string): void {
   }
 }
 
+function normalizeExpiry(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/i.test(value) || !Number.isFinite(Date.parse(value))) {
+    throw new RouteError(400, 'BAD_REQUEST', 'Invalid expiry date');
+  }
+  if (Date.parse(value) <= Date.now()) throw new RouteError(400, 'BAD_REQUEST', 'Expiry must be a future date');
+  return new Date(value).toISOString();
+}
+
 function controlSurface(value: unknown): 'board' | 'chat_gate' | undefined;
 function controlSurface(value: unknown, chatArchive: true): 'board' | 'chat_gate' | 'chat_citation' | 'chat_audit' | undefined;
 function controlSurface(value: unknown, chatArchive = false): 'board' | 'chat_gate' | 'chat_citation' | 'chat_audit' | undefined {
@@ -220,6 +229,7 @@ export async function handleMemoryRequest(
     // Collection: /api/memories
     if (pathname === '/api/memories') {
       if (req.method === 'GET') {
+        memory.expireDue();
         const scope = url.searchParams.get('scope') ?? undefined;
         const projectId = url.searchParams.get('projectId') ?? undefined;
         const sessionId = url.searchParams.get('sessionId') ?? undefined;
@@ -268,6 +278,7 @@ export async function handleMemoryRequest(
         assertString(b.topic, 'topic');
         assertString(b.provenanceSessionId, 'provenanceSessionId');
         assertNumber(b.provenanceTurn, 'provenanceTurn');
+        const expiresAt = normalizeExpiry(b.expiresAt);
         if (b.scope === 'project' && !b.projectId) {
           throw new RouteError(400, 'BAD_REQUEST', "scope 'project' requires projectId");
         }
@@ -282,6 +293,7 @@ export async function handleMemoryRequest(
             scope: b.scope as MemoryScope,
             type: b.type as MemoryType,
             status: b.status as MemoryStatus | undefined,
+            expiresAt,
             projectId: b.projectId as string | undefined,
             sessionId: b.sessionId as string | undefined,
             topic: b.topic as string | undefined,
@@ -1161,6 +1173,11 @@ export async function handleMemoryRequest(
           && (Object.keys(patch).some(key => key !== 'status')
             || !(['active', 'archived'].includes(existing.status) && (patch.status === 'active' || patch.status === 'archived')))) {
           throw new RouteError(400, 'BAD_REQUEST', 'This surface only supports archiving and restoring memories');
+        }
+        if (patch.expiresAt !== undefined) patch.expiresAt = normalizeExpiry(patch.expiresAt);
+        const effectiveExpiry = patch.expiresAt === undefined ? existing.expiresAt : patch.expiresAt;
+        if (patch.status === 'active' && effectiveExpiry && Date.parse(effectiveExpiry as string) <= Date.now()) {
+          throw new RouteError(400, 'BAD_REQUEST', 'Expiry must be a future date');
         }
         assertEnum(patch.scope, MEMORY_SCOPES, 'scope');
         assertEnum(patch.type, MEMORY_TYPES, 'type');

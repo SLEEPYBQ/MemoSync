@@ -38,6 +38,43 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('persists suggested retention and keeps ordinary rules permanent', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const { call } = stubCaller([{ decisions: [{ index: 0, route: 'new', targetId: null }] }, { decisions: [{ index: 0, route: 'new', targetId: null }] }]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const start = Date.now();
+    const temporary = await capture.routeProposal({ content: 'For now, use a synthetic cache', scope: 'personal', retentionDays: 7 }, { sessionId: 's' });
+    const permanent = await capture.routeProposal({ content: 'Use synthetic fixtures', scope: 'personal' }, { sessionId: 's' });
+    expect(Date.parse(temporary!.created[0]!.expiresAt!)).toBeGreaterThanOrEqual(start + 7 * 86400000);
+    expect(permanent!.created[0]!.expiresAt).toBeNull();
+    expect(validateCandidate({ content: 'Test', retentionDays: 4 })?.retentionDays).toBeUndefined();
+    expect(validateCandidate({ content: 'Test', retentionDays: null })?.retentionDays).toBeUndefined();
+  });
+
+  it('preserves a temporary deadline through hook and branch extraction and same-turn retry', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const { call } = stubCaller([
+      { candidates: [{ content: 'For now, use a test transport', scope: 'personal', retentionDays: 7 }] },
+      { decisions: [{ index: 0, route: 'new', targetId: null }] },
+      { decisions: [{ index: 0, route: 'new', targetId: null }] },
+    ]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const context = { sessionId: 's', turn: 1, userText: 'Use the transport for now', assistantText: 'Okay' };
+    const fromHook = await capture.capture(context);
+    expect(fromHook.created[0]!.expiresAt).not.toBeNull();
+    const deadline = fromHook.created[0]!.expiresAt;
+    const fromBranch = await capture.captureFromExtraction!(
+      { candidates: [{ content: 'For now, use a different test transport', scope: 'personal', retentionDays: 30 }] },
+      { ...context, turn: 2 },
+    );
+    expect(Date.parse(fromBranch.created[0]!.expiresAt!)).toBeGreaterThan(Date.parse(deadline!));
+    await capture.captureFromExtraction!(
+      { candidates: [{ content: 'For now, use a test transport', scope: 'personal', retentionDays: 30 }] },
+      context,
+    );
+    expect(memory.store.getById(fromHook.created[0]!.id)?.expiresAt).toBe(deadline);
+  });
+
   it('short-circuits when pass 1 yields zero candidates (routing pass never called)', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const { call, calls } = stubCaller([{ candidates: [] }]);

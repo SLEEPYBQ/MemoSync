@@ -28,6 +28,7 @@ export interface CreateMemoryInput {
   scope: MemoryScope;
   type: MemoryType;
   status?: MemoryStatus;
+  expiresAt?: string | null;
   projectId?: string;
   sessionId?: string;
   topic?: string;
@@ -62,6 +63,7 @@ interface MemoryRow {
   scope: string;
   type: string;
   status: string;
+  expires_at: string | null;
   project_id: string | null;
   session_id: string | null;
   topic: string | null;
@@ -103,6 +105,7 @@ const UPDATABLE_COLUMNS: Record<string, string> = {
   scope: 'scope',
   type: 'type',
   status: 'status',
+  expiresAt: 'expires_at',
   projectId: 'project_id',
   sessionId: 'session_id',
   topic: 'topic',
@@ -118,6 +121,7 @@ const VERSIONED_FIELDS = [
   'scope',
   'type',
   'status',
+  'expiresAt',
   'topic',
   'abstractionLevel',
   'projectId',
@@ -128,7 +132,7 @@ const VERSIONED_FIELDS = [
 const SCOPE_REACH: Record<MemoryScope, number> = { session: 0, project: 1, personal: 2 };
 
 /** Patch keys whose change means "the text/meaning the model acts on moved" — these bump `version`. */
-const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel'] as const;
+const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel', 'expiresAt'] as const;
 
 type CandidateDecisionTransition = 'ordinary' | 'dismiss' | 'restore';
 
@@ -178,10 +182,10 @@ export class MemoryStore {
         .query(
           `INSERT INTO memories
              (id, content, detail, abstraction_level, sensitive, scope, type, status, project_id, session_id, topic,
-              provenance_session_id, provenance_turn, usage_count, reinforced_count, evidence_class, created_at, updated_at)
+              provenance_session_id, provenance_turn, usage_count, reinforced_count, evidence_class, expires_at, created_at, updated_at)
            VALUES
              ($id, $content, $detail, $abstraction_level, $sensitive, $scope, $type, $status, $project_id, $session_id, $topic,
-              $provenance_session_id, $provenance_turn, $usage_count, $reinforced_count, $evidence_class, $created_at, $updated_at)`,
+              $provenance_session_id, $provenance_turn, $usage_count, $reinforced_count, $evidence_class, $expires_at, $created_at, $updated_at)`,
         )
         .run({
           $id: id,
@@ -200,6 +204,7 @@ export class MemoryStore {
           $usage_count: 0,
           $reinforced_count: 0,
           $evidence_class: input.evidenceClass ?? null,
+          $expires_at: input.expiresAt ?? null,
           $created_at: now,
           $updated_at: now,
         });
@@ -387,6 +392,7 @@ export class MemoryStore {
     patch: Partial<MemoryItem>,
     meta: ActorMeta,
     transition: CandidateDecisionTransition,
+    eventKind?: MemoryEventKind,
   ): MemoryItem {
     return this.db.transaction(() => {
       const existing = this.getById(id);
@@ -426,7 +432,7 @@ export class MemoryStore {
     this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
     const updated = this.getById(id)!;
-    this.appendEvent(id, this.classifyChange(existing, changes), meta, {
+    this.appendEvent(id, eventKind ?? this.classifyChange(existing, changes), meta, {
       changes,
       snapshot: this.snapshotOf(updated),
     });
@@ -441,6 +447,23 @@ export class MemoryStore {
   /** Soft delete: set status to 'archived'. The id is never reused. */
   archive(id: string, meta: ActorMeta): MemoryItem {
     return this.update(id, { status: 'archived' }, meta);
+  }
+
+  expireDue(now = new Date().toISOString()): MemoryItem[] {
+    return this.db.transaction(() => {
+      const rows = this.db.query(`SELECT id FROM memories WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY id`).all(now) as Array<{ id: string }>;
+      return rows.map(({ id }) => this.updateWithCandidateDecision(id, { status: 'archived' }, { actor: 'system' }, 'ordinary', 'expire'));
+    })();
+  }
+
+  latestEventSeq(): number {
+    return (this.db.query('SELECT COALESCE(MAX(seq), 0) AS seq FROM memory_events').get() as { seq: number }).seq;
+  }
+
+  expirationsSince(seq: number, projectId?: string, sessionId?: string): { ids: string[]; lastSeq: number } {
+    const rows = this.db.query(`SELECT e.seq, e.memory_id FROM memory_events e JOIN memories m ON m.id=e.memory_id
+      WHERE e.kind='expire' AND e.seq > ? AND (m.scope='personal' OR (m.scope='project' AND m.project_id=?) OR (m.scope='session' AND m.session_id=?)) ORDER BY e.seq`).all(seq, projectId ?? null, sessionId ?? null) as Array<{ seq: number; memory_id: string }>;
+    return { ids: [...new Set(rows.map(row => row.memory_id))], lastSeq: this.latestEventSeq() };
   }
 
   /**
@@ -547,6 +570,7 @@ export class MemoryStore {
 
       const sets: string[] = [];
       const params: Record<string, Bind> = { $id: id };
+      let expiryChanged = false;
       for (const [key, column] of Object.entries(UPDATABLE_COLUMNS)) {
         if (key === 'status') continue;
         const value = (patch as Record<string, unknown>)[key];
@@ -554,11 +578,13 @@ export class MemoryStore {
         const before = (existing as unknown as Record<string, unknown>)[key] ?? null;
         const after = value ?? null;
         if (before === after) continue;
+        if (key === 'expiresAt') expiryChanged = true;
         sets.push(`${column} = $${column}`);
         params[`$${column}`] = after as Bind;
       }
 
       if (sets.length === 0) return existing;
+      if (expiryChanged) sets.push('version = version + 1');
       sets.push('updated_at = $updated_at');
       params.$updated_at = new Date().toISOString();
       this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
@@ -1475,6 +1501,7 @@ export class MemoryStore {
       scope: item.scope,
       type: item.type,
       status: item.status,
+      expiresAt: item.expiresAt ?? null,
       topic: item.topic,
       abstractionLevel: item.abstractionLevel,
       projectId: item.projectId,
@@ -1509,6 +1536,7 @@ export class MemoryStore {
       scope: row.scope as MemoryScope,
       type: row.type as MemoryType,
       status: row.status as MemoryStatus,
+      expiresAt: row.expires_at ?? null,
       projectId: row.project_id ?? undefined,
       sessionId: row.session_id ?? undefined,
       topic: row.topic ?? undefined,

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test';
 
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -24,6 +24,41 @@ afterEach(() => {
 });
 
 describe('planMemoryInjection', () => {
+  test('sweeps expired rules before a fresh plan', () => {
+    const due = memory.store.create({ content: 'Old temporary rule', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    expect(planMemoryInjection({ memory }).injectedMemories.map(item => item.id)).not.toContain(due.id);
+    expect(memory.store.getById(due.id)?.status).toBe('archived');
+    expect(memory.store.getEvents(due.id).at(-1)?.kind).toBe('expire');
+  });
+  test('renders expiry in active and pending projections and removes an expired active rule', () => {
+    const date = '2030-01-02T12:00:00.000Z';
+    const active = memory.store.create({ content: 'Temporary active', scope: 'personal', type: 'fact', expiresAt: date }, { actor: 'user' });
+    memory.store.create({ content: 'Temporary candidate', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: date }, { actor: 'user' });
+    memory.syncProjection();
+    const before = readFileSync(memory.file.personalPath(), 'utf8');
+    expect(before).toContain(`Temporary active (until 2030-01-02)`);
+    expect(before).toContain(`Temporary candidate (until 2030-01-02)`);
+    memory.expireDue('2031-01-01T00:00:00.000Z');
+    const after = readFileSync(memory.file.personalPath(), 'utf8');
+    expect(after).not.toContain('Temporary active');
+    expect(after).toContain('Temporary candidate (until 2030-01-02)');
+    expect(memory.store.getById(active.id)?.status).toBe('archived');
+  });
+  test('refreshes only affected projection scopes once per sweep', () => {
+    const calls: Array<string | undefined> = [];
+    const sync = memory.syncProjection.bind(memory);
+    memory.syncProjection = projectId => { calls.push(projectId); return sync(projectId); };
+    const deadline = '2020-01-01T00:00:00.000Z';
+    memory.store.create({ content: 'Session-only expiry', scope: 'session', sessionId: 's', projectId: 'proj-1', type: 'fact', expiresAt: deadline }, { actor: 'user' });
+    memory.expireDue();
+    expect(calls).toEqual([]);
+    memory.store.create({ content: 'Personal expiry', scope: 'personal', type: 'fact', expiresAt: deadline }, { actor: 'user' });
+    for (const content of ['Project expiry A', 'Project expiry B']) {
+      memory.store.create({ content, scope: 'project', projectId: 'proj-1', type: 'fact', expiresAt: deadline }, { actor: 'user' });
+    }
+    memory.expireDue();
+    expect(calls).toEqual([undefined, 'proj-1']);
+  });
   test('normalizes a client selection against the current chat Visible Memory Pool', () => {
     const currentSession = memory.store.create(
       { content: 'This chat uses a confirmation dialog', scope: 'session', sessionId: 'chat-current', type: 'lesson' },

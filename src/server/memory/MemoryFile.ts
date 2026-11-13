@@ -165,7 +165,7 @@ export class MemoryFile {
     for (const [section, bucket] of groups) {
       lines.push(`## ${section}`);
       const sorted = [...bucket].sort((a, b) => compareMemoryId(a.id, b.id));
-      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}`);
+      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${item.expiresAt.slice(0, 10)})` : ''}`);
       lines.push('');
     }
 
@@ -176,7 +176,7 @@ export class MemoryFile {
       lines.push(PENDING_MARKER);
       lines.push('## Pending review (decide in the app)');
       const sorted = [...pending].sort((a, b) => compareMemoryId(a.id, b.id));
-      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}`);
+      for (const item of sorted) lines.push(`- [${item.id}] ${item.content}${item.expiresAt ? ` (until ${item.expiresAt.slice(0, 10)})` : ''}`);
       lines.push('');
     }
 

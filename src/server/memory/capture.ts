@@ -128,6 +128,7 @@ this project/stack) | "general" (transfers anywhere).
 - evidenceClass: where the claim comes from — "user_stated" (the user said it outright) | \
 "user_corrected" (the user corrected the agent — strongest signal) | "inferred" (deduced from \
 behavior, not said) | "agent_proposed" (the agent noticed it on its own).
+- retentionDays: 1, 7, or 30 for an explicitly time-limited rule that is still worth reusing; null otherwise. For temporary wording such as "for now" or "until the migration is complete" without a date, suggest 7 days. This is a suggested expiry for the developer to review, not a claim that the task will be finished then. Do not invent a deadline for a standing rule.
 
 ${MEMORY_ATOM_SPEC}`;
 
@@ -226,6 +227,7 @@ export interface ValidatedCandidate {
   abstractionLevel: AbstractionLevel;
   sensitive: boolean;
   evidenceClass?: EvidenceClass;
+  retentionDays?: 1 | 7 | 30;
 }
 
 /** Narrow + clamp one raw candidate (pass-1 output or tool payload); null means malformed (dropped). */
@@ -261,6 +263,7 @@ export function validateCandidate(raw: unknown): ValidatedCandidate | null {
     topic,
     abstractionLevel,
     sensitive: r.sensitive === true,
+    retentionDays: r.retentionDays === 1 || r.retentionDays === 7 || r.retentionDays === 30 ? r.retentionDays : undefined,
     evidenceClass: VALID_EVIDENCE.includes(r.evidenceClass as EvidenceClass)
       ? (r.evidenceClass as EvidenceClass)
       : undefined,
@@ -690,6 +693,7 @@ export function createCaptureService(opts: {
         provenanceSessionId: input.sessionId,
         provenanceTurn: input.turn,
         evidenceClass: candidate.evidenceClass,
+        expiresAt: candidate.retentionDays ? new Date(Date.now() + candidate.retentionDays * 86400000).toISOString() : undefined,
       };
       const meta = { actor: 'agent' as const, sessionId: input.sessionId, turn: input.turn };
       const proposal = route === 'updates'

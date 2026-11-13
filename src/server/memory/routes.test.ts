@@ -54,6 +54,41 @@ describe('memory routes', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('validates expiry at the API boundary and sweeps due items on collection reads', async () => {
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const past = '2020-01-01T00:00:00.000Z';
+    const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const path = `/api/memories/${item.id}`;
+    for (const expiresAt of ['', '2027-01-01', 'nonsense', 17]) expect((await call('PATCH', path, { expiresAt }))!.status).toBe(400);
+    expect((await call('PATCH', path, { expiresAt: past }))!.status).toBe(400);
+    expect((await call('PATCH', path, { expiresAt: future.replace('Z', '+00:00') }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBe(future);
+    const fractional = future.replace(/\.\d{3}Z$/, '.123456+0000');
+    expect((await call('PATCH', path, { expiresAt: fractional }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBe(new Date(fractional).toISOString());
+    expect((await call('PATCH', path, { expiresAt: null }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBeNull();
+    for (const surface of ['chat_citation', 'chat_audit']) {
+      expect((await call('PATCH', path, { status: 'archived', expiresAt: future, surface }))!.status).toBe(400);
+    }
+    const due = memory.store.create({ content: 'Due', scope: 'personal', type: 'fact', expiresAt: past }, { actor: 'user' });
+    await call('GET', '/api/memories');
+    expect(memory.store.getById(due.id)?.status).toBe('archived');
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active' }))!.status).toBe(400);
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active', expiresAt: future }))!.status).toBe(200);
+    memory.store.update(due.id, { status: 'archived', expiresAt: past }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active', expiresAt: null }))!.status).toBe(200);
+    const pending = memory.store.create({ content: 'Candidate', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: past }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${pending.id}`, { status: 'active' }))!.status).toBe(400);
+    expect((await call('PATCH', `/api/memories/${pending.id}`, { status: 'active', expiresAt: null }))!.status).toBe(200);
+    const suggested = memory.store.create({ content: 'Temporary candidate', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: future }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${suggested.id}`, { status: 'active' }))!.status).toBe(200);
+    expect(memory.store.getById(suggested.id)?.expiresAt).toBe(future);
+    expect((await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: past }))!.status).toBe(400);
+    const created = await json(await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: future }));
+    expect(created.data.expiresAt).toBe(future);
+  });
+
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
     const events: unknown[] = [];
     const transcript: unknown[] = [];

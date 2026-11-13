@@ -7,9 +7,10 @@ import { recordUiMonitor } from "../../lib/memoriesApi"
 import type { FocusedMemoryReviewController } from "./MemoryBoardLauncher"
 import { useSurfaceExposure } from "./surfaceExposure"
 
-export function MemoryBoardOverlay({ chatId, focusedReview, onClose }: {
+export function MemoryBoardOverlay({ chatId, focusedReview, initialLens, onClose }: {
   chatId: string
   focusedReview?: FocusedMemoryReviewController
+  initialLens?: "archived"
   onClose: () => void
 }) {
   useI18n()
@@ -29,7 +30,7 @@ export function MemoryBoardOverlay({ chatId, focusedReview, onClose }: {
         <DialogTitle className="sr-only">{t("common:memoryBoard")}</DialogTitle>
         <DialogDescription className="sr-only">{t("board:reviewAndManageLongTermMemory")}</DialogDescription>
         <div className="flex h-full max-h-full w-full min-h-0 flex-col overflow-hidden rounded-2xl bg-background">
-          <Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage overlay={{ chatId, focusedReview, onClose }} /></Suspense>
+          <Suspense fallback={<PanelLoading />}><LazyMemoryBoardPage overlay={{ chatId, focusedReview, initialLens, onClose }} /></Suspense>
         </div>
       </DialogContent>
     </Dialog>

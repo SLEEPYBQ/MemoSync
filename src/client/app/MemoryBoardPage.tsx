@@ -7,7 +7,7 @@ import { MEMORY_CARD } from "../components/memory/MemorySurface"
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { AlertTriangle, ArchiveRestore, ArrowLeft, ChevronRight, Inbox, Loader2, Plus, Trash2, X } from "lucide-react"
+import { AlertTriangle, ArchiveRestore, ArrowLeft, ChevronRight, Clock3, Inbox, Loader2, Plus, Trash2, X } from "lucide-react"
 import type { DragEvent } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -15,6 +15,7 @@ import { MarkdownSyncCard } from "../components/memory/MarkdownSyncCard"
 import { MemoryExplorer, memoryMatchesLens, type MemoryLens } from "../components/memory/MemoryExplorer"
 import { MemoryGraphCanvas, memoryGraphLegend } from "../components/memory/MemoryGraphCanvas"
 import { buildMemoryGraph } from "../lib/memoryGraph"
+import { isPastExpiry } from "../lib/memoryExpiry"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
@@ -78,6 +79,7 @@ function readStoredBoardView(): MemoryBoardView {
 export interface MemoryBoardOverlayMode {
   chatId?: string
   focusedReview?: FocusedMemoryReviewController
+  initialLens?: "archived"
   onClose?: () => void
   onChanged?: () => void
 }
@@ -169,6 +171,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // Board stays the global inventory, but the project section narrows to the
   // current project until the chip is dismissed. Personal/session stay put.
   const [lens, setLens] = useState<MemoryLens>(() => {
+    if (overlay?.initialLens === "archived") return { kind: "archived" }
     const project = new URLSearchParams(window.location.search).get("project")
     return project ? { kind: "project", id: project } : { kind: "all" }
   })
@@ -355,10 +358,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       setUnmutingId(null)
     }
   }, [])
-  const handleRestore = useCallback(async (id: string) => {
+  const handleRestore = useCallback(async (item: MemoryItem) => {
+    const id = item.id
     setRestoringId(id)
     try {
-      const updated = await memoriesApi.update(id, { status: "active" }, { surface: "board" })
+      const updated = await memoriesApi.update(id, { status: "active", ...(isPastExpiry(item.expiresAt) ? { expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() } : {}) }, { surface: "board" })
       upsertLocal(updated)
     } catch {
       void loadAll() // raced elsewhere — refetch rather than lie
@@ -466,7 +470,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
   async function acceptCandidate(
     item: MemoryItem,
-    reviewedPatch?: Partial<CreateMemoryBody> & { content: string; detail: string; status: "active" },
+    reviewedPatch?: Partial<CreateMemoryBody> & { status: "active" },
   ) {
     try {
       const updated = await memoriesApi.update(item.id, reviewedPatch ?? { status: "active" }, { surface: "board" })
@@ -839,6 +843,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     {lens.kind === "archived" ? t("board:archived") : lens.kind === "muted" ? t("board:mutedProposals") : t("memory:memoryFiles")}
                   </h2>
                 ) : (
+                  <>
+                  {lens.kind === "expiring" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:expiringSoon")}</h2> : null}
                   <SegmentedControl<MemoryBoardView>
                     size="sm"
                     value={view}
@@ -848,6 +854,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       { value: "board", label: t("board:boardView") },
                     ]}
                   />
+                  </>
                 )}
                 <p className="ml-auto truncate text-xs tabular-nums text-muted-foreground">
                   {lens.kind === "archived"
@@ -869,8 +876,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       key={item.id}
                       className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
                     >
-                      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.id}</span>
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">{item.content}</span>
+                      <button type="button" onClick={() => setSelectedId(item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-foreground">
+                        <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.id}</span>
+                        <span className="min-w-0 truncate text-muted-foreground">{item.content}</span>
+                      </button>
+                      {isPastExpiry(item.expiresAt) ? <span className="inline-flex shrink-0 items-center gap-1 text-[11px] text-cand-fg"><Clock3 className="h-3 w-3" />{t("memory:expiredDate", { date: new Date(item.expiresAt!).toLocaleDateString(getLocale()) })}</span> : null}
                       {originLabelFor(item) ? (
                         <span className="hidden shrink-0 text-[11px] text-muted-foreground/70 sm:inline">{originLabelFor(item)}</span>
                       ) : null}
@@ -879,14 +889,14 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                         size="sm"
                         className="shrink-0"
                         disabled={restoringId === item.id}
-                        onClick={() => void handleRestore(item.id)}
+                        onClick={() => void handleRestore(item)}
                       >
                         {restoringId === item.id ? (
                           <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         ) : (
                           <ArchiveRestore className="h-3.5 w-3.5" />
                         )}
-                        {t("common:restore")}</Button>
+                        {isPastExpiry(item.expiresAt) ? t("memory:restoreForSevenDays") : t("common:restore")}</Button>
                     </div>
                   ))}
                 </div>

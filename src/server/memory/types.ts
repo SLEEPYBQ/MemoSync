@@ -50,6 +50,7 @@ export type MemoryEventKind =
   | 'use' // a citation of this memory by the agent
   | 'trace' // post-turn trace verdict for an injected memory (meta.label)
   | 'trace_correction'
+  | 'expire'
   | 'reinforce' // the same fact was re-observed in conversation (necessity gate verdict)
   | 'renew'; // the user extended a stale memory's lifecycle (resets the expiry window)
 
@@ -71,6 +72,7 @@ export interface MemoryItem {
   scope: MemoryScope;
   type: MemoryType;
   status: MemoryStatus;
+  expiresAt?: string | null;
   projectId?: string; // undefined for personal scope
   sessionId?: string; // undefined if not session-scoped
   topic?: string; // e.g. "Testing", "Environment"
@@ -110,7 +112,7 @@ export interface ScoredMemory {
 /** The versioned slice of a memory — what a rollback restores. */
 export type MemoryItemSnapshot = Pick<
   MemoryItem,
-  'content' | 'detail' | 'scope' | 'type' | 'status' | 'topic' | 'abstractionLevel' | 'projectId' | 'sessionId'
+  'content' | 'detail' | 'scope' | 'type' | 'status' | 'topic' | 'abstractionLevel' | 'projectId' | 'sessionId' | 'expiresAt'
 >;
 
 /**

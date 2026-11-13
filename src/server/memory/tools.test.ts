@@ -22,6 +22,17 @@ afterEach(() => {
 });
 
 describe('memory tools (engine-neutral)', () => {
+  it('allows admitted details after lifecycle expiry but excludes them from the next grant', async () => {
+    const item = memory.store.create({ content: 'Temporary rule', detail: 'Synthetic detail', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, chatId: 'S' }).view;
+    memory.expireDue('2100-01-01T00:00:00.000Z');
+    const specs = buildMemoryToolSpecs(memory);
+    const result = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [item.id] }, { sessionId: 'S', memoryView: grant });
+    expect(result.text).toContain('Synthetic detail');
+    expect(result.receipts?.[0]?.viewRevision).toBe(grant.revision);
+    const fresh = planMemoryInjection({ memory, chatId: 'S' }).view;
+    expect((await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [item.id] }, { sessionId: 'S', memoryView: fresh })).text).not.toContain('Synthetic detail');
+  });
   it('honors an exact turn grant for an archived related memory, but not a fresh grant', async () => {
     const archived = memory.store.create({ content: 'Synthetic rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });

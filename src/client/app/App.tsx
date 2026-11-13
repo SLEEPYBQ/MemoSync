@@ -469,6 +469,7 @@ function AppLayout({ settingsLocation, settingsBackground }: { settingsLocation:
             <MemoryBoardOverlay
               chatId={memoryBoardRequest.chatId}
               focusedReview={memoryBoardRequest.focusedReview}
+              initialLens={memoryBoardRequest.initialLens}
               onClose={() => setMemoryBoardRequest(null)}
             />
           ) : null}

@@ -35,6 +35,7 @@ import { Chip, ScopeBadge, SCOPE_ICONS } from "./ScopeBadge"
 import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
 import { auditRecord } from "../../lib/auditRecord"
 import { TRACE_DOT_CLASSES } from "./memoryVocab"
+import { MemoryExpiryPicker } from "./MemoryExpiryPicker"
 import type { MemoryEvent } from "../../lib/memoriesApi"
 
 const MOVE_SCOPES: MemoryScope[] = ["personal", "project"]
@@ -46,7 +47,7 @@ interface MemoryDetailPanelProps {
   chatId?: string
   onClose: () => void
   onUpdated: (item: MemoryItem) => void
-  onAccept: (item: MemoryItem, reviewedPatch?: ReviewedSensitiveCandidatePatch) => Promise<void>
+  onAccept: (item: MemoryItem, reviewedPatch?: Partial<CreateMemoryBody> & { status: "active" }) => Promise<void>
   onArchive: (item: MemoryItem) => Promise<void>
   surface?: MemoryControlSurface
 }
@@ -75,6 +76,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   useI18n()
   const [tab, setTab] = useState<"details" | "history">("details")
   const [draft, setDraft] = useState({ content: item.content, detail: item.detail ?? "" })
+  const [expiresAt, setExpiresAt] = useState<string | null>(item.expiresAt ?? null)
   const [archiveArmed, setArchiveArmed] = useState(false)
   const [transferOpen, setTransferOpen] = useState(false)
   const [sanitized, setSanitized] = useState<Array<{ placeholder: string; kind: string }> | null>(null)
@@ -97,6 +99,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   // and any armed confirmations.
   useEffect(() => {
     setDraft({ content: item.content, detail: item.detail ?? "" })
+    setExpiresAt(item.expiresAt ?? null)
     setSanitized(null)
     setArchiveArmed(false)
     setError(null)
@@ -108,8 +111,9 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     if (content && content !== item.content) patch.content = content
     const detail = draft.detail.trim()
     if (detail !== (item.detail ?? "")) patch.detail = detail
+    if (expiresAt !== (item.expiresAt ?? null)) patch.expiresAt = expiresAt
     return patch
-  }, [draft, item])
+  }, [draft, expiresAt, item])
 
   const isDirty = Object.keys(dirtyPatch).length > 0
   const sensitiveCandidate = item.status === "candidate" && item.sensitive
@@ -183,9 +187,9 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
           setError(t("memory:editOrPrepareASanitizedVersionBeforeAccepting"))
           return
         }
-        await onAccept(item, reviewedSensitivePatch)
+        await onAccept(item, { ...reviewedSensitivePatch, expiresAt })
       } else {
-        await onAccept(item)
+        await onAccept(item, { status: "active", expiresAt })
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : t("memory:failedToAccept"))
@@ -352,6 +356,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               </div>
             </div>
 
+            <MemoryExpiryPicker value={expiresAt} onChange={setExpiresAt} disabled={busyState} />
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
             <p className="text-xs text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</p>
             {item.status !== "candidate" && record.total ? <div>
@@ -382,7 +387,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               </button>
             )}
 
-            {item.status !== "candidate" ? (
+            {item.status === "active" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
                   <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>

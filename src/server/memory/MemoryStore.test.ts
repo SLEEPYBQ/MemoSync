@@ -21,6 +21,59 @@ describe('MemoryStore', () => {
     store = freshStore();
   });
 
+  it('archives only due active memories once and preserves expiry in snapshots and versions', () => {
+    const old = '2020-01-01T00:00:00.000Z', future = '2099-01-01T00:00:00.000Z';
+    const due = store.create({ content: 'Due rule', scope: 'personal', type: 'fact', expiresAt: old }, { actor: 'user' });
+    const later = store.create({ content: 'Later rule', scope: 'personal', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const candidate = store.create({ content: 'Pending rule', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: old }, { actor: 'user' });
+    const archived = store.create({ content: 'Archived rule', scope: 'personal', type: 'fact', status: 'archived', expiresAt: old }, { actor: 'user' });
+    const discarded = store.create({ content: 'Discarded rule', scope: 'personal', type: 'fact', status: 'discarded', expiresAt: old }, { actor: 'user' });
+    const seq = store.latestEventSeq();
+    expect(store.expireDue('2021-01-01T00:00:00.000Z').map(item => item.id)).toEqual([due.id]);
+    expect(store.expireDue('2021-01-01T00:00:00.000Z')).toEqual([]);
+    expect(store.getById(due.id)).toMatchObject({ status: 'archived', expiresAt: old, version: due.version });
+    expect(store.getById(later.id)?.status).toBe('active');
+    expect(store.getById(candidate.id)?.status).toBe('candidate');
+    expect(store.getById(archived.id)?.status).toBe('archived');
+    expect(store.getById(discarded.id)?.status).toBe('discarded');
+    expect(store.getEvents(due.id).filter(event => event.kind === 'expire')).toMatchObject([
+      { actor: 'system', changes: { status: { before: 'active', after: 'archived' } }, snapshot: { expiresAt: old } },
+    ]);
+    expect(store.expirationsSince(seq, undefined, 's').ids).toEqual([due.id]);
+    const restored = store.update(due.id, { status: 'active', expiresAt: future }, { actor: 'user' });
+    expect(restored).toMatchObject({ status: 'active', expiresAt: future, version: due.version + 1 });
+    const createSeq = store.getEvents(due.id)[0]!.seq;
+    const reverted = store.rollback(due.id, createSeq, { actor: 'user' });
+    expect(reverted.expiresAt).toBe(old);
+    expect(reverted.version).toBe(restored.version + 1);
+    expect(store.update(due.id, { expiresAt: null }, { actor: 'user' }).expiresAt).toBeNull();
+  });
+
+  it('migrates expiry for old memory rows without assigning a deadline', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, scope TEXT NOT NULL, type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active', project_id TEXT, session_id TEXT, topic TEXT,
+      provenance_session_id TEXT, provenance_turn INTEGER, usage_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      INSERT INTO memories (id, content, scope, type, created_at, updated_at) VALUES ('M-01', 'Legacy rule', 'personal', 'fact', '2020', '2020');`);
+    applySchema(db);
+    const legacy = new MemoryStore(db).getById('M-01');
+    expect(legacy?.expiresAt).toBeNull();
+    expect(new MemoryStore(db).expireDue()).toEqual([]);
+    db.close();
+  });
+
+  it('restores old snapshots without an expiry as forever', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const legacyStore = new MemoryStore(db);
+    const item = legacyStore.create({ content: 'Legacy snapshot', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const seq = legacyStore.getEvents(item.id)[0]!.seq;
+    db.query("UPDATE memory_events SET snapshot = json_remove(snapshot, '$.expiresAt') WHERE seq = ?").run(seq);
+    legacyStore.update(item.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    expect(legacyStore.rollback(item.id, seq, { actor: 'user' }).expiresAt).toBeNull();
+    db.close();
+  });
+
   it('applies and withdraws corrections per memory, session and turn', () => {
     const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 's', turn: 1 });

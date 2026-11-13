@@ -51,6 +51,8 @@ const serverKeys = {
   "surfaceArchiveInvalid": "errors:serverSurfaceArchiveInvalid",
   "surfaceArchiveOnly": "errors:serverSurfaceArchiveOnly",
   "traceCorrectionMissing": "errors:serverTraceCorrectionMissing",
+  "expiryInvalid": "errors:serverExpiryInvalid",
+  "expiryFuture": "errors:serverExpiryFuture",
   "traceCorrectionSame": "errors:serverTraceCorrectionSame",
   "traceCorrectionInvalid": "errors:serverTraceCorrectionInvalid",
   "traceCorrectionUnavailable": "errors:serverTraceCorrectionUnavailable",

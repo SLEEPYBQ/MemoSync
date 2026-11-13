@@ -4,6 +4,12 @@ import { createEmptyState } from "./events"
 import type { TranscriptEntry } from "../shared/types"
 
 describe("read models", () => {
+  test("expiry receipts are retained in the memory record but not notification previews", () => {
+    const receipt: TranscriptEntry = { _id: "expired", createdAt: 1, kind: "memory_expired", ids: ["M-1"], turn: 2 }
+    expect(deriveMemoryRecordTranscript([receipt])).toEqual([receipt])
+    expect(deriveChatPreview([receipt])).toBeNull()
+  })
+
   test("notification preview selects the latest visible assistant reply, excluding memory and tool noise", () => {
     const entries: TranscriptEntry[] = [
       { _id: "user", createdAt: 0, kind: "user_prompt", content: "USER PROMPT" },
