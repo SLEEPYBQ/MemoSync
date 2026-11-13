@@ -719,6 +719,14 @@ async function startLockedMemoSyncServer(
             auditAdmission: auditAdmission,
             traceCorrection: {
               hasChat: chatId => Boolean(store.getChat(chatId)),
+              cited: (chatId, turn, memoryId) => {
+                for (const entry of store.getMessages(chatId).reverse()) {
+                  if (entry.kind !== "memory_trace" || entry.turn !== turn || entry.status === "pending") continue
+                  const label = entry.labels.find(value => value.id === memoryId)
+                  if (label) return label.cited === true
+                }
+                return undefined
+              },
               append: async (chatId, entry) => {
                 await store.appendMessage(chatId, { ...entry, _id: crypto.randomUUID(), createdAt: Date.now() })
                 await router.broadcastChatStateImmediately(chatId)

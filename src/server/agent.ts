@@ -3249,9 +3249,9 @@ export class AgentCoordinator {
             // and the offline audit read the per-memory verdict history.
             const cited = new Set(args.citedIds)
             for (const l of labels) {
-              this.memory!.store.recordTraceLabel(l.id, l.label, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber })
+              this.memory!.store.recordTraceLabel(l.id, l.label, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber, cited: cited.has(l.id) })
               if (l.label !== "operational" || cited.has(l.id)) continue
-              this.memory!.store.recordUse(l.id, { actor: "agent", sessionId: args.chatId, via: "trace_operational" })
+              this.memory!.store.recordUse(l.id, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber, via: "trace_operational" })
             }
             this.emitStateChange(args.chatId)
 

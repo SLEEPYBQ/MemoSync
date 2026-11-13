@@ -38,6 +38,7 @@ export interface MemoryRouteServices {
   auditAdmission?: (input: { chatId: string; memoryId: string }) => string | null;
   traceCorrection?: {
     hasChat: (chatId: string) => boolean;
+    cited?: (chatId: string, turn: number, memoryId: string) => boolean | undefined;
     append: (chatId: string, entry: Omit<MemoryTraceCorrectionEntry, '_id' | 'createdAt'>) => Promise<void>;
   };
   /** Server-held pool for the exact active Working Memory preview. */
@@ -1133,7 +1134,7 @@ export async function handleMemoryRequest(
       if (!services.traceCorrection) throw new RouteError(503, 'NOT_AVAILABLE', 'Audit correction is unavailable');
       if (!services.traceCorrection.hasChat(body.sessionId)) throw new RouteError(409, 'CONFLICT', 'No audit verdict exists for this memory and turn');
       const label = body.label as MemoryTraceLabel | null;
-      const result = memory.store.recordTraceCorrection(id, { sessionId: body.sessionId, turn: body.turn, label, note: body.note as string | undefined });
+      const result = memory.store.recordTraceCorrection(id, { sessionId: body.sessionId, turn: body.turn, label, note: body.note as string | undefined, cited: services.traceCorrection.cited?.(body.sessionId, body.turn, id) });
       if (result.changed) memory.logger.event({ type: 'memory.trace_correction', sessionId: body.sessionId, turn: body.turn, id, auditLabel: result.auditLabel, userLabel: label });
       await services.traceCorrection.append(body.sessionId, { kind: 'memory_trace_correction', turn: body.turn, memoryId: id, label, ...(label !== null && result.note ? { note: result.note } : {}) });
       return ok({ ...result, label });

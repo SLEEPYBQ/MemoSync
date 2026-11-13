@@ -202,7 +202,7 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
 
   const effective = label.userLabel ?? label.label
   const violated = effective === "violated"
-  const cause = label.userLabel ? (violated ? "not_followed" : undefined) : label.cause
+  const cause = label.userLabel ? undefined : label.cause
   const canArchive = !renderOptions.readonly && memory?.status === "active"
   // Every row states its reason (2026-08-19 B2): the NA reason is the named
   // missing object; other labels fall back to the audit note.

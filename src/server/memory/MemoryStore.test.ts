@@ -43,6 +43,69 @@ describe('MemoryStore', () => {
     expect(store.recentTraceCorrections(item.id)).toEqual([]);
   });
 
+  it('reconciles uncited operational trace uses on correction and withdrawal without adding use events', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    store.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'trace_operational' });
+    const originalEvents = store.getEvents(item.id);
+    expect(originalEvents.find(e => e.kind === 'trace')?.meta).toEqual({ label: 'operational', cited: false });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    const correction = { sessionId: 's', turn: 1, label: 'not_applicable' as const };
+    expect(store.recordTraceCorrection(item.id, correction).changed).toBe(true);
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    expect(store.recordTraceCorrection(item.id, correction).changed).toBe(false);
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    const events = store.getEvents(item.id);
+    expect(events.slice(0, originalEvents.length)).toEqual(originalEvents);
+    expect(events.filter(e => e.kind === 'use')).toHaveLength(1);
+    expect(events.filter(e => e.kind === 'trace_correction').map(e => e.meta)).toEqual([
+      { label: 'not_applicable', auditLabel: 'operational', usageDelta: -1 },
+      { withdrawn: true, usageDelta: 1 },
+    ]);
+  });
+
+  it('increments and removes inferred use for uncited corrections to and away from operational', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'operational' });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'not_applicable' });
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null });
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'use')).toHaveLength(0);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'trace_correction').map(e => e.meta?.usageDelta)).toEqual([1, -1, undefined]);
+  });
+
+  it('never changes independently cited usage for corrections or withdrawals', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: true });
+    store.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'citation' });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated', cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'not_applicable', cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null, cited: false });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'trace_correction').every(e => e.meta?.usageDelta === undefined)).toBe(true);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'use')).toHaveLength(1);
+  });
+
+  it('rolls back a usage adjustment if recording its correction fails', () => {
+    const db = new Database(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    applySchema(db);
+    const failingStore = new MemoryStore(db);
+    const item = failingStore.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    failingStore.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    failingStore.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'trace_operational' });
+    db.exec(`CREATE TRIGGER reject_correction BEFORE INSERT ON memory_events WHEN NEW.kind = 'trace_correction' BEGIN SELECT RAISE(ABORT, 'correction write failed'); END;`);
+    expect(() => failingStore.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated' })).toThrow('correction write failed');
+    expect(failingStore.getById(item.id)?.usageCount).toBe(1);
+    expect(failingStore.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(0);
+    db.close();
+  });
+
   it('creates a memory with auto-generated ID', () => {
     const a = store.create({ content: 'Use node via nvm', scope: 'personal', type: 'preference' }, { actor: 'system' });
     expect(a.id).toBe('M-01');

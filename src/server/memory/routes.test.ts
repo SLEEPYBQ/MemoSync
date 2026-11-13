@@ -109,6 +109,29 @@ describe('memory routes', () => {
     expect(events[1]).toEqual({ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: null });
   });
 
+  it('uses transcript citation evidence for legacy trace counts and does not guess when absent', async () => {
+    const uncited = memory.store.create({ content: 'Synthetic uncited rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const unknown = memory.store.create({ content: 'Synthetic unknown rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    for (const item of [uncited, unknown]) {
+      memory.store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 'chat', turn: 1 });
+      memory.store.recordUse(item.id, { actor: 'agent', sessionId: 'chat', turn: 1, via: 'trace_operational' });
+    }
+    const seen: unknown[] = [];
+    const services = { traceCorrection: {
+      hasChat: () => true,
+      cited: (chat: string, turn: number, id: string) => { seen.push([chat, turn, id]); return false; },
+      append: async () => {},
+    } };
+    const body = { sessionId: 'chat', turn: 1, label: 'violated' };
+    expect((await call('POST', `/api/memories/${uncited.id}/trace-correction`, body, services))!.status).toBe(200);
+    expect(seen).toEqual([['chat', 1, uncited.id]]);
+    expect(memory.store.getById(uncited.id)?.usageCount).toBe(0);
+    expect(memory.store.getEvents(uncited.id).at(-1)?.meta?.usageDelta).toBe(-1);
+    expect((await call('POST', `/api/memories/${unknown.id}/trace-correction`, body, { traceCorrection: { hasChat: () => true, append: async () => {} } }))!.status).toBe(200);
+    expect(memory.store.getById(unknown.id)?.usageCount).toBe(1);
+    expect(memory.store.getEvents(unknown.id).at(-1)?.meta?.usageDelta).toBeUndefined();
+  });
+
   it('accepts citation and audit surfaces only for archive and restore', async () => {
     const item = memory.store.create({ content: 'Synthetic archive example', scope: 'personal', type: 'fact' }, { actor: 'user' });
     for (const surface of ['chat_citation', 'chat_audit']) {

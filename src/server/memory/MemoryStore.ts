@@ -92,7 +92,7 @@ export class TraceCorrectionError extends Error {
   constructor(public status: 400 | 409, message: string) { super(message); }
 }
 
-type TraceCorrectionMeta = { label?: MemoryTraceLabel; auditLabel?: MemoryTraceLabel; note?: string; withdrawn?: boolean };
+type TraceCorrectionMeta = { label?: MemoryTraceLabel; auditLabel?: MemoryTraceLabel; note?: string; withdrawn?: boolean; cited?: boolean };
 
 /** Maps MemoryItem patch keys to their DB column names. */
 const UPDATABLE_COLUMNS: Record<string, string> = {
@@ -731,17 +731,18 @@ export class MemoryStore {
    * Record the post-turn trace verdict for one memory as a 'trace' event
    * (meta.label). Missing ids are a no-op — the async pass can race a delete.
    */
-  recordTraceLabel(id: string, label: MemoryTraceLabel, meta: ActorMeta & { turn?: number }): void {
+  recordTraceLabel(id: string, label: MemoryTraceLabel, meta: ActorMeta & { turn?: number; cited?: boolean }): void {
     const row = this.db.query(`SELECT id FROM memories WHERE id = ?`).get(id);
     if (!row) return;
-    this.appendEvent(id, 'trace', meta, { meta: { label } });
+    this.appendEvent(id, 'trace', meta, { meta: { label, ...(meta.cited !== undefined ? { cited: meta.cited } : {}) } });
   }
 
-  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string }): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string } {
+  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string } {
     return this.db.transaction(() => {
       const trace = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace' ORDER BY seq DESC LIMIT 1`)
         .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
-      const auditLabel = trace?.meta ? (JSON.parse(trace.meta) as TraceCorrectionMeta).label : undefined;
+      const traceMeta = trace?.meta ? JSON.parse(trace.meta) as TraceCorrectionMeta : undefined;
+      const auditLabel = traceMeta?.label;
       if (!auditLabel) throw new TraceCorrectionError(409, 'No audit verdict exists for this memory and turn');
       if (input.label !== null && (!['operational', 'injected_without_effect', 'violated', 'not_applicable'].includes(input.label) || input.label === auditLabel)) {
         throw new TraceCorrectionError(400, 'Choose a different audit verdict');
@@ -753,8 +754,15 @@ export class MemoryStore {
       if ((input.label === null && (!prior || prior.withdrawn)) || (input.label !== null && !prior?.withdrawn && prior?.label === input.label && prior.note === note)) {
         return { auditLabel, changed: false, note };
       }
+      const cited = traceMeta?.cited ?? input.cited;
+      const previousLabel = prior?.label && !prior.withdrawn ? prior.label : auditLabel;
+      const nextLabel = input.label ?? auditLabel;
+      const usageDelta = cited === false
+        ? Number(nextLabel === 'operational') - Number(previousLabel === 'operational')
+        : 0;
+      if (usageDelta) this.db.query('UPDATE memories SET usage_count = MAX(0, usage_count + ?) WHERE id = ?').run(usageDelta, id);
       this.appendEvent(id, 'trace_correction', { actor: 'user', sessionId: input.sessionId, turn: input.turn }, {
-        meta: input.label === null ? { withdrawn: true } : { label: input.label, auditLabel, ...(note ? { note } : {}) },
+        meta: input.label === null ? { withdrawn: true, ...(usageDelta ? { usageDelta } : {}) } : { label: input.label, auditLabel, ...(note ? { note } : {}), ...(usageDelta ? { usageDelta } : {}) },
       });
       return { auditLabel, changed: true, note };
     })();
