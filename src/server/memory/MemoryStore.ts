@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import type { MemoryTraceCorrectionEntry } from '../../shared/types';
 import { computeMemoryHash } from './hash';
 import type {
   AbstractionLevel,
@@ -19,6 +20,13 @@ import type {
 
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
+
+export type TraceCorrectionDelivery = {
+  seq: number;
+  chatId: string;
+  entry: MemoryTraceCorrectionEntry;
+  projectionProjectIds: Array<string | null>;
+};
 
 export interface CreateMemoryInput {
   content: string;
@@ -748,7 +756,7 @@ export class MemoryStore {
     this.appendEvent(id, 'trace', meta, { meta: { label, ...(meta.cited !== undefined ? { cited: meta.cited } : {}) } });
   }
 
-  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string; invalidatedIds?: string[] } {
+  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }, options: { enqueueTranscript?: boolean } = {}): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string; invalidatedIds?: string[] } {
     return this.db.transaction(() => {
       if (input.label !== null && this.getById(id)?.status !== 'active') {
         throw new TraceCorrectionError(409, 'Only active memories can receive audit corrections');
@@ -761,11 +769,28 @@ export class MemoryStore {
       if (input.label !== null && (!['operational', 'injected_without_effect', 'violated', 'not_applicable'].includes(input.label) || input.label === auditLabel)) {
         throw new TraceCorrectionError(400, 'Choose a different audit verdict');
       }
-      const previous = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace_correction' ORDER BY seq DESC LIMIT 1`)
-        .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
+      const previous = this.db.query(`SELECT seq, meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace_correction' ORDER BY seq DESC LIMIT 1`)
+        .get(id, input.sessionId, input.turn) as { seq: number; meta: string | null } | null;
       const prior = previous?.meta ? JSON.parse(previous.meta) as TraceCorrectionMeta : undefined;
       const note = input.note?.trim().slice(0, 300) || undefined;
+      const enqueueDelivery = (seq: number, invalidatedIds: string[] = []) => {
+        if (!options.enqueueTranscript || this.getKv<boolean>(`trace_correction_delivered:${seq}`)
+          || this.getKv(`trace_correction_delivery:${seq}`)) return;
+        this.setKv(`trace_correction_delivery:${seq}`, {
+          seq,
+          chatId: input.sessionId,
+          entry: {
+            _id: crypto.randomUUID(), createdAt: Date.now(), kind: 'memory_trace_correction',
+            turn: input.turn, memoryId: id, label: input.label,
+            ...(input.label !== null && note ? { note } : {}),
+          },
+          projectionProjectIds: invalidatedIds.length
+            ? [...new Set(invalidatedIds.map(candidateId => this.getById(candidateId)?.projectId ?? null))]
+            : [this.getById(id)?.projectId ?? null],
+        } satisfies TraceCorrectionDelivery);
+      };
       if ((input.label === null && (!prior || prior.withdrawn)) || (input.label !== null && !prior?.withdrawn && prior?.label === input.label && prior.note === note)) {
+        if (previous) enqueueDelivery(previous.seq);
         return { auditLabel, changed: false, note };
       }
       const cited = traceMeta?.cited ?? input.cited;
@@ -775,10 +800,11 @@ export class MemoryStore {
         ? Number(nextLabel === 'operational') - Number(previousLabel === 'operational')
         : 0;
       if (usageDelta) this.db.query('UPDATE memories SET usage_count = MAX(0, usage_count + ?) WHERE id = ?').run(usageDelta, id);
-      this.appendEvent(id, 'trace_correction', { actor: 'user', sessionId: input.sessionId, turn: input.turn }, {
+      const seq = this.appendEvent(id, 'trace_correction', { actor: 'user', sessionId: input.sessionId, turn: input.turn }, {
         meta: input.label === null ? { withdrawn: true, ...(usageDelta ? { usageDelta } : {}) } : { label: input.label, auditLabel, ...(note ? { note } : {}), ...(usageDelta ? { usageDelta } : {}) },
       });
       const invalidatedIds = this.invalidateTraceRevisions(id);
+      enqueueDelivery(seq, invalidatedIds);
       return { auditLabel, changed: true, note, ...(invalidatedIds.length ? { invalidatedIds } : {}) };
     })();
   }
@@ -1272,6 +1298,18 @@ export class MemoryStore {
       .run(key, JSON.stringify(value), new Date().toISOString());
   }
 
+  pendingTraceCorrectionDeliveries(): TraceCorrectionDelivery[] {
+    const rows = this.db.query(`SELECT value FROM memory_kv WHERE key LIKE 'trace_correction_delivery:%' ORDER BY CAST(json_extract(value, '$.seq') AS INTEGER)`).all() as Array<{ value: string }>;
+    return rows.map(row => JSON.parse(row.value) as TraceCorrectionDelivery);
+  }
+
+  acknowledgeTraceCorrectionDelivery(seq: number): void {
+    this.db.transaction(() => {
+      this.setKv(`trace_correction_delivered:${seq}`, true);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`trace_correction_delivery:${seq}`);
+    })();
+  }
+
   /**
    * How many candidate resolutions (accept OR dismiss) happened after event
    * `sinceSeq`, and the newest resolution seq. Drives the policy-memo refresh
@@ -1508,8 +1546,8 @@ export class MemoryStore {
       snapshot?: MemoryItemSnapshot;
       meta?: Record<string, unknown>;
     } = {},
-  ): void {
-    this.db
+  ): number {
+    const result = this.db
       .query(
         `INSERT INTO memory_events (memory_id, ts, kind, actor, session_id, turn, changes, snapshot, meta)
          VALUES ($memory_id, $ts, $kind, $actor, $session_id, $turn, $changes, $snapshot, $meta)`,
@@ -1525,6 +1563,7 @@ export class MemoryStore {
         $snapshot: payload.snapshot ? JSON.stringify(payload.snapshot) : null,
         $meta: payload.meta ? JSON.stringify(payload.meta) : null,
       });
+    return Number(result.lastInsertRowid);
   }
 
   private candidateFingerprint(content: string): string {

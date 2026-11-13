@@ -8,6 +8,22 @@ const userPrompt: HydratedTranscriptMessage = {
 }
 
 describe("MemoryRecordRail", () => {
+  test("offers review only for settled hidden audits with labels", () => {
+    const trace = {
+      kind: "memory_trace", id: "automatic", timestamp: "2026-08-17T00:00:00.000Z", turn: 1,
+      hidden: true, status: "ok", labels: [{ id: "M-1", label: "operational" }],
+    }
+    const render = (value: Record<string, unknown>) => renderToStaticMarkup(
+      <MemoryRecordRail chatId="chat-1" messages={[userPrompt, value as HydratedTranscriptMessage]} />,
+    )
+    expect(render(trace)).toContain("Review audit")
+    expect(render({ ...trace, hidden: false })).not.toContain("Review audit")
+    expect(render({ ...trace, labels: [] })).not.toContain("Review audit")
+    for (const status of ["pending", "failed", "discarded", "empty"]) {
+      expect(render({ ...trace, status })).not.toContain("Review audit")
+    }
+  })
+
   test("shows the audit-complete fallback after a correction clears a stale recap", () => {
     const messages = [userPrompt, {
       kind: "memory_trace", id: "trace-original", timestamp: "2026-08-17T00:00:00.000Z", turn: 1,

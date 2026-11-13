@@ -374,6 +374,8 @@
   "couldntArchive": "Couldn't archive the memory",
   "couldntRestore": "Couldn't restore the memory",
   "notRight": "Not right?",
+  "reviewAudit": "Review audit",
+  "correctionSyncPending": "Correction saved. Updating chat history…",
   "whatActuallyHappened": "What actually happened?",
   "correctionWhyPlaceholder": "Why? Optional. The audit sees this next time.",
   "youVerdict": "You: {{v0}}",
