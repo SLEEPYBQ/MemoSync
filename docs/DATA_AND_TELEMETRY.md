@@ -26,6 +26,9 @@ automatically.
 
 Event families:
 
+- `memory.trace_correction` — a developer changes or withdraws a verdict;
+  records the chat, turn, memory id, original verdict, and corrected verdict,
+  but not the optional explanatory note.
 - `memory.*` — memory lifecycle: capture, candidate decisions, injection,
   citations, checkup outcomes, transfers, interrupts/resumes, audit verdicts and
   audit follow-ups (enforce, draft a fix), working-memory selections.

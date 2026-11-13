@@ -12,6 +12,7 @@ import type { LlmJsonCaller } from './deepseek';
 import type { MemoryItem } from './types';
 
 export type TraceLabel = 'operational' | 'injected_without_effect' | 'violated' | 'not_applicable';
+export type AuditCorrection = { id: string; auditLabel: TraceLabel; userLabel: TraceLabel; note?: string };
 
 /** Violated only: whether the violation visibly hurt the outcome (mentor 2026-08-15: surface "no negative impact" explicitly). */
 export type TraceViolationImpact = 'negative' | 'none';
@@ -28,6 +29,16 @@ export interface TraceInput {
   executionTools?: Array<{ toolId: string; text: string }>;
   /** Memories injected/cited this turn — the set Trace is asked to judge. */
   usedMemories: MemoryItem[];
+  corrections?: AuditCorrection[];
+}
+
+export function formatAuditCorrections(corrections?: AuditCorrection[]): string {
+  if (!corrections?.length) return '';
+  return [
+    'Developer corrections of earlier audit verdicts for these memories:',
+    ...corrections.map(c => `[${c.id}] audit said ${c.auditLabel}; the developer says ${c.userLabel}${c.note ? ` — ${JSON.stringify(c.note)}` : ''}`),
+    'These show how this developer reads each memory. Judge this turn on its own evidence.',
+  ].join('\n');
 }
 
 /**
@@ -113,6 +124,7 @@ function buildUserPrompt(input: TraceInput): string {
   // session's turns; the turn text changes every time — stable first.
   return [
     `Memories used this turn:\n${input.usedMemories.map(formatMemoryForPrompt).join('\n\n')}`,
+    ...(input.corrections?.length ? [formatAuditCorrections(input.corrections)] : []),
     `User message:\n${input.userText}`,
     `Assistant response:\n${input.assistantText}`,
     ...(input.executionText ? [`Tool calls and results:\n${input.executionText}`] : []),

@@ -1,5 +1,6 @@
 import { translateUiText } from "../../i18n/uiText"
 import { memoryStatusLabel } from "../../i18n/labels"
+import { traceVerdictLabel } from "../../i18n/labels"
 import { t, useI18n } from "../../i18n"
 import { MemoryBadge } from "./MemoryBadge"
 // Right-side detail panel for a selected memory (SPEC §4.9, §4.11). Two tabs:
@@ -32,6 +33,9 @@ import { SegmentedControl } from "../ui/segmented-control"
 import { cn } from "../../lib/utils"
 import { Chip, ScopeBadge, SCOPE_ICONS } from "./ScopeBadge"
 import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
+import { auditRecord } from "../../lib/auditRecord"
+import { TRACE_DOT_CLASSES } from "./memoryVocab"
+import type { MemoryEvent } from "../../lib/memoriesApi"
 
 const MOVE_SCOPES: MemoryScope[] = ["personal", "project"]
 
@@ -80,6 +84,14 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   }, [chatId, item.id])
   const [busy, setBusy] = useState<"save" | "scope" | "sensitive" | "sanitize" | "accept" | "archive" | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [auditEvents, setAuditEvents] = useState<MemoryEvent[]>([])
+  useEffect(() => {
+    let current = true
+    setAuditEvents([])
+    if (item.status !== "candidate") void memoriesApi.history(item.id).then(history => { if (current) setAuditEvents(history.events) }).catch(() => {})
+    return () => { current = false }
+  }, [item])
+  const record = useMemo(() => auditRecord(auditEvents), [auditEvents])
 
   // A fresh selection (or an update landing from elsewhere) resets the draft
   // and any armed confirmations.
@@ -342,6 +354,15 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
             <p className="text-xs text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</p>
+            {item.status !== "candidate" && record.total ? <div>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:auditRecord")}</span>
+              <div className="flex flex-wrap items-center gap-1">
+                {record.verdicts.map((verdict, index) => <span key={index}
+                  title={verdict.corrected ? `${traceVerdictLabel(verdict.auditLabel)} → ${t("memory:youVerdict", { v0: traceVerdictLabel(verdict.effectiveLabel) })}` : traceVerdictLabel(verdict.auditLabel)}
+                  className={cn("h-2.5 w-2.5 rounded-[3px]", TRACE_DOT_CLASSES[verdict.effectiveLabel], verdict.corrected && "outline outline-1 outline-offset-1 outline-foreground/40")} />)}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">{record.corrected ? t("memory:auditRecordCorrected", { n: record.corrected, m: record.total }) : t("memory:auditRecordNone", { m: record.total })}</p>
+            </div> : null}
 
             {sensitiveCandidate ? (
               <MemoryBadge className="inline-flex items-center gap-1.5 rounded-md border border-cand-border bg-cand-surface px-1.5 py-1 text-[11px] font-medium text-cand-fg">

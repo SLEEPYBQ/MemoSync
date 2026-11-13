@@ -168,7 +168,7 @@ function incrementSurface(counts: InteractionSurfaceCounts, surface: Interaction
 const PRODUCT_EVENT_TYPES = new Set([
   "memory.branch", "memory.inject", "memory.propose", "memory.cite", "memory.decision",
   "memory.capture", "memory.conflict", "memory.proposals", "memory.checkup", "memory.preparation_reopen",
-  "memory.trace", "memory.detail_load", "memory.bringin", "memory.exclude", "memory.working_memory_selection",
+  "memory.trace", "memory.trace_correction", "memory.detail_load", "memory.bringin", "memory.exclude", "memory.working_memory_selection",
   "memory.transfer", "memory.transfer_decline", "memory.transfer_card", "memory.sanitize",
   "ui.monitor", "ui.surface_exposure", "memory.attention", "memory.audit_action", "memory.interrupt",
   "memory.resume", "memory.preview", "memory.revise_injection", "memory.relevance", "memory.setting",

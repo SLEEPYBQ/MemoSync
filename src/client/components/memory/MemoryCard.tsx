@@ -84,8 +84,8 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</span> : null}
         {item.lastTraceLabel ? (
           <span
-            title={t("memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}
-            className={cn("ml-auto h-2 w-2 shrink-0 rounded-full", TRACE_DOT_CLASSES[item.lastTraceLabel])}
+            title={t(item.lastTraceCorrected ? "memory:lastTraceCorrected" : "memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}
+            className={cn("ml-auto h-2 w-2 shrink-0 rounded-full", TRACE_DOT_CLASSES[item.lastTraceLabel], item.lastTraceCorrected && "outline outline-1 outline-offset-1 outline-foreground/40")}
           />
         ) : null}
       </div>

@@ -48,7 +48,7 @@ export interface RecordReportedStage {
 export interface RecordAuditStage {
   entryId: string
   status?: "ok" | "failed" | "discarded" | "pending" | "empty"
-  labels: Array<{ id: string; label: AuditVerdict; note?: string; quote?: string; toolId?: string; missing?: string }>
+  labels: Array<{ id: string; label: AuditVerdict; userLabel?: AuditVerdict; userNote?: string; note?: string; quote?: string; toolId?: string; missing?: string }>
 }
 
 export interface MemoryRecordTurn {
@@ -79,8 +79,8 @@ export function turnPulse(turn: MemoryRecordTurn): "violated" | "shaped" | "quie
   if (turn.interrupted) return "violated"
   let shaped = false
   for (const label of turn.audit?.labels ?? []) {
-    if (label.label === "violated") return "violated"
-    if (label.label === "operational") shaped = true
+    if ((label.userLabel ?? label.label) === "violated") return "violated"
+    if ((label.userLabel ?? label.label) === "operational") shaped = true
   }
   return shaped ? "shaped" : "quiet"
 }
@@ -212,7 +212,7 @@ export function buildMemoryRecord(
           labels: message.labels
             .filter((l): l is typeof l & { label: AuditVerdict } =>
               l.label === "operational" || l.label === "injected_without_effect" || l.label === "violated" || l.label === "not_applicable")
-            .map((l) => ({ id: l.id, label: l.label, note: l.note, quote: l.quote, toolId: l.toolId, missing: l.missing })),
+            .map((l) => ({ id: l.id, label: l.label, userLabel: l.userLabel, userNote: l.userNote, note: l.note, quote: l.quote, toolId: l.toolId, missing: l.missing })),
         }
         break
       }

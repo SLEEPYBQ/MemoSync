@@ -5,6 +5,9 @@ import { MemoryTraceMessage } from "./MemoryTraceMessage"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "./render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
+
+runMountedRaceSuite("audit correction screenshots", new URL("./MemoryTraceMessage.browser.ts", import.meta.url))
 
 afterEach(() => { useMemoryStore.getInitialState().items.length = 0 })
 
@@ -17,6 +20,28 @@ function msg(
 }
 
 describe("MemoryTraceMessage", () => {
+  test("corrections follow effective verdict, keep audit section and hide controls in readonly", () => {
+    const render = (labels: unknown[], readonly = false) => renderToStaticMarkup(
+      <TranscriptChatContextProvider value={{ chatId: "chat-1" }}>
+        <TranscriptRenderOptionsProvider value={{ readonly }}><MemoryTraceMessage message={msg(labels as Parameters<typeof msg>[0], { turn: 1 })} /></TranscriptRenderOptionsProvider>
+      </TranscriptChatContextProvider>,
+    )
+    const original = render([{ id: "M-1", label: "violated", cause: "not_followed" }])
+    expect(original).toContain("Not right?")
+    const away = render([{ id: "M-1", label: "violated", cause: "not_followed", userLabel: "not_applicable", userNote: "No image" }])
+    expect(away).toContain("line-through")
+    expect(away).toContain("You:")
+    expect(away).toContain("No image")
+    expect(away).toContain("1 corrected")
+    expect(away).not.toContain("Enforce this next run")
+    const toward = render([{ id: "M-1", label: "operational", userLabel: "violated" }])
+    expect(toward).toContain("Enforce this next run")
+    expect(toward).not.toContain("Draft a fix")
+    const readonly = render([{ id: "M-1", label: "violated", userLabel: "operational" }], true)
+    expect(readonly).toContain("You:")
+    expect(readonly).not.toContain("Not right?")
+    expect(readonly).not.toContain("Undo")
+  })
   test("archived violated memories show undo instead of enforcement", () => {
     useMemoryStore.getInitialState().items.push({ id: "M-76", status: "archived", scope: "personal", content: "A synthetic rule", type: "constraint" } as MemoryItem)
     const html = renderToStaticMarkup(<TranscriptChatContextProvider value={{ chatId: "chat-1" }}>

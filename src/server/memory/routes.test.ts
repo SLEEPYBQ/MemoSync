@@ -54,6 +54,61 @@ describe('memory routes', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
+    const events: unknown[] = [];
+    const transcript: unknown[] = [];
+    memory.close();
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir, logger: { event: e => void events.push(e) } });
+    const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1 });
+    const services = { traceCorrection: { hasChat: (id: string) => id === 'chat', append: async (_id: string, entry: unknown) => { transcript.push(entry); } } };
+    const path = `/api/memories/${item.id}/trace-correction`;
+    expect((await call('POST', path, { sessionId: 'chat', turn: 2, label: 'operational' }, services))!.status).toBe(409);
+    expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: 'violated' }, services))!.status).toBe(400);
+    expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: 'operational', note: '  done  ' }, services))!.status).toBe(200);
+    expect(transcript).toEqual([{ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'done' }]);
+    expect(events).toContainEqual({ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: 'operational' });
+    const list = await json(await call('GET', '/api/memories'));
+    expect(list.data[0]).toMatchObject({ lastTraceLabel: 'operational', lastTraceCorrected: true });
+    expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: null }, services))!.status).toBe(200);
+    expect(transcript.at(-1)).toEqual({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
+    expect(events.at(-1)).toMatchObject({ type: 'memory.trace_correction', userLabel: null });
+  });
+
+  it('retries failed correction and withdrawal transcript projections without duplicating events', async () => {
+    const events: unknown[] = [];
+    const transcript: unknown[] = [];
+    memory.close();
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir, logger: { event: e => void events.push(e) } });
+    const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1 });
+    let fail = true;
+    const services = { traceCorrection: { hasChat: (id: string) => id === 'chat', append: async (_id: string, entry: unknown) => {
+      if (fail) { fail = false; throw new Error('Synthetic transcript failure'); }
+      transcript.push(entry);
+    } } };
+    const path = `/api/memories/${item.id}/trace-correction`;
+    const correction = { sessionId: 'chat', turn: 1, label: 'operational', note: '  private reason  ' };
+    for (const body of [
+      { ...correction, label: 'unknown' }, { ...correction, note: 123 }, { ...correction, turn: 0 },
+      { ...correction, turn: '1' }, { ...correction, sessionId: '' },
+    ]) expect((await call('POST', path, body, services))!.status).toBe(400);
+    expect((await call('POST', path, { ...correction, sessionId: 'other' }, services))!.status).toBe(409);
+    expect((await call('POST', path, correction, services))!.status).toBe(500);
+    expect((await call('POST', path, correction, services))!.status).toBe(200);
+    expect(transcript).toEqual([{ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'private reason' }]);
+    expect(memory.store.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(1);
+    expect(events).toEqual([{ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: 'operational' }]);
+    fail = true;
+    const withdraw = { sessionId: 'chat', turn: 1, label: null };
+    expect((await call('POST', path, withdraw, services))!.status).toBe(500);
+    expect((await call('POST', path, withdraw, services))!.status).toBe(200);
+    expect(transcript.at(-1)).toEqual({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
+    expect(memory.store.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(2);
+    expect(events).toHaveLength(2);
+    expect(events[1]).toEqual({ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: null });
+  });
+
   it('accepts citation and audit surfaces only for archive and restore', async () => {
     const item = memory.store.create({ content: 'Synthetic archive example', scope: 'personal', type: 'fact' }, { actor: 'user' });
     for (const surface of ['chat_citation', 'chat_audit']) {

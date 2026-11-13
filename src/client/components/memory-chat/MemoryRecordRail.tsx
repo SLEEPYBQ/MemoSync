@@ -1,4 +1,5 @@
 import { t, useI18n } from "../../i18n"
+import { traceVerdictLabel } from "../../i18n/labels"
 // Memory Record — the sidebar re-presentation of the monitoring column over
 // time (redesign discussion 2026-08-10). Each turn mirrors the transcript
 // stations one-to-one as two-line stage rows: a Title-Case stage name (the
@@ -187,7 +188,8 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
         <div key={label.id} className="flex items-baseline gap-1.5 text-[11px]">
           <MemoryCitationChip id={label.id} />
           <span className="min-w-0">
-            {label.label === "violated" ? (
+            {label.userLabel ? <><span className="text-muted-foreground line-through">{traceVerdictLabel(label.label)}</span>{" "}
+              <span className={cn("font-medium", label.userLabel === "violated" ? "text-destructive" : "text-foreground")}>{t("memory:youVerdict", { v0: traceVerdictLabel(label.userLabel) })}</span></> : label.label === "violated" ? (
               <>
                 <span className="font-medium text-destructive">{t("memory:violated")}</span>
                 <span className="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">
@@ -234,8 +236,8 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
   const auditCounts = useMemo(() => {
     const counts = { shaped: 0, violated: 0, noEffect: 0 }
     for (const label of audit?.labels ?? []) {
-      if (label.label === "operational") counts.shaped += 1
-      else if (label.label === "violated") counts.violated += 1
+      if ((label.userLabel ?? label.label) === "operational") counts.shaped += 1
+      else if ((label.userLabel ?? label.label) === "violated") counts.violated += 1
       else counts.noEffect += 1
     }
     return counts

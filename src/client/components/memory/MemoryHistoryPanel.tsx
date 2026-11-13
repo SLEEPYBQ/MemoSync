@@ -8,7 +8,7 @@ import { MemoryBadge } from "./MemoryBadge"
 // revert) show a before→after diff and a two-step "roll back" action; `use`
 // events are quiet citation rows, grouped and folded by default.
 import { useCallback, useEffect, useState } from "react"
-import { Activity, ChevronDown, ChevronRight, Eye, Flag, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus } from "lucide-react"
+import { Activity, ChevronDown, ChevronRight, Eye, Flag, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { memoriesApi, type MemoryControlSurface, type MemoryEvent, type MemoryItem } from "../../lib/memoriesApi"
 import { Button } from "../ui/button"
@@ -32,6 +32,7 @@ const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
   revert: { icon: RotateCcw, get label() { return t("memory:rolledBack") } },
   use: { icon: Eye, get label() { return t("memory:used2") } },
   trace: { icon: Activity, get label() { return t("memory:traceVerdict") } },
+  trace_correction: { icon: UserRoundPen, get label() { return t("memory:verdictCorrected") } },
   reinforce: { icon: Plus, get label() { return t("memory:reinforced") } },
   renew: { icon: CalendarPlus, get label() { return t("memory:renewed") } },
 }
@@ -199,6 +200,9 @@ function VersionEventRow({
         <span className="text-xs text-muted-foreground">{formatEventTime(event.ts)}</span>
         {sessionTurn ? <span className="text-xs text-muted-foreground">{sessionTurn}</span> : null}
       </div>
+      {event.kind === "trace_correction" ? <p className="mt-1 text-xs text-muted-foreground">
+        {event.meta?.withdrawn ? t("memory:correctionWithdrawn") : `${traceVerdictLabel(String(event.meta?.auditLabel ?? ""))} → ${traceVerdictLabel(String(event.meta?.label ?? ""))}`}
+      </p> : null}
       {changeEntries.length > 0 ? (
         <div className="mt-1 space-y-0.5">
           {changeEntries.map(([key, diff]) => (

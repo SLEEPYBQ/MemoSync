@@ -88,6 +88,12 @@ interface MemoryEventRow {
   meta: string | null;
 }
 
+export class TraceCorrectionError extends Error {
+  constructor(public status: 400 | 409, message: string) { super(message); }
+}
+
+type TraceCorrectionMeta = { label?: MemoryTraceLabel; auditLabel?: MemoryTraceLabel; note?: string; withdrawn?: boolean };
+
 /** Maps MemoryItem patch keys to their DB column names. */
 const UPDATABLE_COLUMNS: Record<string, string> = {
   content: 'content',
@@ -731,17 +737,71 @@ export class MemoryStore {
     this.appendEvent(id, 'trace', meta, { meta: { label } });
   }
 
+  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string }): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string } {
+    return this.db.transaction(() => {
+      const trace = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace' ORDER BY seq DESC LIMIT 1`)
+        .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
+      const auditLabel = trace?.meta ? (JSON.parse(trace.meta) as TraceCorrectionMeta).label : undefined;
+      if (!auditLabel) throw new TraceCorrectionError(409, 'No audit verdict exists for this memory and turn');
+      if (input.label !== null && (!['operational', 'injected_without_effect', 'violated', 'not_applicable'].includes(input.label) || input.label === auditLabel)) {
+        throw new TraceCorrectionError(400, 'Choose a different audit verdict');
+      }
+      const previous = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace_correction' ORDER BY seq DESC LIMIT 1`)
+        .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
+      const prior = previous?.meta ? JSON.parse(previous.meta) as TraceCorrectionMeta : undefined;
+      const note = input.note?.trim().slice(0, 300) || undefined;
+      if ((input.label === null && (!prior || prior.withdrawn)) || (input.label !== null && !prior?.withdrawn && prior?.label === input.label && prior.note === note)) {
+        return { auditLabel, changed: false, note };
+      }
+      this.appendEvent(id, 'trace_correction', { actor: 'user', sessionId: input.sessionId, turn: input.turn }, {
+        meta: input.label === null ? { withdrawn: true } : { label: input.label, auditLabel, ...(note ? { note } : {}) },
+      });
+      return { auditLabel, changed: true, note };
+    })();
+  }
+
+  private traceVerdicts(id?: string, limit?: number): Array<{ id: string; label: MemoryTraceLabel; corrected: boolean }> {
+    const rows = this.db.query(`SELECT t.memory_id, t.meta, c.meta AS correction
+      FROM memory_events t LEFT JOIN memory_events c ON c.seq = (
+        SELECT MAX(seq) FROM memory_events WHERE memory_id = t.memory_id AND session_id = t.session_id
+          AND turn = t.turn AND kind = 'trace_correction'
+      ) WHERE t.kind = 'trace' AND (? IS NULL OR t.memory_id = ?)
+      ORDER BY t.seq DESC LIMIT ?`).all(id ?? null, id ?? null, limit ?? -1) as Array<{ memory_id: string; meta: string | null; correction: string | null }>;
+    return rows.flatMap(row => {
+      const audit = row.meta ? (JSON.parse(row.meta) as TraceCorrectionMeta).label : undefined;
+      const correction = row.correction ? JSON.parse(row.correction) as TraceCorrectionMeta : undefined;
+      if (!audit) return [];
+      const corrected = Boolean(correction?.label && !correction.withdrawn);
+      return [{ id: row.memory_id, label: corrected ? correction!.label! : audit, corrected }];
+    });
+  }
+
   /** Latest trace verdict per memory (last event wins). */
   latestTraceLabels(): Map<string, MemoryTraceLabel> {
-    const rows = this.db
-      .query(`SELECT memory_id, meta FROM memory_events WHERE kind = 'trace' ORDER BY seq`)
-      .all() as Array<{ memory_id: string; meta: string | null }>;
     const labels = new Map<string, MemoryTraceLabel>();
-    for (const row of rows) {
-      const label = row.meta ? (JSON.parse(row.meta) as { label?: MemoryTraceLabel }).label : undefined;
-      if (label) labels.set(row.memory_id, label);
-    }
+    for (const row of this.traceVerdicts()) if (!labels.has(row.id)) labels.set(row.id, row.label);
     return labels;
+  }
+
+  latestTraceCorrections(): Set<string> {
+    const seen = new Set<string>();
+    const corrected = new Set<string>();
+    for (const row of this.traceVerdicts()) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (row.corrected) corrected.add(row.id);
+    }
+    return corrected;
+  }
+
+  recentTraceCorrections(id: string, limit = 3): Array<{ id: string; auditLabel: MemoryTraceLabel; userLabel: MemoryTraceLabel; note?: string }> {
+    const rows = this.db.query(`SELECT c.meta FROM memory_events c WHERE c.memory_id = ? AND c.kind = 'trace_correction'
+      AND c.seq = (SELECT MAX(seq) FROM memory_events WHERE memory_id = c.memory_id AND session_id = c.session_id AND turn = c.turn AND kind = 'trace_correction')
+      ORDER BY c.seq DESC`).all(id) as Array<{ meta: string | null }>;
+    return rows.flatMap(row => {
+      const meta = row.meta ? JSON.parse(row.meta) as TraceCorrectionMeta : undefined;
+      return meta?.label && meta.auditLabel && !meta.withdrawn ? [{ id, auditLabel: meta.auditLabel, userLabel: meta.label, ...(meta.note ? { note: meta.note } : {}) }] : [];
+    }).slice(0, limit);
   }
 
   /**
@@ -827,19 +887,7 @@ export class MemoryStore {
    * behavior have drifted apart.
    */
   recentTraceLabels(id: string, limit = 3): MemoryTraceLabel[] {
-    const rows = this.db
-      .query(
-        `SELECT meta FROM memory_events
-          WHERE memory_id = ? AND kind = 'trace'
-          ORDER BY seq DESC LIMIT ?`,
-      )
-      .all(id, limit) as Array<{ meta: string | null }>;
-    const labels: MemoryTraceLabel[] = [];
-    for (const row of rows) {
-      const label = row.meta ? (JSON.parse(row.meta) as { label?: MemoryTraceLabel }).label : undefined;
-      if (label) labels.push(label);
-    }
-    return labels;
+    return this.traceVerdicts(id, limit).map(row => row.label);
   }
 
   /** True when a PENDING revision candidate already targets `id` (don't re-propose). */

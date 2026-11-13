@@ -35,6 +35,14 @@ describe('provider branch stage contracts', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  it('includes developer corrections only when present in the audit prompt', () => {
+    const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const input = { usedMemories: [item], assistantText: 'Synthetic response' };
+    expect(buildAuditBranchPrompt(input)).not.toContain('Developer corrections of earlier audit verdicts');
+    expect(buildAuditBranchPrompt({ ...input, corrections: [{ id: item.id, auditLabel: 'violated', userLabel: 'not_applicable', note: 'No image' }] }))
+      .toContain(`[${item.id}] audit said violated; the developer says not_applicable — "No image"`);
+  });
+
   it.each(['project', 'session'] as const)('persists resolved C candidates without a sidecar and only revises the same scope (%s)', async scope => {
     const prior = memory.store.create({ content: 'Use npm', type: 'constraint', scope, ...(scope === 'project' ? { projectId: 'P' } : { sessionId: 'S' }) }, { actor: 'user' });
     const service = createCaptureService({ memory, callJson: forbiddenSidecar });

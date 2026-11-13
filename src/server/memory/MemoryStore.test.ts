@@ -21,6 +21,28 @@ describe('MemoryStore', () => {
     store = freshStore();
   });
 
+  it('applies and withdraws corrections per memory, session and turn', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 's', turn: 1 });
+    expect(() => store.recordTraceCorrection(item.id, { sessionId: 's', turn: 2, label: 'operational' })).toThrow('No audit verdict');
+    expect(() => store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated' })).toThrow('different');
+    const input = { sessionId: 's', turn: 1, label: 'not_applicable' as const, note: ` ${'x'.repeat(310)} ` };
+    expect(store.recordTraceCorrection(item.id, input).changed).toBe(true);
+    expect(store.recordTraceCorrection(item.id, input).changed).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['not_applicable']);
+    expect(store.latestTraceLabels().get(item.id)).toBe('not_applicable');
+    expect(store.latestTraceCorrections().has(item.id)).toBe(true);
+    expect(store.recentTraceCorrections(item.id)[0]!.note).toHaveLength(300);
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 2 });
+    expect(store.latestTraceLabels().get(item.id)).toBe('operational');
+    expect(store.latestTraceCorrections().has(item.id)).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['operational', 'not_applicable']);
+    expect(store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null }).changed).toBe(true);
+    expect(store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null }).changed).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['operational', 'violated']);
+    expect(store.recentTraceCorrections(item.id)).toEqual([]);
+  });
+
   it('creates a memory with auto-generated ID', () => {
     const a = store.create({ content: 'Use node via nvm', scope: 'personal', type: 'preference' }, { actor: 'system' });
     expect(a.id).toBe('M-01');

@@ -81,12 +81,20 @@ describe("read models", () => {
       kind: "memory_trace",
       turn: 1,
       labels: [{ id: "M-21", label: "operational" }],
+    }, {
+      _id: "correction-1",
+      createdAt: 6,
+      kind: "memory_trace_correction",
+      turn: 1,
+      memoryId: "M-21",
+      label: "violated",
     }] as TranscriptEntry[]
 
     expect(deriveMemoryRecordTranscript(entries).map((entry) => entry._id)).toEqual([
       "preview-1",
       "answer-with-citation",
       "trace-1",
+      "correction-1",
     ])
   })
 

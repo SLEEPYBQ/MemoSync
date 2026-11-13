@@ -69,8 +69,10 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   // Audit skeletons: a pending memory_trace is superseded by the terminal
   // entry for the same turn — only the last entry per turn renders.
   const settledTraceTurns = new Set<number | undefined>()
+  const traceCorrections = new Map<string, Extract<TranscriptEntry, { kind: "memory_trace_correction" }>>()
   const interruptResolutions = new Map<string, { action?: "content_fixed" | "usage_correction" | "removed_only"; correction?: string; selectedIds: string[]; enforced?: boolean }>()
   for (const entry of entries) {
+    if (entry.kind === "memory_trace_correction") traceCorrections.set(JSON.stringify([entry.turn, entry.memoryId]), entry)
     if (entry.kind === "memory_preview_decision") previewDecisions.set(entry.previewId, { decision: entry.decision, auto: entry.auto, selectedIds: entry.selectedIds, expectedUses: entry.expectedUses })
     if (entry.kind === "memory_interrupt_resolution") {
       interruptResolutions.set(entry.interruptId, { action: entry.action, correction: entry.correction, selectedIds: entry.selectedIds, enforced: entry.enforced })
@@ -259,7 +261,10 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         messages.push({
           ...createBaseMessage(entry),
           kind: "memory_trace",
-          labels: entry.labels,
+          labels: entry.labels.map(label => {
+            const correction = traceCorrections.get(JSON.stringify([entry.turn, label.id]))
+            return correction?.label ? { ...label, userLabel: correction.label, ...(correction.note ? { userNote: correction.note } : {}) } : label
+          }),
           status: entry.status,
           errorClass: entry.errorClass,
           dropped: entry.dropped,
@@ -364,6 +369,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         break
       }
       case "memory_interrupt_resolution":
+      case "memory_trace_correction":
       case "memory_preview_decision":
       case "memory_preview_relevance":
       case "memory_preview_update":

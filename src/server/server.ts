@@ -717,6 +717,13 @@ async function startLockedMemoSyncServer(
             usePlan: memoryUsePlan,
             revision: memoryRevision,
             auditAdmission: auditAdmission,
+            traceCorrection: {
+              hasChat: chatId => Boolean(store.getChat(chatId)),
+              append: async (chatId, entry) => {
+                await store.appendMessage(chatId, { ...entry, _id: crypto.randomUUID(), createdAt: Date.now() })
+                await router.broadcastChatStateImmediately(chatId)
+              },
+            },
             workingMemoryUsePlan: (input) => activeAgent.planMemoryPreviewUses(input),
             workingMemoryRevise: input => activeAgent.reviseMemoryPreview(input),
             workingMemoryPool: ({ chatId, previewId }) => {

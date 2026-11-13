@@ -12,6 +12,27 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("folds corrections into the matching turn, last wins and withdrawal clears", () => {
+    const trace = (turn: number) => entry({ kind: "memory_trace", turn, labels: [{ id: "M-1", label: "violated" }] })
+    const correction = (turn: number, label: "operational" | "not_applicable" | null, note?: string) =>
+      entry({ kind: "memory_trace_correction", turn, memoryId: "M-1", label, note })
+    const records = [trace(1), trace(2), correction(1, "operational"), correction(2, "not_applicable", "No image"), correction(1, null)]
+    const result = processTranscriptMessages(records)
+    expect(result).toHaveLength(2)
+    expect(result[0]).toMatchObject({ kind: "memory_trace", labels: [{ id: "M-1", label: "violated" }] })
+    expect(result[1]).toMatchObject({ kind: "memory_trace", labels: [{ userLabel: "not_applicable", userNote: "No image" }] })
+    expect((result[0] as Extract<typeof result[number], { kind: "memory_trace" }>).labels[0]!.userLabel).toBeUndefined()
+  })
+  test("corrections in one turn do not affect other memory ids", () => {
+    const result = processTranscriptMessages([
+      entry({ kind: "memory_trace", turn: 1, labels: [{ id: "M-1", label: "violated" }, { id: "M-2", label: "operational" }] }),
+      entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-1", label: "not_applicable", note: "No image" }),
+      entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-3", label: "violated" }),
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ labels: [{ id: "M-1", userLabel: "not_applicable", userNote: "No image" }, { id: "M-2", label: "operational" }] })
+    expect((result[0] as Extract<typeof result[number], { kind: "memory_trace" }>).labels[1]!.userLabel).toBeUndefined()
+  })
   test("keeps late automatic memory cards with their producing turns after hydration", () => {
     const entries = [
       entry({ kind: "user_prompt", content: "First task" }),

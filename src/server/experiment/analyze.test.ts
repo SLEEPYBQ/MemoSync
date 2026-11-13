@@ -24,6 +24,11 @@ const FIXTURE = [
 const lines = [...FIXTURE.map((e) => JSON.stringify(e)), "not json", ""]
 
 describe("analyzeEvents", () => {
+  test("accepts trace correction events without changing audit label totals", () => {
+    const report = analyzeEvents([JSON.stringify({ ts: "t", type: "memory.trace_correction", sessionId: "s", turn: 1, id: "M-01", auditLabel: "violated", userLabel: "operational" })])
+    expect(report.totals.ignoredEvents).toBe(0)
+    expect(report.sessions.s.traceLabels.violated).toBe(0)
+  })
   test("per-session metrics", () => {
     const report = analyzeEvents(lines)
     const s1 = report.sessions["s1"]

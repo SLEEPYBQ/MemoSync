@@ -40,6 +40,15 @@ function fakeLogger(): { logger: { event: (e: UsageEvent) => void }; events: Usa
 }
 
 describe('createTraceService', () => {
+  it('includes previous developer corrections only when provided', async () => {
+    const { call, calls } = fakeCallJson({ labels: [] });
+    const service = createTraceService({ callJson: call });
+    const input = { sessionId: 's', userText: 'task', assistantText: 'response', usedMemories: [mem('M-07', 'synthetic')] };
+    await service.trace(input);
+    expect(calls[0]!.user).not.toContain('Developer corrections of earlier audit verdicts');
+    await service.trace({ ...input, corrections: [{ id: 'M-07', auditLabel: 'violated', userLabel: 'not_applicable', note: 'No image' }] });
+    expect(calls[1]!.user).toContain('[M-07] audit said violated; the developer says not_applicable — "No image"');
+  });
   it('short-circuits on empty usedMemories: no LLM call, no log', async () => {
     const { call, calls } = fakeCallJson({ labels: [] });
     const { logger, events } = fakeLogger();

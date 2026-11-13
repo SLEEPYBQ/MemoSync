@@ -3143,6 +3143,7 @@ export class AgentCoordinator {
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
+          const corrections = usedMemories.flatMap(item => this.memory!.store.recentTraceCorrections(item.id, 3))
           // MemoSync always uses a child of the completed conversation. The
           // legacy path below retains its configured fork/sidecar policy.
           let outcome: TraceOutcome | null = null
@@ -3151,7 +3152,7 @@ export class AgentCoordinator {
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
             const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? null, args.parentLaunch, true, args.turnId)
-            const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
+            const auditInput = { usedMemories, corrections, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
               try {
@@ -3194,6 +3195,7 @@ export class AgentCoordinator {
               userText: args.userText,
               assistantText: args.assistantText,
               usedMemories,
+              corrections,
             })
           }
           // CAS: the pass judged the text it was SHOWN. A memory the user
