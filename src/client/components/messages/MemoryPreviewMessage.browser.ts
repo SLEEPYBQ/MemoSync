@@ -167,3 +167,116 @@ test("citation archive and restore block Start until the server responds", async
   expect(await working.getByText("Start (1 injected)").count()).toBe(1)
   expect(await page.evaluate(() => (window as unknown as { archiveFixtureResponses: number }).archiveFixtureResponses)).toBe(0)
 }, 30_000)
+
+type HeldMutation = { id: string; status: string; release: (fail: boolean) => void }
+
+async function installMutationFixture(page: Page) {
+  await page.addInitScript(() => {
+    const fixture = window as unknown as { mutationRequests: Array<{ id: string; status: string }> }
+    fixture.mutationRequests = []
+    const fetchOriginal = window.fetch.bind(window)
+    window.fetch = (input, init) => {
+      if (init?.method === "PATCH") {
+        fixture.mutationRequests.push({
+          id: String(input).split("/").at(-1)!,
+          status: (JSON.parse(String(init.body)) as { status: string }).status,
+        })
+      }
+      return fetchOriginal(input, init)
+    }
+  })
+  let receive: (patch: HeldMutation) => void = () => {}
+  const nextPatch = () => new Promise<HeldMutation>(resolve => { receive = resolve })
+  await page.route("**/api/**", async route => {
+    const request = route.request()
+    if (request.method() === "PATCH") {
+      const id = new URL(request.url()).pathname.split("/").at(-1)!
+      const status = (request.postDataJSON() as { status: string }).status
+      const fail = await new Promise<boolean>(resolve => receive({ id, status, release: resolve }))
+      const item = {
+        id, status, content: id === "M-02" ? "Validate each charge before submission." : "Record a synthetic receipt.",
+        scope: "personal", type: "constraint", abstractionLevel: "concrete", sensitive: false, createdAt: "", updatedAt: "",
+        usageCount: 0, reinforcedCount: 0, citedInCurrentSession: 0, version: 1,
+      }
+      await route.fulfill({
+        status: fail ? 500 : 200, contentType: "application/json",
+        body: JSON.stringify(fail ? { error: { code: "TEST", message: "Synthetic failure" } } : { data: item }),
+      })
+      return
+    }
+    await route.fulfill({ contentType: "application/json", body: '{"data":[]}' })
+  })
+  await page.goto(`${url}?remote=1`)
+  await page.locator("#working-memory").getByText("Start (1 injected)").waitFor()
+  const requests = async () => page.evaluate(async () => {
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    return (window as unknown as { mutationRequests: Array<{ id: string; status: string }> }).mutationRequests
+  })
+  const waitPending = async (count: number) => page.waitForFunction(
+    value => document.querySelector("#pending-m02")?.textContent === String(value), count,
+  )
+  return { nextPatch, requests, waitPending }
+}
+
+test("archive and undo are serialized across controls without blocking other memories", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 1100 } })
+  page.setDefaultTimeout(5_000)
+  const { nextPatch, requests, waitPending } = await installMutationFixture(page)
+  const controls = page.locator("#mutation-controls")
+  const firstArrival = nextPatch()
+  await controls.getByRole("button", { name: "First archive" }).click()
+  const first = await firstArrival
+  expect(first).toMatchObject({ id: "M-02", status: "archived" })
+
+  await controls.getByRole("button", { name: "Second archive" }).click()
+  await waitPending(2)
+  expect(await requests()).toEqual([{ id: "M-02", status: "archived" }])
+  const otherArrival = nextPatch()
+  await controls.getByRole("button", { name: "Other archive" }).click()
+  const other = await otherArrival
+  expect(other).toMatchObject({ id: "M-03", status: "archived" })
+  other.release(false)
+
+  const secondArrival = nextPatch()
+  first.release(false)
+  const second = await secondArrival
+  expect(second).toMatchObject({ id: "M-02", status: "archived" })
+  await controls.getByRole("button", { name: "First undo" }).click()
+  await waitPending(2)
+  expect((await requests()).filter(request => request.id === "M-02")).toEqual([
+    { id: "M-02", status: "archived" }, { id: "M-02", status: "archived" },
+  ])
+  const undoArrival = nextPatch()
+  second.release(false)
+  const undo = await undoArrival
+  expect(undo).toMatchObject({ id: "M-02", status: "active" })
+  undo.release(false)
+  await waitPending(0)
+  await page.waitForFunction(() => document.querySelector("#pending-m03")?.textContent === "0")
+  const working = page.locator("#working-memory")
+  await working.getByText("Start (1 injected)").waitFor()
+  expect(await working.getByRole("button", { name: /Start/ }).isEnabled()).toBe(true)
+  expect(await working.getByText("Validate each charge before submission.").count()).toBe(1)
+}, 30_000)
+
+test("a failed archive does not prevent the next queued archive", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 1100 } })
+  page.setDefaultTimeout(5_000)
+  const { nextPatch, requests, waitPending } = await installMutationFixture(page)
+  const controls = page.locator("#mutation-controls")
+  const firstArrival = nextPatch()
+  await controls.getByRole("button", { name: "First archive" }).click()
+  const first = await firstArrival
+  await controls.getByRole("button", { name: "Second archive" }).click()
+  await waitPending(2)
+  expect(await requests()).toEqual([{ id: "M-02", status: "archived" }])
+  const secondArrival = nextPatch()
+  first.release(true)
+  const second = await secondArrival
+  expect(second).toMatchObject({ id: "M-02", status: "archived" })
+  await controls.getByText("Synthetic failure", { exact: false }).waitFor()
+  second.release(false)
+  await waitPending(0)
+  await page.locator("#working-memory").getByText("Start without memory").waitFor()
+  expect(await page.locator("#working-memory").getByRole("button", { name: /Start/ }).isEnabled()).toBe(true)
+}, 30_000)
