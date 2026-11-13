@@ -225,12 +225,14 @@ export function buildMemoryToolSpecs(
           let view = current.view;
           if (grant.revision !== view.revision && grant.visibleIds) {
             const visible = memory.injectedFor(ctx.projectId, ctx.sessionId);
+            const restoredIds = new Set(visible.filter(item => !grant.visibleIds!.includes(item.id)
+              && grant.eventSeq !== undefined && memory.store.wasArchivedAt(item.id, grant.eventSeq)).map(item => item.id));
             const archived = grant.visibleIds.map(id => memory.store.getById(id)).filter((item): item is MemoryItem => item?.status === 'archived');
             const archivedIds = new Set(archived.map(item => item.id));
             const byId = new Map([...visible, ...archived.map(item => ({ ...item, status: 'active' as const }))].map(item => [item.id, item]));
-            const restored = [...grant.visibleIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []), ...visible.filter(item => !grant.visibleIds!.includes(item.id))];
+            const restored = [...grant.visibleIds.flatMap(id => byId.has(id) ? [byId.get(id)!] : []), ...visible.filter(item => !grant.visibleIds!.includes(item.id) && !restoredIds.has(item.id))];
             const selected = new Set(grant.selectedIds);
-            const reconstructed = compileMemoryView(memory, restored, restored.filter(item => selected.has(item.id)), ctx.projectId, ctx.sessionId, archivedIds);
+            const reconstructed = compileMemoryView(memory, restored, restored.filter(item => selected.has(item.id)), ctx.projectId, ctx.sessionId, archivedIds, restoredIds);
             if (reconstructed.revision === grant.revision) {
               admitted = restored.filter(item => selected.has(item.id));
               view = reconstructed;

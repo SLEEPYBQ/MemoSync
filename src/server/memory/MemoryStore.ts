@@ -437,6 +437,15 @@ export class MemoryStore {
     return this.update(id, { status: 'archived' }, meta);
   }
 
+  latestEventSeq(): number {
+    return (this.db.query('SELECT COALESCE(MAX(seq), 0) AS seq FROM memory_events').get() as { seq: number }).seq;
+  }
+
+  wasArchivedAt(id: string, seq: number): boolean {
+    const row = this.db.query('SELECT snapshot FROM memory_events WHERE memory_id = ? AND seq <= ? AND snapshot IS NOT NULL ORDER BY seq DESC LIMIT 1').get(id, seq) as { snapshot: string } | null;
+    return row ? JSON.parse(row.snapshot).status === 'archived' : false;
+  }
+
   /**
    * HARD-remove a pending candidate and every draft artifact. Used for
    * SENSITIVE candidates, where dismissal must erase the text (only the
