@@ -22,7 +22,7 @@ export function cleanOpencodeProblemDetail(stderr: string, home = homedir()): st
 }
 
 export class OpencodeLaunchError extends Error {
-  constructor(readonly problemDetail: string) { super('account-config-invalid') }
+  constructor(readonly problemDetail: string, cause?: unknown) { super('account-config-invalid', { cause }) }
 }
 
 export interface OpencodeServer {
@@ -68,20 +68,22 @@ export async function startOpencodeServer(args: {
     let cleanup = () => {}
     const url = await new Promise<string>((resolve, reject) => {
       let output = ''
-      const fail = () => reject(new OpencodeLaunchError(cleanOpencodeProblemDetail(stderr, args.env.HOME)))
+      const fail = (cause?: unknown) => reject(new OpencodeLaunchError(cleanOpencodeProblemDetail(stderr, args.env.HOME), cause))
+      const spawnError = (error: NodeJS.ErrnoException) => fail({ code: error.code ?? 'SPAWN_FAILED' })
+      const earlyExit = (exitCode: number | null, signal: NodeJS.Signals | null) => fail({ exitCode, signal })
       const abort = () => reject(args.signal?.reason ?? new Error('OpenCode start cancelled'))
-      const timer = setTimeout(fail, 9000)
+      const timer = setTimeout(() => fail({ code: 'STARTUP_TIMEOUT' }), 9000)
       const data = (chunk: Buffer) => {
         output = (output + chunk.toString()).slice(-4096)
         const match = /opencode server listening on (http:\/\/127\.0\.0\.1:\d+)\r?\n/.exec(output)
         if (match) resolve(match[1]!)
       }
       child.stdout!.on('data', data)
-      child.once('error', fail)
-      child.once('exit', fail)
+      child.once('error', spawnError)
+      child.once('exit', earlyExit)
       args.signal?.addEventListener('abort', abort, { once: true })
       cleanup = () => {
-        clearTimeout(timer); child.stdout!.off('data', data); child.off('error', fail); child.off('exit', fail)
+        clearTimeout(timer); child.stdout!.off('data', data); child.off('error', spawnError); child.off('exit', earlyExit)
         args.signal?.removeEventListener('abort', abort)
       }
     }).finally(() => cleanup())

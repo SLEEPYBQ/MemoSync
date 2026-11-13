@@ -2,9 +2,24 @@ import { expect, test } from 'bun:test'
 import { mkdtempSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
-import { startOpencodeServer, type OpencodeServer } from './opencode-server'
+import { OpencodeLaunchError, startOpencodeServer, type OpencodeServer } from './opencode-server'
 
 const fixture = join(import.meta.dir, 'fixtures/opencode-startup-fixture.ts')
+
+test('reports a sanitized spawn error when the working directory is missing', async () => {
+  const cwd = realpathSync(mkdtempSync(join(tmpdir(), 'opencode-startup-')))
+  try {
+    const failure = await startOpencodeServer({
+      executable: fixture, cwd: join(cwd, 'missing'),
+      env: { HOME: cwd, PATH: [dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter) },
+    }).then(() => null, error => error)
+    expect(failure).toBeInstanceOf(OpencodeLaunchError)
+    expect(failure.cause).toEqual({ code: 'ENOENT' })
+    expect(failure.problemDetail).toBe('Unable to load OpenCode account configuration.')
+  } finally {
+    rmSync(cwd, { recursive: true, force: true })
+  }
+})
 
 for (const ending of ['lf', 'crlf']) {
   test(`waits for the full port when a listening banner is split (${ending})`, async () => {
