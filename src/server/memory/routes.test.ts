@@ -154,6 +154,19 @@ describe('memory routes', () => {
     expect(transcript.at(-1)).toMatchObject({ kind: 'memory_trace_correction', label: null });
   });
 
+  it('rejects undo of an accepted revision when its archived target has expired', async () => {
+    const target = memory.store.create({ content: 'Synthetic target rule', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const proposal = memory.store.createRevisionProposal({ content: 'Synthetic revision', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    memory.store.acceptRevision(proposal.id, { actor: 'system' });
+    memory.store.update(target.id, { expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'system' });
+    const ids = [proposal.id, target.id];
+    const before = ids.map(id => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }));
+    const response = await call('POST', `/api/memories/${proposal.id}/revert-auto`, {});
+    expect(response!.status).toBe(400);
+    expect((await json(response)).error.message).toContain('Expiry must be a future date');
+    expect(ids.map(id => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }))).toEqual(before);
+  });
+
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
     const events: unknown[] = [];
     const transcript: unknown[] = [];

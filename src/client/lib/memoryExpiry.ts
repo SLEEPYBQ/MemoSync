@@ -15,10 +15,12 @@ export function localEndOfDay(value: string): string | null {
 }
 
 export function relativeExpiry(days: number, now = new Date()): string {
-  const date = new Date(now)
-  if (days === 0) date.setHours(23, 59, 59, 999)
-  else date.setDate(date.getDate() + days)
-  return date.toISOString()
+  if (days === 0) {
+    const date = new Date(now)
+    date.setHours(23, 59, 59, 999)
+    return date.toISOString()
+  }
+  return new Date(now.getTime() + days * 86400000).toISOString()
 }
 
 export function isPastExpiry(value?: string | null, now = Date.now()): boolean {

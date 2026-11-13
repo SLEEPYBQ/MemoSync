@@ -1203,6 +1203,9 @@ export class MemoryStore {
         throw new Error('Memory was edited after the auto-accept — use its history on the Board to roll back.');
       }
       const targets = this.revisionTargetsOf(id);
+      if (targets.some(target => target.status === 'archived' && target.expiresAt && Date.parse(target.expiresAt) <= Date.now())) {
+        throw new Error('Expiry must be a future date');
+      }
       const reverted = this.update(id, { status: 'candidate' }, meta);
       const restored = targets
         .filter((t) => t.status === 'archived')

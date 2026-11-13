@@ -1382,6 +1382,31 @@ describe('expiry (stale=过期) + renew + open revisions', () => {
 });
 
 describe('revertAutoAccept (delegating/Auto mode inverse)', () => {
+  it('rejects an expired archived target without changing any part of a multi-target undo', () => {
+    const store = freshStore();
+    const future = '2099-01-01T00:00:00.000Z';
+    const first = store.create({ content: 'Synthetic target one', scope: 'personal', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const second = store.create({ content: 'Synthetic target two', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const proposal = store.createMergeProposal({ content: 'Synthetic merged rule', scope: 'personal', type: 'fact' }, [first.id, second.id], { actor: 'system' })!;
+    store.acceptRevision(proposal.id, { actor: 'system' });
+    store.update(first.id, { expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'system' });
+    const ids = [proposal.id, first.id, second.id];
+    const before = ids.map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+    expect(() => store.revertAutoAccept(proposal.id, { actor: 'user' })).toThrow('Expiry must be a future date');
+    expect(ids.map(id => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
+    expect(store.getById(proposal.id)?.status).toBe('active');
+  });
+
+  it('restores an archived revision target with a future expiry', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic temporary rule', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal({ content: 'Synthetic revision', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    store.acceptRevision(proposal.id, { actor: 'system' });
+    const result = store.revertAutoAccept(proposal.id, { actor: 'user' });
+    expect(result.restored).toMatchObject({ id: target.id, status: 'active', expiresAt: target.expiresAt });
+    expect(result.reverted.status).toBe('candidate');
+  });
+
   it('refuses to turn a born-active memory into a Candidate', () => {
     const store = freshStore();
     const active = store.create({ content: 'Created as saved memory', scope: 'personal', type: 'fact' }, { actor: 'user' });
