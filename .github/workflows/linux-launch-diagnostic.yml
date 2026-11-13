@@ -47,10 +47,21 @@ jobs:
               child.once('close', resolve)
             })
             assert.equal(code, 0)
+            // Release stream ownership before the native subprocess is collected.
+            await Promise.all(child.stdio.filter(Boolean).map(stream => {
+              if (stream.closed) return
+              return new Promise(resolve => {
+                stream.once('close', resolve)
+                stream.destroy()
+              })
+            }))
+            return child
           }
-          await spawnAndClose()
+          let finished = await spawnAndClose()
           // These descriptors belong to this caller, not to the finished child.
           const owned = Array.from({ length: 8 }, () => openSync('/dev/null', 'r'))
+          const reference = new WeakRef(finished)
+          finished = null
           const collect = globalThis.Bun
             ? () => Bun.gc(true)
             : () => global.gc()
@@ -65,7 +76,7 @@ jobs:
           }
           console.log(JSON.stringify({
             runtime: process.versions.bun ? `Bun ${process.versions.bun}` : `Node ${process.versions.node}`,
-            mode, owned, unexpectedlyClosed: closed,
+            mode, childCollected: reference.deref() === undefined, owned, unexpectedlyClosed: closed,
           }))
           for (const fd of owned) {
             try { closeSync(fd) } catch {}
