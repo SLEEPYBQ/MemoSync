@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MemoryService } from './index';
 import { createRevisionService } from './evolution';
 import { handleMemoryRequest } from './routes';
+import { flushTraceCorrections } from './trace-correction-outbox';
 
 let dir: string;
 let memory: MemoryService;
@@ -179,25 +180,25 @@ describe('memory routes', () => {
     expect((await call('POST', path, { sessionId: 'chat', turn: 2, label: 'operational' }, services))!.status).toBe(409);
     expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: 'violated' }, services))!.status).toBe(400);
     expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: 'operational', note: '  done  ' }, services))!.status).toBe(200);
-    expect(transcript).toEqual([{ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'done' }]);
+    expect(transcript).toMatchObject([{ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'done' }]);
     expect(events).toContainEqual({ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: 'operational' });
     const list = await json(await call('GET', '/api/memories'));
     expect(list.data[0]).toMatchObject({ lastTraceLabel: 'operational', lastTraceCorrected: true });
     expect((await call('POST', path, { sessionId: 'chat', turn: 1, label: null }, services))!.status).toBe(200);
-    expect(transcript.at(-1)).toEqual({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
+    expect(transcript.at(-1)).toMatchObject({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
     expect(events.at(-1)).toMatchObject({ type: 'memory.trace_correction', userLabel: null });
   });
 
-  it('retries failed correction and withdrawal transcript projections without duplicating events', async () => {
+  it('retries failed correction and withdrawal deliveries without another POST or duplicate events', async () => {
     const events: unknown[] = [];
     const transcript: unknown[] = [];
     memory.close();
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir, logger: { event: e => void events.push(e) } });
     const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
-    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1 });
+    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1, cited: false });
     let fail = true;
     const services = { traceCorrection: { hasChat: (id: string) => id === 'chat', append: async (_id: string, entry: unknown) => {
-      if (fail) { fail = false; throw new Error('Synthetic transcript failure'); }
+      if (fail) throw new Error('Synthetic transcript failure');
       transcript.push(entry);
     } } };
     const path = `/api/memories/${item.id}/trace-correction`;
@@ -207,19 +208,89 @@ describe('memory routes', () => {
       { ...correction, turn: '1' }, { ...correction, sessionId: '' },
     ]) expect((await call('POST', path, body, services))!.status).toBe(400);
     expect((await call('POST', path, { ...correction, sessionId: 'other' }, services))!.status).toBe(409);
-    expect((await call('POST', path, correction, services))!.status).toBe(500);
-    expect((await call('POST', path, correction, services))!.status).toBe(200);
-    expect(transcript).toEqual([{ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'private reason' }]);
+    const correctionResponse = await call('POST', path, correction, services);
+    expect(correctionResponse!.status).toBe(202);
+    expect((await json(correctionResponse)).data).toMatchObject({ changed: true, transcriptPending: true });
+    const pending = memory.store.pendingTraceCorrectionDeliveries();
+    expect(pending).toHaveLength(1);
+    expect(memory.store.getById(item.id)?.usageCount).toBe(1);
+    const retryResponse = await call('POST', path, correction, services);
+    expect(retryResponse!.status).toBe(202);
+    expect((await json(retryResponse)).data).toMatchObject({ changed: false, transcriptPending: true });
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual(pending);
+    fail = false;
+    await flushTraceCorrections(memory, services.traceCorrection);
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    expect(transcript).toMatchObject([{ ...pending[0]!.entry, note: 'private reason' }]);
     expect(memory.store.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(1);
     expect(events).toEqual([{ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: 'operational' }]);
     fail = true;
     const withdraw = { sessionId: 'chat', turn: 1, label: null };
-    expect((await call('POST', path, withdraw, services))!.status).toBe(500);
-    expect((await call('POST', path, withdraw, services))!.status).toBe(200);
-    expect(transcript.at(-1)).toEqual({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
+    const withdrawalResponse = await call('POST', path, withdraw, services);
+    expect(withdrawalResponse!.status).toBe(202);
+    expect((await json(withdrawalResponse)).data).toMatchObject({ changed: true, transcriptPending: true });
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toHaveLength(1);
+    expect(memory.store.getById(item.id)?.usageCount).toBe(0);
+    fail = false;
+    await flushTraceCorrections(memory, services.traceCorrection);
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    expect(transcript.at(-1)).toMatchObject({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
     expect(memory.store.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(2);
     expect(events).toHaveLength(2);
     expect(events[1]).toEqual({ type: 'memory.trace_correction', sessionId: 'chat', turn: 1, id: item.id, auditLabel: 'violated', userLabel: null });
+    const noopWithdrawal = await call('POST', path, withdraw, services);
+    expect(noopWithdrawal!.status).toBe(200);
+    expect((await json(noopWithdrawal)).data).toMatchObject({ changed: false, transcriptPending: false });
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    expect(transcript).toHaveLength(2);
+  });
+
+  it('repairs pre-outbox correction and withdrawal retries without duplicating delivered entries', async () => {
+    const item = memory.store.create({ content: 'Synthetic legacy rule', scope: 'project', projectId: 'LegacyProject', type: 'constraint' }, { actor: 'user' });
+    memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 'chat', turn: 1, cited: false });
+    const transcript: unknown[] = [];
+    const services = { traceCorrection: { hasChat: () => true, append: async (_chat: string, entry: unknown) => {
+      expect(readFileSync(join(dir, 'projects', 'LegacyProject', 'memories.md'), 'utf8')).toContain('Synthetic legacy rule');
+      transcript.push(entry);
+    } } };
+    const path = `/api/memories/${item.id}/trace-correction`;
+    const correction = { sessionId: 'chat', turn: 1, label: 'operational' as const, note: 'Synthetic reason' };
+    const emptyWithdrawal = await call('POST', path, { sessionId: 'chat', turn: 1, label: null }, services);
+    expect(emptyWithdrawal!.status).toBe(200);
+    expect(transcript).toEqual([]);
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    memory.store.recordTraceCorrection(item.id, correction);
+    const correctionEvents = memory.store.getEvents(item.id);
+    const correctedItem = memory.store.getById(item.id);
+    expect(correctedItem?.usageCount).toBe(1);
+    expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await call('POST', path, correction, services);
+      expect(response!.status).toBe(200);
+      expect((await json(response)).data).toMatchObject({ changed: false, transcriptPending: false });
+      expect(transcript).toHaveLength(1);
+      expect(transcript[0]).toMatchObject({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: 'operational', note: 'Synthetic reason' });
+      expect(memory.store.getEvents(item.id)).toEqual(correctionEvents);
+      expect(memory.store.getById(item.id)).toEqual(correctedItem);
+      expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    }
+
+    const withdrawal = { sessionId: 'chat', turn: 1, label: null };
+    memory.store.recordTraceCorrection(item.id, withdrawal);
+    const withdrawalEvents = memory.store.getEvents(item.id);
+    const withdrawnItem = memory.store.getById(item.id);
+    expect(withdrawnItem?.usageCount).toBe(0);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await call('POST', path, withdrawal, services);
+      expect(response!.status).toBe(200);
+      expect((await json(response)).data).toMatchObject({ changed: false, transcriptPending: false });
+      expect(transcript).toHaveLength(2);
+      expect(transcript[1]).toMatchObject({ kind: 'memory_trace_correction', turn: 1, memoryId: item.id, label: null });
+      expect(memory.store.getEvents(item.id)).toEqual(withdrawalEvents);
+      expect(memory.store.getById(item.id)).toEqual(withdrawnItem);
+      expect(memory.store.pendingTraceCorrectionDeliveries()).toEqual([]);
+    }
   });
 
   it('uses transcript citation evidence for legacy trace counts and does not guess when absent', async () => {

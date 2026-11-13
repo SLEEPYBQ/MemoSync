@@ -7,9 +7,8 @@ import { traceVerdictLabel } from "../../i18n/labels"
 // one-line statement. Verdicts live ONLY in the audit stage; the summary
 // sentence stays a neutral narrative. Hovering a stage row pops the same
 // items the big card holds; clicking jumps back to that card in the
-// transcript. Monitoring only — the record holds no buttons that change
-// state; control stays at the gates.
-import { Fragment, useMemo } from "react"
+// transcript. Hidden automatic audits can be reviewed from the record.
+import { Fragment, useMemo, useState } from "react"
 import {
   ArrowRightLeft,
   CircleSlash,
@@ -33,8 +32,11 @@ import { recordUiMonitor } from "../../lib/memoriesApi"
 import { findQuoteBlock, flashQuoteBlock } from "../../lib/quoteJump"
 import { revealToolEvidence } from "../../lib/toolEvidence"
 import { CurrentTurnMemoryCitationProvider, MemoryCitationChip } from "../messages/shared"
+import { MemoryTraceMessage } from "../messages/MemoryTraceMessage"
+import { TranscriptChatContextProvider, useTranscriptChatContext } from "../messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog"
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../ui/hover-card"
 import { cn } from "../../lib/utils"
 
@@ -226,7 +228,7 @@ function AuditDetail({ chatId, audit }: { chatId: string; audit: RecordAuditStag
   )
 }
 
-function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: MemoryRecordTurn; isLast: boolean; isLive: boolean }) {
+function TurnBlock({ chatId, turn, isLast, isLive, onReviewAudit }: { chatId: string; turn: MemoryRecordTurn; isLast: boolean; isLive: boolean; onReviewAudit?: () => void }) {
   useI18n()
   const pulse = turnPulse(turn)
   const expired = turn.decision === "expired"
@@ -432,6 +434,7 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
             ) : null}
 
             {audit ? (
+              <>
               <StageRow
                 icon={ClipboardCheck}
                 label={t("memory:memoryUseAudit")}
@@ -460,6 +463,8 @@ function TurnBlock({ chatId, turn, isLast, isLive }: { chatId: string; turn: Mem
                   </>
                 )}
               </StageRow>
+              {onReviewAudit ? <button type="button" onClick={onReviewAudit} className="self-start text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline">{t("memory:reviewAudit")}</button> : null}
+              </>
             ) : null}
           </div>
         ) : null}
@@ -547,6 +552,10 @@ function hasDemoFlag(): boolean {
 
 export function MemoryRecordRail({ chatId, messages, streamingText = null, isTurnActive = false }: Props) {
   useI18n()
+  const [reviewEntryId, setReviewEntryId] = useState<string | null>(null)
+  const parentContext = useTranscriptChatContext()
+  const reviewMessage = messages.find((message): message is Extract<HydratedTranscriptMessage, { kind: "memory_trace" }> =>
+    message.kind === "memory_trace" && message.id === reviewEntryId)
   const demo = hasDemoFlag()
   const record = useMemo(
     () => (demo ? DEMO_RECORD : buildMemoryRecord(messages, streamingText)),
@@ -569,20 +578,35 @@ export function MemoryRecordRail({ chatId, messages, streamingText = null, isTur
   }
 
   return (
+    <>
     <div
       className="memory-ui min-h-0 flex-1 overflow-y-auto px-3 py-3"
       onClick={() => recordInteraction("click")}
       onScroll={() => recordInteraction("scroll")}
     >
-      {record.turns.map((turn, index) => (
-        <TurnBlock
+      {record.turns.map((turn, index) => {
+        const trace = messages.find((message): message is Extract<HydratedTranscriptMessage, { kind: "memory_trace" }> =>
+          message.kind === "memory_trace" && message.id === turn.audit?.entryId)
+        const canReview = !demo && trace?.hidden && (turn.audit?.labels.length ?? 0) > 0
+          && trace.status !== "pending" && trace.status !== "failed" && trace.status !== "discarded" && trace.status !== "empty"
+        return <TurnBlock
           key={turn.turn}
           chatId={chatId}
           turn={turn}
           isLast={index === record.turns.length - 1}
           isLive={index === record.turns.length - 1 && live}
+          onReviewAudit={canReview ? () => setReviewEntryId(trace.id) : undefined}
         />
-      ))}
+      })}
     </div>
+    <Dialog open={Boolean(reviewMessage)} onOpenChange={(open) => { if (!open) setReviewEntryId(null) }}>
+      <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-2xl" aria-describedby={undefined}>
+        <DialogHeader><DialogTitle>{t("memory:memoryUseAudit")}</DialogTitle></DialogHeader>
+        {reviewMessage ? <TranscriptChatContextProvider value={{ ...parentContext, chatId }}>
+          <MemoryTraceMessage message={reviewMessage} />
+        </TranscriptChatContextProvider> : null}
+      </DialogContent>
+    </Dialog>
+    </>
   )
 }
