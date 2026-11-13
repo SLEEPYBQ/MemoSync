@@ -43,10 +43,16 @@ describe('MemoryStore', () => {
     const restored = store.update(due.id, { status: 'active', expiresAt: future }, { actor: 'user' });
     expect(restored).toMatchObject({ status: 'active', expiresAt: future, version: due.version + 1 });
     const createSeq = store.getEvents(due.id)[0]!.seq;
-    const reverted = store.rollback(due.id, createSeq, { actor: 'user' });
-    expect(reverted.expiresAt).toBe(old);
-    expect(reverted.version).toBe(restored.version + 1);
-    expect(store.update(due.id, { expiresAt: null }, { actor: 'user' }).expiresAt).toBeNull();
+    const events = store.getEvents(due.id);
+    expect(() => store.rollback(due.id, createSeq, { actor: 'user' })).toThrow('Expiry must be a future date');
+    expect(store.getById(due.id)).toEqual(restored);
+    expect(store.getEvents(due.id)).toEqual(events);
+    const futureSeq = events.at(-1)!.seq;
+    const cleared = store.update(due.id, { expiresAt: null }, { actor: 'user' });
+    expect(cleared.expiresAt).toBeNull();
+    const reverted = store.rollback(due.id, futureSeq, { actor: 'user' });
+    expect(reverted.expiresAt).toBe(future);
+    expect(reverted.version).toBe(cleared.version + 1);
   });
 
   it('migrates expiry for old memory rows without assigning a deadline', () => {
@@ -60,6 +66,16 @@ describe('MemoryStore', () => {
     expect(legacy?.expiresAt).toBeNull();
     expect(new MemoryStore(db).expireDue()).toEqual([]);
     db.close();
+  });
+
+  it.each(['candidate', 'archived'] as const)('allows restoring a past deadline in a %s snapshot', status => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'fact', status,
+      expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const seq = store.getEvents(item.id)[0]!.seq;
+    store.update(item.id, { content: 'Edited synthetic rule' }, { actor: 'user' });
+    expect(store.rollback(item.id, seq, { actor: 'user' })).toMatchObject({
+      status, content: 'Synthetic rule', expiresAt: '2020-01-01T00:00:00.000Z',
+    });
   });
 
   it('restores old snapshots without an expiry as forever', () => {
