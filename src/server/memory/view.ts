@@ -11,6 +11,7 @@ export interface MemoryView {
   chatId?: string;
   /** Canonical effective selection; live eligibility is checked again on reads. */
   selectedIds: readonly string[];
+  visibleIds?: readonly string[];
 }
 
 /** Version-only baselines remain readable and receive one conservative refresh. */
@@ -28,8 +29,14 @@ export function compileMemoryView(
   selected: MemoryItem[],
   projectId?: string,
   chatId?: string,
+  archivedAsActiveIds: ReadonlySet<string> = new Set(),
 ): MemoryView {
-  const relations = memory.store.getViewRelations(visible.map(item => item.id));
+  const relations = memory.store.getViewRelations(visible.map(item => item.id)).map(row => {
+    const relation = [...row];
+    if (archivedAsActiveIds.has(relation[0]!) && relation[3] === 'archived') relation[3] = 'active';
+    if (archivedAsActiveIds.has(relation[1]!) && relation[7] === 'archived') relation[7] = 'active';
+    return relation;
+  });
   const states = visible.map(item => [
     item.id, item.version, item.content, item.detail ?? null, item.scope,
     item.projectId ?? null, item.sessionId ?? null, item.status, item.type,
@@ -48,6 +55,7 @@ export function compileMemoryView(
     projectId,
     chatId,
     selectedIds,
+    visibleIds: visible.map(item => item.id),
   };
 }
 

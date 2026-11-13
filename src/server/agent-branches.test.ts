@@ -534,6 +534,8 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
     const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply this synthetic rule.' })) }) });
     try {
       const other = h.memory.store.create({ content: 'Validate the synthetic charge', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+      h.memory.store.addRelation(h.item.id, other.id, 'conflicts_with');
+      h.memory.store.addRelation(other.id, h.item.id, 'conflicts_with');
       selected.push(h.item.id, other.id);
       await h.send();
       await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
@@ -546,6 +548,21 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       expect(h.mainTurns[0]!.developerInstructions).not.toContain(h.item.content);
       const decision = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview_decision');
       expect(decision).toMatchObject({ selectedIds: [other.id] });
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('rejects relation changes after a selected memory is archived', async () => {
+    const h = await setup();
+    try {
+      const other = h.memory.store.create({ content: 'Synthetic second rule', type: 'constraint', scope: 'personal' }, { actor: 'user' });
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      h.memory.store.archive(other.id, { actor: 'user' });
+      h.memory.store.addRelation(h.item.id, other.id, 'conflicts_with');
+      await expect(h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: [h.item.id] })).rejects.toThrow('changed during review');
+      expect(h.mainTurns).toHaveLength(0);
     } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
   });
 
