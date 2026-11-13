@@ -33,6 +33,47 @@ describe('memory tools (engine-neutral)', () => {
     const fresh = planMemoryInjection({ memory, chatId: 'S' }).view;
     expect((await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [item.id] }, { sessionId: 'S', memoryView: fresh })).text).not.toContain('Synthetic detail');
   });
+
+  it.each([true, false])('keeps the admitted view when a %s-related archived memory is restored', async related => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const archived = memory.store.create({ content: 'Previously archived rule', detail: 'Restored synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    if (related) {
+      memory.store.addRelation(admitted.id, archived.id, 'conflicts_with');
+      memory.store.addRelation(archived.id, admitted.id, 'conflicts_with');
+    }
+    memory.store.archive(archived.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.update(archived.id, { status: 'active' }, { actor: 'user' });
+    const specs = buildMemoryToolSpecs(memory);
+    const old = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [admitted.id, archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(old.isError).toBeFalsy();
+    expect(old.text).toContain('Admitted synthetic detail');
+    expect(old.text).not.toContain('Restored synthetic detail');
+    expect(old.receipts?.map(receipt => receipt.memoryId)).toEqual([admitted.id]);
+    const fresh = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    const next = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: fresh });
+    expect(next.text).toContain('Restored synthetic detail');
+  });
+
+  it.each(['edit', 'rescope', 'relation', 'new-visible'] as const)('rejects a restored grant after an additional %s change', async change => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const archived = memory.store.create({ content: 'Previously archived rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(admitted.id, archived.id, 'conflicts_with');
+    memory.store.archive(archived.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.update(archived.id, { status: 'active' }, { actor: 'user' });
+    if (change === 'edit') memory.store.update(admitted.id, { detail: 'Edited synthetic detail' }, { actor: 'user' });
+    if (change === 'rescope') memory.store.update(archived.id, { scope: 'project', projectId: 'P1' }, { actor: 'user' });
+    if (change === 'relation') memory.store.addRelation(archived.id, admitted.id, 'conflicts_with');
+    if (change === 'new-visible') memory.store.create({ content: 'New synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [admitted.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(change === 'edit' ? 'VERSION_CHANGED' : 'VIEW_CHANGED');
+    expect(result.text).not.toContain('Admitted synthetic detail');
+    expect(result.text).not.toContain('Edited synthetic detail');
+    expect(result.receipts).toEqual([]);
+  });
+
   it('honors an exact turn grant for an archived related memory, but not a fresh grant', async () => {
     const archived = memory.store.create({ content: 'Synthetic rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });

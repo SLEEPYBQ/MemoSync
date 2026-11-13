@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
+import { createRevisionService } from './evolution';
 import { handleMemoryRequest } from './routes';
 
 let dir: string;
@@ -87,6 +88,32 @@ describe('memory routes', () => {
     expect((await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: past }))!.status).toBe(400);
     const created = await json(await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: future }));
     expect(created.data.expiresAt).toBe(future);
+  });
+
+  it('removes a corrected automatic revision from the canonical collection and projection before broadcasting', async () => {
+    const target = memory.store.create({ content: 'Synthetic original rule', scope: 'project', projectId: 'RenderX', type: 'constraint' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) {
+      memory.store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'chat', turn });
+    }
+    const service = createRevisionService({ memory, callJson: async () => ({ action: 'revise', content: 'Synthetic stale proposal' }) });
+    const [proposal] = await service.scanAndPropose({ sessionId: 'chat', labels: [{ id: target.id, label: 'violated' }] });
+    expect(proposal).toBeDefined();
+    memory.syncProjection('RenderX');
+    const projectionPath = join(dir, 'projects', 'RenderX', 'memories.md');
+    expect(readFileSync(projectionPath, 'utf8')).toContain('Synthetic stale proposal');
+    let broadcast = false;
+    const services = { traceCorrection: { hasChat: () => true, append: async () => {
+      expect(readFileSync(projectionPath, 'utf8')).not.toContain('Synthetic stale proposal');
+      broadcast = true;
+    } } };
+    const response = await call('POST', `/api/memories/${target.id}/trace-correction`, { sessionId: 'chat', turn: 2, label: 'operational' }, services);
+    expect(response!.status).toBe(200);
+    expect((await json(response)).data.invalidatedIds).toEqual([proposal!.id]);
+    expect(broadcast).toBe(true);
+    const collection = (await json(await call('GET', '/api/memories?status=candidate'))).data;
+    expect(collection.map((item: { id: string }) => item.id)).not.toContain(proposal!.id);
+    expect(memory.store.listOpenRevisions('RenderX')).toEqual([]);
+    expect(memory.store.getById(target.id)?.status).toBe('active');
   });
 
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
@@ -812,6 +839,27 @@ describe('memory routes', () => {
 
     const empty = (await json(await call('GET', '/api/memories/search?q='))).data;
     expect(empty.memories).toEqual([]);
+  });
+
+  it('sweeps expired personal and project memories before search and only expires them once', async () => {
+    const past = '2020-01-01T00:00:00.000Z';
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const personal = memory.store.create({ content: 'Syntheticsearch expired personal', scope: 'personal', type: 'fact', expiresAt: past }, { actor: 'user' });
+    const project = memory.store.create({ content: 'Syntheticsearch expired project', scope: 'project', projectId: 'RenderX', type: 'fact', expiresAt: past }, { actor: 'user' });
+    const active = memory.store.create({ content: 'Syntheticsearch future rule', scope: 'project', projectId: 'RenderX', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const path = '/api/memories/search?q=syntheticsearch&project=RenderX';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = (await json(await call('GET', path))).data;
+      const ids = result.memories.map((item: { id: string }) => item.id);
+      expect(ids).toContain(active.id);
+      expect(ids).not.toContain(personal.id);
+      expect(ids).not.toContain(project.id);
+      for (const item of [personal, project]) {
+        expect(memory.store.getById(item.id)?.status).toBe('archived');
+        expect(memory.store.getEvents(item.id).filter(event => event.kind === 'expire')).toHaveLength(1);
+      }
+    }
+    expect(memory.store.getById(active.id)?.status).toBe('active');
   });
 
   it('find-duplicates groups identical content', async () => {
