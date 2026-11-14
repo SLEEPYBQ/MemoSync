@@ -370,7 +370,7 @@ function CheckupSuggestionRow({
     case "redundancy":
       actions = other ? (
         <>
-          {teamPair && localId ? actionButton(t("memory:archiveValue0", { v0: localId }), "archived", () =>
+          {teamPair && localId ? actionButton(t("memory:archiveValue0", { v0: localId }), t("memory:keptValue0ArchivedValue1", { v0: teamId, v1: localId }), () =>
             memoriesApi.resolveAttention("redundant", localId, "archive", chatId, teamId, surface),
           ) : !teamPair ? actionButton(t("memory:merge"), t("memory:mergeProposalDraftedReviewItInStep1NextTurn"), () =>
             memoriesApi.resolveAttention("redundant", id, "merge", chatId, other, surface),

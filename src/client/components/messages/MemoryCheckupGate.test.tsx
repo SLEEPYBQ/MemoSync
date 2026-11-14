@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
 import { MemoryCheckupGate } from "./MemoryCheckupGate"
 
 type CheckupMessage = Extract<HydratedTranscriptMessage, { kind: "memory_checkup" }>
+
+runMountedRaceSuite("team redundancy archive receipt", new URL("./MemoryCheckupGate.browser.ts", import.meta.url))
 
 describe("MemoryCheckupGate", () => {
   test("team/local redundancy offers archiving the local rule or keeping both, not merge", () => {

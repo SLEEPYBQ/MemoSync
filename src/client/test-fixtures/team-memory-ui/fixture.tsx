@@ -7,6 +7,7 @@ import { MemoryBoardLauncherProvider } from "../../app/memory/MemoryBoardLaunche
 import { MemoryCard } from "../../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../../components/memory/MemoryDetailPanel"
 import { MemoryPreviewMessage } from "../../components/messages/MemoryPreviewMessage"
+import { MemoryCheckupGate } from "../../components/messages/MemoryCheckupGate"
 import { MemoryTeamUpdatedMessage } from "../../components/messages/MemoryTeamUpdatedMessage"
 import { MemoryCitationChip } from "../../components/messages/shared"
 import { TranscriptChatContextProvider } from "../../components/messages/render-context"
@@ -44,6 +45,18 @@ function Detail({ initial }: { initial: MemoryItem }) {
   return <MemoryDetailPanel item={item} allItems={[item]} onClose={() => {}} onUpdated={setItem} onAccept={async () => {}} onArchive={async () => {}} />
 }
 
+function CheckupFixture() {
+  const [resolvedRows, setResolvedRows] = useState<ReadonlyMap<string, string>>(() => new Map())
+  const message = {
+    kind: "memory_checkup", id: "checkup", checkupId: "checkup", timestamp: "2026-08-19T00:00:00.000Z",
+    suggestions: [{ kind: "redundancy", memoryId: team.id, otherMemoryId: ordinary.id, reason: "Similar synthetic rules", teamPair: true, teamMemoryId: team.id }],
+  } as Extract<HydratedTranscriptMessage, { kind: "memory_checkup" }>
+  return <TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
+    <section id="checkup"><MemoryCheckupGate message={message} onRespond={() => {}} resolvedRows={resolvedRows}
+      onSuggestionResolved={(id, outcome) => setResolvedRows(current => new Map(current).set(id, outcome))} /></section>
+  </TranscriptChatContextProvider>
+}
+
 function Fixture() {
   return <MemoryRouter><MemoryBoardLauncherProvider onOpenMemoryBoard={request => fixtureWindow.fixtureLaunches.push(request)}>
     <TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
@@ -64,4 +77,4 @@ function Fixture() {
   </MemoryBoardLauncherProvider></MemoryRouter>
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />)
+createRoot(document.getElementById("root")!).render(new URLSearchParams(window.location.search).has("checkup") ? <CheckupFixture /> : <Fixture />)
