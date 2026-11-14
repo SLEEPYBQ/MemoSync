@@ -21,6 +21,8 @@ import type {
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
 
+type RevisionTargetSnapshot = { id: string; version: number; digest: string; format?: number };
+
 export type TraceCorrectionDelivery = {
   seq: number;
   chatId: string;
@@ -36,6 +38,7 @@ export interface CreateMemoryInput {
   scope: MemoryScope;
   type: MemoryType;
   status?: MemoryStatus;
+  expiresAt?: string | null;
   projectId?: string;
   sessionId?: string;
   topic?: string;
@@ -70,6 +73,7 @@ interface MemoryRow {
   scope: string;
   type: string;
   status: string;
+  expires_at: string | null;
   project_id: string | null;
   session_id: string | null;
   topic: string | null;
@@ -111,6 +115,7 @@ const UPDATABLE_COLUMNS: Record<string, string> = {
   scope: 'scope',
   type: 'type',
   status: 'status',
+  expiresAt: 'expires_at',
   projectId: 'project_id',
   sessionId: 'session_id',
   topic: 'topic',
@@ -126,6 +131,7 @@ const VERSIONED_FIELDS = [
   'scope',
   'type',
   'status',
+  'expiresAt',
   'topic',
   'abstractionLevel',
   'projectId',
@@ -136,7 +142,7 @@ const VERSIONED_FIELDS = [
 const SCOPE_REACH: Record<MemoryScope, number> = { session: 0, project: 1, personal: 2 };
 
 /** Patch keys whose change means "the text/meaning the model acts on moved" — these bump `version`. */
-const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel'] as const;
+const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel', 'expiresAt'] as const;
 
 type CandidateDecisionTransition = 'ordinary' | 'dismiss' | 'restore';
 
@@ -186,10 +192,10 @@ export class MemoryStore {
         .query(
           `INSERT INTO memories
              (id, content, detail, abstraction_level, sensitive, scope, type, status, project_id, session_id, topic,
-              provenance_session_id, provenance_turn, usage_count, reinforced_count, evidence_class, created_at, updated_at)
+              provenance_session_id, provenance_turn, usage_count, reinforced_count, evidence_class, expires_at, created_at, updated_at)
            VALUES
              ($id, $content, $detail, $abstraction_level, $sensitive, $scope, $type, $status, $project_id, $session_id, $topic,
-              $provenance_session_id, $provenance_turn, $usage_count, $reinforced_count, $evidence_class, $created_at, $updated_at)`,
+              $provenance_session_id, $provenance_turn, $usage_count, $reinforced_count, $evidence_class, $expires_at, $created_at, $updated_at)`,
         )
         .run({
           $id: id,
@@ -208,6 +214,7 @@ export class MemoryStore {
           $usage_count: 0,
           $reinforced_count: 0,
           $evidence_class: input.evidenceClass ?? null,
+          $expires_at: input.expiresAt ?? null,
           $created_at: now,
           $updated_at: now,
         });
@@ -390,11 +397,20 @@ export class MemoryStore {
     }
   }
 
+  private isExpiredArchive(id: string): boolean {
+    if (this.getById(id)?.status !== 'archived') return false;
+    const event = this.db.query(`SELECT kind FROM memory_events
+      WHERE memory_id = ? AND json_type(changes, '$.status') IS NOT NULL
+      ORDER BY seq DESC LIMIT 1`).get(id) as { kind: MemoryEventKind } | null;
+    return event?.kind === 'expire';
+  }
+
   private updateWithCandidateDecision(
     id: string,
     patch: Partial<MemoryItem>,
     meta: ActorMeta,
     transition: CandidateDecisionTransition,
+    eventKind?: MemoryEventKind,
   ): MemoryItem {
     return this.db.transaction(() => {
       const existing = this.getById(id);
@@ -419,8 +435,11 @@ export class MemoryStore {
       changes[key] = { before, after };
     }
 
-      if (sets.length === 0) return existing;
-      this.syncMemoryRevocation(existing, patch.status);
+      const reaffirmArchive = eventKind !== 'expire' && patch.status === 'archived'
+        && existing.status === 'archived' && this.isExpiredArchive(id);
+      if (sets.length === 0 && !reaffirmArchive) return existing;
+      if (reaffirmArchive) changes.status = { before: 'archived', after: 'archived' };
+      if (eventKind !== 'expire') this.syncMemoryRevocation(existing, patch.status);
 
     sets.push('updated_at = $updated_at');
     params.$updated_at = new Date().toISOString();
@@ -434,7 +453,7 @@ export class MemoryStore {
     this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
     const updated = this.getById(id)!;
-    this.appendEvent(id, this.classifyChange(existing, changes), meta, {
+    this.appendEvent(id, eventKind ?? this.classifyChange(existing, changes), meta, {
       changes,
       snapshot: this.snapshotOf(updated),
     });
@@ -451,8 +470,21 @@ export class MemoryStore {
     return this.update(id, { status: 'archived' }, meta);
   }
 
+  expireDue(now = new Date().toISOString()): MemoryItem[] {
+    return this.db.transaction(() => {
+      const rows = this.db.query(`SELECT id FROM memories WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY id`).all(now) as Array<{ id: string }>;
+      return rows.map(({ id }) => this.updateWithCandidateDecision(id, { status: 'archived' }, { actor: 'system' }, 'ordinary', 'expire'));
+    })();
+  }
+
   latestEventSeq(): number {
     return (this.db.query('SELECT COALESCE(MAX(seq), 0) AS seq FROM memory_events').get() as { seq: number }).seq;
+  }
+
+  expirationsSince(seq: number, projectId?: string, sessionId?: string): { ids: string[]; lastSeq: number } {
+    const rows = this.db.query(`SELECT e.seq, e.memory_id FROM memory_events e JOIN memories m ON m.id=e.memory_id
+      WHERE e.kind='expire' AND e.seq > ? AND (m.scope='personal' OR (m.scope='project' AND m.project_id=?) OR (m.scope='session' AND m.session_id=?)) ORDER BY e.seq`).all(seq, projectId ?? null, sessionId ?? null) as Array<{ seq: number; memory_id: string }>;
+    return { ids: [...new Set(rows.map(row => row.memory_id))], lastSeq: this.latestEventSeq() };
   }
 
   wasArchivedAt(id: string, seq: number): boolean {
@@ -566,6 +598,7 @@ export class MemoryStore {
 
       const sets: string[] = [];
       const params: Record<string, Bind> = { $id: id };
+      let expiryChanged = false;
       for (const [key, column] of Object.entries(UPDATABLE_COLUMNS)) {
         if (key === 'status') continue;
         const value = (patch as Record<string, unknown>)[key];
@@ -573,11 +606,13 @@ export class MemoryStore {
         const before = (existing as unknown as Record<string, unknown>)[key] ?? null;
         const after = value ?? null;
         if (before === after) continue;
+        if (key === 'expiresAt') expiryChanged = true;
         sets.push(`${column} = $${column}`);
         params[`$${column}`] = after as Bind;
       }
 
       if (sets.length === 0) return existing;
+      if (expiryChanged) sets.push('version = version + 1');
       sets.push('updated_at = $updated_at');
       params.$updated_at = new Date().toISOString();
       this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
@@ -640,11 +675,13 @@ export class MemoryStore {
     if (this.wasCandidateDismissed(content, owner)) return true;
     const fingerprint = this.candidateFingerprint(content);
     const ownerId = owner.scope === 'project' ? owner.projectId ?? null : owner.scope === 'session' ? owner.sessionId ?? null : null;
-    if (this.db.query(`SELECT 1 FROM memory_revocations WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
-      .get(fingerprint, owner.scope, ownerId)) return true;
+    const revocations = this.db.query(`SELECT memory_id FROM memory_revocations
+      WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
+      .all(fingerprint, owner.scope, ownerId) as Array<{ memory_id: string }>;
+    if (revocations.some(row => !this.isExpiredArchive(row.memory_id))) return true;
     // Read compatibility for archived rows written before revocation receipts.
     return this.list({ scope: owner.scope, projectId: owner.projectId, sessionId: owner.sessionId, status: 'archived' })
-      .some(item => this.candidateFingerprint(item.content) === fingerprint);
+      .some(item => this.candidateFingerprint(item.content) === fingerprint && !this.isExpiredArchive(item.id));
   }
 
   getCaptureOperation(key: string): { memoryId?: string } | null {
@@ -1058,7 +1095,11 @@ export class MemoryStore {
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
       if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      const proposal = this.create({
+        ...input,
+        expiresAt: input.expiresAt === undefined ? target.expiresAt : input.expiresAt,
+        status: 'candidate',
+      }, meta);
       this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
       return { item: proposal, isRevision: true };
@@ -1085,14 +1126,20 @@ export class MemoryStore {
         || !this.revisionTraceEvidenceIsCurrent(evidence.targetId, evidence.traceSeqs))) {
         throw new RevisionConflictError();
       }
-      const reviewed = this.getKv<ReturnType<MemoryStore['revisionSnapshot']>[]>(`revision_targets:${candidateId}`);
+      const reviewed = this.getKv<RevisionTargetSnapshot[]>(`revision_targets:${candidateId}`);
       if (targets.length > 0 || reviewed !== null) {
         if (!Array.isArray(reviewed) || reviewed.length !== targets.length || targets.some((target, index) => {
           const snapshot = this.revisionSnapshot(target);
+          const saved = reviewed[index];
+          const legacySnapshot: Partial<MemoryItemSnapshot> = this.snapshotOf(target);
+          delete legacySnapshot.expiresAt;
+          const legacyMatches = saved?.format === undefined && target.expiresAt == null
+            && saved?.digest === createHash('sha256').update(JSON.stringify(legacySnapshot)).digest('hex');
           return target.status !== 'active'
-            || reviewed[index]?.id !== snapshot.id
-            || reviewed[index]?.version !== snapshot.version
-            || reviewed[index]?.digest !== snapshot.digest;
+            || saved?.id !== snapshot.id
+            || saved?.version !== snapshot.version
+            || (saved?.format !== undefined && saved.format !== 2)
+            || (saved?.digest !== snapshot.digest && !legacyMatches);
         })) throw new RevisionConflictError();
       }
       if (draftPatch && Object.keys(draftPatch).length > 0) {
@@ -1224,6 +1271,9 @@ export class MemoryStore {
         throw new Error('Memory was edited after the auto-accept — use its history on the Board to roll back.');
       }
       const targets = this.revisionTargetsOf(id);
+      if (targets.some(target => target.status === 'archived' && target.expiresAt && Date.parse(target.expiresAt) <= Date.now())) {
+        throw new Error('Expiry must be a future date');
+      }
       const reverted = this.update(id, { status: 'candidate' }, meta);
       const restored = targets
         .filter((t) => t.status === 'archived')
@@ -1277,18 +1327,26 @@ export class MemoryStore {
           || (input.scope === 'session' && (!input.sessionId || target.sessionId !== input.sessionId))) return null;
         targets.push(target);
       }
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      const inheritedExpiry = targets.reduce<string | null>((earliest, target) =>
+        target.expiresAt && (earliest === null || Date.parse(target.expiresAt) < Date.parse(earliest))
+          ? target.expiresAt : earliest, null);
+      const proposal = this.create({
+        ...input,
+        expiresAt: input.expiresAt === undefined ? inheritedExpiry : input.expiresAt,
+        status: 'candidate',
+      }, meta);
       for (const targetId of targetIds) this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, targets.map((target) => this.revisionSnapshot(target)));
       return proposal;
     })() as MemoryItem | null;
   }
 
-  private revisionSnapshot(item: MemoryItem) {
+  private revisionSnapshot(item: MemoryItem): RevisionTargetSnapshot {
     return {
       id: item.id,
       version: item.version,
       digest: createHash('sha256').update(JSON.stringify(this.snapshotOf(item))).digest('hex'),
+      format: 2,
     };
   }
 
@@ -1376,6 +1434,10 @@ export class MemoryStore {
       const target = this.getEvents(id).find((e) => e.seq === toSeq);
       if (!target) throw new Error(`No event ${toSeq} for memory ${id}`);
       if (!target.snapshot) throw new Error(`Event ${toSeq} (${target.kind}) is not a version — cannot roll back to it`);
+      if (target.snapshot.status === 'active' && target.snapshot.expiresAt
+        && Date.parse(target.snapshot.expiresAt) <= Date.now()) {
+        throw new Error('Expiry must be a future date');
+      }
 
     const existing = this.getById(id);
     if (!existing) throw new Error(`Memory not found: ${id}`);
@@ -1595,6 +1657,7 @@ export class MemoryStore {
       scope: item.scope,
       type: item.type,
       status: item.status,
+      expiresAt: item.expiresAt ?? null,
       topic: item.topic,
       abstractionLevel: item.abstractionLevel,
       projectId: item.projectId,
@@ -1629,6 +1692,7 @@ export class MemoryStore {
       scope: row.scope as MemoryScope,
       type: row.type as MemoryType,
       status: row.status as MemoryStatus,
+      expiresAt: row.expires_at ?? null,
       projectId: row.project_id ?? undefined,
       sessionId: row.session_id ?? undefined,
       topic: row.topic ?? undefined,

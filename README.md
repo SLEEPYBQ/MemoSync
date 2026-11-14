@@ -103,6 +103,8 @@ The audit is a model judgment and can be wrong.
 - Open an item to edit it, read its history, or archive it.
 - **Memory files** keeps a Markdown copy for other tools, and imports an existing `CLAUDE.md` as candidates for review.
 
+Temporary memories can have an expiry date. Set or clear it when reviewing a candidate or editing a memory; the Board highlights items expiring within seven days. Expired items are archived before future turns and can be restored for another seven days. Archiving does not erase context already delivered to a running turn.
+
 **Import memory**, at the top of the board, brings in what Claude Code and Codex already remember. A model you pick splits their notes into short items, sorted into personal preferences and project memory. Nothing is saved until you review it. Later imports propose only what changed, and anything you remove stays under **Removed**, where you can bring it back.
 
 **The Memory Record**, on the right of every chat, logs each turn: what was proposed, selected, cited, stopped and audited. It survives context compaction, so you and the agent can still refer back to it.

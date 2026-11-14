@@ -49,6 +49,8 @@ export const SERVER_UI_COPY = {
   "surfaceArchiveInvalid": "surface must be board, chat_gate, chat_citation or chat_audit",
   "surfaceArchiveOnly": "This surface only supports archiving and restoring memories",
   "traceCorrectionMissing": "No audit verdict exists for this memory and turn",
+  "expiryInvalid": "Invalid expiry date",
+  "expiryFuture": "Expiry must be a future date",
   "traceCorrectionSame": "Choose a different audit verdict",
   "traceCorrectionInvalid": "Invalid audit correction",
   "traceCorrectionUnavailable": "Audit correction is unavailable",

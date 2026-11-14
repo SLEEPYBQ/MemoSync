@@ -8,7 +8,7 @@ import { MemoryBadge } from "./MemoryBadge"
 // revert) show a before→after diff and a two-step "roll back" action; `use`
 // events are quiet citation rows, grouped and folded by default.
 import { useCallback, useEffect, useState } from "react"
-import { Activity, ChevronDown, ChevronRight, Eye, Flag, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
+import { Activity, ChevronDown, ChevronRight, Clock3, Eye, Flag, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { memoriesApi, type MemoryControlSurface, type MemoryEvent, type MemoryItem } from "../../lib/memoriesApi"
 import { Button } from "../ui/button"
@@ -33,6 +33,7 @@ const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
   use: { icon: Eye, get label() { return t("memory:used2") } },
   trace: { icon: Activity, get label() { return t("memory:traceVerdict") } },
   trace_correction: { icon: UserRoundPen, get label() { return t("memory:verdictCorrected") } },
+  expire: { icon: Clock3, get label() { return t("memory:expired") } },
   reinforce: { icon: Plus, get label() { return t("memory:reinforced") } },
   renew: { icon: CalendarPlus, get label() { return t("memory:renewed") } },
 }
@@ -54,6 +55,7 @@ const FIELD_LABELS: Record<string, string> = {
   get abstractionLevel() { return t("memory:fieldAbstraction") },
   get projectId() { return t("memory:fieldProject") },
   get sessionId() { return t("memory:fieldSession") },
+  get expiresAt() { return t("memory:expiry") },
 }
 
 function fieldLabel(key: string): string {
@@ -64,6 +66,11 @@ function truncateValue(value: unknown, max = 60): string {
   if (value === null || value === undefined || value === "") return "—"
   const s = String(value)
   return s.length > max ? `${s.slice(0, max)}…` : s
+}
+
+function changeValue(key: string, value: unknown): string {
+  if (key !== "expiresAt") return truncateValue(value)
+  return typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toLocaleString(getLocale()) : t("memory:forever")
 }
 
 function formatEventTime(ts: string): string {
@@ -208,9 +215,9 @@ function VersionEventRow({
           {changeEntries.map(([key, diff]) => (
             <div key={key} className="text-xs">
               <span className="text-muted-foreground">{fieldLabel(key)}: </span>
-              <span className="text-muted-foreground line-through">{truncateValue(diff.before)}</span>
+              <span className="text-muted-foreground line-through">{changeValue(key, diff.before)}</span>
               <span className="mx-1 text-muted-foreground">→</span>
-              <span className="text-foreground">{truncateValue(diff.after)}</span>
+              <span className="text-foreground">{changeValue(key, diff.after)}</span>
             </div>
           ))}
         </div>

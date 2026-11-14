@@ -1,4 +1,6 @@
 {
+  "serverExpiryInvalid": "Invalid expiry date",
+  "serverExpiryFuture": "Expiry must be a future date",
   "disconnected": "Disconnected",
   "providerResponseIsMissingData": "Provider response is missing data",
   "value0TimedOutWaitingForTheServerReconnecting": "{{v0}} timed out waiting for the server — reconnecting",

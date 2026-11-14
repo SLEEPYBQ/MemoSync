@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS memories (
   scope TEXT NOT NULL,       -- 'personal' | 'project' | 'session'
   type TEXT NOT NULL,        -- 'constraint' | 'preference' | 'lesson' | 'fact'
   status TEXT NOT NULL DEFAULT 'active',
+  expires_at TEXT,
   project_id TEXT,
   session_id TEXT,
   topic TEXT,
@@ -156,6 +157,7 @@ export function applySchema(db: Database): void {
     (db.query(`PRAGMA table_info(memories)`).all() as Array<{ name: string }>).map((c) => c.name),
   );
   if (!columns.has('detail')) db.exec(`ALTER TABLE memories ADD COLUMN detail TEXT`);
+  if (!columns.has('expires_at')) db.exec(`ALTER TABLE memories ADD COLUMN expires_at TEXT`);
   if (!columns.has('abstraction_level')) {
     db.exec(`ALTER TABLE memories ADD COLUMN abstraction_level TEXT NOT NULL DEFAULT 'contextual'`);
   }

@@ -53,6 +53,26 @@ describe('MemoryFile', () => {
     expect(text).toContain('- [M-08] Check for port conflicts');
   });
 
+  it('exports active and pending expiry dates in the local calendar', () => {
+    for (const [timezone, expiresAt, date] of [
+      ['America/Los_Angeles', '2026-11-14T07:59:59.999Z', '2026-11-13'],
+      ['Asia/Shanghai', '2026-11-13T16:30:00.000Z', '2026-11-14'],
+      ['UTC', '2026-11-14T07:59:59.999Z', '2026-11-14'],
+    ]) {
+      const active = mem({ id: 'M-01', content: 'Temporary active', expiresAt });
+      const pending = mem({ id: 'M-02', content: 'Temporary pending', status: 'candidate', expiresAt });
+      const permanent = mem({ id: 'M-03', content: 'Permanent' });
+      const child = Bun.spawnSync([process.execPath, '-e',
+        `import { MemoryFile } from ${JSON.stringify(join(import.meta.dir, 'MemoryFile.ts'))}; new MemoryFile(${JSON.stringify(dir)}).writePersonal(${JSON.stringify([active, permanent])}, ${JSON.stringify([pending])});`,
+      ], { env: { ...process.env, TZ: timezone }, stdout: 'pipe', stderr: 'pipe' });
+      expect(child.exitCode, new TextDecoder().decode(child.stderr)).toBe(0);
+      const lines = file.readPersonalRaw().split('\n');
+      expect(lines).toContain(`- [M-01] Temporary active (until ${date})`);
+      expect(lines).toContain(`- [M-02] Temporary pending (until ${date})`);
+      expect(lines).toContain('- [M-03] Permanent');
+    }
+  });
+
   it('writes project memories to correct path', () => {
     const items = [
       mem({ id: 'M-07', content: 'Only run MainTests (~19s)', scope: 'project', type: 'constraint', projectId: 'RenderX', topic: 'Testing' }),

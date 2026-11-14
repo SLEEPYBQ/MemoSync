@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -14,11 +15,163 @@ function freshStore(): MemoryStore {
   return new MemoryStore(db);
 }
 
+function preExpiryReview(item: MemoryItem) {
+  return { id: item.id, version: item.version, digest: createHash('sha256').update(JSON.stringify({
+    content: item.content, detail: item.detail, scope: item.scope, type: item.type,
+    status: item.status, topic: item.topic, abstractionLevel: item.abstractionLevel,
+    projectId: item.projectId, sessionId: item.sessionId,
+  })).digest('hex') };
+}
+
 describe('MemoryStore', () => {
   let store: MemoryStore;
 
   beforeEach(() => {
     store = freshStore();
+  });
+
+  it('archives only due active memories once and preserves expiry in snapshots and versions', () => {
+    const old = '2020-01-01T00:00:00.000Z', future = '2099-01-01T00:00:00.000Z';
+    const due = store.create({ content: 'Due rule', scope: 'personal', type: 'fact', expiresAt: old }, { actor: 'user' });
+    const later = store.create({ content: 'Later rule', scope: 'personal', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const candidate = store.create({ content: 'Pending rule', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: old }, { actor: 'user' });
+    const archived = store.create({ content: 'Archived rule', scope: 'personal', type: 'fact', status: 'archived', expiresAt: old }, { actor: 'user' });
+    const discarded = store.create({ content: 'Discarded rule', scope: 'personal', type: 'fact', status: 'discarded', expiresAt: old }, { actor: 'user' });
+    const seq = store.latestEventSeq();
+    expect(store.expireDue('2021-01-01T00:00:00.000Z').map(item => item.id)).toEqual([due.id]);
+    expect(store.expireDue('2021-01-01T00:00:00.000Z')).toEqual([]);
+    expect(store.getById(due.id)).toMatchObject({ status: 'archived', expiresAt: old, version: due.version });
+    expect(store.getById(later.id)?.status).toBe('active');
+    expect(store.getById(candidate.id)?.status).toBe('candidate');
+    expect(store.getById(archived.id)?.status).toBe('archived');
+    expect(store.getById(discarded.id)?.status).toBe('discarded');
+    expect(store.getEvents(due.id).filter(event => event.kind === 'expire')).toMatchObject([
+      { actor: 'system', changes: { status: { before: 'active', after: 'archived' } }, snapshot: { expiresAt: old } },
+    ]);
+    expect(store.expirationsSince(seq, undefined, 's').ids).toEqual([due.id]);
+    const restored = store.update(due.id, { status: 'active', expiresAt: future }, { actor: 'user' });
+    expect(restored).toMatchObject({ status: 'active', expiresAt: future, version: due.version + 1 });
+    const createSeq = store.getEvents(due.id)[0]!.seq;
+    const events = store.getEvents(due.id);
+    expect(() => store.rollback(due.id, createSeq, { actor: 'user' })).toThrow('Expiry must be a future date');
+    expect(store.getById(due.id)).toEqual(restored);
+    expect(store.getEvents(due.id)).toEqual(events);
+    const futureSeq = events.at(-1)!.seq;
+    const cleared = store.update(due.id, { expiresAt: null }, { actor: 'user' });
+    expect(cleared.expiresAt).toBeNull();
+    const reverted = store.rollback(due.id, futureSeq, { actor: 'user' });
+    expect(reverted.expiresAt).toBe(future);
+    expect(reverted.version).toBe(cleared.version + 1);
+  });
+
+  it('does not suppress an expiration until the user explicitly archives it', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const local = new MemoryStore(db);
+    const content = 'Synthetic temporary personal rule';
+    const item = local.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const owner = { scope: 'personal' as const };
+    local.expireDue('2021-01-01T00:00:00.000Z');
+    expect(local.getById(item.id)?.status).toBe('archived');
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(item.id)).toEqual([]);
+    local.update(item.id, { topic: 'Synthetic metadata' }, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    local.archive(item.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    expect(local.getEvents(item.id).at(-1)).toMatchObject({ kind: 'status', changes: { status: { before: 'archived', after: 'archived' } } });
+    const eventCount = local.getEvents(item.id).length;
+    local.archive(item.id, { actor: 'user' });
+    expect(local.getEvents(item.id)).toHaveLength(eventCount);
+    local.update(item.id, { status: 'active', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(item.id)).toEqual([]);
+    local.archive(item.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.close();
+  });
+
+  it('ignores legacy expiration receipts without ignoring separate explicit revocations', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const local = new MemoryStore(db);
+    const content = 'Synthetic project rule';
+    const owner = { scope: 'project' as const, projectId: 'P1' };
+    const expired = local.create({ content, scope: 'project', projectId: 'P1', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    local.archive(expired.id, { actor: 'user' });
+    const statusEvent = local.getEvents(expired.id).at(-1)!;
+    db.query("UPDATE memory_events SET kind = 'expire' WHERE seq = ?").run(statusEvent.seq);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(expired.id)).toHaveLength(1);
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    const otherProject = local.create({ content, scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    local.archive(otherProject.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(false);
+    expect(local.wasMemorySuppressed(content, { scope: 'project', projectId: 'P2' })).toBe(true);
+    const explicit = local.create({ content, scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    local.archive(explicit.id, { actor: 'user' });
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.query('DELETE FROM memories WHERE id = ?').run(explicit.id);
+    expect(db.query('SELECT memory_id FROM memory_revocations WHERE memory_id = ?').all(explicit.id)).toHaveLength(1);
+    expect(local.wasMemorySuppressed(content, owner)).toBe(true);
+    db.close();
+  });
+
+  it('still suppresses a dismissed candidate matching an expired memory', () => {
+    const content = 'Synthetic dismissed rule';
+    const expired = store.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    store.expireDue('2021-01-01T00:00:00.000Z');
+    expect(store.getById(expired.id)?.status).toBe('archived');
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(false);
+    const candidate = store.create({ content, scope: 'personal', type: 'fact', status: 'candidate' }, { actor: 'agent' });
+    store.dismissCandidate(candidate.id, { actor: 'user' });
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(true);
+  });
+
+  it('honors explicit archived status alongside metadata after expiration', () => {
+    const content = 'Synthetic archived intent';
+    const item = store.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    store.expireDue('2021-01-01T00:00:00.000Z');
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(false);
+    store.update(item.id, { status: 'archived', topic: 'Synthetic' }, { actor: 'user' });
+    expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(true);
+    expect(store.getEvents(item.id).at(-1)).toMatchObject({ kind: 'status', changes: {
+      status: { before: 'archived', after: 'archived' }, topic: { before: null, after: 'Synthetic' },
+    } });
+  });
+
+  it('migrates expiry for old memory rows without assigning a deadline', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, scope TEXT NOT NULL, type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'active', project_id TEXT, session_id TEXT, topic TEXT,
+      provenance_session_id TEXT, provenance_turn INTEGER, usage_count INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      INSERT INTO memories (id, content, scope, type, created_at, updated_at) VALUES ('M-01', 'Legacy rule', 'personal', 'fact', '2020', '2020');`);
+    applySchema(db);
+    const legacy = new MemoryStore(db).getById('M-01');
+    expect(legacy?.expiresAt).toBeNull();
+    expect(new MemoryStore(db).expireDue()).toEqual([]);
+    db.close();
+  });
+
+  it.each(['candidate', 'archived'] as const)('allows restoring a past deadline in a %s snapshot', status => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'fact', status,
+      expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const seq = store.getEvents(item.id)[0]!.seq;
+    store.update(item.id, { content: 'Edited synthetic rule' }, { actor: 'user' });
+    expect(store.rollback(item.id, seq, { actor: 'user' })).toMatchObject({
+      status, content: 'Synthetic rule', expiresAt: '2020-01-01T00:00:00.000Z',
+    });
+  });
+
+  it('restores old snapshots without an expiry as forever', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const legacyStore = new MemoryStore(db);
+    const item = legacyStore.create({ content: 'Legacy snapshot', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const seq = legacyStore.getEvents(item.id)[0]!.seq;
+    db.query("UPDATE memory_events SET snapshot = json_remove(snapshot, '$.expiresAt') WHERE seq = ?").run(seq);
+    legacyStore.update(item.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    expect(legacyStore.rollback(item.id, seq, { actor: 'user' }).expiresAt).toBeNull();
+    db.close();
   });
 
   it('applies and withdraws corrections per memory, session and turn', () => {
@@ -934,6 +1087,76 @@ describe('recentlyDismissedCandidates (capture negative examples)', () => {
 })
 
 describe('reinforce + revision plumbing (self-evolution)', () => {
+  for (const merge of [false, true]) {
+    it(`accepts a persisted pre-expiry ${merge ? 'merge' : 'revision'} for unchanged targets`, () => {
+      const store = freshStore();
+      const a = store.create({ content: 'Synthetic original A', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      const b = merge ? store.create({ content: 'Synthetic original B', scope: 'personal', type: 'fact' }, { actor: 'user' }) : null;
+      const input = { content: 'Synthetic replacement', scope: 'personal' as const, type: 'fact' as const };
+      const proposal = (b ? store.createMergeProposal(input, [a.id, b.id], { actor: 'system' }) : store.createRevisionProposal(input, a.id, { actor: 'system' }))!;
+      store.setKv(`revision_targets:${proposal.id}`, store.revisionTargetsOf(proposal.id).map(preExpiryReview));
+      const result = store.acceptRevision(proposal.id, { actor: 'user' });
+      expect(result.updated.status).toBe('active');
+      expect(result.replaced.map(t => t.id).sort()).toEqual((b ? [a.id, b.id] : [a.id]).sort());
+      for (const target of result.replaced) expect(store.getById(target.id)?.status).toBe('archived');
+    });
+  }
+
+  for (const edit of ['content', 'expiry', 'expiry-cleared'] as const) {
+    it(`rejects a changed pre-expiry target (${edit}) without mutations`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic original', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+      store.setKv(`revision_targets:${proposal.id}`, [preExpiryReview(target)]);
+      if (edit === 'content') store.update(target.id, { content: 'Synthetic changed original' }, { actor: 'user' });
+      else {
+        store.update(target.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+        if (edit === 'expiry-cleared') store.update(target.id, { expiresAt: null }, { actor: 'user' });
+      }
+      const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Edited candidate' })).toThrow();
+      expect(state()).toEqual(before);
+    });
+  }
+
+  it('accepts unversioned expiry-aware snapshots but rejects expiry changes', () => {
+    for (const changed of [false, true]) {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic temporary', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+      const saved = store.getKv<Array<{ id: string; version: number; digest: string; format?: number }>>(`revision_targets:${proposal.id}`)!;
+      expect(saved[0]?.format).toBe(2);
+      store.setKv(`revision_targets:${proposal.id}`, saved.map(({ format, ...rest }) => rest));
+      if (changed) {
+        store.update(target.id, { expiresAt: '2099-02-01T00:00:00.000Z' }, { actor: 'user' });
+        expect(() => store.acceptRevision(proposal.id, { actor: 'user' })).toThrow();
+        expect(store.getById(proposal.id)?.status).toBe('candidate');
+        expect(store.getById(target.id)?.status).toBe('active');
+      } else expect(store.acceptRevision(proposal.id, { actor: 'user' }).updated.status).toBe('active');
+    }
+  });
+
+  it('does not use a legacy digest for a versioned expiry-aware review', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic original', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    store.setKv(`revision_targets:${proposal.id}`, [{ ...preExpiryReview(target), format: 2 }]);
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' })).toThrow();
+  });
+
+  for (const merge of [false, true]) {
+    it(`preserves an explicit permanent override for a ${merge ? 'merge' : 'revision'}`, () => {
+      const store = freshStore();
+      const a = store.create({ content: 'Synthetic temporary A', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      const b = merge ? store.create({ content: 'Synthetic temporary B', scope: 'personal', type: 'fact', expiresAt: '2099-02-01T00:00:00.000Z' }, { actor: 'user' }) : null;
+      const input = { content: 'Synthetic permanent replacement', scope: 'personal' as const, type: 'fact' as const, expiresAt: null };
+      const proposal = (b ? store.createMergeProposal(input, [a.id, b.id], { actor: 'system' }) : store.createRevisionProposal(input, a.id, { actor: 'system' }))!;
+      expect(proposal.expiresAt).toBeNull();
+      expect(store.acceptRevision(proposal.id, { actor: 'user' }).updated.expiresAt).toBeNull();
+    });
+  }
+
   it('recordReinforce bumps reinforced_count and appends a reinforce event', () => {
     const store = freshStore();
     const m = store.create({ content: 'API routes live under server/routes', scope: 'personal', type: 'fact' }, { actor: 'agent' });
@@ -1356,6 +1579,31 @@ describe('expiry (stale=过期) + renew + open revisions', () => {
 });
 
 describe('revertAutoAccept (delegating/Auto mode inverse)', () => {
+  it('rejects an expired archived target without changing any part of a multi-target undo', () => {
+    const store = freshStore();
+    const future = '2099-01-01T00:00:00.000Z';
+    const first = store.create({ content: 'Synthetic target one', scope: 'personal', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const second = store.create({ content: 'Synthetic target two', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const proposal = store.createMergeProposal({ content: 'Synthetic merged rule', scope: 'personal', type: 'fact' }, [first.id, second.id], { actor: 'system' })!;
+    store.acceptRevision(proposal.id, { actor: 'system' });
+    store.update(first.id, { expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'system' });
+    const ids = [proposal.id, first.id, second.id];
+    const before = ids.map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+    expect(() => store.revertAutoAccept(proposal.id, { actor: 'user' })).toThrow('Expiry must be a future date');
+    expect(ids.map(id => ({ item: store.getById(id), events: store.getEvents(id) }))).toEqual(before);
+    expect(store.getById(proposal.id)?.status).toBe('active');
+  });
+
+  it('restores an archived revision target with a future expiry', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic temporary rule', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal({ content: 'Synthetic revision', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    store.acceptRevision(proposal.id, { actor: 'system' });
+    const result = store.revertAutoAccept(proposal.id, { actor: 'user' });
+    expect(result.restored).toMatchObject({ id: target.id, status: 'active', expiresAt: target.expiresAt });
+    expect(result.reverted.status).toBe('candidate');
+  });
+
   it('refuses to turn a born-active memory into a Candidate', () => {
     const store = freshStore();
     const active = store.create({ content: 'Created as saved memory', scope: 'personal', type: 'fact' }, { actor: 'user' });

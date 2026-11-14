@@ -4,6 +4,9 @@ import { t, useI18n } from "../../i18n"
 import { memoriesApi, type MemoryControlSurface } from "../../lib/memoriesApi"
 import { cn } from "../../lib/utils"
 import { useMemoryStore } from "../../stores/memoryStore"
+import { isPastExpiry } from "../../lib/memoryExpiry"
+import { useMemoryBoardLauncher } from "../../app/memory/MemoryBoardLauncher"
+import { useTranscriptChatContext } from "../messages/render-context"
 
 const mutationTails = new Map<string, Promise<void>>()
 
@@ -51,13 +54,17 @@ export function ArchiveIconButton({ onClick, disabled, className }: { onClick: (
 
 export function ArchivedInline({ id, onUndo, busy, note }: { id: string; onUndo: (id: string) => void; busy?: boolean; note?: string }) {
   useI18n()
+  const expired = useMemoryStore(state => isPastExpiry(state.items.find(item => item.id === id)?.expiresAt))
+  const launcher = useMemoryBoardLauncher()
+  const { chatId } = useTranscriptChatContext()
   return <div role="status" className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
     <Archive className="h-3 w-3 shrink-0" />
     <span>{note ?? t("memory:archivedWontBeUsed")}</span>
-    <button type="button" onClick={() => onUndo(id)} disabled={busy}
+    {expired ? launcher.available && chatId ? <button type="button" className="ml-auto font-medium text-foreground underline underline-offset-2"
+      onClick={() => launcher.openMemoryBoard({ source: "chat_long_term", chatId, initialLens: "archived" })}>{t("memory:extendOnBoard")}</button> : null : <button type="button" onClick={() => onUndo(id)} disabled={busy}
       className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-medium text-foreground transition-colors hover:bg-muted disabled:opacity-40">
       {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Undo2 className="h-3 w-3" />}
       {t("common:undo")}
-    </button>
+    </button>}
   </div>
 }

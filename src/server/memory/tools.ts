@@ -111,6 +111,7 @@ export function buildMemoryToolSpecs(
             topic: z.string().optional().describe('short grouping label, e.g. "Testing"'),
             abstractionLevel: z.enum(['concrete', 'contextual', 'general']).optional(),
             sensitive: z.boolean().optional().describe('true if it contains secrets or personal data'),
+            retentionDays: z.union([z.literal(1), z.literal(7), z.literal(30)]).optional().describe('Suggested lifetime in days for an explicitly temporary, reusable rule; omit for permanent memories.'),
             evidenceClass: z
               .enum(['user_stated', 'user_corrected', 'inferred', 'agent_proposed'])
               .optional()

@@ -63,6 +63,7 @@ export type MemoryBoardLaunchSource = "sidebar" | "memory_record" | "chat_long_t
 export interface MemoryBoardLaunchRequest {
   source: MemoryBoardLaunchSource
   chatId?: string
+  initialLens?: "archived"
   memoryId?: string
   focusedReview?: FocusedMemoryReviewController
 }

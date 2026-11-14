@@ -10,6 +10,7 @@ const candidate = object({
   type: enumeration('constraint', 'preference', 'lesson', 'fact'), scope: enumeration('personal', 'project', 'session'),
   abstractionLevel: enumeration('concrete', 'contextual', 'general'), sensitive: { type: 'boolean' },
   evidenceClass: enumeration('user_stated', 'user_corrected', 'inferred', 'agent_proposed'),
+  retentionDays: { type: ['integer', 'null'], enum: [1, 7, 30, null] },
   route: enumeration('new', 'updates', 'reinforces', 'conflicts', 'reinforces-dismissed', 'duplicate-in-batch'),
   targetId: nullableText, targetVersion: { type: ['integer', 'null'] },
 });

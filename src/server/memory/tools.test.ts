@@ -22,6 +22,18 @@ afterEach(() => {
 });
 
 describe('memory tools (engine-neutral)', () => {
+  it('allows admitted details after lifecycle expiry but excludes them from the next grant', async () => {
+    const item = memory.store.create({ content: 'Temporary rule', detail: 'Synthetic detail', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, chatId: 'S' }).view;
+    memory.expireDue('2100-01-01T00:00:00.000Z');
+    const specs = buildMemoryToolSpecs(memory);
+    const result = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [item.id] }, { sessionId: 'S', memoryView: grant });
+    expect(result.text).toContain('Synthetic detail');
+    expect(result.receipts?.[0]?.viewRevision).toBe(grant.revision);
+    const fresh = planMemoryInjection({ memory, chatId: 'S' }).view;
+    expect((await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [item.id] }, { sessionId: 'S', memoryView: fresh })).text).not.toContain('Synthetic detail');
+  });
+
   it.each(['archive', 'restore'] as const)('preserves an admitted grant when an outside relation endpoint is subject to %s', async lifecycle => {
     const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
     const outside = memory.store.create({ content: 'Outside synthetic rule', detail: 'Outside private synthetic detail', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });

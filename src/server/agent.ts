@@ -4510,6 +4510,21 @@ export class AgentCoordinator {
       })
     }
 
+    if (args.memoryState.memoryActive && this.memory && !args.resume) {
+      const key = `expiry_seen:${args.chatId}`
+      const previousCursor = this.memory.store.getKv<number>(key)
+      const cursor = previousCursor ?? this.memory.store.latestEventSeq()
+      if (previousCursor === null) this.memory.store.setKv(key, cursor)
+      this.memory.expireDue()
+      const { ids, lastSeq } = this.memory.store.expirationsSince(cursor, chat.projectId, args.chatId)
+      if (ids.length) {
+        await this.store.appendMessage(args.chatId, timestamped({ kind: "memory_expired", ids, turn: turnNumber }))
+        this.emitStateChange(args.chatId)
+      }
+      this.memory.store.setKv(key, lastSeq)
+      if (startupCancelled()) return
+    }
+
     if (shouldGenerateTitle) {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }

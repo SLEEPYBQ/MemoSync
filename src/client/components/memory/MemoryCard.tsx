@@ -1,13 +1,14 @@
 import { traceVerdictLabel } from "../../i18n/labels"
-import { t, useI18n } from "../../i18n"
+import { getLocale, t, useI18n } from "../../i18n"
 // A single memory as an operable board card (SPEC §4.9): candidates get an
 // amber accent + sensitive badge, scoped (active) cards get a scope tint and
 // are natively draggable for drag-to-rescope. Clicking the card (outside its
 // footer actions) opens the detail panel.
 import type { DragEvent, MouseEvent, ReactNode } from "react"
-import { ShieldAlert } from "lucide-react"
+import { Clock3, ShieldAlert } from "lucide-react"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { formatSidebarAgeLabel } from "../../lib/formatters"
+import { expiryDaysLeft, localDateValue } from "../../lib/memoryExpiry"
 import { cn } from "../../lib/utils"
 import { Chip, ScopeBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
 // Trace-dot and freshness color maps live in memoryVocab so this card and the
@@ -34,6 +35,9 @@ interface MemoryCardProps {
 export function MemoryCard({ item, variant, selected, draggable, onDragStart, onDragEnd, onClick, footer, originLabel, capturedIn, freshness }: MemoryCardProps) {
   useI18n()
   const age = formatSidebarAgeLabel(Date.parse(item.createdAt) || undefined, Date.now())
+  const now = Date.now()
+  const days = expiryDaysLeft(item.expiresAt, now)
+  const expiresToday = Boolean(item.expiresAt && localDateValue(new Date(item.expiresAt)) === localDateValue(new Date(now)))
   function handleFooterClick(e: MouseEvent<HTMLDivElement>) {
     // Footer buttons handle their own actions; don't also open the panel.
     e.stopPropagation()
@@ -82,6 +86,9 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         {variant === "candidate" ? <ScopeBadge scope={item.scope} /> : null}
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}
         {item.usageCount > 0 ? <span className="text-[11px] text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</span> : null}
+        {days !== null ? <span title={new Date(item.expiresAt!).toLocaleString(getLocale())} className={cn("inline-flex items-center gap-1 rounded px-1 text-[11px]", days <= 3 ? "bg-cand-surface text-cand-fg" : "text-muted-foreground")}>
+          <Clock3 className="h-3 w-3" />{expiresToday ? t("memory:expiresToday") : t("memory:daysLeft", { count: days })}
+        </span> : null}
         {item.lastTraceLabel ? (
           <span
             title={t(item.lastTraceCorrected ? "memory:lastTraceCorrected" : "memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}

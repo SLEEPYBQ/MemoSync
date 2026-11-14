@@ -148,7 +148,7 @@ describe("MemoryBoardLauncher", () => {
     expect(appSource).toContain("reconcileMemoryBoardRequestWithActiveChat(current, state.activeChatId)")
     expect(appSource).toContain("focusedReview={memoryBoardRequest.focusedReview}")
     expect(appSource).toContain("memoryId={memoryBoardRequest.memoryId}")
-    expect(overlaySource).toContain("overlay={{ chatId, focusedReview, memoryId, onClose }}")
+    expect(overlaySource).toContain("overlay={{ chatId, focusedReview, initialLens, memoryId, onClose }}")
     expect(recordSource).not.toContain("<MemoryBoardOverlay")
   })
 })

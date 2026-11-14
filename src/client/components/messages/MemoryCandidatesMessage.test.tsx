@@ -1,13 +1,36 @@
 import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
+import { getLocale } from "../../i18n"
+import type { MemoryItem } from "../../lib/memoriesApi"
 import { TranscriptRenderOptionsProvider } from "./render-context"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
 import {
   buildCandidateActivationScopePatch,
   buildCandidateDraftPatch,
   MemoryCandidatesMessage,
+  MemoryCandidateCard,
   runCandidateMutation,
 } from "./MemoryCandidatesMessage"
+
+runMountedRaceSuite("expiry controls and screenshots", new URL("./MemoryExpiry.browser.ts", import.meta.url))
+
+test("accepted and auto-applied candidates retain their expiry date", () => {
+  const expiresAt = "2099-06-15T12:34:56.000Z"
+  const candidate = {
+    id: "M-01", content: "Use a synthetic temporary rule.", scope: "personal", type: "constraint", status: "active",
+    abstractionLevel: "concrete", sensitive: false, expiresAt,
+  } as MemoryItem
+  const date = new Date(expiresAt)
+  for (const autoApplied of [false, true]) {
+    const html = renderToStaticMarkup(<MemoryCandidateCard candidate={candidate} autoApplied={autoApplied} />)
+    expect(html).toContain(`Keep: ${date.toLocaleDateString(getLocale())}`)
+    expect(html).toContain(`title="${date.toLocaleString(getLocale())}"`)
+    expect(html).toContain("lucide-clock")
+    const permanent = renderToStaticMarkup(<MemoryCandidateCard candidate={{ ...candidate, expiresAt: null }} autoApplied={autoApplied} />)
+    expect(permanent).not.toContain("Keep:")
+  }
+})
 
 test("manual candidate edits explicitly clear a removed sensitive detail", () => {
   expect(buildCandidateDraftPatch(" sanitized ", "   ")).toEqual({

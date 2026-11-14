@@ -1,4 +1,25 @@
 {
+  "keep": "Keep",
+  "forever": "Forever",
+  "endOfToday": "End of today",
+  "sevenDays": "7 days",
+  "thirtyDays": "30 days",
+  "customDate": "Custom date",
+  "applyDate": "Apply",
+  "expiryDateFuture": "Choose a future date.",
+  "temporaryMemory": "Temporary memory",
+  "expiringSoon": "Expiring soon",
+  "expiresToday": "Expires today",
+  "daysLeft_one": "{{count}} day left",
+  "daysLeft_other": "{{count}} days left",
+  "expired": "Expired",
+  "expiry": "Expiry",
+  "expiredDate": "Expired {{date}}",
+  "restoreForSevenDays": "Restore for 7 days",
+  "extendOnBoard": "Extend on Memory Board",
+  "expiredSinceTurn_one": "{{count}} memory expired since your last turn",
+  "expiredSinceTurn_other": "{{count}} memories expired since your last turn",
+  "viewArchived": "View archived",
   "failedToLoadMemories": "Failed to load memories",
   "memoryIsTurnedOffInSettings": "Memory is turned off in Settings",
   "thisChatDoesnTUseOrLearnMemoriesClickTo": "This chat doesn't use or learn memories. Click to turn memory back on.",
@@ -469,5 +490,6 @@
   "modeAuto": "Auto",
   "modeOffDescription": "This chat doesn't use or learn memories.",
   "modeReviewDescription": "Asks you before using or saving memories each turn.",
-  "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board."
+  "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board.",
+  "saveExpiryBeforeScopeOrSensitivity": "Save the expiry change before moving this memory or changing its sensitivity."
 }

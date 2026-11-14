@@ -59,6 +59,41 @@ describe('memory routes', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('validates expiry at the API boundary and sweeps due items on collection reads', async () => {
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const past = '2020-01-01T00:00:00.000Z';
+    const item = memory.store.create({ content: 'Synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const path = `/api/memories/${item.id}`;
+    for (const expiresAt of ['', '2027-01-01', 'nonsense', 17]) expect((await call('PATCH', path, { expiresAt }))!.status).toBe(400);
+    expect((await call('PATCH', path, { expiresAt: past }))!.status).toBe(400);
+    expect((await call('PATCH', path, { expiresAt: future.replace('Z', '+00:00') }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBe(future);
+    const fractional = future.replace(/\.\d{3}Z$/, '.123456+0000');
+    expect((await call('PATCH', path, { expiresAt: fractional }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBe(new Date(fractional).toISOString());
+    expect((await call('PATCH', path, { expiresAt: null }))!.status).toBe(200);
+    expect(memory.store.getById(item.id)?.expiresAt).toBeNull();
+    for (const surface of ['chat_citation', 'chat_audit']) {
+      expect((await call('PATCH', path, { status: 'archived', expiresAt: future, surface }))!.status).toBe(400);
+    }
+    const due = memory.store.create({ content: 'Due', scope: 'personal', type: 'fact', expiresAt: past }, { actor: 'user' });
+    await call('GET', '/api/memories');
+    expect(memory.store.getById(due.id)?.status).toBe('archived');
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active' }))!.status).toBe(400);
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active', expiresAt: future }))!.status).toBe(200);
+    memory.store.update(due.id, { status: 'archived', expiresAt: past }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${due.id}`, { status: 'active', expiresAt: null }))!.status).toBe(200);
+    const pending = memory.store.create({ content: 'Candidate', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: past }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${pending.id}`, { status: 'active' }))!.status).toBe(400);
+    expect((await call('PATCH', `/api/memories/${pending.id}`, { status: 'active', expiresAt: null }))!.status).toBe(200);
+    const suggested = memory.store.create({ content: 'Temporary candidate', scope: 'personal', type: 'fact', status: 'candidate', expiresAt: future }, { actor: 'user' });
+    expect((await call('PATCH', `/api/memories/${suggested.id}`, { status: 'active' }))!.status).toBe(200);
+    expect(memory.store.getById(suggested.id)?.expiresAt).toBe(future);
+    expect((await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: past }))!.status).toBe(400);
+    const created = await json(await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: future }));
+    expect(created.data.expiresAt).toBe(future);
+  });
+
   it('keeps inherited fork audit corrections read-only and child-owned audits editable', async () => {
     const store = new EventStore(join(dir, 'chat-store'));
     await store.initialize();
@@ -201,6 +236,19 @@ describe('memory routes', () => {
     expect(memory.store.recentTraceLabels(item.id)).toEqual(['violated']);
     expect(memory.store.getEvents(item.id).filter(event => event.kind === 'trace_correction')).toHaveLength(2);
     expect(transcript.at(-1)).toMatchObject({ kind: 'memory_trace_correction', label: null });
+  });
+
+  it('rejects undo of an accepted revision when its archived target has expired', async () => {
+    const target = memory.store.create({ content: 'Synthetic target rule', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const proposal = memory.store.createRevisionProposal({ content: 'Synthetic revision', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    memory.store.acceptRevision(proposal.id, { actor: 'system' });
+    memory.store.update(target.id, { expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'system' });
+    const ids = [proposal.id, target.id];
+    const before = ids.map(id => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }));
+    const response = await call('POST', `/api/memories/${proposal.id}/revert-auto`, {});
+    expect(response!.status).toBe(400);
+    expect((await json(response)).error.message).toContain('Expiry must be a future date');
+    expect(ids.map(id => ({ item: memory.store.getById(id), events: memory.store.getEvents(id) }))).toEqual(before);
   });
 
   it('persists, broadcasts and logs audit corrections and withdrawals', async () => {
@@ -998,6 +1046,27 @@ describe('memory routes', () => {
     expect(empty.memories).toEqual([]);
   });
 
+  it('sweeps expired personal and project memories before search and only expires them once', async () => {
+    const past = '2020-01-01T00:00:00.000Z';
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const personal = memory.store.create({ content: 'Syntheticsearch expired personal', scope: 'personal', type: 'fact', expiresAt: past }, { actor: 'user' });
+    const project = memory.store.create({ content: 'Syntheticsearch expired project', scope: 'project', projectId: 'RenderX', type: 'fact', expiresAt: past }, { actor: 'user' });
+    const active = memory.store.create({ content: 'Syntheticsearch future rule', scope: 'project', projectId: 'RenderX', type: 'fact', expiresAt: future }, { actor: 'user' });
+    const path = '/api/memories/search?q=syntheticsearch&project=RenderX';
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const result = (await json(await call('GET', path))).data;
+      const ids = result.memories.map((item: { id: string }) => item.id);
+      expect(ids).toContain(active.id);
+      expect(ids).not.toContain(personal.id);
+      expect(ids).not.toContain(project.id);
+      for (const item of [personal, project]) {
+        expect(memory.store.getById(item.id)?.status).toBe('archived');
+        expect(memory.store.getEvents(item.id).filter(event => event.kind === 'expire')).toHaveLength(1);
+      }
+    }
+    expect(memory.store.getById(active.id)?.status).toBe('active');
+  });
+
   it('find-duplicates groups identical content', async () => {
     await call('POST', '/api/memories', { content: 'Run full test suite', scope: 'personal', type: 'lesson' });
     await call('POST', '/api/memories', { content: 'run full   test suite', scope: 'personal', type: 'lesson' });
@@ -1122,11 +1191,13 @@ describe('memory routes', () => {
   });
 
   it('transfer landing: reinforces an equivalent target memory instead of duplicating', async () => {
+    const sourceExpiry = new Date(Date.now() + 86400000).toISOString();
+    const targetExpiry = new Date(Date.now() + 7 * 86400000).toISOString();
     const source = (await json(await call('POST', '/api/memories', {
-      content: 'RenderX: prefer pnpm', scope: 'project', projectId: 'RenderX', type: 'preference',
+      content: 'RenderX: prefer pnpm', scope: 'project', projectId: 'RenderX', type: 'preference', expiresAt: sourceExpiry,
     }))).data;
     const existingTarget = (await json(await call('POST', '/api/memories', {
-      content: 'Prefer pnpm over npm everywhere', scope: 'personal', type: 'preference',
+      content: 'Prefer pnpm over npm everywhere', scope: 'personal', type: 'preference', expiresAt: targetExpiry,
     }))).data;
 
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
@@ -1144,12 +1215,15 @@ describe('memory routes', () => {
     // No new personal memory was created — the existing one absorbed it.
     expect(memory.store.list({ scope: 'personal', status: 'active' })).toHaveLength(1);
     expect(data.id).toBe(existingTarget.id);
+    expect(data.expiresAt).toBe(targetExpiry);
     expect(memory.store.getById(existingTarget.id)!.reinforcedCount).toBe(1);
+    expect(memory.store.getById(existingTarget.id)!.expiresAt).toBe(targetExpiry);
   });
 
   it('transfer landing: a conflicting arrival keeps both and flags the target', async () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
     const source = (await json(await call('POST', '/api/memories', {
-      content: 'RenderX deploys via Vercel', scope: 'project', projectId: 'RenderX', type: 'fact',
+      content: 'RenderX deploys via Vercel', scope: 'project', projectId: 'RenderX', type: 'fact', expiresAt,
     }))).data;
     const existingTarget = (await json(await call('POST', '/api/memories', {
       content: 'Deploys always go through the internal CI', scope: 'personal', type: 'constraint',
@@ -1167,11 +1241,42 @@ describe('memory routes', () => {
     });
     expect(res!.status).toBe(201);
     const created = (await res!.json()).data;
+    expect(created.expiresAt).toBe(expiresAt);
     // Both live; the new item is linked conflicts_with the existing one.
     expect(memory.store.getById(existingTarget.id)!.status).toBe('active');
     expect(created.relations).toContainEqual({ type: 'derived_from', targetId: source.id });
     expect(created.relations).toContainEqual({ type: 'conflicts_with', targetId: existingTarget.id });
     expect(memory.store.listConflicted().map((m: { id: string }) => m.id)).toContain(existingTarget.id);
+  });
+
+  it('keeps a permanent target permanent when a temporary source reinforces it', async () => {
+    const source = memory.store.create({ content: 'Temporary synthetic source', scope: 'project', projectId: 'P', type: 'fact',
+      expiresAt: new Date(Date.now() + 86400000).toISOString() }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Permanent synthetic target', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const response = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version, targetScope: 'personal', content: 'Reinforce target', abstractionLevel: 'general',
+      landingRoute: 'reinforces', landingTargetId: target.id, landingTargetVersion: target.version,
+    });
+    expect(response!.status).toBe(200);
+    expect((await json(response)).data.expiresAt).toBeNull();
+    expect(memory.store.getById(target.id)?.expiresAt).toBeNull();
+  });
+
+  it.each(['source', 'target'] as const)('sweeps a due %s before transfer and rejects the stale commit', async (dueSide) => {
+    const future = new Date(Date.now() + 86400000).toISOString();
+    const source = memory.store.create({ content: 'Synthetic source', scope: 'project', projectId: 'P', type: 'fact',
+      expiresAt: dueSide === 'source' ? '2020-01-01T00:00:00.000Z' : future }, { actor: 'user' });
+    const target = memory.store.create({ content: 'Synthetic target', scope: 'personal', type: 'fact',
+      expiresAt: dueSide === 'target' ? '2020-01-01T00:00:00.000Z' : future }, { actor: 'user' });
+    const response = await call('POST', `/api/memories/${source.id}/transfer`, {
+      sourceVersion: source.version, targetScope: 'personal', content: 'Synthetic transfer', abstractionLevel: 'general',
+      landingRoute: 'conflicts', landingTargetId: target.id, landingTargetVersion: target.version,
+    });
+    expect(response!.status).toBe(409);
+    const due = dueSide === 'source' ? source : target;
+    expect(memory.store.getById(due.id)?.status).toBe('archived');
+    expect(memory.store.getEvents(due.id).filter(event => event.kind === 'expire')).toHaveLength(1);
+    expect(memory.store.list({}).map(item => item.id).sort()).toEqual([source.id, target.id].sort());
   });
 
   it('rolls back a created Board Transfer when its derived_from relation cannot be stored, including after restart', async () => {
@@ -1613,8 +1718,9 @@ describe('memory routes', () => {
   });
 
   it('transfer creates a derived item, links it, and can archive the original', async () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
     const source = (await json(await call('POST', '/api/memories', {
-      content: 'dev port 3000 conflicts, use 3001', scope: 'project', projectId: 'RenderX', type: 'lesson',
+      content: 'dev port 3000 conflicts, use 3001', scope: 'project', projectId: 'RenderX', type: 'lesson', expiresAt,
     }))).data;
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: source.version,
@@ -1628,13 +1734,15 @@ describe('memory routes', () => {
     const created = (await res!.json()).data;
     expect(created.scope).toBe('personal');
     expect(created.type).toBe('lesson'); // type carries over
+    expect(created.expiresAt).toBe(expiresAt);
     expect(created.relations).toEqual([{ type: 'derived_from', targetId: source.id }]);
     expect(memory.store.getById(source.id)!.status).toBe('archived');
   });
 
   it('transfers a project memory into a session (board drag onto a session group)', async () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
     const source = (await json(await call('POST', '/api/memories', {
-      content: 'Always confirm before deleting a booking', scope: 'project', projectId: 'RentalApp', type: 'lesson',
+      content: 'Always confirm before deleting a booking', scope: 'project', projectId: 'RentalApp', type: 'lesson', expiresAt,
     }))).data;
     const res = await call('POST', `/api/memories/${source.id}/transfer`, {
       sourceVersion: source.version,
@@ -1648,6 +1756,7 @@ describe('memory routes', () => {
     const created = (await res!.json()).data;
     expect(created.scope).toBe('session');
     expect(created.sessionId).toBe('chat-42');
+    expect(created.expiresAt).toBe(expiresAt);
     expect(created.relations).toEqual([{ type: 'derived_from', targetId: source.id }]);
     // The source keeps serving its own project (no archive requested).
     expect(memory.store.getById(source.id)!.status).toBe('active');
@@ -2254,6 +2363,33 @@ describe('memory routes', () => {
     const md = readFileSync(join(dir, 'personal', 'memories.md'), 'utf8');
     expect(md).toContain('original wording');
     expect(md).not.toContain('edited wording');
+  });
+
+  it('rejects restoring an expired active snapshot without changing state, events, or projection', async () => {
+    const item = memory.store.create({ content: 'Synthetic expired rule', scope: 'personal', type: 'fact',
+      expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
+    const seq = memory.store.getEvents(item.id)[0]!.seq;
+    memory.expireDue();
+    const current = memory.store.getById(item.id);
+    const events = memory.store.getEvents(item.id);
+    const projectionPath = join(dir, 'personal', 'memories.md');
+    const projection = readFileSync(projectionPath, 'utf8');
+    const response = await call('POST', `/api/memories/${item.id}/revert`, { toSeq: seq });
+    expect(response!.status).toBe(400);
+    expect((await json(response)).error.message).toBe('Expiry must be a future date');
+    expect(memory.store.getById(item.id)).toEqual(current);
+    expect(memory.store.getEvents(item.id)).toEqual(events);
+    expect(readFileSync(projectionPath, 'utf8')).toBe(projection);
+  });
+
+  it('restores an active snapshot whose expiry is still in the future', async () => {
+    const expiresAt = new Date(Date.now() + 7 * 86400000).toISOString();
+    const item = memory.store.create({ content: 'Synthetic future rule', scope: 'personal', type: 'fact', expiresAt }, { actor: 'user' });
+    const seq = memory.store.getEvents(item.id)[0]!.seq;
+    memory.store.archive(item.id, { actor: 'user' });
+    const response = await call('POST', `/api/memories/${item.id}/revert`, { toSeq: seq });
+    expect(response!.status).toBe(200);
+    expect((await json(response)).data).toMatchObject({ status: 'active', expiresAt });
   });
 
   it('history returns the per-item event log; revert rolls back to a version', async () => {

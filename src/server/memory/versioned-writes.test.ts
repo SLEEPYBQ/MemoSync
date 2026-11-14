@@ -44,6 +44,16 @@ afterEach(() => {
 });
 
 describe('semantic views and detail grants', () => {
+  test('expiry edits change the version and semantic grant; clearing also changes it', () => {
+    const rule = item('Synthetic expiring rule.');
+    const before = plan();
+    const changed = memory.store.update(rule.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, meta);
+    expect(changed.version).toBe(rule.version + 1);
+    expect(plan().view.revision).not.toBe(before.view.revision);
+    const cleared = memory.store.update(rule.id, { expiresAt: null }, meta);
+    expect(cleared.version).toBe(changed.version + 1);
+    expect(cleared.expiresAt).toBeNull();
+  });
   test('relations alone change the view and delta; use, reinforcement and selection order stay canonical', () => {
     const a = item('Use local fixtures.', { detail: 'No real upstream requests.' });
     const b = item('Keep reports reproducible.');

@@ -12,6 +12,12 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("hydrates a memory expiry receipt as one row", () => {
+    const result = processTranscriptMessages([entry({ kind: "memory_expired", ids: ["M-1", "M-2"], turn: 2 })])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ kind: "memory_expired", ids: ["M-1", "M-2"], turn: 2 })
+  })
+
   test("suppresses only corrected trace recaps and restores them on withdrawal", () => {
     const trace = entry({ kind: "memory_trace", turn: 1, labels: [{ id: "M-1", label: "violated" }], summary: "Synthetic audit recap." })
     const correction = entry({ kind: "memory_trace_correction", turn: 1, memoryId: "M-1", label: "not_applicable" })

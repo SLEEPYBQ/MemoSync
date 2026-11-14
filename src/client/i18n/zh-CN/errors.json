@@ -1,4 +1,6 @@
 {
+  "serverExpiryInvalid": "无效的到期时间",
+  "serverExpiryFuture": "到期时间必须晚于现在",
   "disconnected": "已断开",
   "providerResponseIsMissingData": "模型提供方的响应缺少数据",
   "value0TimedOutWaitingForTheServerReconnecting": "{{v0}}等待服务器响应超时，正在重新连接",
