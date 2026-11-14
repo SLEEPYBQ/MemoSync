@@ -20,6 +20,24 @@ function msg(
 }
 
 describe("MemoryTraceMessage", () => {
+  test("inherited audit is read-only while owned audits remain correctable", () => {
+    const render = (label: Record<string, unknown>) => renderToStaticMarkup(
+      <TranscriptChatContextProvider value={{ chatId: "child-chat" }}>
+        <MemoryTraceMessage message={msg([label as Parameters<typeof msg>[0][number]], { turn: 1 })} />
+      </TranscriptChatContextProvider>,
+    )
+    const inherited = render({ id: "M-1", label: "violated", correctionAllowed: false })
+    expect(inherited).toContain("Read-only in this chat")
+    expect(inherited).not.toContain("Not right?")
+    const corrected = render({ id: "M-1", label: "violated", correctionAllowed: false, userLabel: "not_applicable", userNote: "Synthetic note" })
+    expect(corrected).toContain("line-through")
+    expect(corrected).toContain("You:")
+    expect(corrected).toContain("Synthetic note")
+    expect(corrected).toContain("Read-only in this chat")
+    expect(corrected).not.toContain("Undo")
+    expect(render({ id: "M-1", label: "violated", correctionAllowed: true })).toContain("Not right?")
+    expect(render({ id: "M-1", label: "violated", correctionAllowed: true, userLabel: "not_applicable" })).toContain("Undo")
+  })
   test("corrections follow effective verdict sections and hide controls in readonly", () => {
     const render = (labels: unknown[], readonly = false) => renderToStaticMarkup(
       <TranscriptChatContextProvider value={{ chatId: "chat-1" }}>

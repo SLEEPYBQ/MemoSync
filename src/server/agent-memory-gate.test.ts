@@ -18,6 +18,7 @@ import { type MemoryPreviewSettings, type TranscriptEntry } from "../shared/type
 import { MemoryService } from "./memory";
 import { recordMemoryConfirmation } from "./memory/confirmation";
 import { createCaptureService, type CaptureService } from "./memory/capture";
+import { createRevisionService, type RevisionService } from "./memory/evolution";
 import type { CheckupService } from "./memory/checkup";
 import type { LlmJsonCaller } from "./memory/deepseek";
 import type { RelevanceService } from "./memory/relevance";
@@ -212,6 +213,7 @@ function createHarness(
     traceInputs?: TraceInput[]
     /** Full trace-service override (takes precedence over traceInputs). */
     trace?: TraceService | null
+    revision?: (memory: MemoryService) => RevisionService
     /** Capture service (enables propose_memory + the per-turn capture nudge). */
     capture?: CaptureService | null
     /** Step-one library checkup (container 2); null disables the stage. */
@@ -299,6 +301,7 @@ function createHarness(
     memoryUsePlan: opts.usePlan ?? null,
     memoryPreview: opts.preview ?? false,
     memoryTrace: traceStub,
+    memoryRevision: opts.revision?.(memory) ?? null,
     forkTrace: (opts.forkTrace ?? (async () => null)) as never,
     forkCapture: (opts.forkCapture ?? (async () => null)) as never,
     forkQuery: (opts.forkQuery ?? (async () => null)) as never,
@@ -5686,6 +5689,77 @@ describe("automatic memory control", () => {
       await finish(h, 2)
       expect(h.memory.store.list({ status: "candidate" })).toHaveLength(1)
     } finally { h.cleanup() }
+  })
+
+  test("auto drafting skips a revision retired while the next draft is pending", async () => {
+    let releaseSecond!: (value: { action: string; content: string }) => void
+    let signalSecondStarted!: () => void
+    const secondDraft = new Promise<{ action: string; content: string }>(resolve => { releaseSecond = resolve })
+    const secondStarted = new Promise<void>(resolve => { signalSecondStarted = resolve })
+    let signalScanFinished!: () => void
+    const scanFinished = new Promise<void>(resolve => { signalScanFinished = resolve })
+    let scanStarted = false
+    let secondPending = false
+    let draftCalls = 0
+    const events: Array<Record<string, unknown>> = []
+    const h = createHarness({
+      getMemorySettings: autoSettings,
+      experimentEvents: events,
+      trace: { trace: async ({ usedMemories }) => ({ labels: usedMemories.map(({ id }) => ({ id, label: "violated" as const })) }) },
+      revision: memory => {
+        const service = createRevisionService({
+          memory,
+          callJson: async () => {
+            if (++draftCalls === 1) return { action: "revise", content: "Synthetic replacement A" }
+            secondPending = true
+            signalSecondStarted()
+            return secondDraft
+          },
+        })
+        return {
+          ...service,
+          scanAndPropose: async input => {
+            scanStarted = true
+            try { return await service.scanAndPropose(input) }
+            finally { signalScanFinished() }
+          },
+        }
+      },
+    })
+    try {
+      const a = h.memory.store.create({ content: "Synthetic original A", scope: "personal", type: "constraint" }, { actor: "user" })
+      const b = h.memory.store.create({ content: "Synthetic original B", scope: "personal", type: "constraint" }, { actor: "user" })
+      for (const item of [a, b]) for (let turn = 1; turn <= 2; turn++) {
+        h.memory.store.recordTraceLabel(item.id, "violated", { actor: "agent", sessionId: "earlier-chat", turn })
+      }
+      await h.coordinator.send(send)
+      await finish(h, 1)
+      await secondStarted
+      const proposalA = h.memory.store.list({ status: "candidate" }).find(item => item.content === "Synthetic replacement A")
+      expect(proposalA).toBeDefined()
+      expect(h.memory.store.revisionTargetOf(proposalA!.id)?.id).toBe(a.id)
+      h.memory.store.recordTraceCorrection(a.id, { sessionId: "chat-1", turn: 1, label: "not_applicable" })
+      expect(h.memory.store.getById(proposalA!.id)?.status).toBe("archived")
+      releaseSecond({ action: "revise", content: "Synthetic replacement B" })
+      await waitFor(() => h.store.messages.some(message => message.kind === "memory_candidates"))
+      const proposalB = h.memory.store.list().find(item => item.content === "Synthetic replacement B")!
+      expect(h.memory.store.getById(a.id)?.status).toBe("active")
+      expect(h.memory.store.getById(proposalA!.id)?.status).toBe("archived")
+      expect(h.memory.store.getById(b.id)?.status).toBe("archived")
+      expect(proposalB.status).toBe("active")
+      expect(h.store.messages.find(message => message.kind === "memory_candidates")).toMatchObject({ candidates: [{ id: proposalB.id, auto: true }] })
+      expect(h.memory.store.getEvents(a.id).filter(event => event.kind === "status" && event.changes?.status?.after === "archived")).toEqual([])
+      expect(events.filter(event => event.type === "memory.decision" && (event.id === a.id || event.id === proposalA!.id))).toEqual([])
+    } finally {
+      releaseSecond({ action: "revise", content: "Synthetic replacement B" })
+      try {
+        if (scanStarted) await scanFinished
+        if (secondPending) await waitFor(() => h.store.messages.some(message => message.kind === "memory_candidates"))
+      } finally {
+        await h.coordinator.shutdownRuntime()
+        h.cleanup()
+      }
+    }
   })
 
   test("a reused session's tool-proposal callback uses the current turn's control snapshot", async () => {

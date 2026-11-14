@@ -1155,6 +1155,8 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
     cause?: "not_followed" | "memory_conflict"
     /** True when the reply itself cited this id inline (self-report); absent = the audit found it post hoc. */
     cited?: boolean
+    /** Read-model hint: whether this audit has a persisted record in the current chat. */
+    correctionAllowed?: boolean
   }>
   /** Terminal state for the post-turn pass. "pending" = the audit is still
    * running (skeleton entry, superseded by the final entry for the same turn).

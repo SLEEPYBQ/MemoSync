@@ -232,7 +232,14 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
 
   const seeding = refreshing || (selection === null && !message.selectionError)
   const archivedIds = useMemo(() => new Set(storedMemories.filter((item) => item.status === "archived" && memoriesById.has(item.id)).map((item) => item.id)), [storedMemories, memoriesById])
-  const selectedRowIds = useMemo(() => [...(selection?.keys() ?? [])].filter((id) => memoriesById.has(id)), [selection, memoriesById])
+  const selectedRowIds = useMemo(() => {
+    const ids = message.decision === undefined
+      ? [...(selection?.keys() ?? [])]
+      : message.decision === "go_on"
+        ? (message.decisionSelectedIds ?? message.memories.map((memory) => memory.id))
+        : []
+    return ids.filter((id) => memoriesById.has(id))
+  }, [message.decision, message.decisionSelectedIds, message.memories, selection, memoriesById])
   const reasonsById = useMemo(() => new Map((message.confirmationReasons ?? []).map(reason => [reason.id, reason])), [message.confirmationReasons])
   const familiarIds = pending && message.confirmationMode === "on_change" && message.confirmationReasons && !message.selectionError
     ? selectedRowIds.filter(id => !reasonsById.has(id) && selection?.get(id) !== "manual" && !archivedIds.has(id))
@@ -240,10 +247,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const familiarSet = new Set(familiarIds)
   const orderedRowIds = [...selectedRowIds.filter(id => !familiarSet.has(id)), ...familiarIds]
   const injectedIds = useMemo(() => selectedRowIds.filter((id) => !pending || !archivedIds.has(id)), [selectedRowIds, pending, archivedIds])
-  const poolRest = useMemo(
-    () => message.memories.filter((m) => !selection?.has(m.id)),
-    [message.memories, selection],
-  )
+  const poolRest = useMemo(() => {
+    const selected = new Set(selectedRowIds)
+    return message.memories.filter((memory) => !selected.has(memory.id))
+  }, [message.memories, selectedRowIds])
 
   const selectedExpectedUses = useMemo<ExpectedMemoryUse[]>(
     () => injectedIds.map((id) => ({ id, expectedUse: expectedUsesById.get(id) ?? DEFAULT_EXPECTED_USE })),

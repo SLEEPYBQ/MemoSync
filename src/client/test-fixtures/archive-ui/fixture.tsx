@@ -8,7 +8,7 @@ import { useArchiveMemory } from "../../components/memory/archiveMemory"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
-import type { HydratedTranscriptMessage } from "../../../shared/types"
+import type { HydratedTranscriptMessage, MemoryPreviewDecision } from "../../../shared/types"
 import { i18n } from "../../i18n"
 import { MemoryBoardLauncherProvider, resolveMemoryBoardLaunchRequest, type ResolvedMemoryBoardLaunchRequest } from "../../app/memory/MemoryBoardLauncher"
 import { MemoryBoardOverlay } from "../../app/memory/MemoryBoardOverlay"
@@ -41,10 +41,12 @@ const trace = {
 } as Extract<HydratedTranscriptMessage, { kind: "memory_trace" }>
 
 const remote = new URLSearchParams(window.location.search).has("remote")
+const settle = new URLSearchParams(window.location.search).has("settle")
 const fixtureWindow = window as unknown as {
   archiveFixtureResponses: number
   archiveFixtureItems: MemoryItem[]
   archiveFixturePublish: () => void
+  archiveFixtureDecision?: { decision: MemoryPreviewDecision; selectedIds?: string[] }
 }
 fixtureWindow.archiveFixtureResponses = 0
 fixtureWindow.archiveFixtureItems = items
@@ -70,6 +72,7 @@ function MutationControls() {
 
 function Fixture() {
   const [responses, setResponses] = useState(0)
+  const [previewMessage, setPreviewMessage] = useState(preview)
   const [boardRequest, setBoardRequest] = useState<ResolvedMemoryBoardLaunchRequest | null>(null)
   const location = useLocation()
   return (
@@ -84,7 +87,14 @@ function Fixture() {
         </section>
         <section id="working-memory">
           <TranscriptRenderOptionsProvider value={remote ? {} : { previewDemo: { reviseReply: "Synthetic reply." } }}>
-            <MemoryPreviewMessage message={preview} onRespond={() => { fixtureWindow.archiveFixtureResponses++; setResponses((count) => count + 1) }} />
+            <MemoryPreviewMessage message={previewMessage} onRespond={(_previewId, decision, memoryIds, expectedUses) => {
+              fixtureWindow.archiveFixtureResponses++
+              setResponses((count) => count + 1)
+              if (settle) {
+                setPreviewMessage(current => ({ ...current, decision, decisionSelectedIds: memoryIds, decisionExpectedUses: expectedUses }))
+                fixtureWindow.archiveFixtureDecision = { decision, selectedIds: memoryIds }
+              }
+            }} />
           </TranscriptRenderOptionsProvider>
         </section>
         {remote ? <output id="response-count">{responses}</output> : null}

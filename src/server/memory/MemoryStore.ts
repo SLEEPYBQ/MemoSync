@@ -793,6 +793,13 @@ export class MemoryStore {
     this.appendEvent(id, 'trace', meta, { meta: { label, ...(meta.cited !== undefined ? { cited: meta.cited } : {}) } });
   }
 
+  traceCorrectionKeysForSession(sessionId: string): Set<string> {
+    const rows = this.db.query(`SELECT DISTINCT turn, memory_id FROM memory_events
+      WHERE session_id = ? AND kind = 'trace' AND turn >= 1`)
+      .all(sessionId) as Array<{ turn: number; memory_id: string }>;
+    return new Set(rows.map(row => JSON.stringify([row.turn, row.memory_id])));
+  }
+
   recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }, options: { enqueueTranscript?: boolean } = {}): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string; invalidatedIds?: string[] } {
     return this.db.transaction(() => {
       if (input.label !== null && this.getById(id)?.status !== 'active') {
@@ -860,6 +867,13 @@ export class MemoryStore {
       const corrected = Boolean(correction?.label && !correction.withdrawn);
       return [{ id: row.memory_id, seq: row.seq, label: corrected ? correction!.label! : audit, corrected }];
     });
+  }
+
+  private revisionTraceEvidenceIsCurrent(targetId: string, traceSeqs: number[]): boolean {
+    const ids = new Set(traceSeqs);
+    const rows = this.traceVerdicts(targetId).filter(row => ids.has(row.seq));
+    return ids.size === traceSeqs.length && rows.length === traceSeqs.length
+      && rows.every(row => row.label === 'violated');
   }
 
   private invalidateTraceRevisions(targetId: string): string[] {
@@ -1050,12 +1064,7 @@ export class MemoryStore {
     },
   ): MemoryItem | null {
     return this.db.transaction(() => {
-      if (opts?.traceEvidence) {
-        const ids = new Set(opts.traceEvidence);
-        const rows = this.traceVerdicts(targetId).filter(row => ids.has(row.seq));
-        if (ids.size !== opts.traceEvidence.length || rows.length !== opts.traceEvidence.length
-          || rows.some(row => row.label !== 'violated')) return null;
-      }
+      if (opts?.traceEvidence && !this.revisionTraceEvidenceIsCurrent(targetId, opts.traceEvidence)) return null;
       const proposal = this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
       if (proposal && opts?.traceEvidence) {
         this.setKv(`revision_trace_evidence:${proposal.id}`, { targetId, traceSeqs: opts.traceEvidence });
@@ -1108,7 +1117,15 @@ export class MemoryStore {
    */
   acceptRevision(candidateId: string, meta: ActorMeta, draftPatch?: Partial<MemoryItem>): { updated: MemoryItem; replaced: MemoryItem[] } {
     return this.db.transaction(() => {
+      const candidate = this.getById(candidateId);
+      if (candidate) this.assertCandidateDecisionTransition(candidate, { status: 'active' }, 'ordinary');
+      if (!candidate || candidate.status !== 'candidate') throw new RevisionConflictError();
       const targets = this.revisionTargetsOf(candidateId);
+      const evidence = this.getKv<{ targetId: string; traceSeqs: number[] }>(`revision_trace_evidence:${candidateId}`);
+      if (evidence && (!targets.some(target => target.id === evidence.targetId)
+        || !this.revisionTraceEvidenceIsCurrent(evidence.targetId, evidence.traceSeqs))) {
+        throw new RevisionConflictError();
+      }
       const reviewed = this.getKv<RevisionTargetSnapshot[]>(`revision_targets:${candidateId}`);
       if (targets.length > 0 || reviewed !== null) {
         if (!Array.isArray(reviewed) || reviewed.length !== targets.length || targets.some((target, index) => {

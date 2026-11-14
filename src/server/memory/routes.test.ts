@@ -8,6 +8,9 @@ import { createRevisionService } from './evolution';
 import { handleMemoryRequest } from './routes';
 import { getMemoryConfirmation, recordMemoryConfirmation } from './confirmation';
 import { flushTraceCorrections } from './trace-correction-outbox';
+import { EventStore } from '../event-store';
+import { AgentCoordinator } from '../agent';
+import { processTranscriptMessages } from '../../client/lib/parseTranscript';
 
 let dir: string;
 let memory: MemoryService;
@@ -90,6 +93,86 @@ describe('memory routes', () => {
     expect((await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: past }))!.status).toBe(400);
     const created = await json(await call('POST', '/api/memories', { content: 'New rule', scope: 'personal', expiresAt: future }));
     expect(created.data.expiresAt).toBe(future);
+  });
+
+  it('keeps inherited fork audit corrections read-only and child-owned audits editable', async () => {
+    const store = new EventStore(join(dir, 'chat-store'));
+    await store.initialize();
+    const project = await store.openProject(join(dir, 'synthetic-project'));
+    const parent = await store.createChat(project.id);
+    await store.setChatProvider(parent.id, 'claude');
+    await store.setSessionToken(parent.id, 'synthetic-session');
+    const a = memory.store.create({ content: 'Synthetic original A', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const b = memory.store.create({ content: 'Synthetic original B', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    await store.appendMessage(parent.id, {
+      _id: 'source-trace', createdAt: 1, kind: 'memory_trace', turn: 1, status: 'ok',
+      labels: [{ id: a.id, label: 'violated' }, { id: b.id, label: 'violated', correctionAllowed: true }],
+    });
+    for (const item of [a, b]) memory.store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: parent.id, turn: 1 });
+    const services = { traceCorrection: {
+      hasChat: (id: string) => Boolean(store.getChat(id)),
+      append: async (chatId: string, entry: Parameters<EventStore['appendMessage']>[1]) => { await store.appendMessage(chatId, entry); },
+    } };
+    const pathA = `/api/memories/${a.id}/trace-correction`;
+    const pathB = `/api/memories/${b.id}/trace-correction`;
+    expect((await call('POST', pathA, { sessionId: parent.id, turn: 1, label: 'not_applicable', note: 'Synthetic correction' }, services))!.status).toBe(200);
+    const child = await store.forkChat(parent.id);
+    const coordinator = new AgentCoordinator({ store, onStateChange: () => {}, memory });
+    try {
+      const rawParent = structuredClone(store.getMessages(parent.id));
+      const rawChild = structuredClone(store.getMessages(child.id));
+      const parentAnnotated = coordinator.annotateTraceCorrectionOwnership(parent.id, store.getMessages(parent.id));
+      const childAnnotated = coordinator.annotateTraceCorrectionOwnership(child.id, store.getMessages(child.id));
+      expect(parentAnnotated.find(entry => entry.kind === 'memory_trace')).toMatchObject({
+        labels: [{ id: a.id, correctionAllowed: true }, { id: b.id, correctionAllowed: true }],
+      });
+      expect(childAnnotated.find(entry => entry.kind === 'memory_trace')).toMatchObject({
+        labels: [{ id: a.id, correctionAllowed: false }, { id: b.id, correctionAllowed: false }],
+      });
+      const inherited = processTranscriptMessages(childAnnotated).find(entry => entry.kind === 'memory_trace');
+      expect(inherited).toMatchObject({
+        labels: [
+          { id: a.id, label: 'violated', userLabel: 'not_applicable', userNote: 'Synthetic correction', correctionAllowed: false },
+          { id: b.id, label: 'violated', correctionAllowed: false },
+        ],
+      });
+      expect(store.getMessages(parent.id)).toEqual(rawParent);
+      expect(store.getMessages(child.id)).toEqual(rawChild);
+
+      const before = structuredClone({ parent: store.getMessages(parent.id), child: store.getMessages(child.id), aEvents: memory.store.getEvents(a.id), bEvents: memory.store.getEvents(b.id) });
+      expect((await call('POST', pathB, { sessionId: child.id, turn: 1, label: 'operational' }, services))!.status).toBe(409);
+      expect((await call('POST', pathA, { sessionId: child.id, turn: 1, label: null }, services))!.status).toBe(409);
+      expect({ parent: store.getMessages(parent.id), child: store.getMessages(child.id), aEvents: memory.store.getEvents(a.id), bEvents: memory.store.getEvents(b.id) }).toEqual(before);
+
+      await store.appendMessage(child.id, {
+        _id: 'child-trace', createdAt: 2, kind: 'memory_trace', turn: 2, status: 'ok',
+        labels: [{ id: b.id, label: 'violated' }],
+      });
+      memory.store.recordTraceLabel(b.id, 'violated', { actor: 'agent', sessionId: child.id, turn: 2 });
+      const traces = coordinator.annotateTraceCorrectionOwnership(child.id, store.getMessages(child.id)).filter(entry => entry.kind === 'memory_trace');
+      expect(traces).toMatchObject([
+        { turn: 1, labels: [{ correctionAllowed: false }, { correctionAllowed: false }] },
+        { turn: 2, labels: [{ correctionAllowed: true }] },
+      ]);
+      const parentEvents = [a, b].map(item => memory.store.getEvents(item.id).filter(event => event.sessionId === parent.id));
+      expect((await call('POST', pathB, { sessionId: child.id, turn: 2, label: 'operational' }, services))!.status).toBe(200);
+      const ownCorrected = processTranscriptMessages(coordinator.annotateTraceCorrectionOwnership(child.id, store.getMessages(child.id))).find(entry => entry.kind === 'memory_trace' && entry.turn === 2);
+      expect(ownCorrected).toMatchObject({ labels: [{ id: b.id, userLabel: 'operational', correctionAllowed: true }] });
+      expect(store.getMessages(parent.id)).toEqual(rawParent);
+      expect([a, b].map(item => memory.store.getEvents(item.id).filter(event => event.sessionId === parent.id))).toEqual(parentEvents);
+      expect((await call('POST', pathA, { sessionId: parent.id, turn: 1, label: null }, services))!.status).toBe(200);
+      const parentAfterWithdrawal = processTranscriptMessages(coordinator.annotateTraceCorrectionOwnership(parent.id, store.getMessages(parent.id))).find(entry => entry.kind === 'memory_trace');
+      if (!parentAfterWithdrawal || parentAfterWithdrawal.kind !== 'memory_trace') throw new Error('Missing parent audit');
+      expect(parentAfterWithdrawal.labels[0]).toMatchObject({ id: a.id, correctionAllowed: true });
+      expect(parentAfterWithdrawal.labels[0]?.userLabel).toBeUndefined();
+      const inheritedAfterWithdrawal = processTranscriptMessages(coordinator.annotateTraceCorrectionOwnership(child.id, store.getMessages(child.id))).find(entry => entry.kind === 'memory_trace' && entry.turn === 1);
+      expect(inheritedAfterWithdrawal).toMatchObject({ labels: [
+        { id: a.id, userLabel: 'not_applicable', userNote: 'Synthetic correction', correctionAllowed: false },
+        { id: b.id, label: 'violated', correctionAllowed: false },
+      ] });
+    } finally {
+      await coordinator.shutdownRuntime();
+    }
   });
 
   it('removes a corrected automatic revision from the canonical collection and projection before broadcasting', async () => {

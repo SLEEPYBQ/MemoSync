@@ -940,9 +940,12 @@ export function createWsRouter({
             const recent = store.getRecentChatHistory(chatId, topic.recentLimit ?? DEFAULT_CHAT_RECENT_LIMIT)
             const allMessages = (typeof store.getMessages === "function" ? store.getMessages(chatId) : null)
               ?? recent.messages
+            const annotated = agent.annotateTraceCorrectionOwnership?.(chatId, allMessages) ?? allMessages
+            const traces = new Map(annotated.filter(entry => entry.kind === "memory_trace").map(entry => [entry._id, entry]))
             return {
               ...recent,
-              memoryRecordMessages: deriveMemoryRecordTranscript(allMessages),
+              messages: recent.messages.map(entry => traces.get(entry._id) ?? entry),
+              memoryRecordMessages: deriveMemoryRecordTranscript(annotated),
             }
           },
           agent.getStreamingAssistantTexts(),
@@ -1948,7 +1951,10 @@ export function createWsRouter({
           const chat = store.getChat(command.chatId)
           if (!chat) throw new Error("Chat not found")
           const page = store.getMessagesPageBefore(command.chatId, command.beforeCursor, command.limit)
-          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: page })
+          send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: {
+            ...page,
+            messages: agent.annotateTraceCorrectionOwnership?.(command.chatId, page.messages) ?? page.messages,
+          } })
           return
         }
         case "harness.getCapabilities": {

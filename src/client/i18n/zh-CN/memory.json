@@ -397,6 +397,7 @@
   "couldntArchive": "归档失败",
   "couldntRestore": "恢复失败",
   "notRight": "不对？",
+  "auditReadOnlyHere": "当前聊天中只读",
   "reviewAudit": "查看并纠正审计",
   "correctionSyncPending": "纠正已保存，正在同步聊天记录…",
   "whatActuallyHappened": "实际情况是？",
