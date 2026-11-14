@@ -37,7 +37,7 @@ Native loopback probes cover Claude Agent SDK 0.3.241 with Claude Code 2.1.241
 and 2.1.325, and OpenCode 1.17.4 and 1.19.5. They use temporary profiles,
 synthetic files and a scripted Anthropic-compatible endpoint. They verify actual
 native tool IDs (including concurrent calls with identical arguments), durable
-receipts, and the acceptance/presentation distinction. They do not establish
+receipts, OpenCode slash-command prompt parents, and the acceptance/presentation distinction. They do not establish
 external inference quality or provider cache behavior. OpenCode may install its
 own plugin dependencies on the first plugin load.
 

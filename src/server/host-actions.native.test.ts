@@ -11,9 +11,13 @@ import { HOST_ACTION_CAPABILITY, HOST_ACTION_TOOL_NAMES, type HostActionServerEv
 
 // Explicit binaries only. Real native loops + scripted loopback responses prove
 // protocol behavior, not external inference quality or provider cache performance.
-for (const engine of ['claude', 'opencode'] as const) {
+for (const { engine, command } of [
+  { engine: 'claude', command: false },
+  { engine: 'opencode', command: false },
+  { engine: 'opencode', command: true },
+] as const) {
   const binary = process.env[engine === 'claude' ? 'MEMOSYNC_CLAUDE_TEST_BIN' : 'MEMOSYNC_OPENCODE_TEST_BIN']
-  ;(binary ? test : test.skip)(`${engine} native tool IDs reach durable host receipts with memory disabled`, async () => {
+  ;(binary ? test : test.skip)(`${engine}${command ? ' slash command' : ''} native tool IDs reach durable host receipts with memory disabled`, async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), 'memosync-native-host-')))
     const workspace = join(root, 'workspace')
     await mkdir(workspace)
@@ -77,9 +81,10 @@ for (const engine of ['claude', 'opencode'] as const) {
       } else {
         runtime.connectionId = 'synthetic-local'
         runtime.opencodeConfig = buildOpencodeProviderConfig({ protocol: 'anthropic-messages', baseUrl: baseURL }, { id: runtime.model })
+        if (command) runtime.opencodeConfig.command = { 'show-host-snapshot': { template: 'Show README.md twice.' } }
         const manager = new OpencodeAgentManager()
         close = () => manager.dispose()
-        const turn = await manager.startTurn({ chatId: 'synthetic-chat', cwd: workspace, content: 'Show README.md twice.', model: runtime.model, runtime,
+        const turn = await manager.startTurn({ chatId: 'synthetic-chat', cwd: workspace, content: command ? '/show-host-snapshot' : 'Show README.md twice.', model: runtime.model, runtime,
           executionPolicy: { engine: 'opencode', permission: 'allow' }, memorySpecs: hostActionToolSpecs(),
           memoryDispatch: async (name, input, signal, native) => native ? dispatch(name, input, native, signal) : { text: 'Missing native context', isError: true } })
         for await (const _event of turn.stream) { /* Drive the real native loop. */ }
