@@ -38,7 +38,7 @@ import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
 import { auditRecord } from "../../lib/auditRecord"
 import { TRACE_DOT_CLASSES } from "./memoryVocab"
 import { MemoryExpiryPicker } from "./MemoryExpiryPicker"
-import { driftedFileRefs } from "../../lib/memoryFileDrift"
+import { driftedFileRefs, fileChangedAgo } from "../../lib/memoryFileDrift"
 import { useTranscriptRenderOptions } from "../messages/render-context"
 import type { MemoryEvent } from "../../lib/memoriesApi"
 
@@ -403,7 +403,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               <div className="space-y-1">{item.fileRefs.map(ref => <div key={`${ref.kind}:${ref.path}`} className="flex min-w-0 items-center gap-2 text-[11px]">
                 {ref.kind === "source" ? <span className="shrink-0 text-muted-foreground">{t("memory:importedFrom")}</span> : null}
                 <span title={ref.path} dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-muted-foreground">{ref.path}</span>
-                <span className={ref.drift ? "shrink-0 text-cand-fg" : "shrink-0 text-muted-foreground"}>{t(ref.drift === "changed" ? "memory:fileStatusChanged" : ref.drift === "missing" ? "memory:fileStatusMissing" : ref.drift === "line_removed" ? "memory:fileStatusLineRemoved" : "memory:fileStatusUnchanged")}</span>
+                <span className={ref.drift ? "shrink-0 text-cand-fg" : "shrink-0 text-muted-foreground"}>{ref.drift === "changed" && fileChangedAgo(ref.changedAt) ? t("memory:fileStatusChangedAgo", { when: fileChangedAgo(ref.changedAt) }) : t(ref.drift === "changed" ? "memory:fileStatusChanged" : ref.drift === "missing" ? "memory:fileStatusMissing" : ref.drift === "line_removed" ? "memory:fileStatusLineRemoved" : "memory:fileStatusUnchanged")}</span>
               </div>)}</div>
             </div> : null}
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}

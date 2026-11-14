@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -71,7 +71,7 @@ describe('memory routes', () => {
     await call('GET', '/api/memories?projectId=P1', undefined, services);
     writeFileSync(join(project, 'auth.ts'), 'changed synthetic file');
     const list = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
-    expect(list.data.find((item: MemoryItem) => item.id === a.id).fileRefs).toEqual([{ path: 'auth.ts', kind: 'mention', drift: 'changed' }]);
+    expect(list.data.find((item: MemoryItem) => item.id === a.id).fileRefs).toEqual([{ path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: statSync(join(project, 'auth.ts')).mtime.toISOString() }]);
     expect((await json(await call('GET', `/api/memories/${a.id}`, undefined, services))).data.fileRefs[0].drift).toBe('changed');
     expect((await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services))).data.find((item: MemoryItem) => item.id === a.id).fileRefs[0].drift).toBe('changed');
     const ack = await json(await call('POST', `/api/memories/${a.id}/file-refs/acknowledge`, undefined, services));

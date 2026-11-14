@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileDrift, extractPaths, gitBlobHash, readProjectSource } from './file-drift';
@@ -101,6 +101,31 @@ describe('file drift', () => {
     memory.fileDrift.acknowledge(item.id, { actor: 'user' });
     expect(memory.fileDrift.refsFor([item.id]).size).toBe(0);
     expect(memory.store.getById(item.id)?.status).toBe('active');
+  });
+
+  it('returns file mtime only for changed references', () => {
+    for (const name of ['auth.ts', 'missing.ts', 'stable.ts']) writeFileSync(join(project, name), 'synthetic baseline');
+    const content = 'Check auth.ts missing.ts stable.ts';
+    const item = memory.store.create({ content, scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    const sourceFile = join(project, 'AGENTS.md');
+    writeFileSync(sourceFile, `- ${content}\n`);
+    memory.fileDrift.addSource(item.id, readProjectSource(project, 'AGENTS.md')!);
+    memory.fileDrift.syncProject('P1', project);
+
+    const changedFile = join(project, 'auth.ts');
+    writeFileSync(changedFile, 'synthetic changed contents');
+    const modified = new Date('2024-04-03T12:30:00.000Z');
+    utimesSync(changedFile, modified, modified);
+    rmSync(join(project, 'missing.ts'));
+    writeFileSync(sourceFile, '- A different synthetic rule\n');
+    memory.fileDrift.syncProject('P1', project);
+
+    expect(memory.fileDrift.refsFor([item.id]).get(item.id)).toEqual([
+      { path: 'AGENTS.md', kind: 'source', drift: 'line_removed' },
+      { path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: statSync(changedFile).mtime.toISOString() },
+      { path: 'missing.ts', kind: 'mention', drift: 'missing' },
+      { path: 'stable.ts', kind: 'mention', drift: null },
+    ]);
   });
 
   it('does not hash unchanged stat hints and removes refs on hard deletion', () => {

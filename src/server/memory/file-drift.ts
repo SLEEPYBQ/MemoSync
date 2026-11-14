@@ -175,11 +175,11 @@ export class FileDrift {
   refsFor(ids: readonly string[]): Map<string, MemoryFileRef[]> {
     const result = new Map<string, MemoryFileRef[]>();
     if (!ids.length) return result;
-    const rows = this.db.query(`SELECT memory_id, path, kind, drift FROM memory_file_refs
+    const rows = this.db.query(`SELECT memory_id, path, kind, drift, mtime_ms FROM memory_file_refs
       WHERE memory_id IN (${ids.map(() => '?').join(',')}) ORDER BY path, kind`).all(...ids) as RefRow[];
     for (const row of rows) {
       const refs = result.get(row.memory_id) ?? [];
-      refs.push({ path: row.path, kind: row.kind, drift: row.drift });
+      refs.push({ path: row.path, kind: row.kind, drift: row.drift, ...(row.drift === 'changed' && row.mtime_ms != null ? { changedAt: new Date(row.mtime_ms).toISOString() } : {}) });
       result.set(row.memory_id, refs);
     }
     return result;

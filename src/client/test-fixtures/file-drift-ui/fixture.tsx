@@ -16,7 +16,8 @@ import "./fixture.css"
 await i18n.changeLanguage("en")
 const base = { scope: "project", projectId: "synthetic", type: "constraint", status: "active", abstractionLevel: "concrete",
   sensitive: false, createdAt: "", updatedAt: "", usageCount: 0, reinforcedCount: 0, citedInCurrentSession: 0, version: 1 } as const
-const changed: MemoryItem = { ...base, id: "M-01", content: "Validate requests in src/auth.ts.", fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }] }
+const fixtureNow = Date.now()
+const changed: MemoryItem = { ...base, id: "M-01", content: "Validate requests in src/auth.ts.", fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed", changedAt: new Date(fixtureNow - 3 * 24 * 60 * 60_000).toISOString() }] }
 const removed: MemoryItem = { ...base, id: "M-02", content: "Run the synthetic test before release.", fileRefs: [{ path: "AGENTS.md", kind: "source", drift: "line_removed" }] }
 const missing: MemoryItem = { ...base, id: "M-03", content: "Use the synthetic release configuration.", fileRefs: [{ path: "config/release.ts", kind: "mention", drift: "missing" }] }
 const multiple: MemoryItem = { ...base, id: "M-04", content: "Check the synthetic release pipeline.", fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }, { path: "config/release.ts", kind: "mention", drift: "missing" }] }

@@ -110,6 +110,7 @@ export interface MemoryFileRef {
   path: string;
   kind: 'mention' | 'source';
   drift: null | 'changed' | 'missing' | 'line_removed';
+  changedAt?: string;
 }
 
 export interface ScoredMemory {

@@ -12,7 +12,7 @@
   "expiresToday": "Expires today",
   "daysLeft_one": "{{count}} day left",
   "daysLeft_other": "{{count}} days left",
-  "expired": "Expired",
+  "expired": "expired",
   "expiry": "Expiry",
   "expiredDate": "Expired {{date}}",
   "restoreForSevenDays": "Restore for 7 days",
@@ -229,7 +229,6 @@
   "mergeProposalDraftedReviewItInStep1NextTurn": "merge proposal drafted — review it with new candidates next turn",
   "keepBoth": "Keep both",
   "keptBothWonTBeFlaggedAgain": "kept both, won't be flagged again",
-  "keep": "Keep",
   "keptExpiryClockReset": "kept — expiry clock reset",
   "memoryContentCorrectedResumedWithTheNewVersion": "memory content corrected; resumed with the new version",
   "workingMemoryAdjustedResumed": "working memory adjusted; resumed",
@@ -461,7 +460,6 @@
   "handledProgress": "{{handled}} of {{total}} handled",
   "importResult": "import: {{count}} candidates created, {{skipped}} skipped",
   "cancelled": "cancelled",
-  "expired": "expired",
   "usedTimes": "used {{count}}×",
   "fieldScope": "scope",
   "fieldType": "type",
@@ -522,7 +520,9 @@
   "importedFrom": "Imported from",
   "nothingToCheck": "Nothing to check — referenced files match what was recorded.",
   "fileCheckAcknowledged": "Referenced files checked",
-  "importFromSource": "Import from {{name}}",
-  "foundInProject": "Found in this project",
-  "sourceLinked": "Source linked — you'll be told if a line is removed."
+  "foundInProject": "Found in this project — import one and MemoSync will tell you when a line is later removed from it.",
+  "sourceLinked": "Source linked — you'll be told if a line is removed.",
+  "importInto": "Import into",
+  "orPasteText": "Or paste text (not linked to a file)",
+  "fileStatusChangedAgo": "Changed {{when}}"
 }

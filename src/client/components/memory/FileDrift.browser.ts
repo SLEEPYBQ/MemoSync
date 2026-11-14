@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import react from "@vitejs/plugin-react"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
-import { chromium, type Browser, type Page } from "playwright"
+import { chromium, type Browser, type Locator, type Page } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
 import type { MemoryItem } from "../../lib/memoriesApi"
 
@@ -11,6 +11,12 @@ let browser: Browser
 let page: Page
 let url: string
 const artifacts = join(import.meta.dir, "../../../../artifacts/80")
+const selectedScreenshots = new Set((process.env.FILE_DRIFT_SCREENSHOTS ?? "").split(",").filter(Boolean))
+async function capture(locator: Locator, name: string) {
+  if (!selectedScreenshots.size || selectedScreenshots.has(name)) {
+    await locator.screenshot({ animations: "disabled", path: join(artifacts, name) })
+  }
+}
 beforeAll(async () => {
   vite = await createServer({ configFile: false, root: join(import.meta.dir, "../../test-fixtures/file-drift-ui"), plugins: [react()],
     optimizeDeps: { entries: [join(import.meta.dir, "../../test-fixtures/file-drift-ui/fixture.tsx"), join(import.meta.dir, "../../app/MemoryBoardPage.tsx")] },
@@ -24,7 +30,7 @@ beforeAll(async () => {
 })
 afterAll(async () => { await page?.close(); await browser?.close(); await vite?.close() })
 
-test("file drift surfaces and acknowledgements", async () => {
+test("file drift surfaces, source import layout and acknowledgements", async () => {
   page = await browser.newPage({ viewport: { width: 1400, height: 1200 } })
   page.setDefaultTimeout(5000)
   const errors: string[] = []
@@ -76,37 +82,53 @@ test("file drift surfaces and acknowledgements", async () => {
   await previewLabel.waitFor()
   expect(await previewLabel.getAttribute("title")).toBe("src/auth.ts")
   expect(await previewLabel.getAttribute("class")).toContain("bg-cand-surface")
-  await page.locator("#import [data-expandable-toggle]").click()
-  await page.locator("#import select").selectOption("synthetic")
-  await page.locator("#import").getByRole("button", { name: "Import from AGENTS.md" }).click()
-  expect(imports).toMatchObject([{ scope: "project", projectId: "synthetic", sourcePath: "AGENTS.md" }])
-  await page.locator("#import").getByText("Source linked — you'll be told if a line is removed.").waitFor()
+  const importPanel = page.locator("#import")
+  await importPanel.locator("[data-expandable-toggle]").click()
+  expect(await importPanel.locator("button.font-mono").count()).toBe(0)
+  await importPanel.locator("select").selectOption("synthetic")
+  await importPanel.getByRole("button", { name: "AGENTS.md", exact: true }).waitFor()
+  expect(await importPanel.locator("button.font-mono").allTextContents()).toEqual(["AGENTS.md", "CLAUDE.md", ".cursorrules"])
+  expect(await importPanel.evaluate(element => {
+    const select = element.querySelector("select")
+    const chips = [...element.querySelectorAll("button.font-mono")]
+    const textarea = element.querySelector("textarea")
+    const importButton = [...element.querySelectorAll("button")].find(button => button.textContent?.includes("Import as candidates"))
+    return Boolean(select && textarea && importButton && chips.length === 3
+      && chips.every(chip => (select.compareDocumentPosition(chip) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0
+        && (chip.compareDocumentPosition(textarea) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
+      && (textarea.compareDocumentPosition(importButton) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0)
+  })).toBe(true)
+  await page.locator("#changed").getByText("Changed 3 days ago").waitFor()
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-    await library.screenshot({ animations: "disabled", path: join(artifacts, `board-desktop-${theme}.png`) })
+    await capture(library, `board-desktop-${theme}.png`)
     for (const name of ["changed", "missing", "removed", "multiple", "preview", "import"]) {
-      await page.locator(`#${name}`).screenshot({ animations: "disabled", path: join(artifacts, `${name}-desktop-${theme}.png`) })
+      await capture(page.locator(`#${name}`), `${name}-desktop-${theme}.png`)
     }
     await page.locator("#citation").getByText("[M-01]").hover()
     const popover = page.locator("[data-radix-popper-content-wrapper]").filter({ hasText: "Check · auth.ts changed" })
     await popover.waitFor()
-    await popover.screenshot({ animations: "disabled", path: join(artifacts, `citation-desktop-${theme}.png`) })
+    await capture(popover, `citation-desktop-${theme}.png`)
   }
   await page.setViewportSize({ width: 390, height: 1000 })
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
     for (const name of ["changed", "missing", "removed", "multiple", "preview"]) {
-      await page.locator(`#${name}`).screenshot({ animations: "disabled", path: join(artifacts, `${name}-narrow-${theme}.png`) })
+      await capture(page.locator(`#${name}`), `${name}-narrow-${theme}.png`)
     }
   }
   await page.setViewportSize({ width: 1400, height: 1200 })
+  await importPanel.getByRole("button", { name: "AGENTS.md", exact: true }).click()
+  await importPanel.getByText("Source linked — you'll be told if a line is removed.").waitFor()
+  expect(imports).toMatchObject([{ scope: "project", projectId: "synthetic", sourcePath: "AGENTS.md" }])
   await page.evaluate(async () => {
     document.documentElement.classList.remove("dark")
     await (window as unknown as { fixtureLanguage: (language: string) => Promise<unknown> }).fixtureLanguage("zh-CN")
   })
   await page.locator("#changed").getByRole("button", { name: "仍然适用" }).waitFor()
-  await page.locator("#changed").screenshot({ animations: "disabled", path: join(artifacts, "changed-desktop-zh-CN.png") })
-  await library.screenshot({ animations: "disabled", path: join(artifacts, "board-desktop-zh-CN.png") })
+  await page.locator("#changed").getByText("3天前修改").waitFor()
+  await capture(page.locator("#changed"), "changed-desktop-zh-CN.png")
+  await capture(library, "board-desktop-zh-CN.png")
   await page.evaluate(async () => { await (window as unknown as { fixtureLanguage: (language: string) => Promise<unknown> }).fixtureLanguage("en") })
   for (const [id, action] of [["M-01", "Still applies"], ["M-02", "Keep as its own memory"]] as const) {
     await library.locator(`[data-memory-board-id="${id}"]`).click()
@@ -124,7 +146,7 @@ test("file drift surfaces and acknowledgements", async () => {
   expect(await library.getByRole("button", { name: "Needs check" }).count()).toBe(1)
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-    await library.screenshot({ animations: "disabled", path: join(artifacts, `empty-desktop-${theme}.png`) })
+    await capture(library, `empty-desktop-${theme}.png`)
   }
   expect(errors).toEqual([])
 }, 60_000)

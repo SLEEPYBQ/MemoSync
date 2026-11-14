@@ -179,13 +179,8 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
           defaultExpanded={false}
           expandedContent={
             <div className="mt-2 space-y-2">
-              <Textarea
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder={t("memory:pasteAnExistingCLAUDEMdCursorrulesEveryBulletLineBecomes")}
-                className="min-h-24 text-xs"
-              />
               <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground">{t("memory:importInto")}</span>
                 <select
                   value={importScope === "personal" ? "personal" : importProjectId}
                   onChange={(e) => {
@@ -205,6 +200,23 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
                     </option>
                   ))}
                 </select>
+              </div>
+              {sources.length ? <div className="rounded-lg border border-border/70 bg-muted/30 p-2">
+                <p className="mb-1.5 text-[11px] text-muted-foreground">{t("memory:foundInProject")}</p>
+                <div className="flex flex-wrap gap-1.5">{sources.map(source => <button key={source} type="button"
+                  disabled={busy !== null} onClick={() => void handleImport(source)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground transition-colors hover:border-foreground/30 hover:bg-muted disabled:opacity-50">
+                  <FileText className="h-3 w-3 text-muted-foreground" />{source}
+                </button>)}</div>
+              </div> : null}
+              {sources.length ? <p className="text-[11px] text-muted-foreground">{t("memory:orPasteText")}</p> : null}
+              <Textarea
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder={t("memory:pasteAnExistingCLAUDEMdCursorrulesEveryBulletLineBecomes")}
+                className="min-h-24 text-xs"
+              />
+              <div className="flex items-center">
                 <Button
                   variant="default"
                   size="sm"
@@ -215,14 +227,6 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
                   {busy === "import" ? <Loader2 className="h-3 w-3 animate-spin" /> : <FolderInput className="h-3 w-3" />}
                   {t("memory:importAsCandidates")}</Button>
               </div>
-              {sources.length ? <div>
-                <p className="mb-1 text-[11px] text-muted-foreground">{t("memory:foundInProject")}</p>
-                <div className="flex flex-wrap gap-1.5">{sources.map(source => <button key={source} type="button"
-                  disabled={busy !== null} onClick={() => void handleImport(source)}
-                  className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground hover:bg-muted disabled:opacity-50">
-                  <FileText className="h-3 w-3" />{t("memory:importFromSource", { name: source })}
-                </button>)}</div>
-              </div> : null}
             </div>
           }
         >

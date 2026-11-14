@@ -56,6 +56,15 @@ test("file reference detail shows changed and removed-source actions only on edi
   expect(render(removedItem, true)).not.toContain("Keep as its own memory")
 })
 
+test("file references render relative change time and fall back when the timestamp is invalid", () => {
+  const now = Date.now()
+  const item: MemoryItem = { ...sensitiveCandidate, content: "Synthetic rule", sensitive: false, status: "active",
+    fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed", changedAt: new Date(now - 3 * 24 * 60 * 60_000).toISOString() }] }
+  const render = (memory: MemoryItem) => renderToStaticMarkup(<MemoryDetailPanel item={memory} allItems={[memory]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} />)
+  expect(render(item)).toContain("Changed 3 days ago")
+  expect(render({ ...item, fileRefs: [{ ...item.fileRefs![0]!, changedAt: "invalid" }] })).toContain(">Changed</span>")
+})
+
 test("a sensitive Candidate only builds an atomic accept patch from a changed reviewed draft", () => {
   expect(buildReviewedSensitiveCandidatePatch(sensitiveCandidate, {
     content: sensitiveCandidate.content,
