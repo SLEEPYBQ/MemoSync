@@ -19,11 +19,13 @@ import { useMemoryStore } from "../../stores/memoryStore"
 import { recordUiMonitor } from "../../lib/memoriesApi"
 import { MemoryCardCore } from "../memory/MemoryCardCore"
 import { ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
+import { useMemoryBoardLauncher } from "../../app/memory/MemoryBoardLauncher"
 import { MEMORY_SCOPE_CHIP_CLASSES, isMemoryScope, parseMemoryCitationHref } from "../../lib/memoryCitations"
 import {
   AlertTriangle,
   Archive,
   ArrowDownToLine,
+  ArrowUpRight,
   CheckLine,
   ChevronRight,
   ListTodo,
@@ -316,6 +318,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
   useI18n()
   useEnsureMemoriesLoaded()
   const { chatId } = useTranscriptChatContext()
+  const boardLauncher = useMemoryBoardLauncher()
   const memory = useMemoryStore((s) => s.items.find((m) => m.id === id))
   const interruptApi = useTurnInterrupt()
   const { readonly, previewDemo } = useTranscriptRenderOptions()
@@ -369,6 +372,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
   return (
     <>
     <HoverCard
+      open={hoverOpen}
       onOpenChange={(open) => {
         setHoverOpen(open)
         if (open && chatId && !hoverReportedRef.current) {
@@ -402,7 +406,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
         <MemoryCardCore item={memory} />
         {!readonly && (memory.status === "active" || memory.status === "archived") ? (
           <>
-            <div className="mt-2.5 flex min-w-0 items-center gap-1 border-t border-border/60 pt-2">
+            <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1 border-t border-border/60 pt-2">
               {memory.status === "active" ? (
                 <button type="button" title={t("memory:archiveEverywhereTitle")} disabled={busyId !== null}
                   onClick={() => void archive(id).catch(() => {})}
@@ -411,6 +415,18 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
                 </button>
               ) : <ArchivedInline id={id} busy={busyId === id} onUndo={(memoryId) => void restore(memoryId).catch(() => {})}
                 note={interruptApi?.active ? t("memory:archivedAppliesNextTurn") : undefined} />}
+              {!previewDemo && boardLauncher.available ? (
+                <button type="button"
+                  className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  onClick={(event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    setHoverOpen(false)
+                    boardLauncher.openMemoryBoard({ source: "chat_citation", chatId, memoryId: id })
+                  }}>
+                  {t("memory:openInBoard")}<ArrowUpRight aria-hidden className="h-3 w-3" />
+                </button>
+              ) : null}
             </div>
             {error ? <p className="mt-1 text-[11px] text-destructive">{error}</p> : null}
           </>
