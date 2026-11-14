@@ -70,6 +70,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     memoryPreview: {
       enabled: true,
       autoProceedWhenEmpty: true,
+      confirmationMode: "on_change",
     },
     warning: null,
     filePathDisplay: filePath,
@@ -109,7 +110,7 @@ describe("memoryPreview settings", () => {
   test("defaults to enabled + auto-proceed-when-empty", async () => {
     const filePath = await createTempFilePath()
     const snapshot = await readAppSettingsSnapshot(filePath)
-    expect(snapshot.memoryPreview).toEqual({ enabled: true, autoProceedWhenEmpty: true })
+    expect(snapshot.memoryPreview).toEqual({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" })
   })
 
   test("patch persists and round-trips through the file", async () => {
@@ -117,18 +118,26 @@ describe("memoryPreview settings", () => {
     const manager = new AppSettingsManager(filePath)
     await manager.initialize()
     const snapshot = await manager.writePatch({ memoryPreview: { enabled: false } })
-    expect(snapshot.memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: true })
+    expect(snapshot.memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: true, confirmationMode: "on_change" })
     const onDisk = JSON.parse(await readFile(filePath, "utf8"))
-    expect(onDisk.memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: true })
+    expect(onDisk.memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: true, confirmationMode: "on_change" })
+    expect((await manager.writePatch({ memoryPreview: { confirmationMode: "every_turn" } })).memoryPreview.confirmationMode).toBe("every_turn")
+    expect((await manager.writePatch({ memoryPreview: { confirmationMode: "on_change" } })).memoryPreview.confirmationMode).toBe("on_change")
     manager.dispose()
     expect((await readAppSettingsSnapshot(filePath)).memoryPreview.enabled).toBe(false)
   })
 
   test("non-boolean values reset to defaults", async () => {
     const filePath = await createTempFilePath()
-    await writeFile(filePath, JSON.stringify({ memoryPreview: { enabled: "nope", autoProceedWhenEmpty: 3 } }))
+    await writeFile(filePath, JSON.stringify({ memoryPreview: { enabled: "nope", autoProceedWhenEmpty: 3, confirmationMode: "invalid" } }))
     const snapshot = await readAppSettingsSnapshot(filePath)
-    expect(snapshot.memoryPreview).toEqual({ enabled: true, autoProceedWhenEmpty: true })
+    expect(snapshot.memoryPreview).toEqual({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" })
+  })
+
+  test("legacy preview settings without a confirmation mode default to on-change", async () => {
+    const filePath = await createTempFilePath()
+    await writeFile(filePath, JSON.stringify({ memoryPreview: { enabled: false, autoProceedWhenEmpty: false } }))
+    expect((await readAppSettingsSnapshot(filePath)).memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: false, confirmationMode: "on_change" })
   })
 })
 

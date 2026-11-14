@@ -9,6 +9,7 @@ import type { CodexAppServerManager } from './codex-app-server';
 import { EventStore } from './event-store';
 import type { HarnessEvent, HarnessTurn } from './harness-types';
 import { MemoryService } from './memory';
+import { getMemoryConfirmation, recordMemoryConfirmation } from './memory/confirmation';
 import type { MemoryBranchAskOptions, MemoryBranchInput } from './memory/branch-runtime';
 import { createCaptureService } from './memory/capture';
 import { createCheckupService } from './memory/checkup';
@@ -52,9 +53,11 @@ function entry(value: Record<string, unknown>): TranscriptEntry {
 async function setup(options: {
   blockPreparation?: boolean;
   workingFailsOnce?: boolean;
-  working?: (prompt: string) => Record<string, unknown>;
+  working?: (prompt: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   invalidAuditReplies?: number;
   getMemorySettings?: () => { enabled: boolean; learn: boolean; control: "review" | "auto" };
+  getMemoryPreviewSettings?: ConstructorParameters<typeof AgentCoordinator>[0]['getMemoryPreviewSettings'];
+  productionPreviewDefaults?: boolean;
   candidate?: (prompt: string, options?: MemoryBranchAskOptions) => Promise<Record<string, unknown>>;
   audit?: () => Promise<void>;
   resolveCaptureRuntime?: ConstructorParameters<typeof AgentCoordinator>[0]['resolveCaptureRuntime'];
@@ -100,6 +103,7 @@ async function setup(options: {
     resolvePiConnection: async () => ({ provider: 'openrouter', baseUrl: 'https://example.test', apiKey: 'test' }),
     onStateChange: () => {},
     getMemorySettings: options.getMemorySettings,
+    getMemoryPreviewSettings: options.productionPreviewDefaults ? undefined : options.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'every_turn' })),
     memoryPreview: true, memoryBranches: true,
     capture: createCaptureService({ memory, callJson }),
     memoryCheckup: createCheckupService({ memory, callJson, listRecentSessions: () => [] }),
@@ -529,6 +533,251 @@ describe('Automatic background candidate learning', () => {
 });
 
 describe('AgentCoordinator persistent Codex memory branches', () => {
+  it('confirms by chat and version, then automatically starts unchanged subsets with exact selection', async () => {
+    const selected: string[] = [];
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }), productionPreviewDefaults: true,
+      working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: `Apply ${id} to this task.` })) }) });
+    try {
+      const second = h.memory.store.create({ content: 'Use the synthetic alternate rule.', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      const unselected = h.memory.store.create({ content: 'Never select this synthetic rule.', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      selected.push(h.item.id, second.id);
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      expect(preview.confirmationMode).toBe('on_change');
+      expect(h.mainTurns).toHaveLength(0);
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: selected });
+      await until(() => h.mainTurns.length === 1);
+      await finish(h);
+      await h.send();
+      await until(() => h.mainTurns.length === 2);
+      let decision = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1)!;
+      expect(decision).toMatchObject({ auto: true, autoReason: 'confirmed' });
+      if (decision.kind !== 'memory_preview_decision') throw new Error('Decision missing');
+      expect([...decision.selectedIds!].sort()).toEqual([...selected].sort());
+      await finish(h, 'second');
+      selected.splice(0, selected.length, second.id);
+      await h.send();
+      await until(() => h.mainTurns.length === 3);
+      decision = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1)!;
+      expect(decision).toMatchObject({ auto: true, autoReason: 'confirmed', selectedIds: [second.id] });
+      expect(h.mainTurns[2]!.developerInstructions).toContain(second.content);
+      expect(h.mainTurns[2]!.developerInstructions).not.toContain(h.item.content);
+      expect(h.mainTurns[2]!.developerInstructions).not.toContain(unselected.content);
+      await finish(h, 'third');
+      const auditCalls = () => h.calls.filter(call => call.purpose === 'audit' && call.prompt.includes('INJECTED MEMORY SNAPSHOT:\n'));
+      await until(() => auditCalls().length >= 3);
+      const auditPrompt = auditCalls().at(-1)!.prompt;
+      const auditSnapshot = JSON.parse(auditPrompt.split('INJECTED MEMORY SNAPSHOT:\n')[1]!.split('\n')[0]!);
+      expect(auditSnapshot.map((memory: { id: string }) => memory.id)).toEqual([second.id]);
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  for (const reason of ['first', 'changed', 'removed', 'enforced'] as const) {
+    it(`requires review for a selected ${reason} memory`, async () => {
+      let chosen = '';
+      const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+        getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }),
+        working: () => ({ selected: [{ id: chosen, why: 'Relevant', expectedUse: 'Apply this rule.' }] }) });
+      try {
+        recordMemoryConfirmation(h.memory.store, h.chat.id, [h.item], []);
+        let item = h.item;
+        if (reason === 'first') item = h.memory.store.create({ content: 'A new synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+        if (reason === 'changed') item = h.memory.store.update(item.id, { content: 'Updated synthetic rule' }, { actor: 'user' });
+        if (reason === 'removed') recordMemoryConfirmation(h.memory.store, h.chat.id, [], [item.id]);
+        if (reason === 'enforced') h.memory.store.setKv(`pay_attention:${h.chat.id}`, [item.id]);
+        chosen = item.id;
+        await h.send();
+        await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+        const relevance = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview_relevance')!;
+        expect(relevance).toMatchObject({ confirmationReasons: [expect.objectContaining({ id: item.id, reason })] });
+        expect(h.coordinator.pendingPreviews.has(h.chat.id)).toBe(true);
+        expect(h.mainTurns).toHaveLength(0);
+      } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('without memory marks proposed items removed without confirming them', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    try {
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.store.getMessages(h.chat.id).find(message => message.kind === 'memory_preview')!;
+      if (preview.kind !== 'memory_preview') throw new Error('Preview missing');
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'without_memory' });
+      await until(() => h.mainTurns.length === 1);
+      await finish(h);
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_relevance').length === 2);
+      const relevance = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_relevance').at(-1)!;
+      expect(relevance).toMatchObject({ confirmationReasons: [{ id: h.item.id, reason: 'removed' }] });
+      expect(h.mainTurns).toHaveLength(1);
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('keeps a failed selector parked even when its memory was already confirmed', async () => {
+    const h = await setup({ workingFailsOnce: true, getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    try {
+      recordMemoryConfirmation(h.memory.store, h.chat.id, [h.item], []);
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance' && message.error));
+      expect(h.mainTurns).toHaveLength(0);
+      expect(h.coordinator.pendingPreviews.has(h.chat.id)).toBe(true);
+      await h.start();
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  for (const allowEmpty of [true, false]) {
+    it(`honors autoProceedWhenEmpty=${allowEmpty} after a successful empty selection`, async () => {
+      const h = await setup({ working: () => ({ selected: [] }), getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+        getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: allowEmpty, confirmationMode: 'on_change' }) });
+      try {
+        await h.send();
+        await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+        if (allowEmpty) {
+          await until(() => h.mainTurns.length === 1);
+          expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1))
+            .toMatchObject({ auto: true, selectedIds: [] });
+          const decision = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1)!;
+          if (decision.kind === 'memory_preview_decision') expect(decision.autoReason).toBeUndefined();
+        } else {
+          expect(h.mainTurns).toHaveLength(0);
+          expect(h.coordinator.pendingPreviews.has(h.chat.id)).toBe(true);
+        }
+      } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('ignores delayed selection after cancellation', async () => {
+    const selection = deferred<Record<string, unknown>>();
+    const h = await setup({ working: () => selection.promise, getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    try {
+      recordMemoryConfirmation(h.memory.store, h.chat.id, [h.item], []);
+      await h.send();
+      await until(() => h.calls.some(call => call.purpose === 'working-memory'));
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      selection.resolve({ selected: [{ id: h.item.id, why: 'Relevant', expectedUse: 'Apply the rule.' }] });
+      await Bun.sleep(20);
+      expect(h.mainTurns).toHaveLength(0);
+      expect(h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_decision' && message.auto)).toBe(false);
+    } finally { selection.resolve({ selected: [] }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('reports a view edit during delayed selection instead of automatically booting', async () => {
+    const selection = deferred<Record<string, unknown>>();
+    const h = await setup({ working: () => selection.promise, getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    try {
+      recordMemoryConfirmation(h.memory.store, h.chat.id, [h.item], []);
+      await h.send();
+      await until(() => h.calls.some(call => call.purpose === 'working-memory'));
+      h.memory.store.update(h.item.id, { content: 'Revised while selection is pending' }, { actor: 'user' });
+      selection.resolve({ selected: [{ id: h.item.id, why: 'Relevant', expectedUse: 'Apply the rule.' }] });
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance' && message.error));
+      expect(h.coordinator.pendingPreviews.has(h.chat.id)).toBe(true);
+      expect(h.mainTurns).toHaveLength(0);
+    } finally { selection.resolve({ selected: [] }); await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  for (const transition of ['archive', 'expire'] as const) {
+    it(`auto-starts only remaining confirmed memories when one is ${transition}d during selection`, async () => {
+      const selection = deferred<Record<string, unknown>>();
+      const h = await setup({ working: () => selection.promise, getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+        getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+      try {
+        const first = transition === 'expire'
+          ? h.memory.store.update(h.item.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' })
+          : h.item;
+        const second = h.memory.store.create({ content: 'Another confirmed synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+        recordMemoryConfirmation(h.memory.store, h.chat.id, [first, second], []);
+        await h.send();
+        await until(() => h.calls.some(call => call.purpose === 'working-memory'));
+        if (transition === 'expire') h.memory.expireDue('2100-01-01T00:00:00.000Z');
+        else h.memory.store.update(first.id, { status: 'archived' }, { actor: 'user' });
+        selection.resolve({ selected: [first, second].map(item => ({ id: item.id, why: 'Relevant', expectedUse: 'Apply this rule.' })) });
+        await until(() => h.mainTurns.length === 1);
+        expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1))
+          .toMatchObject({ auto: true, autoReason: 'confirmed', selectedIds: [second.id] });
+        expect(h.mainTurns[0]!.developerInstructions).toContain(second.content);
+        expect(h.mainTurns[0]!.developerInstructions).not.toContain(first.content);
+      } finally { selection.resolve({ selected: [] }); await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+    });
+  }
+
+  it('retains confirmations across coordinator restart but not another chat', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    let next: AgentCoordinator | undefined;
+    try {
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      await h.start();
+      await finish(h);
+      await h.coordinator.shutdownRuntime();
+      next = h.restart();
+      await next.send({ type: 'chat.send', chatId: h.chat.id, provider: 'codex', model: 'gpt-5.4', content: 'Another synthetic task' });
+      await until(() => h.mainTurns.length === 2);
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_preview_decision').at(-1))
+        .toMatchObject({ auto: true, autoReason: 'confirmed', selectedIds: [h.item.id] });
+      await next.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      const other = await h.store.createChat(h.chat.projectId);
+      await h.store.setSessionToken(other.id, 'other-session');
+      await next.send({ type: 'chat.send', chatId: other.id, provider: 'codex', model: 'gpt-5.4', content: 'Another synthetic task' });
+      await until(() => h.store.getMessages(other.id).some(message => message.kind === 'memory_preview_relevance'));
+      expect(h.store.getMessages(other.id).find(message => message.kind === 'memory_preview_relevance'))
+        .toMatchObject({ confirmationReasons: [{ id: h.item.id, reason: 'first' }] });
+      expect(next.pendingPreviews.has(other.id)).toBe(true);
+      await next.cancel(other.id, { skipPostTurnMemoryPasses: true });
+    } finally { await next?.shutdownRuntime(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('never boots a cancelled automatic decision while its append is pending', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    const entered = deferred<void>(), release = deferred<void>();
+    const append = h.store.appendMessage.bind(h.store);
+    h.store.appendMessage = async (chatId, message) => {
+      if (message.kind === 'memory_preview_decision' && message.auto) { entered.resolve(); await release.promise; }
+      return append(chatId, message);
+    };
+    try {
+      recordMemoryConfirmation(h.memory.store, h.chat.id, [h.item], []);
+      await h.send();
+      await entered.promise;
+      await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
+      release.resolve();
+      await Bun.sleep(20);
+      expect(h.mainTurns).toHaveLength(0);
+    } finally { release.resolve(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('records the approved snapshot version rather than a fresh version after the decision append', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: false, control: 'review' }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: 'on_change' }) });
+    const entered = deferred<void>(), release = deferred<void>();
+    const append = h.store.appendMessage.bind(h.store);
+    h.store.appendMessage = async (chatId, message) => {
+      if (message.kind === 'memory_preview_decision') { entered.resolve(); await release.promise; }
+      return append(chatId, message);
+    };
+    try {
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      const preview = h.coordinator.pendingPreviews.get(h.chat.id)!;
+      await h.coordinator.respondMemoryPreview({ chatId: h.chat.id, previewId: preview.previewId, decision: 'go_on', memoryIds: [h.item.id] });
+      await entered.promise;
+      h.memory.store.update(h.item.id, { content: 'Changed while approval was being saved' }, { actor: 'user' });
+      release.resolve();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'result' && message.isError));
+      expect(getMemoryConfirmation(h.memory.store, h.chat.id).confirmedVersions[h.item.id]).toBe(h.item.version);
+      expect(h.mainTurns).toHaveLength(0);
+    } finally { release.resolve(); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
   it('carries expiry through a parked preview without injecting the expired rule', async () => {
     const selected: string[] = [];
     const h = await setup({ working: () => ({ selected: selected.map(id => ({ id, why: 'Relevant', expectedUse: 'Apply the rule.' })) }) });

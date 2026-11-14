@@ -12,6 +12,21 @@ function entry(partial: Omit<TranscriptEntry, "_id" | "createdAt">): TranscriptE
 }
 
 describe("processTranscriptMessages", () => {
+  test("folds confirmation mode, current-revision reasons and exact automatic selection", () => {
+    const result = processTranscriptMessages([
+      entry({ kind: "memory_preview", previewId: "p", confirmationMode: "every_turn", memories: [{ id: "M-1", content: "Old", scope: "personal" }] }),
+      entry({ kind: "memory_preview_relevance", previewId: "p", revision: 0, relevant: [], confirmationReasons: [{ id: "M-1", reason: "first", version: 1 }] }),
+      entry({ kind: "memory_preview_update", previewId: "p", revision: 1, confirmationMode: "on_change", memories: [{ id: "M-2", content: "New", scope: "personal" }] }),
+      entry({ kind: "memory_preview_relevance", previewId: "p", revision: 1, relevant: [{ id: "M-2", why: "Relevant" }], confirmationReasons: [{ id: "M-2", reason: "changed", version: 2, previousVersion: 1 }], expectedUses: [{ id: "M-2", expectedUse: "Apply it." }] }),
+      entry({ kind: "memory_preview_relevance", previewId: "p", revision: 0, relevant: [], confirmationReasons: [{ id: "M-1", reason: "first", version: 1 }] }),
+      entry({ kind: "memory_preview_decision", previewId: "p", decision: "go_on", auto: true, autoReason: "confirmed", selectedIds: ["M-2"], expectedUses: [{ id: "M-2", expectedUse: "Apply it." }] }),
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({
+      confirmationMode: "on_change", confirmationReasons: [{ id: "M-2", reason: "changed", version: 2, previousVersion: 1 }],
+      decisionAuto: true, decisionAutoReason: "confirmed", decisionSelectedIds: ["M-2"], decisionExpectedUses: [{ id: "M-2", expectedUse: "Apply it." }],
+    })
+  })
   test("hydrates a memory expiry receipt as one row", () => {
     const result = processTranscriptMessages([entry({ kind: "memory_expired", ids: ["M-1", "M-2"], turn: 2 })])
     expect(result).toHaveLength(1)

@@ -48,8 +48,8 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   // Memory-preview decisions and relevance predictions are separate
   // append-only entries; fold each into its matching memory_preview message
   // so a preview renders as one card.
-  const previewDecisions = new Map<string, { decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>["decision"]; auto?: boolean; selectedIds?: string[]; expectedUses?: Array<{ id: string; expectedUse: string }> }>()
-  const previewRelevance = new Map<string, { revision: number; relevant: Array<{ id: string; why: string }>; expectedUses?: Array<{ id: string; expectedUse: string }>; error?: string; errorUiText?: UiTextReference }>()
+  const previewDecisions = new Map<string, { decision: Extract<TranscriptEntry, { kind: "memory_preview_decision" }>["decision"]; auto?: boolean; autoReason?: "confirmed"; selectedIds?: string[]; expectedUses?: Array<{ id: string; expectedUse: string }> }>()
+  const previewRelevance = new Map<string, { revision: number; relevant: Array<{ id: string; why: string }>; expectedUses?: Array<{ id: string; expectedUse: string }>; confirmationReasons?: Extract<TranscriptEntry, { kind: "memory_preview_relevance" }>["confirmationReasons"]; error?: string; errorUiText?: UiTextReference }>()
   const previewUpdates = new Map<string, Extract<TranscriptEntry, { kind: "memory_preview_update" }>>()
   const previewRefreshing = new Set<string>()
   const previewRefreshVersions = new Map<string, number>()
@@ -73,14 +73,14 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   const interruptResolutions = new Map<string, { action?: "content_fixed" | "usage_correction" | "removed_only"; correction?: string; selectedIds: string[]; enforced?: boolean }>()
   for (const entry of entries) {
     if (entry.kind === "memory_trace_correction") traceCorrections.set(JSON.stringify([entry.turn, entry.memoryId]), entry)
-    if (entry.kind === "memory_preview_decision") previewDecisions.set(entry.previewId, { decision: entry.decision, auto: entry.auto, selectedIds: entry.selectedIds, expectedUses: entry.expectedUses })
+    if (entry.kind === "memory_preview_decision") previewDecisions.set(entry.previewId, { decision: entry.decision, auto: entry.auto, autoReason: entry.autoReason, selectedIds: entry.selectedIds, expectedUses: entry.expectedUses })
     if (entry.kind === "memory_interrupt_resolution") {
       interruptResolutions.set(entry.interruptId, { action: entry.action, correction: entry.correction, selectedIds: entry.selectedIds, enforced: entry.enforced })
     }
     if (entry.kind === "memory_preview_relevance") {
       const revision = entry.revision ?? 0
       if (revision >= (previewRelevance.get(entry.previewId)?.revision ?? -1)) {
-        previewRelevance.set(entry.previewId, { revision, relevant: entry.relevant, expectedUses: entry.expectedUses, error: entry.error, errorUiText: entry.errorUiText })
+        previewRelevance.set(entry.previewId, { revision, relevant: entry.relevant, expectedUses: entry.expectedUses, confirmationReasons: entry.confirmationReasons, error: entry.error, errorUiText: entry.errorUiText })
       }
     }
     if (entry.kind === "memory_preview_update") {
@@ -284,6 +284,8 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           ...createBaseMessage(entry),
           kind: "memory_preview",
           previewId: entry.previewId,
+          confirmationMode: update?.confirmationMode ?? entry.confirmationMode,
+          confirmationReasons: relevance?.revision === refreshVersion ? relevance.confirmationReasons : undefined,
           task: entry.task,
           memories: update?.memories ?? entry.memories,
           transferredIds: entry.transferredIds,
@@ -300,6 +302,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           turn: entry.turn,
           decision: previewDecisions.get(entry.previewId)?.decision,
           decisionAuto: previewDecisions.get(entry.previewId)?.auto,
+          decisionAutoReason: previewDecisions.get(entry.previewId)?.autoReason,
           decisionSelectedIds: previewDecisions.get(entry.previewId)?.selectedIds,
           decisionExpectedUses: previewDecisions.get(entry.previewId)?.expectedUses,
         })

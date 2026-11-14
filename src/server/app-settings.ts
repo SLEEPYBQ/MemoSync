@@ -66,6 +66,7 @@ interface AppSettingsFile {
   memoryPreview?: {
     enabled?: unknown
     autoProceedWhenEmpty?: unknown
+    confirmationMode?: unknown
   }
 }
 
@@ -81,6 +82,7 @@ function normalizeMemoryPreview(value: AppSettingsFile["memoryPreview"] | undefi
   return {
     enabled: typeof value?.enabled === "boolean" ? value.enabled : true,
     autoProceedWhenEmpty: typeof value?.autoProceedWhenEmpty === "boolean" ? value.autoProceedWhenEmpty : true,
+    confirmationMode: value?.confirmationMode === "every_turn" ? "every_turn" : "on_change",
   }
 }
 

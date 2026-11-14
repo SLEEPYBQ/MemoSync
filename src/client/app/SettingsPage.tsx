@@ -39,7 +39,7 @@ export {
 export { SkillsSection } from "./settings/SkillsSection"
 export { getKeybindingsSubtitle, shouldPreviewChatSoundChange } from "./settings/shared"
 
-const REVIEW_ONLY_MEMORY_ROWS: string[] = [SETTINGS_ROWS.memoryPreview.id, SETTINGS_ROWS.memoryAutoProceed.id, SETTINGS_ROWS.memoryChanges.id]
+const REVIEW_ONLY_MEMORY_ROWS: string[] = [SETTINGS_ROWS.memoryPreview.id, SETTINGS_ROWS.memoryConfirmation.id, SETTINGS_ROWS.memoryAutoProceed.id, SETTINGS_ROWS.memoryChanges.id]
 
 /**
  * Some rows exist only in one mode: the command template only for the custom

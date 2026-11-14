@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MemoryService } from './index';
 import { createRevisionService } from './evolution';
 import { handleMemoryRequest } from './routes';
+import { getMemoryConfirmation, memoryConfirmationReasons, recordMemoryConfirmation } from './confirmation';
 import { flushTraceCorrections } from './trace-correction-outbox';
 import { EventStore } from '../event-store';
 import { AgentCoordinator } from '../agent';
@@ -434,6 +435,48 @@ describe('memory routes', () => {
     expect(memory.injectedFor(undefined, 'chat-1').map((value) => value.id)).toEqual(before);
     const invalid = await call('POST', '/api/memories/working-memory-selection', { operationId: 'invalid' });
     expect(invalid!.status).toBe(400);
+  });
+
+  it('persists only removals from the live preview pool', async () => {
+    const item = memory.store.create({ content: 'Synthetic retained rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    recordMemoryConfirmation(memory.store, 'chat-1', [item], []);
+    let live: string[] | null = [item.id];
+    const services = { workingMemoryPool: ({ chatId, previewId }: { chatId: string; previewId: string }) =>
+      chatId === 'chat-1' && previewId === 'preview-1' ? live : null };
+    const body = { operationId: 'op', clientTimestamp: '2026-01-01T00:00:00.000Z', chatId: 'chat-1', previewId: 'preview-1', memoryId: item.id };
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'add' }, services))).data).toEqual({ observed: true, durable: false });
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([]);
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'remove' }, services))).data).toEqual({ observed: true, durable: true });
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([item.id]);
+    const versions = { ...getMemoryConfirmation(memory.store, 'chat-1').confirmedVersions };
+    live = null;
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'add' }, services))).data).toEqual({ observed: true, durable: false });
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([item.id]);
+    live = [];
+    await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'add' }, services);
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([item.id]);
+    live = [item.id];
+    await call('POST', '/api/memories/working-memory-selection', { ...body, previewId: 'stale', action: 'add' }, services);
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([item.id]);
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'add' }, services))).data).toEqual({ observed: true, durable: false });
+    const afterAdd = getMemoryConfirmation(memory.store, 'chat-1');
+    expect(afterAdd.removedIds).toEqual([]);
+    expect(afterAdd.confirmedVersions).toEqual(versions);
+    expect(memoryConfirmationReasons([item], afterAdd, [])).toEqual([]);
+    const first = memory.store.create({ content: 'Synthetic never-confirmed rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    live = [first.id];
+    const firstBody = { ...body, memoryId: first.id };
+    await call('POST', '/api/memories/working-memory-selection', { ...firstBody, action: 'remove' }, services);
+    await call('POST', '/api/memories/working-memory-selection', { ...firstBody, action: 'add' }, services);
+    const firstState = getMemoryConfirmation(memory.store, 'chat-1');
+    expect(firstState.confirmedVersions).toEqual(versions);
+    expect(memoryConfirmationReasons([first], firstState, [])).toMatchObject([{ reason: 'first' }]);
+    live = null;
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'remove' }, services))).data).toEqual({ observed: true, durable: false });
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([]);
+    live = [];
+    expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'remove' }, services))).data).toEqual({ observed: true, durable: false });
+    expect(getMemoryConfirmation(memory.store, 'chat-1').removedIds).toEqual([]);
   });
 
   it('returns null for non-memory paths', async () => {

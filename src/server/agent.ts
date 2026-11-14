@@ -19,6 +19,7 @@ import type {
   ChatAttachment,
   ContextWindowUsageSnapshot,
   MemoryPreviewDecision,
+  MemoryPreviewSettings,
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
@@ -33,6 +34,7 @@ import { EventStore } from "./event-store"
 import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
+import { getMemoryConfirmation, memoryConfirmationReasons, recordMemoryConfirmation } from "./memory/confirmation"
 import { MemoryBranchPipeline, type BranchRequest } from "./memory/branch-pipeline"
 import { createMemoryBranch, type MemoryBranch } from "./memory/branch-runtime"
 import { memoryStageSchema } from "./memory/branch-schemas"
@@ -320,6 +322,7 @@ interface StartTurnArgs {
   connectionId?: string
   engineRuntime?: EngineRuntime
   memoryState?: TurnMemoryState
+  memoryPreviewSettings?: Readonly<Required<MemoryPreviewSettings>>
   chatId: string
   provider: AgentProvider
   content: string
@@ -552,7 +555,7 @@ interface AgentCoordinatorArgs {
   /** User switches, sampled only when a new turn begins. */
   getMemorySettings?: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
 
-  getMemoryPreviewSettings?: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
+  getMemoryPreviewSettings?: () => MemoryPreviewSettings
   /** Injectable resume-token validity check (default: real ~/.claude session-file lookup). */
   claudeSessionFileExists?: typeof claudeSessionFileExists
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
@@ -1767,6 +1770,9 @@ interface PendingMemoryPreview {
   memories: MemoryItem[]
   /** Expected-use text is generated server-side and scoped to this revision. */
   expectedUseById: Map<string, string>
+  confirmationMode: "on_change" | "every_turn"
+  proposedIds?: Set<string>
+  autoProceed?: boolean
   assertCurrentView?: () => void
   proposalsId?: string
   transferId?: string
@@ -1840,7 +1846,7 @@ export class AgentCoordinator {
   private readonly memoryCheckup: CheckupService | null
   private readonly memoryTransferDetect: TransferDetectService | null
   private readonly getMemorySettings: () => { enabled: boolean; learn: boolean; control?: "review" | "auto" }
-  private readonly getMemoryPreviewSettings: () => { enabled: boolean; autoProceedWhenEmpty: boolean }
+  private readonly getMemoryPreviewSettings: () => MemoryPreviewSettings
   private readonly claudeSessionFileExists: typeof claudeSessionFileExists
   private readonly claudeRetireTimeoutMs: number
   private reportBackgroundError: ((message: string) => void) | null = null
@@ -1976,7 +1982,7 @@ export class AgentCoordinator {
     this.resolveCaptureRuntimeFn = args.resolveCaptureRuntime ?? resolveEngineRuntime
     this.captureQueue = this.memoryBranches && this.memory ? new CaptureQueue(this.memory.db) : null
     this.getMemoryPreviewSettings =
-      args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true }))
+      args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" }))
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
   }
@@ -2211,7 +2217,7 @@ export class AgentCoordinator {
     this.workingBranches.get(args.chatId)?.dispose()
     const branch = this.newMemoryBranch(args, "working-memory")
     this.workingBranches.set(args.chatId, branch)
-    const assertCurrentView = this.memoryViewGuard(args)
+    const assertCurrentView = this.memoryViewGuard(args, true)
     const input = { task: args.memoryUserText ?? args.content, memories, mandatoryIds }
     const raw = await branch.ask(buildWorkingMemoryBranchPrompt(input), { schema: memoryStageSchema("working-memory") })
     assertCurrentView()
@@ -2269,6 +2275,10 @@ export class AgentCoordinator {
     expectedUses?: ExpectedMemoryUse[]
     operationId?: string
   }) {
+    return this.respondToMemoryPreview(command)
+  }
+
+  private async respondToMemoryPreview(command: Parameters<AgentCoordinator["respondMemoryPreview"]>[0], auto = false) {
     if (this.claimedPreviewResponses.get(command.chatId) === command.previewId) {
       throw new Error("This Working Memory preview is already being handled")
     }
@@ -2305,6 +2315,7 @@ export class AgentCoordinator {
     if (!this.claimPendingPreviewResponse(command.chatId, pending)) {
       throw new Error("This Working Memory preview is already being handled")
     }
+    pending.autoProceed = auto
 
     let handedOff = false
     try {
@@ -2316,6 +2327,11 @@ export class AgentCoordinator {
       if (command.decision === 'go_on' && this.memory) {
         const chat = this.store.requireChat(command.chatId)
         effectiveIds = normalizeMemorySelection({ memory: this.memory, projectId: chat.projectId, chatId: command.chatId, selectedIds: effectiveIds })
+        if (auto && memoryConfirmationReasons(
+          pending.memories.filter(item => effectiveIds.includes(item.id)),
+          getMemoryConfirmation(this.memory.store, command.chatId),
+          (this.turnPayAttention.get(command.chatId) ?? []).map(item => item.id),
+        ).length) throw new Error("Working memory needs confirmation.")
       }
 
       handedOff = true
@@ -2357,6 +2373,7 @@ export class AgentCoordinator {
       chatId: input.chatId,
       selectedIds: input.selectedIds.filter((id) => previewPool.has(id)),
     })
+    for (const id of effectiveIds) (pending.proposedIds ??= new Set()).add(id)
     return await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
   }
 
@@ -2367,6 +2384,7 @@ export class AgentCoordinator {
     pending.assertCurrentView?.()
     const liveIds = new Set(this.memory?.injectedFor(this.store.requireChat(input.chatId).projectId, input.chatId).map(item => item.id) ?? [])
     const selected = new Set(input.selectedIds.filter(id => liveIds.has(id)))
+    for (const id of selected) (pending.proposedIds ??= new Set()).add(id)
     const mandatoryIds = (this.turnPayAttention.get(input.chatId) ?? []).filter(item => selected.has(item.id)).map(item => item.id)
     const branchInput = { task: pending.task, memories: pending.memories.filter(item => liveIds.has(item.id)), mandatoryIds }
     const raw = await branch.ask([
@@ -2378,6 +2396,7 @@ export class AgentCoordinator {
     pending.assertCurrentView?.()
     const result = parseWorkingMemoryBranchResult(raw, branchInput)
     for (const use of result.expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
+    for (const item of result.relevant) (pending.proposedIds ??= new Set()).add(item.id)
     return { selectedIds: result.relevant.map(item => item.id), reply: typeof raw.reply === "string" ? raw.reply : "Updated working memory for this task." }
   }
 
@@ -4388,6 +4407,14 @@ export class AgentCoordinator {
 
     const chat = this.store.requireChat(args.chatId)
     args.memoryState ??= resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
+    if (!args.memoryPreviewSettings) {
+      const settings = this.getMemoryPreviewSettings()
+      args.memoryPreviewSettings = {
+        enabled: settings.enabled,
+        autoProceedWhenEmpty: settings.autoProceedWhenEmpty,
+        confirmationMode: settings.confirmationMode === "every_turn" ? "every_turn" : "on_change",
+      }
+    }
     if (this.activeTurns.has(args.chatId) || this.hasPendingPreviewActivity(args.chatId) || this.startingChats.has(args.chatId)) {
       throw new Error("Chat is already running")
     }
@@ -4529,7 +4556,7 @@ export class AgentCoordinator {
       void this.generateTitleInBackground(args.chatId, args.content, project.localPath, optimisticTitle ?? "New Chat")
     }
 
-    const previewSettings = this.getMemoryPreviewSettings()
+    const previewSettings = args.memoryPreviewSettings
     // A resume-after-interrupt skips every gate: candidates/transfer/checkup
     // were reviewed this session already and the recovery card confirmed the
     // working memory (2026-08-19 C2).
@@ -5906,6 +5933,47 @@ export class AgentCoordinator {
     })
   }
 
+  private async settleWorkingMemory(args: StartTurnArgs, pending: PendingMemoryPreview, attentionIds: string[], relevant: RelevantMemory[], turnNumber: number) {
+    if (this.pendingPreviews.get(args.chatId) !== pending || !this.memory) return
+    const chat = this.store.requireChat(args.chatId)
+    let selectedIds = normalizeMemorySelection({
+      memory: this.memory, projectId: chat.projectId, chatId: args.chatId,
+      selectedIds: [...new Set([...attentionIds, ...relevant.map(item => item.id)])].filter(id => pending.memoryIds.includes(id)),
+    })
+    const plannedUses = await this.resolveExpectedUses(pending.task, pending.memories, selectedIds, relevant)
+    if (this.pendingPreviews.get(args.chatId) !== pending) return
+    selectedIds = normalizeMemorySelection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId, selectedIds })
+    if (pending.confirmationMode === "on_change") pending.assertCurrentView?.()
+    const expectedUses = plannedUses.filter(use => selectedIds.includes(use.id))
+    for (const id of selectedIds) (pending.proposedIds ??= new Set()).add(id)
+    for (const use of expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
+    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds)
+    if (relevant.length) this.memory.logger.event({ type: "memory.relevance", sessionId: args.chatId, turn: turnNumber, ids: relevant.map(item => item.id) })
+    this.turnExpectedUses.set(args.chatId, expectedUses)
+    await this.store.appendMessage(args.chatId, timestamped({
+      kind: "memory_preview_relevance", previewId: pending.previewId, revision: pending.revision,
+      relevant: relevant.filter(item => selectedIds.includes(item.id)).map(({ id, why }) => ({ id, why })),
+      expectedUses, confirmationReasons: reasons,
+    }))
+    if (this.pendingPreviews.get(args.chatId) !== pending) return
+    if (pending.confirmationMode === "on_change") pending.assertCurrentView?.()
+    selectedIds = normalizeMemorySelection({ memory: this.memory, projectId: chat.projectId, chatId: args.chatId, selectedIds })
+    this.emitStateChange(args.chatId)
+    const settings = args.memoryPreviewSettings!
+    const reasonsById = new Set(reasons.map(reason => reason.id))
+    const hasExpectedUse = new Set(expectedUses.filter(use => use.expectedUse.trim()).map(use => use.id))
+    const snapshotsCurrent = selectedIds.every(id => {
+      const snapshot = pending.memories.find(item => item.id === id)
+      const current = this.memory!.store.getById(id)
+      return snapshot && current?.status === "active" && current.version === snapshot.version
+    })
+    if (pending.confirmationMode === "on_change" && snapshotsCurrent
+      && selectedIds.every(id => hasExpectedUse.has(id) && !reasonsById.has(id))
+      && !attentionIds.length && (selectedIds.length > 0 || settings.autoProceedWhenEmpty)) {
+      await this.respondToMemoryPreview({ chatId: args.chatId, previewId: pending.previewId, decision: "go_on", memoryIds: selectedIds }, true)
+    }
+  }
+
   /** Replace one parked preview in place after an earlier review changed. */
   private async refreshMemoryPreviewGate(input: {
     args: StartTurnArgs
@@ -5922,6 +5990,7 @@ export class AgentCoordinator {
     checkupId?: string
   }) {
     const { args, ctx, previewId, revision } = input
+    const previewSettings = args.memoryPreviewSettings!
     const memoryIds = ctx.injected.map((memory) => memory.id)
     const attentionIds = (this.turnPayAttention.get(args.chatId) ?? []).map((e) => e.id).filter((id) => memoryIds.includes(id))
     const willAssessRelevance = (this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0
@@ -5937,7 +6006,9 @@ export class AgentCoordinator {
       task: args.memoryUserText ?? args.content,
       memories: ctx.injected,
       expectedUseById: new Map(),
-      assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args, true) : undefined,
+      confirmationMode: previewSettings.confirmationMode,
+      proposedIds: new Set(willAssessRelevance ? [] : memoryIds),
+      assertCurrentView: this.memoryBranches || previewSettings.confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
       proposalsId: input.proposalsId,
       transferId: input.transferId,
       checkupId: input.checkupId,
@@ -5955,6 +6026,10 @@ export class AgentCoordinator {
           selectedIds,
           expectedUses,
           operationId,
+          auto: pending.autoProceed,
+          confirmationMode: pending.confirmationMode,
+          confirmedMemories: pending.memories.filter(item => selectedIds?.includes(item.id)),
+          removedIds: [...(pending.proposedIds ?? [])].filter(id => !selectedIds?.includes(id)),
         })
       },
       reopen: (from, stageId) => {
@@ -5977,6 +6052,7 @@ export class AgentCoordinator {
       timestamped({
         kind: "memory_preview_update",
         previewId,
+        confirmationMode: pending.confirmationMode,
         revision,
         memories: ctx.injected.map((memory) => ({ id: memory.id, content: memory.content, scope: memory.scope })),
         relevancePending: willAssessRelevance,
@@ -5994,27 +6070,9 @@ export class AgentCoordinator {
     this.emitStateChange(args.chatId, { immediate: true })
 
     if (willAssessRelevance) {
-      const userText = args.memoryUserText ?? args.content
-      const settle = async (relevant: RelevantMemory[]) => {
-        const current = this.pendingPreviews.get(args.chatId)
-        if (current?.previewId !== previewId || current.revision !== revision) return
-        const selectedIds = [...new Set([...attentionIds, ...relevant.map((item) => item.id)])]
-        const expectedUses = await this.resolveExpectedUses(userText, ctx.injected, selectedIds, relevant)
-        const stillCurrent = this.pendingPreviews.get(args.chatId)
-        if (stillCurrent?.previewId !== previewId || stillCurrent.revision !== revision) return
-        for (const use of expectedUses) stillCurrent.expectedUseById.set(use.id, use.expectedUse)
-        this.turnExpectedUses.set(args.chatId, expectedUses)
-        await this.store.appendMessage(
-          args.chatId,
-          timestamped({ kind: "memory_preview_relevance", previewId, revision, relevant: relevant.map(({ id, why }) => ({ id, why })), expectedUses }),
-        )
-        this.emitStateChange(args.chatId)
-      }
       void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
-        .then(settle)
-        .catch(() => this.memoryBranches
-          ? this.reportWorkingMemoryFailure(args.chatId, previewId, revision)
-          : settle([]).catch(() => {})))
+        .then(relevant => this.settleWorkingMemory(args, pending, attentionIds, relevant, ctx.turnNumber))
+        .catch(() => this.reportWorkingMemoryFailure(args.chatId, previewId, revision)))
     }
   }
 
@@ -6036,6 +6094,7 @@ export class AgentCoordinator {
       injected: MemoryItem[]
     },
   ) {
+    const previewSettings = args.memoryPreviewSettings!
     try {
       let gated = false
       // Flipped by the parked respond closure: once a decision claims the
@@ -6217,7 +6276,7 @@ export class AgentCoordinator {
           this.memory!.store.setKv(attentionKey, [])
           this.turnPayAttention.set(args.chatId, queuedEntries)
         }
-        const autoProceed = this.getMemoryPreviewSettings().autoProceedWhenEmpty && ctx.injected.length === 0
+        const autoProceed = previewSettings.autoProceedWhenEmpty && ctx.injected.length === 0
         // Maintenance attention no longer rides the gate (redesign 2026-08-07
         // §3): the step-one checkup container is its one home in the chat
         // flow; the Board keeps the inventory view.
@@ -6236,7 +6295,9 @@ export class AgentCoordinator {
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected,
             expectedUseById: new Map(),
-            assertCurrentView: this.memoryBranches ? this.memoryViewGuard(args, true) : undefined,
+            confirmationMode: previewSettings.confirmationMode,
+            proposedIds: new Set((this.memoryBranches || Boolean(this.memoryRelevance)) && ctx.injected.length > 0 ? [] : memoryIds),
+            assertCurrentView: this.memoryBranches || previewSettings.confirmationMode !== "every_turn" ? this.memoryViewGuard(args, true) : undefined,
             proposalsId,
             transferId,
             checkupId,
@@ -6254,6 +6315,11 @@ export class AgentCoordinator {
                 decision,
                 selectedIds,
                 expectedUses,
+                operationId,
+                auto: pending.autoProceed,
+                confirmationMode: pending.confirmationMode,
+                confirmedMemories: pending.memories.filter(item => selectedIds?.includes(item.id)),
+                removedIds: [...(pending.proposedIds ?? [])].filter(id => !selectedIds?.includes(id)),
               })
             },
             reopen: (from, stageId) => {
@@ -6283,6 +6349,7 @@ export class AgentCoordinator {
           timestamped({
             kind: "memory_preview",
             previewId,
+            confirmationMode: this.pendingPreviews.get(args.chatId)?.confirmationMode ?? previewSettings.confirmationMode,
             turn: ctx.turnNumber,
             task: args.memoryUserText ?? args.content,
             memories: ctx.injected.map((m) => ({ id: m.id, content: m.content, scope: m.scope })),
@@ -6300,44 +6367,19 @@ export class AgentCoordinator {
         // REDESIGN D6: fire the sidecar relevance prediction DETACHED — the
         // receipt lands instantly; the highlight follows as its own entry
         // (~1-2s) and, when it beats the user's decision, also rides the
-        // prompt as a "possibly relevant" hint. Failures vanish silently.
+        // prompt as a "possibly relevant" hint.
         if (willAssessRelevance) {
-          const userText = args.memoryUserText ?? args.content
           // The gate card shows "picking likely-relevant…" until an entry
           // lands — so EVERY outcome appends one: hits, an empty list, and
           // failure all resolve the pending state (an empty list IS the
           // prediction "nothing clearly applies").
-          const settle = async (relevant: RelevantMemory[]) => {
-            const current = this.pendingPreviews.get(args.chatId)
-            // The user may have reopened Step 1/2 while this revision-0
-            // prediction was in flight. Never let that stale answer replace
-            // the regenerated preview's relevance or next-prompt hint.
-            if (current?.previewId !== previewId || current.revision !== 0) return
-            const selectedIds = [...new Set([...attentionIds, ...relevant.map((item) => item.id)])]
-            const expectedUses = await this.resolveExpectedUses(userText, ctx.injected, selectedIds, relevant)
-            const stillCurrent = this.pendingPreviews.get(args.chatId)
-            if (stillCurrent?.previewId !== previewId || stillCurrent.revision !== 0) return
-            for (const use of expectedUses) stillCurrent.expectedUseById.set(use.id, use.expectedUse)
-            if (relevant.length > 0) {
-              this.memory!.logger.event({
-                type: "memory.relevance",
-                sessionId: args.chatId,
-                turn: ctx.turnNumber,
-                ids: relevant.map((r) => r.id),
-              })
-            }
-            this.turnExpectedUses.set(args.chatId, expectedUses)
-            await this.store.appendMessage(
-              args.chatId,
-              timestamped({ kind: "memory_preview_relevance", previewId, revision: 0, relevant: relevant.map(({ id, why }) => ({ id, why })), expectedUses })
-            )
-            this.emitStateChange(args.chatId)
-          }
           void this.trackMemoryWork(args.chatId, () => this.assessWorkingMemory(args, ctx.injected, attentionIds)
-            .then(settle)
-            .catch(() => this.memoryBranches
-              ? this.reportWorkingMemoryFailure(args.chatId, previewId, 0)
-              : settle([]).catch(() => {})))
+            .then(relevant => {
+              const pending = this.pendingPreviews.get(args.chatId)
+              if (!pending || pending.previewId !== previewId || pending.revision !== 0) return
+              return this.settleWorkingMemory(args, pending, attentionIds, relevant, ctx.turnNumber)
+            })
+            .catch(() => this.reportWorkingMemoryFailure(args.chatId, previewId, 0)))
         }
         if (autoProceed) {
           // Stop can land during the preview-entry append here too — an
@@ -6466,6 +6508,10 @@ export class AgentCoordinator {
     /** Exact instructions approved in the preview UI. */
     operationId?: string
     expectedUses?: ExpectedMemoryUse[]
+    auto?: boolean
+    confirmationMode?: "on_change" | "every_turn"
+    confirmedMemories?: MemoryItem[]
+    removedIds?: string[]
   }) {
     const { args, decision } = ctx
     try {
@@ -6475,7 +6521,7 @@ export class AgentCoordinator {
         || this.isEngineStartBlocked(args.chatId)) return
       this.reserveStartup(args)
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
-      if (this.memoryBranches && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
+      if ((this.memoryBranches || ctx.confirmationMode === "on_change") && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
         memory: this.memory, projectId: ctx.chat.projectId, chatId: args.chatId, restrictToIds: [...selected],
       }).view.revision
       const expectedUses = (ctx.expectedUses ?? this.turnExpectedUses.get(args.chatId) ?? [])
@@ -6483,17 +6529,21 @@ export class AgentCoordinator {
         .map((use) => ({ id: use.id, expectedUse: use.expectedUse.trim().slice(0, 220) }))
       await this.store.appendMessage(
         args.chatId,
-        timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses })
+        timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses,
+          ...(ctx.auto ? { auto: true, ...(ctx.selectedIds?.length ? { autoReason: "confirmed" as const } : {}) } : {}) })
       )
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      if (!ctx.auto && decision !== "dismiss" && this.memory) {
+        recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [])
+      }
       this.memory?.logger.event({
         type: "memory.preview",
         operationId: ctx.operationId,
         sessionId: args.chatId,
         engine: args.provider,
         turn: ctx.turnNumber,
-        memoryIds: ctx.memoryIds,
-        decision,
+        memoryIds: ctx.auto ? ctx.selectedIds ?? [] : ctx.memoryIds,
+        decision: ctx.auto ? "auto_go_on" : decision,
         selectedIds: ctx.selectedIds,
       })
       // An edited go_on scopes injection to the selection for THIS turn only —
