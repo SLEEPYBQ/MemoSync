@@ -10,7 +10,7 @@ import { MemoryPreviewMessage } from "../../components/messages/MemoryPreviewMes
 import { MemoryCheckupGate } from "../../components/messages/MemoryCheckupGate"
 import { MemoryTeamUpdatedMessage } from "../../components/messages/MemoryTeamUpdatedMessage"
 import { MemoryCitationChip } from "../../components/messages/shared"
-import { TranscriptChatContextProvider } from "../../components/messages/render-context"
+import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
@@ -57,6 +57,17 @@ function CheckupFixture() {
   </TranscriptChatContextProvider>
 }
 
+function NoticeFixture({ mode }: { mode: string }) {
+  return <MemoryBoardLauncherProvider onOpenMemoryBoard={() => {}}><TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
+    <TranscriptRenderOptionsProvider value={{ readonly: mode === "readonly", ...(mode === "demo" ? { previewDemo: { reviseReply: "" } } : {}) }}>
+      <section id="notice"><MemoryTeamUpdatedMessage message={{
+        kind: "memory_team_updated", id: "notice", timestamp: "2030-01-01T00:00:00.000Z",
+        added: ["M-05"], changed: ["M-01"], removed: ["M-03"], turn: 2,
+      }} /></section>
+    </TranscriptRenderOptionsProvider>
+  </TranscriptChatContextProvider></MemoryBoardLauncherProvider>
+}
+
 function Fixture() {
   return <MemoryRouter><MemoryBoardLauncherProvider onOpenMemoryBoard={request => fixtureWindow.fixtureLaunches.push(request)}>
     <TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
@@ -77,4 +88,6 @@ function Fixture() {
   </MemoryBoardLauncherProvider></MemoryRouter>
 }
 
-createRoot(document.getElementById("root")!).render(new URLSearchParams(window.location.search).has("checkup") ? <CheckupFixture /> : <Fixture />)
+const params = new URLSearchParams(window.location.search)
+const noticeMode = params.get("teamNotice")
+createRoot(document.getElementById("root")!).render(noticeMode ? <NoticeFixture mode={noticeMode} /> : params.has("checkup") ? <CheckupFixture /> : <Fixture />)

@@ -1,7 +1,9 @@
+import { useEffect } from "react"
 import { Users } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { t, useI18n } from "../../i18n"
 import { useMemoryBoardLauncher } from "../../app/memory/MemoryBoardLauncher"
+import { useMemoryStore } from "../../stores/memoryStore"
 import { useTranscriptChatContext, useTranscriptRenderOptions } from "./render-context"
 import { MemoryCitationChip } from "./shared"
 
@@ -10,6 +12,12 @@ export function MemoryTeamUpdatedMessage({ message }: { message: Extract<Hydrate
   const launcher = useMemoryBoardLauncher()
   const { chatId } = useTranscriptChatContext()
   const { readonly, previewDemo } = useTranscriptRenderOptions()
+  const addedIds = message.added.join("\0")
+  const changedIds = message.changed.join("\0")
+  const removedIds = message.removed.join("\0")
+  useEffect(() => {
+    if (!readonly && !previewDemo) void useMemoryStore.getState().loadAll()
+  }, [message.id, addedIds, changedIds, removedIds, readonly, previewDemo])
   const parts = [
     t("memory:teamUpdated"),
     message.added.length ? t("memory:teamNoticeNew", { count: message.added.length }) : null,

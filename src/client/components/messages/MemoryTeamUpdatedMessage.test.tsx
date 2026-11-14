@@ -1,8 +1,11 @@
 import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryBoardLauncherProvider } from "../../app/memory/MemoryBoardLauncher"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
 import { MemoryTeamUpdatedMessage } from "./MemoryTeamUpdatedMessage"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "./render-context"
+
+runMountedRaceSuite("team notice refresh", new URL("./MemoryTeamUpdatedMessage.browser.ts", import.meta.url))
 
 test("team notice shows nonzero counts, citations and a live-only Board link", () => {
   const render = (readonly: boolean) => renderToStaticMarkup(
