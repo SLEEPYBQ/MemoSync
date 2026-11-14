@@ -16,6 +16,19 @@ const streams = new Set<ReadableStreamDefaultController<Uint8Array>>()
 const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
   async fetch(request) {
     const path = new URL(request.url).pathname
+    if (path === '/test/host-bind' || path === '/test/host-call') {
+      const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT!)
+      const input = await request.json() as { name: string; sessionID: string; callID: string; args: Record<string, unknown> }
+      const output = { args: input.args }
+      if (path.endsWith('bind')) {
+        const plugin = await (await import(config.plugin.at(-1))).default()
+        await plugin['tool.execute.before']({ tool: `memosync_${input.name}`, sessionID: input.sessionID, callID: input.callID }, output)
+        return Response.json(output.args)
+      }
+      const response = await fetch(config.mcp.memosync.url, { method: 'POST', headers: config.mcp.memosync.headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: input.name, arguments: output.args } }) })
+      return Response.json(await response.json())
+    }
     if (path === '/test/events') {
       const events = await request.json() as unknown[]
       for (const event of events) {
@@ -27,6 +40,10 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0,
     if (path === '/test/history') { history.resolve(await request.json() as string); return Response.json(true) }
     if (path.startsWith('/test/answer/')) { answers.get(path.split('/').at(-1)!)?.resolve(); return Response.json(true) }
     if (path === '/event') {
+      if (process.env.FAKE_OC_HOLD_EVENTS === '1') {
+        await notify({ kind: 'subscribing' })
+        return await new Promise<Response>(() => {})
+      }
       let stream: ReadableStreamDefaultController<Uint8Array>
       return new Response(new ReadableStream({
         start(controller) {
