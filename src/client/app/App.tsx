@@ -470,6 +470,7 @@ function AppLayout({ settingsLocation, settingsBackground }: { settingsLocation:
               chatId={memoryBoardRequest.chatId}
               focusedReview={memoryBoardRequest.focusedReview}
               initialLens={memoryBoardRequest.initialLens}
+              memoryId={memoryBoardRequest.memoryId}
               onClose={() => setMemoryBoardRequest(null)}
             />
           ) : null}

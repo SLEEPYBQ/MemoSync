@@ -16,6 +16,10 @@ beforeAll(async () => {
     configFile: false,
     root: join(import.meta.dir, "../../test-fixtures/archive-ui"),
     plugins: [react()],
+    optimizeDeps: { entries: [
+      join(import.meta.dir, "../../test-fixtures/archive-ui/fixture.tsx"),
+      join(import.meta.dir, "../../app/MemoryBoardPage.tsx"),
+    ] },
     css: { postcss: join(import.meta.dir, "../../../..") },
     server: { host: "127.0.0.1", port: 0, hmr: false },
     logLevel: "error",
@@ -279,4 +283,171 @@ test("a failed archive does not prevent the next queued archive", async () => {
   await waitPending(0)
   await page.locator("#working-memory").getByText("Start without memory").waitFor()
   expect(await page.locator("#working-memory").getByRole("button", { name: /Start/ }).isEnabled()).toBe(true)
+}, 30_000)
+
+test("citation opens the matching active or archived Board detail without leaving chat", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+  page.setDefaultTimeout(5_000)
+  const errors: string[] = []
+  const mutations: string[] = []
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.stack) })
+  let items: unknown[] = []
+  let releaseLoad!: () => void
+  const heldLoad = new Promise<void>(resolve => { releaseLoad = resolve })
+  let holdNext = true
+  await page.route("**/api/**", async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === "PATCH" || request.method() === "DELETE") mutations.push(`${request.method()} ${path}`)
+    if (request.method() === "GET" && path === "/api/memories") {
+      if (holdNext) {
+        holdNext = false
+        await page.evaluate(() => { (window as unknown as { archiveFixtureLoadHeld: boolean }).archiveFixtureLoadHeld = true })
+        await heldLoad
+      }
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: items }) })
+      return
+    }
+    const data = path === "/api/memories/needs-attention" || path === "/api/memories/muted" ? { items: [] } : []
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data }) })
+  })
+  await page.goto(`${url}?project=unrelated`)
+  const initialUrl = page.url()
+  items = await page.evaluate(() => (window as unknown as { archiveFixtureItems: unknown[] }).archiveFixtureItems)
+  const draft = page.getByLabel("Synthetic chat draft")
+  await draft.fill("Unique synthetic draft survives")
+  const citations = page.locator("#board-citations")
+  const hover = page.locator("[data-radix-popper-content-wrapper]")
+  const dialog = page.getByRole("dialog", { name: "Memory Board" })
+  const open = async (id: string) => {
+    await citations.getByText(`[${id}]`).hover()
+    const button = hover.getByRole("button", { name: "Open in Board" })
+    await button.waitFor()
+    await button.click()
+    await dialog.waitFor()
+    await hover.waitFor({ state: "hidden" })
+  }
+  const close = async () => {
+    await page.keyboard.press("Escape")
+    await dialog.waitFor({ state: "hidden" })
+    expect(await draft.inputValue()).toBe("Unique synthetic draft survives")
+    expect(await page.locator("#fixture-chat-location").innerText()).toBe("/chat/fixture-chat")
+    expect(page.url()).toBe(initialUrl)
+    expect(await page.evaluate(() => (window as unknown as { archiveFixtureResponses: number }).archiveFixtureResponses)).toBe(0)
+  }
+  try {
+    await open("M-02")
+    await page.waitForFunction(() => (window as unknown as { archiveFixtureLoadHeld?: boolean }).archiveFixtureLoadHeld === true)
+    expect(await dialog.locator("aside[data-memory-detail-id]").count()).toBe(0)
+    releaseLoad()
+    const activeDetail = dialog.locator('aside[data-memory-detail-id="M-02"]')
+    await activeDetail.waitFor()
+    expect(await activeDetail.locator("textarea").first().inputValue()).toBe("Validate each charge before submission.")
+    expect(await activeDetail.getByRole("button", { name: "Archive", exact: true }).isEnabled()).toBe(true)
+    expect(await activeDetail.getByRole("button", { name: /Transfer/ }).isEnabled()).toBe(true)
+    const activeRow = dialog.locator('[data-memory-board-id="M-02"]')
+    await activeRow.waitFor()
+    expect(await activeRow.locator(".ring-2").count()).toBe(1)
+    await activeDetail.getByRole("button", { name: "Close" }).click()
+    await activeDetail.waitFor({ state: "hidden" })
+    await page.evaluate(() => (window as unknown as { archiveFixturePublish: () => void }).archiveFixturePublish())
+    await dialog.getByText("Refreshed synthetic receipt.").waitFor()
+    expect(await dialog.locator("aside[data-memory-detail-id]").count()).toBe(0)
+    await close()
+
+    await open("M-02")
+    await dialog.locator('aside[data-memory-detail-id="M-02"]').waitFor()
+    await close()
+
+    for (const [size, viewport] of [
+      ["desktop", { width: 1100, height: 900 }],
+      ["narrow", { width: 390, height: 844 }],
+    ] as const) {
+      await page.setViewportSize(viewport)
+      for (const theme of ["light", "dark"] as const) {
+        await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
+        await citations.getByText("[M-01]").hover()
+        const button = hover.getByRole("button", { name: "Open in Board" })
+        await button.waitFor()
+        expect(await hover.getByText("Archived. It won't be used again.").count()).toBe(1)
+        const hoverBox = await hover.boundingBox()
+        expect(hoverBox && hoverBox.x >= 0 && hoverBox.x + hoverBox.width <= viewport.width).toBe(true)
+        const buttonBox = await button.boundingBox()
+        expect(buttonBox && buttonBox.x >= 0 && buttonBox.x + buttonBox.width <= viewport.width).toBe(true)
+        await hover.screenshot({ animations: "disabled", path: join(artifacts, `citation-board-hover-${size}-${theme}.png`) })
+        await button.click()
+        await dialog.waitFor()
+        await hover.waitFor({ state: "hidden" })
+        const archivedDetail = dialog.locator('aside[data-memory-detail-id="M-01"]')
+        await archivedDetail.waitFor()
+        expect(await archivedDetail.locator("textarea").first().inputValue()).toBe("Keep amounts in integer cents.")
+        expect(await archivedDetail.getByRole("button", { name: "Archive", exact: true }).count()).toBe(0)
+        expect(await archivedDetail.getByRole("button", { name: /Transfer/ }).count()).toBe(0)
+        expect(await archivedDetail.getByRole("button", { name: "Personal", exact: true }).isDisabled()).toBe(true)
+        expect(await archivedDetail.getByRole("button", { name: "Project", exact: true }).isDisabled()).toBe(true)
+        await archivedDetail.getByText("Restore this memory from Archived before moving or transferring it.").waitFor()
+        const row = dialog.locator('[data-memory-board-id="M-01"]')
+        await row.waitFor()
+        await dialog.getByRole("heading", { name: "Archived" }).waitFor()
+        expect(await row.getByRole("button", { name: "Restore" }).count()).toBe(1)
+        expect(await row.evaluate(element => element.classList.contains("ring-2"))).toBe(true)
+        await page.screenshot({ animations: "disabled", path: join(artifacts, `citation-board-detail-${size}-${theme}.png`) })
+        await archivedDetail.getByRole("button", { name: "Close" }).click()
+        await archivedDetail.waitFor({ state: "hidden" })
+        await page.screenshot({ animations: "disabled", path: join(artifacts, `citation-board-archived-${size}-${theme}.png`) })
+        await close()
+      }
+    }
+    expect(mutations).toEqual([])
+    expect(errors).toEqual([])
+  } finally {
+    releaseLoad()
+  }
+}, 60_000)
+
+test("citation Board entry is hidden without live Board navigation", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+  page.setDefaultTimeout(5_000)
+  await page.route("**/api/**", route => route.fulfill({ contentType: "application/json", body: '{"data":[]}' }))
+  await page.goto(url)
+  const hover = page.locator("[data-radix-popper-content-wrapper]")
+  for (const [section, id, content] of [
+    ["#readonly", "M-01", "Keep amounts in integer cents."],
+    ["#working-memory", "M-02", "Validate each charge before submission."],
+    ["#unavailable", "M-02", "Validate each charge before submission."],
+  ] as const) {
+    await page.locator(section).getByText(`[${id}]`).hover()
+    await hover.getByText(content).waitFor()
+    expect(await hover.getByRole("button", { name: "Open in Board" }).count()).toBe(0)
+  }
+}, 30_000)
+
+test("missing citation after Board refresh shows an error and never steals focus later", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+  page.setDefaultTimeout(5_000)
+  const errors: string[] = []
+  const mutations: string[] = []
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.stack) })
+  let items: Array<{ id: string }> = []
+  await page.route("**/api/**", async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() === "PATCH" || request.method() === "DELETE") mutations.push(`${request.method()} ${path}`)
+    const data = request.method() === "GET" && path === "/api/memories"
+      ? items.filter(item => item.id !== "M-02")
+      : path === "/api/memories/needs-attention" || path === "/api/memories/muted" ? { items: [] } : []
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data }) })
+  })
+  await page.goto(url)
+  items = await page.evaluate(() => (window as unknown as { archiveFixtureItems: Array<{ id: string }> }).archiveFixtureItems)
+  await page.locator("#board-citations").getByText("[M-02]").hover()
+  await page.locator("[data-radix-popper-content-wrapper]").getByRole("button", { name: "Open in Board" }).click()
+  const dialog = page.getByRole("dialog", { name: "Memory Board" })
+  await dialog.getByText("M-02 · no longer available").waitFor()
+  expect(await dialog.locator("aside[data-memory-detail-id]").count()).toBe(0)
+  await page.evaluate(() => (window as unknown as { archiveFixturePublish: () => void }).archiveFixturePublish())
+  await dialog.getByText("Refreshed synthetic receipt.").waitFor()
+  expect(await dialog.locator("aside[data-memory-detail-id]").count()).toBe(0)
+  expect(mutations).toEqual([])
+  expect(errors).toEqual([])
 }, 30_000)

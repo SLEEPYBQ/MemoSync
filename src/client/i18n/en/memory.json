@@ -113,6 +113,8 @@
   "new": "new",
   "changed": "changed",
   "noLongerAvailable": "no longer available",
+  "openInBoard": "Open in Board",
+  "restoreBeforeMoving": "Restore this memory from Archived before moving or transferring it.",
   "memoryUseAuditThisTurnSOutputCheckedAgainstEach": "Memory Use Audit — this turn's output checked against each working-memory item",
   "showInTranscript": "show in transcript",
   "shapedThisTurn": "shaped this turn",
