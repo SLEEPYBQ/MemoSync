@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +13,14 @@ function freshStore(): MemoryStore {
   db.exec('PRAGMA foreign_keys = ON');
   applySchema(db);
   return new MemoryStore(db);
+}
+
+function preExpiryReview(item: MemoryItem) {
+  return { id: item.id, version: item.version, digest: createHash('sha256').update(JSON.stringify({
+    content: item.content, detail: item.detail, scope: item.scope, type: item.type,
+    status: item.status, topic: item.topic, abstractionLevel: item.abstractionLevel,
+    projectId: item.projectId, sessionId: item.sessionId,
+  })).digest('hex') };
 }
 
 describe('MemoryStore', () => {
@@ -1063,6 +1072,76 @@ describe('recentlyDismissedCandidates (capture negative examples)', () => {
 })
 
 describe('reinforce + revision plumbing (self-evolution)', () => {
+  for (const merge of [false, true]) {
+    it(`accepts a persisted pre-expiry ${merge ? 'merge' : 'revision'} for unchanged targets`, () => {
+      const store = freshStore();
+      const a = store.create({ content: 'Synthetic original A', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      const b = merge ? store.create({ content: 'Synthetic original B', scope: 'personal', type: 'fact' }, { actor: 'user' }) : null;
+      const input = { content: 'Synthetic replacement', scope: 'personal' as const, type: 'fact' as const };
+      const proposal = (b ? store.createMergeProposal(input, [a.id, b.id], { actor: 'system' }) : store.createRevisionProposal(input, a.id, { actor: 'system' }))!;
+      store.setKv(`revision_targets:${proposal.id}`, store.revisionTargetsOf(proposal.id).map(preExpiryReview));
+      const result = store.acceptRevision(proposal.id, { actor: 'user' });
+      expect(result.updated.status).toBe('active');
+      expect(result.replaced.map(t => t.id).sort()).toEqual((b ? [a.id, b.id] : [a.id]).sort());
+      for (const target of result.replaced) expect(store.getById(target.id)?.status).toBe('archived');
+    });
+  }
+
+  for (const edit of ['content', 'expiry', 'expiry-cleared'] as const) {
+    it(`rejects a changed pre-expiry target (${edit}) without mutations`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic original', scope: 'personal', type: 'fact' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+      store.setKv(`revision_targets:${proposal.id}`, [preExpiryReview(target)]);
+      if (edit === 'content') store.update(target.id, { content: 'Synthetic changed original' }, { actor: 'user' });
+      else {
+        store.update(target.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+        if (edit === 'expiry-cleared') store.update(target.id, { expiresAt: null }, { actor: 'user' });
+      }
+      const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Edited candidate' })).toThrow();
+      expect(state()).toEqual(before);
+    });
+  }
+
+  it('accepts unversioned expiry-aware snapshots but rejects expiry changes', () => {
+    for (const changed of [false, true]) {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic temporary', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+      const saved = store.getKv<Array<{ id: string; version: number; digest: string; format?: number }>>(`revision_targets:${proposal.id}`)!;
+      expect(saved[0]?.format).toBe(2);
+      store.setKv(`revision_targets:${proposal.id}`, saved.map(({ format, ...rest }) => rest));
+      if (changed) {
+        store.update(target.id, { expiresAt: '2099-02-01T00:00:00.000Z' }, { actor: 'user' });
+        expect(() => store.acceptRevision(proposal.id, { actor: 'user' })).toThrow();
+        expect(store.getById(proposal.id)?.status).toBe('candidate');
+        expect(store.getById(target.id)?.status).toBe('active');
+      } else expect(store.acceptRevision(proposal.id, { actor: 'user' }).updated.status).toBe('active');
+    }
+  });
+
+  it('does not use a legacy digest for a versioned expiry-aware review', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic original', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'fact' }, target.id, { actor: 'system' })!;
+    store.setKv(`revision_targets:${proposal.id}`, [{ ...preExpiryReview(target), format: 2 }]);
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' })).toThrow();
+  });
+
+  for (const merge of [false, true]) {
+    it(`preserves an explicit permanent override for a ${merge ? 'merge' : 'revision'}`, () => {
+      const store = freshStore();
+      const a = store.create({ content: 'Synthetic temporary A', scope: 'personal', type: 'fact', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      const b = merge ? store.create({ content: 'Synthetic temporary B', scope: 'personal', type: 'fact', expiresAt: '2099-02-01T00:00:00.000Z' }, { actor: 'user' }) : null;
+      const input = { content: 'Synthetic permanent replacement', scope: 'personal' as const, type: 'fact' as const, expiresAt: null };
+      const proposal = (b ? store.createMergeProposal(input, [a.id, b.id], { actor: 'system' }) : store.createRevisionProposal(input, a.id, { actor: 'system' }))!;
+      expect(proposal.expiresAt).toBeNull();
+      expect(store.acceptRevision(proposal.id, { actor: 'user' }).updated.expiresAt).toBeNull();
+    });
+  }
+
   it('recordReinforce bumps reinforced_count and appends a reinforce event', () => {
     const store = freshStore();
     const m = store.create({ content: 'API routes live under server/routes', scope: 'personal', type: 'fact' }, { actor: 'agent' });

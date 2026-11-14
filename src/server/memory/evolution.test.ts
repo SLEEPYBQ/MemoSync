@@ -50,6 +50,25 @@ describe('revision service (DG4 propose-fixes drafting)', () => {
     }
   }
 
+  for (const mode of ['automatic', 'manual'] as const) {
+    it(`inherits the current target deadline in ${mode} audit revisions`, async () => {
+      const target = activeMemory('Synthetic temporary audit rule');
+      memory.store.update(target.id, { expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+      tracedTurns(target.id, 3);
+      const deadline = '2099-02-01T00:00:00.000Z';
+      const callJson: LlmJsonCaller = async () => {
+        memory.store.update(target.id, { expiresAt: deadline }, { actor: 'user' });
+        return { action: 'revise', content: 'Synthetic corrected audit rule' };
+      };
+      const svc = createRevisionService({ memory, callJson });
+      const proposal = mode === 'manual' ? await svc.draftFor(target.id, { sessionId: 'chat' })
+        : (await svc.scanAndPropose({ sessionId: 'chat', labels: [{ id: target.id, label: 'violated' }] }))[0];
+      expect(proposal?.expiresAt).toBe(deadline);
+      expect(memory.store.acceptRevision(proposal!.id, { actor: 'user' }).updated.expiresAt).toBe(deadline);
+      expect(memory.store.getById(target.id)?.status).toBe('archived');
+    });
+  }
+
   it('archives only a revision whose captured streak was corrected, without a dismissal', async () => {
     const target = activeMemory('Synthetic original rule');
     tracedTurns(target.id, 4);
