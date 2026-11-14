@@ -552,5 +552,6 @@
   "teamOffHere": "Turned off on this machine.",
   "teamRemoveHint": "The rule leaves team.md once you commit the change. This memory stays here as your own project memory.",
   "teamShareDetailHint": "Only the one-line rule is shared. The detailed form will be removed from this memory.",
-  "archiveValue0": "Archive {{v0}}"
+  "archiveValue0": "Archive {{v0}}",
+  "teamShareSaveFirst": "Save your changes before sharing."
 }

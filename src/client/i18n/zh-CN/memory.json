@@ -552,5 +552,6 @@
   "teamOffHere": "已在本机停用。",
   "teamRemoveHint": "提交这次改动后，这条规则会从 team.md 中移除。这条记忆会保留为你自己的项目记忆。",
   "teamShareDetailHint": "只会分享这一行规则，这条记忆的详细内容将被移除。",
-  "archiveValue0": "归档 {{v0}}"
+  "archiveValue0": "归档 {{v0}}",
+  "teamShareSaveFirst": "请先保存修改，再分享。"
 }

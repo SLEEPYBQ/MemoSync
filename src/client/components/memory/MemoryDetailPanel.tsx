@@ -139,7 +139,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     return patch
   }, [draft, expiresAt, item])
 
-  const isDirty = Object.keys(dirtyPatch).length > 0
+  const isDirty = Object.keys(dirtyPatch).length > 0 || draft.content.trim() !== item.content.trim()
   const sensitiveCandidate = item.status === "candidate" && item.sensitive
   const reviewedSensitivePatch = useMemo(
     () => buildReviewedSensitiveCandidatePatch(item, draft),
@@ -502,7 +502,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                 {shareArmed ? <p className="w-full text-[11px] leading-4 text-muted-foreground">{t("memory:teamShareDetailHint")}</p> : null}
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
                   <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>
-                {canShare ? <Button variant="ghost" size="sm" disabled={busyState} onClick={() => {
+                {canShare ? <Button variant="ghost" size="sm" disabled={busyState || isDirty} title={isDirty ? t("memory:teamShareSaveFirst") : undefined} onClick={() => {
                   if (!shareArmed && (item.detail?.trim() || draft.detail.trim())) setShareArmed(true)
                   else void handleTeam("publish")
                 }}><Users className="h-3.5 w-3.5" />{t("memory:teamShare")}</Button> : null}
