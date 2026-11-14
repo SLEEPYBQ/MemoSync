@@ -11,7 +11,7 @@ import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { expiryDaysLeft, localDateValue } from "../../lib/memoryExpiry"
 import { driftedFileRefs, fileDriftLabel } from "../../lib/memoryFileDrift"
 import { cn } from "../../lib/utils"
-import { Chip, ScopeBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
+import { Chip, ScopeBadge, TeamBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
 // Trace-dot and freshness color maps live in memoryVocab so this card and the
 // MemoryLegend render the exact same swatches (they can no longer drift).
 import { FRESHNESS_CLASSES, TRACE_DOT_CLASSES } from "./memoryVocab"
@@ -84,6 +84,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
       <div className="mt-2 flex flex-wrap items-center gap-1.5">
         {freshness ? <Chip className={FRESHNESS_CLASSES[freshness]}>{freshness}</Chip> : null}
         <Chip className="font-mono">{item.id}</Chip>
+        {item.team ? <TeamBadge /> : null}
         {/* In a column the scope is already said by where the card sits. */}
         {variant === "candidate" ? <ScopeBadge scope={item.scope} /> : null}
         {originLabel ? <Chip className="max-w-[160px] truncate">{originLabel}</Chip> : null}

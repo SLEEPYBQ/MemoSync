@@ -19,6 +19,7 @@ import { CollapsedToolGroup } from "../components/messages/CollapsedToolGroup"
 import { MemoryCandidatesMessage } from "../components/messages/MemoryCandidatesMessage"
 import { MemoryTraceMessage } from "../components/messages/MemoryTraceMessage"
 import { MemoryExpiredMessage } from "../components/messages/MemoryExpiredMessage"
+import { MemoryTeamUpdatedMessage } from "../components/messages/MemoryTeamUpdatedMessage"
 import { MemoryInterruptMessage } from "../components/messages/MemoryInterruptMessage"
 import {
   MemoryChangesReviewFlow,
@@ -173,6 +174,7 @@ function getTranscriptMessageRenderState(
       case "memory_candidates":
       case "memory_trace":
       case "memory_expired":
+      case "memory_team_updated":
       case "memory_preview":
       case "memory_proposals":
       case "memory_transfer":
@@ -395,6 +397,7 @@ function sameMessage(left: HydratedTranscriptMessage, right: HydratedTranscriptM
     case "memory_candidates":
     case "memory_trace":
     case "memory_expired":
+    case "memory_team_updated":
     case "memory_interrupt":
     case "memory_preview":
     case "memory_proposals":
@@ -606,6 +609,9 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
         break
       case "memory_expired":
         rendered = <MemoryExpiredMessage key={message.id} message={message} />
+        break
+      case "memory_team_updated":
+        rendered = <MemoryTeamUpdatedMessage key={message.id} message={message} />
         break
       case "memory_interrupt":
         rendered = <MemoryInterruptMessage key={message.id} message={message} />

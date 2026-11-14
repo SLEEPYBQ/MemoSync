@@ -712,6 +712,7 @@ async function startLockedMemoSyncServer(
             url.pathname.startsWith("/api/memories") ? await memoryRequestContext(req, url) : {},
             () => handleMemoryRequest(req, url, memory, {
             resolveProjectPath: projectId => store.getProject(projectId)?.localPath,
+            listProjectIds: () => store.listProjects().map(project => project.id),
             nativeMemory,
             transfer: memoryTransfer,
             sanitize: memorySanitize,

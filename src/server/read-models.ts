@@ -48,6 +48,7 @@ const MEMORY_RECORD_KINDS = new Set<TranscriptEntry["kind"]>([
   "memory_candidates",
   "memory_trace",
   "memory_expired",
+  "memory_team_updated",
   "memory_trace_correction",
   "memory_preview",
   "memory_preview_decision",

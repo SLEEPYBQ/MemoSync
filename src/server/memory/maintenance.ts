@@ -108,6 +108,7 @@ export function createMaintenanceService(opts: MaintenanceServiceOptions) {
       const a = memory.store.getById(memoryId);
       const b = memory.store.getById(otherMemoryId);
       if (!a || !b) throw new Error('Memory not found');
+      if (memory.store.isTeamLinked(a.id) || memory.store.isTeamLinked(b.id)) throw new Error('Team rules change through .memosync/team.md');
       if (a.status !== 'active' || b.status !== 'active') {
         throw new Error('Both memories must still be active to merge');
       }

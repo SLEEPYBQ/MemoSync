@@ -38,6 +38,7 @@ export interface ActorMeta {
   actor: MemoryActor;
   sessionId?: string;
   turn?: number;
+  via?: string;
 }
 
 export type MemoryEventKind =
@@ -75,6 +76,7 @@ export interface MemoryItem {
   status: MemoryStatus;
   expiresAt?: string | null;
   fileRefs?: MemoryFileRef[];
+  team?: { id: string };
   projectId?: string; // undefined for personal scope
   sessionId?: string; // undefined if not session-scoped
   topic?: string; // e.g. "Testing", "Environment"

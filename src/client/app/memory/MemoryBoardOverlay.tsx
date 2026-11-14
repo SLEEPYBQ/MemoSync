@@ -10,7 +10,7 @@ import { useSurfaceExposure } from "./surfaceExposure"
 export function MemoryBoardOverlay({ chatId, focusedReview, initialLens, memoryId, onClose }: {
   chatId: string
   focusedReview?: FocusedMemoryReviewController
-  initialLens?: "archived"
+  initialLens?: "archived" | "team"
   memoryId?: string
   onClose: () => void
 }) {

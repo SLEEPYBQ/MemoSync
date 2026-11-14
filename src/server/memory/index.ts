@@ -7,6 +7,7 @@ import { openMemoryDb } from './db';
 import { MemoryFile } from './MemoryFile';
 import { MemoryStore } from './MemoryStore';
 import { FileDrift } from './file-drift';
+import { TeamMemory } from './team-memory';
 import { markdownBulletContent, normalizeContent } from './markdown-content';
 import { looksLikeSecret } from './secrets';
 import { semanticHash } from './view';
@@ -25,6 +26,7 @@ export class MemoryService {
   readonly db: Database;
   readonly store: MemoryStore;
   readonly fileDrift: FileDrift;
+  readonly team: TeamMemory;
   readonly file: MemoryFile;
   readonly logger: Pick<UsageLogger, 'event'>;
 
@@ -33,6 +35,7 @@ export class MemoryService {
     this.store = new MemoryStore(this.db);
     this.fileDrift = new FileDrift(this.db, this.store);
     this.file = new MemoryFile(opts.dataDir);
+    this.team = new TeamMemory(this.db, this.store, projectId => { this.syncProjection(projectId); });
     this.logger = opts.logger ?? NoopUsageLogger;
     this.store.expireDue();
     // The Markdown files are a generated EXPORT of SQLite state (read-only for

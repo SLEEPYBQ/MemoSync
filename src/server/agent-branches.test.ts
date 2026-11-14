@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TranscriptEntry } from '../shared/types';
@@ -15,6 +15,7 @@ import { createCaptureService } from './memory/capture';
 import { createCheckupService } from './memory/checkup';
 import { createTransferService } from './memory/transfer';
 import { createTransferDetectService } from './memory/transfer-detect';
+import { handleMemoryRequest } from './memory/routes';
 
 type MainTurnRequest = { content: string; developerInstructions?: string; onDynamicToolCall?: (name: string, args: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }> };
 type MainSessionRequest = { sessionToken: string | null; pendingForkSessionToken?: string | null; dynamicTools?: Array<{ name: string }> };
@@ -819,6 +820,35 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       await h.send();
       await finish(h, 'third');
       expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_expired')).toHaveLength(2);
+    } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('emits team updates on turns, including changes first loaded by the Board', async () => {
+    const h = await setup({ getMemorySettings: () => ({ enabled: true, learn: true, control: 'auto' }) });
+    try {
+      const path = h.store.getProject(h.chat.projectId)!.localPath;
+      mkdirSync(join(path, '.memosync'));
+      const file = join(path, '.memosync', 'team.md');
+      writeFileSync(file, '- [T-abcd] Run the synthetic suite\n');
+      const url = new URL(`http://localhost/api/memories?projectId=${h.chat.projectId}`);
+      await handleMemoryRequest(new Request(url), url, h.memory, { resolveProjectPath: () => path });
+      const id = h.memory.team.pendingNotice(h.chat.projectId)!.added[0]!;
+      writeFileSync(file, '- [T-abcd] Run the revised synthetic suite\n');
+      await h.send();
+      await finish(h);
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_team_updated')).toMatchObject([
+        { added: [id], changed: [id], removed: [], turn: 1 },
+      ]);
+      expect(h.memory.team.pendingNotice(h.chat.projectId)).toBeNull();
+      writeFileSync(file, '- [T-ef01] Run a different synthetic suite\n');
+      await h.send();
+      await finish(h, 'second');
+      const notices = h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_team_updated');
+      expect(notices).toHaveLength(2);
+      expect(notices[1]).toMatchObject({ added: [expect.any(String)], changed: [], removed: [id], turn: 2 });
+      await h.send();
+      await finish(h, 'third');
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'memory_team_updated')).toHaveLength(2);
     } finally { await h.coordinator.shutdownRuntime(); h.close(); }
   });
 

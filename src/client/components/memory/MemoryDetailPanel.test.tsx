@@ -20,6 +20,26 @@ const sensitiveCandidate = {
   version: 1,
 } satisfies MemoryItem
 
+test("team details are read-only and hide ordinary editing and actions", () => {
+  const item: MemoryItem = { ...sensitiveCandidate, content: "Synthetic team rule", sensitive: false, status: "active", scope: "project", projectId: "P1", team: { id: "T-abcd" } }
+  const render = (memory: MemoryItem, readonly = false) => renderToStaticMarkup(<TranscriptRenderOptionsProvider value={{ readonly }}><MemoryDetailPanel item={memory} allItems={[memory]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} /></TranscriptRenderOptionsProvider>)
+  const active = render(item)
+  expect(active).toContain('readOnly=""')
+  expect(active).toContain("Propose a change")
+  expect(active).toContain("Turn off on this machine")
+  expect(active).toContain("Remove from team file…")
+  expect(active).not.toContain("detailed form")
+  expect(active).not.toContain("Transfer")
+  expect(active).not.toContain("Not sensitive")
+  const archived = render({ ...item, status: "archived" })
+  expect(archived).toContain("Turn back on")
+  expect(archived).not.toContain("Propose a change")
+  const readonly = render(item, true)
+  expect(readonly).not.toContain("Propose a change")
+  expect(readonly).not.toContain("Turn off on this machine")
+  expect(readonly).not.toContain("Remove from team file…")
+})
+
 test("file reference detail shows changed and removed-source actions only on editable items", () => {
   const render = (item: MemoryItem, readonly = false) => renderToStaticMarkup(
     <TranscriptRenderOptionsProvider value={{ readonly }}>

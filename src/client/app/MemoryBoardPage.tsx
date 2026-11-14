@@ -1,5 +1,6 @@
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
+import { Trans } from "react-i18next"
 import { MEMORY_CARD } from "../components/memory/MemorySurface"
 // Memory Board — the user's memories as operable objects (SPEC §4.9): a
 // candidate-review lane, three scope columns (Personal/Project/Session) with
@@ -7,7 +8,7 @@ import { MEMORY_CARD } from "../components/memory/MemorySurface"
 // detail panel with per-item history + rollback (§4.11, option 乙). Ported
 // (functionality) from MemoSync, re-implemented in Kanna's visual language.
 // State via the memoryStore; mutations via memoriesApi.
-import { AlertTriangle, ArchiveRestore, ArrowLeft, ChevronRight, Clock3, Inbox, Loader2, Plus, Trash2, X } from "lucide-react"
+import { AlertTriangle, ArchiveRestore, ArrowLeft, ChevronRight, Clock3, FileWarning, Inbox, Loader2, Plus, Trash2, X } from "lucide-react"
 import type { DragEvent } from "react"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
@@ -80,7 +81,7 @@ function readStoredBoardView(): MemoryBoardView {
 export interface MemoryBoardOverlayMode {
   chatId?: string
   focusedReview?: FocusedMemoryReviewController
-  initialLens?: "archived"
+  initialLens?: "archived" | "team"
   memoryId?: string
   onClose?: () => void
   onChanged?: () => void
@@ -176,6 +177,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // current project until the chip is dismissed. Personal/session stay put.
   const [lens, setLens] = useState<MemoryLens>(() => {
     if (overlay?.initialLens === "archived") return { kind: "archived" }
+    if (overlay?.initialLens === "team") return { kind: "team" }
     const project = new URLSearchParams(window.location.search).get("project")
     return project ? { kind: "project", id: project } : { kind: "all" }
   })
@@ -225,6 +227,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   }>({ projects: {}, chats: {} })
   // chatId → projectId, so session groups can name the project they came from.
   const [chatProjects, setChatProjects] = useState<Record<string, string>>({})
+  const [conflictedProjects, setConflictedProjects] = useState<string[]>([])
   const [draft, setDraft] = useState<{
     content: string
     detail: string
@@ -264,6 +267,16 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   useEffect(() => {
     refreshOriginTitles()
   }, [refreshOriginTitles])
+
+  const contextProject = lens.kind === "project" ? lens.id : overlay?.chatId ? chatProjects[overlay.chatId] : undefined
+  useEffect(() => {
+    let live = true
+    const projectIds = contextProject ? [contextProject] : [...new Set(items.flatMap(item => item.projectId ? [item.projectId] : []))]
+    void Promise.all(projectIds.map(async id => {
+      try { return (await memoriesApi.teamStatus(id)).conflict ? id : null } catch { return null }
+    })).then(results => { if (live) setConflictedProjects(results.filter((id): id is string => Boolean(id))) })
+    return () => { live = false }
+  }, [contextProject, items])
 
   const originLabelFor = useCallback(
     (item: MemoryItem): string | undefined => {
@@ -447,7 +460,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     }
     return lit
   }, [graph, lens, query])
-  const liveMemoryCount = items.filter((item) => item.status === "active").length
+  const liveMemoryCount = items.filter((item) => item.status === "active" && memoryMatchesLens(item, lens)).length
   const relationCount = graph.edges.filter((edge) => edge.kind === "relation").length
   const visibleScopes: MemoryScope[] = lens.kind === "scope"
     ? [lens.scope]
@@ -573,7 +586,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
           item={item}
           variant="scoped"
           selected={item.id === selectedId}
-          draggable
+          draggable={!item.team}
           onDragStart={(e) => handleDragStart(e, item.id)}
           // Always fires when the drag ends, wherever it lands (or is cancelled)
           // — the reliable clear for a drop released outside every zone.
@@ -591,7 +604,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label={t("board:archiveMemory")}
+              aria-label={item.team ? t("memory:teamTurnOff") : t("board:archiveMemory")}
               className="text-muted-foreground hover:text-destructive"
               onClick={() => void discard(item).catch(() => {})}
             >
@@ -872,6 +885,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   <>
                   {lens.kind === "expiring" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:expiringSoon")}</h2> : null}
                   {lens.kind === "drift" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:needsFileCheck")}</h2> : null}
+                  {lens.kind === "team" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:teamRules")}</h2> : null}
                   <SegmentedControl<MemoryBoardView>
                     size="sm"
                     value={view}
@@ -893,6 +907,11 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                         : t("board:memoryCount", { count: liveMemoryCount })}
                 </p>
               </div>
+
+              {conflictedProjects.map(id => <div key={id} className="flex items-center gap-2 border-b border-cand-fg/20 bg-cand-surface px-4 py-2 text-[12px] text-cand-fg">
+                <FileWarning className="h-3.5 w-3.5 shrink-0" />
+                <span>{!contextProject ? `${originTitles.projects[id] ?? id}: ` : null}<Trans ns="memory" i18nKey="teamConflict" components={{ code: <code className="font-mono text-[11px]" /> }} /></span>
+              </div>)}
 
               {lens.kind === "archived" ? (
                 <div className="min-h-0 flex-1 overflow-y-auto p-3">

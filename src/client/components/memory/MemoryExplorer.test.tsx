@@ -9,6 +9,15 @@ function render(items: MemoryItem[], lens: MemoryLens) {
   return renderToStaticMarkup(<MemoryExplorer items={items} lens={lens} onLensChange={() => {}} query="" onQueryChange={() => {}} projectTitles={{}} chatTitles={{}} pendingCount={0} archivedCount={0} mutedCount={null} onOpenReview={() => {}} />)
 }
 
+test("team lens is visible only with rules or when selected", () => {
+  const team = { ...item, team: { id: "T-abcd" } }
+  expect(render([item], { kind: "all" })).not.toContain("Team rules")
+  expect(render([item], { kind: "team" })).toContain("Team rules")
+  expect(render([team], { kind: "all" })).toContain("Team rules")
+  expect(memoryMatchesLens(team, { kind: "team" })).toBe(true)
+  expect(memoryMatchesLens(item, { kind: "team" })).toBe(false)
+})
+
 test("drift lens counts active drift and remains visible while selected at zero", () => {
   const clean = { ...item, fileRefs: [{ path: "src/a.ts", kind: "mention", drift: null }] } as MemoryItem
   expect(render([clean], { kind: "all" })).not.toContain("Needs check")

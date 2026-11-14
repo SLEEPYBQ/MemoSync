@@ -1,16 +1,17 @@
 import { translateUiText } from "../../i18n/uiText"
 import { memoryStatusLabel } from "../../i18n/labels"
 import { traceVerdictLabel } from "../../i18n/labels"
-import { t, useI18n } from "../../i18n"
+import { getLocale, t, useI18n } from "../../i18n"
 import { Trans } from "react-i18next"
 import { MemoryBadge } from "./MemoryBadge"
 // Right-side detail panel for a selected memory (SPEC §4.9, §4.11). Two tabs:
 // "Details" (editable fields + scope move + provenance/usage/sensitive) and
 // "History" (the per-item version/usage timeline with rollback, option 乙).
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import {
   ArrowRightLeft,
   Check,
+  Clock3,
   FileWarning,
   History as HistoryIcon,
   Loader2,
@@ -18,6 +19,7 @@ import {
   ShieldCheck,
   ShieldOff,
   SlidersHorizontal,
+  Users,
   X,
 } from "lucide-react"
 import {
@@ -83,12 +85,17 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   const [expiresAt, setExpiresAt] = useState<string | null>(item.expiresAt ?? null)
   const [archiveArmed, setArchiveArmed] = useState(false)
   const [transferOpen, setTransferOpen] = useState(false)
+  const [proposing, setProposing] = useState(false)
+  const [teamWritten, setTeamWritten] = useState<"publish" | "propose" | null>(null)
+  const [unshareArmed, setUnshareArmed] = useState(false)
+  const [canShare, setCanShare] = useState(false)
+  const contentRef = useRef<HTMLTextAreaElement>(null)
   const [sanitized, setSanitized] = useState<Array<{ placeholder: string; kind: string }> | null>(null)
   // Monitoring-act beacon: opening an item's detail is a monitoring behavior.
   useEffect(() => {
     if (chatId) recordUiMonitor("detail_open", { ids: [item.id], sessionId: chatId, interaction: "open" })
   }, [chatId, item.id])
-  const [busy, setBusy] = useState<"save" | "scope" | "sensitive" | "sanitize" | "accept" | "archive" | "file-check" | null>(null)
+  const [busy, setBusy] = useState<"save" | "scope" | "sensitive" | "sanitize" | "accept" | "archive" | "file-check" | "team" | null>(null)
   const { readonly, previewDemo } = useTranscriptRenderOptions()
   const [error, setError] = useState<string | null>(null)
   const [auditEvents, setAuditEvents] = useState<MemoryEvent[]>([])
@@ -99,6 +106,16 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     return () => { current = false }
   }, [item])
   const record = useMemo(() => auditRecord(auditEvents), [auditEvents])
+  useEffect(() => {
+    let live = true
+    setCanShare(false)
+    if (!readonly && !previewDemo && !item.team && item.status === "active" && !item.sensitive && item.scope === "project" && item.projectId) {
+      void memoriesApi.teamStatus(item.projectId).then(status => { if (live) setCanShare(status.canShare) }).catch(() => {})
+    }
+    return () => { live = false }
+  }, [item.id, item.projectId, item.scope, item.status, item.sensitive, item.team, readonly, previewDemo])
+  useEffect(() => { if (proposing) contentRef.current?.focus() }, [proposing])
+  useEffect(() => { setProposing(false); setTeamWritten(null); setUnshareArmed(false) }, [item.id])
 
   // A fresh selection (or an update landing from elsewhere) resets the draft
   // and any armed confirmations.
@@ -132,10 +149,29 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     setBusy("save")
     setError(null)
     try {
-      const updated = await memoriesApi.update(item.id, dirtyPatch, { surface })
+      const updated = item.team ? await memoriesApi.proposeTeam(item.id, draft.content) : await memoriesApi.update(item.id, dirtyPatch, { surface })
       onUpdated(updated)
+      if (item.team) { setProposing(false); setTeamWritten("propose") }
     } catch (err) {
       setError(err instanceof Error ? err.message : t("memory:failedToSave"))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function handleTeam(action: "publish" | "unshare" | "toggle") {
+    setBusy("team")
+    setError(null)
+    try {
+      const updated = action === "publish" ? await memoriesApi.publishTeam(item.id)
+        : action === "unshare" ? await memoriesApi.unshareTeam(item.id)
+          : await memoriesApi.update(item.id, { status: item.status === "active" ? "archived" : "active" }, { surface })
+      onUpdated(updated)
+      setTeamWritten(action === "publish" ? "publish" : null)
+      setUnshareArmed(false)
+      setProposing(false)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("memory:failedToUpdate"))
     } finally {
       setBusy(null)
     }
@@ -278,6 +314,17 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         {tab === "details" ? (
           <div className="mt-3 space-y-4">
+            {item.team ? <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
+              <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[12px] leading-5 text-muted-foreground"><Trans ns="memory" i18nKey="teamDetail" components={{ code: <code className="font-mono text-[11px]" /> }} /></p>
+                {!readonly && !previewDemo ? <div className="mt-1.5 flex flex-wrap gap-1.5">
+                  {item.status === "active" ? <Button variant="outline" size="xs" className="bg-background" disabled={busyState} onClick={() => { setTeamWritten(null); setProposing(true) }}>{t("memory:teamPropose")}</Button> : null}
+                  <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleTeam("toggle")}>{item.status === "archived" ? t("memory:teamTurnOn") : t("memory:teamTurnOff")}</Button>
+                </div> : null}
+                {teamWritten === "publish" ? <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground"><Check className="h-3 w-3 text-success" />{t("memory:teamWritten")}</p> : null}
+              </div>
+            </div> : null}
             {drifted.length > 0 && canReviewFiles ? <div className="flex items-start gap-2 rounded-lg border border-cand-fg/20 bg-cand-surface px-3 py-2.5">
               <FileWarning className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cand-fg" />
               <div className="min-w-0 flex-1">
@@ -341,13 +388,16 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:content")}</label>
               <Textarea
+                ref={contentRef}
                 value={draft.content}
                 onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
-                className="min-h-16 text-sm"
+                readOnly={Boolean(item.team && (!proposing || readonly || previewDemo))}
+                className={cn("min-h-16 text-sm", item.team && !proposing && "bg-muted/40 text-muted-foreground")}
               />
+              {item.team && teamWritten === "propose" ? <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"><Check className="h-3 w-3 text-success" />{t("memory:teamWritten")}</p> : null}
             </div>
 
-            <div>
+            {!item.team ? <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:detailedForm")}</label>
               <Textarea
                 value={draft.detail}
@@ -355,16 +405,17 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                 placeholder={t("memory:loadedOnDemandByTheAgentOptional")}
                 className="min-h-20 text-sm"
               />
-            </div>
+            </div> : null}
 
-            {sensitiveCandidate ? null : (
+            {sensitiveCandidate || (item.team && !proposing) ? null : (
               <div className="flex justify-end">
+                {item.team ? <Button variant="ghost" size="sm" onClick={() => { setProposing(false); setDraft({ content: item.content, detail: item.detail ?? "" }) }}>{t("common:cancel")}</Button> : null}
                 <Button variant={item.status === "candidate" ? "outline" : "default"} size="sm" disabled={busyState || !isDirty || !draft.content.trim()} onClick={() => void handleSave()}>
-                  {t("common:save")}</Button>
+                  {item.team ? t("memory:teamWrite") : t("common:save")}</Button>
               </div>
             )}
 
-            <div className="border-t border-border pt-3">
+            {!item.team ? <div className="border-t border-border pt-3">
               <label className="mb-1 block text-xs font-medium text-muted-foreground">
                 {item.scope === "session" ? t("memory:sessionScopedMoveToWidenReach") : t("memory:scopeLabel")}
               </label>
@@ -395,9 +446,10 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                 })}
               </div>
               {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
-            </div>
+            </div> : null}
 
-            <MemoryExpiryPicker value={expiresAt} onChange={setExpiresAt} disabled={busyState} />
+            {item.team ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 className="h-3 w-3" />{t("memory:keep")}: {item.expiresAt ? t("memory:teamExpiryUntil", { date: new Date(item.expiresAt).toLocaleDateString(getLocale(), { month: "short", day: "numeric", year: "numeric" }) }) : t("memory:forever")}</div>
+              : <MemoryExpiryPicker value={expiresAt} onChange={setExpiresAt} disabled={busyState} />}
             {item.fileRefs?.length ? <div>
               <span className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:referencedFiles")}</span>
               <div className="space-y-1">{item.fileRefs.map(ref => <div key={`${ref.kind}:${ref.path}`} className="flex min-w-0 items-center gap-2 text-[11px]">
@@ -418,7 +470,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               <p className="mt-1 text-[11px] text-muted-foreground">{record.corrected ? t("memory:auditRecordCorrected", { n: record.corrected, m: record.total }) : t("memory:auditRecordNone", { m: record.total })}</p>
             </div> : null}
 
-            {sensitiveCandidate ? (
+            {item.team ? null : sensitiveCandidate ? (
               <MemoryBadge className="inline-flex items-center gap-1.5 rounded-md border border-cand-border bg-cand-surface px-1.5 py-1 text-[11px] font-medium text-cand-fg">
                 <ShieldAlert className="h-3.5 w-3.5" /> {t("memory:sensitive")}</MemoryBadge>
             ) : (
@@ -436,10 +488,15 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               </button>
             )}
 
-            {item.status === "active" ? (
+            {item.team && !readonly && !previewDemo ? <div className="flex items-center gap-2 border-t border-border pt-3">
+              {unshareArmed ? <><Button variant="ghost" size="sm" className="text-destructive" disabled={busyState} onClick={() => void handleTeam("unshare")}>{t("memory:teamRemoveConfirm")}</Button><Button variant="ghost" size="sm" onClick={() => setUnshareArmed(false)}>{t("common:cancel")}</Button></>
+                : <Button variant="ghost" size="sm" className="text-destructive" disabled={busyState} onClick={() => setUnshareArmed(true)}>{t("memory:teamRemove")}</Button>}
+            </div> : null}
+            {!item.team && item.status === "active" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
                   <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>
+                {canShare ? <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleTeam("publish")}><Users className="h-3.5 w-3.5" />{t("memory:teamShare")}</Button> : null}
                 {archiveArmed ? (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button variant="ghost" className="text-destructive hover:text-destructive" size="sm" disabled={busyState} onClick={() => void handleArchive()}>
@@ -466,7 +523,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         ) : (
-          <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} />
+          <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} readOnly={Boolean(item.team || readonly || previewDemo)} />
         )}
       </div>
     </div>

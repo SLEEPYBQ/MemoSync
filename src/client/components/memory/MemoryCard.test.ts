@@ -23,6 +23,12 @@ function item(over: Partial<MemoryItem> = {}): MemoryItem {
 }
 
 describe("MemoryCard", () => {
+  test("shows team identity alongside file drift", () => {
+    const html = renderToStaticMarkup(createElement(MemoryCard, { item: item({ team: { id: "T-abcd" }, fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }] }), variant: "scoped" }))
+    expect(html).toContain("Shared in .memosync/team.md")
+    expect(html).toContain("lucide-users")
+    expect(html).toContain("Check · auth.ts changed")
+  })
   test("shows a file drift chip with full paths and the appropriate status", () => {
     const render = (fileRefs: MemoryItem["fileRefs"]) => renderToStaticMarkup(createElement(MemoryCard, { item: item({ fileRefs }), variant: "scoped" }))
     expect(render([{ path: "src/auth.ts", kind: "mention", drift: "changed" }])).toContain("Check · auth.ts changed")

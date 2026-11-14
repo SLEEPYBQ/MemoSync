@@ -5,7 +5,8 @@ import { useI18n } from "../../i18n"
 // literal class maps the citation-chip layer defined (memoryCitations.ts) so
 // the board and inline citations stay visually identical (SPEC §2).
 import type { ReactNode } from "react"
-import { FolderGit2, MessagesSquare, User } from "lucide-react"
+import { FolderGit2, MessagesSquare, User, Users } from "lucide-react"
+import { t } from "../../i18n"
 import type { LucideIcon } from "lucide-react"
 import type { MemoryScope, MemoryType } from "../../lib/memoriesApi"
 import { MEMORY_SCOPE_CHIP_CLASSES, memoryScopeLabel } from "../../lib/memoryCitations"
@@ -83,6 +84,13 @@ export function ScopeBadge({ scope, className }: { scope: MemoryScope; className
       {memoryScopeLabel(scope)}
     </MemoryBadge>
   )
+}
+
+export function TeamBadge() {
+  useI18n()
+  return <MemoryBadge title={t("memory:teamBadgeTitle")} className={MEMORY_SCOPE_CHIP_CLASSES.project}>
+    <Users aria-hidden className="h-3 w-3 shrink-0" />{t("memory:team")}
+  </MemoryBadge>
 }
 
 /** Generic small pill for id/type/topic tags on a card or in the detail panel. */

@@ -2332,6 +2332,7 @@ export class AgentCoordinator {
           getMemoryConfirmation(this.memory.store, command.chatId),
           (this.turnPayAttention.get(command.chatId) ?? []).map(item => item.id),
           this.memory.fileDrift,
+          this.memory.store,
         ).length) throw new Error("Working memory needs confirmation.")
       }
 
@@ -4544,7 +4545,15 @@ export class AgentCoordinator {
       const cursor = previousCursor ?? this.memory.store.latestEventSeq()
       if (previousCursor === null) this.memory.store.setKv(key, cursor)
       this.memory.expireDue()
+      this.memory.team.queueNotice(chat.projectId, this.memory.team.syncProject(chat.projectId, project.localPath))
+      this.memory.expireDue()
       this.memory.fileDrift.syncProject(chat.projectId, project.localPath)
+      const teamNotice = this.memory.team.pendingNotice(chat.projectId)
+      if (teamNotice && (teamNotice.added.length || teamNotice.changed.length || teamNotice.removed.length)) {
+        await this.store.appendMessage(args.chatId, timestamped({ kind: "memory_team_updated", added: teamNotice.added, changed: teamNotice.changed, removed: teamNotice.removed, turn: turnNumber }))
+        this.memory.team.clearNotice(chat.projectId, teamNotice.revision)
+        this.emitStateChange(args.chatId)
+      }
       const { ids, lastSeq } = this.memory.store.expirationsSince(cursor, chat.projectId, args.chatId)
       if (ids.length) {
         await this.store.appendMessage(args.chatId, timestamped({ kind: "memory_expired", ids, turn: turnNumber }))
@@ -5949,7 +5958,7 @@ export class AgentCoordinator {
     const expectedUses = plannedUses.filter(use => selectedIds.includes(use.id))
     for (const id of selectedIds) (pending.proposedIds ??= new Set()).add(id)
     for (const use of expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
-    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds, this.memory.fileDrift)
+    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds, this.memory.fileDrift, this.memory.store)
     if (relevant.length) this.memory.logger.event({ type: "memory.relevance", sessionId: args.chatId, turn: turnNumber, ids: relevant.map(item => item.id) })
     this.turnExpectedUses.set(args.chatId, expectedUses)
     await this.store.appendMessage(args.chatId, timestamped({

@@ -253,12 +253,13 @@ function VersionEventRow({
 
 interface MemoryHistoryPanelProps {
   itemId: string
+  readOnly?: boolean
   /** Called with the memory returned by a successful rollback, so the caller can refresh the item + store. */
   onReverted: (item: MemoryItem) => void
   surface?: MemoryControlSurface
 }
 
-export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistoryPanelProps) {
+export function MemoryHistoryPanel({ itemId, onReverted, surface, readOnly }: MemoryHistoryPanelProps) {
   useI18n()
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
   const [events, setEvents] = useState<MemoryEvent[]>([])
@@ -319,7 +320,7 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface }: MemoryHistor
           <VersionEventRow
             key={row.event.seq}
             event={row.event}
-            isLatest={row.event.seq === latestVersionSeq}
+            isLatest={Boolean(readOnly) || row.event.seq === latestVersionSeq}
             busy={busySeq === row.event.seq}
             onRollback={handleRollback}
           />

@@ -1,5 +1,5 @@
 import { t, useI18n } from "../../i18n"
-import { ScopeBadge } from "./ScopeBadge"
+import { ScopeBadge, TeamBadge } from "./ScopeBadge"
 // The canonical READ-ONLY face of a memory item (redesign 2026-08-07 §4:
 // shared operable representation). Body = short content + usage count + scope
 // + expandable Detail, identical everywhere. Hosts (candidate container,
@@ -13,7 +13,7 @@ import { cn } from "../../lib/utils"
 import { isMemoryScope } from "../../lib/memoryCitations"
 
 export type MemoryCardCoreItem = Pick<MemoryItem, "id" | "content" | "scope" | "usageCount"> &
-  Partial<Pick<MemoryItem, "detail" | "version" | "provenanceSessionId" | "provenanceTurn">>
+  Partial<Pick<MemoryItem, "detail" | "version" | "provenanceSessionId" | "provenanceTurn" | "team">>
 
 export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; className?: string }) {
   useI18n()
@@ -32,6 +32,7 @@ export function MemoryCardCore({ item, className }: { item: MemoryCardCoreItem; 
         </span>
         <span>·</span>
         <ScopeBadge scope={scope} />
+        {item.team ? <TeamBadge /> : null}
         <span className="ml-auto font-sans">{t("memory:usedTimes", { count: item.usageCount ?? 0 })}</span>
       </div>
       <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground">{item.content}</p>

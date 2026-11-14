@@ -54,6 +54,13 @@ export interface MemoryHistory {
   events: MemoryEvent[]
 }
 
+export interface TeamMemoryStatus {
+  exists: boolean
+  conflict: boolean
+  path: string
+  canShare: boolean
+}
+
 export interface MutedProposal {
   memoryId: string
   content: string | null
@@ -95,6 +102,15 @@ export const memoriesApi = {
 
   acknowledgeFileRefs: (id: string) =>
     fetch(`/api/memories/${encodeURIComponent(id)}/file-refs/acknowledge`, { method: "POST" }).then((r) => unwrap<MemoryItem>(r)),
+
+  teamStatus: (projectId: string) =>
+    fetch(`/api/memories/team-status${qs({ projectId })}`).then((r) => unwrap<TeamMemoryStatus>(r)),
+  publishTeam: (id: string) =>
+    fetch(`/api/memories/${encodeURIComponent(id)}/team/publish`, { method: "POST" }).then((r) => unwrap<MemoryItem>(r)),
+  proposeTeam: (id: string, content: string) =>
+    fetch(`/api/memories/${encodeURIComponent(id)}/team/propose`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content }) }).then((r) => unwrap<MemoryItem>(r)),
+  unshareTeam: (id: string) =>
+    fetch(`/api/memories/${encodeURIComponent(id)}/team/unshare`, { method: "POST" }).then((r) => unwrap<MemoryItem>(r)),
 
   create: (body: CreateMemoryBody, options: { surface?: MemoryControlSurface } = {}) =>
     fetch("/api/memories", {
