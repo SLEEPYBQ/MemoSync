@@ -397,6 +397,7 @@
   "couldntArchive": "Couldn't archive the memory",
   "couldntRestore": "Couldn't restore the memory",
   "notRight": "Not right?",
+  "auditReadOnlyHere": "Read-only in this chat",
   "reviewAudit": "Review audit",
   "correctionSyncPending": "Correction saved. Updating chat history…",
   "whatActuallyHappened": "What actually happened?",

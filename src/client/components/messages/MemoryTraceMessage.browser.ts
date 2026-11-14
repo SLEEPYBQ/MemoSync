@@ -219,3 +219,59 @@ test("hidden automatic audit can be corrected, synced and withdrawn from the rec
     { sessionId: "synthetic-chat", turn: 2, label: null },
   ])
 }, 30_000)
+
+test("inherited audit controls stay read-only in chat and Memory Record", async () => {
+  page = await browser.newPage({ viewport: { width: 1100, height: 1400 } })
+  page.setDefaultTimeout(5_000)
+  const errors: string[] = []
+  const posts: string[] = []
+  page.on("pageerror", error => { errors.push(error.message); console.error(error.stack) })
+  const item = {
+    id: "M-07", content: "Use integer cents for all amounts.", scope: "personal", type: "constraint", status: "active",
+    abstractionLevel: "concrete", sensitive: false, createdAt: "", updatedAt: "", usageCount: 6,
+    reinforcedCount: 0, citedInCurrentSession: 0, version: 1,
+  }
+  await page.route("**/api/**", async route => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (path.endsWith("/trace-correction") && request.method() === "POST") posts.push(path)
+    const data = path === "/api/fixture-correction" ? null
+      : path === "/api/memories" && request.method() === "GET" ? [item]
+        : path.endsWith("/history") ? { memory: item, events: [] } : {}
+    await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data }) })
+  })
+  await page.goto(`${url}?inherited=1`)
+  const editor = page.locator("#editor")
+  const corrected = page.locator("#corrected")
+  await editor.getByText("Read-only in this chat").waitFor()
+  await corrected.getByText("Read-only in this chat").waitFor()
+  expect(await editor.getByRole("button", { name: "Not right?" }).count()).toBe(0)
+  expect(await corrected.getByRole("button", { name: "Undo", exact: true }).count()).toBe(0)
+  expect(await corrected.getByText("Your note: No monetary amounts were produced.").count()).toBe(1)
+  for (const [size, viewport] of [
+    ["desktop", { width: 1100, height: 1400 }],
+    ["narrow", { width: 390, height: 1000 }],
+  ] as const) {
+    await page.setViewportSize(viewport)
+    for (const theme of ["light", "dark"] as const) {
+      await page.evaluate(dark => { document.documentElement.classList.toggle("dark", dark); window.scrollTo(0, 0) }, theme === "dark")
+      const first = await editor.boundingBox()
+      const second = await corrected.boundingBox()
+      if (!first || !second) throw new Error("Missing audit cards")
+      const x = Math.max(0, Math.min(first.x, second.x) - 8)
+      const y = Math.max(0, first.y - 8)
+      await page.screenshot({
+        animations: "disabled",
+        clip: { x, y, width: Math.min(viewport.width - x, Math.max(first.x + first.width, second.x + second.width) - x + 8), height: Math.min(viewport.height - y, second.y + second.height - y + 8) },
+        path: join(artifacts, `inherited-audit-${size}-${theme}.png`),
+      })
+    }
+  }
+  await page.locator("#record").getByRole("button", { name: "Review audit" }).click()
+  const dialog = page.getByRole("dialog")
+  await dialog.getByText("Read-only in this chat").waitFor()
+  expect(await dialog.getByRole("button", { name: "Not right?" }).count()).toBe(0)
+  expect(await dialog.getByRole("button", { name: "Undo", exact: true }).count()).toBe(0)
+  expect(posts).toEqual([])
+  expect(errors).toEqual([])
+}, 30_000)

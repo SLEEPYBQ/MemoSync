@@ -471,3 +471,73 @@ test("missing citation after Board refresh shows an error and never steals focus
   expect(mutations).toEqual([])
   expect(errors).toEqual([])
 }, 30_000)
+
+for (const decision of ["go_on", "without_memory", "dismiss"] as const) {
+  test(`completed previews use the recorded selection (${decision})`, async () => {
+    page = await browser.newPage({ viewport: { width: 1100, height: 1100 } })
+    page.setDefaultTimeout(5_000)
+    const errors: string[] = []
+    page.on("pageerror", error => { errors.push(error.message); console.error(error.stack) })
+    let items: Array<{ id: string; status: string; [key: string]: unknown }> = []
+    await page.route("**/api/**", async route => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      if (request.method() === "GET" && path === "/api/memories") {
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: items }) })
+        return
+      }
+      const match = path.match(/^\/api\/memories\/(M-01|M-02)$/)
+      if (request.method() === "PATCH" && match) {
+        const index = items.findIndex(item => item.id === match[1])
+        if (index < 0) throw new Error("Synthetic memory not found")
+        items[index] = { ...items[index]!, status: (request.postDataJSON() as { status: string }).status }
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ data: items[index] }) })
+        return
+      }
+      await route.fulfill({ contentType: "application/json", body: '{"data":[]}' })
+    })
+    await page.goto(`${url}?remote=1&settle=1`)
+    items = await page.evaluate(() => (window as unknown as { archiveFixtureItems: Array<{ id: string; status: string; [key: string]: unknown }> }).archiveFixtureItems)
+    const working = page.locator("#working-memory")
+    await working.getByRole("button", { name: "Undo" }).click()
+    await working.getByText("Start (2 injected)").waitFor()
+    const firstRow = working.locator(".relative").filter({ hasText: "M-01" }).first()
+    await firstRow.getByRole("button", { name: "Archive: stop using this memory in every chat" }).click()
+    await working.getByText("Archived. It won't be used again.").waitFor()
+    await working.getByText("Start (1 injected)").waitFor()
+    if (decision === "without_memory") {
+      const secondRow = working.locator(".relative").filter({ hasText: "M-02" }).first()
+      await secondRow.getByRole("button", { name: "Archive: stop using this memory in every chat" }).click()
+      await working.getByText("Start without memory").waitFor()
+      await working.getByRole("button", { name: "Start without memory" }).click()
+    } else if (decision === "dismiss") {
+      await working.getByRole("button", { name: "Dismiss turn" }).click()
+    } else {
+      await working.getByRole("button", { name: "Start (1 injected)" }).click()
+    }
+    const expectedText = decision === "go_on" ? "started with 1 injected"
+      : decision === "without_memory" ? "started with empty working memory"
+        : "turn dismissed — message returned to the composer"
+    await working.getByText(expectedText).waitFor()
+    const recorded = await page.evaluate(() => (window as unknown as { archiveFixtureDecision: { decision: string; selectedIds?: string[] } }).archiveFixtureDecision)
+    expect(recorded.decision).toBe(decision)
+    if (decision === "go_on") expect(recorded.selectedIds).toEqual(["M-02"])
+    else expect(recorded.selectedIds).toBeUndefined()
+    expect(await working.getByText("[M-01]").count()).toBe(0)
+    if (decision === "go_on") {
+      expect(await working.getByText("[M-02]").count()).toBe(1)
+      expect(await working.getByText("Apply this rule to the task.").count()).toBe(1)
+      expect(await working.getByText("2 available").count()).toBe(1)
+      await page.locator("#board-citations").getByText("[M-02]").hover()
+      await page.locator("[data-radix-popper-content-wrapper]").getByRole("button", { name: "Archive", exact: true }).click()
+      await page.waitForFunction(() => document.querySelector("#working-memory")?.querySelector(".line-through")?.textContent === "[M-02]")
+      expect(await working.getByText("Validate each charge before submission.").count()).toBe(1)
+      expect(await working.getByText("Apply this rule to the task.").count()).toBe(1)
+    } else {
+      expect(await working.getByText("[M-02]").count()).toBe(0)
+      expect(await working.getByText("Apply this rule to the task.").count()).toBe(0)
+      expect(await working.getByText("3 available").count()).toBe(1)
+    }
+    expect(errors).toEqual([])
+  }, 30_000)
+}

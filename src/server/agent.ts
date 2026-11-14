@@ -2785,8 +2785,9 @@ export class AgentCoordinator {
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
     if (memoryState.control !== "auto" && mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
-    for (const proposal of proposals) {
-      if (proposal.sensitive) continue
+    for (const proposed of proposals) {
+      const proposal = this.memory.store.getById(proposed.id)
+      if (!proposal || proposal.status !== "candidate" || proposal.sensitive) continue
       try {
         const meta = { actor: "system" as const, sessionId: args.chatId, turn: args.turnNumber }
         if (this.memory.store.revisionTargetOf(proposal.id)) {
@@ -2818,7 +2819,7 @@ export class AgentCoordinator {
           via: "auto",
         })
       } catch {
-        // A failed auto-apply simply leaves the proposal in the review lane.
+        // Stale or invalid proposals are not applied.
       }
     }
     // Auto-applied state is ACTIVE state — the Markdown view must say so now,
@@ -3788,6 +3789,18 @@ export class AgentCoordinator {
         this.contextBaselines.set(chatId, compiled.nextBaseline)
       }
     } }
+  }
+
+  annotateTraceCorrectionOwnership(chatId: string, entries: TranscriptEntry[]): TranscriptEntry[] {
+    if (!entries.some(entry => entry.kind === "memory_trace")) return entries
+    const owned = this.memory?.store.traceCorrectionKeysForSession(chatId) ?? new Set<string>()
+    return entries.map(entry => entry.kind === "memory_trace" ? {
+      ...entry,
+      labels: entry.labels.map(label => ({
+        ...label,
+        correctionAllowed: entry.turn !== undefined && owned.has(JSON.stringify([entry.turn, label.id])),
+      })),
+    } : entry)
   }
 
   getActiveStatuses() {
