@@ -17,7 +17,7 @@ export function buildViolatedCitationsByMessageId(
     } else if (message.kind === "assistant_text") {
       segment.push(message.id)
     } else if (message.kind === "memory_trace") {
-      const violated = message.labels.filter((l) => l.label === "violated").map((l) => l.id)
+      const violated = message.labels.filter((l) => (l.userLabel ?? l.label) === "violated").map((l) => l.id)
       const judged = segment
       // A trace closes its turn. Post-tool follow-up turns append no
       // user_prompt, so without this reset the NEXT trace would fold onto

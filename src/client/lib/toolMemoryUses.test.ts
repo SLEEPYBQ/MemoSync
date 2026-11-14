@@ -9,6 +9,17 @@ function trace(labels: Trace["labels"], extra: Partial<Trace> = {}): HydratedTra
 }
 
 describe("buildToolMemoryUses", () => {
+  test("uses corrected verdicts and notes instead of stale audit rationale", () => {
+    const uses = buildToolMemoryUses([trace([
+      { id: "M-01", label: "violated", userLabel: "operational", userNote: "Actually followed", note: "Audit reason", noteUiText: { code: "traceUnlabeled" }, toolId: "tool-a" },
+      { id: "M-02", label: "violated", userLabel: "not_applicable", note: "Audit reason", toolId: "tool-a" },
+      { id: "M-03", label: "operational", userLabel: "violated", note: "Audit reason", toolId: "tool-a" },
+    ])])
+    expect(uses?.get("tool-a")).toEqual([
+      { id: "M-01", violated: false, note: "Actually followed", noteUiText: undefined },
+      { id: "M-03", violated: true, note: undefined, noteUiText: undefined },
+    ])
+  })
   test("ties used and violated memories to the step that shows them", () => {
     const uses = buildToolMemoryUses([
       trace([

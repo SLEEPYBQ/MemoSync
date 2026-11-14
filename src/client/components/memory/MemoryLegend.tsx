@@ -15,6 +15,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../ui/popover"
 import { Chip, ScopeBadge } from "./ScopeBadge"
 import {
   FRESHNESS_CLASSES,
+  CORRECTED_DOT_LEGEND,
   FRESHNESS_LEGEND,
   SCOPE_LEGEND,
   TRACE_DOT_CLASSES,
@@ -77,6 +78,7 @@ export function MemoryLegend({
               meaning={meaning}
             />
           ))}
+          <Row swatch={<span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-muted-foreground/40 outline outline-1 outline-offset-1 outline-foreground/40" /><span className="text-xs font-medium text-foreground">{CORRECTED_DOT_LEGEND.label}</span></span>} meaning={CORRECTED_DOT_LEGEND.meaning} />
         </Section>
       ) : null}
       {sections.includes("freshness") ? (

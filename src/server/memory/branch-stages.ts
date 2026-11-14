@@ -1,7 +1,7 @@
 // Model work belongs to a provider conversation branch. These functions only
 // construct prompts and validate proposals; they never call a second model.
 import { CANDIDATE_FIELD_SPEC, validateCandidate, type ValidatedCandidate } from './capture';
-import { coerceTraceOutcome, type TraceInput, type TraceOutcome } from './trace';
+import { coerceTraceOutcome, formatAuditCorrections, type TraceInput, type TraceOutcome } from './trace';
 import type { ExpectedMemoryUse } from '../../shared/types';
 import type { MemoryItem } from './types';
 import type { TransferSuggestionCard } from './transfer-detect';
@@ -213,7 +213,7 @@ export function parseWorkingMemoryBranchResult(raw: Record<string, unknown>, inp
   return { relevant, expectedUses };
 }
 
-export type AuditBranchInput = Pick<TraceInput, 'usedMemories' | 'assistantText' | 'executionText' | 'executionTools'> & {
+export type AuditBranchInput = Pick<TraceInput, 'usedMemories' | 'assistantText' | 'executionText' | 'executionTools' | 'corrections'> & {
   task?: string;
   expectedUses?: ExpectedMemoryUse[];
 };
@@ -238,6 +238,7 @@ export function buildAuditBranchPrompt(input: AuditBranchInput): string {
     'REQUIRED FIELDS: Every label row must include id, label, note, quote, toolId, cause, missing, and impact. Use JSON null for fields that do not apply. For not_applicable, missing MUST be a separate non-empty string naming the absent object or opportunity. Writing "Missing opportunity" only inside note does NOT satisfy the missing field; an absent or null missing field is rejected.',
     'When quoting a tool action or result, also return its exact toolId from CURRENT TURN TOOL ANCHORS. This lets the developer open the matching tool even when collapsed. Never invent a toolId or use an earlier-turn tool.',
     `INJECTED MEMORY SNAPSHOT:\n${JSON.stringify(input.usedMemories)}`,
+    ...(input.corrections?.length ? [formatAuditCorrections(input.corrections)] : []),
     `EXPECTED USES:\n${JSON.stringify(input.expectedUses ?? [])}`,
     input.task ? `CURRENT TASK:\n${input.task}` : '',
     `CURRENT TURN ASSISTANT REPLY:\n${input.assistantText}`,

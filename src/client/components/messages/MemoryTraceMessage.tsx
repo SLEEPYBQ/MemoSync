@@ -3,7 +3,7 @@ import { t, useI18n } from "../../i18n"
 import { MEMORY_CARD } from "../memory/MemorySurface"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { createPortal } from "react-dom"
-import { AlertTriangle, Archive, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck } from "lucide-react"
+import { AlertTriangle, Archive, Check, ChevronRight, CornerDownRight, CornerUpLeft, Loader2, ShieldCheck, UserRound } from "lucide-react"
 import type { HydratedTranscriptMessage } from "../../../shared/types"
 import { cn } from "../../lib/utils"
 import { memoriesApi, recordUiMonitor } from "../../lib/memoriesApi"
@@ -14,6 +14,7 @@ import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryCitationChip, useEnsureMemoriesLoaded } from "./shared"
 import { ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
 import { useMemoryStore } from "../../stores/memoryStore"
+import { Button } from "../ui/button"
 import {
   useSurfaceExposure,
   useSurfaceViewportVisibility,
@@ -37,20 +38,20 @@ const LABEL_TEXT: Record<MemoryTraceLabel["label"], string> = {
   get violated() { return t("memory:violated") },
 }
 
-function TraceStatusMark({ label }: { label: MemoryTraceLabel["label"] }) {
+function TraceStatusMark({ label, compact = false }: { label: MemoryTraceLabel["label"]; compact?: boolean }) {
   useI18n()
-  if (label === "operational") return <Check className="mt-0.5 h-3 w-3 shrink-0 text-success-foreground" />
-  if (label === "violated") return <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-destructive" />
+  if (label === "operational") return <Check className={cn("h-3 w-3 shrink-0 text-success-foreground", !compact && "mt-0.5")} />
+  if (label === "violated") return <AlertTriangle className={cn("h-3 w-3 shrink-0 text-destructive", !compact && "mt-0.5")} />
   if (label === "not_applicable")
     return (
-      <span className="mt-1.5 flex h-3 w-3 shrink-0 items-center justify-center">
+      <span className={cn("flex h-3 w-3 shrink-0 items-center justify-center", !compact && "mt-1.5")}>
         {/* Hollow ring: never entered play — visually distinct from the filled
             no-effect dot (played, changed nothing). */}
         <span className="h-1.5 w-1.5 rounded-full border border-border" />
       </span>
     )
   return (
-    <span className="mt-1.5 flex h-3 w-3 shrink-0 items-center justify-center">
+    <span className={cn("flex h-3 w-3 shrink-0 items-center justify-center", !compact && "mt-1.5")}>
       <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
     </span>
   )
@@ -134,7 +135,7 @@ const CAUSE_TEXT: Record<NonNullable<MemoryTraceLabel["cause"]>, string> = {
   get memory_conflict() { return t("memory:causeConflict") },
 }
 
-function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label: MemoryTraceLabel) => void }) {
+function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTraceLabel; turn?: number; onJump?: (label: MemoryTraceLabel) => void; onDemoCorrection: (id: string, value: { userLabel?: MemoryTraceLabel["label"]; userNote?: string }) => void }) {
   useI18n()
   const renderOptions = useTranscriptRenderOptions()
   const { chatId } = useTranscriptChatContext()
@@ -143,6 +144,52 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
   const memory = useMemoryStore((state) => state.items.find((item) => item.id === label.id))
   const demo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo")
   const archiveControl = useArchiveMemory("chat_audit", { localOnly: demo })
+  const [editing, setEditing] = useState(false)
+  const [selected, setSelected] = useState<MemoryTraceLabel["label"] | null>(null)
+  const [correctionNote, setCorrectionNote] = useState("")
+  const [saving, setSaving] = useState(false)
+  const [correctionError, setCorrectionError] = useState<string | null>(null)
+  const [pendingTarget, setPendingTarget] = useState<{ label: MemoryTraceLabel["label"] | null; note?: string } | null>(null)
+  const archived = memory?.status === "archived"
+  const ownsAudit = label.correctionAllowed !== false
+  const canCorrect = ownsAudit && !renderOptions.readonly && Boolean(chatId) && turn !== undefined && !archived
+
+  useEffect(() => {
+    if (!canCorrect) {
+      setEditing(false)
+      setSelected(null)
+      setCorrectionNote("")
+      setCorrectionError(null)
+    }
+  }, [canCorrect])
+
+  function cancelCorrection() {
+    setEditing(false)
+    setSelected(null)
+    setCorrectionNote("")
+    setCorrectionError(null)
+  }
+
+  async function correct(value: MemoryTraceLabel["label"] | null) {
+    if (!ownsAudit || !chatId || turn === undefined || saving || renderOptions.readonly || (archived && value !== null)) return
+    setSaving(true)
+    setCorrectionError(null)
+    try {
+      const note = correctionNote.trim().slice(0, 300)
+      if (demo) {
+        onDemoCorrection(label.id, value ? { userLabel: value, ...(note ? { userNote: note } : {}) } : {})
+        setPendingTarget(null)
+      }
+      else {
+        const result = await memoriesApi.correctTrace(label.id, { sessionId: chatId, turn, label: value, ...(value && note ? { note } : {}) })
+        setPendingTarget(result.transcriptPending ? { label: value, ...(value && note ? { note } : {}) } : null)
+        void useMemoryStore.getState().loadAll()
+      }
+      cancelCorrection()
+    } catch (err) {
+      setCorrectionError(err instanceof Error ? `${t("memory:couldntSaveCorrection")}: ${err.message}` : t("memory:couldntSaveCorrection"))
+    } finally { setSaving(false) }
+  }
 
   async function act(name: string, run: () => Promise<unknown>, doneText: string) {
     setBusy(name)
@@ -159,8 +206,9 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
     }
   }
 
-  const violated = label.label === "violated"
-  const archived = memory?.status === "archived"
+  const effective = label.userLabel ?? label.label
+  const violated = effective === "violated"
+  const cause = label.userLabel ? undefined : label.cause
   const canArchive = !renderOptions.readonly && memory?.status === "active"
   // Every row states its reason (2026-08-19 B2): the NA reason is the named
   // missing object; other labels fall back to the audit note.
@@ -169,23 +217,58 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
   return (
     <div className="group/trace grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 normal-case tracking-normal">
       <div className="pt-0.5">
-        <TraceStatusMark label={label.label} />
+        <TraceStatusMark label={effective} />
       </div>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
           <MemoryCitationChip id={label.id} />
-          <span className={cn("font-medium", violated ? "text-destructive" : "text-foreground/80")}>
+          <span className={cn("font-medium", label.userLabel ? "text-muted-foreground line-through" : violated ? "text-destructive" : "text-foreground/80")}>
             {LABEL_TEXT[label.label]}
           </span>
+          {label.userLabel ? <span className={cn("inline-flex items-center gap-1 font-medium", violated ? "text-destructive" : "text-foreground")}>
+            <UserRound className="h-3 w-3" /> {t("memory:youVerdict", { v0: LABEL_TEXT[effective] })}
+          </span> : null}
           {/* Fact/inference line: the reply's own [M-NN] citation is a
               self-report; a verdict only the audit produced is an inference. */}
           <span className="text-[11px] text-muted-foreground/70">
             {label.cited ? t("memory:selfReported") : t("memory:auditFound")}
           </span>
+          {!renderOptions.readonly && !ownsAudit ? (
+            <span className="ml-auto text-[11px] text-muted-foreground/60">{t("memory:auditReadOnlyHere")}</span>
+          ) : !renderOptions.readonly && chatId && turn !== undefined && (label.userLabel || !archived) ? (
+            <button type="button" disabled={saving} onClick={() => label.userLabel ? void correct(null) : setEditing(true)}
+              className="ml-auto text-[11px] text-muted-foreground/60 underline-offset-2 transition-colors hover:text-foreground hover:underline">
+              {label.userLabel ? t("common:undo") : t("memory:notRight")}
+            </button>
+          ) : null}
         </div>
-        {reason ? <p className={cn("mt-0.5 leading-relaxed text-muted-foreground", archived && "opacity-60")}>{reason}</p> : null}
-        {violated && label.cause ? (
-          <p className={cn("mt-0.5 leading-relaxed text-muted-foreground/80", archived && "opacity-60")}>{CAUSE_TEXT[label.cause]}</p>
+        {editing && !label.userLabel && canCorrect ? <div className="mt-1.5 rounded-lg border border-border/70 bg-background/60 p-2 dark:bg-muted/40">
+          <p className="text-[11px] font-medium text-muted-foreground">{t("memory:whatActuallyHappened")}</p>
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {(Object.keys(LABEL_TEXT) as MemoryTraceLabel["label"][]).filter(value => value !== label.label).map(value => (
+              <button key={value} type="button" aria-pressed={selected === value} onClick={() => setSelected(value)}
+                className={cn("inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground", selected === value && "border-foreground/40 bg-muted text-foreground")}>
+                <TraceStatusMark label={value} compact /> {LABEL_TEXT[value]}
+              </button>
+            ))}
+          </div>
+          <div className="mt-1.5"><input value={correctionNote} onChange={event => setCorrectionNote(event.target.value)} maxLength={300}
+            placeholder={t("memory:correctionWhyPlaceholder")}
+            aria-label={t("memory:correctionWhyPlaceholder")}
+            onKeyDown={event => { if (event.nativeEvent.isComposing) return; if (event.key === "Enter" || event.key === "Escape") { event.preventDefault(); event.stopPropagation(); if (event.key === "Escape") cancelCorrection(); else if (selected) void correct(selected) } }}
+            className="h-7 w-full min-w-0 flex-1 rounded-lg border border-border bg-background px-2 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring" /></div>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button variant="ghost" size="xs" onClick={cancelCorrection} disabled={saving}>{t("common:cancel")}</Button>
+            <Button variant="default" size="xs" onClick={() => selected && void correct(selected)} disabled={!selected || saving}>{saving ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("common:save")}</Button>
+          </div>
+        </div> : null}
+        {correctionError ? <p className="mt-1 text-[11px] text-destructive">{correctionError}</p> : null}
+        {pendingTarget && ((label.userLabel ?? null) !== pendingTarget.label || (label.userNote ?? undefined) !== pendingTarget.note)
+          ? <p role="status" className="mt-1 text-[11px] text-muted-foreground">{t("memory:correctionSyncPending")}</p> : null}
+        {label.userNote ? <p className="mt-0.5 leading-relaxed text-foreground/80">{t("memory:yourNote", { v0: label.userNote })}</p> : null}
+        {reason ? <p className={cn("mt-0.5 leading-relaxed text-muted-foreground", (archived || label.userLabel) && "opacity-60")}>{reason}</p> : null}
+        {label.label === "violated" && label.cause ? (
+          <p className={cn("mt-0.5 leading-relaxed text-muted-foreground/80", (archived || label.userLabel) && "opacity-60")}>{CAUSE_TEXT[label.cause]}</p>
         ) : null}
         {onJump || violated || canArchive || (archived && !renderOptions.readonly) ? (
           <div className="mt-2 flex min-h-7 flex-wrap items-center justify-end gap-2">
@@ -210,7 +293,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
               <>
                 {/* The cause remains authoritative for which repair is safe:
                     enforce a sound memory, draft a fix for a conflicting one. */}
-                {label.cause === "not_followed" && chatId ? (
+                {cause === "not_followed" && chatId ? (
                   <button
                     type="button"
                     disabled={busy !== null}
@@ -225,7 +308,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                   >
                     {busy === "attention" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} {t("memory:enforceNext")}</button>
                 ) : null}
-                {label.cause === "memory_conflict" ? (
+                {cause === "memory_conflict" ? (
                   <button
                     type="button"
                     disabled={busy !== null}
@@ -240,7 +323,7 @@ function TraceRow({ label, onJump }: { label: MemoryTraceLabel; onJump?: (label:
                   >
                     {busy === "fix" ? <Loader2 className="inline h-3 w-3 animate-spin" /> : null} {t("memory:draftFix")}</button>
                 ) : null}
-                {!label.cause ? (
+                {!cause ? (
                   <span className="text-muted-foreground/80">
                     {t("memory:causeUnclear")}</span>
                 ) : null}
@@ -271,9 +354,13 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   useI18n()
   useEnsureMemoriesLoaded()
   const { chatId } = useTranscriptChatContext()
-  const message = (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo"))
+  const demo = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo")
+  const [demoCorrections, setDemoCorrections] = useState<Record<string, { userLabel?: MemoryTraceLabel["label"]; userNote?: string }>>({})
+  const originalMessage = demo
     ? { ...sourceMessage, status: "ok" as const, summary: "Built the Stripe checkout — recomputed the cart total on the server [M-05] with strict typing [M-01], but charged a floating-point total, violating [M-07].", labels: DEMO_TRACE_LABELS }
     : sourceMessage
+  const message = demo ? { ...originalMessage, labels: originalMessage.labels.map(label => ({ ...label, ...demoCorrections[label.id] })) } : originalMessage
+  const onDemoCorrection = (id: string, value: { userLabel?: MemoryTraceLabel["label"]; userNote?: string }) => setDemoCorrections(current => ({ ...current, [id]: value }))
   // Expanded by default: the per-memory used / no-effect / violated verdicts are
   // the point of the trace. Hiding them behind a click made "was this memory
   // used?" an extra step (review feedback). Still collapsible for quiet turns.
@@ -383,14 +470,14 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   if (message.labels.length === 0) return null
 
   const counts = { operational: 0, injected_without_effect: 0, violated: 0, not_applicable: 0 }
-  for (const label of message.labels) counts[label.label] += 1
+  for (const label of message.labels) counts[label.userLabel ?? label.label] += 1
   // Four sections in severity order (2026-08-19 B2), all expanded initially
   // (2026-08-20); the two "didn't act" states keep their OWN collapsible
   // header so they never blur together.
-  const violatedRows = message.labels.filter((l) => l.label === "violated")
-  const shapedRows = message.labels.filter((l) => l.label === "operational")
-  const notApplicableRows = message.labels.filter((l) => l.label === "not_applicable")
-  const noEffectRows = message.labels.filter((l) => l.label === "injected_without_effect")
+  const violatedRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "violated")
+  const shapedRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "operational")
+  const notApplicableRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "not_applicable")
+  const noEffectRows = message.labels.filter((l) => (l.userLabel ?? l.label) === "injected_without_effect")
 
   const summaryParts: string[] = []
   if (counts.violated > 0) summaryParts.push(t("memory:traceViolations", { v0: counts.violated }))
@@ -398,6 +485,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
   if (counts.not_applicable > 0) summaryParts.push(t("memory:traceNotApplicableCount", { v0: counts.not_applicable }))
   if (counts.injected_without_effect > 0) summaryParts.push(t("memory:traceNoEffectCount", { v0: counts.injected_without_effect }))
   const hasViolation = counts.violated > 0
+  const correctedCount = message.labels.filter(label => label.userLabel).length
 
   return (
     // Give the audit its own card, matching the pre-turn review cards.
@@ -409,6 +497,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
         <span className={cn("text-xs", hasViolation ? "font-medium text-destructive" : "text-muted-foreground")}>
           {summaryParts.join(" · ")}
         </span>
+        {correctedCount ? <span className="text-xs text-muted-foreground">{t("memory:correctedCount", { count: correctedCount })}</span> : null}
       </button>
       {expanded ? (
         <div className="mt-3 flex flex-col gap-3">
@@ -421,7 +510,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={violatedRows.map((label) => label.id)}
             >
               {violatedRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
+                <TraceRow key={`${label.id}-${index}`} label={label} turn={message.turn} onDemoCorrection={onDemoCorrection} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
               ))}
             </TraceSection>
           ) : null}
@@ -434,7 +523,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={shapedRows.map((label) => label.id)}
             >
               {shapedRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
+                <TraceRow key={`${label.id}-${index}`} label={label} turn={message.turn} onDemoCorrection={onDemoCorrection} onJump={label.toolId || label.quote || label.cited ? jumpTo : undefined} />
               ))}
             </TraceSection>
           ) : null}
@@ -449,7 +538,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={notApplicableRows.map((label) => label.id)}
             >
               {notApplicableRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} />
+                <TraceRow key={`${label.id}-${index}`} label={label} turn={message.turn} onDemoCorrection={onDemoCorrection} />
               ))}
             </TraceSection>
           ) : null}
@@ -464,7 +553,7 @@ export function MemoryTraceMessage({ message: sourceMessage }: Props) {
               memoryIds={noEffectRows.map((label) => label.id)}
             >
               {noEffectRows.map((label, index) => (
-                <TraceRow key={`${label.id}-${index}`} label={label} />
+                <TraceRow key={`${label.id}-${index}`} label={label} turn={message.turn} onDemoCorrection={onDemoCorrection} />
               ))}
             </TraceSection>
           ) : null}

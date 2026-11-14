@@ -277,7 +277,7 @@ const DEFAULT_LLM_PROVIDER_SNAPSHOT: LlmProviderSnapshot = {
   filePathDisplay: "~/.kanna/llm-provider.json",
 }
 
-function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = null) {
+function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = null, annotate?: (chatId: string, entries: TranscriptEntry[]) => TranscriptEntry[]) {
   const state = createEmptyState()
   state.projectsById.set("project-1", {
     id: "project-1",
@@ -304,6 +304,7 @@ function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = nul
       state,
       getChat: (chatId: string) => state.chatsById.get(chatId) ?? null,
       getMessages: () => transcript,
+      getMessagesPageBefore: () => ({ messages: transcript, hasOlder: false, olderCursor: null }),
       getRecentChatHistory: (_chatId: string, recentLimit: number) => ({
         messages: transcript,
         history: { hasOlder: false, olderCursor: null, recentLimit },
@@ -314,6 +315,7 @@ function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = nul
       getDrainingChatIds: () => new Set(),
       getStreamingAssistantTexts: () => new Map(),
       getPendingTool: () => pendingTool,
+      annotateTraceCorrectionOwnership: annotate,
     } as never,
     terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
     keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
@@ -329,6 +331,37 @@ function createChatSnapshotHarness(pendingTool: PendingToolSnapshot | null = nul
 }
 
 describe("chat.getPreview", () => {
+  test("annotates trace ownership in chat snapshots, Memory Record, and history pages", async () => {
+    const calls: string[] = []
+    const harness = createChatSnapshotHarness(null, (chatId, entries) => {
+      calls.push(chatId)
+      return entries.map(entry => entry.kind === "memory_trace" ? {
+        ...entry, labels: entry.labels.map(label => ({ ...label, correctionAllowed: false })),
+      } : entry)
+    })
+    const { transcript, router, ws } = harness
+    transcript.push(
+      { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Synthetic task" },
+      { _id: "trace", createdAt: 2, kind: "memory_trace", turn: 1, status: "ok", labels: [{ id: "M-01", label: "violated" }] },
+    )
+    const raw = structuredClone(transcript)
+    await subscribeChatHarness(harness)
+    const snapshot = (ws.sent.at(-1) as { snapshot: { data: { messages: TranscriptEntry[]; memoryRecordMessages: TranscriptEntry[]; history: unknown } } }).snapshot.data
+    expect(snapshot.messages).toMatchObject([{ _id: "prompt", content: "Synthetic task" }, { _id: "trace", labels: [{ id: "M-01", correctionAllowed: false }] }])
+    expect(snapshot.memoryRecordMessages.find(entry => entry.kind === "memory_trace")).toMatchObject({ _id: "trace", labels: [{ id: "M-01", correctionAllowed: false }] })
+    expect(snapshot.history).toEqual({ hasOlder: false, olderCursor: null, recentLimit: expect.any(Number) })
+    await router.handleMessage(ws as never, JSON.stringify({
+      v: PROTOCOL_VERSION, type: "command", id: "owned-history",
+      command: { type: "chat.loadHistory", chatId: "chat-1", beforeCursor: "idx:100", limit: 100 },
+    }))
+    expect(ws.sent.at(-1)).toMatchObject({
+      type: "ack", id: "owned-history",
+      result: { messages: [{ _id: "prompt", content: "Synthetic task" }, { _id: "trace", labels: [{ id: "M-01", correctionAllowed: false }] }], hasOlder: false, olderCursor: null },
+    })
+    expect(calls).toEqual(["chat-1", "chat-1"])
+    expect(transcript).toEqual(raw)
+  })
+
   test("uses the coordinator's pending tool id to preview the question being asked", async () => {
     const { router, transcript, ws } = createChatSnapshotHarness({ toolUseId: "question", toolKind: "ask_user_question" })
     transcript.push(

@@ -45,6 +45,7 @@ import { NativeMemoryDiscovery } from "./memory/native-discovery"
 import { NativeMemoryImportService } from "./memory/native-import"
 import { createSanitizeService } from "./memory/sanitize"
 import { createTraceService } from "./memory/trace"
+import { createTraceCorrectionTransport, startTraceCorrectionDelivery } from "./memory/trace-correction-outbox"
 import { createTransferService } from "./memory/transfer"
 import { createTransferDetectService } from "./memory/transfer-detect"
 import { createUsePlanService } from "./memory/use-plan"
@@ -536,6 +537,7 @@ async function startLockedMemoSyncServer(
     getSelfPort: () => actualPort,
   })
   onStartupCleanup(() => router.dispose())
+  const traceCorrection = createTraceCorrectionTransport(store, chatId => router.broadcastChatStateImmediately(chatId))
 
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
@@ -717,6 +719,7 @@ async function startLockedMemoSyncServer(
             usePlan: memoryUsePlan,
             revision: memoryRevision,
             auditAdmission: auditAdmission,
+            traceCorrection,
             workingMemoryUsePlan: (input) => activeAgent.planMemoryPreviewUses(input),
             workingMemoryRevise: input => activeAgent.reviseMemoryPreview(input),
             workingMemoryPool: ({ chatId, previewId }) => {
@@ -784,6 +787,8 @@ async function startLockedMemoSyncServer(
   const stopServer = server!.stop.bind(server!)
   server!.stop = (closeActiveConnections?: boolean) => { disposeModelAccess(); return stopServer(closeActiveConnections) }
   onStartupCleanup(() => server.stop(true))
+  const stopTraceCorrectionDelivery = startTraceCorrectionDelivery(memory, traceCorrection)
+  onStartupCleanup(stopTraceCorrectionDelivery)
   // Do not launch writers until startup can no longer fail to bind, and not
   // before agents can find their CLIs on the login shell's PATH.
   const staleEmptyChatPruneInterval = setInterval(() => {
@@ -808,6 +813,7 @@ async function startLockedMemoSyncServer(
       }
     }
     await attempt(() => server.stop(true))
+    await attempt(stopTraceCorrectionDelivery)
     for (const chatId of [...activeAgent.activeTurns.keys()]) {
       await attempt(() => activeAgent.cancel(chatId))
     }

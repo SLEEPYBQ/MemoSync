@@ -5,6 +5,9 @@ import { MemoryTraceMessage } from "./MemoryTraceMessage"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "./render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
+
+runMountedRaceSuite("audit correction screenshots", new URL("./MemoryTraceMessage.browser.ts", import.meta.url))
 
 afterEach(() => { useMemoryStore.getInitialState().items.length = 0 })
 
@@ -17,6 +20,62 @@ function msg(
 }
 
 describe("MemoryTraceMessage", () => {
+  test("inherited audit is read-only while owned audits remain correctable", () => {
+    const render = (label: Record<string, unknown>) => renderToStaticMarkup(
+      <TranscriptChatContextProvider value={{ chatId: "child-chat" }}>
+        <MemoryTraceMessage message={msg([label as Parameters<typeof msg>[0][number]], { turn: 1 })} />
+      </TranscriptChatContextProvider>,
+    )
+    const inherited = render({ id: "M-1", label: "violated", correctionAllowed: false })
+    expect(inherited).toContain("Read-only in this chat")
+    expect(inherited).not.toContain("Not right?")
+    const corrected = render({ id: "M-1", label: "violated", correctionAllowed: false, userLabel: "not_applicable", userNote: "Synthetic note" })
+    expect(corrected).toContain("line-through")
+    expect(corrected).toContain("You:")
+    expect(corrected).toContain("Synthetic note")
+    expect(corrected).toContain("Read-only in this chat")
+    expect(corrected).not.toContain("Undo")
+    expect(render({ id: "M-1", label: "violated", correctionAllowed: true })).toContain("Not right?")
+    expect(render({ id: "M-1", label: "violated", correctionAllowed: true, userLabel: "not_applicable" })).toContain("Undo")
+  })
+  test("corrections follow effective verdict sections and hide controls in readonly", () => {
+    const render = (labels: unknown[], readonly = false) => renderToStaticMarkup(
+      <TranscriptChatContextProvider value={{ chatId: "chat-1" }}>
+        <TranscriptRenderOptionsProvider value={{ readonly }}><MemoryTraceMessage message={msg(labels as Parameters<typeof msg>[0], { turn: 1 })} /></TranscriptRenderOptionsProvider>
+      </TranscriptChatContextProvider>,
+    )
+    const original = render([{ id: "M-1", label: "violated", cause: "not_followed" }])
+    expect(original).toContain("Not right?")
+    const away = render([{ id: "M-1", label: "violated", cause: "not_followed", userLabel: "not_applicable", userNote: "No image" }])
+    expect(away).toContain("line-through")
+    expect(away).toContain("You:")
+    expect(away).toContain("No image")
+    expect(away).toContain("1 corrected")
+    expect(away).not.toContain("Enforce this next run")
+    const toward = render([{ id: "M-1", label: "operational", userLabel: "violated" }])
+    expect(toward).not.toContain("Enforce this next run")
+    expect(toward).not.toContain("Draft a fix")
+    expect(toward).toContain("Cause unclear. Review the memory and reply before taking action.")
+    const grouped = render([
+      { id: "M-1", label: "violated", userLabel: "not_applicable", userNote: "No image" },
+      { id: "M-2", label: "operational", userLabel: "violated" },
+    ])
+    const sections = grouped.match(/<section\b[\s\S]*?<\/section>/g) ?? []
+    expect(sections).toHaveLength(2)
+    const violated = sections.find(section => section.includes(">Violated</span>"))
+    const notApplicable = sections.find(section => section.includes(">Not applicable this turn</span>"))
+    expect(violated).toContain("M-2")
+    expect(violated).not.toContain("M-1")
+    expect(notApplicable).toContain("M-1")
+    expect(notApplicable).not.toContain("M-2")
+    expect(grouped).toContain("1 violated")
+    expect(grouped).toContain("1 not applicable")
+    expect(grouped).not.toContain(">Shaped this turn</span>")
+    const readonly = render([{ id: "M-1", label: "violated", userLabel: "operational" }], true)
+    expect(readonly).toContain("You:")
+    expect(readonly).not.toContain("Not right?")
+    expect(readonly).not.toContain("Undo")
+  })
   test("archived violated memories show undo instead of enforcement", () => {
     useMemoryStore.getInitialState().items.push({ id: "M-76", status: "archived", scope: "personal", content: "A synthetic rule", type: "constraint" } as MemoryItem)
     const html = renderToStaticMarkup(<TranscriptChatContextProvider value={{ chatId: "chat-1" }}>

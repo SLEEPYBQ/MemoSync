@@ -56,6 +56,7 @@ export type UsageEvent =
   | { type: "memory.checkup"; sessionId?: string; engine?: string; turn?: number; suggestions: number; cached?: boolean; failedKinds?: Array<"conflict" | "redundancy" | "staleness">; decision: "clear" | "handled" | "skipped" | "cancelled" | "expired" | "failed" }
   | { type: "memory.preparation_reopen"; sessionId?: string; engine?: string; turn?: number; from: "proposals" | "checkup" | "transfer"; revision: number }
   | { type: "memory.trace"; sessionId?: string; engine?: string; turn?: number; status?: "ok" | "failed" | "discarded" | "empty"; stage?: "trace_pass" | "cas"; errorClass?: string; dropped?: number; labels: Array<{ id: string; label: string }>; via?: "fork" | "sidecar" }
+  | { type: "memory.trace_correction"; sessionId: string; turn: number; id: string; auditLabel: string; userLabel: string | null }
   | { type: "memory.detail_load"; sessionId?: string; engine?: string; ids: string[] }
   | { type: "memory.bringin"; sessionId?: string; ids: string[] }
   | { type: "memory.exclude"; sessionId?: string; ids: string[] }

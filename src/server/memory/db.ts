@@ -141,6 +141,8 @@ CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
 CREATE INDEX IF NOT EXISTS idx_memory_events_memory ON memory_events(memory_id, seq);
+CREATE INDEX IF NOT EXISTS idx_memory_events_trace_session ON memory_events(session_id, turn, memory_id) WHERE kind = 'trace';
+CREATE INDEX IF NOT EXISTS idx_memory_events_trace_correction ON memory_events(memory_id, session_id, turn, seq) WHERE kind = 'trace_correction';
 `;
 
 /**

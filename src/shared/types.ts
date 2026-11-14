@@ -1146,6 +1146,8 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
     cause?: "not_followed" | "memory_conflict"
     /** True when the reply itself cited this id inline (self-report); absent = the audit found it post hoc. */
     cited?: boolean
+    /** Read-model hint: whether this audit has a persisted record in the current chat. */
+    correctionAllowed?: boolean
   }>
   /** Terminal state for the post-turn pass. "pending" = the audit is still
    * running (skeleton entry, superseded by the final entry for the same turn).
@@ -1159,6 +1161,14 @@ export interface MemoryTraceEntry extends TranscriptEntryBase {
   /** One-sentence turn recap with [M-NN] citations for the memories that mattered (timeline anchor). */
   summary?: string
   turn?: number
+}
+
+export interface MemoryTraceCorrectionEntry extends TranscriptEntryBase {
+  kind: "memory_trace_correction"
+  turn: number
+  memoryId: string
+  label: MemoryTraceEntry["labels"][number]["label"] | null
+  note?: string
 }
 
 export type MemoryPreviewDecision = "go_on" | "dismiss" | "without_memory"
@@ -1511,6 +1521,7 @@ export type TranscriptEntry =
   | InterruptedEntry
   | MemoryCandidatesEntry
   | MemoryTraceEntry
+  | MemoryTraceCorrectionEntry
   | MemoryPreviewEntry
   | MemoryPreviewDecisionEntry
   | MemoryInterruptEntry
@@ -1646,7 +1657,7 @@ export type HydratedTranscriptMessage =
   | ({ kind: "context_cleared"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "interrupted"; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_candidates"; candidates: MemoryCandidateSnapshot[]; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
-  | ({ kind: "memory_trace"; labels: MemoryTraceEntry["labels"]; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
+  | ({ kind: "memory_trace"; labels: Array<MemoryTraceEntry["labels"][number] & { userLabel?: MemoryTraceEntry["labels"][number]["label"]; userNote?: string }>; status?: MemoryTraceEntry["status"]; errorClass?: string; dropped?: number; summary?: string; turn?: number; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_preview"; previewId: string; task?: string; memories: Array<{ id: string; content: string; scope: string }>; transferredIds?: string[]; attention?: PreviewAttention; attentions?: PreviewAttention[]; relevant?: Array<{ id: string; why: string }>; expectedUses?: ExpectedMemoryUse[]; selectionError?: string; selectionErrorUiText?: UiTextReference; relevancePending?: boolean; attentionIds?: string[]; refreshing?: boolean; refreshVersion?: number; turn?: number; decision?: MemoryPreviewDecision | "expired"; decisionAuto?: boolean; decisionSelectedIds?: string[]; decisionExpectedUses?: ExpectedMemoryUse[]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_proposals"; proposalsId: string; openingReviewId?: string; candidates: MemoryCandidateSnapshot[]; turn?: number; pending?: boolean; decision?: MemoryProposalsDecisionEntry["decision"]; id: string; messageId?: string; timestamp: string; hidden?: boolean })
   | ({ kind: "memory_interrupt"; interruptId: string; memoryId: string; quote?: string; prompt: string; workingSet: Array<{ id: string; cited: boolean }>; turn?: number; resolution?: { correction?: string; action?: "content_fixed" | "usage_correction" | "removed_only"; selectedIds: string[]; enforced?: boolean }; id: string; messageId?: string; timestamp: string; hidden?: boolean })

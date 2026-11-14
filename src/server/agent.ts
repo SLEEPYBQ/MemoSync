@@ -2785,8 +2785,9 @@ export class AgentCoordinator {
     const mode = this.memory.store.getKv<{ mode?: string }>("evolution_policy")?.mode ?? "ask"
     if (memoryState.control !== "auto" && mode !== "auto") return applied
     const touchedProjects = new Set<string | undefined>()
-    for (const proposal of proposals) {
-      if (proposal.sensitive) continue
+    for (const proposed of proposals) {
+      const proposal = this.memory.store.getById(proposed.id)
+      if (!proposal || proposal.status !== "candidate" || proposal.sensitive) continue
       try {
         const meta = { actor: "system" as const, sessionId: args.chatId, turn: args.turnNumber }
         if (this.memory.store.revisionTargetOf(proposal.id)) {
@@ -2818,7 +2819,7 @@ export class AgentCoordinator {
           via: "auto",
         })
       } catch {
-        // A failed auto-apply simply leaves the proposal in the review lane.
+        // Stale or invalid proposals are not applied.
       }
     }
     // Auto-applied state is ACTIVE state — the Markdown view must say so now,
@@ -3151,6 +3152,7 @@ export class AgentCoordinator {
           )
           this.emitStateChange(args.chatId)
           const usedById = new Map(usedMemories.map((m) => [m.id, m]))
+          const corrections = usedMemories.flatMap(item => this.memory!.store.recentTraceCorrections(item.id, 3))
           // MemoSync always uses a child of the completed conversation. The
           // legacy path below retains its configured fork/sidecar policy.
           let outcome: TraceOutcome | null = null
@@ -3159,7 +3161,7 @@ export class AgentCoordinator {
             const provider = args.engine as AgentProvider
             const settings = { ...this.getProviderSettings(provider, { model: args.model, effort: args.effort }), serviceTier: args.serviceTier }
             const branch = this.newMemoryBranch({ chatId: args.chatId, provider, ...settings, engineRuntime: args.engineRuntime }, "audit", args.sessionToken ?? args.claudeSessionToken ?? null, args.parentLaunch, true, args.turnId)
-            const auditInput = { usedMemories, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
+            const auditInput = { usedMemories, corrections, assistantText: args.assistantText, executionText: args.executionText, executionTools: args.executionTools, task: args.userText, expectedUses: args.expectedUses }
             try {
               const raw = await branch.ask(buildAuditBranchPrompt(auditInput), { schema: memoryStageSchema("audit") })
               try {
@@ -3202,6 +3204,7 @@ export class AgentCoordinator {
               userText: args.userText,
               assistantText: args.assistantText,
               usedMemories,
+              corrections,
             })
           }
           // CAS: the pass judged the text it was SHOWN. A memory the user
@@ -3255,9 +3258,9 @@ export class AgentCoordinator {
             // and the offline audit read the per-memory verdict history.
             const cited = new Set(args.citedIds)
             for (const l of labels) {
-              this.memory!.store.recordTraceLabel(l.id, l.label, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber })
+              this.memory!.store.recordTraceLabel(l.id, l.label, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber, cited: cited.has(l.id) })
               if (l.label !== "operational" || cited.has(l.id)) continue
-              this.memory!.store.recordUse(l.id, { actor: "agent", sessionId: args.chatId, via: "trace_operational" })
+              this.memory!.store.recordUse(l.id, { actor: "agent", sessionId: args.chatId, turn: args.turnNumber, via: "trace_operational" })
             }
             this.emitStateChange(args.chatId)
 
@@ -3786,6 +3789,18 @@ export class AgentCoordinator {
         this.contextBaselines.set(chatId, compiled.nextBaseline)
       }
     } }
+  }
+
+  annotateTraceCorrectionOwnership(chatId: string, entries: TranscriptEntry[]): TranscriptEntry[] {
+    if (!entries.some(entry => entry.kind === "memory_trace")) return entries
+    const owned = this.memory?.store.traceCorrectionKeysForSession(chatId) ?? new Set<string>()
+    return entries.map(entry => entry.kind === "memory_trace" ? {
+      ...entry,
+      labels: entry.labels.map(label => ({
+        ...label,
+        correctionAllowed: entry.turn !== undefined && owned.has(JSON.stringify([entry.turn, label.id])),
+      })),
+    } : entry)
   }
 
   getActiveStatuses() {

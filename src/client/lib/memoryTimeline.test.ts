@@ -91,6 +91,22 @@ function trace(
 }
 
 describe("buildMemoryRecord", () => {
+  it("clears an earlier recap when a corrected trace for the same turn has none", () => {
+    const corrected = {
+      ...trace(1, []),
+      labels: [{ id: "M-1", label: "violated", userLabel: "not_applicable" }],
+      summary: undefined,
+    } as HydratedTranscriptMessage
+    const record = buildMemoryRecord([
+      trace(1, [{ id: "M-1", label: "violated" }], "Synthetic stale recap."),
+      corrected,
+    ])
+    const turn = record.turns[0]!
+    expect(turn.summary).toBeUndefined()
+    expect(turn.audit?.labels).toMatchObject([{ id: "M-1", label: "violated", userLabel: "not_applicable" }])
+    expect(turnPulse(turn)).toBe("quiet")
+  })
+
   it("keeps turn 2 citations after a late hidden turn 1 audit, without a preview", () => {
     const messages = [
       prompt("u-1"), text("a-1", "First reply"), prompt("u-2"),

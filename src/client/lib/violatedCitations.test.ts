@@ -20,6 +20,14 @@ function traceOf(
 }
 
 describe("buildViolatedCitationsByMessageId", () => {
+  it("uses the developer's effective verdict for citation highlights", () => {
+    const trace = { ...base, id: "t", kind: "memory_trace", labels: [
+      { id: "M-01", label: "violated", userLabel: "operational" },
+      { id: "M-07", label: "operational", userLabel: "violated" },
+    ] } as HydratedTranscriptMessage
+    const map = buildViolatedCitationsByMessageId([user("u"), reply("a"), trace])!
+    expect([...map.get("a")!]).toEqual(["M-07"])
+  })
   it("folds violated verdicts onto the replies of the SAME turn segment only", () => {
     const map = buildViolatedCitationsByMessageId([
       user("u1"),

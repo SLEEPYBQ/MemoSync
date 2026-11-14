@@ -23,6 +23,11 @@ function item(over: Partial<MemoryItem> = {}): MemoryItem {
 }
 
 describe("MemoryCard", () => {
+  test("rings a corrected audit dot", () => {
+    const html = renderToStaticMarkup(createElement(MemoryCard, { item: item({ lastTraceLabel: "violated", lastTraceCorrected: true }), variant: "scoped" }))
+    expect(html).toContain("outline-offset-1")
+    expect(html).toContain("corrected by you")
+  })
   test("shows the origin label chip when provided (which project/chat this binds to)", () => {
     const html = renderToStaticMarkup(
       createElement(MemoryCard, { item: item(), variant: "scoped", originLabel: "MemoSync" }),

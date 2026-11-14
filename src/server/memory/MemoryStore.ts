@@ -1,5 +1,6 @@
 import type { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
+import type { MemoryTraceCorrectionEntry } from '../../shared/types';
 import { computeMemoryHash } from './hash';
 import type {
   AbstractionLevel,
@@ -19,6 +20,13 @@ import type {
 
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
+
+export type TraceCorrectionDelivery = {
+  seq: number;
+  chatId: string;
+  entry: MemoryTraceCorrectionEntry;
+  projectionProjectIds: Array<string | null>;
+};
 
 export interface CreateMemoryInput {
   content: string;
@@ -87,6 +95,12 @@ interface MemoryEventRow {
   snapshot: string | null;
   meta: string | null;
 }
+
+export class TraceCorrectionError extends Error {
+  constructor(public status: 400 | 409, message: string) { super(message); }
+}
+
+type TraceCorrectionMeta = { label?: MemoryTraceLabel; auditLabel?: MemoryTraceLabel; note?: string; withdrawn?: boolean; cited?: boolean };
 
 /** Maps MemoryItem patch keys to their DB column names. */
 const UPDATABLE_COLUMNS: Record<string, string> = {
@@ -465,6 +479,7 @@ export class MemoryStore {
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
       this.recordCandidateDismissal(existing);
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
@@ -483,6 +498,7 @@ export class MemoryStore {
       if (!existing) return;
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
@@ -734,23 +750,153 @@ export class MemoryStore {
    * Record the post-turn trace verdict for one memory as a 'trace' event
    * (meta.label). Missing ids are a no-op — the async pass can race a delete.
    */
-  recordTraceLabel(id: string, label: MemoryTraceLabel, meta: ActorMeta & { turn?: number }): void {
+  recordTraceLabel(id: string, label: MemoryTraceLabel, meta: ActorMeta & { turn?: number; cited?: boolean }): void {
     const row = this.db.query(`SELECT id FROM memories WHERE id = ?`).get(id);
     if (!row) return;
-    this.appendEvent(id, 'trace', meta, { meta: { label } });
+    this.appendEvent(id, 'trace', meta, { meta: { label, ...(meta.cited !== undefined ? { cited: meta.cited } : {}) } });
+  }
+
+  traceCorrectionKeysForSession(sessionId: string): Set<string> {
+    const rows = this.db.query(`SELECT DISTINCT turn, memory_id FROM memory_events
+      WHERE session_id = ? AND kind = 'trace' AND turn >= 1`)
+      .all(sessionId) as Array<{ turn: number; memory_id: string }>;
+    return new Set(rows.map(row => JSON.stringify([row.turn, row.memory_id])));
+  }
+
+  recordTraceCorrection(id: string, input: { sessionId: string; turn: number; label: MemoryTraceLabel | null; note?: string; cited?: boolean }, options: { enqueueTranscript?: boolean } = {}): { auditLabel: MemoryTraceLabel; changed: boolean; note?: string; invalidatedIds?: string[] } {
+    return this.db.transaction(() => {
+      if (input.label !== null && this.getById(id)?.status !== 'active') {
+        throw new TraceCorrectionError(409, 'Only active memories can receive audit corrections');
+      }
+      const trace = this.db.query(`SELECT meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace' ORDER BY seq DESC LIMIT 1`)
+        .get(id, input.sessionId, input.turn) as { meta: string | null } | null;
+      const traceMeta = trace?.meta ? JSON.parse(trace.meta) as TraceCorrectionMeta : undefined;
+      const auditLabel = traceMeta?.label;
+      if (!auditLabel) throw new TraceCorrectionError(409, 'No audit verdict exists for this memory and turn');
+      if (input.label !== null && (!['operational', 'injected_without_effect', 'violated', 'not_applicable'].includes(input.label) || input.label === auditLabel)) {
+        throw new TraceCorrectionError(400, 'Choose a different audit verdict');
+      }
+      const previous = this.db.query(`SELECT seq, meta FROM memory_events WHERE memory_id = ? AND session_id = ? AND turn = ? AND kind = 'trace_correction' ORDER BY seq DESC LIMIT 1`)
+        .get(id, input.sessionId, input.turn) as { seq: number; meta: string | null } | null;
+      const prior = previous?.meta ? JSON.parse(previous.meta) as TraceCorrectionMeta : undefined;
+      const note = input.note?.trim().slice(0, 300) || undefined;
+      const enqueueDelivery = (seq: number, invalidatedIds: string[] = []) => {
+        if (!options.enqueueTranscript || this.getKv<boolean>(`trace_correction_delivered:${seq}`)
+          || this.getKv(`trace_correction_delivery:${seq}`)) return;
+        this.setKv(`trace_correction_delivery:${seq}`, {
+          seq,
+          chatId: input.sessionId,
+          entry: {
+            _id: crypto.randomUUID(), createdAt: Date.now(), kind: 'memory_trace_correction',
+            turn: input.turn, memoryId: id, label: input.label,
+            ...(input.label !== null && note ? { note } : {}),
+          },
+          projectionProjectIds: invalidatedIds.length
+            ? [...new Set(invalidatedIds.map(candidateId => this.getById(candidateId)?.projectId ?? null))]
+            : [this.getById(id)?.projectId ?? null],
+        } satisfies TraceCorrectionDelivery);
+      };
+      if ((input.label === null && (!prior || prior.withdrawn)) || (input.label !== null && !prior?.withdrawn && prior?.label === input.label && prior.note === note)) {
+        if (previous) enqueueDelivery(previous.seq);
+        return { auditLabel, changed: false, note };
+      }
+      const cited = traceMeta?.cited ?? input.cited;
+      const previousLabel = prior?.label && !prior.withdrawn ? prior.label : auditLabel;
+      const nextLabel = input.label ?? auditLabel;
+      const usageDelta = cited === false
+        ? Number(nextLabel === 'operational') - Number(previousLabel === 'operational')
+        : 0;
+      if (usageDelta) this.db.query('UPDATE memories SET usage_count = MAX(0, usage_count + ?) WHERE id = ?').run(usageDelta, id);
+      const seq = this.appendEvent(id, 'trace_correction', { actor: 'user', sessionId: input.sessionId, turn: input.turn }, {
+        meta: input.label === null ? { withdrawn: true, ...(usageDelta ? { usageDelta } : {}) } : { label: input.label, auditLabel, ...(note ? { note } : {}), ...(usageDelta ? { usageDelta } : {}) },
+      });
+      const invalidatedIds = this.invalidateTraceRevisions(id);
+      enqueueDelivery(seq, invalidatedIds);
+      return { auditLabel, changed: true, note, ...(invalidatedIds.length ? { invalidatedIds } : {}) };
+    })();
+  }
+
+  private traceVerdicts(id?: string, limit?: number): Array<{ id: string; seq: number; label: MemoryTraceLabel; corrected: boolean }> {
+    const rows = this.db.query(`SELECT t.seq, t.memory_id, t.meta, c.meta AS correction
+      FROM memory_events t LEFT JOIN memory_events c ON c.seq = (
+        SELECT MAX(seq) FROM memory_events WHERE memory_id = t.memory_id AND session_id = t.session_id
+          AND turn = t.turn AND kind = 'trace_correction'
+      ) WHERE t.kind = 'trace' AND (? IS NULL OR t.memory_id = ?)
+      ORDER BY t.seq DESC LIMIT ?`).all(id ?? null, id ?? null, limit ?? -1) as Array<{ seq: number; memory_id: string; meta: string | null; correction: string | null }>;
+    return rows.flatMap(row => {
+      const audit = row.meta ? (JSON.parse(row.meta) as TraceCorrectionMeta).label : undefined;
+      const correction = row.correction ? JSON.parse(row.correction) as TraceCorrectionMeta : undefined;
+      if (!audit) return [];
+      const corrected = Boolean(correction?.label && !correction.withdrawn);
+      return [{ id: row.memory_id, seq: row.seq, label: corrected ? correction!.label! : audit, corrected }];
+    });
+  }
+
+  private revisionTraceEvidenceIsCurrent(targetId: string, traceSeqs: number[]): boolean {
+    const ids = new Set(traceSeqs);
+    const rows = this.traceVerdicts(targetId).filter(row => ids.has(row.seq));
+    return ids.size === traceSeqs.length && rows.length === traceSeqs.length
+      && rows.every(row => row.label === 'violated');
+  }
+
+  private invalidateTraceRevisions(targetId: string): string[] {
+    const rows = this.db.query(`SELECT c.id FROM memories c JOIN memory_relations r ON r.source_id = c.id
+      WHERE r.target_id = ? AND r.relation_type = 'revises' AND c.status = 'candidate'`).all(targetId) as Array<{ id: string }>;
+    const verdicts = this.traceVerdicts(targetId);
+    const bySeq = new Map(verdicts.map(row => [row.seq, row.label]));
+    const invalidated: string[] = [];
+    for (const { id } of rows) {
+      const evidence = this.getKv<{ targetId: string; traceSeqs: number[] }>(`revision_trace_evidence:${id}`);
+      let traceSeqs: number[];
+      if (evidence) {
+        if (evidence.targetId !== targetId) continue;
+        traceSeqs = evidence.traceSeqs;
+      } else {
+        const candidate = this.getById(id);
+        if (candidate?.evidenceClass !== 'inferred' || this.revisionTargetsOf(id).length !== 1) continue;
+        const created = this.getEvents(id).find(event => event.kind === 'create');
+        if (!created || created.actor !== 'system') continue;
+        const traces = verdicts.filter(row => row.seq < created.seq).slice(0, 3);
+        if (traces.length !== 3) continue;
+        const original = new Map(this.getEvents(targetId).filter(event => event.kind === 'trace')
+          .map(event => [event.seq, event.meta?.label]));
+        if (!traces.every(row => original.get(row.seq) === 'violated')) continue;
+        traceSeqs = traces.map(row => row.seq);
+      }
+      if (traceSeqs.some(seq => bySeq.get(seq) !== 'violated')) {
+        this.archive(id, { actor: 'system' });
+        invalidated.push(id);
+      }
+    }
+    return invalidated;
   }
 
   /** Latest trace verdict per memory (last event wins). */
   latestTraceLabels(): Map<string, MemoryTraceLabel> {
-    const rows = this.db
-      .query(`SELECT memory_id, meta FROM memory_events WHERE kind = 'trace' ORDER BY seq`)
-      .all() as Array<{ memory_id: string; meta: string | null }>;
     const labels = new Map<string, MemoryTraceLabel>();
-    for (const row of rows) {
-      const label = row.meta ? (JSON.parse(row.meta) as { label?: MemoryTraceLabel }).label : undefined;
-      if (label) labels.set(row.memory_id, label);
-    }
+    for (const row of this.traceVerdicts()) if (!labels.has(row.id)) labels.set(row.id, row.label);
     return labels;
+  }
+
+  latestTraceCorrections(): Set<string> {
+    const seen = new Set<string>();
+    const corrected = new Set<string>();
+    for (const row of this.traceVerdicts()) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
+      if (row.corrected) corrected.add(row.id);
+    }
+    return corrected;
+  }
+
+  recentTraceCorrections(id: string, limit = 3): Array<{ id: string; auditLabel: MemoryTraceLabel; userLabel: MemoryTraceLabel; note?: string }> {
+    const rows = this.db.query(`SELECT c.meta FROM memory_events c WHERE c.memory_id = ? AND c.kind = 'trace_correction'
+      AND c.seq = (SELECT MAX(seq) FROM memory_events WHERE memory_id = c.memory_id AND session_id = c.session_id AND turn = c.turn AND kind = 'trace_correction')
+      ORDER BY c.seq DESC`).all(id) as Array<{ meta: string | null }>;
+    return rows.flatMap(row => {
+      const meta = row.meta ? JSON.parse(row.meta) as TraceCorrectionMeta : undefined;
+      return meta?.label && meta.auditLabel && !meta.withdrawn ? [{ id, auditLabel: meta.auditLabel, userLabel: meta.label, ...(meta.note ? { note: meta.note } : {}) }] : [];
+    }).slice(0, limit);
   }
 
   /**
@@ -836,19 +982,11 @@ export class MemoryStore {
    * behavior have drifted apart.
    */
   recentTraceLabels(id: string, limit = 3): MemoryTraceLabel[] {
-    const rows = this.db
-      .query(
-        `SELECT meta FROM memory_events
-          WHERE memory_id = ? AND kind = 'trace'
-          ORDER BY seq DESC LIMIT ?`,
-      )
-      .all(id, limit) as Array<{ meta: string | null }>;
-    const labels: MemoryTraceLabel[] = [];
-    for (const row of rows) {
-      const label = row.meta ? (JSON.parse(row.meta) as { label?: MemoryTraceLabel }).label : undefined;
-      if (label) labels.push(label);
-    }
-    return labels;
+    return this.traceVerdicts(id, limit).map(row => row.label);
+  }
+
+  recentTraceEvidence(id: string, limit = 3): Array<{ seq: number; label: MemoryTraceLabel }> {
+    return this.traceVerdicts(id, limit).map(({ seq, label }) => ({ seq, label }));
   }
 
   /** True when a PENDING revision candidate already targets `id` (don't re-propose). */
@@ -885,9 +1023,17 @@ export class MemoryStore {
        * than proposed against text it never saw.
        */
       expectedTargetContent?: string;
+      traceEvidence?: number[];
     },
   ): MemoryItem | null {
-    return this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
+    return this.db.transaction(() => {
+      if (opts?.traceEvidence && !this.revisionTraceEvidenceIsCurrent(targetId, opts.traceEvidence)) return null;
+      const proposal = this.createRevisionCandidate(input, targetId, meta, false, opts)?.item ?? null;
+      if (proposal && opts?.traceEvidence) {
+        this.setKv(`revision_trace_evidence:${proposal.id}`, { targetId, traceSeqs: opts.traceEvidence });
+      }
+      return proposal;
+    })();
   }
 
   /** Preserve competing capture updates as target-bound alternatives, not independent facts. */
@@ -930,7 +1076,15 @@ export class MemoryStore {
    */
   acceptRevision(candidateId: string, meta: ActorMeta, draftPatch?: Partial<MemoryItem>): { updated: MemoryItem; replaced: MemoryItem[] } {
     return this.db.transaction(() => {
+      const candidate = this.getById(candidateId);
+      if (candidate) this.assertCandidateDecisionTransition(candidate, { status: 'active' }, 'ordinary');
+      if (!candidate || candidate.status !== 'candidate') throw new RevisionConflictError();
       const targets = this.revisionTargetsOf(candidateId);
+      const evidence = this.getKv<{ targetId: string; traceSeqs: number[] }>(`revision_trace_evidence:${candidateId}`);
+      if (evidence && (!targets.some(target => target.id === evidence.targetId)
+        || !this.revisionTraceEvidenceIsCurrent(evidence.targetId, evidence.traceSeqs))) {
+        throw new RevisionConflictError();
+      }
       const reviewed = this.getKv<ReturnType<MemoryStore['revisionSnapshot']>[]>(`revision_targets:${candidateId}`);
       if (targets.length > 0 || reviewed !== null) {
         if (!Array.isArray(reviewed) || reviewed.length !== targets.length || targets.some((target, index) => {
@@ -1159,6 +1313,18 @@ export class MemoryStore {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
       )
       .run(key, JSON.stringify(value), new Date().toISOString());
+  }
+
+  pendingTraceCorrectionDeliveries(): TraceCorrectionDelivery[] {
+    const rows = this.db.query(`SELECT value FROM memory_kv WHERE key LIKE 'trace_correction_delivery:%' ORDER BY CAST(json_extract(value, '$.seq') AS INTEGER)`).all() as Array<{ value: string }>;
+    return rows.map(row => JSON.parse(row.value) as TraceCorrectionDelivery);
+  }
+
+  acknowledgeTraceCorrectionDelivery(seq: number): void {
+    this.db.transaction(() => {
+      this.setKv(`trace_correction_delivered:${seq}`, true);
+      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`trace_correction_delivery:${seq}`);
+    })();
   }
 
   /**
@@ -1397,8 +1563,8 @@ export class MemoryStore {
       snapshot?: MemoryItemSnapshot;
       meta?: Record<string, unknown>;
     } = {},
-  ): void {
-    this.db
+  ): number {
+    const result = this.db
       .query(
         `INSERT INTO memory_events (memory_id, ts, kind, actor, session_id, turn, changes, snapshot, meta)
          VALUES ($memory_id, $ts, $kind, $actor, $session_id, $turn, $changes, $snapshot, $meta)`,
@@ -1414,6 +1580,7 @@ export class MemoryStore {
         $snapshot: payload.snapshot ? JSON.stringify(payload.snapshot) : null,
         $meta: payload.meta ? JSON.stringify(payload.meta) : null,
       });
+    return Number(result.lastInsertRowid);
   }
 
   private candidateFingerprint(content: string): string {

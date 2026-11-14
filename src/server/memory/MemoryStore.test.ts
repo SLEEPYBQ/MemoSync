@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applySchema, openMemoryDb } from './db';
-import { MemoryStore } from './MemoryStore';
+import { MemoryStore, RevisionConflictError } from './MemoryStore';
 import type { MemoryItem } from './types';
 
 function freshStore(): MemoryStore {
@@ -19,6 +19,106 @@ describe('MemoryStore', () => {
 
   beforeEach(() => {
     store = freshStore();
+  });
+
+  it('applies and withdraws corrections per memory, session and turn', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 's', turn: 1 });
+    expect(() => store.recordTraceCorrection(item.id, { sessionId: 's', turn: 2, label: 'operational' })).toThrow('No audit verdict');
+    expect(() => store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated' })).toThrow('different');
+    const input = { sessionId: 's', turn: 1, label: 'not_applicable' as const, note: ` ${'x'.repeat(310)} ` };
+    expect(store.recordTraceCorrection(item.id, input).changed).toBe(true);
+    expect(store.recordTraceCorrection(item.id, input).changed).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['not_applicable']);
+    expect(store.latestTraceLabels().get(item.id)).toBe('not_applicable');
+    expect(store.latestTraceCorrections().has(item.id)).toBe(true);
+    expect(store.recentTraceCorrections(item.id)[0]!.note).toHaveLength(300);
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 2 });
+    expect(store.latestTraceLabels().get(item.id)).toBe('operational');
+    expect(store.latestTraceCorrections().has(item.id)).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['operational', 'not_applicable']);
+    expect(store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null }).changed).toBe(true);
+    expect(store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null }).changed).toBe(false);
+    expect(store.recentTraceLabels(item.id)).toEqual(['operational', 'violated']);
+    expect(store.recentTraceCorrections(item.id)).toEqual([]);
+  });
+
+  it('reports trace correction ownership only for traces in the requested session', () => {
+    const a = store.create({ content: 'Synthetic rule A', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const b = store.create({ content: 'Synthetic rule B', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(a.id, 'violated', { actor: 'agent', sessionId: 'parent', turn: 1 });
+    store.recordTraceLabel(b.id, 'operational', { actor: 'agent', sessionId: 'parent', turn: 1 });
+    const before = [store.getEvents(a.id), store.getEvents(b.id)];
+    expect(store.traceCorrectionKeysForSession('parent')).toEqual(new Set([JSON.stringify([1, a.id]), JSON.stringify([1, b.id])]));
+    expect(store.traceCorrectionKeysForSession('child')).toEqual(new Set());
+    expect([store.getEvents(a.id), store.getEvents(b.id)]).toEqual(before);
+    store.recordTraceLabel(b.id, 'violated', { actor: 'agent', sessionId: 'child', turn: 2 });
+    expect(store.traceCorrectionKeysForSession('child')).toEqual(new Set([JSON.stringify([2, b.id])]));
+    expect(store.getEvents(a.id)).toEqual(before[0]);
+    expect(store.getEvents(b.id)).toHaveLength(before[1]!.length + 1);
+  });
+
+  it('reconciles uncited operational trace uses on correction and withdrawal without adding use events', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    store.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'trace_operational' });
+    const originalEvents = store.getEvents(item.id);
+    expect(originalEvents.find(e => e.kind === 'trace')?.meta).toEqual({ label: 'operational', cited: false });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    const correction = { sessionId: 's', turn: 1, label: 'not_applicable' as const };
+    expect(store.recordTraceCorrection(item.id, correction).changed).toBe(true);
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    expect(store.recordTraceCorrection(item.id, correction).changed).toBe(false);
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    const events = store.getEvents(item.id);
+    expect(events.slice(0, originalEvents.length)).toEqual(originalEvents);
+    expect(events.filter(e => e.kind === 'use')).toHaveLength(1);
+    expect(events.filter(e => e.kind === 'trace_correction').map(e => e.meta)).toEqual([
+      { label: 'not_applicable', auditLabel: 'operational', usageDelta: -1 },
+      { withdrawn: true, usageDelta: 1 },
+    ]);
+  });
+
+  it('increments and removes inferred use for uncited corrections to and away from operational', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'violated', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'operational' });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'not_applicable' });
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null });
+    expect(store.getById(item.id)?.usageCount).toBe(0);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'use')).toHaveLength(0);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'trace_correction').map(e => e.meta?.usageDelta)).toEqual([1, -1, undefined]);
+  });
+
+  it('never changes independently cited usage for corrections or withdrawals', () => {
+    const item = store.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: true });
+    store.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'citation' });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated', cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'not_applicable', cited: false });
+    store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null, cited: false });
+    expect(store.getById(item.id)?.usageCount).toBe(1);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'trace_correction').every(e => e.meta?.usageDelta === undefined)).toBe(true);
+    expect(store.getEvents(item.id).filter(e => e.kind === 'use')).toHaveLength(1);
+  });
+
+  it('rolls back a usage adjustment if recording its correction fails', () => {
+    const db = new Database(':memory:');
+    db.exec('PRAGMA foreign_keys = ON');
+    applySchema(db);
+    const failingStore = new MemoryStore(db);
+    const item = failingStore.create({ content: 'Synthetic rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    failingStore.recordTraceLabel(item.id, 'operational', { actor: 'agent', sessionId: 's', turn: 1, cited: false });
+    failingStore.recordUse(item.id, { actor: 'agent', sessionId: 's', turn: 1, via: 'trace_operational' });
+    db.exec(`CREATE TRIGGER reject_correction BEFORE INSERT ON memory_events WHEN NEW.kind = 'trace_correction' BEGIN SELECT RAISE(ABORT, 'correction write failed'); END;`);
+    expect(() => failingStore.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: 'violated' })).toThrow('correction write failed');
+    expect(failingStore.getById(item.id)?.usageCount).toBe(1);
+    expect(failingStore.getEvents(item.id).filter(e => e.kind === 'trace_correction')).toHaveLength(0);
+    db.close();
   });
 
   it('creates a memory with auto-generated ID', () => {
@@ -987,6 +1087,34 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
       expect(state()).toEqual(before);
     });
   }
+
+  for (const status of ['archived', 'active'] as const) {
+    it(`rejects a revision no longer pending (${status}) without mutations`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic original rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' })!;
+      store.update(proposal.id, { status }, { actor: 'user' });
+      const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Must not save' })).toThrow(RevisionConflictError);
+      expect(state()).toEqual(before);
+    });
+  }
+
+  it('rejects invalid captured evidence even if a revision is pending again', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic original rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'evidence-chat', turn });
+    const traceEvidence = store.recentTraceEvidence(target.id, 3).map(row => row.seq);
+    const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' }, { traceEvidence })!;
+    store.recordTraceCorrection(target.id, { sessionId: 'evidence-chat', turn: 2, label: 'not_applicable' });
+    expect(store.getById(proposal.id)?.status).toBe('archived');
+    store.update(proposal.id, { status: 'candidate' }, { actor: 'user' });
+    const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+    const before = state();
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Must not save' })).toThrow(RevisionConflictError);
+    expect(state()).toEqual(before);
+  });
 
   it('acceptRevision activates the candidate and archives its target in one act', () => {
     const store = freshStore();

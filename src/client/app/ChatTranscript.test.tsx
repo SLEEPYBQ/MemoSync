@@ -845,6 +845,17 @@ describe("areChatTranscriptRowPropsEqual", () => {
     expect(areChatTranscriptRowPropsEqual(singleRowProps(), singleRowProps())).toBe(true)
   })
 
+  test("audit row memoization notices a corrected verdict and a changed user note", () => {
+    const message: Extract<HydratedTranscriptMessage, { kind: "memory_trace" }> = {
+      kind: "memory_trace", id: "audit", timestamp: "2026-01-01T00:00:00Z", turn: 1,
+      labels: [{ id: "M-1", label: "violated" }],
+    }
+    const corrected = { ...message, labels: [{ ...message.labels[0]!, userLabel: "operational" as const, userNote: "First note" }] }
+    const changedNote = { ...corrected, labels: [{ ...corrected.labels[0]!, userNote: "Changed note" }] }
+    expect(areChatTranscriptRowPropsEqual(singleRowProps({ message }), singleRowProps({ message: corrected }))).toBe(false)
+    expect(areChatTranscriptRowPropsEqual(singleRowProps({ message: corrected }), singleRowProps({ message: changedNote }))).toBe(false)
+  })
+
   test("a preview card going stale re-renders the row", () => {
     // Regression: this field was missing from the live comparator, so an
     // undecided memory_preview card kept its actionable look after newer

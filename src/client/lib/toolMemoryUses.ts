@@ -19,13 +19,14 @@ export function buildToolMemoryUses(messages: HydratedTranscriptMessage[]): Tool
     if (message.status !== undefined && message.status !== "ok") continue
     for (const label of message.labels) {
       // Only these two say the memory touched the work; the others say it didn't.
-      if (!label.toolId || (label.label !== "operational" && label.label !== "violated")) continue
+      const effective = label.userLabel ?? label.label
+      if (!label.toolId || (effective !== "operational" && effective !== "violated")) continue
       result ??= new Map()
       const uses = result.get(label.toolId) ?? []
-      const violated = label.label === "violated"
+      const violated = effective === "violated"
       const existing = uses.find((use) => use.id === label.id)
       if (existing) existing.violated ||= violated
-      else uses.push({ id: label.id, violated, note: label.note, noteUiText: label.noteUiText })
+      else uses.push({ id: label.id, violated, note: label.userLabel ? label.userNote : label.note, noteUiText: label.userLabel ? undefined : label.noteUiText })
       result.set(label.toolId, uses)
     }
   }

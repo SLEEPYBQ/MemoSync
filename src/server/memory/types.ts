@@ -49,6 +49,7 @@ export type MemoryEventKind =
   | 'revert' // rollback applied (target version in meta.toSeq)
   | 'use' // a citation of this memory by the agent
   | 'trace' // post-turn trace verdict for an injected memory (meta.label)
+  | 'trace_correction'
   | 'reinforce' // the same fact was re-observed in conversation (necessity gate verdict)
   | 'renew'; // the user extended a stale memory's lifecycle (resets the expiry window)
 
@@ -93,6 +94,7 @@ export interface MemoryItem {
   /** Derived from evidenceClass × reinforcedCount at read time; never stored. */
   /** Latest trace verdict — decorated onto API list responses (health dot). */
   lastTraceLabel?: MemoryTraceLabel;
+  lastTraceCorrected?: boolean;
   /** For REVISION candidates: the memory this proposal would replace (decorated on list reads). */
   revisionOf?: { id: string; content: string };
   citedInCurrentSession: number; // times cited this session

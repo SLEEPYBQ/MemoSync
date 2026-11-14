@@ -51,6 +51,11 @@ export const TRACE_DOT_LEGEND: { verdict: TraceVerdict; label: string; meaning: 
   { verdict: "not_applicable", get label() { return t("memory:notApplicable") }, get meaning() { return t("memory:nothingInThatTurnItCouldApplyTo") } },
 ]
 
+export const CORRECTED_DOT_LEGEND = {
+  get label() { return t("memory:ringedDot") },
+  get meaning() { return t("memory:ringedDotMeaning") },
+}
+
 export const FRESHNESS_LEGEND: { freshness: Freshness; label: string; meaning: string }[] = [
   { freshness: "new", get label() { return t("memory:new") }, get meaning() { return t("memory:addedSinceYourLastVisitHere") } },
   { freshness: "changed", get label() { return t("memory:changed") }, get meaning() { return t("memory:editedSinceYourLastVisitHere") } },
