@@ -490,5 +490,6 @@
   "modeAuto": "Auto",
   "modeOffDescription": "This chat doesn't use or learn memories.",
   "modeReviewDescription": "Asks you before using or saving memories each turn.",
-  "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board."
+  "modeAutoDescription": "The agent uses and saves memories on its own. Check them later on the board.",
+  "saveExpiryBeforeScopeOrSensitivity": "Save the expiry change before moving this memory or changing its sensitivity."
 }

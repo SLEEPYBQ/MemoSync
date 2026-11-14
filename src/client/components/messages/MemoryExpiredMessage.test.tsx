@@ -2,7 +2,10 @@ import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryBoardLauncherProvider } from "../../app/memory/MemoryBoardLauncher"
 import { MemoryExpiredMessage } from "./MemoryExpiredMessage"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
 import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "./render-context"
+
+runMountedRaceSuite("expiry receipt refresh and draft protection", new URL("./MemoryExpiredMessage.browser.ts", import.meta.url))
 
 test("expiry receipt shows citations and omits live board controls in readonly", () => {
   const render = (readonly: boolean) => renderToStaticMarkup(

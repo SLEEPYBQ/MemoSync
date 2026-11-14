@@ -6,7 +6,7 @@ import { MemoryCard } from "../../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../../components/memory/MemoryDetailPanel"
 import { MemoryCandidateCard } from "../../components/messages/MemoryCandidatesMessage"
 import { MemoryExpiredMessage } from "../../components/messages/MemoryExpiredMessage"
-import { TranscriptChatContextProvider } from "../../components/messages/render-context"
+import { TranscriptChatContextProvider, TranscriptRenderOptionsProvider } from "../../components/messages/render-context"
 import { useMemoryStore } from "../../stores/memoryStore"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { i18n } from "../../i18n"
@@ -25,6 +25,19 @@ const items = [
   { ...base, id: "M-04", status: "archived", content: "Keep the temporary synthetic queue.", expiresAt: "2020-01-01T00:00:00.000Z" },
 ] as MemoryItem[]
 useMemoryStore.setState({ items, status: "ready" })
+const probe = new URLSearchParams(window.location.search).get("probe")
+if (probe) useMemoryStore.setState({ items: [{ ...items[1]!, id: "M-01", expiresAt: null }], status: "ready" })
+
+function Probe() {
+  const current = useMemoryStore(state => state.items)
+  return <MemoryRouter><MemoryBoardLauncherProvider onOpenMemoryBoard={() => {}}><TranscriptChatContextProvider value={{ chatId: "synthetic-chat" }}>
+    <TranscriptRenderOptionsProvider value={{ readonly: probe === "readonly", ...(probe === "demo" ? { previewDemo: { reviseReply: "" } } : {}) }}>
+      {probe === "detail" ? <section id="detail"><MemoryDetailPanel item={current[0]!} allItems={current}
+        onUpdated={item => useMemoryStore.getState().upsertLocal(item)} onClose={() => {}} onAccept={async () => {}} onArchive={async () => {}} /></section>
+        : <section id="receipt"><MemoryExpiredMessage message={{ id: "receipt", kind: "memory_expired", timestamp: new Date().toISOString(), ids: ["M-01"], turn: 2 }} /></section>}
+    </TranscriptRenderOptionsProvider>
+  </TranscriptChatContextProvider></MemoryBoardLauncherProvider></MemoryRouter>
+}
 
 function Fixture() {
   const current = useMemoryStore(state => state.items)
@@ -39,4 +52,4 @@ function Fixture() {
   </TranscriptChatContextProvider></MemoryBoardLauncherProvider></MemoryRouter>
 }
 
-createRoot(document.getElementById("root")!).render(<Fixture />)
+createRoot(document.getElementById("root")!).render(probe ? <Probe /> : <Fixture />)
