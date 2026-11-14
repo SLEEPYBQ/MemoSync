@@ -299,6 +299,16 @@ test("citation opens the matching active or archived Board detail without leavin
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (request.method() === "PATCH" || request.method() === "DELETE") mutations.push(`${request.method()} ${path}`)
+    const historyMatch = path.match(/^\/api\/memories\/([^/]+)\/history$/)
+    if (request.method() === "GET" && historyMatch) {
+      const memory = items.find(item => (item as { id: string }).id === decodeURIComponent(historyMatch[1]!))
+      await route.fulfill({
+        status: memory ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify(memory ? { data: { memory, events: [] } } : { error: { code: "NOT_FOUND", message: "Synthetic memory not found" } }),
+      })
+      return
+    }
     if (request.method() === "GET" && path === "/api/memories") {
       if (holdNext) {
         holdNext = false
@@ -433,6 +443,16 @@ test("missing citation after Board refresh shows an error and never steals focus
     const request = route.request()
     const path = new URL(request.url()).pathname
     if (request.method() === "PATCH" || request.method() === "DELETE") mutations.push(`${request.method()} ${path}`)
+    const historyMatch = path.match(/^\/api\/memories\/([^/]+)\/history$/)
+    if (request.method() === "GET" && historyMatch) {
+      const memory = items.filter(item => item.id !== "M-02").find(item => item.id === decodeURIComponent(historyMatch[1]!))
+      await route.fulfill({
+        status: memory ? 200 : 404,
+        contentType: "application/json",
+        body: JSON.stringify(memory ? { data: { memory, events: [] } } : { error: { code: "NOT_FOUND", message: "Synthetic memory not found" } }),
+      })
+      return
+    }
     const data = request.method() === "GET" && path === "/api/memories"
       ? items.filter(item => item.id !== "M-02")
       : path === "/api/memories/needs-attention" || path === "/api/memories/muted" ? { items: [] } : []
