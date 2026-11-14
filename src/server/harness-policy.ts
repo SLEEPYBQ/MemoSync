@@ -87,12 +87,15 @@ export class CapabilityRegistry {
           engine === "pi" ? "Tool gating only. Shell subprocesses have no OS sandbox." : ""].filter(Boolean).join(" "),
       }
     })
-    const correlated = engine === "pi" || engine === "codex"
+    const hostVerified = engine === "claude" ? ["2.1.241", "2.1.325"].includes(version ?? "")
+      : engine === "opencode" ? ["1.17.4", "1.19.5"].includes(version ?? "") : verified
     return { engine, revision, executionPolicies, capabilities: [
       { id: "set-execution-policy", availability: "available", revision: 1, executionOwner: "host", proof: { version: "1", source: "MemoSync policy service (desired-state command)", level: "versioned-api" } },
-      { id: HOST_ACTION_CAPABILITY, availability: !correlated ? "unavailable" : verified ? "available" : "unknown", revision, executionOwner: "host",
-        proof: { version: version ?? "unknown", source: engine === "pi" ? "Pi native session/custom-tool call correlation" : engine === "codex" ? "Codex app-server process/thread/turn/call correlation" : "Trusted native host-action correlation is unavailable", level: "versioned-api" },
-        ...(!correlated ? { reason: "This adapter cannot verify native host-action correlation." } : !verified ? { reason: "This runtime version has not been verified." } : {}) },
+      { id: HOST_ACTION_CAPABILITY, availability: hostVerified ? "available" : "unknown", revision, executionOwner: "host",
+        proof: { version: version ?? "unknown", source: engine === "pi" ? "Pi native session/custom-tool call correlation" : engine === "codex" ? "Codex app-server process/thread/turn/call correlation"
+          : engine === "claude" ? "Claude SDK input replay UUID / tool_use / claudecode/toolUseId (loopback native probe)"
+          : "OpenCode native prompt parent / tool.execute.before / authenticated MCP ticket (loopback native probe)", level: "versioned-api" },
+        ...(!hostVerified ? { reason: "This runtime version has not been verified." } : {}) },
     ] }
   }
 }

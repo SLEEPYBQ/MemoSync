@@ -8,6 +8,8 @@ import type { HarnessEvent, HarnessTurn } from './harness-types'
 import { createMemoryBranch } from './memory/branch-runtime'
 import { isOpencodeBranchRead } from './memory/branch-read-policy'
 import type { EngineRuntime } from './model-access/runtime'
+import { hostActionToolSpecs } from './host-actions'
+import { HOST_ACTION_TOOL_NAMES, type HostNativeToolContext } from '../shared/host-actions'
 
 const managers: OpencodeAgentManager[] = []
 const roots: string[] = []
@@ -121,6 +123,7 @@ function lifecycleFixture(holdHistory = false, sameParent = false) {
       const { origin } = await notices.waitFor(n => n.kind === 'ready')
       const response = await fetch(`${origin}${path}`, { method: 'POST', body: JSON.stringify(body) })
       expect(response.ok).toBe(true)
+      return response.json()
     },
     start(args: Partial<Parameters<OpencodeAgentManager['startTurn']>[0]> = {}) {
       return manager.startTurn({ chatId: 'lifecycle', cwd: root, content: 'fixture', model: runtime.model, runtime, ...args })
@@ -144,6 +147,18 @@ test('native session rules must be confirmed before policy application and promp
   expect(rejected.notices.values.some(n => n.path?.endsWith('/prompt_async'))).toBe(false)
 })
 
+test('cancellation stops a native plugin startup while the first event stream is still pending', async () => {
+  const f = lifecycleFixture(), controller = new AbortController()
+  f.runtime.env.FAKE_OC_HOLD_EVENTS = '1'
+  const pending = f.start({ signal: controller.signal, memorySpecs: hostActionToolSpecs() })
+  // Observe the rejection immediately so the cancellation cannot become an unhandled error.
+  const rejected = pending.then(() => undefined, error => error as Error)
+  await f.notices.waitFor(n => n.kind === 'subscribing')
+  controller.abort()
+  expect((await rejected)?.message).toMatch(/cancelled|disconnected/)
+  expect(f.manager.hasSession('lifecycle')).toBe(false)
+}, 5_000)
+
 test('duplicate native permissions prompt once and an expired reply is rejected', async () => {
   const f = lifecycleFixture(), answer = deferred<boolean>(), entered = deferred<void>()
   let current = true, calls = 0
@@ -164,6 +179,37 @@ function collectTurn(turn: HarnessTurn) {
   const done = (async () => { for await (const event of turn.stream) events.push(event) })()
   return { events, done }
 }
+
+test('OpenCode native host calls require the admitted prompt parent; stale tickets never bind to a reused session', async () => {
+  const f = lifecycleFixture(), observed: HostNativeToolContext[] = []
+  const dispatch = async (_name: string, _input: Record<string, unknown>, _signal?: AbortSignal, native?: HostNativeToolContext) => {
+    observed.push(native!); return { text: '{"status":"accepted"}' }
+  }
+  const first = await f.start({ memorySpecs: hostActionToolSpecs(), memoryDispatch: dispatch })
+  const prompt = await f.notices.waitFor(n => n.path?.endsWith('/prompt_async') === true)
+  const parentID = (prompt.body as { messageID: string }).messageID
+  const nativeEvents = (messageID: string, callID: string, parent = parentID) => [
+    { type: 'message.updated', properties: { info: { id: messageID, sessionID: 'ses_created', role: 'assistant', parentID: parent, time: { created: 1 } } } },
+    { type: 'message.part.updated', properties: { part: { id: `part-${callID}`, sessionID: 'ses_created', messageID, type: 'tool', callID,
+      tool: `memosync_${HOST_ACTION_TOOL_NAMES.openFile}`, state: { status: 'running', input: { path: 'README.md' }, time: { start: 1 } } } } },
+  ]
+  const request = (callID: string) => ({ name: HOST_ACTION_TOOL_NAMES.openFile, sessionID: 'ses_created', callID, args: { path: 'README.md' } })
+  await f.post('/test/events', nativeEvents('assistant-1', 'call-1'))
+  const ticket = await f.post('/test/host-bind', request('call-1'))
+  const result = await f.post('/test/host-call', { ...request('call-1'), args: ticket }) as any
+  expect(JSON.parse(result.result.content[0].text).status).toBe('accepted')
+  expect(observed[0]).toMatchObject({ nativeSessionId: 'ses_created', nativeToolCallId: 'call-1', nativeTurnId: parentID })
+  await f.post('/test/events', [{ type: 'session.idle', properties: { sessionID: 'ses_created' } }])
+  for await (const _event of first.stream) { /* Finish the first native turn. */ }
+  const second = await f.start({ memorySpecs: hostActionToolSpecs(), memoryDispatch: dispatch })
+  const stale = await f.post('/test/host-call', { ...request('call-1'), args: ticket }) as any
+  expect(JSON.parse(stale.result.content[0].text).status).toBe('unavailable')
+  await f.post('/test/events', nativeEvents('late-assistant', 'late-call'))
+  const denied = await f.post('/test/host-bind', request('late-call')) as Record<string, unknown>
+  expect(Object.keys(denied)).toEqual(['path'])
+  expect(observed).toHaveLength(1)
+  await second.interrupt()
+})
 const question = (id: string, callID?: string) => ({ type: 'question.asked', properties: {
   sessionID: 'ses_created', id, ...(callID ? { tool: { callID, messageID: 'assistant' } } : {}),
   questions: [{ question: `Question ${id}`, header: id, options: [{ label: 'A', description: 'a' }, { label: 'B', description: 'b' }], multiple: true }],

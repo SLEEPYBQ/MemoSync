@@ -12,6 +12,9 @@ import { startOpencodeServer, OPENCODE_BRANCH_AGENT, type OpencodeServer } from 
 import { createOpencodeMemoryMcp, type OpencodeMemoryDispatch } from './memory/opencode-adapter'
 import type { MemoryToolSpec } from './memory/tools'
 import type { OpencodeParentLaunch } from './memory/parent-launch'
+import { createOpencodeHostPlugin } from './opencode-host-actions'
+import { isHostActionTool } from './host-actions'
+import type { HostNativeToolContext } from '../shared/host-actions'
 
 let sdk: Promise<typeof import('@opencode-ai/sdk/v2/client')> | undefined
 const loadSdk = () => sdk ??= import('@opencode-ai/sdk/v2/client')
@@ -86,6 +89,8 @@ interface ChatServer {
   server: OpencodeServer
   client: OpencodeClient
   mcp?: ReturnType<typeof createOpencodeMemoryMcp>
+  hostPlugin?: Awaited<ReturnType<typeof createOpencodeHostPlugin>>
+  instance: string
   controller: AbortController
   turn?: { sessionID: string; handle(event: Event): void; fail(message: string): void; cancel(): void }
   initializing?: { controller: AbortController; done: Promise<void> }
@@ -116,6 +121,7 @@ export class OpencodeAgentManager {
     // Keep the server alive until initialization has deleted that orphan.
     await chat.initializing?.done
     await chat.server.close()
+    await chat.hostPlugin?.close()
   }
   getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
     const chat = this.chats.get(chatId)
@@ -162,18 +168,21 @@ export class OpencodeAgentManager {
     if (previous?.key === key && !previous.closed) return previous
     if (previous) { this.chats.delete(args.chatId); await this.stop(previous) }
     const generation = this.generations.get(args.chatId) ?? 0
-    const mcp = !args.agent && args.memorySpecs?.length ? createOpencodeMemoryMcp(args.memorySpecs, args.memoryDispatch) : undefined
+    const mcp = !args.agent && args.memorySpecs?.length ? createOpencodeMemoryMcp(args.memorySpecs) : undefined
     let server: OpencodeServer | undefined
+    let hostPlugin: ChatServer['hostPlugin']
     try {
+      if (mcp && args.memorySpecs?.some(spec => isHostActionTool(spec.name))) hostPlugin = await createOpencodeHostPlugin(mcp.nativeConfig)
       const { createOpencodeClient } = await loadSdk()
       server = await startOpencodeServer({ executable: runtime.executable.path!, cwd: args.cwd, env: runtime.env, signal: args.signal,
         config: { ...runtime.opencodeConfig, permission: { '*': args.executionPolicy?.permission ?? 'allow' },
           agent: { 'memosync-branch': OPENCODE_BRANCH_AGENT }, ...(mcp ? { mcp: { memosync: mcp.config } } : {}),
+          ...(hostPlugin ? { plugin: [...Array.isArray(runtime.opencodeConfig?.plugin) ? runtime.opencodeConfig.plugin : [], hostPlugin.url] } : {}),
         },
       })
       const controller = new AbortController()
       const client = createOpencodeClient({ baseUrl: server.url, directory: args.cwd, headers: { Authorization: server.authorization } })
-      const chat: ChatServer = { key, runtime, server, client, mcp, controller, retiredMessages: new Set(), closed: false }
+      const chat: ChatServer = { key, runtime, server, client, mcp, hostPlugin, instance: crypto.randomUUID(), controller, retiredMessages: new Set(), closed: false }
       if (this.disposed || generation !== (this.generations.get(args.chatId) ?? 0)) throw new Error('OpenCode start cancelled')
       this.chats.set(args.chatId, chat)
       server.child.once('exit', () => {
@@ -182,24 +191,35 @@ export class OpencodeAgentManager {
       // SDK streams are lazy: wait for the server.connected event before prompting.
       let readyResolve!: () => void, readyReject!: (error: Error) => void
       const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject })
+      // Attach before subscribing: cancellation can arrive while native plugin
+      // initialization is still holding the first event-stream response.
+      const abortStartup = () => { readyReject(new Error('OpenCode start cancelled')); controller.abort() }
+      args.signal?.addEventListener('abort', abortStartup, { once: true })
+      void ready.catch(() => {})
       const fail = () => {
         if (chat.closed) return
         readyReject(new Error('OpenCode event stream disconnected'))
         chat.turn?.fail('OpenCode event stream disconnected')
         this.closeChat(args.chatId)
       }
-      const events = await client.event.subscribe({ directory: args.cwd }, { signal: controller.signal, sseMaxRetryAttempts: 0, onSseError: fail })
-      void (async () => {
-        try { for await (const event of events.stream) { if (event.type === 'server.connected') readyResolve(); chat.turn?.handle(event) } }
-        catch { /* transport details cannot escape */ }
-        finally { fail() }
-      })()
       let timer: ReturnType<typeof setTimeout> | undefined
-      try { await Promise.race([ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('OpenCode event stream unavailable')), 5000) })]) }
-      finally { clearTimeout(timer) }
+      try {
+        if (args.signal?.aborted) abortStartup()
+        void (async () => {
+          try {
+            const events = await client.event.subscribe({ directory: args.cwd }, { signal: controller.signal, sseMaxRetryAttempts: 0, onSseError: fail })
+            for await (const event of events.stream) { if (event.type === 'server.connected') readyResolve(); chat.turn?.handle(event) }
+          }
+          catch { /* transport details cannot escape */ }
+          finally { fail() }
+        })()
+        // The first native plugin load may install OpenCode's own plugin API.
+        await Promise.race([ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('OpenCode event stream unavailable')), hostPlugin ? 30_000 : 5_000) })])
+      } finally { clearTimeout(timer); args.signal?.removeEventListener('abort', abortStartup) }
       return chat
     } catch (error) {
       mcp?.close(); await server?.close()
+      await hostPlugin?.close()
       this.chats.delete(args.chatId)
       throw error
     }
@@ -226,7 +246,7 @@ export class OpencodeAgentManager {
     args.signal?.throwIfAborted()
     if (this.disposed || chat.closed) throw new Error('OpenCode start cancelled')
     if (chat.turn || chat.initializing) throw new Error('OpenCode chat is already running')
-    chat.mcp?.setDispatch(args.memoryDispatch)
+    chat.mcp?.setDispatch()
     const systemPrompt = args.systemPrompt ?? OPENCODE_SYSTEM_PROMPT
     args.onLaunch?.({ provider: 'opencode', options: { model: runtime.model, runtime, systemPrompt, memorySpecs: args.memorySpecs } })
     let initialized!: () => void
@@ -293,8 +313,11 @@ export class OpencodeAgentManager {
     const { chat, runtime, sessionID, systemPrompt } = await this.initializeSession(args)
     const queue = new Queue<HarnessEvent>()
     const started = Date.now()
+    const promptID = `msg_${Date.now().toString(16)}${crypto.randomUUID().replaceAll('-', '')}`
     let finished = false, cancelled = false, output = false, lastError = '', cost = 0
     const messages = new Map<string, string>()
+    const parents = new Map<string, string>()
+    const nativeWaiters = new Set<() => void>()
     const parts = new Map<string, Part>()
     const pendingDeltas = new Map<string, string[]>()
     const calls = new Set<string>(), results = new Set<string>(), completedParts = new Set<string>(), usages = new Set<string>()
@@ -304,6 +327,8 @@ export class OpencodeAgentManager {
     const finalize = (message = '', isError = false, cancel = false) => {
       if (finished) return
       finished = true
+      chat.mcp?.setDispatch()
+      for (const notify of nativeWaiters) notify()
       args.signal?.removeEventListener('abort', onAbort)
       for (const id of messages.keys()) chat.retiredMessages.add(id)
       if (chat.retiredMessages.size > 4096) chat.retiredMessages = new Set([...chat.retiredMessages].slice(-2048))
@@ -372,6 +397,8 @@ export class OpencodeAgentManager {
         case 'message.updated': {
           const info = event.properties.info
           messages.set(info.id, info.role)
+          if (info.role === 'assistant') parents.set(info.id, info.parentID)
+          for (const notify of nativeWaiters) notify()
           for (const part of parts.values()) if (part.messageID === info.id) { flushDelta(part); if (info.role === 'assistant') emitTool(part) }
           if (info.role === 'assistant' && info.time.completed) {
             if (info.error) lastError = errorMessage(info.error)
@@ -397,6 +424,7 @@ export class OpencodeAgentManager {
         case 'message.part.updated': {
           const part = event.properties.part
           parts.set(part.id, part); flushDelta(part)
+          for (const notify of nativeWaiters) notify()
           if (messages.get(part.messageID) !== 'assistant') break
           emitTool(part)
           if (part.type === 'text' && part.time?.end) completeText(part)
@@ -469,6 +497,20 @@ export class OpencodeAgentManager {
     }
     chat.sessionID = sessionID
     chat.turn = { sessionID, handle, fail: message => finalize(message, true), cancel: () => finalize('', false, true) }
+    chat.mcp?.setDispatch(args.memoryDispatch, async (name, input, signal) => {
+      if (input.sessionID !== sessionID || typeof input.callID !== 'string' || !input.callID) return undefined
+      const find = () => [...parts.values()].find(part => part.type === 'tool' && part.callID === input.callID
+        && part.tool === `memosync_${name}` && messages.get(part.messageID) === 'assistant' && parents.get(part.messageID) === promptID)
+      const current = () => !finished && !chat.closed && !signal.aborted && args.isPolicyCurrent?.() !== false
+      if (!find() && current()) await new Promise<void>(resolve => {
+        const done = () => { clearTimeout(timer); nativeWaiters.delete(check); signal.removeEventListener('abort', done); resolve() }
+        const check = () => { if (!current() || find()) done() }
+        const timer = setTimeout(done, 2_000)
+        nativeWaiters.add(check); signal.addEventListener('abort', done, { once: true }); check()
+      })
+      if (!current() || !find()) return undefined
+      return Object.freeze({ engineInstanceId: chat.instance, nativeSessionId: sessionID, nativeTurnId: promptID, nativeToolCallId: input.callID }) satisfies HostNativeToolContext
+    })
     queue.push({ type: 'session_token', sessionToken: sessionID })
     transcript({ kind: 'system_init', provider: 'opencode', model: runtime.model, tools: ['Read', 'Bash', 'Edit', 'Write', 'Grep', 'Glob', ...(args.memorySpecs ?? []).map(s => `mcp__memory__${s.name}`)], agents: [], slashCommands: [], mcpServers: chat.mcp ? [{ name: 'memory', status: 'connected' }] : [] })
     args.signal?.addEventListener('abort', onAbort, { once: true })
@@ -483,9 +525,9 @@ export class OpencodeAgentManager {
     promptParts.push({ type: 'text', text: args.content })
     const nativeCommand = args.content.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
     if (!cancelled) void (nativeCommand
-      ? chat.client.session.command({ sessionID, command: nativeCommand[1], arguments: nativeCommand[2] ?? '', agent: args.agent,
+      ? chat.client.session.command({ sessionID, messageID: promptID, command: nativeCommand[1], arguments: nativeCommand[2] ?? '', agent: args.agent,
           ...(model ? { model: `${model.providerID}/${model.modelID}` } : {}) }, { signal: AbortSignal.timeout(120_000) })
-      : chat.client.session.promptAsync({ sessionID, model, system: systemPrompt, agent: args.agent, parts: promptParts }, { signal: AbortSignal.timeout(10_000) }))
+      : chat.client.session.promptAsync({ sessionID, messageID: promptID, model, system: systemPrompt, agent: args.agent, parts: promptParts }, { signal: AbortSignal.timeout(10_000) }))
       .then(response => { if (response.error) void abort('OpenCode prompt request failed') })
       .catch(() => { void abort('OpenCode prompt request failed') })
     return { provider: 'opencode', stream: queue, interrupt: abort, close: () => { if (!finished) void abort() } }
