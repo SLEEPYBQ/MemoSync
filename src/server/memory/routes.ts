@@ -10,6 +10,7 @@ import type { ExpectedMemoryUse } from '../../shared/types';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
+import { shareMergeContext } from './maintenance';
 import { CandidateDismissalTransitionError, RevisionConflictError, TraceCorrectionError } from './MemoryStore';
 import { clearMemoryRemoval, recordMemoryConfirmation } from './confirmation';
 import { rankMemories } from './retrieval';
@@ -27,6 +28,7 @@ import { readProjectSource } from './file-drift';
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
   resolveProjectPath?: (projectId: string) => string | undefined;
+  listProjectIds?: () => string[];
   nativeMemory?: NativeMemoryImportService;
   transfer?: TransferService | null;
   sanitize?: SanitizeService | null;
@@ -140,7 +142,11 @@ export async function handleMemoryRequest(
 
   const decorate = (item: MemoryItem): MemoryItem => {
     const refs = memory.fileDrift.refsFor([item.id]).get(item.id);
-    return refs?.length ? { ...item, fileRefs: refs } : item;
+    const withRefs = refs?.length ? { ...item, fileRefs: refs } : item;
+    return memory.team.decorate(withRefs);
+  };
+  const assertNotTeam = (id: string) => {
+    if (memory.store.isTeamLinked(id)) throw new RouteError(409, 'CONFLICT', 'Team rules change through .memosync/team.md');
   };
   const baseline = (item: MemoryItem) => {
     if (item.scope !== 'project' || !item.projectId) return;
@@ -148,6 +154,33 @@ export async function handleMemoryRequest(
     if (path) memory.fileDrift.baseline(item.id, path);
   };
   try {
+    if (pathname === '/api/memories/team-status' && req.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      if (!projectId) throw new RouteError(400, 'BAD_REQUEST', 'projectId is required');
+      return ok(memory.team.status(projectId, services.resolveProjectPath?.(projectId)));
+    }
+
+    const teamAction = pathname.match(/^\/api\/memories\/([^/]+)\/team\/(publish|propose|unshare)$/);
+    if (teamAction && req.method === 'POST') {
+      const id = decodeURIComponent(teamAction[1]!);
+      const item = memory.store.getById(id);
+      if (!item) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      const path = item.projectId ? services.resolveProjectPath?.(item.projectId) : undefined;
+      if (!path) throw new RouteError(409, 'CONFLICT', 'Project has no local path');
+      const body = teamAction[2] === 'propose' ? await readBody(req) : {};
+      if (teamAction[2] === 'propose' && typeof body.content !== 'string') throw new RouteError(400, 'BAD_REQUEST', 'content is required');
+      try {
+        const updated = teamAction[2] === 'publish' ? memory.team.publish(id, path, UI_ACTOR)
+          : teamAction[2] === 'propose' ? memory.team.propose(id, body.content as string, path, UI_ACTOR)
+            : memory.team.unshare(id, path, UI_ACTOR);
+        memory.team.queueNotice(item.projectId!, memory.team.syncProject(item.projectId!, path));
+        memory.expireDue();
+        memory.fileDrift.syncProject(item.projectId!, path);
+        return ok(decorate(memory.store.getById(updated.id)!));
+      } catch (error) {
+        throw new RouteError(409, 'CONFLICT', error instanceof Error ? error.message : 'Team file update failed');
+      }
+    }
     // GET /api/memories/search?q=&project=&k=
     if (pathname === '/api/memories/search') {
       if (req.method !== 'GET') return fail(405, 'METHOD_NOT_ALLOWED', 'use GET');
@@ -248,19 +281,25 @@ export async function handleMemoryRequest(
         const projectId = url.searchParams.get('projectId') ?? undefined;
         const sessionId = url.searchParams.get('sessionId') ?? undefined;
         const status = url.searchParams.get('status') ?? undefined;
-        const items = memory.store.list({
+        let items = memory.store.list({
           scope: scope as MemoryScope | undefined,
           projectId,
           sessionId,
           status: status as MemoryStatus | undefined,
         });
         const syncProjects = projectId ? [projectId] : url.searchParams.get('syncFileRefs') === '1'
-          ? [...new Set(items.flatMap(item => item.scope === 'project' && item.projectId ? [item.projectId] : []))] : [];
+          ? [...new Set([...items.flatMap(item => item.scope === 'project' && item.projectId ? [item.projectId] : []), ...(services.listProjectIds?.() ?? [])])] : [];
         for (const id of syncProjects) {
           const path = services.resolveProjectPath?.(id);
-          if (path) memory.fileDrift.syncProject(id, path);
+          if (path) {
+            memory.team.queueNotice(id, memory.team.syncProject(id, path));
+            memory.expireDue();
+            memory.fileDrift.syncProject(id, path);
+          }
         }
+        if (syncProjects.length) items = memory.store.list({ scope: scope as MemoryScope | undefined, projectId, sessionId, status: status as MemoryStatus | undefined });
         const fileRefs = memory.fileDrift.refsFor(items.map(item => item.id));
+        const teamRefs = memory.team.refsFor(items.map(item => item.id));
         // Health decoration: the latest trace verdict per item (Board dot).
         const traceLabels = memory.store.latestTraceLabels();
         const corrected = memory.store.latestTraceCorrections();
@@ -269,6 +308,8 @@ export async function handleMemoryRequest(
             let out = traceLabels.has(m.id) ? { ...m, lastTraceLabel: traceLabels.get(m.id), lastTraceCorrected: corrected.has(m.id) } : m;
             const refs = fileRefs.get(m.id);
             if (refs?.length) out = { ...out, fileRefs: refs };
+            const team = teamRefs.get(m.id);
+            if (team) out = { ...out, team };
             // Revision decoration: a pending candidate that proposes to replace
             // an existing memory carries its target so the review card can show
             // the before → after contrast.
@@ -331,7 +372,7 @@ export async function handleMemoryRequest(
         // Candidates are projected too (Pending review section), so every
         // create refreshes the file, not just active ones.
         memory.syncProjection(created.projectId);
-        return ok(created, 201);
+        return ok(decorate(created), 201);
       }
       return fail(405, 'METHOD_NOT_ALLOWED', 'use GET or POST');
     }
@@ -386,6 +427,7 @@ export async function handleMemoryRequest(
       }
       const keep = memory.store.getById(keepId);
       if (!keep) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${keepId}`);
+      for (const id of [keepId, ...ids]) if (typeof id === 'string') assertNotTeam(id);
       const affected = new Set<string | undefined>([keep.projectId]);
       for (const id of ids as string[]) {
         const dup = id !== keepId ? memory.store.getById(id) : null;
@@ -395,7 +437,7 @@ export async function handleMemoryRequest(
         }
       }
       for (const p of affected) memory.syncProjection(p);
-      return ok(memory.store.getById(keepId));
+      return ok(decorate(memory.store.getById(keepId)!));
     }
 
     // GET /api/memories/:id/history — the full append-only version/usage log
@@ -406,7 +448,7 @@ export async function handleMemoryRequest(
       const id = decodeURIComponent(histMatch[1]);
       const mem = memory.store.getById(id);
       if (!mem) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
-      return ok({ memory: mem, events: memory.store.getEvents(id) });
+      return ok({ memory: decorate(mem), events: memory.store.getEvents(id) });
     }
 
     // POST /api/memories/:id/revert { toSeq } — roll back to a prior version
@@ -417,6 +459,7 @@ export async function handleMemoryRequest(
       const id = decodeURIComponent(revertMatch[1]);
       const existing = memory.store.getById(id);
       if (!existing) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      assertNotTeam(id);
       const b = await readBody(req);
       if (typeof b.toSeq !== 'number' || !Number.isFinite(b.toSeq)) {
         throw new RouteError(400, 'BAD_REQUEST', 'toSeq (a history event seq) is required');
@@ -623,14 +666,24 @@ export async function handleMemoryRequest(
         if (typeof b.otherId !== 'string' || !b.otherId) {
           throw new RouteError(400, 'BAD_REQUEST', 'otherId is required for a redundant pair');
         }
-        if (b.action !== 'merge' && b.action !== 'keep') {
-          throw new RouteError(400, 'BAD_REQUEST', "action must be 'merge' or 'keep'");
+        if (b.action !== 'merge' && b.action !== 'keep' && b.action !== 'archive') {
+          throw new RouteError(400, 'BAD_REQUEST', "action must be 'merge', 'keep' or 'archive'");
         }
         return await (async () => {
             try {
               if (b.action === 'keep') {
                 services.maintenance!.keepBoth(b.id as string, b.otherId as string, meta);
                 return ok({ kept: [b.id, b.otherId] });
+              }
+              if (b.action === 'archive') {
+                const local = memory.store.getById(b.id as string);
+                const team = memory.store.getById(b.otherId as string);
+                if (!local || !team || local.status !== 'active' || team.status !== 'active'
+                  || memory.store.isTeamLinked(local.id) || !memory.store.isTeamLinked(team.id)
+                  || !shareMergeContext(local, team)) {
+                  throw new RouteError(409, 'CONFLICT', 'Only the local memory in an active team/local pair can be archived');
+                }
+                return ok(decorate(services.maintenance!.archive('redundant', local.id, meta)));
               }
               const proposal = await services.maintenance!.merge(b.id as string, b.otherId as string, meta);
               if (!proposal) {
@@ -653,7 +706,7 @@ export async function handleMemoryRequest(
             const result = b.action === 'keep'
               ? services.maintenance!.renew(b.id as string, meta)
               : services.maintenance!.archive(kind, b.id as string, meta);
-            return ok(result);
+            return ok(decorate(result));
           } catch (e) {
             throw new RouteError(409, 'CONFLICT', e instanceof Error ? e.message : 'attention action failed');
           }
@@ -668,6 +721,7 @@ export async function handleMemoryRequest(
       const id = decodeURIComponent(sanitizeMatch[1]);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      assertNotTeam(id);
       // Never degrade to the raw text: a failed redaction that LOOKS clean is
       // exactly the accident this instrument exists to prevent (DG1). The
       // client's fallback is manual editing, not a fake proposal.
@@ -688,6 +742,7 @@ export async function handleMemoryRequest(
     if (previewMatch && req.method === 'POST') {
       const id = decodeURIComponent(previewMatch[1]);
       if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      assertNotTeam(id);
       const b = await readBody(req);
       const source = memory.store.getById(id);
       if (!source) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
@@ -776,6 +831,7 @@ export async function handleMemoryRequest(
     if (transferMatch && req.method === 'POST') {
       const id = decodeURIComponent(transferMatch[1]);
       if (!memory.store.getById(id)) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      assertNotTeam(id);
       const b = await readBody(req);
       memory.expireDue();
       const source = memory.store.getById(id);
@@ -881,7 +937,7 @@ export async function handleMemoryRequest(
           archivedOriginal,
           surface,
         });
-        return ok({ ...memory.store.getById(landingTarget!.id)!, relations: memory.store.getRelations(landingTarget!.id) });
+        return ok({ ...decorate(memory.store.getById(landingTarget!.id)!), relations: memory.store.getRelations(landingTarget!.id) });
       }
 
       const created = memory.store.createDerivedMemory(
@@ -1216,9 +1272,15 @@ export async function handleMemoryRequest(
       if (!item) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
       if (item.status !== 'active' && item.status !== 'candidate') throw new RouteError(409, 'CONFLICT', 'memory is not active or a candidate');
       const localPath = item.projectId ? services.resolveProjectPath?.(item.projectId) : undefined;
-      if (localPath && item.projectId) memory.fileDrift.syncProject(item.projectId, localPath);
+      if (localPath && item.projectId) {
+        memory.team.queueNotice(item.projectId, memory.team.syncProject(item.projectId, localPath));
+        memory.expireDue();
+        memory.fileDrift.syncProject(item.projectId, localPath);
+      }
+      const synced = memory.store.getById(id)!;
+      if (synced.status !== 'active' && synced.status !== 'candidate') throw new RouteError(409, 'CONFLICT', 'memory is not active or a candidate');
       memory.fileDrift.acknowledge(id, UI_ACTOR);
-      return ok(decorate(item));
+      return ok(decorate(synced));
     }
 
     // Item: /api/memories/:id
@@ -1243,6 +1305,10 @@ export async function handleMemoryRequest(
         const blockingBoardReview = requestedSurface === 'board';
         const via = blockingBoardReview ? 'board' : requestedSurface ?? 'ui';
         const { surface: _surface, operationId: _operationId, ...patch } = rawPatch;
+        if (memory.store.isTeamLinked(id)) {
+          const protectedFields = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'expiresAt', 'sensitive', 'abstractionLevel'] as const;
+          if (protectedFields.some(field => patch[field] !== undefined && (patch[field] ?? null) !== (existing[field] ?? null))) assertNotTeam(id);
+        }
         if ((requestedSurface === 'chat_citation' || requestedSurface === 'chat_audit')
           && (Object.keys(patch).some(key => key !== 'status')
             || !(['active', 'archived'].includes(existing.status) && (patch.status === 'active' || patch.status === 'archived')))) {

@@ -32,6 +32,11 @@ describe("processTranscriptMessages", () => {
     expect(result).toHaveLength(1)
     expect(result[0]).toMatchObject({ kind: "memory_expired", ids: ["M-1", "M-2"], turn: 2 })
   })
+  test("hydrates team update ids and turn", () => {
+    const result = processTranscriptMessages([entry({ kind: "memory_team_updated", added: ["M-1"], changed: ["M-2"], removed: ["M-3"], turn: 2 })])
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ kind: "memory_team_updated", added: ["M-1"], changed: ["M-2"], removed: ["M-3"], turn: 2 })
+  })
 
   test("suppresses only corrected trace recaps and restores them on withdrawal", () => {
     const trace = entry({ kind: "memory_trace", turn: 1, labels: [{ id: "M-1", label: "violated" }], summary: "Synthetic audit recap." })

@@ -258,6 +258,9 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
       case "memory_expired":
         messages.push({ ...createBaseMessage(entry), kind: "memory_expired", ids: entry.ids, turn: entry.turn })
         break
+      case "memory_team_updated":
+        messages.push({ ...createBaseMessage(entry), kind: "memory_team_updated", added: entry.added, changed: entry.changed, removed: entry.removed, turn: entry.turn })
+        break
       case "memory_trace":
         // Skip a pending skeleton whose terminal entry already landed.
         if (entry.status === "pending" && settledTraceTurns.has(entry.turn)) break

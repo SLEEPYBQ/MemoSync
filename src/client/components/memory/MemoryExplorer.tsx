@@ -1,5 +1,5 @@
 // The left rail of the memory screen: search, then every place a memory can live.
-import { Archive, BellOff, ChevronRight, Clock3, FileText, FileWarning, FolderGit2, Inbox, Layers, MessagesSquare, Search, User } from "lucide-react"
+import { Archive, BellOff, ChevronRight, Clock3, FileText, FileWarning, FolderGit2, Inbox, Layers, MessagesSquare, Search, User, Users } from "lucide-react"
 import { useState, type ComponentType, type ReactNode } from "react"
 import { t, useI18n } from "../../i18n"
 import type { MemoryItem, MemoryScope } from "../../lib/memoriesApi"
@@ -11,6 +11,7 @@ export type MemoryLens =
   | { kind: "all" }
   | { kind: "expiring" }
   | { kind: "drift" }
+  | { kind: "team" }
   | { kind: "scope"; scope: MemoryScope }
   | { kind: "project"; id: string }
   | { kind: "session"; id: string }
@@ -33,6 +34,8 @@ export function memoryMatchesLens(item: MemoryItem, lens: MemoryLens): boolean {
       return isExpiringSoon(item)
     case "drift":
       return driftedFileRefs(item).length > 0
+    case "team":
+      return Boolean(item.team)
     case "scope":
       return item.scope === lens.scope
     case "project":
@@ -125,6 +128,7 @@ export function MemoryExplorer({
   const activeKey = memoryLensKey(lens)
   const is = (next: MemoryLens) => memoryLensKey(next) === activeKey
   const driftCount = items.filter(item => (item.status === "active" || item.status === "candidate") && driftedFileRefs(item).length > 0).length
+  const teamCount = count(item => Boolean(item.team))
 
   return (
     <nav aria-label={t("common:memory")} className="flex min-h-0 flex-1 flex-col bg-muted/50">
@@ -169,6 +173,7 @@ export function MemoryExplorer({
             onClick={() => onLensChange({ kind: "project", id })}
           />
         )) : null}
+        {teamCount > 0 || lens.kind === "team" ? <Row icon={Users} label={t("memory:teamRules")} count={teamCount} active={is({ kind: "team" })} onClick={() => onLensChange({ kind: "team" })} /> : null}
         <Row
           icon={MessagesSquare}
           label={t("board:sessionsLabel")}

@@ -17,7 +17,7 @@ import { MemoryBadge } from "../memory/MemoryBadge"
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
 import { CachedMarkdown } from "./CachedMarkdown"
-import { ArrowUp, ChevronRight, FileWarning, LibraryBig, Loader2, Plus, X } from "lucide-react"
+import { ArrowUp, ChevronRight, FileWarning, LibraryBig, Loader2, Plus, Users, X } from "lucide-react"
 import { MemoSyncIcon } from "../MemoSyncIcon"
 import type { ExpectedMemoryUse, HydratedTranscriptMessage, MemoryPreviewDecision } from "../../../shared/types"
 import { memoriesApi, recordUiMonitor, recordWorkingMemorySelection } from "../../lib/memoriesApi"
@@ -582,7 +582,9 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                         {pending && message.confirmationMode === "on_change" && reason && !(reason.reason === "enforced" && source === "attention") ? (
                           <MemoryBadge title={reason.reason === "file_changed" ? [...new Set((reason.files ?? []).map(file => file.path))].join("\n") : undefined}
                             className={cn("shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] leading-4", reason.reason === "file_changed" ? "inline-flex items-center gap-1 border-cand-fg/20 bg-cand-surface text-cand-fg" : "border-info/25 bg-info/8 text-info-foreground")}>
-                            {reason.reason === "file_changed" ? <><FileWarning className="h-3 w-3" />{fileDriftSummary(reason.files ?? []) ?? t("memory:fileChangedFallback")}</>
+                            {reason.team && reason.reason === "first" ? <><Users className="h-3 w-3" />{t("memory:teamConfirmationFirst")}</>
+                              : reason.team && reason.reason === "changed" ? <><Users className="h-3 w-3" />{t("memory:teamConfirmationChanged", { from: reason.previousVersion, to: reason.version })}</>
+                              : reason.reason === "file_changed" ? <><FileWarning className="h-3 w-3" />{fileDriftSummary(reason.files ?? []) ?? t("memory:fileChangedFallback")}</>
                               : reason.reason === "changed" ? t("memory:confirmationChanged", { from: reason.previousVersion, to: reason.version })
                               : t(reason.reason === "first" ? "memory:confirmationFirst" : reason.reason === "removed" ? "memory:confirmationRemoved" : "memory:confirmationEnforced")}
                           </MemoryBadge>

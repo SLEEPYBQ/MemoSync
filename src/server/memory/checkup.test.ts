@@ -36,6 +36,37 @@ describe('createCheckupService (step-one container 2, redesign 2026-08-07)', () 
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('drops redundancy between two team rules but retains a team/local pair', async () => {
+    const project = join(dir, 'team-project');
+    mkdirSync(project);
+    const one = memory.store.create({ content: 'Team synthetic rule A', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const two = memory.store.create({ content: 'Team synthetic rule B', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const local = memory.store.create({ content: 'Local synthetic rule', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const { call } = routedCaller([
+      { match: 'CONTRADICTIONS', response: { findings: [] } },
+      { match: 'NEAR-DUPLICATES', response: { findings: [
+        { memoryId: one.id, otherMemoryId: two.id, reason: 'Similar team rules' },
+        { memoryId: one.id, otherMemoryId: local.id, reason: 'Similar local rule' },
+      ] } },
+    ]);
+    const checkup = createCheckupService({ memory, callJson: call, listRecentSessions: noSessions });
+    const ctx = { projectId: 'P1' };
+    const previous = checkup.buildBranchPrompt!(ctx);
+    memory.team.publish(one.id, project, { actor: 'user' });
+    memory.team.publish(two.id, project, { actor: 'user' });
+    const current = checkup.buildBranchPrompt!(ctx);
+    expect(current.dependencyKey).not.toBe(previous.dependencyKey);
+    const raw = { conflicts: [], redundancy: [
+      { memoryId: one.id, otherMemoryId: two.id, reason: 'Similar team rules' },
+      { memoryId: one.id, otherMemoryId: local.id, reason: 'Similar local rule' },
+    ], staleness: [] };
+    expect(await checkup.primeFromBranchResult!(ctx, previous.dependencyKey, raw)).toBeNull();
+    const branch = await checkup.primeFromBranchResult!(ctx, current.dependencyKey, raw);
+    expect(branch?.suggestions).toEqual([{ kind: 'redundancy', memoryId: one.id, otherMemoryId: local.id, reason: 'Similar local rule', teamPair: true, teamMemoryId: one.id }]);
+    const result = await checkup.run({ ...ctx, taskText: 'A different task' });
+    expect(result.suggestions).toEqual([{ kind: 'redundancy', memoryId: one.id, otherMemoryId: local.id, reason: 'Similar local rule', teamPair: true, teamMemoryId: one.id }]);
+  });
+
   it('includes a used drifted memory in staleness evidence and invalidates cached results on another change', async () => {
     const project = join(dir, 'synthetic-project');
     mkdirSync(project);

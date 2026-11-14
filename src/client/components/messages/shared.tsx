@@ -414,7 +414,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
                 <button type="button" title={t("memory:archiveEverywhereTitle")} disabled={busyId !== null}
                   onClick={() => void archive(id).catch(() => {})}
                   className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:opacity-40">
-                  <Archive className="h-3 w-3" /> {t("common:archive")}
+                  <Archive className="h-3 w-3" /> {memory.team ? t("memory:teamTurnOff") : t("common:archive")}
                 </button>
               ) : <ArchivedInline id={id} busy={busyId === id} onUndo={(memoryId) => void restore(memoryId).catch(() => {})}
                 note={interruptApi?.active ? t("memory:archivedAppliesNextTurn") : undefined} />}

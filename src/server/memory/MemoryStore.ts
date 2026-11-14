@@ -219,7 +219,7 @@ export class MemoryStore {
           $updated_at: now,
         });
       const created = this.getById(id)!;
-      this.appendEvent(id, 'create', meta, { snapshot: this.snapshotOf(created) });
+      this.appendEvent(id, 'create', meta, { snapshot: this.snapshotOf(created), ...(meta.via ? { meta: { via: meta.via } } : {}) });
       return created;
     })();
   }
@@ -247,6 +247,10 @@ export class MemoryStore {
   getById(id: string): MemoryItem | null {
     const row = this.db.query('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | null;
     return row ? this.rowToItem(row) : null;
+  }
+
+  isTeamLinked(id: string): boolean {
+    return Boolean(this.db.query('SELECT 1 FROM team_memory_links WHERE memory_id = ? AND removed = 0').get(id));
   }
 
   list(filter: MemoryFilter = {}): MemoryItem[] {
@@ -417,6 +421,14 @@ export class MemoryStore {
       if (!existing) throw new Error(`Memory not found: ${id}`);
       this.assertCandidateDecisionTransition(existing, patch, transition);
       patch = this.normalizeScopePatch(existing, patch);
+      if (meta.actor === 'user' && patch.status === 'archived') {
+        this.db.query('UPDATE team_memory_links SET local_off = 1 WHERE memory_id = ? AND removed = 0').run(id);
+      } else if (meta.actor === 'user' && patch.status === 'active') {
+        this.db.query('UPDATE team_memory_links SET local_off = 0 WHERE memory_id = ? AND removed = 0').run(id);
+        if (existing.status === 'archived') {
+          this.db.query('DELETE FROM team_memory_links WHERE memory_id = ? AND removed = 1').run(id);
+        }
+      }
 
     // Only fields that actually differ count as a change; `undefined` means
     // "leave unchanged". A patch that changes nothing is a full no-op (no
@@ -459,6 +471,7 @@ export class MemoryStore {
     this.appendEvent(id, eventKind ?? this.classifyChange(existing, changes), meta, {
       changes,
       snapshot: this.snapshotOf(updated),
+      ...(meta.via ? { meta: { via: meta.via } } : {}),
     });
       return updated;
     })();
@@ -473,11 +486,27 @@ export class MemoryStore {
     return this.update(id, { status: 'archived' }, meta);
   }
 
+  archiveRemovedTeamRule(id: string): MemoryItem {
+    return this.db.transaction(() => {
+      const item = this.getById(id);
+      if (!item) throw new Error(`Memory not found: ${id}`);
+      if (item.status !== 'archived') return this.archive(id, { actor: 'system', via: 'team_removed' });
+      this.appendEvent(id, 'status', { actor: 'system' }, { snapshot: this.snapshotOf(item), meta: { via: 'team_removed' } });
+      return item;
+    })();
+  }
+
   expireDue(now = new Date().toISOString()): MemoryItem[] {
     return this.db.transaction(() => {
       const rows = this.db.query(`SELECT id FROM memories WHERE status = 'active' AND expires_at IS NOT NULL AND expires_at <= ? ORDER BY id`).all(now) as Array<{ id: string }>;
       return rows.map(({ id }) => this.updateWithCandidateDecision(id, { status: 'archived' }, { actor: 'system' }, 'ordinary', 'expire'));
     })();
+  }
+
+  expireIfDue(id: string, now = new Date().toISOString()): MemoryItem | null {
+    const item = this.getById(id);
+    if (!item || item.status !== 'active' || !item.expiresAt || item.expiresAt > now) return null;
+    return this.updateWithCandidateDecision(id, { status: 'archived' }, { actor: 'system' }, 'ordinary', 'expire');
   }
 
   latestEventSeq(): number {
@@ -1104,7 +1133,7 @@ export class MemoryStore {
   ): { item: MemoryItem; isRevision: boolean } | null {
     return this.db.transaction(() => {
       const target = this.getById(targetId);
-      if (!target || target.status !== 'active') return null;
+      if (!target || target.status !== 'active' || this.isTeamLinked(targetId)) return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
       if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
       const proposal = this.create({
@@ -1133,6 +1162,7 @@ export class MemoryStore {
       if (candidate) this.assertCandidateDecisionTransition(candidate, { status: 'active' }, 'ordinary');
       if (!candidate || candidate.status !== 'candidate') throw new RevisionConflictError();
       const targets = this.revisionTargetsOf(candidateId);
+      if (targets.some(target => this.isTeamLinked(target.id))) throw new RevisionConflictError();
       const evidence = this.getKv<{ targetId: string; traceSeqs: number[] }>(`revision_trace_evidence:${candidateId}`);
       if (evidence && (!targets.some(target => target.id === evidence.targetId)
         || !this.revisionTraceEvidenceIsCurrent(evidence.targetId, evidence.traceSeqs))) {
@@ -1331,7 +1361,7 @@ export class MemoryStore {
       const targets: MemoryItem[] = [];
       for (let i = 0; i < targetIds.length; i++) {
         const target = this.getById(targetIds[i]!);
-        if (!target || target.status !== 'active') return null;
+        if (!target || target.status !== 'active' || this.isTeamLinked(target.id)) return null;
         if (opts?.expectedContents && target.content !== opts.expectedContents[i]) return null;
         if (this.hasOpenRevision(target.id)) return null;
         if (target.scope !== input.scope

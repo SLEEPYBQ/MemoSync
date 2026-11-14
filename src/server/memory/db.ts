@@ -154,6 +154,16 @@ CREATE TABLE IF NOT EXISTS memory_file_refs (
   PRIMARY KEY (memory_id, path, kind)
 );
 
+CREATE TABLE IF NOT EXISTS team_memory_links (
+  memory_id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  team_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  removed INTEGER NOT NULL DEFAULT 0,
+  local_off INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(project_id, team_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);

@@ -326,6 +326,11 @@ function CheckupSuggestionRow({
 
   const id = suggestion.memoryId
   const other = suggestion.otherMemoryId
+  const items = useMemoryStore((state) => state.items)
+  const currentTeamIds = [id, other].filter((candidate): candidate is string => Boolean(candidate && items.some(item => item.id === candidate && item.team)))
+  const teamId = currentTeamIds.length === 1 ? currentTeamIds[0] : currentTeamIds.length === 0 ? suggestion.teamMemoryId : undefined
+  const teamPair = Boolean(suggestion.teamPair || currentTeamIds.length)
+  const localId = teamId === id ? other : teamId === other ? id : undefined
   if (suggestion.kind === "promotion") {
     return (
       <div className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
@@ -365,9 +370,11 @@ function CheckupSuggestionRow({
     case "redundancy":
       actions = other ? (
         <>
-          {actionButton(t("memory:merge"), t("memory:mergeProposalDraftedReviewItInStep1NextTurn"), () =>
+          {teamPair && localId ? actionButton(t("memory:archiveValue0", { v0: localId }), t("memory:keptValue0ArchivedValue1", { v0: teamId, v1: localId }), () =>
+            memoriesApi.resolveAttention("redundant", localId, "archive", chatId, teamId, surface),
+          ) : !teamPair ? actionButton(t("memory:merge"), t("memory:mergeProposalDraftedReviewItInStep1NextTurn"), () =>
             memoriesApi.resolveAttention("redundant", id, "merge", chatId, other, surface),
-          )}
+          ) : null}
           {actionButton(t("memory:keepBoth"), t("memory:keptBothWonTBeFlaggedAgain"), () =>
             memoriesApi.resolveAttention("redundant", id, "keep", chatId, other, surface),
           )}

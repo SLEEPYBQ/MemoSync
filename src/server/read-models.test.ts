@@ -9,6 +9,11 @@ describe("read models", () => {
     expect(deriveMemoryRecordTranscript([receipt])).toEqual([receipt])
     expect(deriveChatPreview([receipt])).toBeNull()
   })
+  test("team receipts are retained in the memory record but not notification previews", () => {
+    const receipt: TranscriptEntry = { _id: "team", createdAt: 1, kind: "memory_team_updated", added: ["M-1"], changed: [], removed: ["M-2"], turn: 2 }
+    expect(deriveMemoryRecordTranscript([receipt])).toEqual([receipt])
+    expect(deriveChatPreview([receipt])).toBeNull()
+  })
 
   test("notification preview selects the latest visible assistant reply, excluding memory and tool noise", () => {
     const entries: TranscriptEntry[] = [

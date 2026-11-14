@@ -79,7 +79,7 @@ export function createRevisionService(opts: {
       for (const { id } of flagged) {
         try {
           const target = memory.store.getById(id);
-          if (!target || target.status !== 'active') continue;
+          if (!target || target.status !== 'active' || memory.store.isTeamLinked(id)) continue;
           if (memory.store.hasOpenRevision(id)) continue;
 
           const traceEvidence = memory.store.recentTraceEvidence(id, streak);
@@ -180,7 +180,7 @@ export function createRevisionService(opts: {
     async draftFor(id, meta): Promise<MemoryItem | null> {
       try {
         const target = memory.store.getById(id);
-        if (!target || target.status !== 'active') return null;
+        if (!target || target.status !== 'active' || memory.store.isTeamLinked(id)) return null;
         if (memory.store.hasOpenRevision(id)) return null;
 
         const evidence = 'The user flagged this memory on the turn audit: it was violated and the memory itself is at fault.';

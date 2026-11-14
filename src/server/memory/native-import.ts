@@ -170,6 +170,9 @@ export class NativeMemoryImportService {
       .query("SELECT * FROM native_v2_links WHERE unit_id=?")
       .all(id) as Link[];
   }
+  private ownedLinks(id: string): Link[] {
+    return this.links(id).filter(link => !link.memory_id || !this.memory.store.isTeamLinked(link.memory_id));
+  }
   private eventSeq(id: string): number {
     return (
       this.db
@@ -183,7 +186,7 @@ export class NativeMemoryImportService {
     if (owner.scope === "project" && !owner.projectId) return [];
     return this.memory.store
       .list({ scope: owner.scope })
-      .filter((m) => sameOwner(m, owner));
+      .filter((m) => sameOwner(m, owner) && !this.memory.store.isTeamLinked(m.id));
   }
   private suppressed(
     content: string,
@@ -632,7 +635,7 @@ export class NativeMemoryImportService {
       if (unit.kind !== "native-memory" || unit.change === "removed")
         conflict("Removed units and independent assets cannot be imported");
       const { text, source } = this.inventory.get(unit.unitId),
-        links = this.links(unit.unitId),
+        links = this.ownedLinks(unit.unitId),
         available = new Set(links.map((l) => l.item_key));
       const proposals = (claims.get(unit.unitId) ?? []).filter(
         (c) =>
@@ -1025,7 +1028,7 @@ export class NativeMemoryImportService {
             const moved =
               ownerKey(reviewed.owner, reviewed.projectPath) !==
               ownerKey(item.owner, item.projectPath);
-            const acceptedLink = this.links(item.unitId).find(
+            const acceptedLink = this.ownedLinks(item.unitId).find(
               (l) => l.item_key === item.itemKey && l.decision === "accepted",
             );
             if (moved && !acceptedLink) {
@@ -1067,6 +1070,11 @@ export class NativeMemoryImportService {
             const link = this.links(item.unitId).find(
               (l) => l.item_key === item.itemKey && l.decision === "accepted",
             );
+            if ((item.target && this.memory.store.isTeamLinked(item.target.memoryId))
+              || (reviewed.target && this.memory.store.isTeamLinked(reviewed.target.memoryId))
+              || (link?.memory_id && this.memory.store.isTeamLinked(link.memory_id))) {
+              conflict("Team rules are not owned by native import");
+            }
             if (
               reviewed.target &&
               reviewed.disposition !== "exact-match" &&
@@ -1329,6 +1337,7 @@ export class NativeMemoryImportService {
             link.operation_id !== id ||
             link.decision !== "accepted" ||
             !memory ||
+            this.memory.store.isTeamLinked(entry.memoryId) ||
             memory.status !== "active" ||
             !sameOwner(memory, item.owner) ||
             memory.version !== link.version ||

@@ -21,7 +21,7 @@ export function clearMemoryRemoval(store: MemoryStore, chatId: string, memoryId:
   store.setKv(key(chatId), { ...state, removedIds: state.removedIds.filter(id => id !== memoryId) });
 }
 
-export function memoryConfirmationReasons(items: readonly MemoryItem[], state: MemoryConfirmationState, enforcedIds: readonly string[], drift?: FileDrift): MemoryConfirmationReason[] {
+export function memoryConfirmationReasons(items: readonly MemoryItem[], state: MemoryConfirmationState, enforcedIds: readonly string[], drift?: FileDrift, store?: MemoryStore): MemoryConfirmationReason[] {
   const removed = new Set(state.removedIds), enforced = new Set(enforcedIds);
   const refs = drift?.refsFor(items.map(item => item.id));
   return items.flatMap(item => {
@@ -29,6 +29,7 @@ export function memoryConfirmationReasons(items: readonly MemoryItem[], state: M
     const signature = drift?.driftSignature(item.id) ?? '';
     const reason = enforced.has(item.id) ? "enforced" : removed.has(item.id) ? "removed" : previousVersion === undefined ? "first" : previousVersion !== item.version ? "changed" : signature && signature !== (state.confirmedDrift[item.id] ?? '') ? "file_changed" : undefined;
     return reason ? [{ id: item.id, reason, version: item.version, ...(previousVersion === undefined ? {} : { previousVersion }),
+      ...(store?.isTeamLinked(item.id) ? { team: true as const } : {}),
       ...(reason === "file_changed" ? { files: (refs?.get(item.id) ?? []).flatMap(ref => ref.drift ? [{ path: ref.path, drift: ref.drift }] : []) } : {}) }] : [];
   });
 }
