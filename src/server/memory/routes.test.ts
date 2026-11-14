@@ -140,6 +140,31 @@ describe('memory routes', () => {
     expect((await json(await call('GET', `/api/memories/${list[0].id}`, undefined, services))).data.team).toBeUndefined();
   });
 
+  it('restores the team file content after an archived removed rule was edited', async () => {
+    const project = join(dir, 'team-edited-return-project');
+    mkdirSync(join(project, '.memosync'), { recursive: true });
+    const file = join(project, '.memosync', 'team.md');
+    const text = '- [T-abcd] Original synthetic rule\n';
+    writeFileSync(file, text);
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const initial = (await json(await call('GET', '/api/memories?projectId=P1', undefined, services))).data[0];
+    rmSync(file);
+    await call('GET', '/api/memories?projectId=P1', undefined, services);
+    const response = await call('PATCH', `/api/memories/${initial.id}`, { content: 'Locally edited synthetic rule' }, services);
+    expect(response!.status).toBe(200);
+    const edited = (await json(response)).data;
+    expect(edited).toMatchObject({ content: 'Locally edited synthetic rule', status: 'archived' });
+    expect(edited.team).toBeUndefined();
+    writeFileSync(file, text);
+    const returned = (await json(await call('GET', '/api/memories?projectId=P1', undefined, services))).data;
+    expect(returned).toHaveLength(1);
+    expect(returned[0]).toMatchObject({
+      id: initial.id, content: 'Original synthetic rule', status: 'active',
+      version: edited.version + 1, team: { id: 'T-abcd' },
+    });
+    expect(memory.team.pendingNotice('P1')?.changed).toContain(initial.id);
+  });
+
   it('preserves user opt-outs from all archive surfaces through a branch switch', async () => {
     const project = join(dir, 'team-opt-out-project');
     mkdirSync(join(project, '.memosync'), { recursive: true });

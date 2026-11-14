@@ -51,6 +51,66 @@ test('sync creates, changes, removes and restores the same id; respects local of
   expect(memory.team.refsFor([id]).get(id)).toEqual({ id: 'T-a123' });
 });
 
+test.each([
+  ['content', { content: 'Locally edited synthetic rule' }],
+  ['topic', { topic: 'Locally edited topic' }],
+  ['expiry', { expiresAt: '2099-12-31T00:00:00.000Z' }],
+  ['detail', { detail: 'Locally edited synthetic detail' }],
+] as const)('reconciles the %s of a returning team rule against the actual mirror', (_field, patch) => {
+  const text = '## Testing\n- [T-a123] Synthetic team rule (until 2099-11-20)\n';
+  writeFileSync(file, text);
+  const id = memory.team.syncProject('P1', project).added[0]!;
+  rmSync(file);
+  expect(memory.team.syncProject('P1', project).removed).toEqual([id]);
+  const edited = memory.store.update(id, patch, { actor: 'user' });
+  writeFileSync(file, text);
+  expect(memory.team.syncProject('P1', project)).toEqual({ added: [], changed: [id], removed: [], conflict: false });
+  expect(memory.store.getById(id)).toMatchObject({
+    content: 'Synthetic team rule', topic: 'Testing', detail: undefined,
+    expiresAt: new Date(2099, 10, 20, 23, 59, 59, 999).toISOString(),
+    status: 'active', version: edited.version + 1,
+  });
+  expect(memory.team.refsFor([id]).get(id)).toEqual({ id: 'T-a123' });
+  expect(memory.team.syncProject('P1', project).changed).toEqual([]);
+});
+
+test('reconciles a returning rule while preserving its local opt-out', () => {
+  const text = '- [T-a123] Synthetic team rule\n';
+  writeFileSync(file, text);
+  const id = memory.team.syncProject('P1', project).added[0]!;
+  memory.store.archive(id, { actor: 'user' });
+  rmSync(file);
+  memory.team.syncProject('P1', project);
+  memory.store.update(id, { content: 'Locally edited synthetic rule' }, { actor: 'user' });
+  writeFileSync(file, text);
+  expect(memory.team.syncProject('P1', project).changed).toEqual([id]);
+  expect(memory.store.getById(id)).toMatchObject({ content: 'Synthetic team rule', status: 'archived' });
+});
+
+test('reconciles a live mirror when its actual fields differ from the team file', () => {
+  writeFileSync(file, '- [T-a123] Synthetic team rule\n');
+  const id = memory.team.syncProject('P1', project).added[0]!;
+  memory.store.update(id, {
+    content: 'Synthetic local change', topic: 'Local', expiresAt: '2099-12-31T00:00:00.000Z', detail: 'Local detail',
+  }, { actor: 'system' });
+  expect(memory.team.syncProject('P1', project).changed).toEqual([id]);
+  expect(memory.store.getById(id)).toMatchObject({
+    content: 'Synthetic team rule', topic: undefined, expiresAt: null, detail: undefined, status: 'active',
+  });
+});
+
+test('updates the saved file hash without reporting a change when the mirror already matches', () => {
+  writeFileSync(file, '- [T-a123] Original synthetic rule\n');
+  const id = memory.team.syncProject('P1', project).added[0]!;
+  rmSync(file);
+  memory.team.syncProject('P1', project);
+  const edited = memory.store.update(id, { content: 'Updated synthetic rule' }, { actor: 'user' });
+  writeFileSync(file, '- [T-a123] Updated synthetic rule\n');
+  expect(memory.team.syncProject('P1', project)).toEqual({ added: [], changed: [], removed: [], conflict: false });
+  expect(memory.store.getById(id)).toMatchObject({ content: 'Updated synthetic rule', status: 'active', version: edited.version });
+  expect(memory.team.syncProject('P1', project).changed).toEqual([]);
+});
+
 test('conflicts freeze last good state and sensitive rules are skipped', () => {
   writeFileSync(file, '- [T-a123] A synthetic rule\n');
   const id = memory.team.syncProject('P1', project).added[0]!;

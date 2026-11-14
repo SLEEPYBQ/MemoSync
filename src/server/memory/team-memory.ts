@@ -146,9 +146,11 @@ export class TeamMemory {
             projectionDirty = true;
             result.added.push(item.id);
           } else {
-            const changed = link.content_hash !== hash;
             const item = this.store.getById(link.memory_id);
             if (!item) throw new Error('Linked team memory is missing');
+            const changed = item.content !== rule.content
+              || (item.topic ?? null) !== (rule.topic ?? null)
+              || (item.expiresAt ?? null) !== (rule.expiresAt ?? null);
             const detailChanged = Boolean(item.detail);
             const expired = Boolean(rule.expiresAt && rule.expiresAt <= now);
             const patch: Partial<MemoryItem> = {};
@@ -161,7 +163,7 @@ export class TeamMemory {
               projectionDirty = true;
             }
             if (expired && !link.local_off && this.store.expireIfDue(link.memory_id, now)) projectionDirty = true;
-            if (changed || link.removed) this.db.query('UPDATE team_memory_links SET content_hash = ?, removed = 0 WHERE memory_id = ?')
+            if (link.content_hash !== hash || link.removed) this.db.query('UPDATE team_memory_links SET content_hash = ?, removed = 0 WHERE memory_id = ?')
               .run(hash, link.memory_id);
             if (changed || detailChanged) result.changed.push(link.memory_id);
           }
