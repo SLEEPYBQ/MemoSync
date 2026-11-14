@@ -33,6 +33,9 @@ Event families:
   expansion, citation hovers).
 - `ui.surface_exposure` — open / close / visible / hidden intervals of memory
   surfaces (Memory Board, Memory Record, review cards).
+- Archive and restore decisions from chat citations and audit rows use the
+  `chat_citation` and `chat_audit` control surfaces. Experiment summaries group
+  these alongside other non-Board, non-gate interactions under `other`.
 
 The log can contain memory content, expected-use text, revision instructions
 (`memory.revise_injection.instruction`), and quoted interruption evidence. It

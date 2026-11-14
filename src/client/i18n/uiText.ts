@@ -48,6 +48,8 @@ const serverKeys = {
   "requiredField": "errors:serverRequiredField",
   "requiredFields": "errors:serverRequiredFields",
   "surfaceInvalid": "errors:serverSurfaceInvalid",
+  "surfaceArchiveInvalid": "errors:serverSurfaceArchiveInvalid",
+  "surfaceArchiveOnly": "errors:serverSurfaceArchiveOnly",
   "invalidAction": "errors:serverInvalidAction",
   "mutedNotFound": "errors:serverMutedNotFound",
   "contentScope": "errors:serverContentScope",

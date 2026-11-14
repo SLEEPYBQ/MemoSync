@@ -32,10 +32,26 @@ let restoreList: (() => void) | undefined
 afterEach(() => {
   restoreList?.()
   restoreList = undefined
-  useMemoryStore.setState({ items: [], status: "idle", error: null })
+  useMemoryStore.setState({ items: [], status: "idle", error: null, pendingArchiveIds: {} })
 })
 
 describe("memoryStore load races", () => {
+  test("tracks concurrent per-memory archive mutations through reloads", async () => {
+    const listSpy = spyOn(memoriesApi, "list").mockResolvedValue([])
+    restoreList = () => listSpy.mockRestore()
+    const store = useMemoryStore.getState()
+    store.beginArchiveChange("one")
+    store.beginArchiveChange("one")
+    store.beginArchiveChange("two")
+    await store.loadAll()
+    expect(useMemoryStore.getState().pendingArchiveIds).toEqual({ one: 2, two: 1 })
+    store.endArchiveChange("one")
+    expect(useMemoryStore.getState().pendingArchiveIds).toEqual({ one: 1, two: 1 })
+    store.endArchiveChange("one")
+    expect(useMemoryStore.getState().pendingArchiveIds).toEqual({ two: 1 })
+    store.endArchiveChange("two")
+    expect(useMemoryStore.getState().pendingArchiveIds).toEqual({})
+  })
   test("lets a later fresh GET supersede a confirmed local edit while ignoring the earlier GET", async () => {
     const older = deferred<MemoryItem[]>()
     const newer = deferred<MemoryItem[]>()

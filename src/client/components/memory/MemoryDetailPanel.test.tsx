@@ -59,3 +59,36 @@ test("the Board detail surface offers sanitize, manual review, and dismiss witho
   expect(html).not.toContain(">Accept</button>")
   expect(html).not.toContain(">Save</button>")
 })
+
+for (const status of ["active", "archived"] as const) {
+  test(`${status} detail shows only valid movement and archive actions`, () => {
+    const item: MemoryItem = {
+      ...sensitiveCandidate,
+      id: "M-01",
+      content: "Synthetic navigation rule",
+      detail: "",
+      sensitive: false,
+      status,
+    }
+    const html = renderToStaticMarkup(
+      <MemoryDetailPanel
+        item={item}
+        allItems={[item]}
+        onClose={() => {}}
+        onUpdated={() => {}}
+        onAccept={async () => {}}
+        onArchive={async () => {}}
+        surface="board"
+      />,
+    )
+    expect(html.includes("Transfer…")).toBe(status === "active")
+    expect(html.includes(">Archive</button>")).toBe(status === "active")
+    expect(html.includes("Restore this memory from Archived before moving or transferring it.")).toBe(status === "archived")
+    const buttons = [...html.matchAll(/<button\b[^>]*>[\s\S]*?<\/button>/g)].map(match => match[0])
+    for (const scope of ["Personal", "Project"]) {
+      const button = buttons.find(value => value.endsWith(`>${scope}</button>`))
+      expect(button).toBeDefined()
+      expect(button!.includes('disabled=""')).toBe(status === "archived")
+    }
+  })
+}

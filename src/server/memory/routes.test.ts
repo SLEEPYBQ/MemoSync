@@ -54,6 +54,21 @@ describe('memory routes', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it('accepts citation and audit surfaces only for archive and restore', async () => {
+    const item = memory.store.create({ content: 'Synthetic archive example', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    for (const surface of ['chat_citation', 'chat_audit']) {
+      expect((await call('PATCH', `/api/memories/${item.id}`, { status: 'archived', surface }))!.status).toBe(200);
+      expect(memory.store.getById(item.id)!.status).toBe('archived');
+      expect((await call('PATCH', `/api/memories/${item.id}`, { status: 'archived', surface }))!.status).toBe(200);
+      expect((await call('PATCH', `/api/memories/${item.id}`, { status: 'active', surface }))!.status).toBe(200);
+      expect((await call('PATCH', `/api/memories/${item.id}`, { content: 'Unexpected edit', surface }))!.status).toBe(400);
+      const candidate = memory.store.create({ content: 'Synthetic sensitive candidate', scope: 'personal', type: 'fact', status: 'candidate', sensitive: true }, { actor: 'user' });
+      expect((await call('PATCH', `/api/memories/${candidate.id}`, { status: 'active', surface }))!.status).toBe(400);
+      expect(memory.store.getById(candidate.id)!.status).toBe('candidate');
+    }
+    expect((await call('PATCH', `/api/memories/${item.id}`, { status: 'archived', surface: 'unknown' }))!.status).toBe(400);
+  });
+
   it('records Add/Remove usage with chat provenance without changing the selected pool', async () => {
     const events: unknown[] = [];
     memory.close();

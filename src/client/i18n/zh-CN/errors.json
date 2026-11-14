@@ -47,6 +47,8 @@
   "serverRequiredField": "缺少{{v0}}",
   "serverRequiredFields": "缺少{{v0}}",
   "serverSurfaceInvalid": "surface 必须为 board 或 chat_gate",
+  "serverSurfaceArchiveInvalid": "surface 必须为 board、chat_gate、chat_citation 或 chat_audit",
+  "serverSurfaceArchiveOnly": "此位置仅支持归档和恢复记忆",
   "serverInvalidAction": "action 必须为 add 或 remove",
   "serverMutedNotFound": "找不到{{v0}}的已静音提议",
   "serverContentScope": "必须提供内容和范围",

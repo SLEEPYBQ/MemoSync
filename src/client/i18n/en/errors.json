@@ -47,6 +47,8 @@
   "serverRequiredField": "{{v0}} is required",
   "serverRequiredFields": "{{v0}} are required",
   "serverSurfaceInvalid": "surface must be board or chat_gate",
+  "serverSurfaceArchiveInvalid": "surface must be board, chat_gate, chat_citation or chat_audit",
+  "serverSurfaceArchiveOnly": "This surface only supports archiving and restoring memories",
   "serverInvalidAction": "action must be add or remove",
   "serverMutedNotFound": "no muted proposal for {{v0}}",
   "serverContentScope": "content and scope are required",

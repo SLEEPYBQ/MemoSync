@@ -22,6 +22,160 @@ afterEach(() => {
 });
 
 describe('memory tools (engine-neutral)', () => {
+  it.each(['archive', 'restore'] as const)('preserves an admitted grant when an outside relation endpoint is subject to %s', async lifecycle => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const outside = memory.store.create({ content: 'Outside synthetic rule', detail: 'Outside private synthetic detail', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(admitted.id, outside.id, 'conflicts_with');
+    memory.store.addRelation(outside.id, admitted.id, 'conflicts_with');
+    if (lifecycle === 'restore') memory.store.archive(outside.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    expect(grant.visibleIds).toEqual([admitted.id]);
+    expect(grant.selectedIds).toEqual([admitted.id]);
+    if (lifecycle === 'archive') memory.store.archive(outside.id, { actor: 'user' });
+    else memory.store.update(outside.id, { status: 'active' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail',
+      { ids: [admitted.id, outside.id], expectedViewRevision: grant.revision },
+      { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toContain('Admitted synthetic detail');
+    expect(result.text).not.toContain('Outside private synthetic detail');
+    expect(result.receipts).toEqual([expect.objectContaining({ memoryId: admitted.id, viewRevision: grant.revision })]);
+  });
+
+  it('preserves an outside endpoint already archived when the grant was issued', async () => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const outside = memory.store.create({ content: 'Outside synthetic rule', detail: 'Outside private synthetic detail', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(admitted.id, outside.id, 'conflicts_with');
+    memory.store.addRelation(outside.id, admitted.id, 'conflicts_with');
+    memory.store.archive(outside.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.archive(admitted.id, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail',
+      { ids: [admitted.id, outside.id], expectedViewRevision: grant.revision },
+      { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toContain('Admitted synthetic detail');
+    expect(result.text).not.toContain('Outside private synthetic detail');
+    expect(result.receipts).toEqual([expect.objectContaining({ memoryId: admitted.id, viewRevision: grant.revision })]);
+  });
+
+  it.each([
+    ['archive', 'rescope'], ['archive', 'relation'], ['restore', 'rescope'], ['restore', 'relation'],
+  ] as const)('rejects outside endpoint %s followed by %s', async (lifecycle, change) => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const outside = memory.store.create({ content: 'Outside synthetic rule', detail: 'Outside private synthetic detail', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(admitted.id, outside.id, 'conflicts_with');
+    if (lifecycle === 'restore') memory.store.archive(outside.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    if (lifecycle === 'archive') memory.store.archive(outside.id, { actor: 'user' });
+    else memory.store.update(outside.id, { status: 'active' }, { actor: 'user' });
+    if (change === 'rescope') memory.store.update(outside.id, { projectId: 'P3' }, { actor: 'user' });
+    else memory.store.addRelation(outside.id, admitted.id, 'conflicts_with');
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail',
+      { ids: [admitted.id, outside.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('VIEW_CHANGED');
+    expect(result.text).not.toContain('Admitted synthetic detail');
+    expect(result.text).not.toContain('Outside private synthetic detail');
+    expect(result.receipts).toEqual([]);
+  });
+
+  it.each([true, false])('keeps the admitted view when a %s-related archived memory is restored', async related => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const archived = memory.store.create({ content: 'Previously archived rule', detail: 'Restored synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    if (related) {
+      memory.store.addRelation(admitted.id, archived.id, 'conflicts_with');
+      memory.store.addRelation(archived.id, admitted.id, 'conflicts_with');
+    }
+    memory.store.archive(archived.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.update(archived.id, { status: 'active' }, { actor: 'user' });
+    const specs = buildMemoryToolSpecs(memory);
+    const old = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [admitted.id, archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(old.isError).toBeFalsy();
+    expect(old.text).toContain('Admitted synthetic detail');
+    expect(old.text).not.toContain('Restored synthetic detail');
+    expect(old.receipts?.map(receipt => receipt.memoryId)).toEqual([admitted.id]);
+    const fresh = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    const next = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: fresh });
+    expect(next.text).toContain('Restored synthetic detail');
+  });
+
+  it.each(['edit', 'rescope', 'relation', 'new-visible'] as const)('rejects a restored grant after an additional %s change', async change => {
+    const admitted = memory.store.create({ content: 'Admitted synthetic rule', detail: 'Admitted synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const archived = memory.store.create({ content: 'Previously archived rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(admitted.id, archived.id, 'conflicts_with');
+    memory.store.archive(archived.id, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.update(archived.id, { status: 'active' }, { actor: 'user' });
+    if (change === 'edit') memory.store.update(admitted.id, { detail: 'Edited synthetic detail' }, { actor: 'user' });
+    if (change === 'rescope') memory.store.update(archived.id, { scope: 'project', projectId: 'P1' }, { actor: 'user' });
+    if (change === 'relation') memory.store.addRelation(archived.id, admitted.id, 'conflicts_with');
+    if (change === 'new-visible') memory.store.create({ content: 'New synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [admitted.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain(change === 'edit' ? 'VERSION_CHANGED' : 'VIEW_CHANGED');
+    expect(result.text).not.toContain('Admitted synthetic detail');
+    expect(result.text).not.toContain('Edited synthetic detail');
+    expect(result.receipts).toEqual([]);
+  });
+
+  it('honors an exact turn grant for an archived related memory, but not a fresh grant', async () => {
+    const archived = memory.store.create({ content: 'Synthetic rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const unselected = memory.store.create({ content: 'Not selected', detail: 'Unselected secret', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const outside = memory.store.create({ content: 'Other project', detail: 'Out of scope secret', scope: 'project', projectId: 'P2', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(archived.id, related.id, 'conflicts_with');
+    memory.store.addRelation(related.id, archived.id, 'conflicts_with');
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S', restrictToIds: [archived.id, related.id] }).view;
+    const specs = buildMemoryToolSpecs(memory);
+    memory.store.archive(archived.id, { actor: 'user' });
+    const result = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id, unselected.id, outside.id], expectedViewRevision: grant.revision }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.isError).toBeFalsy();
+    expect(result.text).toContain('Original synthetic detail');
+    expect(result.text).not.toContain('Unselected secret');
+    expect(result.text).not.toContain('Out of scope secret');
+    expect(result.receipts).toEqual([expect.objectContaining({ memoryId: archived.id, version: archived.version, viewRevision: grant.revision })]);
+    const fresh = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    const next = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [archived.id] }, { projectId: 'P1', sessionId: 'S', memoryView: fresh });
+    expect(next.text).not.toContain('Original synthetic detail');
+  });
+
+  it('reports a changed view for an archived admitted id without admitting unrelated ids', async () => {
+    const admitted = memory.store.create({ content: 'Synthetic admitted rule', detail: 'Synthetic admitted detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.archive(admitted.id, { actor: 'user' });
+    const added = memory.store.create({ content: 'New synthetic rule', detail: 'New synthetic detail', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const specs = buildMemoryToolSpecs(memory);
+    const ctx = { projectId: 'P1', sessionId: 'S', memoryView: grant };
+    const stale = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [admitted.id] }, ctx);
+    expect(stale.isError).toBe(true);
+    expect(stale.text).toContain('VIEW_CHANGED');
+    expect(stale.text).not.toContain('Synthetic admitted detail');
+    expect(stale.receipts).toEqual([]);
+    const outside = await dispatchMemoryTool(specs, 'load_memory_detail', { ids: [added.id] }, ctx);
+    expect(outside.isError).toBeFalsy();
+    expect(outside.text).not.toContain('New synthetic detail');
+    expect(outside.receipts).toEqual([]);
+  });
+
+  it.each(['edit', 'rescope', 'relation', 'new-visible'] as const)('rejects an archived grant after an additional %s change', async change => {
+    const archived = memory.store.create({ content: 'Synthetic archived rule', detail: 'Original synthetic detail', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const related = memory.store.create({ content: 'Synthetic related rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    memory.store.addRelation(archived.id, related.id, 'conflicts_with');
+    const grant = planMemoryInjection({ memory, projectId: 'P1', chatId: 'S' }).view;
+    memory.store.archive(archived.id, { actor: 'user' });
+    if (change === 'edit') memory.store.update(archived.id, { detail: 'Edited synthetic detail' }, { actor: 'user' });
+    if (change === 'rescope') memory.store.update(archived.id, { scope: 'project', projectId: 'P2' }, { actor: 'user' });
+    if (change === 'relation') memory.store.addRelation(related.id, archived.id, 'conflicts_with');
+    if (change === 'new-visible') memory.store.create({ content: 'New synthetic rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
+    const result = await dispatchMemoryTool(buildMemoryToolSpecs(memory), 'load_memory_detail', { ids: [archived.id, related.id] }, { projectId: 'P1', sessionId: 'S', memoryView: grant });
+    expect(result.text).not.toContain('Original synthetic detail');
+    expect(result.text).not.toContain('Edited synthetic detail');
+    expect(result.text).toContain('VIEW_CHANGED');
+    expect(result.isError).toBe(true);
+  });
+
   it('loads details only for the server-confirmed working set', async () => {
     const selected = memory.store.create({ content: 'Use integer cents', detail: '1250 is USD 12.50.', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     const hidden = memory.store.create({ content: 'Hidden rule', detail: 'Unselected details must stay out of context.', scope: 'personal', type: 'fact' }, { actor: 'user' });

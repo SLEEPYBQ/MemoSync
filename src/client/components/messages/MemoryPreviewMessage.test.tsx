@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { ReplyMarkdown, WorkingMemorySelectionError } from "./MemoryPreviewMessage"
+import { runMountedRaceSuite } from "../../test-utils/runMountedRaceSuite"
+
+runMountedRaceSuite("archived working-memory rows and audit controls", new URL("./MemoryPreviewMessage.browser.ts", import.meta.url))
 
 describe("ReplyMarkdown", () => {
   test("renders Markdown without losing memory citation chips", () => {

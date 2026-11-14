@@ -31,6 +31,9 @@ import { Button } from "../ui/button"
 import { MemoryCitationChip } from "./shared"
 import { AnimatedShinyText } from "../ui/animated-shiny-text"
 import { MemoryReviewSkeleton } from "./MemoryReviewSkeleton"
+import { ArchiveIconButton, ArchivedInline, useArchiveMemory } from "../memory/archiveMemory"
+import { useMemoryStore } from "../../stores/memoryStore"
+import type { MemoryItem } from "../../lib/memoriesApi"
 
 type MemoryPreviewHydratedMessage = Extract<HydratedTranscriptMessage, { kind: "memory_preview" }>
 
@@ -110,6 +113,9 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   const refreshing = message.refreshing === true
   const interactive = pending && !refreshing
   const { chatId } = useParams<{ chatId: string }>()
+  const storedMemories = useMemoryStore((state) => state.items)
+  const archiveControl = useArchiveMemory("chat_gate", { localOnly: Boolean(previewDemo) })
+  const archivePending = useMemoryStore((state) => message.memories.some((item) => (state.pendingArchiveIds[item.id] ?? 0) > 0))
 
   // selected = injected. null = not seeded yet (waiting for the suggestion
   // pass); a Map so every row remembers WHY it is on the list.
@@ -201,11 +207,20 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   }, [attentionIds, message.decision, message.decisionSelectedIds, message.memories, message.relevant, message.relevancePending, message.selectionError, memoriesById, pending, relevantIds, selection, selectionRecovered])
 
   const seeding = refreshing || (selection === null && !message.selectionError)
-  const injectedIds = useMemo(() => [...(selection?.keys() ?? [])].filter((id) => memoriesById.has(id)), [selection, memoriesById])
-  const poolRest = useMemo(
-    () => message.memories.filter((m) => !selection?.has(m.id)),
-    [message.memories, selection],
-  )
+  const archivedIds = useMemo(() => new Set(storedMemories.filter((item) => item.status === "archived" && memoriesById.has(item.id)).map((item) => item.id)), [storedMemories, memoriesById])
+  const selectedRowIds = useMemo(() => {
+    const ids = message.decision === undefined
+      ? [...(selection?.keys() ?? [])]
+      : message.decision === "go_on"
+        ? (message.decisionSelectedIds ?? message.memories.map((memory) => memory.id))
+        : []
+    return ids.filter((id) => memoriesById.has(id))
+  }, [message.decision, message.decisionSelectedIds, message.memories, selection, memoriesById])
+  const injectedIds = useMemo(() => selectedRowIds.filter((id) => !pending || !archivedIds.has(id)), [selectedRowIds, pending, archivedIds])
+  const poolRest = useMemo(() => {
+    const selected = new Set(selectedRowIds)
+    return message.memories.filter((memory) => !selected.has(memory.id))
+  }, [message.memories, selectedRowIds])
 
   const selectedExpectedUses = useMemo<ExpectedMemoryUse[]>(
     () => injectedIds.map((id) => ({ id, expectedUse: expectedUsesById.get(id) ?? DEFAULT_EXPECTED_USE })),
@@ -294,6 +309,27 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     }
   }
 
+  async function archiveMemory(id: string) {
+    if (previewDemo && !useMemoryStore.getState().items.some((item) => item.id === id)) {
+      const memory = memoriesById.get(id)
+      if (memory) useMemoryStore.getState().upsertLocal({
+        ...memory, type: "fact", status: "active", abstractionLevel: "concrete", sensitive: false,
+        createdAt: "", updatedAt: "", usageCount: 0, reinforcedCount: 0, citedInCurrentSession: 0, version: 1,
+      } as MemoryItem)
+    }
+    try {
+      await archiveControl.archive(id)
+      if (selection?.has(id) && chatId && !previewDemo) recordWorkingMemorySelection({ chatId, previewId: message.previewId, memoryId: id, action: "remove" })
+    } catch {}
+  }
+
+  async function restoreMemory(id: string) {
+    try {
+      await archiveControl.restore(id)
+      if (selection?.has(id) && chatId && !previewDemo) recordWorkingMemorySelection({ chatId, previewId: message.previewId, memoryId: id, action: "add" })
+    } catch {}
+  }
+
   // "Ask agent to revise": a small talking assistant inside the card — an
   // instruction changes the selection, a question gets answered; either way
   // it replies (user feedback 2026-08-07: 不能只干不说话). Start stays the
@@ -343,6 +379,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
         const addedIds = result.selectedIds.filter((id) => memoriesById.has(id) && !expectedUsesById.has(id))
         setSelection((prev) => {
           const next = new Map<string, InjectSource>()
+          for (const [id, source] of prev ?? []) if (archivedIds.has(id)) next.set(id, source)
           for (const id of result.selectedIds) {
             if (!memoriesById.has(id)) continue
             // Kept rows keep their story; agent-added rows read as yours (the
@@ -386,7 +423,8 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
   }
 
   function start() {
-    if (submitting || seeding || revising || planningSelected || failedSelected.length) return
+    if (submitting || seeding || revising || archiveControl.busyId || planningSelected || failedSelected.length) return
+    if (message.memories.some((item) => (useMemoryStore.getState().pendingArchiveIds[item.id] ?? 0) > 0)) return
     // Zero injected = the honest "start with nothing" — same user model,
     // existing server semantics.
     if (injectedIds.length === 0) respond("without_memory")
@@ -411,7 +449,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pending, submitting, message.previewId, injectedIds, seeding, revising, planningSelected, failedSelected.length])
+  }, [pending, submitting, message.previewId, injectedIds, seeding, revising, archiveControl.busyId, archivePending, planningSelected, failedSelected.length])
 
   const decidedText = message.decision
     ? message.decision === "go_on" && message.decisionAuto
@@ -448,6 +486,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
             else void askAgentToRevise("Retry selecting working memory for the current task from the active pool. Preserve every enforced item and explain the selection.")
           }}
         /> : null}
+        {pending && archiveControl.error ? <p className="mt-1 text-[11px] text-destructive">{archiveControl.error}</p> : null}
 
         {message.memories.length === 0 ? (
           <p className="mt-2 text-sm text-muted-foreground">{t("memory:noMemoriesAreAvailableForThisTurn")}</p>
@@ -458,18 +497,26 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                 label={t("memory:preparingTheWorkingMemory")}
                 status={t("memory:choosingMemories")}
               />
-            ) : injectedIds.length === 0 ? (
+            ) : selectedRowIds.length === 0 ? (
               <p className="text-sm text-muted-foreground">
                 {selectionError ? t("memory:noSelectionIsReadyPickItemsBelowRetryOrExplicitly") : t("memory:workingMemoryIsEmptyPickFromThePoolBelowOr")}
               </p>
             ) : (
-              injectedIds.map((id, index) => {
+              selectedRowIds.map((id, index) => {
                 const memory = memoriesById.get(id)!
                 const source = selection?.get(id) ?? "manual"
                 const label = SOURCE_LABELS[source]
                 const expectedUse = expectedUsesById.get(id) ?? DEFAULT_EXPECTED_USE
                 const planning = planningIds.has(id)
                 const planningFailed = failedPlanningIds.has(id) || Boolean(message.selectionError && !expectedUsesById.has(id))
+                if (pending && archivedIds.has(id)) return (
+                  <RiseIn key={id} freshAt={Date.now()} delay={index * 0.06}>
+                    <div className="relative flex min-w-0 items-center gap-2 rounded-lg border border-border/70 bg-background/60 px-3 py-2 text-sm opacity-80 dark:bg-muted/40">
+                      <MemoryCitationChip id={id} />
+                      <div className="min-w-0 flex-1"><ArchivedInline id={id} busy={archiveControl.busyId === id || revising} onUndo={(memoryId) => void restoreMemory(memoryId)} /></div>
+                    </div>
+                  </RiseIn>
+                )
                 return (
                   <RiseIn key={id} freshAt={pending ? Date.now() : undefined} delay={index * 0.06}>
                     <div className="relative min-w-0 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-2 text-sm">
@@ -500,6 +547,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             {label}
                           </MemoryBadge>
                         ) : null}
+                        {interactive ? <ArchiveIconButton disabled={revising || archiveControl.busyId !== null} onClick={() => void archiveMemory(id)} /> : null}
                         {interactive ? (
                           source === "attention" ? (
                             // Enforced rows lock (2026-08-19 D1): no casual ×.
@@ -578,10 +626,14 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                     {poolRest.map((memory) => (
                       <div
                         key={memory.id}
-                        className="flex flex-wrap items-start gap-2 rounded-lg px-1.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                        className="group/pool flex flex-wrap items-start gap-2 rounded-lg px-1.5 py-1.5 text-sm text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
                       >
                         <MemoryCitationChip id={memory.id} />
+                        {pending && archivedIds.has(memory.id) ? (
+                          <div className="min-w-0 flex-1"><ArchivedInline id={memory.id} busy={archiveControl.busyId === memory.id || revising} onUndo={(id) => void restoreMemory(id)} /></div>
+                        ) : <>
                         <span className="min-w-0 flex-1 basis-40">{memory.content}</span>
+                        {interactive ? <ArchiveIconButton disabled={revising || archiveControl.busyId !== null} onClick={() => void archiveMemory(memory.id)} className="opacity-0 group-hover/pool:opacity-100 focus-visible:opacity-100" /> : null}
                         <Button
                           type="button"
                           variant="ghost"
@@ -592,6 +644,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                         >
                           <Plus className="h-3.5 w-3.5" />
                           {t("common:add")}</Button>
+                        </>}
                       </div>
                     ))}
                   </div>
@@ -671,7 +724,7 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
               {t("memory:dismissTurn")}<kbd className="ml-1.5 rounded bg-muted px-1 font-sans text-[11px] text-muted-foreground">esc</kbd>
             </Button>
 
-            <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || planningSelected || failedSelected.length > 0} onClick={start}>
+            <Button variant="default" size="xs" disabled={submitting !== null || seeding || revising || archiveControl.busyId !== null || archivePending || planningSelected || failedSelected.length > 0} onClick={start}>
               {submitting === "go_on" || submitting === "without_memory" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : null}

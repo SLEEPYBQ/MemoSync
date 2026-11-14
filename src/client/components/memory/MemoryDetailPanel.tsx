@@ -320,7 +320,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                     <button
                       key={scope}
                       type="button"
-                      disabled={busyState}
+                      disabled={busyState || item.status === "archived"}
                       onClick={() => void handleMoveScope(scope)}
                       aria-pressed={active}
                       className={cn(
@@ -338,6 +338,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   )
                 })}
               </div>
+              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
             </div>
 
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
@@ -361,7 +362,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               </button>
             )}
 
-            {item.status !== "candidate" ? (
+            {item.status === "active" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
                   <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>
