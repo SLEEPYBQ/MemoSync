@@ -92,6 +92,8 @@
   "new": "新增",
   "changed": "已变更",
   "noLongerAvailable": "已不可用",
+  "openInBoard": "在看板中打开",
+  "restoreBeforeMoving": "如需移动或转移这条记忆，请先在「已归档」中恢复。",
   "memoryUseAuditThisTurnSOutputCheckedAgainstEach": "记忆使用审查：逐项对照工作记忆检查本轮输出",
   "showInTranscript": "在对话中显示",
   "shapedThisTurn": "影响了本轮",

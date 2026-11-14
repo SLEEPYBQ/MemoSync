@@ -58,11 +58,12 @@ export function useFocusedMemoryReview(controller: FocusedMemoryReviewController
   return useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot)
 }
 
-export type MemoryBoardLaunchSource = "sidebar" | "memory_record" | "chat_long_term"
+export type MemoryBoardLaunchSource = "sidebar" | "memory_record" | "chat_long_term" | "chat_citation"
 
 export interface MemoryBoardLaunchRequest {
   source: MemoryBoardLaunchSource
   chatId?: string
+  memoryId?: string
   focusedReview?: FocusedMemoryReviewController
 }
 
