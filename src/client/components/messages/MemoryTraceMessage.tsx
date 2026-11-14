@@ -151,7 +151,8 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
   const [correctionError, setCorrectionError] = useState<string | null>(null)
   const [pendingTarget, setPendingTarget] = useState<{ label: MemoryTraceLabel["label"] | null; note?: string } | null>(null)
   const archived = memory?.status === "archived"
-  const canCorrect = !renderOptions.readonly && Boolean(chatId) && turn !== undefined && !archived
+  const ownsAudit = label.correctionAllowed !== false
+  const canCorrect = ownsAudit && !renderOptions.readonly && Boolean(chatId) && turn !== undefined && !archived
 
   useEffect(() => {
     if (!canCorrect) {
@@ -170,7 +171,7 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
   }
 
   async function correct(value: MemoryTraceLabel["label"] | null) {
-    if (!chatId || turn === undefined || saving || renderOptions.readonly || (archived && value !== null)) return
+    if (!ownsAudit || !chatId || turn === undefined || saving || renderOptions.readonly || (archived && value !== null)) return
     setSaving(true)
     setCorrectionError(null)
     try {
@@ -232,7 +233,9 @@ function TraceRow({ label, turn, onJump, onDemoCorrection }: { label: MemoryTrac
           <span className="text-[11px] text-muted-foreground/70">
             {label.cited ? t("memory:selfReported") : t("memory:auditFound")}
           </span>
-          {!renderOptions.readonly && chatId && turn !== undefined && (label.userLabel || !archived) ? (
+          {!renderOptions.readonly && !ownsAudit ? (
+            <span className="ml-auto text-[11px] text-muted-foreground/60">{t("memory:auditReadOnlyHere")}</span>
+          ) : !renderOptions.readonly && chatId && turn !== undefined && (label.userLabel || !archived) ? (
             <button type="button" disabled={saving} onClick={() => label.userLabel ? void correct(null) : setEditing(true)}
               className="ml-auto text-[11px] text-muted-foreground/60 underline-offset-2 transition-colors hover:text-foreground hover:underline">
               {label.userLabel ? t("common:undo") : t("memory:notRight")}

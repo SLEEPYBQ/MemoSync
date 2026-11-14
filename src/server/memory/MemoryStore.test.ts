@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applySchema, openMemoryDb } from './db';
-import { MemoryStore } from './MemoryStore';
+import { MemoryStore, RevisionConflictError } from './MemoryStore';
 import type { MemoryItem } from './types';
 
 function freshStore(): MemoryStore {
@@ -41,6 +41,21 @@ describe('MemoryStore', () => {
     expect(store.recordTraceCorrection(item.id, { sessionId: 's', turn: 1, label: null }).changed).toBe(false);
     expect(store.recentTraceLabels(item.id)).toEqual(['operational', 'violated']);
     expect(store.recentTraceCorrections(item.id)).toEqual([]);
+  });
+
+  it('reports trace correction ownership only for traces in the requested session', () => {
+    const a = store.create({ content: 'Synthetic rule A', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    const b = store.create({ content: 'Synthetic rule B', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    store.recordTraceLabel(a.id, 'violated', { actor: 'agent', sessionId: 'parent', turn: 1 });
+    store.recordTraceLabel(b.id, 'operational', { actor: 'agent', sessionId: 'parent', turn: 1 });
+    const before = [store.getEvents(a.id), store.getEvents(b.id)];
+    expect(store.traceCorrectionKeysForSession('parent')).toEqual(new Set([JSON.stringify([1, a.id]), JSON.stringify([1, b.id])]));
+    expect(store.traceCorrectionKeysForSession('child')).toEqual(new Set());
+    expect([store.getEvents(a.id), store.getEvents(b.id)]).toEqual(before);
+    store.recordTraceLabel(b.id, 'violated', { actor: 'agent', sessionId: 'child', turn: 2 });
+    expect(store.traceCorrectionKeysForSession('child')).toEqual(new Set([JSON.stringify([2, b.id])]));
+    expect(store.getEvents(a.id)).toEqual(before[0]);
+    expect(store.getEvents(b.id)).toHaveLength(before[1]!.length + 1);
   });
 
   it('reconciles uncited operational trace uses on correction and withdrawal without adding use events', () => {
@@ -1072,6 +1087,34 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
       expect(state()).toEqual(before);
     });
   }
+
+  for (const status of ['archived', 'active'] as const) {
+    it(`rejects a revision no longer pending (${status}) without mutations`, () => {
+      const store = freshStore();
+      const target = store.create({ content: 'Synthetic original rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+      const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' })!;
+      store.update(proposal.id, { status }, { actor: 'user' });
+      const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+      const before = state();
+      expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Must not save' })).toThrow(RevisionConflictError);
+      expect(state()).toEqual(before);
+    });
+  }
+
+  it('rejects invalid captured evidence even if a revision is pending again', () => {
+    const store = freshStore();
+    const target = store.create({ content: 'Synthetic original rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'evidence-chat', turn });
+    const traceEvidence = store.recentTraceEvidence(target.id, 3).map(row => row.seq);
+    const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' }, { traceEvidence })!;
+    store.recordTraceCorrection(target.id, { sessionId: 'evidence-chat', turn: 2, label: 'not_applicable' });
+    expect(store.getById(proposal.id)?.status).toBe('archived');
+    store.update(proposal.id, { status: 'candidate' }, { actor: 'user' });
+    const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
+    const before = state();
+    expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Must not save' })).toThrow(RevisionConflictError);
+    expect(state()).toEqual(before);
+  });
 
   it('acceptRevision activates the candidate and archives its target in one act', () => {
     const store = freshStore();
