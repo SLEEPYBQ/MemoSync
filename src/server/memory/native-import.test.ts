@@ -402,6 +402,33 @@ describe("format inventory and incremental manifest", () => {
 });
 
 describe("reviewed writes, lineage and rollback", () => {
+  it("does not overwrite a shared rule when its native source changes", async () => {
+    const refined = await refine();
+    const first = service.getOperation(refined.batches[0]!.operationId!)!;
+    const receipt = await accept(first);
+    const id = receipt.accepted[0]!.memoryId;
+    const shared = memory.team.publish(id, project, { actor: "user" });
+    put(topic, "Keep the synthetic parser in a newer location.\n");
+    const next = plan("shared-next");
+    expect(next.plan.items[0]!.target?.memoryId).not.toBe(id);
+    await accept(next);
+    expect(memory.store.getById(id)!.content).toBe(shared.content);
+    expect(readFileSync(join(project, ".memosync", "team.md"), "utf8")).toContain(shared.content);
+  });
+  it("rejects a reviewed overwrite or rollback if the target is shared after planning", async () => {
+    const refined = await refine();
+    const first = service.getOperation(refined.batches[0]!.operationId!)!;
+    const id = (await accept(first)).accepted[0]!.memoryId;
+    put(topic, "A changed synthetic parser rule with a longer source.\n");
+    const next = plan("shared-race");
+    expect(next.plan.items[0]!.target?.memoryId).toBe(id);
+    const shared = memory.team.publish(id, project, { actor: "user" });
+    await expect(accept(next)).rejects.toThrow("Team rules are not owned by native import");
+    const rollback = service.rollback(first.plan.operationId, true);
+    expect(rollback.archived).not.toContain(id);
+    expect(rollback.conflicts.map(conflict => conflict.memoryId)).toContain(id);
+    expect(memory.store.getById(id)).toMatchObject({ status: "active", content: shared.content });
+  });
   it("is durable and idempotent, preserves source bytes, and updates changed units rather than duplicating", async () => {
     const before = readFileSync(topic, "utf8"),
       first = plan("first"),

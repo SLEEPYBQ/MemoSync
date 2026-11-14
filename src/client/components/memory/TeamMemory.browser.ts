@@ -42,6 +42,7 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     { ...base, id: "M-02", content: "Run the synthetic suite before release.", version: 3, team: { id: "T-b234" } },
     { ...base, id: "M-03", content: "Document the synthetic deployment procedure." },
     { ...base, id: "M-04", status: "archived", content: "Keep a synthetic change log.", team: { id: "T-a123" } },
+    { ...base, id: "M-06", content: "Run synthetic checks.", detail: "Extra synthetic detail." },
   ]
   const actions: Array<{ path: string; body: unknown }> = []
   let releaseToggle!: () => void
@@ -65,7 +66,7 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
       data = items.find(item => item.id === id)
     } else if (path.endsWith("/team/publish")) {
       actions.push({ path, body: null })
-      items = items.map(item => item.id === id ? { ...item, team: { id: "T-c345" } } : item)
+      items = items.map(item => item.id === id ? { ...item, detail: undefined, team: { id: "T-c345" } } : item)
       data = items.find(item => item.id === id)
     } else if (path.endsWith("/team/unshare")) {
       actions.push({ path, body: null })
@@ -89,6 +90,16 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
   expect(await library.locator('[data-memory-board-id="M-03"]').count()).toBe(0)
   await library.getByText(/unresolved merge conflicts/).waitFor()
   await page.locator("#ordinary").getByRole("button", { name: "Share with team" }).waitFor()
+  const detailed = page.locator("#ordinary-detail")
+  await detailed.getByRole("button", { name: "Share with team" }).click()
+  await detailed.getByText("Only the one-line rule is shared. The detailed form will be removed from this memory.").waitFor()
+  expect(actions.filter(action => action.path === "/api/memories/M-06/team/publish")).toHaveLength(0)
+  await detailed.getByRole("button", { name: "Cancel" }).click()
+  expect(await detailed.getByText("Only the one-line rule is shared. The detailed form will be removed from this memory.").count()).toBe(0)
+  await detailed.getByRole("button", { name: "Share with team" }).click()
+  await detailed.getByRole("button", { name: "Share with team" }).click()
+  await detailed.getByText("Written to .memosync/team.md — commit it with your pull request.").waitFor()
+  expect(actions.filter(action => action.path === "/api/memories/M-06/team/publish")).toHaveLength(1)
   expect(await page.locator("#ordinary-no-path").getByRole("button", { name: "Share with team" }).count()).toBe(0)
   const teamDefault = page.locator("#team-default")
   expect(await teamDefault.locator("[data-team-rule-text]").textContent()).toBe("Validate requests in src/auth.ts.")

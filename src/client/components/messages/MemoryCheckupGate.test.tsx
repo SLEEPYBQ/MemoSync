@@ -6,6 +6,25 @@ import { MemoryCheckupGate } from "./MemoryCheckupGate"
 type CheckupMessage = Extract<HydratedTranscriptMessage, { kind: "memory_checkup" }>
 
 describe("MemoryCheckupGate", () => {
+  test("team/local redundancy offers archiving the local rule or keeping both, not merge", () => {
+    const message = {
+      kind: "memory_checkup",
+      id: "team-checkup",
+      checkupId: "team-checkup",
+      timestamp: "2026-08-19T00:00:00.000Z",
+      suggestions: [{ kind: "redundancy", memoryId: "M-01", otherMemoryId: "M-03", reason: "Synthetic duplicate", teamPair: true, teamMemoryId: "M-01" }],
+    } as unknown as CheckupMessage
+    const html = renderToStaticMarkup(<MemoryCheckupGate message={message} onRespond={() => {}} />)
+    expect(html).not.toContain(">Merge</button>")
+    expect(html).toContain("Archive M-03")
+    expect(html).toContain("Keep both")
+    const reversed = renderToStaticMarkup(<MemoryCheckupGate message={{
+      ...message,
+      suggestions: [{ kind: "redundancy", memoryId: "M-03", otherMemoryId: "M-01", reason: "Synthetic duplicate", teamPair: true, teamMemoryId: "M-01" }],
+    }} onRespond={() => {}} />)
+    expect(reversed).toContain("Archive M-03")
+    expect(reversed).not.toContain(">Merge</button>")
+  })
   test("renders row progress shared with an expanded Memory Board surface", () => {
     const message = {
       kind: "memory_checkup",

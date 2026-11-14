@@ -140,6 +140,50 @@ describe('memory routes', () => {
     expect((await json(await call('GET', `/api/memories/${list[0].id}`, undefined, services))).data.team).toBeUndefined();
   });
 
+  it('preserves user opt-outs from all archive surfaces through a branch switch', async () => {
+    const project = join(dir, 'team-opt-out-project');
+    mkdirSync(join(project, '.memosync'), { recursive: true });
+    const teamFile = join(project, '.memosync', 'team.md');
+    const text = Array.from({ length: 5 }, (_, i) => `- [T-000${i}] Synthetic rule ${i}`).join('\n');
+    writeFileSync(teamFile, text);
+    const ids = memory.team.syncProject('P1', project).added;
+    const { createMaintenanceService } = await import('./maintenance');
+    const services = { resolveProjectPath: () => project, maintenance: createMaintenanceService({ memory }) };
+    for (const [i, surface] of ['board', 'chat_gate', 'chat_citation', 'chat_audit'].entries()) {
+      expect((await call('PATCH', `/api/memories/${ids[i]}`, { status: 'archived', surface }, services))!.status).toBe(200);
+    }
+    expect((await call('DELETE', `/api/memories/${ids[4]}`, undefined, services))!.status).toBe(200);
+    rmSync(teamFile);
+    memory.team.syncProject('P1', project);
+    writeFileSync(teamFile, text);
+    memory.team.syncProject('P1', project);
+    for (const id of ids) expect(memory.store.getById(id)?.status).toBe('archived');
+    expect((await call('PATCH', `/api/memories/${ids[0]}`, { status: 'active', surface: 'chat_citation' }, services))!.status).toBe(200);
+    rmSync(teamFile);
+    memory.team.syncProject('P1', project);
+    writeFileSync(teamFile, text);
+    memory.team.syncProject('P1', project);
+    expect(memory.store.getById(ids[0]!)?.status).toBe('active');
+  });
+
+  it('only permits archiving the local half of a live team/local redundancy pair', async () => {
+    const project = join(dir, 'team-redundancy-project');
+    mkdirSync(project);
+    const team = memory.store.create({ content: 'Team synthetic rule', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const local = memory.store.create({ content: 'Local synthetic rule', scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+    const other = memory.store.create({ content: 'Another synthetic rule', scope: 'project', projectId: 'P2', type: 'constraint' }, { actor: 'user' });
+    memory.team.publish(team.id, project, { actor: 'user' });
+    const { createMaintenanceService } = await import('./maintenance');
+    const services = { maintenance: createMaintenanceService({ memory, callJson: async () => ({}) }) };
+    const resolve = (id: string, otherId: string, action: string) => call('POST', '/api/memories/attention-resolve', { kind: 'redundant', id, otherId, action }, services);
+    expect((await resolve(local.id, team.id, 'merge'))!.status).toBe(409);
+    expect((await resolve(team.id, local.id, 'archive'))!.status).toBe(409);
+    expect((await resolve(other.id, team.id, 'archive'))!.status).toBe(409);
+    expect((await resolve(local.id, team.id, 'archive'))!.status).toBe(200);
+    expect(memory.store.getById(local.id)?.status).toBe('archived');
+    expect(memory.store.getById(team.id)?.status).toBe('active');
+  });
+
   it('expires already-past team rules during the first Board sync', async () => {
     const project = join(dir, 'team-expiry-project');
     mkdirSync(join(project, '.memosync'), { recursive: true });

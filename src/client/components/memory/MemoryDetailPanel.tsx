@@ -88,6 +88,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   const [proposing, setProposing] = useState(false)
   const [teamWritten, setTeamWritten] = useState<"publish" | "propose" | null>(null)
   const [unshareArmed, setUnshareArmed] = useState(false)
+  const [shareArmed, setShareArmed] = useState(false)
   const [canShare, setCanShare] = useState(false)
   const contentRef = useRef<HTMLTextAreaElement>(null)
   const [sanitized, setSanitized] = useState<Array<{ placeholder: string; kind: string }> | null>(null)
@@ -124,6 +125,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     setExpiresAt(item.expiresAt ?? null)
     setSanitized(null)
     setArchiveArmed(false)
+    setShareArmed(false)
     setError(null)
   }, [item.id, item.updatedAt])
 
@@ -169,6 +171,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       onUpdated(updated)
       setTeamWritten(action === "publish" ? "publish" : null)
       setUnshareArmed(false)
+      setShareArmed(false)
       setProposing(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : t("memory:failedToUpdate"))
@@ -496,9 +499,14 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             </div> : null}
             {!item.team && item.status === "active" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+                {shareArmed ? <p className="w-full text-[11px] leading-4 text-muted-foreground">{t("memory:teamShareDetailHint")}</p> : null}
                 <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setTransferOpen(true)}>
                   <ArrowRightLeft className="h-3.5 w-3.5" /> {t("memory:transfer")}</Button>
-                {canShare ? <Button variant="ghost" size="sm" disabled={busyState} onClick={() => void handleTeam("publish")}><Users className="h-3.5 w-3.5" />{t("memory:teamShare")}</Button> : null}
+                {canShare ? <Button variant="ghost" size="sm" disabled={busyState} onClick={() => {
+                  if (!shareArmed && (item.detail?.trim() || draft.detail.trim())) setShareArmed(true)
+                  else void handleTeam("publish")
+                }}><Users className="h-3.5 w-3.5" />{t("memory:teamShare")}</Button> : null}
+                {shareArmed ? <Button variant="ghost" size="sm" disabled={busyState} onClick={() => setShareArmed(false)}>{t("common:cancel")}</Button> : null}
                 {archiveArmed ? (
                   <div className="flex flex-wrap items-center gap-2">
                     <Button variant="ghost" className="text-destructive hover:text-destructive" size="sm" disabled={busyState} onClick={() => void handleArchive()}>

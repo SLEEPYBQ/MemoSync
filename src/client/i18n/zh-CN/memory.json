@@ -550,5 +550,7 @@
   "teamConflict": "<code>.memosync/team.md</code> 存在未解决的合并冲突，团队规则暂时保持上一次成功加载的版本。",
   "teamExpiryUntil": "至 {{date}}",
   "teamOffHere": "已在本机停用。",
-  "teamRemoveHint": "提交这次改动后，这条规则会从 team.md 中移除。这条记忆会保留为你自己的项目记忆。"
+  "teamRemoveHint": "提交这次改动后，这条规则会从 team.md 中移除。这条记忆会保留为你自己的项目记忆。",
+  "teamShareDetailHint": "只会分享这一行规则，这条记忆的详细内容将被移除。",
+  "archiveValue0": "归档 {{v0}}"
 }

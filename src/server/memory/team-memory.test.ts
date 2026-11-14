@@ -47,7 +47,7 @@ test('sync creates, changes, removes and restores the same id; respects local of
   expect(memory.store.getEvents(id).at(-1)).toMatchObject({ actor: 'system', meta: { via: 'team_removed' } });
   writeFileSync(file, '# Team memory\n## Testing\n- [T-a123] Run updated synthetic suite\n');
   expect(memory.team.syncProject('P1', project)).toEqual({ added: [], changed: [], removed: [], conflict: false });
-  expect(memory.store.getById(id)).toMatchObject({ status: 'active', version: item.version + 1 });
+  expect(memory.store.getById(id)).toMatchObject({ status: 'archived', version: item.version + 1 });
   expect(memory.team.refsFor([id]).get(id)).toEqual({ id: 'T-a123' });
 });
 
@@ -135,4 +135,47 @@ test('team links prevent revision proposals and invalidate already-drafted accep
   expect(memory.store.createRevisionProposal({ content: 'Another synthetic revision', scope: 'project', projectId: 'P1', type: 'constraint' }, target.id, { actor: 'system' })).toBeNull();
   expect(() => memory.store.acceptRevision(draft.id, { actor: 'user' })).toThrow();
   expect(memory.store.getById(target.id)?.status).toBe('active');
+});
+
+test('an expired rule is reactivated when extended unless it was locally turned off', () => {
+  writeFileSync(file, '- [T-a123] First synthetic rule (until 2020-01-01)\n- [T-b234] Second synthetic rule (until 2020-01-01)\n');
+  const [first, second] = memory.team.syncProject('P1', project).added;
+  memory.expireDue();
+  expect(memory.store.getById(first!)?.status).toBe('archived');
+  memory.store.archive(second!, { actor: 'user' });
+  writeFileSync(file, '- [T-a123] First synthetic rule (until 2099-01-01)\n- [T-b234] Second synthetic rule (until 2099-01-01)\n');
+  memory.team.syncProject('P1', project);
+  expect(memory.store.getById(first!)?.status).toBe('active');
+  expect(memory.store.getById(second!)?.status).toBe('archived');
+  memory.store.update(second!, { status: 'active' }, { actor: 'user' });
+  rmSync(file);
+  memory.team.syncProject('P1', project);
+  writeFileSync(file, '- [T-a123] First synthetic rule\n- [T-b234] Second synthetic rule\n');
+  memory.team.syncProject('P1', project);
+  expect(memory.store.getById(second!)?.status).toBe('active');
+  expect(memory.db.query('SELECT local_off FROM team_memory_links WHERE memory_id = ?').get(second!)).toEqual({ local_off: 0 });
+});
+
+test('returning an unchanged rule refreshes the project markdown projection', () => {
+  writeFileSync(file, '- [T-a123] Synthetic projection rule\n');
+  const id = memory.team.syncProject('P1', project).added[0]!;
+  const projection = memory.file.projectPath('P1');
+  expect(readFileSync(projection, 'utf8')).toContain(id);
+  rmSync(file);
+  memory.team.syncProject('P1', project);
+  expect(readFileSync(projection, 'utf8')).not.toContain(id);
+  writeFileSync(file, '- [T-a123] Synthetic projection rule\n');
+  memory.team.syncProject('P1', project);
+  expect(memory.store.getById(id)?.status).toBe('active');
+  expect(readFileSync(projection, 'utf8')).toContain(id);
+});
+
+test('publishing clears detail and sync keeps the team mirror detail empty', () => {
+  const item = memory.store.create({ content: 'Synthetic team rule', detail: 'Synthetic local detail', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+  const shared = memory.team.publish(item.id, project, { actor: 'user' });
+  expect(shared.detail ?? '').toBe('');
+  expect(memory.store.getEvents(item.id).at(-1)).toMatchObject({ meta: { via: 'team' } });
+  memory.store.update(item.id, { detail: 'Synthetic local detail again' }, { actor: 'system' });
+  memory.team.syncProject('P1', project);
+  expect(memory.store.getById(item.id)?.detail ?? '').toBe('');
 });

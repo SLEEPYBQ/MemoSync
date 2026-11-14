@@ -1391,6 +1391,8 @@ export interface MemoryCheckupSuggestionSnapshot {
   kind: MemoryCheckupKind | "promotion"
   memoryId: string
   otherMemoryId?: string
+  teamPair?: true
+  teamMemoryId?: string
   promoteTo?: "project" | "personal"
   reason: string
 }

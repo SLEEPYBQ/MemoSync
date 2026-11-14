@@ -22,6 +22,7 @@ const team: MemoryItem = { ...base, id: "M-01", content: "Validate requests in s
   fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }] }
 const second: MemoryItem = { ...base, id: "M-02", content: "Run the synthetic suite before release.", version: 3, team: { id: "T-b234" } }
 const ordinary: MemoryItem = { ...base, id: "M-03", content: "Document the synthetic deployment procedure." }
+const detailed: MemoryItem = { ...base, id: "M-06", content: "Run synthetic checks.", detail: "Extra synthetic detail." }
 const noPath: MemoryItem = { ...base, id: "M-05", projectId: "no-path", content: "A synthetic rule without a local project." }
 const off: MemoryItem = { ...team, id: "M-04", status: "archived", content: "Keep a synthetic change log.", fileRefs: [] }
 useMemoryStore.setState({ items: [team, second, ordinary, off], status: "ready" })
@@ -53,6 +54,7 @@ function Fixture() {
         <section id="team-propose" className="max-w-lg rounded-xl border bg-card"><Detail initial={second} /></section>
         <section id="team-off" className="max-w-lg rounded-xl border bg-card"><Detail initial={off} /></section>
         <section id="ordinary" className="max-w-lg rounded-xl border bg-card"><Detail initial={ordinary} /></section>
+        <section id="ordinary-detail" className="max-w-lg rounded-xl border bg-card"><Detail initial={detailed} /></section>
         <section id="ordinary-no-path" className="max-w-lg rounded-xl border bg-card"><Detail initial={noPath} /></section>
         <section id="preview" className="max-w-3xl"><MemoryPreviewMessage message={preview} onRespond={() => {}} /></section>
         <section id="notice" className="max-w-3xl rounded-xl border bg-card p-4"><MemoryTeamUpdatedMessage message={{ kind: "memory_team_updated", id: "notice", timestamp: "2030-01-01T00:00:00.000Z", added: ["M-01"], changed: ["M-02"], removed: ["M-04"], turn: 2 }} /></section>

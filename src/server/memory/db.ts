@@ -160,6 +160,7 @@ CREATE TABLE IF NOT EXISTS team_memory_links (
   team_id TEXT NOT NULL,
   content_hash TEXT NOT NULL,
   removed INTEGER NOT NULL DEFAULT 0,
+  local_off INTEGER NOT NULL DEFAULT 0,
   UNIQUE(project_id, team_id)
 );
 

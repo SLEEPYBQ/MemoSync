@@ -26,7 +26,7 @@ export interface TeamSyncResult {
   conflict: boolean;
 }
 
-type TeamLink = { memory_id: string; project_id: string; team_id: string; content_hash: string; removed: number };
+type TeamLink = { memory_id: string; project_id: string; team_id: string; content_hash: string; removed: number; local_off: number };
 type PendingNotice = { added: string[]; changed: string[]; removed: string[]; revision: number };
 
 function localEndOfDay(value: string): string | null {
@@ -128,6 +128,8 @@ export class TeamMemory {
       const parsed = parseTeamFile(text ?? '');
       if (parsed.conflict) return { ...result, conflict: true };
       const seen = new Set(parsed.rules.map(rule => rule.id));
+      let projectionDirty = false;
+      const now = new Date().toISOString();
       this.db.transaction(() => {
         for (const rule of parsed.rules) {
           if (looksLikeSecret(rule.content)) continue;
@@ -140,16 +142,28 @@ export class TeamMemory {
             { actor: 'system', via: 'team' });
             this.db.query('INSERT INTO team_memory_links (memory_id, project_id, team_id, content_hash) VALUES (?, ?, ?, ?)')
               .run(item.id, projectId, rule.id, hash);
+            this.store.expireIfDue(item.id, now);
+            projectionDirty = true;
             result.added.push(item.id);
           } else {
             const changed = link.content_hash !== hash;
+            const item = this.store.getById(link.memory_id);
+            if (!item) throw new Error('Linked team memory is missing');
+            const detailChanged = Boolean(item.detail);
+            const expired = Boolean(rule.expiresAt && rule.expiresAt <= now);
             const patch: Partial<MemoryItem> = {};
             if (changed) Object.assign(patch, { content: rule.content, topic: rule.topic ?? null, expiresAt: rule.expiresAt ?? null });
-            if (link.removed) patch.status = 'active';
-            if (changed || link.removed) this.store.update(link.memory_id, patch, { actor: 'system', via: 'team' });
+            if (detailChanged) Object.assign(patch, { detail: null });
+            if (link.local_off && item.status !== 'archived') patch.status = 'archived';
+            else if (!link.local_off && !expired && item.status !== 'active') patch.status = 'active';
+            if (Object.keys(patch).length) {
+              this.store.update(link.memory_id, patch, { actor: 'system', via: 'team' });
+              projectionDirty = true;
+            }
+            if (expired && !link.local_off && this.store.expireIfDue(link.memory_id, now)) projectionDirty = true;
             if (changed || link.removed) this.db.query('UPDATE team_memory_links SET content_hash = ?, removed = 0 WHERE memory_id = ?')
               .run(hash, link.memory_id);
-            if (changed) result.changed.push(link.memory_id);
+            if (changed || detailChanged) result.changed.push(link.memory_id);
           }
         }
         const links = this.db.query('SELECT * FROM team_memory_links WHERE project_id = ? AND removed = 0').all(projectId) as TeamLink[];
@@ -157,10 +171,11 @@ export class TeamMemory {
           if (seen.has(link.team_id)) continue;
           this.store.archiveRemovedTeamRule(link.memory_id);
           this.db.query('UPDATE team_memory_links SET removed = 1 WHERE memory_id = ?').run(link.memory_id);
+          projectionDirty = true;
           result.removed.push(link.memory_id);
         }
       })();
-      if (result.added.length || result.changed.length || result.removed.length) this.syncProjection(projectId);
+      if (projectionDirty) this.syncProjection(projectId);
       return result;
     } catch {
       console.warn('[memory] Could not sync team memory');
@@ -205,8 +220,10 @@ export class TeamMemory {
     const canonical = parseTeamFile(`## ${section}\n${serializeRule(rule)}\n`).rules[0]!;
     this.db.query('INSERT INTO team_memory_links (memory_id, project_id, team_id, content_hash) VALUES (?, ?, ?, ?)')
       .run(item.id, item.projectId, rule.id, ruleHash(canonical));
-    if (item.content !== canonical.content || (item.topic ?? null) !== (canonical.topic ?? null) || (item.expiresAt ?? null) !== (canonical.expiresAt ?? null)) {
-      this.store.update(item.id, { content: canonical.content, topic: canonical.topic ?? null, expiresAt: canonical.expiresAt ?? null } as Partial<MemoryItem>, meta);
+    if (item.content !== canonical.content || item.detail || (item.topic ?? null) !== (canonical.topic ?? null) || (item.expiresAt ?? null) !== (canonical.expiresAt ?? null)) {
+      const patch: Partial<MemoryItem> = { content: canonical.content, expiresAt: canonical.expiresAt ?? null };
+      Object.assign(patch, { detail: null, topic: canonical.topic ?? null });
+      this.store.update(item.id, patch, { ...meta, via: 'team' });
     }
     this.syncProjection(item.projectId);
     return this.decorate(this.store.getById(item.id)!);

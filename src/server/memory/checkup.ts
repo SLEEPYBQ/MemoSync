@@ -27,6 +27,8 @@ export interface CheckupSuggestion {
   memoryId: string;
   /** conflict/redundancy: the other half of the pair. */
   otherMemoryId?: string;
+  teamPair?: true;
+  teamMemoryId?: string;
   /** One line, grounded in the item's text/evidence — this IS the suggestion's justification. */
   reason: string;
 }
@@ -147,6 +149,7 @@ interface CheckupDependencySnapshot {
   driftRefs: Map<string, import('./types').MemoryFileRef[]>;
   relatedPairs: Set<string>;
   openRevisionIds: Set<string>;
+  teamIds: Set<string>;
   today: string;
 }
 
@@ -186,6 +189,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
   function dependencySnapshot(ctx: CheckupContext): CheckupDependencySnapshot {
     const pool = activePool(ctx);
     const poolById = new Map(pool.map((item) => [item.id, item]));
+    const teamIds = new Set(memory.team.refsFor(pool.map(item => item.id)).keys());
     const quiet = quietShortlist(ctx);
     const driftRefs = memory.fileDrift.refsFor(pool.map(item => item.id));
     const quietItems = pool.filter((item) => quiet.has(item.id) || driftRefs.get(item.id)?.some(ref => ref.drift));
@@ -216,6 +220,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
           reinforcedCount: item.reinforcedCount,
           quiet: quiet.has(item.id),
           drift: memory.fileDrift.driftSignature(item.id),
+          team: teamIds.has(item.id),
         }))
         .sort((a, b) => a.id.localeCompare(b.id)),
       relations: [...relationFingerprint].sort(),
@@ -223,7 +228,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       today: quietItems.length ? today : '',
     });
 
-    return { key, pool, poolById, quiet, quietItems, driftRefs, relatedPairs, openRevisionIds, today };
+    return { key, pool, poolById, quiet, quietItems, driftRefs, relatedPairs, openRevisionIds, teamIds, today };
   }
 
   /** Validate one pair-shaped finding list (conflict/redundancy). */
@@ -248,6 +253,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       const reason = normalizeReason(rec.reason);
       if (!a || !b || a === b || !snapshot.poolById.has(a) || !snapshot.poolById.has(b) || !reason) continue;
       if (kind === 'redundancy' && !shareMergeContext(snapshot.poolById.get(a)!, snapshot.poolById.get(b)!)) continue;
+      if (kind === 'redundancy' && snapshot.teamIds.has(a) && snapshot.teamIds.has(b)) continue;
       const pairKey = normalizedPairKey(a, b);
       if (seenPairs.has(pairKey)) continue;
       seenPairs.add(pairKey);
@@ -259,7 +265,8 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
         snapshot.openRevisionIds.has(a) ||
         snapshot.openRevisionIds.has(b)
       ) continue;
-      out.push({ kind, memoryId: a, otherMemoryId: b, reason });
+      const teamMemoryId = kind === 'redundancy' ? (snapshot.teamIds.has(a) ? a : snapshot.teamIds.has(b) ? b : undefined) : undefined;
+      out.push({ kind, memoryId: a, otherMemoryId: b, reason, ...(teamMemoryId ? { teamPair: true, teamMemoryId } : {}) });
     }
     return out;
   }
@@ -333,7 +340,9 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
         // accepted by the snapshot validator are eligible for the final row.
         if (!id || !kind || !reason || !ids.has(id) || seen.has(id) || !validatedTuples.has(tuple)) continue;
         seen.add(id);
-        out.push({ kind, memoryId: id, ...(other ? { otherMemoryId: other } : {}), reason });
+        const original = findings.find(finding => finding.memoryId === id && finding.kind === kind && finding.otherMemoryId === other);
+        out.push({ kind, memoryId: id, ...(other ? { otherMemoryId: other } : {}), reason,
+          ...(original?.teamPair ? { teamPair: true, teamMemoryId: original.teamMemoryId } : {}) });
       }
       // Coverage guarantee: any memory the model dropped gets its original
       // finding(s) back through the deterministic merge.

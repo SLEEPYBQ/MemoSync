@@ -550,5 +550,7 @@
   "teamConflict": "<code>.memosync/team.md</code> has unresolved merge conflicts. Team rules stay at the last version that loaded.",
   "teamExpiryUntil": "until {{date}}",
   "teamOffHere": "Turned off on this machine.",
-  "teamRemoveHint": "The rule leaves team.md once you commit the change. This memory stays here as your own project memory."
+  "teamRemoveHint": "The rule leaves team.md once you commit the change. This memory stays here as your own project memory.",
+  "teamShareDetailHint": "Only the one-line rule is shared. The detailed form will be removed from this memory.",
+  "archiveValue0": "Archive {{v0}}"
 }

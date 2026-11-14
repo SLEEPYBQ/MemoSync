@@ -10,6 +10,7 @@ import type { ExpectedMemoryUse } from '../../shared/types';
 import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
+import { shareMergeContext } from './maintenance';
 import { CandidateDismissalTransitionError, RevisionConflictError, TraceCorrectionError } from './MemoryStore';
 import { recordMemoryConfirmation } from './confirmation';
 import { rankMemories } from './retrieval';
@@ -664,14 +665,24 @@ export async function handleMemoryRequest(
         if (typeof b.otherId !== 'string' || !b.otherId) {
           throw new RouteError(400, 'BAD_REQUEST', 'otherId is required for a redundant pair');
         }
-        if (b.action !== 'merge' && b.action !== 'keep') {
-          throw new RouteError(400, 'BAD_REQUEST', "action must be 'merge' or 'keep'");
+        if (b.action !== 'merge' && b.action !== 'keep' && b.action !== 'archive') {
+          throw new RouteError(400, 'BAD_REQUEST', "action must be 'merge', 'keep' or 'archive'");
         }
         return await (async () => {
             try {
               if (b.action === 'keep') {
                 services.maintenance!.keepBoth(b.id as string, b.otherId as string, meta);
                 return ok({ kept: [b.id, b.otherId] });
+              }
+              if (b.action === 'archive') {
+                const local = memory.store.getById(b.id as string);
+                const team = memory.store.getById(b.otherId as string);
+                if (!local || !team || local.status !== 'active' || team.status !== 'active'
+                  || memory.store.isTeamLinked(local.id) || !memory.store.isTeamLinked(team.id)
+                  || !shareMergeContext(local, team)) {
+                  throw new RouteError(409, 'CONFLICT', 'Only the local memory in an active team/local pair can be archived');
+                }
+                return ok(decorate(services.maintenance!.archive('redundant', local.id, meta)));
               }
               const proposal = await services.maintenance!.merge(b.id as string, b.otherId as string, meta);
               if (!proposal) {
@@ -1397,9 +1408,6 @@ export async function handleMemoryRequest(
               }
             } else {
               updated = memory.store.update(id, patch as Partial<MemoryItem>, UI_ACTOR);
-              if (existing.status === 'archived' && patch.status === 'active') {
-                memory.db.query('DELETE FROM team_memory_links WHERE memory_id = ? AND removed = 1').run(id);
-              }
             }
           })();
         baseline(updated);
