@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { formatBashCommandTitle, formatSidebarAgeLabel } from "./formatters"
+import { formatBashCommandTitle, formatSidebarAgeLabel, getPathBasename } from "./formatters"
+
+test("project labels use folder names across native path formats", () => {
+  expect(getPathBasename("C:\\Projects\\中文 workspace\\")).toBe("中文 workspace")
+  expect(getPathBasename("\\\\server\\share\\workspace")).toBe("workspace")
+  expect(getPathBasename("/home/synthetic/workspace/")).toBe("workspace")
+})
 
 describe("formatBashCommandTitle", () => {
   test("unwraps codex zsh -lc commands", () => {

@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test"
-import { parseLocalFileLink, shouldOpenLocalFileLinkInEditor } from "./pathUtils"
+import { parseLocalFileLink, shouldOpenLocalFileLinkInEditor, stripOutputsPath, stripWorkspacePath } from "./pathUtils"
+
+test("Windows file links retain drive and UNC roots and workspace-relative labels", () => {
+  expect(parseLocalFileLink("C:\\Projects\\中文\\app.ts:12:3")).toEqual({ path: "C:\\Projects\\中文\\app.ts", line: 12, column: 3 })
+  expect(parseLocalFileLink("\\\\server\\share\\app.ts#L5")).toEqual({ path: "\\\\server\\share\\app.ts", line: 5, column: undefined })
+  expect(parseLocalFileLink("C:relative.ts:5")).toBeNull()
+  expect(stripWorkspacePath("c:\\PROJECTS\\Demo\\src\\app.ts", "C:/Projects/Demo/")).toBe("src/app.ts")
+  expect(stripWorkspacePath("C:\\Projects\\Demo-other\\app.ts", "C:\\Projects\\Demo")).toBe("C:/Projects/Demo-other/app.ts")
+  expect(stripOutputsPath("C:\\Projects\\Demo\\outputs\\chart.csv", "C:\\Projects\\Demo")).toBe("/chart.csv")
+})
 
 describe("parseLocalFileLink", () => {
   test("parses an absolute file path with a line fragment", () => {

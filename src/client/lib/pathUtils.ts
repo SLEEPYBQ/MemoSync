@@ -42,8 +42,9 @@ function toPositiveInteger(value: string | undefined) {
 }
 
 function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
-  const hashMatch = /^(?<path>\/.+?)#L(?<line>\d+)(?:C(?<column>\d+))?$/.exec(target)
-  if (hashMatch?.groups?.path) {
+  const absolute = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\")
+  const hashMatch = /^(?<path>.+?)#L(?<line>\d+)(?:C(?<column>\d+))?$/.exec(target)
+  if (hashMatch?.groups?.path && absolute(hashMatch.groups.path)) {
     return {
       path: hashMatch.groups.path,
       line: toPositiveInteger(hashMatch.groups.line),
@@ -51,8 +52,8 @@ function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
     }
   }
 
-  const suffixMatch = /^(?<path>\/.+?):(?<line>\d+)(?::(?<column>\d+))?$/.exec(target)
-  if (suffixMatch?.groups?.path) {
+  const suffixMatch = /^(?<path>.+?):(?<line>\d+)(?::(?<column>\d+))?$/.exec(target)
+  if (suffixMatch?.groups?.path && absolute(suffixMatch.groups.path)) {
     return {
       path: suffixMatch.groups.path,
       line: toPositiveInteger(suffixMatch.groups.line),
@@ -60,7 +61,7 @@ function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
     }
   }
 
-  if (target.startsWith("/")) {
+  if (absolute(target)) {
     return { path: target }
   }
 
@@ -106,14 +107,18 @@ export function shouldOpenLocalFileLinkInEditor(filePath: string) {
  */
 export function stripWorkspacePath(path: string | undefined, localPath: string | undefined | null): string {
   if (!path) return ""
+  const normalized = path.replaceAll("\\", "/")
   // Try localPath first (with or without trailing slash)
   if (localPath) {
-    const withSlash = localPath.endsWith("/") ? localPath : `${localPath}/`
-    if (path.startsWith(withSlash)) return path.slice(withSlash.length)
-    if (path === localPath) return ""
+    const root = localPath.replaceAll("\\", "/").replace(/\/+$/, "")
+    const windows = /^[A-Za-z]:\//.test(root) || root.startsWith("//")
+    const candidate = windows ? normalized.toLowerCase() : normalized
+    const base = windows ? root.toLowerCase() : root
+    if (candidate.startsWith(`${base}/`)) return normalized.slice(root.length + 1)
+    if (candidate === base) return ""
   }
   // Fallback to sandbox path
-  return path.replace(/^\/home\/user\/workspace\//, "")
+  return normalized.replace(/^\/home\/user\/workspace\//, "")
 }
 
 /**
@@ -123,8 +128,9 @@ export function stripWorkspacePath(path: string | undefined, localPath: string |
 export function stripOutputsPath(path: string | undefined, localPath: string | undefined | null): string | undefined {
   if (!path) return undefined
   if (localPath) {
-    const outputsPrefix = `${localPath}/outputs`
-    if (path.startsWith(outputsPrefix)) return path.slice(outputsPrefix.length)
+    const relative = stripWorkspacePath(path, localPath)
+    if (relative === "outputs") return ""
+    if (relative.startsWith("outputs/")) return relative.slice("outputs".length)
   }
   return path.replace(/^\/home\/user\/workspace\/outputs/, "") || undefined
 }

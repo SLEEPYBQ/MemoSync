@@ -68,6 +68,7 @@ async function main() {
     const origin = new URL(page.url()).origin
     const { projectId } = await command(page, { type: "project.create", localPath: workspace, title: "Synthetic desktop project" })
     assert.ok(projectId)
+    await page.getByRole("heading", { name: "What should we build in workspace with spaces?", exact: true }).waitFor()
     const fileUrl = `${origin}/api/projects/${projectId}/files/README.md/content`
     assert.equal(await page.evaluate(async url => (await fetch(url)).text(), fileUrl), "# Synthetic desktop snapshot\n")
     const opened = app.waitForEvent("window")
