@@ -498,5 +498,6 @@
   "modeAuto": "自动",
   "modeOffDescription": "这个对话不使用，也不学习记忆。",
   "modeReviewDescription": "在需要时请你审阅记忆改动和工作记忆。",
-  "modeAutoDescription": "智能体自行使用和保存记忆，你可以事后到记忆页查看。"
+  "modeAutoDescription": "智能体自行使用和保存记忆，你可以事后到记忆页查看。",
+  "saveExpiryBeforeScopeOrSensitivity": "请先保存到期时间，再更改作用域或敏感标记。"
 }
