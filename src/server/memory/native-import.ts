@@ -1158,6 +1158,9 @@ export class NativeMemoryImportService {
                   },
                   { actor: "user" },
                 ));
+            if (item.owner.scope === "project" && item.projectPath && target.projectId === item.owner.projectId) {
+              this.memory.fileDrift.baseline(target.id, item.projectPath);
+            }
             if (!previous) createdDuringBatch.set(batchKey, target);
             const owns = !link || updated;
             if (owns) {
