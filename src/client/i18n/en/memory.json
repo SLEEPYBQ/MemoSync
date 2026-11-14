@@ -553,5 +553,6 @@
   "teamRemoveHint": "The rule leaves team.md once you commit the change. This memory stays here as your own project memory.",
   "teamShareDetailHint": "Only the one-line rule is shared. The detailed form will be removed from this memory.",
   "archiveValue0": "Archive {{v0}}",
-  "teamShareSaveFirst": "Save your changes before sharing."
+  "teamShareSaveFirst": "Save your changes before sharing.",
+  "saveExpiryBeforeScopeOrSensitivity": "Save the expiry change before moving this memory or changing its sensitivity."
 }

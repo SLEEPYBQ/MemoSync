@@ -15,6 +15,12 @@ export function getMemoryConfirmation(store: MemoryStore, chatId: string): Memor
   return { confirmedVersions: state?.confirmedVersions ?? {}, confirmedDrift: state?.confirmedDrift ?? {}, removedIds: state?.removedIds ?? [] };
 }
 
+export function clearMemoryRemoval(store: MemoryStore, chatId: string, memoryId: string): void {
+  const state = getMemoryConfirmation(store, chatId);
+  if (!state.removedIds.includes(memoryId)) return;
+  store.setKv(key(chatId), { ...state, removedIds: state.removedIds.filter(id => id !== memoryId) });
+}
+
 export function memoryConfirmationReasons(items: readonly MemoryItem[], state: MemoryConfirmationState, enforcedIds: readonly string[], drift?: FileDrift, store?: MemoryStore): MemoryConfirmationReason[] {
   const removed = new Set(state.removedIds), enforced = new Set(enforcedIds);
   const refs = drift?.refsFor(items.map(item => item.id));

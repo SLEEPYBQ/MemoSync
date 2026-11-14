@@ -141,6 +141,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
   const isDirty = Object.keys(dirtyPatch).length > 0
   const shareBlocked = isDirty || draft.content.trim() !== item.content.trim()
+  const expiryDirty = expiresAt !== (item.expiresAt ?? null)
   const sensitiveCandidate = item.status === "candidate" && item.sensitive
   const reviewedSensitivePatch = useMemo(
     () => buildReviewedSensitiveCandidatePatch(item, draft),
@@ -182,7 +183,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   }
 
   async function handleMoveScope(target: MemoryScope) {
-    if (target === item.scope) return
+    if (expiryDirty || target === item.scope) return
     setBusy("scope")
     setError(null)
     try {
@@ -207,6 +208,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   }
 
   async function handleToggleSensitive() {
+    if (expiryDirty) return
     setBusy("sensitive")
     setError(null)
     try {
@@ -432,7 +434,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                     <button
                       key={scope}
                       type="button"
-                      disabled={busyState || item.status === "archived"}
+                      disabled={busyState || item.status === "archived" || expiryDirty}
                       onClick={() => void handleMoveScope(scope)}
                       aria-pressed={active}
                       className={cn(
@@ -451,6 +453,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                 })}
               </div>
               {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
+              {expiryDirty ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:saveExpiryBeforeScopeOrSensitivity")}</p> : null}
             </div> : null}
 
             {item.team ? <div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Clock3 className="h-3 w-3" />{t("memory:keep")}: {item.expiresAt ? t("memory:teamExpiryUntil", { date: new Date(item.expiresAt).toLocaleDateString(getLocale(), { month: "short", day: "numeric", year: "numeric" }) }) : t("memory:forever")}</div>
@@ -481,7 +484,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             ) : (
               <button
                 type="button"
-                disabled={busyState}
+                disabled={busyState || expiryDirty}
+                title={expiryDirty ? t("memory:saveExpiryBeforeScopeOrSensitivity") : undefined}
                 onClick={() => void handleToggleSensitive()}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
