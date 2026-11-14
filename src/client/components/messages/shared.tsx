@@ -41,12 +41,14 @@ import {
   type LucideIcon,
   File,
   FilePen,
+  FileWarning,
   FilePlusCorner,
   FileX,
   Copy,
   Check,
 } from "lucide-react"
 import { cn } from "../../lib/utils"
+import { fileDriftLabel } from "../../lib/memoryFileDrift"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import { parseLocalFileLink } from "../../lib/pathUtils"
 import { useMessageViolatedCitations, useTranscriptRenderOptions } from "./render-context"
@@ -404,6 +406,7 @@ export function MemoryCitationChip({ id, children, note }: { id: string; childre
         {note ? <p className="mb-2 leading-relaxed text-muted-foreground">{note}</p> : null}
         {/* Inspect the canonical memory here; Stop/Confirm stays beside the citation. */}
         <MemoryCardCore item={memory} />
+        {fileDriftLabel(memory) ? <p className="mt-2 flex items-center gap-1 text-[11px] text-cand-fg"><FileWarning className="h-3 w-3" />{fileDriftLabel(memory)}</p> : null}
         {!readonly && (memory.status === "active" || memory.status === "archived") ? (
           <>
             <div className="mt-2.5 flex min-w-0 flex-wrap items-center gap-1 border-t border-border/60 pt-2">

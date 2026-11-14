@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applySchema } from "./db";
 import { MemoryStore } from "./MemoryStore";
 import { getMemoryConfirmation, memoryConfirmationReasons, recordMemoryConfirmation } from "./confirmation";
+import { FileDrift } from "./file-drift";
 
 test("confirmation persists per chat and tracks versions, removals and enforcement", () => {
   const dir = mkdtempSync(join(tmpdir(), "confirmation-test-"));
@@ -37,5 +38,29 @@ test("confirmation persists per chat and tracks versions, removals and enforceme
     recordMemoryConfirmation(store, "chat-a", [changed], [a.id]);
     expect(memoryConfirmationReasons([changed, b], getMemoryConfirmation(store, "chat-a"), [])).toEqual([]);
     expect(memoryConfirmationReasons([changed], getMemoryConfirmation(store, "chat-a"), [a.id])).toMatchObject([{ reason: "enforced" }]);
+  } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("file drift requires confirmation once per distinct change", () => {
+  const dir = mkdtempSync(join(tmpdir(), "confirmation-drift-"));
+  const db = new Database(":memory:");
+  try {
+    applySchema(db);
+    const store = new MemoryStore(db);
+    const drift = new FileDrift(db, store);
+    const file = join(dir, "auth.ts");
+    writeFileSync(file, "baseline");
+    const item = store.create({ content: "Use auth.ts", scope: "project", projectId: "P1", type: "fact" }, { actor: "user" });
+    drift.syncProject("P1", dir);
+    recordMemoryConfirmation(store, "chat", [item], [], drift);
+    writeFileSync(file, "first changed file");
+    drift.syncProject("P1", dir);
+    expect(memoryConfirmationReasons([item], getMemoryConfirmation(store, "chat"), [], drift)).toMatchObject([{ reason: "file_changed", files: [{ path: "auth.ts", drift: "changed" }] }]);
+    recordMemoryConfirmation(store, "chat", [item], [], drift);
+    expect(memoryConfirmationReasons([item], getMemoryConfirmation(store, "chat"), [], drift)).toEqual([]);
+    writeFileSync(file, "another changed file with different size");
+    drift.syncProject("P1", dir);
+    expect(memoryConfirmationReasons([item], getMemoryConfirmation(store, "chat"), [], drift)).toMatchObject([{ reason: "file_changed" }]);
+    expect(memoryConfirmationReasons([item], getMemoryConfirmation(store, "chat"), [item.id], drift)).toMatchObject([{ reason: "enforced" }]);
   } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
 });

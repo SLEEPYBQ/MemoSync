@@ -2331,6 +2331,7 @@ export class AgentCoordinator {
           pending.memories.filter(item => effectiveIds.includes(item.id)),
           getMemoryConfirmation(this.memory.store, command.chatId),
           (this.turnPayAttention.get(command.chatId) ?? []).map(item => item.id),
+          this.memory.fileDrift,
         ).length) throw new Error("Working memory needs confirmation.")
       }
 
@@ -4543,6 +4544,7 @@ export class AgentCoordinator {
       const cursor = previousCursor ?? this.memory.store.latestEventSeq()
       if (previousCursor === null) this.memory.store.setKv(key, cursor)
       this.memory.expireDue()
+      this.memory.fileDrift.syncProject(chat.projectId, project.localPath)
       const { ids, lastSeq } = this.memory.store.expirationsSince(cursor, chat.projectId, args.chatId)
       if (ids.length) {
         await this.store.appendMessage(args.chatId, timestamped({ kind: "memory_expired", ids, turn: turnNumber }))
@@ -5947,7 +5949,7 @@ export class AgentCoordinator {
     const expectedUses = plannedUses.filter(use => selectedIds.includes(use.id))
     for (const id of selectedIds) (pending.proposedIds ??= new Set()).add(id)
     for (const use of expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
-    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds)
+    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds, this.memory.fileDrift)
     if (relevant.length) this.memory.logger.event({ type: "memory.relevance", sessionId: args.chatId, turn: turnNumber, ids: relevant.map(item => item.id) })
     this.turnExpectedUses.set(args.chatId, expectedUses)
     await this.store.appendMessage(args.chatId, timestamped({
@@ -6534,7 +6536,7 @@ export class AgentCoordinator {
       )
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       if (!ctx.auto && decision !== "dismiss" && this.memory) {
-        recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [])
+        recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [], this.memory.fileDrift)
       }
       this.memory?.logger.event({
         type: "memory.preview",

@@ -22,9 +22,11 @@ import { TRANSFER_DECLINED_PREFIX } from './transfer-detect';
 import type { AbstractionLevel, MemoryItem, MemoryScope, MemoryStatus, MemoryTraceLabel, MemoryType } from './types';
 import type { UsePlanService } from './use-plan';
 import { flushTraceCorrections, type TraceCorrectionTransport } from './trace-correction-outbox';
+import { readProjectSource } from './file-drift';
 
 /** Optional LLM-backed services a caller can plug into the routes. */
 export interface MemoryRouteServices {
+  resolveProjectPath?: (projectId: string) => string | undefined;
   nativeMemory?: NativeMemoryImportService;
   transfer?: TransferService | null;
   sanitize?: SanitizeService | null;
@@ -136,6 +138,10 @@ export async function handleMemoryRequest(
     return fail(404, 'NOT_FOUND', 'route not found');
   }
 
+  const decorate = (item: MemoryItem): MemoryItem => {
+    const refs = memory.fileDrift.refsFor([item.id]).get(item.id);
+    return refs?.length ? { ...item, fileRefs: refs } : item;
+  };
   try {
     // GET /api/memories/search?q=&project=&k=
     if (pathname === '/api/memories/search') {
@@ -242,12 +248,21 @@ export async function handleMemoryRequest(
           sessionId,
           status: status as MemoryStatus | undefined,
         });
+        const syncProjects = projectId ? [projectId] : url.searchParams.get('syncFileRefs') === '1'
+          ? [...new Set(items.flatMap(item => item.scope === 'project' && item.projectId ? [item.projectId] : []))] : [];
+        for (const id of syncProjects) {
+          const path = services.resolveProjectPath?.(id);
+          if (path) memory.fileDrift.syncProject(id, path);
+        }
+        const fileRefs = memory.fileDrift.refsFor(items.map(item => item.id));
         // Health decoration: the latest trace verdict per item (Board dot).
         const traceLabels = memory.store.latestTraceLabels();
         const corrected = memory.store.latestTraceCorrections();
         return ok(
           items.map((m) => {
             let out = traceLabels.has(m.id) ? { ...m, lastTraceLabel: traceLabels.get(m.id), lastTraceCorrected: corrected.has(m.id) } : m;
+            const refs = fileRefs.get(m.id);
+            if (refs?.length) out = { ...out, fileRefs: refs };
             // Revision decoration: a pending candidate that proposes to replace
             // an existing memory carries its target so the review card can show
             // the before → after contrast.
@@ -987,23 +1002,44 @@ export async function handleMemoryRequest(
       }
     }
 
+    if (pathname === '/api/memories/md-import/sources' && req.method === 'GET') {
+      const projectId = url.searchParams.get('projectId');
+      if (!projectId) throw new RouteError(400, 'BAD_REQUEST', 'projectId is required');
+      const localPath = services.resolveProjectPath?.(projectId);
+      return ok({ sources: localPath ? ['AGENTS.md', 'CLAUDE.md', '.cursorrules'].filter(path => readProjectSource(localPath, path)) : [] });
+    }
+
     // POST /api/memories/md-import { text, scope, projectId? } — ingest an
     // external CLAUDE.md/.cursorrules: every bullet line becomes a candidate.
     if (pathname === '/api/memories/md-import' && req.method === 'POST') {
       const b = await readBody(req);
-      if (typeof b.text !== 'string' || !b.text.trim()) throw new RouteError(400, 'BAD_REQUEST', 'text is required');
       if (b.scope !== 'personal' && b.scope !== 'project') {
         throw new RouteError(400, 'BAD_REQUEST', "scope must be 'personal' or 'project'");
       }
       if (b.scope === 'project' && (typeof b.projectId !== 'string' || !b.projectId)) {
         throw new RouteError(400, 'BAD_REQUEST', 'projectId is required for project scope');
       }
+      let source: ReturnType<typeof readProjectSource> = null;
+      if (b.sourcePath !== undefined) {
+        if (b.scope !== 'project' || typeof b.sourcePath !== 'string' || !b.sourcePath) {
+          throw new RouteError(400, 'BAD_REQUEST', 'sourcePath requires project scope');
+        }
+        const localPath = services.resolveProjectPath?.(b.projectId as string);
+        source = localPath ? readProjectSource(localPath, b.sourcePath) : null;
+        if (!source) throw new RouteError(400, 'BAD_REQUEST', 'sourcePath is unavailable or outside the project');
+      }
+      const text = source ? source.bytes.toString('utf8') : b.text;
+      if (typeof text !== 'string' || !text.trim()) throw new RouteError(400, 'BAD_REQUEST', 'text is required');
       const sessionId = typeof b.sessionId === 'string' ? b.sessionId : undefined;
-      const result = memory.importMarkdown(
-        b.text,
-        b.scope === 'personal' ? { scope: 'personal' } : { scope: 'project', projectId: b.projectId as string },
-        { ...UI_ACTOR, sessionId },
-      );
+      const result = memory.db.transaction(() => {
+        const imported = memory.importMarkdown(
+          text,
+          b.scope === 'personal' ? { scope: 'personal' } : { scope: 'project', projectId: b.projectId as string },
+          { ...UI_ACTOR, sessionId },
+        );
+        if (source) for (const id of imported.created) memory.fileDrift.addSource(id, source);
+        return imported;
+      })();
       return ok(result);
     }
 
@@ -1160,10 +1196,27 @@ export async function handleMemoryRequest(
       return ok({ ...result, label, transcriptPending: false });
     }
 
-    // Item: /api/memories/:id  (PATCH | DELETE)
+    const acknowledgeMatch = pathname.match(/^\/api\/memories\/([^/]+)\/file-refs\/acknowledge$/);
+    if (acknowledgeMatch && req.method === 'POST') {
+      const id = decodeURIComponent(acknowledgeMatch[1]!);
+      const item = memory.store.getById(id);
+      if (!item) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+      if (item.status !== 'active' && item.status !== 'candidate') throw new RouteError(409, 'CONFLICT', 'memory is not active or a candidate');
+      const localPath = item.projectId ? services.resolveProjectPath?.(item.projectId) : undefined;
+      if (localPath && item.projectId) memory.fileDrift.syncProject(item.projectId, localPath);
+      memory.fileDrift.acknowledge(id, UI_ACTOR);
+      return ok(decorate(item));
+    }
+
+    // Item: /api/memories/:id
     const idMatch = pathname.match(/^\/api\/memories\/([^/]+)$/);
     if (idMatch) {
       const id = decodeURIComponent(idMatch[1]);
+      if (req.method === 'GET') {
+        const item = memory.store.getById(id);
+        if (!item) throw new RouteError(404, 'NOT_FOUND', `memory not found: ${id}`);
+        return ok(decorate(item));
+      }
       if (req.method === 'PATCH') {
         // Read the request before inspecting status so the discarded guard and
         // the synchronous store update share one current-state critical path.
@@ -1304,7 +1357,7 @@ export async function handleMemoryRequest(
         for (const r of replaced) memory.syncProjection(r.projectId);
         memory.syncProjection(existing.projectId);
         if (updated.projectId !== existing.projectId) memory.syncProjection(updated.projectId);
-        return ok(replaced.length > 0 ? { ...updated, replacedId: replaced[0]!.id } : updated);
+        return ok(replaced.length > 0 ? { ...decorate(updated), replacedId: replaced[0]!.id } : decorate(updated));
       }
       if (req.method === 'DELETE') {
         const existing = memory.store.getById(id);
@@ -1337,7 +1390,7 @@ export async function handleMemoryRequest(
         memory.syncProjection(existing.projectId);
         return ok({ id });
       }
-      return fail(405, 'METHOD_NOT_ALLOWED', 'use PATCH or DELETE');
+      return fail(405, 'METHOD_NOT_ALLOWED', 'use GET, PATCH or DELETE');
     }
 
     return fail(404, 'NOT_FOUND', `unknown memory route: ${pathname}`);

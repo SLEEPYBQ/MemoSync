@@ -16,6 +16,7 @@ import { MemoryExplorer, memoryMatchesLens, type MemoryLens } from "../component
 import { MemoryGraphCanvas, memoryGraphLegend } from "../components/memory/MemoryGraphCanvas"
 import { buildMemoryGraph } from "../lib/memoryGraph"
 import { isPastExpiry } from "../lib/memoryExpiry"
+import { driftedFileRefs } from "../lib/memoryFileDrift"
 import { MemoryCard } from "../components/memory/MemoryCard"
 import { MemoryDetailPanel } from "../components/memory/MemoryDetailPanel"
 import { MemoryLegendButton } from "../components/memory/MemoryLegend"
@@ -237,7 +238,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   })
 
   useEffect(() => {
-    void loadAll()
+    void loadAll({ syncFileRefs: true })
   }, [loadAll])
 
   const refreshNeedsAttention = useCallback(() => {
@@ -297,7 +298,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // lightly while visible.
   useEffect(() => {
     const refresh = () => {
-      void loadAll()
+      void loadAll({ syncFileRefs: true })
       refreshNeedsAttention()
       refreshOriginTitles()
     }
@@ -870,6 +871,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                 ) : (
                   <>
                   {lens.kind === "expiring" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:expiringSoon")}</h2> : null}
+                  {lens.kind === "drift" ? <h2 className="text-[13px] font-medium text-foreground">{t("memory:needsFileCheck")}</h2> : null}
                   <SegmentedControl<MemoryBoardView>
                     size="sm"
                     value={view}
@@ -984,6 +986,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                     }}
                   />
                 </div>
+              ) : lens.kind === "drift" && !items.some(item => (item.status === "active" || item.status === "candidate") && driftedFileRefs(item).length > 0) ? (
+                <p className="p-3 text-xs text-muted-foreground">{t("memory:nothingToCheck")}</p>
               ) : view === "graph" ? (
                 <div className="min-h-0 flex-1">
                   <MemoryGraphCanvas

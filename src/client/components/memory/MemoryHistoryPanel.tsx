@@ -8,7 +8,7 @@ import { MemoryBadge } from "./MemoryBadge"
 // revert) show a before→after diff and a two-step "roll back" action; `use`
 // events are quiet citation rows, grouped and folded by default.
 import { useCallback, useEffect, useState } from "react"
-import { Activity, ChevronDown, ChevronRight, Clock3, Eye, Flag, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
+import { Activity, ChevronDown, ChevronRight, Clock3, Eye, Flag, FileWarning, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
 import { memoriesApi, type MemoryControlSurface, type MemoryEvent, type MemoryItem } from "../../lib/memoriesApi"
 import { Button } from "../ui/button"
@@ -33,6 +33,7 @@ const KIND_META: Record<EventKind, { icon: LucideIcon; label: string }> = {
   use: { icon: Eye, get label() { return t("memory:used2") } },
   trace: { icon: Activity, get label() { return t("memory:traceVerdict") } },
   trace_correction: { icon: UserRoundPen, get label() { return t("memory:verdictCorrected") } },
+  file_check: { icon: FileWarning, get label() { return t("memory:fileCheckAcknowledged") } },
   expire: { icon: Clock3, get label() { return t("memory:expired") } },
   reinforce: { icon: Plus, get label() { return t("memory:reinforced") } },
   renew: { icon: CalendarPlus, get label() { return t("memory:renewed") } },

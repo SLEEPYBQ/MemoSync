@@ -50,6 +50,7 @@ export type MemoryEventKind =
   | 'use' // a citation of this memory by the agent
   | 'trace' // post-turn trace verdict for an injected memory (meta.label)
   | 'trace_correction'
+  | 'file_check'
   | 'expire'
   | 'reinforce' // the same fact was re-observed in conversation (necessity gate verdict)
   | 'renew'; // the user extended a stale memory's lifecycle (resets the expiry window)
@@ -73,6 +74,7 @@ export interface MemoryItem {
   type: MemoryType;
   status: MemoryStatus;
   expiresAt?: string | null;
+  fileRefs?: MemoryFileRef[];
   projectId?: string; // undefined for personal scope
   sessionId?: string; // undefined if not session-scoped
   topic?: string; // e.g. "Testing", "Environment"
@@ -102,6 +104,12 @@ export interface MemoryItem {
   citedInCurrentSession: number; // times cited this session
   citedAtSteps?: number[]; // which steps cited it this session
   relations?: MemoryRelation[];
+}
+
+export interface MemoryFileRef {
+  path: string;
+  kind: 'mention' | 'source';
+  drift: null | 'changed' | 'missing' | 'line_removed';
 }
 
 export interface ScoredMemory {

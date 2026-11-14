@@ -13,7 +13,7 @@ interface MemoryStoreState {
   pendingArchiveIds: Record<string, number>
   beginArchiveChange: (id: string) => void
   endArchiveChange: (id: string) => void
-  loadAll: () => Promise<void>
+  loadAll: (options?: { syncFileRefs?: boolean }) => Promise<void>
   upsertLocal: (item: MemoryItem) => void
   removeLocal: (id: string) => void
 }
@@ -36,13 +36,13 @@ export const useMemoryStore = create<MemoryStoreState>()((set) => {
       else delete pendingArchiveIds[id]
       return { pendingArchiveIds }
     }),
-    loadAll: async () => {
+    loadAll: async (options) => {
       const generation = ++loadGeneration
       const mutations = new Map<string, MemoryItem | null>()
       pendingMutations = mutations
       set({ status: "loading", error: null })
       try {
-        const items = await memoriesApi.list()
+        const items = await memoriesApi.list(options?.syncFileRefs ? { syncFileRefs: "1" } : {})
         if (generation !== loadGeneration) return
         const merged = new Map(items.map((item) => [item.id, item]))
         for (const [id, item] of mutations) {
