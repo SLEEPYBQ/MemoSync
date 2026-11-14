@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -11,6 +11,7 @@ import { flushTraceCorrections } from './trace-correction-outbox';
 import { EventStore } from '../event-store';
 import { AgentCoordinator } from '../agent';
 import { processTranscriptMessages } from '../../client/lib/parseTranscript';
+import type { MemoryItem } from './types';
 
 let dir: string;
 let memory: MemoryService;
@@ -55,9 +56,98 @@ describe('memory routes', () => {
     dir = mkdtempSync(join(tmpdir(), 'memv2-routes-'));
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
   });
+
+  it('baselines a new project memory before a later file edit', async () => {
+    const project = join(dir, 'baseline-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'auth.ts'), 'baseline');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const created = (await json(await call('POST', '/api/memories', { content: 'Use auth.ts', scope: 'project', projectId: 'P1' }, services))).data;
+    writeFileSync(join(project, 'auth.ts'), 'changed after creation');
+    memory.fileDrift.syncProject('P1', project);
+    expect(memory.fileDrift.refsFor([created.id]).get(created.id)?.[0]?.drift).toBe('changed');
+  });
+
+  it('baselines candidate edits and acceptance immediately without resetting metadata-only drift', async () => {
+    const project = join(dir, 'edited-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'a.ts'), 'a baseline');
+    writeFileSync(join(project, 'b.ts'), 'b baseline');
+    const services = { resolveProjectPath: () => project };
+    const created = (await json(await call('POST', '/api/memories', { content: 'Use a.ts', scope: 'project', projectId: 'P1', status: 'candidate' }, services))).data;
+    await call('PATCH', `/api/memories/${created.id}`, { content: 'Use b.ts' }, services);
+    writeFileSync(join(project, 'b.ts'), 'b changed');
+    memory.fileDrift.syncProject('P1', project);
+    const signature = memory.fileDrift.driftSignature(created.id);
+    expect(signature).not.toBe('');
+    await call('PATCH', `/api/memories/${created.id}`, { status: 'active', topic: 'Testing' }, services);
+    expect(memory.fileDrift.driftSignature(created.id)).toBe(signature);
+    expect(memory.fileDrift.refsFor([created.id]).get(created.id)?.[0]?.drift).toBe('changed');
+  });
   afterEach(() => {
     memory.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('decorates and acknowledges project file drift without affecting other memories', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'auth.ts'), 'baseline');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const a = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    const b = memory.store.create({ content: 'Review auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    await call('GET', '/api/memories?projectId=P1', undefined, services);
+    writeFileSync(join(project, 'auth.ts'), 'changed synthetic file');
+    const list = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
+    expect(list.data.find((item: MemoryItem) => item.id === a.id).fileRefs).toEqual([{ path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: statSync(join(project, 'auth.ts')).mtime.toISOString() }]);
+    expect((await json(await call('GET', `/api/memories/${a.id}`, undefined, services))).data.fileRefs[0].drift).toBe('changed');
+    expect((await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services))).data.find((item: MemoryItem) => item.id === a.id).fileRefs[0].drift).toBe('changed');
+    const ack = await json(await call('POST', `/api/memories/${a.id}/file-refs/acknowledge`, undefined, services));
+    expect(ack.data.fileRefs[0].drift).toBeNull();
+    expect(memory.fileDrift.refsFor([b.id]).get(b.id)?.[0]?.drift).toBe('changed');
+    expect(memory.store.getEvents(a.id).at(-1)).toMatchObject({ kind: 'file_check', meta: { paths: ['auth.ts'] } });
+  });
+
+  it('imports project source files and rejects outside paths', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'AGENTS.md'), '- Synthetic sourced rule\n');
+    writeFileSync(join(dir, 'outside.md'), '- Synthetic outside rule\n');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    expect((await json(await call('GET', '/api/memories/md-import/sources?projectId=P1', undefined, services))).data.sources).toEqual(['AGENTS.md']);
+    expect((await call('POST', '/api/memories/md-import', { scope: 'project', projectId: 'P1', sourcePath: '../outside.md' }, services))!.status).toBe(400);
+    expect((await call('POST', '/api/memories/md-import', { scope: 'personal', sourcePath: 'AGENTS.md' }, services))!.status).toBe(400);
+    const result = await json(await call('POST', '/api/memories/md-import', { scope: 'project', projectId: 'P1', sourcePath: 'AGENTS.md' }, services));
+    const id = result.data.created[0];
+    expect(id).toBeDefined();
+    expect((await json(await call('GET', `/api/memories/${id}`, undefined, services))).data.fileRefs).toEqual([{ path: 'AGENTS.md', kind: 'source', drift: null }]);
+    writeFileSync(join(project, 'AGENTS.md'), '- Another synthetic rule\n');
+    const updated = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
+    expect(updated.data.find((item: MemoryItem) => item.id === id).fileRefs[0].drift).toBe('line_removed');
+    expect((await json(await call('POST', `/api/memories/${id}/file-refs/acknowledge`, undefined, services))).data.fileRefs).toBeUndefined();
+  });
+
+  it('retains a hashed source link without keeping the original sensitive bullet after review', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    const file = join(project, 'AGENTS.md');
+    const syntheticSecret = 'token = SYNTHETIC_VALUE';
+    writeFileSync(file, `- ${syntheticSecret}\n`);
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const imported = await json(await call('POST', '/api/memories/md-import', { scope: 'project', projectId: 'P1', sourcePath: 'AGENTS.md' }, services));
+    const id = imported.data.created[0];
+    expect(memory.store.getById(id)?.sensitive).toBe(true);
+    const accepted = await call('PATCH', `/api/memories/${id}`, { content: 'token = [REDACTED]', detail: '', status: 'active', surface: 'board' }, services);
+    expect(accepted!.status).toBe(200);
+    const tables = memory.db.query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as Array<{ name: string }>;
+    for (const { name } of tables) {
+      const rows = memory.db.query(`SELECT * FROM "${name.replace(/"/g, '""')}"`).all();
+      expect(JSON.stringify(rows)).not.toContain(syntheticSecret);
+    }
+    expect(memory.fileDrift.refsFor([id]).get(id)).toEqual([{ path: 'AGENTS.md', kind: 'source', drift: null }]);
+    writeFileSync(file, '- Another synthetic rule\n');
+    memory.fileDrift.syncProject('P1', project);
+    expect(memory.fileDrift.refsFor([id]).get(id)?.[0]?.drift).toBe('line_removed');
   });
 
   it('validates expiry at the API boundary and sweeps due items on collection reads', async () => {
@@ -440,6 +530,9 @@ describe('memory routes', () => {
   it('persists only removals from the live preview pool', async () => {
     const item = memory.store.create({ content: 'Synthetic retained rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
     recordMemoryConfirmation(memory.store, 'chat-1', [item], []);
+    memory.store.setKv('confirmed_memories:chat-1', {
+      ...getMemoryConfirmation(memory.store, 'chat-1'), confirmedDrift: { [item.id]: 'synthetic-drift-signature' },
+    });
     let live: string[] | null = [item.id];
     const services = { workingMemoryPool: ({ chatId, previewId }: { chatId: string; previewId: string }) =>
       chatId === 'chat-1' && previewId === 'preview-1' ? live : null };
@@ -462,6 +555,7 @@ describe('memory routes', () => {
     const afterAdd = getMemoryConfirmation(memory.store, 'chat-1');
     expect(afterAdd.removedIds).toEqual([]);
     expect(afterAdd.confirmedVersions).toEqual(versions);
+    expect(afterAdd.confirmedDrift).toEqual({ [item.id]: 'synthetic-drift-signature' });
     expect(memoryConfirmationReasons([item], afterAdd, [])).toEqual([]);
     const first = memory.store.create({ content: 'Synthetic never-confirmed rule', scope: 'personal', type: 'fact' }, { actor: 'user' });
     live = [first.id];
@@ -470,6 +564,7 @@ describe('memory routes', () => {
     await call('POST', '/api/memories/working-memory-selection', { ...firstBody, action: 'add' }, services);
     const firstState = getMemoryConfirmation(memory.store, 'chat-1');
     expect(firstState.confirmedVersions).toEqual(versions);
+    expect(firstState.confirmedDrift).toEqual({ [item.id]: 'synthetic-drift-signature' });
     expect(memoryConfirmationReasons([first], firstState, [])).toMatchObject([{ reason: 'first' }]);
     live = null;
     expect((await json(await call('POST', '/api/memories/working-memory-selection', { ...body, action: 'remove' }, services))).data).toEqual({ observed: true, durable: false });

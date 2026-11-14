@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TranscriptEntry } from '../shared/types';
@@ -58,6 +58,7 @@ async function setup(options: {
   getMemorySettings?: () => { enabled: boolean; learn: boolean; control: "review" | "auto" };
   getMemoryPreviewSettings?: ConstructorParameters<typeof AgentCoordinator>[0]['getMemoryPreviewSettings'];
   productionPreviewDefaults?: boolean;
+  routeToolProposal?: boolean;
   candidate?: (prompt: string, options?: MemoryBranchAskOptions) => Promise<Record<string, unknown>>;
   audit?: () => Promise<void>;
   resolveCaptureRuntime?: ConstructorParameters<typeof AgentCoordinator>[0]['resolveCaptureRuntime'];
@@ -71,7 +72,11 @@ async function setup(options: {
   const memory = new MemoryService({ dbPath: ':memory:', dataDir: join(directory, 'memory') });
   const item = memory.store.create({ content: 'Store money as integer cents', type: 'constraint', scope: 'project', projectId: project.id }, { actor: 'user' });
   const sidecarCalls: string[] = [];
-  const callJson = async () => { sidecarCalls.push('called'); throw new Error('Unexpected sidecar'); };
+  const callJson = async () => {
+    sidecarCalls.push('called');
+    if (options.routeToolProposal) return { decisions: [{ index: 0, route: 'new', targetId: null }] };
+    throw new Error('Unexpected sidecar');
+  };
   const calls: Array<{ purpose: string; prompt: string; options?: MemoryBranchAskOptions }> = [];
   const branches: MemoryBranchInput[] = [];
   const disposed: string[] = [];
@@ -1012,6 +1017,43 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
       expect(h.mainTurns[0]!.developerInstructions).toContain('Validate the charge before submitting it.');
       await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true });
     } finally { await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('baselines a rule created at the proposals gate before the task changes its file', async () => {
+    const h = await setup({ candidate: async () => ({ candidates: [candidateResult('Use src/a.ts for synthetic checks')] }) });
+    try {
+      const project = h.store.getProject(h.chat.projectId)!.localPath;
+      mkdirSync(join(project, 'src'));
+      writeFileSync(join(project, 'src', 'a.ts'), 'baseline');
+      await h.send();
+      await until(() => h.coordinator.pendingProposalGates.has(h.chat.id));
+      const candidate = h.memory.store.list({ status: 'candidate' })[0]!;
+      const gate = h.coordinator.pendingProposalGates.get(h.chat.id)!;
+      await h.coordinator.respondMemoryProposals({ chatId: h.chat.id, proposalsId: gate.proposalsId, decision: 'skipped' });
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      await h.start();
+      writeFileSync(join(project, 'src', 'a.ts'), 'changed during the task');
+      h.memory.fileDrift.syncProject(h.chat.projectId, project);
+      expect(h.memory.fileDrift.refsFor([candidate.id]).get(candidate.id)?.[0]?.drift).toBe('changed');
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
+  });
+
+  it('baselines a mid-turn tool proposal before the agent changes its file', async () => {
+    const h = await setup({ routeToolProposal: true });
+    try {
+      const project = h.store.getProject(h.chat.projectId)!.localPath;
+      writeFileSync(join(project, 'a.ts'), 'baseline');
+      await h.send();
+      await until(() => h.store.getMessages(h.chat.id).some(message => message.kind === 'memory_preview_relevance'));
+      await h.start();
+      const result = await h.mainTurns[0]!.onDynamicToolCall!('propose_memory', { content: 'Use a.ts for synthetic checks', scope: 'project', type: 'constraint' });
+      expect(result.isError).not.toBe(true);
+      const candidate = h.memory.store.list({ status: 'candidate' }).find(item => item.content.includes('a.ts'))!;
+      expect(candidate).toBeDefined();
+      writeFileSync(join(project, 'a.ts'), 'changed during the task');
+      h.memory.fileDrift.syncProject(h.chat.projectId, project);
+      expect(h.memory.fileDrift.refsFor([candidate.id]).get(candidate.id)?.[0]?.drift).toBe('changed');
+    } finally { await h.coordinator.cancel(h.chat.id, { skipPostTurnMemoryPasses: true }); await h.coordinator.shutdownRuntime(); h.close(); }
   });
 
   it('accepts a restored memory with its original expected use in a parked preview', async () => {

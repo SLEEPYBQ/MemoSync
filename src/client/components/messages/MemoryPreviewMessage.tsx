@@ -17,12 +17,13 @@ import { MemoryBadge } from "../memory/MemoryBadge"
 import { Fragment, useEffect, useMemo, useRef, useState } from "react"
 import { useParams } from "react-router-dom"
 import { CachedMarkdown } from "./CachedMarkdown"
-import { ArrowUp, ChevronRight, LibraryBig, Loader2, Plus, X } from "lucide-react"
+import { ArrowUp, ChevronRight, FileWarning, LibraryBig, Loader2, Plus, X } from "lucide-react"
 import { MemoSyncIcon } from "../MemoSyncIcon"
 import type { ExpectedMemoryUse, HydratedTranscriptMessage, MemoryPreviewDecision } from "../../../shared/types"
 import { memoriesApi, recordUiMonitor, recordWorkingMemorySelection } from "../../lib/memoriesApi"
 import { linkifyMemoryCitations } from "../../lib/memoryCitations"
 import { previewGateKeyAction } from "../../lib/previewGateKeys"
+import { fileDriftSummary } from "../../lib/memoryFileDrift"
 import { PREVIEW_GATE_PENDING_ATTRIBUTE } from "../../app/chatFocusPolicy"
 import { dispatchPreviewDemoDecision, useTranscriptRenderOptions } from "./render-context"
 import { cn } from "../../lib/utils"
@@ -579,8 +580,10 @@ export function MemoryPreviewMessage({ message, onRespond, stale = false }: Prop
                             {t("memory:viaTransfer")}</MemoryBadge>
                         ) : null}
                         {pending && message.confirmationMode === "on_change" && reason && !(reason.reason === "enforced" && source === "attention") ? (
-                          <MemoryBadge className="shrink-0 rounded-md border border-info/25 bg-info/8 px-1.5 py-0.5 text-[11px] leading-4 text-info-foreground">
-                            {reason.reason === "changed" ? t("memory:confirmationChanged", { from: reason.previousVersion, to: reason.version })
+                          <MemoryBadge title={reason.reason === "file_changed" ? [...new Set((reason.files ?? []).map(file => file.path))].join("\n") : undefined}
+                            className={cn("shrink-0 rounded-md border px-1.5 py-0.5 text-[11px] leading-4", reason.reason === "file_changed" ? "inline-flex items-center gap-1 border-cand-fg/20 bg-cand-surface text-cand-fg" : "border-info/25 bg-info/8 text-info-foreground")}>
+                            {reason.reason === "file_changed" ? <><FileWarning className="h-3 w-3" />{fileDriftSummary(reason.files ?? []) ?? t("memory:fileChangedFallback")}</>
+                              : reason.reason === "changed" ? t("memory:confirmationChanged", { from: reason.previousVersion, to: reason.version })
                               : t(reason.reason === "first" ? "memory:confirmationFirst" : reason.reason === "removed" ? "memory:confirmationRemoved" : "memory:confirmationEnforced")}
                           </MemoryBadge>
                         ) : null}

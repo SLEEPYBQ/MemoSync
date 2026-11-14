@@ -49,6 +49,8 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
   const [importScope, setImportScope] = useState<"personal" | "project">("personal")
   const [projects, setProjects] = useState<Record<string, string>>({})
   const [importProjectId, setImportProjectId] = useState("")
+  const [sources, setSources] = useState<string[]>([])
+  const [sourceLinked, setSourceLinked] = useState(false)
 
   const selected: FileTarget = useMemo(() => {
     const entry = files?.find((f) => targetKey(f) === selectedKey)
@@ -85,11 +87,20 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
     loadFile(selected)
   }, [loadFile, selected])
 
+  useEffect(() => {
+    let current = true
+    setSources([])
+    if (importScope === "project" && importProjectId) {
+      void memoriesApi.mdImportSources(importProjectId).then(result => { if (current) setSources(result.sources) }).catch(() => {})
+    }
+    return () => { current = false }
+  }, [importScope, importProjectId])
+
   if (!files) return null
   const selectedEntry = files.find((f) => targetKey(f) === selectedKey)
 
-  async function handleImport() {
-    if (!importText.trim()) return
+  async function handleImport(sourcePath?: string) {
+    if (!sourcePath && !importText.trim()) return
     setBusy("import")
     setError(null)
     try {
@@ -97,7 +108,9 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
         importText,
         importScope,
         importScope === "project" ? importProjectId : undefined,
+        sourcePath,
       )
+      setSourceLinked(Boolean(sourcePath))
       setLastReport(
         t("memory:importResult", { count: result.created.length, skipped: result.skipped }),
       )
@@ -158,6 +171,7 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
 
       <p className="mt-1.5 break-all font-mono text-[11px] text-muted-foreground">{selectedEntry?.path ?? file?.path}</p>
       {lastReport ? <p className="mt-1.5 text-xs text-foreground/80">{translateUiText(lastReport)}</p> : null}
+      {lastReport && sourceLinked ? <p className="mt-1 text-xs text-muted-foreground">{t("memory:sourceLinked")}</p> : null}
       {error ? <p className="mt-1.5 text-xs text-destructive">{translateUiText(error)}</p> : null}
 
       <div className="mt-2">
@@ -165,13 +179,8 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
           defaultExpanded={false}
           expandedContent={
             <div className="mt-2 space-y-2">
-              <Textarea
-                value={importText}
-                onChange={(e) => setImportText(e.target.value)}
-                placeholder={t("memory:pasteAnExistingCLAUDEMdCursorrulesEveryBulletLineBecomes")}
-                className="min-h-24 text-xs"
-              />
               <div className="flex flex-wrap items-center gap-2 text-xs">
+                <span className="text-muted-foreground">{t("memory:importInto")}</span>
                 <select
                   value={importScope === "personal" ? "personal" : importProjectId}
                   onChange={(e) => {
@@ -191,6 +200,23 @@ export function MarkdownSyncCard({ onSynced, embedded = false }: { onSynced?: (n
                     </option>
                   ))}
                 </select>
+              </div>
+              {sources.length ? <div className="rounded-lg border border-border/70 bg-muted/30 p-2">
+                <p className="mb-1.5 text-[11px] text-muted-foreground">{t("memory:foundInProject")}</p>
+                <div className="flex flex-wrap gap-1.5">{sources.map(source => <button key={source} type="button"
+                  disabled={busy !== null} onClick={() => void handleImport(source)}
+                  className="inline-flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-mono text-[11px] text-foreground transition-colors hover:border-foreground/30 hover:bg-muted disabled:opacity-50">
+                  <FileText className="h-3 w-3 text-muted-foreground" />{source}
+                </button>)}</div>
+              </div> : null}
+              {sources.length ? <p className="text-[11px] text-muted-foreground">{t("memory:orPasteText")}</p> : null}
+              <Textarea
+                value={importText}
+                onChange={(e) => setImportText(e.target.value)}
+                placeholder={t("memory:pasteAnExistingCLAUDEMdCursorrulesEveryBulletLineBecomes")}
+                className="min-h-24 text-xs"
+              />
+              <div className="flex items-center">
                 <Button
                   variant="default"
                   size="sm"

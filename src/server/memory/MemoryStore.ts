@@ -453,6 +453,9 @@ export class MemoryStore {
     this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
     const updated = this.getById(id)!;
+    if (updated.scope !== existing.scope || updated.projectId !== existing.projectId) {
+      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+    }
     this.appendEvent(id, eventKind ?? this.classifyChange(existing, changes), meta, {
       changes,
       snapshot: this.snapshotOf(updated),
@@ -513,6 +516,7 @@ export class MemoryStore {
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
+      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
     })();
@@ -532,6 +536,7 @@ export class MemoryStore {
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
       this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
       this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
+      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.db.query('DELETE FROM memories WHERE id = ?').run(id);
     })();
@@ -618,6 +623,9 @@ export class MemoryStore {
       this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
       const replaced = this.getById(id)!;
+      if (replaced.scope !== existing.scope || replaced.projectId !== existing.projectId) {
+        this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+      }
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.appendEvent(id, 'create', meta, { snapshot: this.snapshotOf(replaced) });
       return replaced;
@@ -791,6 +799,10 @@ export class MemoryStore {
     const row = this.db.query(`SELECT id FROM memories WHERE id = ?`).get(id);
     if (!row) return;
     this.appendEvent(id, 'trace', meta, { meta: { label, ...(meta.cited !== undefined ? { cited: meta.cited } : {}) } });
+  }
+
+  recordFileCheck(id: string, paths: string[], meta: ActorMeta): void {
+    this.appendEvent(id, 'file_check', meta, { meta: { paths } });
   }
 
   traceCorrectionKeysForSession(sessionId: string): Set<string> {
@@ -1470,6 +1482,9 @@ export class MemoryStore {
     this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
     const reverted = this.getById(id)!;
+    if (reverted.scope !== existing.scope || reverted.projectId !== existing.projectId) {
+      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+    }
     this.appendEvent(id, 'revert', meta, {
       changes,
       snapshot: this.snapshotOf(reverted),

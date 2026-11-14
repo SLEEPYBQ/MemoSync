@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -34,6 +34,30 @@ describe('createCheckupService (step-one container 2, redesign 2026-08-07)', () 
   afterEach(() => {
     memory.close();
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('includes a used drifted memory in staleness evidence and invalidates cached results on another change', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    const file = join(project, 'auth.ts');
+    writeFileSync(file, 'baseline');
+    const item = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    memory.store.recordUse(item.id, { actor: 'agent', sessionId: 'used-chat', via: 'citation' });
+    memory.fileDrift.syncProject('P1', project);
+    const calls: DeepSeekJsonRequest[] = [];
+    const checkup = createCheckupService({ memory, callJson: async req => { calls.push(req); return { findings: [] }; }, listRecentSessions: noSessions });
+    writeFileSync(file, 'first synthetic change');
+    memory.fileDrift.syncProject('P1', project);
+    const first = checkup.buildForkPrompt!({ projectId: 'P1' })!;
+    expect(first.prompt).toContain('referenced file auth.ts changed');
+    expect(first.prompt).toContain(item.id);
+    await checkup.run({ projectId: 'P1' });
+    expect(calls.some(call => call.system.includes('STOPPED BEING TRUE') && call.user.includes('referenced file auth.ts changed'))).toBe(true);
+    expect(checkup.needsRecompute({ projectId: 'P1' })).toBe(false);
+    writeFileSync(file, 'another synthetic change of different size');
+    memory.fileDrift.syncProject('P1', project);
+    expect(checkup.buildForkPrompt!({ projectId: 'P1' })!.dependencyKey).not.toBe(first.dependencyKey);
+    expect(checkup.needsRecompute({ projectId: 'P1' })).toBe(true);
   });
 
   it('skips an empty branch and rejects task/policy/scope changes when priming a semantic result', async () => {

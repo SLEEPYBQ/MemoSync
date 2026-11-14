@@ -90,8 +90,11 @@ export const memoriesApi = {
     fetch(`/api/memories/${encodeURIComponent(id)}/trace-correction`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     }).then((r) => unwrap<{ auditLabel: MemoryTraceLabel; changed: boolean; label: MemoryTraceLabel | null; note?: string; transcriptPending?: boolean }>(r)),
-  list: (params: { scope?: string; projectId?: string; sessionId?: string; status?: string } = {}) =>
+  list: (params: { scope?: string; projectId?: string; sessionId?: string; status?: string; syncFileRefs?: string } = {}) =>
     fetch(`/api/memories${qs(params)}`).then((r) => unwrap<MemoryItem[]>(r)),
+
+  acknowledgeFileRefs: (id: string) =>
+    fetch(`/api/memories/${encodeURIComponent(id)}/file-refs/acknowledge`, { method: "POST" }).then((r) => unwrap<MemoryItem>(r)),
 
   create: (body: CreateMemoryBody, options: { surface?: MemoryControlSurface } = {}) =>
     fetch("/api/memories", {
@@ -229,12 +232,15 @@ export const memoriesApi = {
     ).then((r) => unwrap<{ path: string; content: string }>(r)),
 
   /** Import an external CLAUDE.md/.cursorrules: every bullet line becomes a candidate. */
-  mdImport: (text: string, scope: "personal" | "project", projectId?: string) =>
+  mdImport: (text: string, scope: "personal" | "project", projectId?: string, sourcePath?: string) =>
     fetch("/api/memories/md-import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, scope, projectId }),
+      body: JSON.stringify({ text, scope, projectId, sourcePath }),
     }).then((r) => unwrap<{ created: string[]; skipped: number }>(r)),
+
+  mdImportSources: (projectId: string) =>
+    fetch(`/api/memories/md-import/sources${qs({ projectId })}`).then((r) => unwrap<{ sources: string[] }>(r)),
 
   /** Delegating mode (F4): Ask parks proposals for review; Auto applies them with revert. */
   getEvolutionPolicy: () =>

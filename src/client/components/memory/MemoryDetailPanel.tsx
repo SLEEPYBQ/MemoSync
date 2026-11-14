@@ -2,6 +2,7 @@ import { translateUiText } from "../../i18n/uiText"
 import { memoryStatusLabel } from "../../i18n/labels"
 import { traceVerdictLabel } from "../../i18n/labels"
 import { t, useI18n } from "../../i18n"
+import { Trans } from "react-i18next"
 import { MemoryBadge } from "./MemoryBadge"
 // Right-side detail panel for a selected memory (SPEC §4.9, §4.11). Two tabs:
 // "Details" (editable fields + scope move + provenance/usage/sensitive) and
@@ -10,6 +11,7 @@ import { useEffect, useMemo, useState } from "react"
 import {
   ArrowRightLeft,
   Check,
+  FileWarning,
   History as HistoryIcon,
   Loader2,
   ShieldAlert,
@@ -36,6 +38,8 @@ import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
 import { auditRecord } from "../../lib/auditRecord"
 import { TRACE_DOT_CLASSES } from "./memoryVocab"
 import { MemoryExpiryPicker } from "./MemoryExpiryPicker"
+import { driftedFileRefs, fileChangedAgo } from "../../lib/memoryFileDrift"
+import { useTranscriptRenderOptions } from "../messages/render-context"
 import type { MemoryEvent } from "../../lib/memoriesApi"
 
 const MOVE_SCOPES: MemoryScope[] = ["personal", "project"]
@@ -84,7 +88,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
   useEffect(() => {
     if (chatId) recordUiMonitor("detail_open", { ids: [item.id], sessionId: chatId, interaction: "open" })
   }, [chatId, item.id])
-  const [busy, setBusy] = useState<"save" | "scope" | "sensitive" | "sanitize" | "accept" | "archive" | null>(null)
+  const [busy, setBusy] = useState<"save" | "scope" | "sensitive" | "sanitize" | "accept" | "archive" | "file-check" | null>(null)
+  const { readonly, previewDemo } = useTranscriptRenderOptions()
   const [error, setError] = useState<string | null>(null)
   const [auditEvents, setAuditEvents] = useState<MemoryEvent[]>([])
   useEffect(() => {
@@ -225,7 +230,23 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
     }
   }
 
+  async function handleFileCheck() {
+    setBusy("file-check")
+    setError(null)
+    try {
+      onUpdated(await memoriesApi.acknowledgeFileRefs(item.id))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t("memory:failed"))
+    } finally {
+      setBusy(null)
+    }
+  }
+
   const busyState = busy !== null
+  const drifted = driftedFileRefs(item)
+  const removedSource = drifted.find(ref => ref.drift === "line_removed")
+  const driftPathCount = new Set(drifted.map(ref => ref.path)).size
+  const canReviewFiles = (item.status === "active" || item.status === "candidate") && !readonly && !previewDemo
   const provenance = item.provenanceSessionId || item.provenanceTurn !== undefined
     ? `from ${item.provenanceSessionId ? item.provenanceSessionId.slice(0, 8) : t("memory:unknownSession")}${item.provenanceTurn !== undefined ? t("memory:turnValue0", { v0: item.provenanceTurn }) : ""}`
     : null
@@ -259,6 +280,25 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         {tab === "details" ? (
           <div className="mt-3 space-y-4">
+            {drifted.length > 0 && canReviewFiles ? <div className="flex items-start gap-2 rounded-lg border border-cand-fg/20 bg-cand-surface px-3 py-2.5">
+              <FileWarning className="mt-0.5 h-3.5 w-3.5 shrink-0 text-cand-fg" />
+              <div className="min-w-0 flex-1">
+                <p className="text-[12px] leading-5 text-cand-fg">
+                  {removedSource ? <Trans ns="memory" i18nKey="sourceLineRemovedCallout" values={{ path: removedSource.path }} components={{ code: <code className="break-all font-mono text-[11px]" /> }} />
+                    : driftPathCount > 1 ? t("memory:filesChangedCallout", { count: driftPathCount })
+                      : <Trans ns="memory" i18nKey={drifted[0]!.drift === "missing" ? "fileMissingCallout" : "fileChangedCallout"} values={{ path: drifted[0]!.path }} components={{ code: <code className="break-all font-mono text-[11px]" /> }} />}
+                </p>
+                <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                  {removedSource ? <>
+                    <Button variant="outline" size="xs" className="bg-background" disabled={busyState} onClick={() => void handleArchive()}>{busy === "archive" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("common:archive")}</Button>
+                    <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleFileCheck()}>{busy === "file-check" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("memory:keepOwnMemory")}</Button>
+                  </> : <>
+                    <Button variant="outline" size="xs" className="bg-background" disabled={busyState} onClick={() => void handleFileCheck()}>{busy === "file-check" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("memory:stillApplies")}</Button>
+                    <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleArchive()}>{busy === "archive" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("common:archive")}</Button>
+                  </>}
+                </div>
+              </div>
+            </div> : null}
             {item.status === "candidate" ? (
               sensitiveCandidate ? (
                 <div className="rounded-lg border border-cand-border bg-cand-surface/60 p-3">
@@ -361,6 +401,14 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             </div>
 
             <MemoryExpiryPicker value={expiresAt} onChange={setExpiresAt} disabled={busyState} />
+            {item.fileRefs?.length ? <div>
+              <span className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:referencedFiles")}</span>
+              <div className="space-y-1">{item.fileRefs.map(ref => <div key={`${ref.kind}:${ref.path}`} className="flex min-w-0 items-center gap-2 text-[11px]">
+                {ref.kind === "source" ? <span className="shrink-0 text-muted-foreground">{t("memory:importedFrom")}</span> : null}
+                <span title={ref.path} dir="rtl" className="min-w-0 flex-1 truncate text-left font-mono text-muted-foreground">{ref.path}</span>
+                <span className={ref.drift ? "shrink-0 text-cand-fg" : "shrink-0 text-muted-foreground"}>{ref.drift === "changed" && fileChangedAgo(ref.changedAt) ? t("memory:fileStatusChangedAgo", { when: fileChangedAgo(ref.changedAt) }) : t(ref.drift === "changed" ? "memory:fileStatusChanged" : ref.drift === "missing" ? "memory:fileStatusMissing" : ref.drift === "line_removed" ? "memory:fileStatusLineRemoved" : "memory:fileStatusUnchanged")}</span>
+              </div>)}</div>
+            </div> : null}
             {provenance ? <p className="text-xs text-muted-foreground">{provenance}</p> : null}
             <p className="text-xs text-muted-foreground">{t("memory:usedTimes", { count: item.usageCount })}</p>
             {item.status !== "candidate" && record.total ? <div>

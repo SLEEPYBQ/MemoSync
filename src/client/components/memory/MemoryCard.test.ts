@@ -23,6 +23,16 @@ function item(over: Partial<MemoryItem> = {}): MemoryItem {
 }
 
 describe("MemoryCard", () => {
+  test("shows a file drift chip with full paths and the appropriate status", () => {
+    const render = (fileRefs: MemoryItem["fileRefs"]) => renderToStaticMarkup(createElement(MemoryCard, { item: item({ fileRefs }), variant: "scoped" }))
+    expect(render([{ path: "src/auth.ts", kind: "mention", drift: "changed" }])).toContain("Check · auth.ts changed")
+    expect(render([{ path: "src/auth.ts", kind: "mention", drift: "missing" }])).toContain("Check · auth.ts missing")
+    expect(render([{ path: "AGENTS.md", kind: "source", drift: "line_removed" }])).toContain("Check · removed from AGENTS.md")
+    const several = render([{ path: "src/auth.ts", kind: "mention", drift: "changed" }, { path: "AGENTS.md", kind: "source", drift: "line_removed" }])
+    expect(several).toContain("Check · 2 files changed")
+    expect(several).toContain('title="src/auth.ts\nAGENTS.md"')
+    expect(render([{ path: "src/auth.ts", kind: "mention", drift: null }])).not.toContain("Check ·")
+  })
   test("shows a clock badge with remaining days", () => {
     const html = renderToStaticMarkup(createElement(MemoryCard, { item: item({ expiresAt: new Date(Date.now() + 6 * 86400000 - 1000).toISOString() }), variant: "scoped" }))
     expect(html).toContain("6 days left")

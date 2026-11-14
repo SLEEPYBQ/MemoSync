@@ -6,13 +6,11 @@ import { NoopUsageLogger, type UsageLogger } from '../usage/logger';
 import { openMemoryDb } from './db';
 import { MemoryFile } from './MemoryFile';
 import { MemoryStore } from './MemoryStore';
+import { FileDrift } from './file-drift';
+import { markdownBulletContent, normalizeContent } from './markdown-content';
 import { looksLikeSecret } from './secrets';
 import { semanticHash } from './view';
 import type { ActorMeta, MemoryItem } from './types';
-
-function normalizeContent(s: string): string {
-  return s.replace(/\s+/g, ' ').trim().toLowerCase();
-}
 
 export interface MemoryServiceOptions {
   /** SQLite path, or ':memory:' for tests. */
@@ -26,12 +24,14 @@ export interface MemoryServiceOptions {
 export class MemoryService {
   readonly db: Database;
   readonly store: MemoryStore;
+  readonly fileDrift: FileDrift;
   readonly file: MemoryFile;
   readonly logger: Pick<UsageLogger, 'event'>;
 
   constructor(opts: MemoryServiceOptions) {
     this.db = openMemoryDb(opts.dbPath);
     this.store = new MemoryStore(this.db);
+    this.fileDrift = new FileDrift(this.db, this.store);
     this.file = new MemoryFile(opts.dataDir);
     this.logger = opts.logger ?? NoopUsageLogger;
     this.store.expireDue();
@@ -170,10 +170,7 @@ export class MemoryService {
       const created: string[] = [];
       let skipped = 0;
       for (const raw of text.split('\n')) {
-        const line = raw.trim();
-        if (!line.startsWith('- ')) continue;
-        // Strip a leading [anchor] if the source mimics our format.
-        const content = line.replace(/^- (\[[^\]]*\]\s*)?/, '').trim();
+        const content = markdownBulletContent(raw);
         if (!content) continue;
         const operationKey = `md_import:${semanticHash([target.scope, projectId ?? null, normalizeContent(content)])}`;
         if (this.store.getCaptureOperation(operationKey)) {

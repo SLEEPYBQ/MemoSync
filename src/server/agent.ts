@@ -2331,6 +2331,7 @@ export class AgentCoordinator {
           pending.memories.filter(item => effectiveIds.includes(item.id)),
           getMemoryConfirmation(this.memory.store, command.chatId),
           (this.turnPayAttention.get(command.chatId) ?? []).map(item => item.id),
+          this.memory.fileDrift,
         ).length) throw new Error("Working memory needs confirmation.")
       }
 
@@ -3041,6 +3042,9 @@ export class AgentCoordinator {
             if (!ready?.result || !queue.transition(current, 'ready', 'applying')) continue
             hostStarted = performance.now()
             const outcome = await this.capture!.captureFromBranch!(ready.result.raw, input, ready.result.dependencyKey)
+            if (finished.localPath) for (const item of outcome.created) {
+              if (item.projectId === current.projectId) this.memory?.fileDrift.baseline(item.id, finished.localPath)
+            }
             signal.throwIfAborted()
             // Commit the terminal receipt before transcript publication. A
             // restart cannot replay reinforcement after an append failure.
@@ -4543,6 +4547,7 @@ export class AgentCoordinator {
       const cursor = previousCursor ?? this.memory.store.latestEventSeq()
       if (previousCursor === null) this.memory.store.setKv(key, cursor)
       this.memory.expireDue()
+      this.memory.fileDrift.syncProject(chat.projectId, project.localPath)
       const { ids, lastSeq } = this.memory.store.expirationsSince(cursor, chat.projectId, args.chatId)
       if (ids.length) {
         await this.store.appendMessage(args.chatId, timestamped({ kind: "memory_expired", ids, turn: turnNumber }))
@@ -4649,7 +4654,10 @@ export class AgentCoordinator {
       const captureTask = this.trackMemoryWork(args.chatId, () => branches
         ? branches.pipeline.result("candidate").then(result => this.capture!.captureFromBranch!(result.raw, captureInput, result.dependencyKey))
         : this.capture!.captureFromPrompt(captureInput)).then(
-        () => ({ kind: "done" as const }),
+        (outcome) => {
+          for (const item of outcome.created) if (item.projectId === ctx.project.id) this.memory?.fileDrift.baseline(item.id, ctx.project.localPath)
+          return { kind: "done" as const }
+        },
         (error: unknown) => ({ kind: "error" as const, error }),
       )
       const captureOutcome = prep
@@ -4666,6 +4674,8 @@ export class AgentCoordinator {
         )
       }
     }
+
+    this.memory!.fileDrift.syncProject(ctx.project.id, ctx.project.localPath)
 
     // This conversation's changes only: captured here, or session-scoped here.
     // Unreviewed candidates from other sessions belong to the Board, not to
@@ -5947,7 +5957,7 @@ export class AgentCoordinator {
     const expectedUses = plannedUses.filter(use => selectedIds.includes(use.id))
     for (const id of selectedIds) (pending.proposedIds ??= new Set()).add(id)
     for (const use of expectedUses) pending.expectedUseById.set(use.id, use.expectedUse)
-    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds)
+    const reasons = memoryConfirmationReasons(pending.memories, getMemoryConfirmation(this.memory.store, args.chatId), attentionIds, this.memory.fileDrift)
     if (relevant.length) this.memory.logger.event({ type: "memory.relevance", sessionId: args.chatId, turn: turnNumber, ids: relevant.map(item => item.id) })
     this.turnExpectedUses.set(args.chatId, expectedUses)
     await this.store.appendMessage(args.chatId, timestamped({
@@ -6534,7 +6544,7 @@ export class AgentCoordinator {
       )
       if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       if (!ctx.auto && decision !== "dismiss" && this.memory) {
-        recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [])
+        recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [], this.memory.fileDrift)
       }
       this.memory?.logger.event({
         type: "memory.preview",
@@ -6769,6 +6779,7 @@ export class AgentCoordinator {
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
+                for (const item of created) if (item.projectId === chat.projectId) this.memory?.fileDrift.baseline(item.id, project.localPath)
                 const autoIds = info?.resurfaced ? new Set<string>() : this.autoApplyProposals(created, { chatId: args.chatId, memoryState: args.memoryState })
                 const autoApplied = created.filter(({ id }) => autoIds.has(id))
                 if (!autoApplied.length) return
@@ -6911,6 +6922,7 @@ export class AgentCoordinator {
           ? buildMemoryToolSpecs(this.memory, {
               capture: args.memoryState?.learnActive === false ? null : this.capture,
               onProposed: (created, info) => {
+                for (const item of created) if (item.projectId === chat.projectId) this.memory?.fileDrift.baseline(item.id, project.localPath)
                 // Redesign 2026-08-07 §3: mid-turn proposals park in the store
                 // and surface at the NEXT turn's step-one gate. Only
                 // auto-applied ones (delegating policy) card immediately —
@@ -7462,6 +7474,7 @@ export class AgentCoordinator {
         // immediately — they took effect without asking.
         onMemoryProposal: (created) => {
           if (!memoryEnabled || args.learnEnabled === false) return
+          for (const item of created) if (item.projectId === args.projectId) this.memory?.fileDrift.baseline(item.id, args.localPath)
           const autoIds = this.autoApplyProposals(created, { chatId: args.chatId, memoryState: this.activeTurns.get(args.chatId)?.memoryState })
           const autoApplied = created.filter(({ id }) => autoIds.has(id))
           if (!autoApplied.length) return

@@ -1,14 +1,16 @@
 // The left rail of the memory screen: search, then every place a memory can live.
-import { Archive, BellOff, ChevronRight, Clock3, FileText, FolderGit2, Inbox, Layers, MessagesSquare, Search, User } from "lucide-react"
+import { Archive, BellOff, ChevronRight, Clock3, FileText, FileWarning, FolderGit2, Inbox, Layers, MessagesSquare, Search, User } from "lucide-react"
 import { useState, type ComponentType, type ReactNode } from "react"
 import { t, useI18n } from "../../i18n"
 import type { MemoryItem, MemoryScope } from "../../lib/memoriesApi"
 import { cn } from "../../lib/utils"
 import { isExpiringSoon } from "../../lib/memoryExpiry"
+import { driftedFileRefs } from "../../lib/memoryFileDrift"
 
 export type MemoryLens =
   | { kind: "all" }
   | { kind: "expiring" }
+  | { kind: "drift" }
   | { kind: "scope"; scope: MemoryScope }
   | { kind: "project"; id: string }
   | { kind: "session"; id: string }
@@ -29,6 +31,8 @@ export function memoryMatchesLens(item: MemoryItem, lens: MemoryLens): boolean {
       return true
     case "expiring":
       return isExpiringSoon(item)
+    case "drift":
+      return driftedFileRefs(item).length > 0
     case "scope":
       return item.scope === lens.scope
     case "project":
@@ -44,6 +48,7 @@ function Row({
   icon: Icon,
   label,
   count,
+  countClassName,
   active,
   depth = 0,
   dot,
@@ -54,6 +59,7 @@ function Row({
   icon?: ComponentType<{ className?: string }>
   label: ReactNode
   count?: ReactNode
+  countClassName?: string
   active?: boolean
   depth?: number
   dot?: string
@@ -78,7 +84,7 @@ function Row({
         {dot ? <span aria-hidden className={cn("size-2 shrink-0 rounded-full", dot)} /> : null}
         {Icon ? <Icon className="size-3.5 shrink-0 text-muted-foreground" /> : null}
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        {count !== undefined && count !== 0 ? <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{count}</span> : null}
+        {count !== undefined && count !== 0 ? <span className={cn("shrink-0 text-[11px] tabular-nums text-muted-foreground", countClassName)}>{count}</span> : null}
       </button>
     </div>
   )
@@ -118,6 +124,7 @@ export function MemoryExplorer({
   const sessions = [...new Set(live.filter((item) => item.scope === "session" && item.sessionId).map((item) => item.sessionId as string))]
   const activeKey = memoryLensKey(lens)
   const is = (next: MemoryLens) => memoryLensKey(next) === activeKey
+  const driftCount = items.filter(item => (item.status === "active" || item.status === "candidate") && driftedFileRefs(item).length > 0).length
 
   return (
     <nav aria-label={t("common:memory")} className="flex min-h-0 flex-1 flex-col bg-muted/50">
@@ -134,6 +141,7 @@ export function MemoryExplorer({
       </div>
       <div className="min-h-0 flex-1 space-y-px overflow-y-auto px-2 pb-2">
         <Row icon={Layers} label={t("board:allMemories")} count={live.length} active={is({ kind: "all" })} onClick={() => onLensChange({ kind: "all" })} />
+        {driftCount > 0 || lens.kind === "drift" ? <Row icon={FileWarning} label={t("memory:needsFileCheck")} count={driftCount} countClassName="text-cand-fg" active={is({ kind: "drift" })} onClick={() => onLensChange({ kind: "drift" })} /> : null}
         <Row icon={Clock3} label={t("memory:expiringSoon")} count={count(item => isExpiringSoon(item))} active={is({ kind: "expiring" })} onClick={() => onLensChange({ kind: "expiring" })} />
         <Row
           icon={User}

@@ -576,9 +576,10 @@ export interface MemorySettings {
 export type MemoryConfirmationMode = "on_change" | "every_turn"
 export interface MemoryConfirmationReason {
   id: string
-  reason: "first" | "changed" | "removed" | "enforced"
+  reason: "first" | "changed" | "removed" | "enforced" | "file_changed"
   version: number
   previousVersion?: number
+  files?: Array<{ path: string; drift: "changed" | "missing" | "line_removed" }>
 }
 
 export interface MemoryPreviewSettings {

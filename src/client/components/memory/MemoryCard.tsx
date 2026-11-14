@@ -5,10 +5,11 @@ import { getLocale, t, useI18n } from "../../i18n"
 // are natively draggable for drag-to-rescope. Clicking the card (outside its
 // footer actions) opens the detail panel.
 import type { DragEvent, MouseEvent, ReactNode } from "react"
-import { Clock3, ShieldAlert } from "lucide-react"
+import { Clock3, FileWarning, ShieldAlert } from "lucide-react"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { formatSidebarAgeLabel } from "../../lib/formatters"
 import { expiryDaysLeft, localDateValue } from "../../lib/memoryExpiry"
+import { driftedFileRefs, fileDriftLabel } from "../../lib/memoryFileDrift"
 import { cn } from "../../lib/utils"
 import { Chip, ScopeBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
 // Trace-dot and freshness color maps live in memoryVocab so this card and the
@@ -38,6 +39,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
   const now = Date.now()
   const days = expiryDaysLeft(item.expiresAt, now)
   const expiresToday = Boolean(item.expiresAt && localDateValue(new Date(item.expiresAt)) === localDateValue(new Date(now)))
+  const driftLabel = fileDriftLabel(item)
   function handleFooterClick(e: MouseEvent<HTMLDivElement>) {
     // Footer buttons handle their own actions; don't also open the panel.
     e.stopPropagation()
@@ -89,6 +91,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
         {days !== null ? <span title={new Date(item.expiresAt!).toLocaleString(getLocale())} className={cn("inline-flex items-center gap-1 rounded px-1 text-[11px]", days <= 3 ? "bg-cand-surface text-cand-fg" : "text-muted-foreground")}>
           <Clock3 className="h-3 w-3" />{expiresToday ? t("memory:expiresToday") : t("memory:daysLeft", { count: days })}
         </span> : null}
+        {driftLabel ? <span title={[...new Set(driftedFileRefs(item).map(ref => ref.path))].join("\n")} className="inline-flex items-center gap-1 rounded px-1 text-[11px] bg-cand-surface text-cand-fg"><FileWarning className="h-3 w-3" />{driftLabel}</span> : null}
         {item.lastTraceLabel ? (
           <span
             title={t(item.lastTraceCorrected ? "memory:lastTraceCorrected" : "memory:lastTrace", { v0: traceVerdictLabel(item.lastTraceLabel) })}

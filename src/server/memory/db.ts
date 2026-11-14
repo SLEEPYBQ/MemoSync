@@ -138,6 +138,22 @@ CREATE TABLE IF NOT EXISTS memory_revocations (
 );
 CREATE INDEX IF NOT EXISTS idx_memory_revocations_fingerprint ON memory_revocations(fingerprint);
 
+CREATE TABLE IF NOT EXISTS memory_file_refs (
+  memory_id TEXT NOT NULL,
+  path TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  blob_hash TEXT NOT NULL,
+  line_hash TEXT,
+  memory_version INTEGER NOT NULL,
+  content_hash TEXT,
+  size INTEGER,
+  mtime_ms REAL,
+  drift TEXT,
+  drift_hash TEXT,
+  checked_at TEXT,
+  PRIMARY KEY (memory_id, path, kind)
+);
+
 CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
 CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
 CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);

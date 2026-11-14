@@ -2,6 +2,7 @@ import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { buildReviewedSensitiveCandidatePatch, MemoryDetailPanel } from "./MemoryDetailPanel"
+import { TranscriptRenderOptionsProvider } from "../messages/render-context"
 
 const sensitiveCandidate = {
   id: "M-07",
@@ -18,6 +19,51 @@ const sensitiveCandidate = {
   reinforcedCount: 0,
   version: 1,
 } satisfies MemoryItem
+
+test("file reference detail shows changed and removed-source actions only on editable items", () => {
+  const render = (item: MemoryItem, readonly = false) => renderToStaticMarkup(
+    <TranscriptRenderOptionsProvider value={{ readonly }}>
+      <MemoryDetailPanel item={item} allItems={[item]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} />
+    </TranscriptRenderOptionsProvider>,
+  )
+  const item: MemoryItem = { ...sensitiveCandidate, content: "Synthetic rule", sensitive: false, status: "active",
+    fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }, { path: "src/stable.ts", kind: "mention", drift: null }] }
+  const changed = render(item)
+  expect(changed).toContain("Referenced files")
+  expect(changed).toContain("src/auth.ts")
+  expect(changed).toContain("Unchanged")
+  expect(changed).toContain("Still applies")
+  expect(changed).toContain("changed after this memory was recorded. Does the rule still hold?")
+  expect(changed).toContain('<code class="break-all font-mono text-[11px]">src/auth.ts</code>')
+  expect(changed.indexOf("changed after this memory")).toBeLessThan(changed.indexOf("<textarea"))
+  expect(changed).not.toContain("Keep as its own memory")
+  const missing = render({ ...item, fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "missing" }] })
+  expect(missing).toContain("was moved or deleted after this memory was recorded.")
+  expect(missing).toContain("Still applies")
+  const multiple = render({ ...item, fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed" }, { path: "src/config.ts", kind: "mention", drift: "missing" }] })
+  expect(multiple).toContain("2 files this memory refers to changed after it was recorded.")
+  const removed = render({ ...item, fileRefs: [{ path: "AGENTS.md", kind: "source", drift: "line_removed" }] })
+  expect(removed).toContain("This line was removed from")
+  expect(removed).toContain(">AGENTS.md</code>. Keep following it anyway?")
+  expect(removed).toContain("Imported from")
+  expect(removed).toContain("Keep as its own memory")
+  expect(removed).not.toContain("Still applies")
+  expect(render({ ...item, status: "archived" })).not.toContain("Still applies")
+  expect(render(item, true)).not.toContain("Still applies")
+  expect(render({ ...item, status: "archived" })).toContain("Referenced files")
+  const removedItem: MemoryItem = { ...item, fileRefs: [{ path: "AGENTS.md", kind: "source", drift: "line_removed" }] }
+  expect(render({ ...removedItem, status: "archived" })).not.toContain("Keep as its own memory")
+  expect(render(removedItem, true)).not.toContain("Keep as its own memory")
+})
+
+test("file references render relative change time and fall back when the timestamp is invalid", () => {
+  const now = Date.now()
+  const item: MemoryItem = { ...sensitiveCandidate, content: "Synthetic rule", sensitive: false, status: "active",
+    fileRefs: [{ path: "src/auth.ts", kind: "mention", drift: "changed", changedAt: new Date(now - 3 * 24 * 60 * 60_000).toISOString() }] }
+  const render = (memory: MemoryItem) => renderToStaticMarkup(<MemoryDetailPanel item={memory} allItems={[memory]} onClose={() => {}} onUpdated={() => {}} onAccept={async () => {}} onArchive={async () => {}} />)
+  expect(render(item)).toContain("Changed 3 days ago")
+  expect(render({ ...item, fileRefs: [{ ...item.fileRefs![0]!, changedAt: "invalid" }] })).toContain(">Changed</span>")
+})
 
 test("a sensitive Candidate only builds an atomic accept patch from a changed reviewed draft", () => {
   expect(buildReviewedSensitiveCandidatePatch(sensitiveCandidate, {

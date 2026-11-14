@@ -402,6 +402,24 @@ describe("format inventory and incremental manifest", () => {
 });
 
 describe("reviewed writes, lineage and rollback", () => {
+  it("baselines imported project memories before their referenced files change", async () => {
+    const referenced = join(project, "src", "a.ts");
+    put(referenced, "synthetic baseline");
+    put(topic, "Always validate src/a.ts before the synthetic release.\n");
+    const first = plan("file-baseline");
+    const id = (await accept(first)).accepted[0]!.memoryId;
+    put(referenced, "synthetic file changed after import");
+    memory.fileDrift.syncProject("p", project);
+    expect(memory.fileDrift.refsFor([id]).get(id)?.[0]?.drift).toBe("changed");
+    const secondFile = join(project, "src", "b.ts");
+    put(secondFile, "second synthetic baseline");
+    put(topic, "Always validate src/b.ts before the synthetic release and test the revised path.\n");
+    const updated = plan("file-baseline-updated");
+    expect((await accept(updated)).accepted[0]!.updated).toBe(true);
+    put(secondFile, "second synthetic file changed after import");
+    memory.fileDrift.syncProject("p", project);
+    expect(memory.fileDrift.refsFor([id]).get(id)?.[0]?.drift).toBe("changed");
+  });
   it("is durable and idempotent, preserves source bytes, and updates changed units rather than duplicating", async () => {
     const before = readFileSync(topic, "utf8"),
       first = plan("first"),

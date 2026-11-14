@@ -144,6 +144,7 @@ interface CheckupDependencySnapshot {
   poolById: Map<string, MemoryItem>;
   quiet: Set<string>;
   quietItems: MemoryItem[];
+  driftRefs: Map<string, import('./types').MemoryFileRef[]>;
   relatedPairs: Set<string>;
   openRevisionIds: Set<string>;
   today: string;
@@ -186,7 +187,8 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
     const pool = activePool(ctx);
     const poolById = new Map(pool.map((item) => [item.id, item]));
     const quiet = quietShortlist(ctx);
-    const quietItems = pool.filter((item) => quiet.has(item.id));
+    const driftRefs = memory.fileDrift.refsFor(pool.map(item => item.id));
+    const quietItems = pool.filter((item) => quiet.has(item.id) || driftRefs.get(item.id)?.some(ref => ref.drift));
     const today = now().toISOString().slice(0, 10);
     const relatedPairs = new Set<string>();
     const relationFingerprint = new Set<string>();
@@ -213,6 +215,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
           scope: item.scope,
           reinforcedCount: item.reinforcedCount,
           quiet: quiet.has(item.id),
+          drift: memory.fileDrift.driftSignature(item.id),
         }))
         .sort((a, b) => a.id.localeCompare(b.id)),
       relations: [...relationFingerprint].sort(),
@@ -220,7 +223,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       today: quietItems.length ? today : '',
     });
 
-    return { key, pool, poolById, quiet, quietItems, relatedPairs, openRevisionIds, today };
+    return { key, pool, poolById, quiet, quietItems, driftRefs, relatedPairs, openRevisionIds, today };
   }
 
   /** Validate one pair-shaped finding list (conflict/redundancy). */
@@ -342,9 +345,10 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
     }
   }
 
-  const evidenceLineFor = (m: MemoryItem, quiet: Set<string>) =>
+  const evidenceLineFor = (m: MemoryItem, quiet: Set<string>, refs: CheckupDependencySnapshot['driftRefs']) =>
     `[${m.id}] (${m.scope}, created ${m.createdAt.slice(0, 10)}, used ${m.usageCount}×, re-confirmed ` +
-    `${m.reinforcedCount}×${quiet.has(m.id) ? `, no reference in the last ${SHORTLIST_QUIET_SESSIONS}+ sessions` : ''}) ${m.content}`;
+    `${m.reinforcedCount}×${quiet.has(m.id) ? `, no reference in the last ${SHORTLIST_QUIET_SESSIONS}+ sessions` : ''}) ${m.content}` +
+    (refs.get(m.id) ?? []).filter(ref => ref.drift).map(ref => `; referenced file ${ref.path} ${ref.drift === 'line_removed' ? 'lost its source line' : ref.drift === 'missing' ? 'is missing' : 'changed'}`).join('');
 
   function resultSlot(ctx: CheckupContext): string {
     return `${ctx.projectId ?? ''}#${ctx.sessionId ?? ''}`;
@@ -395,7 +399,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
       try {
         const raw = await callJson({
           system: STALENESS_SYSTEM,
-          user: `Today: ${snapshot.today}\n\nItems:\n${snapshot.quietItems.map((item) => evidenceLineFor(item, snapshot.quiet)).join('\n')}`,
+          user: `Today: ${snapshot.today}\n\nItems:\n${snapshot.quietItems.map((item) => evidenceLineFor(item, snapshot.quiet, snapshot.driftRefs)).join('\n')}`,
           timeoutMs: QUERY_TIMEOUT_MS,
         });
         if (!Array.isArray(raw.findings)) return { suggestions: [], failedKind: 'staleness' };
@@ -433,6 +437,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
           `CURRENT TASK:\n${taskText ?? ctx.taskText ?? '(see inherited conversation)'}`,
           `TODAY: ${snapshot.today}`,
           `ACTIVE LIBRARY:\n${JSON.stringify(snapshot.pool)}`,
+          `REFERENCED FILE CHANGES:\n${snapshot.quietItems.filter(item => snapshot.driftRefs.get(item.id)?.some(ref => ref.drift)).map(item => evidenceLineFor(item, snapshot.quiet, snapshot.driftRefs)).join('\n') || '(none)'}`,
           `ACKNOWLEDGED PAIRS:\n${JSON.stringify([...snapshot.relatedPairs])}`,
           `PENDING REVISIONS:\n${JSON.stringify([...snapshot.openRevisionIds])}`,
           'Each finding has memoryId and reason; conflicts/redundancy also have otherMemoryId. Reasons must identify concrete evidence. Use the supplied IDs only. Stable pair identities sort the two IDs: conflicts:M-1:M-2 or redundancy:M-1:M-2; staleness identity: staleness:M-1.',
@@ -479,7 +484,7 @@ export function createCheckupService(opts: CheckupServiceOptions): CheckupServic
         '',
         `Library:\n${snapshot.pool.map(itemLine).join('\n')}`,
         '',
-        `STALENESS SHORTLIST (today: ${snapshot.today}):\n${snapshot.quietItems.length ? snapshot.quietItems.map((item) => evidenceLineFor(item, snapshot.quiet)).join('\n') : '(none — return an empty staleness list)'}`,
+        `STALENESS SHORTLIST (today: ${snapshot.today}):\n${snapshot.quietItems.length ? snapshot.quietItems.map((item) => evidenceLineFor(item, snapshot.quiet, snapshot.driftRefs)).join('\n') : '(none — return an empty staleness list)'}`,
         '',
         'Every reason: one short line grounded in the item text, evidence, or context. Empty lists are the normal outcome.',
         'Respond with STRICT JSON only — no prose before or after: {"conflicts":[{"memoryId":"M-3","otherMemoryId":"M-19","reason":"…"}],"redundancy":[{"memoryId":"M-3","otherMemoryId":"M-19","reason":"…"}],"staleness":[{"memoryId":"M-3","reason":"…"}]}',
