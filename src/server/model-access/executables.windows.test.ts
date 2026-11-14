@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { knownInstallDirectories } from "./discovery-paths"
@@ -7,7 +7,7 @@ import { createExecutableResolver } from "./resolver"
 import { findWindowsEditor } from "../external-open"
 
 test.skipIf(process.platform !== "win32")("discovers Windows npm globals and launches npm shims without shell interpretation", async () => {
-  const root = await mkdtemp(path.join(tmpdir(), "memosync CLI 中文 & spaces-"))
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "memosync CLI 中文 & spaces-")))
   try {
     const appData = path.join(root, "AppData", "Roaming")
     const prefix = path.join(appData, "npm")

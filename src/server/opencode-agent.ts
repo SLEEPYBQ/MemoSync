@@ -13,6 +13,7 @@ import { createOpencodeMemoryMcp, type OpencodeMemoryDispatch } from './memory/o
 import type { MemoryToolSpec } from './memory/tools'
 import type { OpencodeParentLaunch } from './memory/parent-launch'
 import { createOpencodeHostPlugin } from './opencode-host-actions'
+import { readOpencodeEvents } from './opencode-events'
 import { isHostActionTool } from './host-actions'
 import type { HostNativeToolContext } from '../shared/host-actions'
 
@@ -207,14 +208,16 @@ export class OpencodeAgentManager {
         if (args.signal?.aborted) abortStartup()
         void (async () => {
           try {
-            const events = await client.event.subscribe({ directory: args.cwd }, { signal: controller.signal, sseMaxRetryAttempts: 0, onSseError: fail })
-            for await (const event of events.stream) { if (event.type === 'server.connected') readyResolve(); chat.turn?.handle(event) }
+            for await (const event of readOpencodeEvents(server!.url, args.cwd, server!.authorization, controller.signal)) {
+              if (event.type === 'server.connected') readyResolve()
+              chat.turn?.handle(event)
+            }
           }
           catch { /* transport details cannot escape */ }
           finally { fail() }
         })()
         // The first native plugin load may install OpenCode's own plugin API.
-        await Promise.race([ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('OpenCode event stream unavailable')), hostPlugin ? 30_000 : 5_000) })])
+        await Promise.race([ready, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('OpenCode event stream unavailable')), hostPlugin ? 60_000 : 5_000) })])
       } finally { clearTimeout(timer); args.signal?.removeEventListener('abort', abortStartup) }
       return chat
     } catch (error) {

@@ -90,13 +90,17 @@ export function parseLsofListeningPorts(output: string) {
 }
 
 export function parseWindowsListeningEntries(output: string): ListeningPortEntry[] {
-  const data = JSON.parse(output || "[]")
   const entries = new Map<number, ListeningPortEntry>()
-  for (const row of Array.isArray(data) ? data : [data]) {
-    if (!row || !Number.isInteger(row.port) || row.port < 1 || row.port > 65535 || !Number.isInteger(row.pid) || row.pid <= 0) continue
-    const entry: ListeningPortEntry = entries.get(row.port) ?? { port: row.port, owners: [] }
-    if (!entry.owners.some(owner => owner.pid === row.pid)) entry.owners.push({ pid: row.pid, command: typeof row.command === "string" ? row.command : `PID ${row.pid}` })
-    entries.set(row.port, entry)
+  for (const line of output.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/)
+    // Numeric netstat output: TCP local remote state pid. An unconnected
+    // remote port identifies listeners without depending on localized state.
+    if (fields.length !== 5 || fields[0] !== "TCP" || !/:0$/.test(fields[2]!)) continue
+    const port = Number(fields[1]!.slice(fields[1]!.lastIndexOf(":") + 1)), pid = Number(fields[4])
+    if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isInteger(pid) || pid <= 0) continue
+    const entry: ListeningPortEntry = entries.get(port) ?? { port, owners: [] }
+    if (!entry.owners.some(owner => owner.pid === pid)) entry.owners.push({ pid, command: `PID ${pid}` })
+    entries.set(port, entry)
   }
   return [...entries.values()].sort((a, b) => a.port - b.port)
 }
@@ -234,8 +238,17 @@ async function listProcListeningTcpEntries(excludedPorts: Set<number>) {
 export async function listListeningTcpEntries() {
   if (process.platform === "win32") {
     try {
-      const { stdout } = await windowsQuery("$names=@{}; Get-Process | ForEach-Object { $names[$_.Id]=$_.ProcessName }; @(Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { [pscustomobject]@{port=[int]$_.LocalPort;pid=[int]$_.OwningProcess;command=$names[[int]$_.OwningProcess]} }) | ConvertTo-Json -Compress")
-      return parseWindowsListeningEntries(stdout)
+      // Get-NetTCPConnection loads CIM providers and can exceed five seconds
+      // on a cold Windows desktop. netstat reads the same native socket table.
+      const { stdout } = await execFileAsync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "netstat.exe"), ["-a", "-n", "-o"],
+        { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
+      const entries = parseWindowsListeningEntries(stdout)
+      try {
+        const names = await windowsQuery("@(Get-Process | Select-Object Id,ProcessName) | ConvertTo-Json -Compress")
+        const byPid = new Map<number, string>(JSON.parse(names.stdout || "[]").map((row: { Id: number; ProcessName: string }) => [row.Id, row.ProcessName]))
+        for (const entry of entries) for (const owner of entry.owners) owner.command = byPid.get(owner.pid) || owner.command
+      } catch { /* Names are optional; preserve native port/PID discovery. */ }
+      return entries
     } catch { return [] }
   }
   let lsofEntries: ListeningPortEntry[] = []

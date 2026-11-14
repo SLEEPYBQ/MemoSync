@@ -104,7 +104,9 @@ export async function openExternal(command: OpenExternalCommand) {
         await spawnDetached("wt", ["-d", resolvedPath])
         return
       }
-      await spawnDetached(process.env.ComSpec || "cmd.exe", ["/K"], { cwd: resolvedPath })
+      // START supplies a fresh console's input/output handles. The directory
+      // stays in cwd so %, &, and spaces never become command syntax.
+      await spawnDetached(process.env.ComSpec || "cmd.exe", ["/d", "/c", "start", '""', "cmd", "/d", "/k"], { cwd: resolvedPath })
       return
     }
   }

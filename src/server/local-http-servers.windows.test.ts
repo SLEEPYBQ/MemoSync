@@ -2,10 +2,14 @@ import { expect, test } from "bun:test"
 import { listListeningTcpEntries, parseWindowsListeningEntries } from "./local-http-servers"
 
 test("Windows listener records deduplicate IPv4/IPv6 owners and reject invalid ports", () => {
-  expect(parseWindowsListeningEntries(JSON.stringify([
-    { port: 43210, pid: 25, command: "synthetic-bun" }, { port: 43210, pid: 25, command: "synthetic-bun" },
-    { port: 65536, pid: 26 }, { port: 10, pid: 0 },
-  ]))).toEqual([{ port: 43210, owners: [{ command: "synthetic-bun", pid: 25 }] }])
+  expect(parseWindowsListeningEntries(`
+  TCP  0.0.0.0:43210   0.0.0.0:0   LISTENING  25
+  TCP  [::]:43210     [::]:0      LISTENING  25
+  TCP  127.0.0.1:12   127.0.0.1:43210 ESTABLISHED 30
+  TCP  0.0.0.0:65536  0.0.0.0:0   LISTENING  26
+  TCP  0.0.0.0:10     0.0.0.0:0   LISTENING  0
+  UDP  0.0.0.0:20     *:*         31
+  `)).toEqual([{ port: 43210, owners: [{ command: "PID 25", pid: 25 }] }])
 })
 
 test.skipIf(process.platform !== "win32")("discovers a real Windows loopback listener and its process", async () => {

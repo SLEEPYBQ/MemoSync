@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile, rm, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startClaudeSession } from './agent'
@@ -106,6 +106,15 @@ for (const { engine, command } of [
       expect(service.statusForTool(lease, first.operationId).status).toBe('accepted')
       service.presented(connection, { operationId: first.operationId, viewInstanceId: 'synthetic-rendered-tab', fileVersion: snapshot.version, digest: snapshot.digest })
       expect(service.statusForTool(lease, first.operationId).status).toBe('presented')
+    } catch (error) {
+      // This entire profile is synthetic. Print bounded native diagnostics only
+      // on failure; never inspect the user's native profiles or credentials.
+      for (const file of await readdir(root, { recursive: true }).catch(() => [])) {
+        if (!file.endsWith('.log')) continue
+        const log = await readFile(join(root, file), 'utf8').catch(() => '')
+        console.error(log.split(/\r?\n/).filter(line => !/authorization|password|api.?key|token|secret/i.test(line)).slice(-12).join('\n').slice(-4000))
+      }
+      throw error
     } finally { await close(); provider.stop(true); await service.close(); await rm(root, { recursive: true, force: true }) }
-  }, 45_000)
+  }, 90_000)
 }
