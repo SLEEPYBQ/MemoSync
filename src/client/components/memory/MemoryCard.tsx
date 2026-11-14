@@ -8,7 +8,7 @@ import type { DragEvent, MouseEvent, ReactNode } from "react"
 import { Clock3, ShieldAlert } from "lucide-react"
 import type { MemoryItem } from "../../lib/memoriesApi"
 import { formatSidebarAgeLabel } from "../../lib/formatters"
-import { expiryDaysLeft } from "../../lib/memoryExpiry"
+import { expiryDaysLeft, localDateValue } from "../../lib/memoryExpiry"
 import { cn } from "../../lib/utils"
 import { Chip, ScopeBadge, scopeCardClasses, scopeRingClasses } from "./ScopeBadge"
 // Trace-dot and freshness color maps live in memoryVocab so this card and the
@@ -37,7 +37,7 @@ export function MemoryCard({ item, variant, selected, draggable, onDragStart, on
   const age = formatSidebarAgeLabel(Date.parse(item.createdAt) || undefined, Date.now())
   const now = Date.now()
   const days = expiryDaysLeft(item.expiresAt, now)
-  const expiresToday = Boolean(item.expiresAt && Date.parse(item.expiresAt) - now < 86400000)
+  const expiresToday = Boolean(item.expiresAt && localDateValue(new Date(item.expiresAt)) === localDateValue(new Date(now)))
   function handleFooterClick(e: MouseEvent<HTMLDivElement>) {
     // Footer buttons handle their own actions; don't also open the panel.
     e.stopPropagation()

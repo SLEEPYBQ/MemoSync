@@ -28,15 +28,20 @@ describe("MemoryCard", () => {
     expect(html).toContain("6 days left")
     expect(html).toContain("lucide-clock")
   })
-  test("uses today only below 24 hours", () => {
+  test("uses the current local calendar date for the today expiry label", () => {
     const originalNow = Date.now
-    const now = Date.parse("2030-01-01T12:00:00.000Z")
+    const now = new Date(2030, 0, 1, 23, 30).getTime()
     Date.now = () => now
     try {
+      const today = renderToStaticMarkup(createElement(MemoryCard, { item: item({ expiresAt: new Date(2030, 0, 1, 23, 59).toISOString() }), variant: "scoped" }))
+      const tomorrow = renderToStaticMarkup(createElement(MemoryCard, { item: item({ expiresAt: new Date(2030, 0, 2, 0, 30).toISOString() }), variant: "scoped" }))
       const exactDay = renderToStaticMarkup(createElement(MemoryCard, { item: item({ expiresAt: new Date(now + 86400000).toISOString() }), variant: "scoped" }))
-      const underDay = renderToStaticMarkup(createElement(MemoryCard, { item: item({ expiresAt: new Date(now + 86399000).toISOString() }), variant: "scoped" }))
+      expect(today).toContain("Expires today")
+      expect(today).not.toContain("1 day left")
+      expect(tomorrow).toContain("1 day left")
+      expect(tomorrow).not.toContain("Expires today")
       expect(exactDay).toContain("1 day left")
-      expect(underDay).toContain("Expires today")
+      expect(exactDay).not.toContain("Expires today")
     } finally { Date.now = originalNow }
   })
   test("rings a corrected audit dot", () => {
