@@ -80,6 +80,7 @@ export interface MemoryBoardOverlayMode {
   chatId?: string
   focusedReview?: FocusedMemoryReviewController
   initialLens?: "archived"
+  memoryId?: string
   onClose?: () => void
   onChanged?: () => void
 }
@@ -152,6 +153,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const [actionError, setActionError] = useState<string | null>(null)
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const boardRootRef = useRef<HTMLDivElement>(null)
+  const focusedMemoryIdRef = useRef<string | undefined>(undefined)
   // Conflict maintenance (A1): older memories targeted by conflicts_with.
   const [needsAttention, setNeedsAttention] = useState<
     Array<{ memory: MemoryItem; supersededBy: MemoryItem[] }>
@@ -313,6 +316,28 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   useEffect(() => {
     if (selectedId && !items.some((m) => m.id === selectedId)) setSelectedId(null)
   }, [items, selectedId])
+
+  useEffect(() => {
+    const id = overlay?.memoryId
+    if (!id) { focusedMemoryIdRef.current = undefined; return }
+    if (focusedMemoryIdRef.current === id || status !== "ready") return
+    // The mount refresh may have begun after this render captured its snapshot.
+    const current = useMemoryStore.getState()
+    if (current.status !== "ready") return
+    focusedMemoryIdRef.current = id
+    const target = current.items.find((item) => item.id === id)
+    setQuery("")
+    setView("board")
+    setLens({ kind: target?.status === "archived" ? "archived" : "all" })
+    setSelectedId(target?.id ?? null)
+    setActionError(target ? null : `${id} · ${t("memory:noLongerAvailable")}`)
+  }, [overlay?.memoryId, items, status])
+  useEffect(() => {
+    if (!selectedId || selectedId !== overlay?.memoryId) return
+    const row = Array.from(boardRootRef.current?.querySelectorAll<HTMLElement>("[data-memory-board-id]") ?? [])
+      .find((element) => element.dataset.memoryBoardId === selectedId)
+    row?.scrollIntoView({ block: "nearest", inline: "nearest" })
+  }, [selectedId, overlay?.memoryId, lens, view])
 
   const boardModel = useMemo(
     () => deriveMemoryBoardModel(items, { query, projectFilter: null }),
@@ -542,7 +567,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
 
   function renderScopedCard(item: MemoryItem, scope: MemoryScope) {
     return (
-      <div key={item.id} onMouseEnter={() => recordBoardHover(item.id)}>
+      <div key={item.id} data-memory-board-id={item.id} onMouseEnter={() => recordBoardHover(item.id)}>
         <MemoryCard
           item={item}
           variant="scoped"
@@ -634,7 +659,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   }
 
   return (
-    <div className="memory-ui @container/board relative flex min-h-0 min-w-0 flex-1">
+    <div ref={boardRootRef} className="memory-ui @container/board relative flex min-h-0 min-w-0 flex-1">
       <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-3 pb-3 pt-2 @xl/board:px-5 @xl/board:pb-4" onScroll={recordBoardScroll}>
         <div className="mx-auto flex w-full max-w-[1320px] flex-1 flex-col">
           <MemorySettingsBanner />
@@ -874,7 +899,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                   {archivedItems.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm"
+                      data-memory-board-id={item.id}
+                      className={cn("flex items-center gap-2 rounded-lg border border-border/70 bg-background/60 dark:bg-muted/40 px-3 py-1.5 text-sm", selectedId === item.id && cn("ring-2", scopeRingClasses(item.scope)))}
                     >
                       <button type="button" onClick={() => setSelectedId(item.id)} className="flex min-w-0 flex-1 items-center gap-2 text-left hover:text-foreground">
                         <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{item.id}</span>
@@ -1096,7 +1122,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
       ) : null}
 
       {selectedItem ? (
-        <aside className="absolute inset-0 z-10 min-w-0 overflow-hidden bg-background @3xl/board:static @3xl/board:w-[400px] @3xl/board:shrink-0 @3xl/board:border-l @3xl/board:border-border">
+        <aside data-memory-detail-id={selectedItem.id} className="absolute inset-0 z-10 min-w-0 overflow-hidden bg-background @3xl/board:static @3xl/board:w-[400px] @3xl/board:shrink-0 @3xl/board:border-l @3xl/board:border-border">
           <MemoryDetailPanel
             item={selectedItem}
             allItems={items}

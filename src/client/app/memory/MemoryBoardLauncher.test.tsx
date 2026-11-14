@@ -71,6 +71,12 @@ describe("MemoryBoardLauncher", () => {
     })
   })
 
+  test("binds a citation target to its active chat and rejects a stale chat", () => {
+    const request = { source: "chat_citation" as const, chatId: "chat-a", memoryId: "M-02" }
+    expect(resolveMemoryBoardLaunchRequest(request, "chat-a")).toEqual(request)
+    expect(resolveMemoryBoardLaunchRequest(request, "chat-b")).toBeNull()
+  })
+
   test("fails closed when a Board launch has no active chat or targets a stale chat", () => {
     expect(resolveMemoryBoardLaunchRequest(
       { source: "sidebar" },
@@ -141,7 +147,8 @@ describe("MemoryBoardLauncher", () => {
     expect(appSource).toContain("resolveMemoryBoardLaunchRequest(request, state.activeChatId)")
     expect(appSource).toContain("reconcileMemoryBoardRequestWithActiveChat(current, state.activeChatId)")
     expect(appSource).toContain("focusedReview={memoryBoardRequest.focusedReview}")
-    expect(overlaySource).toContain("overlay={{ chatId, focusedReview, initialLens, onClose }}")
+    expect(appSource).toContain("memoryId={memoryBoardRequest.memoryId}")
+    expect(overlaySource).toContain("overlay={{ chatId, focusedReview, initialLens, memoryId, onClose }}")
     expect(recordSource).not.toContain("<MemoryBoardOverlay")
   })
 })

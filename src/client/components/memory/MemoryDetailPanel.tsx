@@ -336,7 +336,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                     <button
                       key={scope}
                       type="button"
-                      disabled={busyState}
+                      disabled={busyState || item.status === "archived"}
                       onClick={() => void handleMoveScope(scope)}
                       aria-pressed={active}
                       className={cn(
@@ -354,6 +354,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   )
                 })}
               </div>
+              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
             </div>
 
             <MemoryExpiryPicker value={expiresAt} onChange={setExpiresAt} disabled={busyState} />
