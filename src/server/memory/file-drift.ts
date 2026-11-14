@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { markdownBulletContent, normalizeContent } from './markdown-content';
 import { semanticHash } from './view';
 import type { MemoryStore } from './MemoryStore';
-import type { ActorMeta, MemoryFileRef } from './types';
+import type { ActorMeta, MemoryFileRef, MemoryItem } from './types';
 
 const MAX_FILE_SIZE = 1024 * 1024;
 const MAX_PATHS = 8;
@@ -88,6 +88,44 @@ export class FileDrift {
     private hash: (bytes: Uint8Array) => string = gitBlobHash,
   ) {}
 
+  private reconcile(item: MemoryItem, root: string, existing: RefRow[]): void {
+    const contentHash = semanticHash([item.content, item.detail ?? '']);
+    if (existing.length && existing.every(row => row.content_hash === contentHash)) return;
+    const paths = extractPaths(`${item.content}\n${item.detail ?? ''}`, root);
+    const refs = paths.flatMap(path => {
+      const file = projectFile(root, path);
+      if (!file || file.size > MAX_FILE_SIZE) return [];
+      try { return [{ ...file, hash: this.hash(readFileSync(file.fullPath)) }]; }
+      catch { return []; }
+    });
+    this.db.transaction(() => {
+      this.db.query("DELETE FROM memory_file_refs WHERE memory_id = ? AND kind = 'mention'").run(item.id);
+      for (const ref of refs) this.db.query(`INSERT INTO memory_file_refs
+        (memory_id, path, kind, blob_hash, memory_version, content_hash, size, mtime_ms, checked_at)
+        VALUES (?, ?, 'mention', ?, ?, ?, ?, ?, ?)`)
+        .run(item.id, ref.path, ref.hash, item.version, contentHash, ref.size, ref.mtimeMs, new Date().toISOString());
+    })();
+  }
+
+  baseline(memoryId: string, localPath: string): void {
+    let root: string;
+    try {
+      root = realpathSync(localPath);
+      if (!statSync(root).isDirectory()) return;
+      accessSync(root, constants.R_OK | constants.X_OK);
+    } catch {
+      return;
+    }
+    try {
+      const item = this.store.getById(memoryId);
+      if (!item || item.scope !== 'project' || !item.projectId || !['active', 'candidate'].includes(item.status)) return;
+      const existing = this.db.query("SELECT * FROM memory_file_refs WHERE memory_id = ? AND kind = 'mention'").all(item.id) as RefRow[];
+      this.reconcile(item, root, existing);
+    } catch (error) {
+      console.warn('[memory] Could not baseline file references:', error);
+    }
+  }
+
   syncProject(projectId: string, localPath: string): void {
     let root: string;
     try {
@@ -113,22 +151,7 @@ export class FileDrift {
       }
       for (const item of items) {
         const existing = mentions.get(item.id) ?? [];
-        const contentHash = semanticHash([item.content, item.detail ?? '']);
-        if (existing.length && existing.every(row => row.memory_version === item.version && row.content_hash === contentHash)) continue;
-        const paths = extractPaths(`${item.content}\n${item.detail ?? ''}`, root);
-        const refs = paths.flatMap(path => {
-          const file = projectFile(root, path);
-          if (!file || file.size > MAX_FILE_SIZE) return [];
-          try { return [{ ...file, hash: this.hash(readFileSync(file.fullPath)) }]; }
-          catch { return []; }
-        });
-        this.db.transaction(() => {
-          this.db.query("DELETE FROM memory_file_refs WHERE memory_id = ? AND kind = 'mention'").run(item.id);
-          for (const ref of refs) this.db.query(`INSERT INTO memory_file_refs
-            (memory_id, path, kind, blob_hash, memory_version, content_hash, size, mtime_ms, checked_at)
-            VALUES (?, ?, 'mention', ?, ?, ?, ?, ?, ?)`)
-            .run(item.id, ref.path, ref.hash, item.version, contentHash, ref.size, ref.mtimeMs, new Date().toISOString());
-        })();
+        this.reconcile(item, root, existing);
       }
       const current = this.db.query(`SELECT r.* FROM memory_file_refs r JOIN memories m ON m.id = r.memory_id
         WHERE m.scope = 'project' AND m.project_id = ? AND m.status IN ('active', 'candidate')`)

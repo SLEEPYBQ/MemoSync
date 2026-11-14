@@ -157,4 +157,43 @@ describe('file drift', () => {
     memory.fileDrift.syncProject('P1', project);
     expect(memory.fileDrift.refsFor([item.id]).get(item.id)?.map(ref => ref.path)).toEqual(['new.ts', 'old.ts']);
   });
+
+  it('preserves file drift and confirmation signature across topic and expiry changes', () => {
+    const file = join(project, 'auth.ts');
+    writeFileSync(file, 'baseline');
+    const item = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    memory.fileDrift.syncProject('P1', project);
+    writeFileSync(file, 'changed synthetic file');
+    memory.fileDrift.syncProject('P1', project);
+    const signature = memory.fileDrift.driftSignature(item.id);
+    expect(signature).not.toBe('');
+    memory.store.update(item.id, { topic: 'Testing', expiresAt: '2099-01-01T00:00:00.000Z' }, { actor: 'user' });
+    memory.fileDrift.syncProject('P1', project);
+    expect(memory.fileDrift.refsFor([item.id]).get(item.id)?.[0]?.drift).toBe('changed');
+    expect(memory.fileDrift.driftSignature(item.id)).toBe(signature);
+  });
+
+  it('clears source and mention refs when a candidate moves to personal or another project', () => {
+    writeFileSync(join(project, 'AGENTS.md'), '- Use auth.ts\n');
+    writeFileSync(join(project, 'auth.ts'), 'first project');
+    const other = join(dir, 'other-project');
+    mkdirSync(other);
+    writeFileSync(join(other, 'auth.ts'), 'second project');
+    writeFileSync(join(other, 'AGENTS.md'), '- Different synthetic rule\n');
+    const source = readProjectSource(project, 'AGENTS.md')!;
+    const create = () => {
+      const item = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact', status: 'candidate' }, { actor: 'user' });
+      memory.fileDrift.addSource(item.id, source);
+      memory.fileDrift.syncProject('P1', project);
+      return item;
+    };
+    const personal = create();
+    memory.store.replaceCandidateDraft(personal.id, { scope: 'personal' }, { actor: 'user' });
+    expect(memory.fileDrift.refsFor([personal.id]).size).toBe(0);
+    const moved = create();
+    memory.store.replaceCandidateDraft(moved.id, { projectId: 'P2' }, { actor: 'user' });
+    expect(memory.fileDrift.refsFor([moved.id]).size).toBe(0);
+    memory.fileDrift.syncProject('P2', other);
+    expect(memory.fileDrift.refsFor([moved.id]).get(moved.id)).toEqual([{ path: 'auth.ts', kind: 'mention', drift: null }]);
+  });
 });

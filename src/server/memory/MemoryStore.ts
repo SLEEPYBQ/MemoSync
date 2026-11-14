@@ -623,6 +623,9 @@ export class MemoryStore {
       this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
       const replaced = this.getById(id)!;
+      if (replaced.scope !== existing.scope || replaced.projectId !== existing.projectId) {
+        this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+      }
       this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
       this.appendEvent(id, 'create', meta, { snapshot: this.snapshotOf(replaced) });
       return replaced;
@@ -1479,6 +1482,9 @@ export class MemoryStore {
     this.db.query(`UPDATE memories SET ${sets.join(', ')} WHERE id = $id`).run(params);
 
     const reverted = this.getById(id)!;
+    if (reverted.scope !== existing.scope || reverted.projectId !== existing.projectId) {
+      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+    }
     this.appendEvent(id, 'revert', meta, {
       changes,
       snapshot: this.snapshotOf(reverted),

@@ -56,6 +56,34 @@ describe('memory routes', () => {
     dir = mkdtempSync(join(tmpdir(), 'memv2-routes-'));
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
   });
+
+  it('baselines a new project memory before a later file edit', async () => {
+    const project = join(dir, 'baseline-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'auth.ts'), 'baseline');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const created = (await json(await call('POST', '/api/memories', { content: 'Use auth.ts', scope: 'project', projectId: 'P1' }, services))).data;
+    writeFileSync(join(project, 'auth.ts'), 'changed after creation');
+    memory.fileDrift.syncProject('P1', project);
+    expect(memory.fileDrift.refsFor([created.id]).get(created.id)?.[0]?.drift).toBe('changed');
+  });
+
+  it('baselines candidate edits and acceptance immediately without resetting metadata-only drift', async () => {
+    const project = join(dir, 'edited-project');
+    mkdirSync(project);
+    writeFileSync(join(project, 'a.ts'), 'a baseline');
+    writeFileSync(join(project, 'b.ts'), 'b baseline');
+    const services = { resolveProjectPath: () => project };
+    const created = (await json(await call('POST', '/api/memories', { content: 'Use a.ts', scope: 'project', projectId: 'P1', status: 'candidate' }, services))).data;
+    await call('PATCH', `/api/memories/${created.id}`, { content: 'Use b.ts' }, services);
+    writeFileSync(join(project, 'b.ts'), 'b changed');
+    memory.fileDrift.syncProject('P1', project);
+    const signature = memory.fileDrift.driftSignature(created.id);
+    expect(signature).not.toBe('');
+    await call('PATCH', `/api/memories/${created.id}`, { status: 'active', topic: 'Testing' }, services);
+    expect(memory.fileDrift.driftSignature(created.id)).toBe(signature);
+    expect(memory.fileDrift.refsFor([created.id]).get(created.id)?.[0]?.drift).toBe('changed');
+  });
   afterEach(() => {
     memory.close();
     rmSync(dir, { recursive: true, force: true });

@@ -142,6 +142,11 @@ export async function handleMemoryRequest(
     const refs = memory.fileDrift.refsFor([item.id]).get(item.id);
     return refs?.length ? { ...item, fileRefs: refs } : item;
   };
+  const baseline = (item: MemoryItem) => {
+    if (item.scope !== 'project' || !item.projectId) return;
+    const path = services.resolveProjectPath?.(item.projectId);
+    if (path) memory.fileDrift.baseline(item.id, path);
+  };
   try {
     // GET /api/memories/search?q=&project=&k=
     if (pathname === '/api/memories/search') {
@@ -317,6 +322,7 @@ export async function handleMemoryRequest(
             provenanceSessionId: b.provenanceSessionId as string | undefined,
             provenanceTurn: b.provenanceTurn as number | undefined,
           }, UI_ACTOR))();
+        baseline(created);
         // Decision first, projection second: syncProjection may ingest a dirty
         // file and emit derived events — the causal order in the log must be
         // decision → derived, never the reverse.
@@ -434,6 +440,7 @@ export async function handleMemoryRequest(
         via,
       });
       memory.syncProjection(existing.projectId);
+      baseline(reverted);
       if (reverted.projectId !== existing.projectId) memory.syncProjection(reverted.projectId);
       return ok(reverted);
     }
@@ -897,6 +904,7 @@ export async function handleMemoryRequest(
           ? { conflictsWith: landingTarget!.id }
           : undefined,
       );
+      baseline(created);
       if (landingChatId) memory.noteTransferLanding(landingChatId, created.id);
       if (landingRoute === 'conflicts' && landingBinds) {
         memory.logger.event({
@@ -1040,6 +1048,10 @@ export async function handleMemoryRequest(
         if (source) for (const id of imported.created) memory.fileDrift.addSource(id, source);
         return imported;
       })();
+      for (const id of result.created) {
+        const item = memory.store.getById(id);
+        if (item) baseline(item);
+      }
       return ok(result);
     }
 
@@ -1332,6 +1344,7 @@ export async function handleMemoryRequest(
               updated = memory.store.update(id, patch as Partial<MemoryItem>, UI_ACTOR);
             }
           })();
+        baseline(updated);
         // Decisions log BEFORE the projections they trigger — syncProjection
         // may ingest a dirty file and emit derived memory.propose events, and
         // the log's order must reflect causality (decision unblocks derived).
