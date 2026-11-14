@@ -43,10 +43,11 @@ function toPositiveInteger(value: string | undefined) {
 
 function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
   const absolute = (value: string) => value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value) || value.startsWith("\\\\")
+  const decodePath = (value: string) => { try { return decodeURIComponent(value) } catch { return value } }
   const hashMatch = /^(?<path>.+?)#L(?<line>\d+)(?:C(?<column>\d+))?$/.exec(target)
   if (hashMatch?.groups?.path && absolute(hashMatch.groups.path)) {
     return {
-      path: hashMatch.groups.path,
+      path: decodePath(hashMatch.groups.path),
       line: toPositiveInteger(hashMatch.groups.line),
       column: toPositiveInteger(hashMatch.groups.column),
     }
@@ -55,14 +56,14 @@ function parseAbsoluteFileTarget(target: string): ParsedFileTarget | null {
   const suffixMatch = /^(?<path>.+?):(?<line>\d+)(?::(?<column>\d+))?$/.exec(target)
   if (suffixMatch?.groups?.path && absolute(suffixMatch.groups.path)) {
     return {
-      path: suffixMatch.groups.path,
+      path: decodePath(suffixMatch.groups.path),
       line: toPositiveInteger(suffixMatch.groups.line),
       column: toPositiveInteger(suffixMatch.groups.column),
     }
   }
 
   if (absolute(target)) {
-    return { path: target }
+    return { path: decodePath(target) }
   }
 
   return null
