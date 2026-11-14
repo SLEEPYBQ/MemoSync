@@ -5,7 +5,13 @@ import { MEMORY_CITATION_SCHEME } from "../../lib/memoryCitations"
 import { markdownComponentsWithLinks } from "./shared"
 
 export function urlTransform(url: string): string {
-  return url.startsWith(MEMORY_CITATION_SCHEME) ? url : defaultUrlTransform(url)
+  return url.startsWith(MEMORY_CITATION_SCHEME) ? url : localUrlTransform(url)
+}
+
+// A Windows drive is a local path, not an arbitrary URI scheme. The link
+// component routes it through the existing local-file click handler.
+function localUrlTransform(url: string): string {
+  return /^[A-Za-z]:[\\/]/.test(url) ? url : defaultUrlTransform(url)
 }
 
 export function createMarkdownRenderCache({ maxEntries = 256, maxCharacters = 512 * 1024 } = {}) {
@@ -24,7 +30,7 @@ export function createMarkdownRenderCache({ maxEntries = 256, maxCharacters = 51
     }
     const tree = Markdown({
       children: text, remarkPlugins: [remarkGfm], components: markdownComponentsWithLinks,
-      urlTransform: memoryLinks ? urlTransform : defaultUrlTransform,
+      urlTransform: memoryLinks ? urlTransform : localUrlTransform,
     })
     if (maxEntries <= 0 || text.length > maxCharacters) return tree
     entries.set(key, { tree, characters: text.length })

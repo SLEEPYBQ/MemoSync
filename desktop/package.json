@@ -1,8 +1,11 @@
 {
   "name": "memosync-desktop",
-  "version": "0.44.0",
+  "version": "0.45.0",
   "private": true,
   "description": "MemoSync desktop shell",
+  "homepage": "https://github.com/SLEEPYBQ/MemoSync",
+  "license": "MIT",
+  "desktopName": "memosync.desktop",
   "main": "main.cjs",
   "scripts": {
     "dev": "electron ."
@@ -54,11 +57,34 @@
         ]
       }
     ],
-    "artifactName": "${productName}-${version}-${arch}.${ext}",
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release"
     },
+    "win": {
+      "artifactName": "${productName}-${version}-windows-${arch}.${ext}",
+      "target": ["nsis", "zip"],
+      "icon": "icon-light.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "${productName}-${version}-windows-${arch}-Setup.${ext}",
+      "deleteAppDataOnUninstall": false
+    },
+    "linux": {
+      "artifactName": "${productName}-${version}-linux-x64.${ext}",
+      "target": ["AppImage", "deb"],
+      "icon": "icon-light.png",
+      "category": "Development",
+      "executableName": "memosync",
+      "syncDesktopName": true,
+      "maintainer": "SLEEPYBQ <92238261+SLEEPYBQ@users.noreply.github.com>"
+    },
     "mac": {
+      "artifactName": "${productName}-${version}-macos-${arch}.${ext}",
       "category": "public.app-category.developer-tools",
       "icon": "icon.icns",
       "identity": "-",

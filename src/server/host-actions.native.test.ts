@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test'
-import { mkdtemp, mkdir, realpath, writeFile, rm } from 'node:fs/promises'
+import { mkdtemp, mkdir, realpath, writeFile, rm, readdir, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { startClaudeSession } from './agent'
@@ -60,7 +60,12 @@ for (const { engine, command } of [
         + event('message_stop', {}), { headers: { 'content-type': 'text/event-stream' } })
     } })
     const baseURL = `http://127.0.0.1:${provider.port}`
-    const env = { HOME: root, PATH: process.env.PATH, TMPDIR: root,
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows'
+    const env = { HOME: root, USERPROFILE: root, PATH: process.env.PATH || process.env.Path, TMPDIR: root, TEMP: root, TMP: root,
+      ...(process.platform === 'win32' ? { SystemRoot: systemRoot, WINDIR: systemRoot,
+        ComSpec: join(systemRoot, 'System32', 'cmd.exe'), PATHEXT: '.COM;.EXE;.BAT;.CMD',
+        CLAUDE_CODE_GIT_BASH_PATH: join(process.env.ProgramFiles || 'C:\\Program Files', 'Git', 'bin', 'bash.exe') } : {}),
+      APPDATA: join(root, 'AppData', 'Roaming'), LOCALAPPDATA: join(root, 'AppData', 'Local'),
       XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'native-data'), XDG_CACHE_HOME: join(root, 'cache'), XDG_STATE_HOME: join(root, 'state'),
       CLAUDE_CONFIG_DIR: join(root, 'claude'), ANTHROPIC_BASE_URL: baseURL, ANTHROPIC_API_KEY: 'synthetic-loopback-only', ANTHROPIC_AUTH_TOKEN: 'synthetic-loopback-only',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1', MEMOSYNC_MODEL_API_KEY: 'synthetic-loopback-only',
@@ -101,6 +106,15 @@ for (const { engine, command } of [
       expect(service.statusForTool(lease, first.operationId).status).toBe('accepted')
       service.presented(connection, { operationId: first.operationId, viewInstanceId: 'synthetic-rendered-tab', fileVersion: snapshot.version, digest: snapshot.digest })
       expect(service.statusForTool(lease, first.operationId).status).toBe('presented')
+    } catch (error) {
+      // This entire profile is synthetic. Print bounded native diagnostics only
+      // on failure; never inspect the user's native profiles or credentials.
+      for (const file of await readdir(root, { recursive: true }).catch(() => [])) {
+        if (!file.endsWith('.log')) continue
+        const log = await readFile(join(root, file), 'utf8').catch(() => '')
+        console.error(log.split(/\r?\n/).filter(line => !/authorization|password|api.?key|token|secret/i.test(line)).slice(-12).join('\n').slice(-4000))
+      }
+      throw error
     } finally { await close(); provider.stop(true); await service.close(); await rm(root, { recursive: true, force: true }) }
-  }, 45_000)
+  }, 90_000)
 }

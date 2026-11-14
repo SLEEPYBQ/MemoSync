@@ -1,5 +1,6 @@
 import { formatRelativeTime, t } from "../i18n"
 import type { MemoryItem } from "./memoriesApi"
+import { getPathBasename } from "./formatters"
 
 export type DriftedFile = { path: string; drift: "changed" | "missing" | "line_removed" }
 
@@ -8,7 +9,7 @@ export function driftedFileRefs(item: MemoryItem) {
 }
 
 export function fileBasename(path: string): string {
-  return path.split("/").at(-1) || path
+  return getPathBasename(path)
 }
 
 export function fileDriftSummary(refs: readonly DriftedFile[]): string | null {

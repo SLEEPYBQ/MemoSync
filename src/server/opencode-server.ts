@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { executableLauncher } from './model-access/launcher'
+import { killProcessTree } from './process-utils'
 import type { RuntimeEnv } from './model-access/legacy'
 
 export type OpencodeConfig = Record<string, unknown>
@@ -35,6 +36,7 @@ export interface OpencodeServer {
 /** Kill the entire wrapper/server group, even when the npm wrapper exited first. */
 export async function stopOpencodeProcess(child: ChildProcess): Promise<void> {
   if (!child.pid) return
+  if (process.platform === 'win32') { await killProcessTree(child); return }
   const pid = child.pid
   const kill = (signal: NodeJS.Signals | 0) => {
     try { process.kill(process.platform === 'win32' ? pid : -pid, signal); return true } catch { return false }
