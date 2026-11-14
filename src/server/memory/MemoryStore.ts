@@ -21,6 +21,8 @@ import type {
 /** Values SQLite can bind (subset of bun:sqlite's SQLQueryBindings). */
 type Bind = string | number | bigint | boolean | null | Uint8Array;
 
+type RevisionTargetSnapshot = { id: string; version: number; digest: string; format?: number };
+
 export type TraceCorrectionDelivery = {
   seq: number;
   chatId: string;
@@ -1084,7 +1086,11 @@ export class MemoryStore {
       if (!target || target.status !== 'active') return null;
       if (opts?.expectedTargetContent !== undefined && target.content !== opts.expectedTargetContent) return null;
       if (!allowCompeting && this.hasOpenRevision(targetId)) return null;
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      const proposal = this.create({
+        ...input,
+        expiresAt: input.expiresAt === undefined ? target.expiresAt : input.expiresAt,
+        status: 'candidate',
+      }, meta);
       this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, [this.revisionSnapshot(target)]);
       return { item: proposal, isRevision: true };
@@ -1103,14 +1109,20 @@ export class MemoryStore {
   acceptRevision(candidateId: string, meta: ActorMeta, draftPatch?: Partial<MemoryItem>): { updated: MemoryItem; replaced: MemoryItem[] } {
     return this.db.transaction(() => {
       const targets = this.revisionTargetsOf(candidateId);
-      const reviewed = this.getKv<ReturnType<MemoryStore['revisionSnapshot']>[]>(`revision_targets:${candidateId}`);
+      const reviewed = this.getKv<RevisionTargetSnapshot[]>(`revision_targets:${candidateId}`);
       if (targets.length > 0 || reviewed !== null) {
         if (!Array.isArray(reviewed) || reviewed.length !== targets.length || targets.some((target, index) => {
           const snapshot = this.revisionSnapshot(target);
+          const saved = reviewed[index];
+          const legacySnapshot: Partial<MemoryItemSnapshot> = this.snapshotOf(target);
+          delete legacySnapshot.expiresAt;
+          const legacyMatches = saved?.format === undefined && target.expiresAt == null
+            && saved?.digest === createHash('sha256').update(JSON.stringify(legacySnapshot)).digest('hex');
           return target.status !== 'active'
-            || reviewed[index]?.id !== snapshot.id
-            || reviewed[index]?.version !== snapshot.version
-            || reviewed[index]?.digest !== snapshot.digest;
+            || saved?.id !== snapshot.id
+            || saved?.version !== snapshot.version
+            || (saved?.format !== undefined && saved.format !== 2)
+            || (saved?.digest !== snapshot.digest && !legacyMatches);
         })) throw new RevisionConflictError();
       }
       if (draftPatch && Object.keys(draftPatch).length > 0) {
@@ -1298,18 +1310,26 @@ export class MemoryStore {
           || (input.scope === 'session' && (!input.sessionId || target.sessionId !== input.sessionId))) return null;
         targets.push(target);
       }
-      const proposal = this.create({ ...input, status: 'candidate' }, meta);
+      const inheritedExpiry = targets.reduce<string | null>((earliest, target) =>
+        target.expiresAt && (earliest === null || Date.parse(target.expiresAt) < Date.parse(earliest))
+          ? target.expiresAt : earliest, null);
+      const proposal = this.create({
+        ...input,
+        expiresAt: input.expiresAt === undefined ? inheritedExpiry : input.expiresAt,
+        status: 'candidate',
+      }, meta);
       for (const targetId of targetIds) this.addRelation(proposal.id, targetId, 'revises');
       this.setKv(`revision_targets:${proposal.id}`, targets.map((target) => this.revisionSnapshot(target)));
       return proposal;
     })() as MemoryItem | null;
   }
 
-  private revisionSnapshot(item: MemoryItem) {
+  private revisionSnapshot(item: MemoryItem): RevisionTargetSnapshot {
     return {
       id: item.id,
       version: item.version,
       digest: createHash('sha256').update(JSON.stringify(this.snapshotOf(item))).digest('hex'),
+      format: 2,
     };
   }
 

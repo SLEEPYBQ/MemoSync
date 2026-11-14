@@ -25,6 +25,23 @@ describe('maintenance actions used by the chat Checkup', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  for (const [first, second, expected] of [
+    [null, '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z'],
+    ['2099-02-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z'],
+    [null, null, null],
+  ] as const) {
+    it(`inherits the earliest finite deadline for maintenance merge (${first}, ${second})`, async () => {
+      const a = memory.store.create({ content: 'Synthetic original A', scope: 'personal', type: 'constraint', expiresAt: first }, { actor: 'user' });
+      const b = memory.store.create({ content: 'Synthetic original B', scope: 'personal', type: 'constraint', expiresAt: second }, { actor: 'user' });
+      const svc = service({ callJson: async () => ({ content: 'Synthetic merged rule', type: 'constraint', abstractionLevel: 'contextual' }) });
+      const proposal = await svc.merge(a.id, b.id, { actor: 'user', sessionId: 'chat' });
+      expect(proposal?.expiresAt).toBe(expected);
+      expect(memory.store.acceptRevision(proposal!.id, { actor: 'user' }).updated.expiresAt).toBe(expected);
+      expect(memory.store.getById(a.id)?.status).toBe('archived');
+      expect(memory.store.getById(b.id)?.status).toBe('archived');
+    });
+  }
+
   it('archive and renew validate live state and preserve their memory events', () => {
     const toRenew = memory.store.create(
       { content: 'The release window is still valid', scope: 'personal', type: 'fact' },
