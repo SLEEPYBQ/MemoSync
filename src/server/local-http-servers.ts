@@ -4,6 +4,9 @@ import path from "node:path"
 import { promisify } from "node:util"
 
 const execFileAsync = promisify(execFile)
+const windowsPowerShell = () => path.join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+const windowsQuery = (script: string) => execFileAsync(windowsPowerShell(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding=[Text.Encoding]::UTF8; ${script}`],
+  { windowsHide: true, timeout: 5_000, maxBuffer: 1024 * 1024 })
 // Cold Next/Turbopack listeners often accept TCP before the first page compile
 // can answer. Keep a bounded but realistic probe; failed probes are not put in
 // the long-lived positive cache, so the next Browser poll can observe readiness.
@@ -84,6 +87,18 @@ export function parseLsofListeningEntries(output: string) {
 
 export function parseLsofListeningPorts(output: string) {
   return parseLsofListeningEntries(output).map((entry) => entry.port)
+}
+
+export function parseWindowsListeningEntries(output: string): ListeningPortEntry[] {
+  const data = JSON.parse(output || "[]")
+  const entries = new Map<number, ListeningPortEntry>()
+  for (const row of Array.isArray(data) ? data : [data]) {
+    if (!row || !Number.isInteger(row.port) || row.port < 1 || row.port > 65535 || !Number.isInteger(row.pid) || row.pid <= 0) continue
+    const entry: ListeningPortEntry = entries.get(row.port) ?? { port: row.port, owners: [] }
+    if (!entry.owners.some(owner => owner.pid === row.pid)) entry.owners.push({ pid: row.pid, command: typeof row.command === "string" ? row.command : `PID ${row.pid}` })
+    entries.set(row.port, entry)
+  }
+  return [...entries.values()].sort((a, b) => a.port - b.port)
 }
 
 export function parseProcNetListeningSockets(...outputs: string[]): ProcListeningSocket[] {
@@ -217,6 +232,12 @@ async function listProcListeningTcpEntries(excludedPorts: Set<number>) {
 }
 
 export async function listListeningTcpEntries() {
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await windowsQuery("$names=@{}; Get-Process | ForEach-Object { $names[$_.Id]=$_.ProcessName }; @(Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object { [pscustomobject]@{port=[int]$_.LocalPort;pid=[int]$_.OwningProcess;command=$names[[int]$_.OwningProcess]} }) | ConvertTo-Json -Compress")
+      return parseWindowsListeningEntries(stdout)
+    } catch { return [] }
+  }
   let lsofEntries: ListeningPortEntry[] = []
   try {
     const { stdout } = await execFileAsync("lsof", ["-nP", "-iTCP", "-sTCP:LISTEN"], {
@@ -278,6 +299,9 @@ export async function readProcessCwds(
   const uniquePids = [...new Set(pids)]
   const result = new Map<number, string>()
   if (!uniquePids.length) return result
+  // Windows does not expose another process's cwd through this API. Its native
+  // process ancestry still associates terminal descendants with a project.
+  if (process.platform === "win32") return result
   let stdout = ""
   try {
     stdout = (await run("lsof", ["-p", uniquePids.join(","), "-a", "-d", "cwd", "-Fn"], {
@@ -307,6 +331,15 @@ export async function readProcessCwd(pid: number) {
 
 async function readParentProcessMap() {
   const parentByPid = new Map<number, number>()
+  if (process.platform === "win32") {
+    try {
+      const { stdout } = await windowsQuery("@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId) | ConvertTo-Json -Compress")
+      for (const row of JSON.parse(stdout || "[]")) {
+        if (Number.isInteger(row.ProcessId) && Number.isInteger(row.ParentProcessId)) parentByPid.set(row.ProcessId, row.ParentProcessId)
+      }
+    } catch { /* ancestry is optional enrichment */ }
+    return parentByPid
+  }
   try {
     const { stdout } = await execFileAsync("ps", ["-axo", "pid=", "-o", "ppid="], {
       timeout: 500,

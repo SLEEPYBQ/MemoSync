@@ -1,7 +1,15 @@
 import { dlopen, FFIType, ptr } from "bun:ffi"
-import { closeSync, constants, fstatSync, openSync } from "node:fs"
+import { closeSync, constants, fstatSync, openSync, statSync } from "node:fs"
+import path from "node:path"
+import { pinWindowsSnapshotPath } from "./host-snapshot-windows"
 
 let openAt: ((directory: number, segment: string, flags: number) => number) | undefined
+const windowsPins = new Map<number, () => void>()
+
+export function closeWorkspaceSnapshotFd(fd: number) {
+  try { closeSync(fd) }
+  finally { windowsPins.get(fd)?.(); windowsPins.delete(fd) }
+}
 // Node omits O_CLOEXEC; native descriptors must not leak into engine subprocesses.
 const closeOnExec = process.platform === "darwin" ? 0x1000000 : 0x80000
 
@@ -35,6 +43,17 @@ function descriptorOpen(directory: number, segment: string, flags: number): numb
  */
 export function openWorkspaceSnapshotFd(root: string, relative: string, expectedRootIdentity: string): number {
   if (relative.split("/").some(part => !part || part === "." || part === ".." || /[\\\\:\u0000]/.test(part))) throw new Error("Invalid workspace-relative path")
+  if (process.platform === "win32") {
+    const release = pinWindowsSnapshotPath(root, relative, () => {
+      const info = statSync(root)
+      if (`${info.dev}:${info.ino}` !== expectedRootIdentity) throw new Error("Workspace root identity changed")
+    })
+    try {
+      const fd = openSync(path.join(root, relative), constants.O_RDONLY)
+      windowsPins.set(fd, release)
+      return fd
+    } catch (error) { release(); throw error }
+  }
   const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | closeOnExec
   let parent = openSync(root, directoryFlags)
   try {

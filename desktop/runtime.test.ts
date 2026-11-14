@@ -6,8 +6,10 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import { delimiter, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 import { findBundledAgentPackages } from "./runtime-packages"
+import { desktopTarget } from "./platform"
 
 const runtimeDir = resolve(import.meta.dir, "build/runtime")
+const bunName = desktopTarget().bunName
 const active: ChildProcessWithoutNullStreams[] = []
 
 interface RunningServer {
@@ -17,11 +19,19 @@ interface RunningServer {
 }
 
 function testEnvironment(home: string) {
+  const windows = process.platform === "win32"
+  const systemRoot = process.env.SystemRoot || "C:\\Windows"
   return {
     HOME: home,
-    PATH: [runtimeDir, "/usr/bin", "/bin"].join(delimiter),
+    USERPROFILE: home,
+    APPDATA: join(home, "AppData", "Roaming"),
+    LOCALAPPDATA: join(home, "AppData", "Local"),
+    ...(windows ? { SystemRoot: systemRoot, WINDIR: systemRoot, ComSpec: join(systemRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD" } : {}),
+    PATH: [runtimeDir, ...(windows ? [join(systemRoot, "System32"), systemRoot] : ["/usr/bin", "/bin"])].join(delimiter),
     USER: "memosync-test",
     TMPDIR: home,
+    TMP: home,
+    TEMP: home,
     LANG: "en_US.UTF-8",
     NO_PROXY: "*",
     MEMOSYNC_EXTERNAL_AGENTS: "1",
@@ -31,14 +41,14 @@ function testEnvironment(home: string) {
 }
 
 async function createHome() {
-  const root = await mkdtemp(join(tmpdir(), "memosync-desktop-smoke-"))
-  const home = join(root, "home")
+  const root = await mkdtemp(join(tmpdir(), "memosync desktop smoke-"))
+  const home = join(root, "home-测试")
   await mkdir(home)
   return { root, home, dataDir: join(root, "data") }
 }
 
 async function startServer(home: string, dataDir: string): Promise<RunningServer> {
-  const child = spawn(join(runtimeDir, "bun"), [join(runtimeDir, "desktop/server.ts")], {
+  const child = spawn(join(runtimeDir, bunName), [join(runtimeDir, "desktop/server.ts")], {
     cwd: home,
     env: testEnvironment(home),
     stdio: ["pipe", "pipe", "pipe"],
@@ -96,7 +106,7 @@ afterEach(async () => {
 
 describe("staged desktop backend", () => {
   test("stages Bun without Claude, Codex or Pi agent packages", async () => {
-    expect(await stat(join(runtimeDir, "bun"))).toBeTruthy()
+    expect(await stat(join(runtimeDir, bunName))).toBeTruthy()
     expect(await findBundledAgentPackages(join(runtimeDir, "node_modules"))).toEqual([])
     await expect(stat(join(runtimeDir, "src/server/auth.test.ts"))).rejects.toThrow()
     await expect(stat(join(runtimeDir, "src/server/fixtures"))).rejects.toThrow()
@@ -157,7 +167,7 @@ describe("staged desktop backend", () => {
     const firstContext = await createHome()
     const secondContext = await createHome()
     const first = await startServer(firstContext.home, firstContext.dataDir)
-    const conflict = spawn(join(runtimeDir, "bun"), [join(runtimeDir, "desktop/server.ts")], {
+    const conflict = spawn(join(runtimeDir, bunName), [join(runtimeDir, "desktop/server.ts")], {
       cwd: secondContext.home,
       env: testEnvironment(secondContext.home),
       stdio: ["pipe", "pipe", "pipe"],

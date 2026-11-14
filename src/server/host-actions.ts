@@ -1,9 +1,9 @@
 import { Database } from "bun:sqlite"
 import { createHash, randomUUID } from "node:crypto"
-import { closeSync, fstatSync, lstatSync, mkdirSync, read, realpathSync, statSync } from "node:fs"
+import { fstatSync, lstatSync, mkdirSync, read, realpathSync, statSync } from "node:fs"
 import { lstat, realpath, stat } from "node:fs/promises"
 import { promisify } from "node:util"
-import { openWorkspaceSnapshotFd } from "./host-snapshot-fd"
+import { closeWorkspaceSnapshotFd, openWorkspaceSnapshotFd } from "./host-snapshot-fd"
 import path from "node:path"
 import { z } from "zod"
 import {
@@ -82,7 +82,8 @@ const sameFile = (a: Awaited<ReturnType<typeof stat>>, b: Awaited<ReturnType<typ
 
 const readChunk = promisify(read)
 /** V1 rejects symlink components, including in-root links. Opens each component with
- * descriptor-relative openat + O_NOFOLLOW, then revalidates path and file identity.
+ * descriptor-relative openat + O_NOFOLLOW (POSIX), or pins non-reparse Windows
+ * paths against rename/delete, then revalidates path and file identity.
  */
 export async function boundedDiskSnapshot(root: string, relative: string, view: "source" | "preview", expectedRootIdentity?: string): Promise<HostFileSnapshot> {
   if (!relative || relative.includes("\\") || relative.includes(":") || relative.includes("\0") || path.isAbsolute(relative)
@@ -126,7 +127,7 @@ export async function boundedDiskSnapshot(root: string, relative: string, view: 
     const hash = digest(body)
     return { content, digest: hash, version: hash, origin: "snapshot", byteLength: length, mediaType: /\.(md|markdown|mdown)$/i.test(relative) ? "text/markdown" : "text/plain" }
   } finally {
-    closeSync(fd)
+    closeWorkspaceSnapshotFd(fd)
   }
 }
 
