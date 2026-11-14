@@ -548,5 +548,7 @@
   "teamRemove": "从团队文件移除…",
   "teamRemoveConfirm": "从团队文件移除",
   "teamConflict": "<code>.memosync/team.md</code> 存在未解决的合并冲突，团队规则暂时保持上一次成功加载的版本。",
-  "teamExpiryUntil": "至 {{date}}"
+  "teamExpiryUntil": "至 {{date}}",
+  "teamOffHere": "已在本机停用。",
+  "teamRemoveHint": "提交这次改动后，这条规则会从 team.md 中移除。这条记忆会保留为你自己的项目记忆。"
 }

@@ -35,7 +35,7 @@ import { Button } from "../ui/button"
 import { Textarea } from "../ui/textarea"
 import { SegmentedControl } from "../ui/segmented-control"
 import { cn } from "../../lib/utils"
-import { Chip, ScopeBadge, SCOPE_ICONS } from "./ScopeBadge"
+import { Chip, ScopeBadge, SCOPE_ICONS, TeamBadge } from "./ScopeBadge"
 import { MemoryHistoryPanel } from "./MemoryHistoryPanel"
 import { auditRecord } from "../../lib/auditRecord"
 import { TRACE_DOT_CLASSES } from "./memoryVocab"
@@ -299,6 +299,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
         <ScopeBadge scope={item.scope} />
+        {item.team ? <TeamBadge /> : null}
         <SegmentedControl<"details" | "history">
           size="sm"
           className="ml-auto"
@@ -317,10 +318,10 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {item.team ? <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5">
               <Users className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
-                <p className="text-[12px] leading-5 text-muted-foreground"><Trans ns="memory" i18nKey="teamDetail" components={{ code: <code className="font-mono text-[11px]" /> }} /></p>
-                {!readonly && !previewDemo ? <div className="mt-1.5 flex flex-wrap gap-1.5">
+                <p className="text-[12px] leading-5 text-muted-foreground">{item.status === "archived" ? <span className="font-medium text-foreground">{t("memory:teamOffHere")} </span> : null}<Trans ns="memory" i18nKey="teamDetail" components={{ code: <code className="font-mono text-[11px]" /> }} /></p>
+                {!readonly && !previewDemo && !proposing ? <div className="mt-1.5 flex flex-wrap gap-1.5">
                   {item.status === "active" ? <Button variant="outline" size="xs" className="bg-background" disabled={busyState} onClick={() => { setTeamWritten(null); setProposing(true) }}>{t("memory:teamPropose")}</Button> : null}
-                  <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleTeam("toggle")}>{item.status === "archived" ? t("memory:teamTurnOn") : t("memory:teamTurnOff")}</Button>
+                  <Button variant={item.status === "archived" ? "outline" : "ghost"} size="xs" className={item.status === "archived" ? "bg-background" : undefined} disabled={busyState} onClick={() => void handleTeam("toggle")}>{busy === "team" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{item.status === "archived" ? t("memory:teamTurnOn") : t("memory:teamTurnOff")}</Button>
                 </div> : null}
                 {teamWritten === "publish" ? <p className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground"><Check className="h-3 w-3 text-success" />{t("memory:teamWritten")}</p> : null}
               </div>
@@ -339,7 +340,8 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                     <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleFileCheck()}>{busy === "file-check" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("memory:keepOwnMemory")}</Button>
                   </> : <>
                     <Button variant="outline" size="xs" className="bg-background" disabled={busyState} onClick={() => void handleFileCheck()}>{busy === "file-check" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("memory:stillApplies")}</Button>
-                    <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleArchive()}>{busy === "archive" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("common:archive")}</Button>
+                    {item.team ? (proposing ? null : <Button variant="ghost" size="xs" disabled={busyState} onClick={() => { setTeamWritten(null); setProposing(true) }}>{t("memory:teamPropose")}</Button>)
+                      : <Button variant="ghost" size="xs" disabled={busyState} onClick={() => void handleArchive()}>{busy === "archive" ? <Loader2 className="h-3 w-3 animate-spin" /> : null}{t("common:archive")}</Button>}
                   </>}
                 </div>
               </div>
@@ -387,13 +389,12 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
 
             <div>
               <label className="mb-1 block text-xs font-medium text-muted-foreground">{t("memory:content")}</label>
-              <Textarea
+              {item.team && !proposing ? <p data-team-rule-text className="whitespace-pre-wrap break-words rounded-lg border border-border/70 bg-muted/30 px-3 py-2 text-sm leading-6 text-foreground">{item.content}</p> : <Textarea
                 ref={contentRef}
                 value={draft.content}
                 onChange={(e) => setDraft((d) => ({ ...d, content: e.target.value }))}
-                readOnly={Boolean(item.team && (!proposing || readonly || previewDemo))}
-                className={cn("min-h-16 text-sm", item.team && !proposing && "bg-muted/40 text-muted-foreground")}
-              />
+                className="min-h-16 text-sm"
+              />}
               {item.team && teamWritten === "propose" ? <p className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground"><Check className="h-3 w-3 text-success" />{t("memory:teamWritten")}</p> : null}
             </div>
 
@@ -488,9 +489,10 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
               </button>
             )}
 
-            {item.team && !readonly && !previewDemo ? <div className="flex items-center gap-2 border-t border-border pt-3">
+            {item.team && !readonly && !previewDemo ? <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
+              {unshareArmed ? <p className="w-full text-[11px] leading-4 text-muted-foreground">{t("memory:teamRemoveHint")}</p> : null}
               {unshareArmed ? <><Button variant="ghost" size="sm" className="text-destructive" disabled={busyState} onClick={() => void handleTeam("unshare")}>{t("memory:teamRemoveConfirm")}</Button><Button variant="ghost" size="sm" onClick={() => setUnshareArmed(false)}>{t("common:cancel")}</Button></>
-                : <Button variant="ghost" size="sm" className="text-destructive" disabled={busyState} onClick={() => setUnshareArmed(true)}>{t("memory:teamRemove")}</Button>}
+                : <Button variant="ghost" size="sm" className="text-muted-foreground hover:text-destructive" disabled={busyState} onClick={() => setUnshareArmed(true)}>{t("memory:teamRemove")}</Button>}
             </div> : null}
             {!item.team && item.status === "active" ? (
               <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">

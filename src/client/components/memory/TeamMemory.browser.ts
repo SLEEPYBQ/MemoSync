@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test"
 import react from "@vitejs/plugin-react"
 import { mkdir } from "node:fs/promises"
 import { join } from "node:path"
-import { chromium, type Browser, type Page } from "playwright"
+import { chromium, type Browser, type Locator, type Page } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
 import type { MemoryItem } from "../../lib/memoriesApi"
 
@@ -11,6 +11,12 @@ let browser: Browser
 let page: Page
 let url: string
 const artifacts = join(import.meta.dir, "../../../../artifacts/81")
+const selectedScreenshots = new Set((process.env.TEAM_MEMORY_SCREENSHOTS ?? "").split(",").filter(Boolean))
+async function capture(locator: Locator, name: string) {
+  if (!selectedScreenshots.size || selectedScreenshots.has(name)) {
+    await locator.screenshot({ animations: "disabled", path: join(artifacts, name) })
+  }
+}
 beforeAll(async () => {
   vite = await createServer({ configFile: false, root: join(import.meta.dir, "../../test-fixtures/team-memory-ui"), plugins: [react()],
     optimizeDeps: { entries: [join(import.meta.dir, "../../test-fixtures/team-memory-ui/fixture.tsx"), join(import.meta.dir, "../../app/MemoryBoardPage.tsx")] },
@@ -38,6 +44,8 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     { ...base, id: "M-04", status: "archived", content: "Keep a synthetic change log.", team: { id: "T-a123" } },
   ]
   const actions: Array<{ path: string; body: unknown }> = []
+  let releaseToggle!: () => void
+  const togglePending = new Promise<void>(resolve => { releaseToggle = resolve })
   await page.route("**/api/**", async route => {
     const request = route.request()
     const url = new URL(request.url())
@@ -67,6 +75,7 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
       const id = path.split("/").at(-1)
       const body = request.postDataJSON() as Partial<MemoryItem>
       actions.push({ path, body })
+      if (id === "M-04") await togglePending
       items = items.map(item => item.id === id ? { ...item, ...body } : item)
       data = items.find(item => item.id === id)
     }
@@ -81,7 +90,20 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
   await library.getByText(/unresolved merge conflicts/).waitFor()
   await page.locator("#ordinary").getByRole("button", { name: "Share with team" }).waitFor()
   expect(await page.locator("#ordinary-no-path").getByRole("button", { name: "Share with team" }).count()).toBe(0)
-  expect(await page.locator("#team-default textarea").first().getAttribute("readonly")).not.toBeNull()
+  const teamDefault = page.locator("#team-default")
+  expect(await teamDefault.locator("[data-team-rule-text]").textContent()).toBe("Validate requests in src/auth.ts.")
+  expect(await teamDefault.locator("textarea").count()).toBe(0)
+  expect(await teamDefault.locator('[title="Shared in .memosync/team.md"]').count()).toBe(1)
+  const driftCallout = teamDefault.locator(".bg-cand-surface").filter({ hasText: "changed after this memory" })
+  expect(await driftCallout.getByRole("button", { name: "Propose a change" }).count()).toBe(1)
+  expect(await driftCallout.getByRole("button", { name: "Archive" }).count()).toBe(0)
+  await driftCallout.getByRole("button", { name: "Propose a change" }).click()
+  expect(await teamDefault.locator("textarea").evaluate(element => element === document.activeElement)).toBe(true)
+  expect(await teamDefault.locator("[data-team-rule-text]").count()).toBe(0)
+  expect(await teamDefault.getByRole("button", { name: "Propose a change" }).count()).toBe(0)
+  expect(await teamDefault.getByRole("button", { name: "Turn off on this machine" }).count()).toBe(0)
+  await teamDefault.getByRole("button", { name: "Cancel" }).click()
+  expect(await teamDefault.locator("[data-team-rule-text]").count()).toBe(1)
   expect(await page.locator("#preview").getByText("Team rule · new").count()).toBe(1)
   expect(await page.locator("#preview").getByText("Team rule changed · v2 → v3").count()).toBe(1)
   expect(await page.locator("#notice").getByText("Team memory updated · 1 new · 1 changed · 1 removed").count()).toBe(1)
@@ -90,23 +112,37 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
 
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-    await library.screenshot({ animations: "disabled", path: join(artifacts, `board-team-desktop-${theme}.png`) })
-    await library.getByText(/unresolved merge conflicts/).locator("..").screenshot({ animations: "disabled", path: join(artifacts, `conflict-desktop-${theme}.png`) })
+    await capture(library, `board-team-desktop-${theme}.png`)
+    await capture(library.getByText(/unresolved merge conflicts/).locator(".."), `conflict-desktop-${theme}.png`)
     for (const name of ["card", "team-default", "team-off", "ordinary", "preview", "notice"]) {
-      await page.locator(`#${name}`).screenshot({ animations: "disabled", path: join(artifacts, `${name}-desktop-${theme}.png`) })
+      await capture(page.locator(`#${name}`), `${name}-desktop-${theme}.png`)
     }
     await page.locator("#citation").getByText("[M-01]").hover()
     const popover = page.locator("[data-radix-popper-content-wrapper]").filter({ hasText: "Turn off on this machine" })
     await popover.waitFor()
-    await popover.screenshot({ animations: "disabled", path: join(artifacts, `citation-desktop-${theme}.png`) })
+    await capture(popover, `citation-desktop-${theme}.png`)
   }
   await page.setViewportSize({ width: 390, height: 1000 })
   for (const theme of ["light", "dark"] as const) {
     await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
     for (const name of ["team-default", "team-off", "ordinary"]) {
-      await page.locator(`#${name}`).screenshot({ animations: "disabled", path: join(artifacts, `${name}-narrow-${theme}.png`) })
+      await capture(page.locator(`#${name}`), `${name}-narrow-${theme}.png`)
     }
   }
+  await page.setViewportSize({ width: 1400, height: 1200 })
+  const removeButton = teamDefault.getByRole("button", { name: "Remove from team file…" })
+  expect((await removeButton.getAttribute("class"))?.split(" ")).toContain("text-muted-foreground")
+  expect(await teamDefault.getByText("The rule leaves team.md once you commit the change. This memory stays here as your own project memory.").count()).toBe(0)
+  await removeButton.click()
+  await teamDefault.getByText("The rule leaves team.md once you commit the change. This memory stays here as your own project memory.").waitFor()
+  for (const width of ["desktop", "narrow"] as const) {
+    await page.setViewportSize(width === "desktop" ? { width: 1400, height: 1200 } : { width: 390, height: 1000 })
+    for (const theme of ["light", "dark"] as const) {
+      await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
+      await capture(teamDefault, `team-remove-armed-${width}-${theme}.png`)
+    }
+  }
+  await teamDefault.getByRole("button", { name: "Cancel" }).click()
   await page.setViewportSize({ width: 1400, height: 1200 })
   const detail = page.locator("#team-propose")
   await detail.getByRole("button", { name: "Propose a change" }).click()
@@ -116,12 +152,13 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     await page.setViewportSize(width === "desktop" ? { width: 1400, height: 1200 } : { width: 390, height: 1000 })
     for (const theme of ["light", "dark"] as const) {
       await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-      await detail.screenshot({ animations: "disabled", path: join(artifacts, `team-proposing-${width}-${theme}.png`) })
+      await capture(detail, `team-proposing-${width}-${theme}.png`)
     }
   }
   await detail.locator("textarea").first().fill("A temporary synthetic draft.")
   await detail.getByRole("button", { name: "Cancel" }).click()
-  expect(await detail.locator("textarea").first().inputValue()).toBe("Run the synthetic suite before release.")
+  expect(await detail.locator("[data-team-rule-text]").textContent()).toBe("Run the synthetic suite before release.")
+  expect(await detail.locator("textarea").count()).toBe(0)
   await detail.getByRole("button", { name: "Propose a change" }).click()
   await detail.locator("textarea").first().fill("Run the revised synthetic suite.")
   await detail.getByRole("button", { name: "Write to team.md" }).click()
@@ -131,7 +168,7 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     await page.setViewportSize(width === "desktop" ? { width: 1400, height: 1200 } : { width: 390, height: 1000 })
     for (const theme of ["light", "dark"] as const) {
       await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-      await detail.screenshot({ animations: "disabled", path: join(artifacts, `team-written-${width}-${theme}.png`) })
+      await capture(detail, `team-written-${width}-${theme}.png`)
     }
   }
   const ordinary = page.locator("#ordinary")
@@ -142,10 +179,13 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     await page.setViewportSize(width === "desktop" ? { width: 1400, height: 1200 } : { width: 390, height: 1000 })
     for (const theme of ["light", "dark"] as const) {
       await page.evaluate(dark => document.documentElement.classList.toggle("dark", dark), theme === "dark")
-      await ordinary.screenshot({ animations: "disabled", path: join(artifacts, `shared-${width}-${theme}.png`) })
+      await capture(ordinary, `shared-${width}-${theme}.png`)
     }
   }
   await page.locator("#team-off").getByRole("button", { name: "Turn back on" }).click()
+  expect(await page.locator("#team-off").getByRole("button", { name: "Turn back on" }).isDisabled()).toBe(true)
+  await page.locator("#team-off").getByRole("button", { name: "Turn back on" }).locator(".animate-spin").waitFor()
+  releaseToggle()
   await page.locator("#team-off").getByRole("button", { name: "Turn off on this machine" }).waitFor()
   await ordinary.getByRole("button", { name: "Remove from team file…" }).click()
   await ordinary.getByRole("button", { name: "Remove from team file", exact: true }).click()
@@ -156,8 +196,8 @@ test("team rules, conflict, propose, share and transcript UI", async () => {
     document.documentElement.classList.remove("dark")
     await (window as unknown as { fixtureLanguage: (language: string) => Promise<unknown> }).fixtureLanguage("zh-CN")
   })
-  await page.locator("#team-default").getByRole("button", { name: "提议修改" }).waitFor()
-  await page.locator("#team-default").screenshot({ animations: "disabled", path: join(artifacts, "team-default-desktop-zh-CN.png") })
-  await library.screenshot({ animations: "disabled", path: join(artifacts, "board-team-desktop-zh-CN.png") })
+  await page.locator("#team-default").getByRole("button", { name: "提议修改" }).first().waitFor()
+  await capture(page.locator("#team-default"), "team-default-desktop-zh-CN.png")
+  await capture(library, "board-team-desktop-zh-CN.png")
   expect(errors).toEqual([])
 }, 60_000)

@@ -548,5 +548,7 @@
   "teamRemove": "Remove from team file…",
   "teamRemoveConfirm": "Remove from team file",
   "teamConflict": "<code>.memosync/team.md</code> has unresolved merge conflicts. Team rules stay at the last version that loaded.",
-  "teamExpiryUntil": "until {{date}}"
+  "teamExpiryUntil": "until {{date}}",
+  "teamOffHere": "Turned off on this machine.",
+  "teamRemoveHint": "The rule leaves team.md once you commit the change. This memory stays here as your own project memory."
 }
