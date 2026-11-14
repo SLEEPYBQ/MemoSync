@@ -524,5 +524,6 @@
   "sourceLinked": "Source linked — you'll be told if a line is removed.",
   "importInto": "Import into",
   "orPasteText": "Or paste text (not linked to a file)",
-  "fileStatusChangedAgo": "Changed {{when}}"
+  "fileStatusChangedAgo": "Changed {{when}}",
+  "saveExpiryBeforeScopeOrSensitivity": "Save the expiry change before moving this memory or changing its sensitivity."
 }

@@ -524,5 +524,6 @@
   "sourceLinked": "已关联来源，行被移除时会提醒。",
   "importInto": "导入到",
   "orPasteText": "或粘贴文本（不关联文件）",
-  "fileStatusChangedAgo": "{{when}}修改"
+  "fileStatusChangedAgo": "{{when}}修改",
+  "saveExpiryBeforeScopeOrSensitivity": "请先保存到期时间，再更改作用域或敏感标记。"
 }

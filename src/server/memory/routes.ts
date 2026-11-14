@@ -11,7 +11,7 @@ import type { RevisionService } from './evolution';
 import type { MemoryService } from './index';
 import type { AttentionKind, MaintenanceService } from './maintenance';
 import { CandidateDismissalTransitionError, RevisionConflictError, TraceCorrectionError } from './MemoryStore';
-import { recordMemoryConfirmation } from './confirmation';
+import { clearMemoryRemoval, recordMemoryConfirmation } from './confirmation';
 import { rankMemories } from './retrieval';
 import { handleNativeMemoryRequest } from './native-routes';
 import type { NativeMemoryImportService } from './native-import';
@@ -210,6 +210,7 @@ export async function handleMemoryRequest(
         const pool = services.workingMemoryPool?.({ chatId: b.chatId, previewId: b.previewId });
         const durable = b.action === 'remove' && Boolean(pool?.includes(b.memoryId));
         if (durable) recordMemoryConfirmation(memory.store, b.chatId, [], [b.memoryId]);
+        if (b.action === 'add' && pool?.includes(b.memoryId)) clearMemoryRemoval(memory.store, b.chatId, b.memoryId);
         memory.logger.event({
           type: 'memory.working_memory_selection',
           eventId: b.operationId,
