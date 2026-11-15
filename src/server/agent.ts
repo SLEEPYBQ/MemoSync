@@ -52,6 +52,7 @@ import { extractCitations } from "./memory/citations"
 import { toClaudeMemoryMcpServer } from "./memory/claude-adapter"
 import { HostActionService, dispatchHostAction, hostActionToolSpecs, isHostActionTool, type HostAdmissionLease } from "./host-actions"
 import type { HostNativeToolContext } from "../shared/host-actions"
+import { ClaudeHostActions, type HostToolDispatch } from "./claude-host-actions"
 import { toCodexDynamicTools } from "./memory/codex-adapter"
 import type { RevisionService } from "./memory/evolution"
 import { runForkQuery } from "./memory/fork-query"
@@ -438,6 +439,7 @@ const PREPARATION_ERROR_CODES = new Set([
 ])
 
 interface ClaudeExecutionControl {
+  hostDispatch?: HostToolDispatch
   permissionMode: Extract<NativeExecutionPolicy, { engine: "claude" }>["permissionMode"]
   isCurrent: () => boolean
   canUseMemory?: (name: string) => boolean
@@ -1479,6 +1481,8 @@ export async function startClaudeSession(args: {
   let executionControl = args.executionControl
   let currentPlanMode = args.planMode
   const toolOriginResolver = new ClaudeToolOriginResolver()
+  const hostCalls = new ClaudeHostActions()
+  const hostPromptIds = new Map<number, string>()
   const echoesPromptIds = !process.env.CLAUDE_EXECUTABLE
   const outboundOrigins = new ClaudeOutboundOriginTracker(echoesPromptIds)
   const plan: MemoryInjectionPlan | null = args.memoryPlan !== undefined
@@ -1520,7 +1524,7 @@ export async function startClaudeSession(args: {
       : []).map(spec => ({ ...spec, handler: async (...input: Parameters<typeof spec.handler>) => nativeControlInput
         ? { text: 'Memory tools are disabled during native context control.', isError: true }
         : spec.handler(...input) }))
-  // Claude MCP lacks verified native call provenance; its handlers fail unavailable.
+  // The SDK bridge separately joins native call metadata to an echoed prompt UUID.
   if (args.hostActionsEnabled) memorySpecs.push(...hostActionToolSpecs())
   const memoryBlock = plan?.block ?? ""
   // Append environment guidance so the agent knows how a dev server it
@@ -1619,7 +1623,7 @@ export async function startClaudeSession(args: {
             if (executionControl && !executionControl.isCurrent()) return { text: "Execution policy changed or turn ended", isError: true }
             if (executionControl?.canUseMemory?.(spec.name) === false) return { text: "Memory access is disabled", isError: true }
             return spec.handler(input, context)
-          } })), memoryToolContext),
+          } })), memoryToolContext, (name, input, extra) => isHostActionTool(name) ? hostCalls.dispatch(name, input, extra) : undefined),
         }
       : undefined,
     settingSources: engineRuntime.isolated ? [] : ["user", "project", "local"],
@@ -1653,6 +1657,7 @@ export async function startClaudeSession(args: {
   })
   const acceptedContexts = new Map<string, () => void>()
   const nativeStream = createClaudeHarnessStream(q, undefined, (toolUseId, origin) => {}, outboundOrigins, message => {
+    hostCalls.observe(message)
     const m = message as { type?: string; uuid?: string; user_message_uuid?: string; user_message_uuids?: string[]; session_id?: string }
     const ids = m.type === 'user' ? [m.uuid] : m.type === 'result' ? [m.user_message_uuid, ...(m.user_message_uuids ?? [])] : []
     for (const id of ids) {
@@ -1679,7 +1684,7 @@ export async function startClaudeSession(args: {
     setExecutionControl: (control) => { executionControl = control },
     echoesPromptIds,
     parentLaunch,
-    stream: { async *[Symbol.asyncIterator]() { try { yield* nativeStream } finally { controls.dispose() } } },
+    stream: { async *[Symbol.asyncIterator]() { try { yield* nativeStream } finally { hostCalls.close(); controls.dispose() } } },
     getAccountInfo: async () => {
       try {
         return await q.accountInfo()
@@ -1713,6 +1718,10 @@ export async function startClaudeSession(args: {
       activeMemoryToolIds = context?.allowedMemoryIds
       activeMemoryToolView = context?.memoryView
       outboundOrigins.beginHumanTurn(context?.promptSeq, context?.promptId)
+      if (context?.promptId) {
+        hostCalls.reserve(context.promptId, executionControl?.hostDispatch)
+        if (context.promptSeq !== undefined) hostPromptIds.set(context.promptSeq, context.promptId)
+      }
       try {
         promptQueue.push({
           type: "user",
@@ -1727,10 +1736,15 @@ export async function startClaudeSession(args: {
       } catch (error) {
         if (context?.promptId) acceptedContexts.delete(context.promptId)
         outboundOrigins.cancelHumanTurn(context?.promptSeq)
+        if (context?.promptId) hostCalls.revoke(context.promptId)
         throw error
       }
     },
-    revokeHumanTurnReservation: (promptSeq) => outboundOrigins.revokeHumanTurn(promptSeq),
+    revokeHumanTurnReservation: (promptSeq) => {
+      outboundOrigins.revokeHumanTurn(promptSeq)
+      const id = hostPromptIds.get(promptSeq)
+      if (id) hostCalls.revoke(id)
+    },
     discardHumanTurnReservations: (promptSeqs) => (
       outboundOrigins.discardHumanTurnReservations(promptSeqs)
     ),
@@ -1749,6 +1763,7 @@ export async function startClaudeSession(args: {
     supportedModels: async () => await q.supportedModels(),
     memoryPlan: plan,
     close: () => {
+      hostCalls.close()
       controls.dispose()
       toolOriginResolver.clear()
       outboundOrigins.clear()
@@ -4437,7 +4452,18 @@ export class AgentCoordinator {
     try {
     await this.settleCommandPreparation(args)
     if (startupCancelled()) return
-    // Freeze execution and host admission together, before runtime/memory startup awaits.
+    // Retire the previous window admission immediately. Resolve the executable
+    // before freezing capability revisions: an initially unknown version must
+    // not invalidate the very first turn when its native process starts.
+    this.hostActions?.revokeChat(args.chatId, "A new turn superseded this admission")
+    if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
+      const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
+      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
+      args.engineRuntime ??= await resolveEngineRuntime({ engine: args.provider, model: args.model, connectionId: args.connectionId })
+      this.runtimeSelections.set(args.chatId, selection)
+    }
+    if (startupCancelled()) return
+    // Freeze execution and host admission together, before native/memory startup awaits.
     if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
     this.harnessPolicies.ensure(args.chatId, selectedPolicy.policy, selectedPolicy.revision, chat.executionPolicyStates?.[args.provider])
@@ -4451,13 +4477,6 @@ export class AgentCoordinator {
         workspaceRoot: hostProject.localPath, targetClientId: args.hostClientId, policyScope: args.policyScope,
       })
     }
-    if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
-      const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
-      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
-      args.engineRuntime ??= await resolveEngineRuntime({ engine: args.provider, model: args.model, connectionId: args.connectionId })
-      this.runtimeSelections.set(args.chatId, selection)
-    }
-    if (startupCancelled()) return
     if (!chat.provider) {
       await this.store.setChatProvider(args.chatId, args.provider)
       if (startupCancelled()) return
@@ -6740,12 +6759,16 @@ export class AgentCoordinator {
         sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken),
         executionControl: {
+          hostDispatch: async (name, input, native, signal) => {
+            if (!isPolicyCurrent()) return dispatchHostAction(undefined, undefined, name, input)
+            return dispatchHostAction(this.hostActions, hostAdmission, name, input, native, signal)
+          },
           permissionMode: executionPolicy.engine === "claude" ? executionPolicy.permissionMode : "default",
           isCurrent: isPolicyCurrent,
           canUseMemory,
           approve: async (name, input, requestId) => {
             if (!isPolicyCurrent() || executionPolicy.engine !== "claude") return false
-            if (legacyExecution || isMemoryTool(name)) return true
+            if (legacyExecution || isMemoryTool(name) || isHostActionTool(name.replace(/^mcp__memory__/, ''))) return true
             return executionPolicy.permissionMode !== "dontAsk" && await requestNativeApproval(name, input, requestId)
           },
           onToolRequest,

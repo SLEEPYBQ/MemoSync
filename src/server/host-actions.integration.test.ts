@@ -12,6 +12,7 @@ import { HostActionService } from "./host-actions"
 import type { HarnessTurn } from "./harness-types"
 import type { StartPiTurnArgs } from "./pi-agent"
 import { createWsRouter, type ClientState } from "./ws-router"
+import { ModelAccessService, getModelAccessService, setModelAccessService } from './model-access/service'
 
 class Socket {
   data: ClientState = { subscriptions: new Map(), snapshotSignatures: new Map() }
@@ -20,6 +21,41 @@ class Socket {
   get ws() { return this as unknown as ServerWebSocket<ClientState> }
   ack(id: string) { return this.sent.find(event => event.type === "ack" && event.id === id) as Extract<ServerEnvelope, { type: "ack" }> | undefined }
 }
+
+test('the first resolved Claude runtime admits host actions with memory disabled and no prior executable probe', async () => {
+  const root = await realpath(await mkdtemp(path.join(os.tmpdir(), 'memosync-host-cold-')))
+  const prior = getModelAccessService()
+  const store = new EventStore(path.join(root, 'data'))
+  await store.initialize()
+  const workspace = path.join(root, 'workspace')
+  await mkdir(workspace); await writeFile(path.join(workspace, 'README.md'), '# Cold start\n')
+  const project = await store.openProject(workspace), chat = await store.createChat(project.id)
+  await store.renameChat(chat.id, 'Synthetic cold start')
+  const access = await new ModelAccessService({ dataDir: path.join(root, 'access'), env: { HOME: root, PATH: '' }, readLegacyPi: async () => null,
+    resolveExecutable: async () => ({ state: 'ready', path: '/synthetic/claude', version: '2.1.241' }) }).initialize()
+  const connection = await access.saveConnection({ name: 'Synthetic local', apiKey: 'synthetic', endpoints: [{ protocol: 'anthropic-messages', baseUrl: 'http://127.0.0.1:1' }], models: [{ id: 'synthetic' }] })
+  await access.setEngine('claude', { access: { mode: 'connection', connectionId: connection.id } })
+  setModelAccessService(access)
+  const policies = new HarnessPolicyService()
+  const service = new HostActionService({ dataDir: store.dataDir, policy: policies })
+  const binding = service.bind({}, [HOST_ACTION_CAPABILITY], () => true, () => true)
+  let release!: () => void, receipt: any
+  const done = new Promise<void>(resolve => { release = resolve })
+  const agent = new AgentCoordinator({ store, harnessPolicies: policies, hostActions: service, onStateChange: () => {}, memory: null, capture: null, memoryTrace: null, memoryPreview: false,
+    getMemorySettings: () => ({ enabled: false, learn: false }),
+    startClaudeSession: async args => ({ provider: 'claude', memoryPlan: null, stream: (async function* () { await done })(),
+      sendPrompt: async () => { receipt = JSON.parse((await args.executionControl!.hostDispatch!(HOST_ACTION_TOOL_NAMES.openFile, { path: 'README.md' },
+        { engineInstanceId: 'synthetic-instance', nativeSessionId: 'synthetic-session', nativeToolCallId: 'synthetic-call' })).text) },
+      interrupt: async () => release(), close: () => release(), setModel: async () => {}, setPermissionMode: async () => {},
+    }),
+  })
+  try {
+    await agent.send({ type: 'chat.send', chatId: chat.id, provider: 'claude', model: 'synthetic', content: 'Open README' }, binding.clientId)
+    expect(receipt).toMatchObject({ status: 'accepted', delivery: 'sent' })
+  } finally {
+    release(); await agent.cancel(chat.id); await agent.shutdownRuntime(); await service.close(); setModelAccessService(prior); await rm(root, { recursive: true, force: true })
+  }
+})
 
 test("production coordinator -> native tool dispatch -> existing WS pipeline -> scoped snapshot -> rendered ACK", async () => {
   const root = await realpath(await mkdtemp(path.join(os.tmpdir(), "memosync-host-pipeline-")))

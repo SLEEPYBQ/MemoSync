@@ -12,14 +12,16 @@ export const MEMORY_MCP_SERVER_NAME = 'memory';
  * Build the `mcpServers.memory` entry to pass into `query({ options })`.
  * `ctx` is captured per-turn (projectId/sessionId) so handlers scope correctly.
  */
-export function toClaudeMemoryMcpServer(specs: MemoryToolSpec[], ctx: MemoryToolContext) {
+export function toClaudeMemoryMcpServer(specs: MemoryToolSpec[], ctx: MemoryToolContext,
+  nativeDispatch?: (name: string, args: Record<string, unknown>, extra: unknown) => Promise<import('./tools').MemoryToolResult> | undefined) {
   const tools = specs.map((s) =>
     tool(
       s.name,
       s.description,
       s.schema,
-      async (args) => {
-        const r = await s.handler(args as Record<string, unknown>, { ...ctx });
+      async (args, extra) => {
+        const r = await (nativeDispatch?.(s.name, args as Record<string, unknown>, extra)
+          ?? s.handler(args as Record<string, unknown>, { ...ctx }));
         return { content: [{ type: 'text' as const, text: r.text }], isError: r.isError };
       },
       { alwaysLoad: true },

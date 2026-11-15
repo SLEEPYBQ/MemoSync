@@ -11,7 +11,7 @@ import {
   type HostActionClientBinding, type HostActionReceipt, type HostActionRequested,
   type HostActionServerEvent, type HostFileSnapshot, type HostNativeToolContext,
 } from "../shared/host-actions"
-import type { MemoryToolSpec } from "./memory/tools"
+import type { MemoryToolResult, MemoryToolSpec } from "./memory/tools"
 import type { PolicyCallScope } from "../shared/harness-capabilities"
 
 export const MAX_HOST_SNAPSHOT_BYTES = 256 * 1024
@@ -426,11 +426,11 @@ export class HostActionService {
 }
 
 /** Reuses the existing engines' native tool compiler; specs have no model-selectable identity. */
+export const unavailableHostCall = (): MemoryToolResult => ({ text: JSON.stringify({ operationId: "", status: "unavailable", delivery: "not-sent", cancellation: "none", reason: "Trusted native host-action correlation unavailable" }), isError: true })
 export function hostActionToolSpecs(): MemoryToolSpec[] {
-  const unavailable = () => ({ text: JSON.stringify({ operationId: "", status: "unavailable", delivery: "not-sent", cancellation: "none", reason: "This adapter cannot verify native host-action correlation" }), isError: true })
   return [
-    { name: HOST_ACTION_TOOL_NAMES.openFile, description: "Request a readonly workspace text/Markdown snapshot in the originating MemoSync window. accepted is not displayed; only presented confirms rendering. Does not read content into model context.", schema: openInput.shape, handler: unavailable },
-    { name: HOST_ACTION_TOOL_NAMES.actionStatus, description: "Read the persisted status of a MemoSync host operation in this chat. Does not navigate or execute anything.", schema: { operationId: z.string().min(1).max(256) }, handler: unavailable },
+    { name: HOST_ACTION_TOOL_NAMES.openFile, description: "Request a readonly workspace text/Markdown snapshot in the originating MemoSync window. accepted is not displayed; only presented confirms rendering. Does not read content into model context.", schema: openInput.shape, handler: unavailableHostCall },
+    { name: HOST_ACTION_TOOL_NAMES.actionStatus, description: "Read the persisted status of a MemoSync host operation in this chat. Does not navigate or execute anything.", schema: { operationId: z.string().min(1).max(256) }, handler: unavailableHostCall },
   ]
 }
 export function isHostActionTool(name: string) { return Object.values(HOST_ACTION_TOOL_NAMES).includes(name as never) }

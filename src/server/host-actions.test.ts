@@ -370,7 +370,7 @@ describe("host actions with the production execution policy service", () => {
 
   test.each(["claude", "opencode", "pi", "codex"] as const)("%s cannot use unavailable or unverified host capabilities", async engine => {
     const policy = new HarnessPolicyService()
-    const scope = policy.beginTurn("chat-1", defaultExecutionPolicy(engine), 1, "turn-1", engine === "claude" ? "2.1.241" : engine === "opencode" ? "1.19.5" : "unknown")
+    const scope = policy.beginTurn("chat-1", defaultExecutionPolicy(engine), 1, "turn-1", "unknown")
     const f = await fixture({ policy }, scope)
     expect((await f.open()).status).toBe("unavailable")
     expect(f.requests()).toHaveLength(0)
