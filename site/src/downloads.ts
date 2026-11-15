@@ -9,7 +9,7 @@ type Target = keyof typeof SUFFIXES
 type UserAgentData = {
   platform?: string
   mobile?: boolean
-  getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string; bitness?: string }>
+  getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string; bitness?: string; wow64?: boolean }>
 }
 
 export function initializeDownloads() {
@@ -20,8 +20,9 @@ export function initializeDownloads() {
   const mobile = hints?.mobile || /Android|iPhone|iPad|iPod/i.test(ua)
     || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)
   const linux = !mobile && /Linux/i.test(platform) && !/CrOS/i.test(ua)
+  const windows = !mobile && /Win/i.test(platform)
   let os: "windows" | "mac" | "linux" | null = mobile ? null
-    : /Win/i.test(platform) ? "windows"
+    : windows && /\b(x64|amd64|x86_64|WOW64)\b/i.test(ua) ? "windows"
     : /Mac/i.test(platform) ? "mac"
     : linux && /\b(x86_64|amd64|x64)\b/i.test(`${navigator.platform} ${ua}`) ? "linux"
     : null
@@ -110,15 +111,16 @@ export function initializeDownloads() {
   render()
 
   // MacIntel in navigator.platform is also used on Apple silicon. Only trust an explicit CPU hint.
-  if ((os === "mac" || linux) && hints?.getHighEntropyValues) {
-    hints.getHighEntropyValues(["architecture", "bitness"]).then(({ architecture, bitness }) => {
+  if ((os === "mac" || linux || windows) && hints?.getHighEntropyValues) {
+    hints.getHighEntropyValues(["architecture", "bitness", "wow64"]).then(({ architecture, bitness, wow64 }) => {
       if (os === "mac") {
         if (architecture === "arm") target = "mac-arm64"
         if (architecture === "x86") target = "mac-x64"
-      } else if (linux && architecture) {
-        // Explicit hints take precedence over a browser's reduced Linux user agent.
-        if (architecture !== "x86" || bitness === "32") os = null
-        else if (bitness === "64") os = "linux"
+      } else if (linux || windows) {
+        // Explicit hints take precedence over a reduced UA; WOW64 is a 32-bit browser on 64-bit Windows.
+        if (architecture && architecture !== "x86") os = null
+        else if (bitness === "32" && !(windows && wow64)) os = null
+        else if ((architecture === "x86" && bitness === "64") || (windows && wow64)) os = windows ? "windows" : "linux"
         target = os
       }
       render()
