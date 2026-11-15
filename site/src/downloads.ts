@@ -9,7 +9,7 @@ type Target = keyof typeof SUFFIXES
 type UserAgentData = {
   platform?: string
   mobile?: boolean
-  getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string }>
+  getHighEntropyValues?: (hints: string[]) => Promise<{ architecture?: string; bitness?: string }>
 }
 
 export function initializeDownloads() {
@@ -19,10 +19,11 @@ export function initializeDownloads() {
   // iPadOS can report MacIntel; Android and ChromeOS also contain Linux in their UA.
   const mobile = hints?.mobile || /Android|iPhone|iPad|iPod/i.test(ua)
     || (/Mac/i.test(platform) && navigator.maxTouchPoints > 1)
-  const os = mobile ? null
+  const linux = !mobile && /Linux/i.test(platform) && !/CrOS/i.test(ua)
+  let os: "windows" | "mac" | "linux" | null = mobile ? null
     : /Win/i.test(platform) ? "windows"
     : /Mac/i.test(platform) ? "mac"
-    : /Linux/i.test(platform) && !/CrOS|aarch64|armv\d/i.test(`${platform} ${ua}`) ? "linux"
+    : linux && /\b(x86_64|amd64|x64)\b/i.test(`${navigator.platform} ${ua}`) ? "linux"
     : null
   let target: Target | null = os === "mac" ? null : os
   let version = "v0.45.0"
@@ -109,10 +110,17 @@ export function initializeDownloads() {
   render()
 
   // MacIntel in navigator.platform is also used on Apple silicon. Only trust an explicit CPU hint.
-  if (os === "mac" && hints?.getHighEntropyValues) {
-    hints.getHighEntropyValues(["architecture"]).then(({ architecture }) => {
-      if (architecture === "arm") target = "mac-arm64"
-      if (architecture === "x86") target = "mac-x64"
+  if ((os === "mac" || linux) && hints?.getHighEntropyValues) {
+    hints.getHighEntropyValues(["architecture", "bitness"]).then(({ architecture, bitness }) => {
+      if (os === "mac") {
+        if (architecture === "arm") target = "mac-arm64"
+        if (architecture === "x86") target = "mac-x64"
+      } else if (linux && architecture) {
+        // Explicit hints take precedence over a browser's reduced Linux user agent.
+        if (architecture !== "x86" || bitness === "32") os = null
+        else if (bitness === "64") os = "linux"
+        target = os
+      }
       render()
     }).catch(() => {})
   }
