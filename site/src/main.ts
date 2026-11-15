@@ -1,6 +1,7 @@
 import "./style.css"
 import { BRAND_SVGS } from "../../src/client/components/brand/brand-svgs"
 import catSizes from "./cat-sizes.json"
+import { initializeDownloads } from "./downloads"
 
 const $ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as T
 const $$ = <T extends Element = HTMLElement>(sel: string, root: ParentNode = document) => [...root.querySelectorAll(sel)] as T[]
@@ -61,16 +62,7 @@ fetch("https://api.github.com/repos/SLEEPYBQ/MemoSync")
   })
   .catch(() => {})
 
-// Point the download buttons at the latest Apple silicon DMG; the Releases page is the fallback.
-fetch("https://api.github.com/repos/SLEEPYBQ/MemoSync/releases/latest")
-  .then((r) => (r.ok ? r.json() : null))
-  .then((release) => {
-    const dmg = release?.assets?.find((a: { name: string }) => /arm64\.dmg$/.test(a.name))
-    if (!dmg) return
-    for (const link of $$<HTMLAnchorElement>("[data-dmg]")) link.href = dmg.browser_download_url
-    if (typeof release.tag_name === "string") for (const v of $$("[data-version]")) v.textContent = ` · ${release.tag_name}`
-  })
-  .catch(() => {})
+initializeDownloads()
 
 const video = $<HTMLVideoElement>("[data-video]")
 video.addEventListener("error", fallbackVideo, true)

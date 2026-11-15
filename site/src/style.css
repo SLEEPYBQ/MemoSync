@@ -139,6 +139,14 @@ section h2 { font-size: clamp(32px, 4.4vw, 52px); line-height: 1.08; font-weight
 .hero .fine { margin-top: 14px; }
 .hero .fine a { color: inherit; text-underline-offset: 3px; }
 .btn .dl { width: 17px; height: 17px; margin-right: 8px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.download { position: relative; width: fit-content; }
+.download-options {
+  position: absolute; z-index: 10; top: calc(100% + 8px); left: 0; min-width: 100%; width: max-content;
+  padding: 12px; border: 1px solid var(--line-2); border-radius: 12px; background: var(--paper); box-shadow: var(--shadow);
+}
+.download-options p { margin: 0 8px 6px; color: var(--ink-3); font-size: 13px; }
+.download-options a { display: block; padding: 8px; border-radius: 6px; color: var(--ink); font-size: 15px; text-decoration: none; }
+.download-options a:hover, .download-options a:focus-visible { background: var(--card); }
 
 /* Lists that feature MemoSync, as small paper tags. */
 .mentions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 26px 0 0; }

@@ -48,10 +48,10 @@
             <span class="across">across sessions.<svg class="scribble" viewBox="0 0 300 20" preserveAspectRatio="none" aria-hidden="true"><path d="M3 14 C 60 4, 120 18, 180 9 S 270 6, 297 11" /></svg></span>
           </h1>
           <div class="cta">
-            <a class="btn primary" href="https://github.com/SLEEPYBQ/MemoSync/releases/latest" data-dmg><svg class="dl" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 C 8.2 5.5, 7.8 8, 8 11" /><path d="M4.6 7.9 L 8 11.3 L 11.4 7.8" /><path d="M3 13.6 C 6 13.2, 10 13.9, 13 13.5" /></svg>Download for Mac</a>
+            <div class="download" data-download><a class="btn primary" href="https://github.com/SLEEPYBQ/MemoSync/releases/latest"><svg class="dl" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 C 8.2 5.5, 7.8 8, 8 11" /><path d="M4.6 7.9 L 8 11.3 L 11.4 7.8" /><path d="M3 13.6 C 6 13.2, 10 13.9, 13 13.5" /></svg><span data-download-label>Download MemoSync</span></a></div>
             <a class="btn" href="#story">See how it works <svg class="hand-arrow-down" viewBox="0 0 16 18" aria-hidden="true"><path d="M8 2 C 7.4 6, 8.6 10, 8 15" /><path d="M3.5 10.5 L 8 15.5 L 12.5 10.6" /></svg></a>
           </div>
-          <p class="fine">For Apple silicon Macs<span data-version></span> · or <a href="#source">run it from source</a></p>
+          <p class="fine"><span data-download-detail>For macOS, Windows &amp; Linux</span><span data-version></span> · or <a href="#source">run it from source</a></p>
           <p class="mentions">
             <span class="hand">mentioned in</span>
             <a href="https://github.com/kyrolabs/awesome-agents" rel="noopener"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.6l1.9 4.1 4.5.5-3.4 3 1 4.4L8 11.4 4 13.6l1-4.4-3.4-3 4.5-.5z" /></svg>Awesome Agents</a>
@@ -267,8 +267,8 @@
           <p class="hand eyebrow">two ways in</p>
           <h2>Download it, or run from source.</h2>
           <div class="get">
-            <a class="btn primary" href="https://github.com/SLEEPYBQ/MemoSync/releases/latest" data-dmg><svg class="dl" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 C 8.2 5.5, 7.8 8, 8 11" /><path d="M4.6 7.9 L 8 11.3 L 11.4 7.8" /><path d="M3 13.6 C 6 13.2, 10 13.9, 13 13.5" /></svg>Download for Mac</a>
-            <p class="fine">Apple silicon<span data-version></span>. Not notarized yet: the first time, open it from <b>System Settings → Privacy &amp; Security → Open Anyway</b>.</p>
+            <div class="download" data-download><a class="btn primary" href="https://github.com/SLEEPYBQ/MemoSync/releases/latest"><svg class="dl" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5 C 8.2 5.5, 7.8 8, 8 11" /><path d="M4.6 7.9 L 8 11.3 L 11.4 7.8" /><path d="M3 13.6 C 6 13.2, 10 13.9, 13 13.5" /></svg><span data-download-label>Download MemoSync</span></a></div>
+            <p class="fine"><span data-download-detail>For macOS, Windows &amp; Linux</span><span data-version></span>.<span data-mac-install hidden> Not notarized yet: the first time, open it from <b>System Settings → Privacy &amp; Security → Open Anyway</b>.</span></p>
           </div>
           <ol class="steps">
             <li><b>Have an agent ready:</b> Claude Code, Codex, Pi or OpenCode, with its own sign-in or an API key from any provider.</li>
@@ -286,7 +286,7 @@ bun run build
 bun run start</code></pre>
             <img class="terminal-cat" src="/art/cat-sit.webp" alt="" />
           </div>
-          <p class="fine">macOS or Linux, with <a href="https://bun.sh">Bun</a> 1.3.5 or newer. Opens at <code>localhost:3210</code>.</p>
+          <p class="fine">macOS, Windows or Linux, with <a href="https://bun.sh">Bun</a> 1.4.4 or newer. Opens at <code>localhost:3210</code>.</p>
         </div>
       </section>
     </main>
