@@ -21,7 +21,7 @@ function isBundledAgentReference(value: string) {
 }
 
 function isBundledAgentShim(name: string, reference: string) {
-  return ["pi", "claude", "claude-code", "codex", "codex-cli"].includes(name) ||
+  return ["pi", "claude", "claude-code", "codex", "codex-cli"].includes(name.replace(/\.(cmd|bat|ps1|exe)$/i, "")) ||
     isBundledAgentReference(reference)
 }
 

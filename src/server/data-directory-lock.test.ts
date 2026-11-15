@@ -306,9 +306,9 @@ test("preserves the effective target of a relative legacy data symlink", async (
   const importedLink = path.join(currentData, "memories")
   expect(lstatSync(importedLink).isSymbolicLink()).toBe(true)
   expect(realpathSync(importedLink)).toBe(realpathSync(legacySibling))
-  expect(readlinkSync(importedLink)).not.toBe("../shared-memories")
+  expect(readlinkSync(importedLink)).not.toBe(path.join("..", "shared-memories"))
   expect(await Bun.file(path.join(importedLink, "history.jsonl")).text()).toBe("legacy history\n")
-  expect(readlinkSync(path.join(legacyData, "memories"))).toBe("../shared-memories")
+  expect(readlinkSync(path.join(legacyData, "memories"))).toBe(path.join("..", "shared-memories"))
 })
 
 test("rejects malformed legacy import marker IDs without touching sibling paths", async () => {

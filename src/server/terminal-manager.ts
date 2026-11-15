@@ -6,6 +6,7 @@ import { existsSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import type { TerminalEvent, TerminalSnapshot, TerminalTailResult } from "../shared/protocol"
+import { killProcessTree } from "./process-utils"
 
 /** A bounded, segmented UTF-16 log. Versions address decoded strings, not PTY bytes. */
 export class TerminalOutputLog {
@@ -199,13 +200,13 @@ function killTerminalProcessTree(subprocess: Bun.Subprocess | null) {
   const pid = subprocess.pid
   if (typeof pid !== "number") return
 
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-pid, "SIGKILL")
-      return
-    } catch {
-      // Fall back to killing only the shell process if group termination fails.
-    }
+  if (process.platform === "win32") return killProcessTree(subprocess)
+
+  try {
+    process.kill(-pid, "SIGKILL")
+    return
+  } catch {
+    // Fall back to killing only the shell process if group termination fails.
   }
 
   try {
@@ -217,17 +218,17 @@ function killTerminalProcessTree(subprocess: Bun.Subprocess | null) {
 
 function signalTerminalProcessGroup(subprocess: Bun.Subprocess | null, signal: NodeJS.Signals) {
   if (!subprocess) return false
+  // ConPTY resize is handled by terminal.resize(); Windows has no SIGWINCH.
+  if (process.platform === "win32") return false
 
   const pid = subprocess.pid
   if (typeof pid !== "number") return false
 
-  if (process.platform !== "win32") {
-    try {
-      process.kill(-pid, signal)
-      return true
-    } catch {
-      // Fall back to signaling only the shell if group signaling fails.
-    }
+  try {
+    process.kill(-pid, signal)
+    return true
+  } catch {
+    // Fall back to signaling only the shell if group signaling fails.
   }
 
   try {
@@ -250,8 +251,8 @@ export class TerminalManager {
   }
 
   createTerminal(args: CreateTerminalArgs) {
-    if (process.platform === "win32") {
-      throw new Error("Embedded terminal is currently supported on macOS/Linux only.")
+    if (process.platform === "win32" && Bun.semver.order(Bun.version, "1.4.4") < 0) {
+      throw new Error("The Windows embedded terminal requires Bun 1.4.4 or newer.")
     }
     if (typeof Bun.Terminal !== "function") {
       throw new Error("Embedded terminal requires Bun 1.3.5+ with Bun.Terminal support.")
@@ -425,10 +426,12 @@ export class TerminalManager {
 
     this.sessions.delete(terminalId)
     session.output.clear()
-    killTerminalProcessTree(session.process)
-    session.terminal.close()
+    const cleanup = killTerminalProcessTree(session.process)
     session.serializeAddon.dispose()
     session.headless.dispose()
+    // Let taskkill enumerate descendants before closing ConPTY can exit its shell.
+    if (cleanup) return cleanup.finally(() => session.terminal.close())
+    session.terminal.close()
   }
 
   closeByCwd(cwd: string) {
@@ -438,10 +441,8 @@ export class TerminalManager {
     }
   }
 
-  closeAll() {
-    for (const terminalId of this.sessions.keys()) {
-      this.close(terminalId)
-    }
+  async closeAll() {
+    await Promise.all([...this.sessions.keys()].map(terminalId => this.close(terminalId)))
   }
 
   getRootPidsByCwd(cwd: string) {

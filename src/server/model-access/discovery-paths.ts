@@ -14,10 +14,22 @@ export async function knownInstallDirectories(
 ): Promise<string[]> {
   const dirs: string[] = []
   const add = (dir: string | undefined) => { if (dir && isAbsolute(dir)) dirs.push(resolve(dir)) }
+  const npmBin = (prefix: string) => process.platform === "win32" ? prefix : join(prefix, "bin")
   add(dirname(runtimePath))
   for (const key of ["NVM_BIN", "PNPM_HOME"]) add(env[key])
-  for (const key of ["NPM_CONFIG_PREFIX", "npm_config_prefix", "VOLTA_HOME", "BUN_INSTALL"])
+  for (const key of ["NPM_CONFIG_PREFIX", "npm_config_prefix"])
+    if (env[key]) add(npmBin(env[key]))
+  for (const key of ["VOLTA_HOME", "BUN_INSTALL"])
     if (env[key]) add(join(env[key], "bin"))
+  if (process.platform === "win32") {
+    for (const key of ["NVM_HOME", "NVM_SYMLINK"]) add(env[key])
+    if (env.APPDATA) add(join(env.APPDATA, "npm"))
+    if (env.LOCALAPPDATA) {
+      add(join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"))
+      add(join(env.LOCALAPPDATA, "Programs", "nodejs"))
+    }
+    if (env.ProgramFiles) add(join(env.ProgramFiles, "nodejs"))
+  }
   if (env.FNM_MULTISHELL_PATH) add(join(env.FNM_MULTISHELL_PATH, "bin"))
   const roots: [string, string][] = []
   const root = (base: string | undefined, suffix: string, bin: string) => {
@@ -25,7 +37,7 @@ export async function knownInstallDirectories(
   }
   root(env.NVM_DIR, "versions/node", "bin")
   root(env.XDG_CONFIG_HOME, "nvm/versions/node", "bin")
-  root(env.FNM_DIR, "node-versions", "installation/bin")
+  root(env.FNM_DIR, "node-versions", process.platform === "win32" ? "installation" : "installation/bin")
   root(env.ASDF_DATA_DIR, "installs/nodejs", "bin")
   root(env.MISE_DATA_DIR, "installs/node", "bin")
   const home = env.HOME || env.USERPROFILE
@@ -35,6 +47,7 @@ export async function knownInstallDirectories(
       ".asdf/shims", ".local/share/mise/shims", ".cargo/bin", ".deno/bin", "Library/pnpm",
       ".local/share/pnpm", ".yarn/bin", ".n/bin",
     ]) add(join(home, suffix))
+    if (process.platform === "win32") add(join(home, "scoop", "shims"))
     // npmrc is installation metadata only; no agent configuration or credentials are read.
     try {
       const text = await readFile(join(home, ".npmrc"), "utf8")
@@ -44,7 +57,7 @@ export async function knownInstallDirectories(
         let prefix = match[1]!.replace(/^["']|["']$/g, "")
         prefix = prefix.replace(/\$\{([^}]+)\}/g, (_, key: string) => env[key] ?? "")
         if (prefix.startsWith("~/")) prefix = join(home, prefix.slice(2))
-        if (isAbsolute(prefix)) add(join(prefix, "bin"))
+        if (isAbsolute(prefix)) add(npmBin(prefix))
         break
       }
     } catch { /* no npm prefix */ }

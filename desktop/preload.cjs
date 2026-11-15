@@ -1,4 +1,4 @@
-// The smallest bridge the page needs to sit inside a native macOS window. The
+// The smallest bridge the page needs to sit inside a native desktop window. The
 // app stays a normal web page: everything here is optional and absent in a browser.
 const { contextBridge, ipcRenderer, webFrame } = require("electron")
 

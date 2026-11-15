@@ -1,5 +1,5 @@
 import type { PrepareNativeContext } from "./context-compiler"
-import { fileURLToPath } from 'node:url'
+import { codexBranchGuardCommand } from './memory/codex-branch-command'
 import { createHash } from 'node:crypto'
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { discoverCodexCommands } from "./native-command-drivers"
@@ -999,9 +999,7 @@ export class CodexAppServerManager {
       if (!config) throw new Error("Cannot establish read-only memory branch: invalid Codex configuration response")
       const servers = config.mcp_servers === undefined ? {} : asRecord(config.mcp_servers)
       if (!servers) throw new Error("Cannot establish read-only memory branch: invalid MCP configuration")
-      const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
-      const guard = fileURLToPath(new URL("./memory/codex-branch-guard.ts", import.meta.url))
-      const command = `BUN_BE_BUN=1 ${quote(process.execPath)} ${quote(guard)} ${quote(args.cwd)}${args.disableTools ? " --deny-all-tools" : ""}`
+      const command = codexBranchGuardCommand(args.cwd, Boolean(args.disableTools))
       // Codex normalizes hook identity to sorted JSON before hashing. Session
       // flags are not implicitly trusted; keep trust local to this declaration.
       // scripts/smoke-branch-prefix.ts proves the hook denies on the installed CLI.

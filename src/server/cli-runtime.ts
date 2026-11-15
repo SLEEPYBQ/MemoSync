@@ -72,7 +72,7 @@ type ParsedArgs =
   | { kind: "help" }
   | { kind: "version" }
 
-const MINIMUM_BUN_VERSION = "1.3.5"
+const MINIMUM_BUN_VERSION = process.platform === "win32" ? "1.4.4" : "1.3.5"
 
 function throwShareConflict(share: Exclude<ShareMode, false>, hostFlag: "--host" | "--remote"): never {
   throw new Error(`${getShareCliFlag(share)} cannot be used with ${hostFlag}`)

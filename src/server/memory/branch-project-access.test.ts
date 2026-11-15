@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url'
 import type { query, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { StartPiTurnArgs } from '../pi-agent'
 import { createMemoryBranch, isReadOnlyBranchCommand } from './branch-runtime'
+import { codexBranchGuardCommand } from './codex-branch-command'
+import { spawnSync } from 'node:child_process'
 
 function fixture(prefix = "branch project 'quote-") {
   const root = mkdtempSync(join(tmpdir(), prefix))
@@ -20,6 +22,25 @@ function fixture(prefix = "branch project 'quote-") {
 }
 
 describe('memory branch project read boundary', () => {
+  test.skipIf(process.platform !== 'win32')('Windows native hook handles encoded paths and stdin under CMD and PowerShell', () => {
+    const f = fixture("branch 中文 & % 'quote-")
+    const system = join(process.env.SystemRoot || 'C:\\Windows', 'System32')
+    try {
+      for (const [shell, args] of [
+        [join(system, 'cmd.exe'), ['/d', '/c']],
+        [join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoProfile', '-NonInteractive', '-Command']],
+      ] as const) for (const [command, denyAll, denied] of [['cat inside.txt', false, false], ['cat ../outside.txt', false, true], ['pwd', true, true]] as const) {
+        const result = spawnSync(shell, [...args, codexBranchGuardCommand(f.project, denyAll)], {
+          input: JSON.stringify({ tool_name: 'exec_command', tool_input: { cmd: command }, cwd: f.project }),
+          encoding: 'utf8', timeout: 10_000, windowsHide: true,
+        })
+        expect({ status: result.status, stderr: result.stderr }).toMatchObject({ status: 0 })
+        const output = JSON.parse(result.stdout)
+        expect(output.hookSpecificOutput?.permissionDecision).toBe(denied ? 'deny' : undefined)
+      }
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
+  }, 30_000)
+
   test('Claude native PreToolUse scopes Read, Glob, Grep and Bash to the project', async () => {
     const f = fixture()
     let call!: Parameters<typeof query>[0]

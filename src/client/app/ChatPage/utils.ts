@@ -122,6 +122,7 @@ export function hasFileDragTypes(types: Iterable<string>) {
 
 export function isAbsoluteLocalPath(value: string) {
   return value.startsWith("/")
+    || value.startsWith("\\\\")
     || value === "~"
     || value.startsWith("~/")
     || /^[A-Za-z]:[\\/]/u.test(value)

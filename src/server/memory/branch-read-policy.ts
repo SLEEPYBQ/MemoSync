@@ -12,9 +12,16 @@ export function isProjectBranchPath(path: unknown, projectRoot: string, cwd = pr
   try {
     const root = realpathSync(projectRoot)
     const inside = (value: string) => { const tail = relative(root, value); return tail !== '..' && !tail.startsWith(`..${sep}`) && !isAbsolute(tail) }
-    let current = isAbsolute(path) ? parse(path).root : realpathSync(cwd)
-    if (!isAbsolute(path) && !inside(current)) return false
-    for (const part of path.split(sep)) {
+    const absolute = isAbsolute(path)
+    const anchor = absolute ? parse(path).root : ''
+    // Strip the drive/UNC anchor once; joining C: again would corrupt an
+    // absolute Windows path. Windows accepts both separators without first
+    // normalizing away a symlink followed by .. . Drive-relative paths reject.
+    if (process.platform === 'win32' && !absolute && parse(path).root) return false
+    let current = absolute ? anchor : realpathSync(cwd)
+    if (!absolute && !inside(current)) return false
+    const parts = path.slice(anchor.length).split(process.platform === 'win32' ? /[\\/]/ : sep)
+    for (const part of parts) {
       if (!part || part === '.') continue
       if (part === '..') current = dirname(current)
       else {
@@ -27,7 +34,7 @@ export function isProjectBranchPath(path: unknown, projectRoot: string, cwd = pr
           current = next
         }
       }
-      if (!isAbsolute(path) && !inside(current)) return false
+      if (!absolute && !inside(current)) return false
     }
     return inside(current)
   } catch { return false }

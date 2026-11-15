@@ -55,7 +55,7 @@ export function getToolCallTitle(message: ProcessedToolCall, localPath?: string 
 
 /** A path keeps its file name when space runs out; the folders give way first. */
 function PathTarget({ path }: { path: string }) {
-  const slash = path.lastIndexOf("/") + 1
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1
   return (
     <span className="flex min-w-0 font-mono text-[12px]">
       {slash > 0 ? <span className="min-w-0 truncate text-muted-foreground/70">{path.slice(0, slash)}</span> : null}

@@ -120,17 +120,23 @@ Reviewing every turn pays off when memory matters, and is too much for a quick q
 
 ## Quick start
 
-### Mac app
+### Desktop app
 
-Download the DMG from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) and drag MemoSync to Applications. The app runs on Apple silicon Macs; on an Intel Mac, run it [from source](#from-source).
+Download your platform's package from [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest):
+
+- **macOS:** choose `arm64` for Apple silicon or `x64` for Intel, then open the DMG and drag MemoSync to Applications.
+- **Windows x64:** run the per-user `Setup.exe`, or extract the ZIP and launch `MemoSync.exe`.
+- **Linux x64:** install the `.deb` on Debian/Ubuntu, or mark the AppImage executable and run it on a compatible distribution.
 
 The app isn't notarized yet, so macOS blocks it the first time. Try to open it, then go to **System Settings → Privacy & Security** and choose **Open Anyway**.
+
+Windows packages are not publisher-signed. Linux requires a graphical session and support for Electron's sandbox; on Ubuntu, prefer the `.deb` package.
 
 The app doesn't include any agents, so install Claude Code or Codex first. To use Pi, install `@earendil-works/pi-coding-agent` 1.3.0 or newer. The app shares `~/.memosync/data` with a source install, and only one of them can run at a time.
 
 ### From source
 
-You need [Bun](https://bun.sh) 1.3.5 or newer, plus one of:
+You need [Bun](https://bun.sh) 1.3.5 or newer (1.4.4 or newer on Windows), plus one of:
 - Claude Code or Codex already signed in, or
 - an API key from any provider.
 
@@ -259,13 +265,16 @@ The server code is in `src/server/`:
 
 The client is a React app in `src/client/`. Development data goes to `~/.memosync-dev/`.
 
-The Mac app bundles its runtime and uses your locally installed agents. It is developed and packaged on macOS, for that machine's architecture only:
+The desktop app bundles Bun **1.4.4** and uses your locally installed agents. Build on the target OS and architecture with Bun 1.4.4 and Node.js 24:
 
 ```bash
 bun run desktop:install       # once
 bun run desktop:dev
-bun run desktop:package:mac   # DMG and ZIP in desktop/release/
+bun run desktop:package      # native packages in desktop/release/
+bun run desktop:smoke        # staged backend checks
 ```
+
+Pull requests run compatibility checks without requiring installers. The manually dispatched **Desktop release** workflow builds all four native targets and exercises each packaged app before it can publish a release.
 
 ## Acknowledgements
 

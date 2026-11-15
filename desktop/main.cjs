@@ -7,6 +7,9 @@ const { trackBackendProcess } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
 const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
 
+if (process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR)
+  app.setPath("userData", path.resolve(process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR))
+
 let backend
 let backendLifecycle
 let mainWindow
@@ -60,6 +63,7 @@ function createWindow() {
     minWidth: 800,
     minHeight: 600,
     show: false,
+    icon: path.join(__dirname, "icon-light.png"),
     backgroundColor: windowBackground(),
     ...MAC_WINDOW_OPTIONS,
     webPreferences: {
@@ -120,7 +124,7 @@ function startBackend(password) {
       windowsHide: true,
       env: {
         ...process.env,
-        PATH: [root, process.env.PATH].filter(Boolean).join(path.delimiter),
+        PATH: [root, process.env.PATH || process.env.Path].filter(Boolean).join(path.delimiter),
         MEMOSYNC_RUNTIME_PROFILE: "prod",
         MEMOSYNC_EXTERNAL_AGENTS: "1",
       },
@@ -176,6 +180,7 @@ async function authenticate(password) {
 
 if (!app.requestSingleInstanceLock()) app.quit()
 else {
+  if (process.platform === "win32") app.setAppUserModelId("com.memosync.desktop")
   app.on("second-instance", () => {
     if (!mainWindow) createWindow()
     if (mainWindow?.isMinimized()) mainWindow.restore()

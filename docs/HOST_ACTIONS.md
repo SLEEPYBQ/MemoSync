@@ -27,6 +27,11 @@ retains workspace-host resolution, window authentication, durable idempotency,
 snapshot integrity and cancellation/presentation rules. Manual editable tabs
 remain independent from agent-requested snapshots.
 
+POSIX snapshots use descriptor-relative, no-follow opens. Windows pins every
+ancestor and the file with non-inheritable handles that deny rename/delete and
+reject reparse points. Both paths revalidate file identity and preserve the same
+bounded, immutable snapshot format.
+
 The first turn resolves its executable version before freezing the capability
 revision. Later policy/version changes invalidate admission rather than rebinding
 an old operation. Unverified runtime versions report unknown capability.

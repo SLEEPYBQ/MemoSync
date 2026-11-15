@@ -130,11 +130,11 @@ function formatSpawnError(command: string, error: unknown) {
   return new Error(error.message || `Failed to start ${command}`)
 }
 
-export function spawnDetached(command: string, args: string[]) {
+export function spawnDetached(command: string, args: string[], options: { cwd?: string } = {}) {
   return new Promise<void>((resolve, reject) => {
     let child
     try {
-      child = spawn(command, args, { stdio: "ignore", detached: true })
+      child = spawn(command, args, { ...options, stdio: "ignore", detached: true })
     } catch (error) {
       reject(formatSpawnError(command, error))
       return
@@ -156,6 +156,7 @@ export function spawnDetached(command: string, args: string[]) {
 export function hasCommand(command: string) {
   // Bun.which otherwise reads the startup PATH, before inheritShellPath.
   if (Bun.which(command, { PATH: process.env.PATH ?? "" })) return true
+  if (process.platform === "win32") return false
   const result = spawnSync("sh", ["-lc", `command -v ${command}`], { stdio: "ignore" })
   return result.status === 0
 }

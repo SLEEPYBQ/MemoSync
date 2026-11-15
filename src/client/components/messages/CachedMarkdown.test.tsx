@@ -2,6 +2,16 @@ import { expect, test } from "bun:test"
 import { renderToStaticMarkup } from "react-dom/server"
 import { createMarkdownRenderCache } from "./CachedMarkdown"
 
+test("renders Windows drive links as local files while rejecting executable URI schemes", () => {
+  const render = createMarkdownRenderCache()
+  for (const memoryLinks of [false, true]) {
+    const html = renderToStaticMarkup(render('[source](<C:/Projects/with spaces/app.ts#L4>)', memoryLinks))
+    expect(html).toContain('href="C:/Projects/with%20spaces/app.ts#L4"')
+    expect(html).not.toContain('target="_blank"')
+    expect(renderToStaticMarkup(render('[bad](javascript:alert%281%29)', memoryLinks))).not.toContain('href="javascript:')
+  }
+})
+
 test("reuses rendered markdown by text across entries", () => {
   const render = createMarkdownRenderCache()
   const first = render("**shared** [file](src/app.ts)")

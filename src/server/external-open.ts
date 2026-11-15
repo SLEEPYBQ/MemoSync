@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises"
+import { existsSync, realpathSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
 import type { ClientCommand, EditorOpenSettings, EditorPreset } from "../shared/protocol"
@@ -103,7 +104,11 @@ export async function openExternal(command: OpenExternalCommand) {
         await spawnDetached("wt", ["-d", resolvedPath])
         return
       }
-      await spawnDetached("cmd", ["/c", "start", "", "cmd", "/K", `cd /d ${resolvedPath}`])
+      // START supplies a fresh console's input/output handles. The directory
+      // stays in cwd so %, &, and spaces never become command syntax.
+      // START resolves the literal CMD token through COMSPEC; no quoted title
+      // or executable path needs to pass through cmd's argument parser.
+      await spawnDetached(process.env.ComSpec || "cmd.exe", ["/d", "/c", "start", "cmd", "/d", "/k"], { cwd: resolvedPath })
       return
     }
   }
@@ -183,7 +188,7 @@ export function buildDefaultOpenCommand(args: {
     return { command: "open", args: [args.localPath] }
   }
   if (args.platform === "win32") {
-    return { command: "cmd", args: ["/c", "start", "", args.localPath] }
+    return { command: "explorer.exe", args: [args.localPath] }
   }
   return { command: "xdg-open", args: [args.localPath] }
 }
@@ -216,6 +221,11 @@ function buildPresetEditorCommand(
 }
 
 function resolveEditorExecutable(preset: Exclude<EditorPreset, "custom">, platform: NodeJS.Platform) {
+  if (platform === "win32" && preset !== "xcode") {
+    const native = findWindowsEditor(preset)
+    if (native) return { command: native, args: [] }
+    throw new Error(`Could not find ${preset}. Configure its native .exe path as a custom editor.`)
+  }
   if (preset === "cursor") {
     if (hasCommand("cursor")) return { command: "cursor", args: [] }
     if (platform === "darwin" && canOpenMacApp("Cursor")) return { command: "open", args: ["-a", "Cursor"] }
@@ -247,6 +257,22 @@ function resolveEditorExecutable(preset: Exclude<EditorPreset, "custom">, platfo
   }
 
   return { command: preset === "vscode" ? "code" : preset === "xcode" ? "xed" : preset, args: [] }
+}
+
+export function findWindowsEditor(preset: "cursor" | "vscode" | "windsurf", env = process.env) {
+  const names = { cursor: ["cursor", "Cursor.exe", "cursor"], vscode: ["code", "Code.exe", "Microsoft VS Code"], windsurf: ["windsurf", "Windsurf.exe", "Windsurf"] } as const
+  const [cli, executable, folder] = names[preset]
+  const candidates: string[] = []
+  const shim = Bun.which(cli, { PATH: env.PATH || env.Path || "" })
+  if (shim) {
+    const resolved = realpathSync(shim)
+    if (/\.exe$/i.test(resolved)) candidates.push(resolved)
+    candidates.push(path.resolve(path.dirname(resolved), "..", executable))
+  }
+  if (env.LOCALAPPDATA) candidates.push(path.join(env.LOCALAPPDATA, "Programs", folder, executable))
+  for (const root of [env.ProgramFiles, env["ProgramFiles(x86)"]])
+    if (root) candidates.push(path.join(root, folder, executable))
+  return candidates.find(existsSync)
 }
 
 function buildCustomEditorCommand(args: {

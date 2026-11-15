@@ -15,6 +15,7 @@ import {
 import { Input } from "./ui/input"
 import { SegmentedControl } from "./ui/segmented-control"
 import { isImeComposingKeyEvent } from "../lib/imeKeys"
+import { getPathBasename } from "../lib/formatters"
 
 interface Props {
   open: boolean
@@ -99,7 +100,7 @@ export function NewProjectModal({ open, onOpenChange, onConfirm }: Props) {
     if (tab === "new") {
       onConfirm({ mode: "new", localPath: newPath, title: name.trim() })
     } else {
-      const folderName = trimmedExisting.split("/").pop() || trimmedExisting
+      const folderName = getPathBasename(trimmedExisting)
       onConfirm({ mode: "existing", localPath: trimmedExisting, title: folderName })
     }
     onOpenChange(false)

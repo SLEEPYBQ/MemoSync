@@ -121,17 +121,23 @@ MemoSync 是一个本地运行的工作台，支持 Claude Code、Codex、Pi 和
 
 ## 快速开始
 
-### Mac 应用
+### 桌面应用
 
-从 [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) 下载 DMG，把 MemoSync 拖进“应用程序”。应用只支持 Apple 芯片的 Mac；Intel Mac 请[从源码运行](#从源码运行)。
+从 [Releases](https://github.com/SLEEPYBQ/MemoSync/releases/latest) 下载对应平台的安装包：
+
+- **macOS：**Apple 芯片选择 `arm64`，Intel 选择 `x64`；打开 DMG，把 MemoSync 拖进“应用程序”。
+- **Windows x64：**运行按用户安装的 `Setup.exe`，或解压 ZIP 后运行 `MemoSync.exe`。
+- **Linux x64：**Debian/Ubuntu 可安装 `.deb`；其他兼容发行版可给 AppImage 添加执行权限后运行。
 
 应用还没有经过 Apple 公证，第一次打开会被 macOS 拦下。先尝试打开一次，再到**系统设置 → 隐私与安全性**，点**仍要打开**。
+
+Windows 安装包尚未配置发布者签名。Linux 需要图形会话和 Electron 沙箱支持，Ubuntu 建议使用 `.deb` 包。
 
 应用里不带智能体，请先装好 Claude Code 或 Codex。要用 Pi，需要安装 `@earendil-works/pi-coding-agent` 1.3.0 或更新版本。应用和源码版共用 `~/.memosync/data`，两者不能同时运行。
 
 ### 从源码运行
 
-需要 [Bun](https://bun.sh) 1.3.5 或更新版本，再加上下面任意一种：
+需要 [Bun](https://bun.sh) 1.3.5 或更新版本（Windows 需要 1.4.4 或更新版本），再加上下面任意一种：
 - 已经登录好的 Claude Code 或 Codex；
 - 任意一家服务商的 API key。
 
@@ -260,13 +266,16 @@ bun run check     # 类型检查和前端构建
 
 前端是 `src/client/` 下的 React 应用。开发模式的数据存放在 `~/.memosync-dev/`。
 
-Mac 应用内置运行时，使用你在本机安装的智能体。开发和打包要在 macOS 上进行，只能打当前机器架构的版本：
+桌面应用内置 Bun **1.4.4**，使用你在本机安装的智能体。请在目标操作系统和架构上，使用 Bun 1.4.4 和 Node.js 24 开发、打包：
 
 ```bash
 bun run desktop:install       # 只需一次
 bun run desktop:dev
-bun run desktop:package:mac   # DMG 和 ZIP 在 desktop/release/
+bun run desktop:package      # 当前平台的安装包在 desktop/release/
+bun run desktop:smoke        # 检查打包后的后端运行时
 ```
+
+PR 运行兼容性检查，不强制构建安装包。手动触发的 **Desktop release** 工作流会构建四种原生目标，并启动各平台打包后的应用完成检查，通过后才允许发布。
 
 ## 致谢
 

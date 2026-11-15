@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { createHash } from "node:crypto"
-import { closeSync, readFileSync, statSync } from "node:fs"
-import { openWorkspaceSnapshotFd } from "./host-snapshot-fd"
+import { readFileSync, statSync } from "node:fs"
+import { closeWorkspaceSnapshotFd, openWorkspaceSnapshotFd } from "./host-snapshot-fd"
 import { mkdtemp, mkdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
@@ -259,14 +259,21 @@ describe("HostActionService", () => {
     const info = statSync(f.workspace)
     const identity = `${info.dev}:${info.ino}`
     const fd = openWorkspaceSnapshotFd(f.workspace, "docs/a.md", identity)
+    let closed = false
     try {
+      if (process.platform === "win32") {
+        await expect(rename(path.join(f.workspace, "docs"), path.join(f.workspace, "docs-old"))).rejects.toThrow()
+        expect(readFileSync(fd, "utf8")).toBe("inside")
+        closeWorkspaceSnapshotFd(fd)
+        closed = true
+      }
       await rename(path.join(f.workspace, "docs"), path.join(f.workspace, "docs-old"))
-      await symlink(path.join(f.root, "outside"), path.join(f.workspace, "docs"))
-      expect(readFileSync(fd, "utf8")).toBe("inside")
+      await symlink(path.join(f.root, "outside"), path.join(f.workspace, "docs"), process.platform === "win32" ? "junction" : "dir")
+      if (!closed) expect(readFileSync(fd, "utf8")).toBe("inside")
       expect(() => openWorkspaceSnapshotFd(f.workspace, "docs/a.md", identity)).toThrow("symlinked")
       expect(() => openWorkspaceSnapshotFd(f.workspace, "../outside/a.md", identity)).toThrow("Invalid")
       expect(() => openWorkspaceSnapshotFd(f.workspace, "README.md", "wrong-identity")).toThrow("identity changed")
-    } finally { closeSync(fd) }
+    } finally { if (!closed) closeWorkspaceSnapshotFd(fd) }
   })
 
   test("persistent receipts survive service restart, but native admission is never invented", async () => {
