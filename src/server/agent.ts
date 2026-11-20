@@ -2868,6 +2868,8 @@ export class AgentCoordinator {
     return applied
   }
 
+  private readonly queueDispatches = new Set<string>()
+
   private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
       entry.kind === "interrupted"
@@ -3914,7 +3916,8 @@ export class AgentCoordinator {
       || this.pendingTransferGates.has(chatId) || this.pendingCheckupGates.has(chatId)
       || this.activePreparations.has(chatId) || this.inFlightCheckups.has(chatId)
       || this.claimedPreviewResponses.has(chatId) || (this.memoryWork.get(chatId) ?? 0) > 0
-      || this.store.getQueuedMessages(chatId).length > 0
+      || this.queueDispatches.has(chatId)
+      || this.store.getQueuedMessages(chatId).some((entry) => !entry.rejection)
       || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
         !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
       || Boolean(this.codexManager.hasPendingWork?.(chatId))
@@ -4329,6 +4332,7 @@ export class AgentCoordinator {
     queuedMessage: QueuedChatMessage,
     options?: {
       steered?: boolean
+      releaseDispatch?: () => void
     },
   ): Promise<"started" | "cancelled" | "missing"> {
     if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
@@ -4361,6 +4365,8 @@ export class AgentCoordinator {
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
     this.commandSelections.set(chatId, { provider, model: queuedMessage.model, modelOptions: queuedMessage.modelOptions, planMode: queuedMessage.planMode })
+    // startTurnForChat takes the startup reservation before its first await.
+    options?.releaseDispatch?.()
     await this.startTurnForChat({
       chatId,
       provider,
@@ -4406,14 +4412,33 @@ export class AgentCoordinator {
   }
 
   private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.commandRegistry.isRunning(chatId) || this.activeTurns.has(chatId)) return false
-    const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
-    if (!nextQueuedMessage) return false
-    await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
-    return true
+    if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
+      || this.activeTurns.has(chatId) || this.startingChats.has(chatId)
+      || this.hasPendingPreviewActivity(chatId) || this.isEngineStartBlocked(chatId)) return false
+
+    this.queueDispatches.add(chatId)
+    let ownsDispatch = true
+    const releaseDispatch = () => {
+      if (!ownsDispatch) return
+      ownsDispatch = false
+      this.queueDispatches.delete(chatId)
+    }
+    try {
+      while (!this.isEngineStartBlocked(chatId)) {
+        const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
+        if (!nextQueuedMessage || this.isEngineStartBlocked(chatId)) return false
+        const outcome = await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage, { releaseDispatch })
+        if (outcome === "started") return true
+      }
+      return false
+    } finally {
+      releaseDispatch()
+      this.updateIdleClose(chatId)
+    }
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
+    if (this.queueDispatches.has(args.chatId)) throw new Error("Queued messages are being recovered")
     if (this.commandRegistry.isRunning(args.chatId)) throw new Error('Native context control is running')
     if (/^\s*\/compact(?:\s|$)/.test(args.content)) throw new Error('Compact must use the native command control route')
     const logicalTurnId = args.turnId ?? crypto.randomUUID()
@@ -7829,8 +7854,10 @@ export class AgentCoordinator {
       // as well as chat/sidebar subscribers, including native slash submissions.
       this.emitStateChange()
     }
+    const dispatchingQueue = this.queueDispatches.has(chatId)
     if (
-      this.activeTurns.has(chatId)
+      dispatchingQueue
+      || this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
     ) {
@@ -7841,6 +7868,14 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
       })
+      if (dispatchingQueue) {
+        // The dispatcher may have reached the end before this enqueue landed.
+        void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+          this.reportBackgroundError?.(
+            `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+      }
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
@@ -7896,6 +7931,8 @@ export class AgentCoordinator {
       throw new Error('Queued native commands must be resubmitted through the current command catalog')
     }
 
+    if (this.queueDispatches.has(command.chatId)) throw new Error("Queued messages are being recovered")
+
     logClaudeSteer("steer_requested", {
       chatId: command.chatId,
       queuedMessageId: command.queuedMessageId,
@@ -7925,7 +7962,7 @@ export class AgentCoordinator {
     // busy (e.g. the previewing-memory reservation cancel can't yet abort), the
     // startTurnForChat guard would throw AFTER the message was already deleted —
     // losing it entirely (BUG AGENT-1). Guarding here keeps it in the queue.
-    if (isBusy()) {
+    if (isBusy() || this.queueDispatches.has(command.chatId)) {
       throw new Error("Chat is still running")
     }
 

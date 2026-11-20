@@ -1027,32 +1027,65 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
-  test("startup skips a legacy command and dispatches the following saved prompt", async () => {
+  test("startup keeps a fresh send behind recovered prompts while legacy rejection is pending", async () => {
     const store = createFakeStore()
-    const legacy = await store.enqueueMessage("chat-1", { content: " 	/compact", provider: "codex" })
+    const legacy = await store.enqueueMessage("chat-1", { content: " \t/compact", provider: "codex" })
     const next = await store.enqueueMessage("chat-1", { content: "continue the synthetic task", provider: "codex" })
-    const queue = new AsyncEventQueue<HarnessEvent>()
+    let releaseRejection!: () => void
+    let rejectionStarted = false
+    const rejectionGate = new Promise<void>((resolve) => { releaseRejection = resolve })
+    const rejectQueuedNativeCommand = store.rejectQueuedNativeCommand.bind(store)
+    store.rejectQueuedNativeCommand = async (chatId, rowId) => {
+      rejectionStarted = true
+      await rejectionGate
+      await rejectQueuedNativeCommand(chatId, rowId)
+    }
+    const queues: Array<AsyncEventQueue<HarnessEvent>> = []
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
       codexManager: {
         async startSession() {},
         async startTurn() {
+          const queue = new AsyncEventQueue<HarnessEvent>()
+          queues.push(queue)
           return { provider: "codex", stream: queue, interrupt: async () => {}, close: () => queue.close() }
         },
+        getCommandRuntime: () => ({
+          session: "fixture-session", instance: "fixture-instance", version: "test", alive: () => true,
+          compact: async () => {}, restore: async () => {},
+        }),
       } as never,
     })
+    const prompts = () => store.messages.filter((entry) => entry.kind === "user_prompt").map((entry) => entry.content)
+    const finish = (queue: AsyncEventQueue<HarnessEvent>) => {
+      queue.push({ type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) })
+      queue.close()
+    }
 
     try {
-      await coordinator.drainOrphanedQueues()
-      const prompts = store.messages.filter((entry) => entry.kind === "user_prompt")
-      expect(prompts.map((entry) => entry.content)).toEqual([next.content])
+      const recovery = coordinator.drainOrphanedQueues()
+      await waitFor(() => rejectionStarted)
+      const fresh = "check the synthetic build"
+      expect(await coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: fresh })).toMatchObject({ queued: true })
+      expect(prompts()).toEqual([])
+      releaseRejection()
+      await recovery
+      expect(prompts()).toEqual([next.content])
+      await waitFor(() => queues.length === 1)
+      finish(queues[0]!)
+      await waitFor(() => queues.length === 2)
+      expect(prompts()).toEqual([next.content, fresh])
+      finish(queues[1]!)
+      await waitFor(() => coordinator.getCommandCatalog("chat-1").compact.status === "available")
+
       expect(store.getQueuedMessages()).toEqual([{ ...legacy, rejection: "stale_native_command" }])
       await expect(coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "/compact" })).rejects.toThrow("current command catalog")
       await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: legacy.id })).rejects.toThrow("resubmitted")
       expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(false)
     } finally {
-      queue.close()
+      releaseRejection()
+      for (const queue of queues) queue.close()
     }
   })
 

@@ -1627,7 +1627,7 @@ export class EventStore {
       await this.writeEvent(this.queuedMessagesLogPath, {
         v: STORE_VERSION,
         type: "queued_native_command_rejected",
-        timestamp: Date.now(),
+        timestamp: Math.max(Date.now(), row.createdAt),
         chatId,
         queuedMessageId,
       })
