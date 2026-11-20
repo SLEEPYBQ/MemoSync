@@ -292,22 +292,48 @@ describe("AppSocket", () => {
     socket.dispose()
   })
 
-  test("a command that never gets an ack rejects on timeout and forces a reconnect", async () => {
+  test("a command timeout leaves other requests and subscriptions on the shared socket", async () => {
     const socket = new AppSocket("ws://localhost/ws")
     socket.start()
     const ws = FakeWebSocket.instances[0]!
     ws.open()
+    const snapshots: unknown[] = []
+    socket.subscribe({ type: "sidebar", patches: true }, (data) => snapshots.push(data))
+    const subscription = ws.sent.at(-1)!
 
-    // The zombie-WS case: the frame is written into a half-open TCP hole —
-    // no ack, no error, and no close event ever fires.
-    const sendPromise = socket.command({ type: "chat.send", content: "hello" } as never)
-    expect(ws.sent).toHaveLength(1)
+    const slow = socket.command({ type: "chat.stopDraining", chatId: "slow" })
+    const slowCommand = ws.sent.at(-1)!
+    const timeout = [...timers.timeouts.keys()][0]!
+    const unrelated = socket.command({ type: "chat.stopDraining", chatId: "unrelated" })
+    const unrelatedCommand = ws.sent.at(-1)!
 
-    for (const id of [...timers.timeouts.keys()]) timers.runTimeout(id)
+    timers.runTimeout(timeout)
+    await expect(slow).rejects.toThrow("chat.stopDraining timed out waiting for the server")
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(ws.readyState).toBe(FakeWebSocket.OPEN)
 
-    await expect(sendPromise).rejects.toThrow(/timed out/i)
-    // The proven-dead socket is not kept around — a reconnect is underway.
-    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(2)
+    ws.receive({ v: 1, type: "ack", id: slowCommand.id })
+    ws.receive({ v: 1, type: "snapshot", id: subscription.id, snapshot: {
+      type: "sidebar-patch", data: { from: null, to: 1, order: [] },
+    } })
+    ws.receive({ v: 1, type: "ack", id: unrelatedCommand.id, result: { ok: true } })
+
+    expect(snapshots).toEqual([{ projectGroups: [] }])
+    await expect(unrelated).resolves.toEqual({ ok: true })
+    socket.dispose()
+  })
+
+  test("a command that expires before the socket opens is never sent", async () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    const queued = socket.command({ type: "chat.stopDraining", chatId: "expired" })
+
+    timers.runTimeout([...timers.timeouts.keys()][0]!)
+    await expect(queued).rejects.toThrow(/timed out/i)
+    ws.open()
+
+    expect(ws.sent).toEqual([])
     socket.dispose()
   })
 

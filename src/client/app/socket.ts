@@ -33,11 +33,8 @@ type StatusListener = (status: SocketStatus) => void
 const STALE_CONNECTION_MS = 25_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const PING_TIMEOUT_MS = 4_000
-// Acks are fast (chat.send acks even before the engine boots — the preview
-// gate parks instead of blocking), so a missing ack means the connection is
-// gone even when the transport never says so (zombie TCP after a container
-// restart: no error, no close event). Reject on a local timer the transport
-// can't stall, so callers' error paths (draft restore, banner) actually run.
+// Bound how long a caller waits for its own ACK. Connection health is
+// checked separately by the heartbeat and ping.
 const COMMAND_ACK_TIMEOUT_MS = 10_000
 const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "memosync:profile-send-to-starting"
 
@@ -249,8 +246,7 @@ export class AppSocket {
       const timer = window.setTimeout(() => {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
-        reject(new Error(t("errors:value0TimedOutWaitingForTheServerReconnecting", { v0: command.type })))
-        this.reconnectNow()
+        reject(new Error(t("errors:value0TimedOutWaitingForTheServer", { v0: command.type })))
       }, COMMAND_ACK_TIMEOUT_MS)
       this.pending.set(id, {
         resolve: (value: unknown) => {
