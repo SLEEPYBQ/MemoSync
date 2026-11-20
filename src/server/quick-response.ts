@@ -5,7 +5,7 @@ import OpenAI from "openai"
 import { getDataRootDir } from "../shared/branding"
 import type { LlmProviderSnapshot } from "../shared/types"
 import { CodexAppServerManager } from "./codex-app-server"
-import { readLlmProviderSnapshot } from "./llm-provider"
+import { normalizeLlmProviderSnapshot, readLlmProviderSnapshot } from "./llm-provider"
 import { resolveChatProviderRoute } from "./chat-providers"
 import { assertIsolatedClaudeCredentials, buildIsolatedClaudeEnv, DEFAULT_GLM_MODEL, isCliIsolationEnabled } from "./provider-runtime"
 
@@ -245,7 +245,7 @@ export class QuickResponseAdapter {
     const offline = process.env.MEMOSYNC_QUICK_RESPONSE_OFFLINE === "1"
     this.codexManager = args.codexManager ?? new CodexAppServerManager()
     this.readLlmProvider = args.readLlmProvider ?? (offline
-      ? async () => ({ ...(await readLlmProviderSnapshot()), enabled: false })
+      ? async () => normalizeLlmProviderSnapshot(undefined)
       : () => readLlmProviderSnapshot())
     this.runOpenAIStructured = args.runOpenAIStructured ?? runOpenAIStructured
     this.runClaudeStructured = args.runClaudeStructured ?? (offline ? async () => null : runClaudeStructured)

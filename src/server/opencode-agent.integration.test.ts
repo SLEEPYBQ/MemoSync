@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -48,7 +49,7 @@ integration('OpenCode real-binary backend with scripted local model', () => {
     writeFileSync(join(hostConfig, 'opencode.json'), '{ "invalid-option": true }')
     fake = createOpencodeFakeModel(project)
     const credentials = new Map<string, string>()
-    const service = await new ModelAccessService({ dataDir: join(root, 'memosync'),
+    const service = await new ModelAccessService({ keyring: testKeyring, dataDir: join(root, 'memosync'),
       env: { HOME: root, PATH: process.env.PATH, XDG_CONFIG_HOME: join(root, 'host-config'), MEMOSYNC_ISOLATE_CLI: '1' },
       readLegacyPi: async () => null,
       credentials: { get: async id => credentials.get(id), set: async (id, value) => { if (value) credentials.set(id, value); else credentials.delete(id) } },

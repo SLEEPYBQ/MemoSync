@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto"
-import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
+import { access, chmod, readFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import OpenAI from "openai"
 import { getLlmProviderFilePath } from "../shared/branding"
+import { acquireLlmProviderFileLock } from "./data-directory-lock"
+import { SystemCredentialStore, type Keyring } from "./model-access/keyring"
+import { atomicJson } from "./model-access/storage"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
   DEFAULT_OPENROUTER_SDK_MODEL,
@@ -117,48 +120,187 @@ function createDefaultSnapshot(filePath: string, warning: string | null = null):
   }
 }
 
-export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(homedir())) {
+const providerOperations = new Map<string, Promise<void>>()
+
+function withProviderFile<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  // Preserve submission order while the provider-file lock coordinates other processes.
+  const absolute = path.resolve(filePath)
+  const key = process.platform === "win32" ? absolute.toLowerCase() : absolute
+  const result = (providerOperations.get(key) ?? Promise.resolve()).then(async () => {
+    const lock = await acquireLlmProviderFileLock(absolute)
+    try { return await operation() }
+    finally { lock.release() }
+  })
+  const tail = result.then(() => undefined, () => undefined)
+  providerOperations.set(key, tail)
+  return result.finally(() => {
+    if (providerOperations.get(key) === tail) providerOperations.delete(key)
+  })
+}
+
+async function readProviderFile(filePath: string): Promise<{ value?: unknown; warning?: string }> {
   try {
     const text = await readFile(filePath, "utf8")
-    // Upgrade files created by older versions that used the process umask and
-    // could therefore leave provider credentials world-readable.
+    // Older versions used the process umask for the plaintext file.
     await chmod(filePath, 0o600).catch(() => {})
-    if (!text.trim()) {
-      return createDefaultSnapshot(filePath, "LLM provider file was empty. Using defaults.")
-    }
-    return normalizeLlmProviderSnapshot(JSON.parse(text), filePath)
+    if (!text.trim()) return { warning: "LLM provider file was empty. Using defaults." }
+    return { value: JSON.parse(text) }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
-      return createDefaultSnapshot(filePath)
-    }
-    if (error instanceof SyntaxError) {
-      return createDefaultSnapshot(filePath, "LLM provider file is invalid JSON. Using defaults.")
-    }
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {}
+    if (error instanceof SyntaxError) return { warning: "LLM provider file is invalid JSON. Using defaults." }
     throw error
   }
 }
 
+function providerRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>
+}
+
+function isCredentialRef(ref: unknown): ref is string {
+  return typeof ref === "string" && /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(ref)
+}
+
+type ProviderMetadata = { provider?: unknown; model?: unknown; baseUrl?: unknown }
+
+function retiredCredentialRefs(value: unknown, activeRef?: string): string[] {
+  const retired = providerRecord(value)?.retiredCredentialRefs
+  return Array.isArray(retired) ? [...new Set(retired.filter(ref => isCredentialRef(ref) && ref !== activeRef))] : []
+}
+
+function commitProviderFile(filePath: string, metadata: ProviderMetadata, activeRef?: string, retired: string[] = []) {
+  atomicJson(filePath, {
+    ...metadata,
+    credentialRef: activeRef,
+    retiredCredentialRefs: retired.length ? retired : undefined,
+  })
+}
+
+async function retireProviderCredentials(
+  filePath: string,
+  vault: SystemCredentialStore,
+  metadata: ProviderMetadata,
+  activeRef: string | undefined,
+  retired: string[]
+) {
+  const remaining: string[] = []
+  for (const ref of retired) {
+    try { await vault.set(ref, null) }
+    catch { remaining.push(ref) }
+  }
+  if (remaining.length !== retired.length) {
+    try { commitProviderFile(filePath, metadata, activeRef, remaining) }
+    catch { /* The committed file still tracks the entries, so retrying is safe. */ }
+  }
+}
+
+async function saveProviderFile(
+  filePath: string,
+  vault: SystemCredentialStore,
+  metadata: ProviderMetadata,
+  apiKey: string,
+  previous: { activeRef?: string; key?: string; retired: string[] }
+) {
+  const reused = apiKey && apiKey === previous.key ? previous.activeRef : undefined
+  // A fresh reference keeps the last committed configuration usable until
+  // the metadata rename succeeds.
+  const staged = apiKey && !reused ? randomUUID() : undefined
+  const activeRef = reused ?? staged
+  const retired = previous.activeRef && previous.activeRef !== activeRef
+    ? [...previous.retired, previous.activeRef] : previous.retired
+  try {
+    if (staged) {
+      await vault.set(staged, apiKey)
+      if (await vault.get(staged) !== apiKey) throw new Error("llm-provider-credential-write-failed")
+    }
+    commitProviderFile(filePath, metadata, activeRef, retired)
+  } catch (error) {
+    if (staged) await vault.set(staged, null).catch(() => {})
+    throw error
+  }
+  await retireProviderCredentials(filePath, vault, metadata, activeRef, retired)
+}
+
+function unavailableProvider(filePath: string, source: Record<string, unknown>): LlmProviderSnapshot {
+  const snapshot = normalizeLlmProviderSnapshot({ ...source, apiKey: "" }, filePath)
+  return { ...snapshot, warning: snapshot.warning ?? "LLM provider credential is unavailable in protected storage." }
+}
+
+export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(homedir()), keyring?: Keyring) {
+  try { await access(filePath) }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return createDefaultSnapshot(filePath)
+    throw error
+  }
+
+  return withProviderFile(filePath, async () => {
+    const { value, warning } = await readProviderFile(filePath)
+    if (warning) return createDefaultSnapshot(filePath, warning)
+
+    const source = providerRecord(value)
+    if (!source) return normalizeLlmProviderSnapshot(value, filePath)
+    const { provider, model, baseUrl } = source
+    const metadata = { provider, model, baseUrl }
+    const vault = new SystemCredentialStore(filePath, keyring)
+    const activeRef = isCredentialRef(source.credentialRef) ? source.credentialRef : undefined
+    if (source.credentialRef !== undefined && !activeRef) return unavailableProvider(filePath, source)
+
+    const retired = retiredCredentialRefs(source, activeRef)
+    if (activeRef) {
+      try {
+        const apiKey = await vault.get(activeRef)
+        if (apiKey) {
+          await retireProviderCredentials(filePath, vault, metadata, activeRef, retired)
+          return normalizeLlmProviderSnapshot({ ...metadata, apiKey }, filePath)
+        }
+      } catch {
+        // A locked or unavailable vault should keep the provider disabled.
+      }
+      return unavailableProvider(filePath, source)
+    }
+
+    const snapshot = normalizeLlmProviderSnapshot(value, filePath)
+    if (snapshot.apiKey) {
+      try {
+        await saveProviderFile(filePath, vault, metadata, snapshot.apiKey, { retired })
+      } catch {
+        // Keep the legacy file available for a later migration attempt.
+        return unavailableProvider(filePath, source)
+      }
+    } else {
+      await retireProviderCredentials(filePath, vault, metadata, undefined, retired)
+    }
+    return snapshot
+  })
+}
+
 export async function writeLlmProviderSnapshot(
   value: Pick<LlmProviderFile, "provider" | "apiKey" | "model"> & { baseUrl: string },
-  filePath = getLlmProviderFilePath(homedir())
+  filePath = getLlmProviderFilePath(homedir()),
+  keyring?: Keyring
 ) {
   const snapshot = normalizeLlmProviderSnapshot(value, filePath)
-  const payload: LlmProviderFile = {
-    provider: snapshot.provider,
-    apiKey: snapshot.apiKey,
-    model: snapshot.model,
-    baseUrl: snapshot.provider === "custom" ? snapshot.baseUrl : null,
-  }
-  await mkdir(path.dirname(filePath), { recursive: true })
-  const tempPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`
-  try {
-    await writeFile(tempPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 })
-    await rename(tempPath, filePath)
-    await chmod(filePath, 0o600)
-  } finally {
-    await rm(tempPath, { force: true }).catch(() => {})
-  }
-  return snapshot
+  return withProviderFile(filePath, async () => {
+    const { value: previous } = await readProviderFile(filePath)
+    const vault = new SystemCredentialStore(filePath, keyring)
+    const oldRef = providerRecord(previous)?.credentialRef
+    const previousRef = isCredentialRef(oldRef) ? oldRef : undefined
+    const previousKey = previousRef ? await vault.get(previousRef) : undefined
+    if (!snapshot.apiKey && normalizeString(providerRecord(previous)?.apiKey)) {
+      // A masked Settings submission must preserve legacy credential data
+      // while the vault remains unavailable.
+      await vault.get("legacy-migration")
+    }
+    await saveProviderFile(filePath, vault, {
+      provider: snapshot.provider,
+      model: snapshot.model,
+      baseUrl: snapshot.provider === "custom" ? snapshot.baseUrl : null,
+    }, snapshot.apiKey, {
+      activeRef: previousRef,
+      key: previousKey,
+      retired: retiredCredentialRefs(previous, previousRef),
+    })
+    return snapshot
+  })
 }
 
 function toSerializableValue(value: unknown): unknown {

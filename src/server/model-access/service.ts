@@ -6,11 +6,12 @@ import { join, resolve } from "node:path"
 import { getDataDir, getLlmProviderFilePath } from "../../shared/branding"
 import { connectionSupport, compatibleEndpointForEngine, ENGINE_PROTOCOLS, type ApiConnection, type ApiConnectionInput, type EngineId, type EngineSetup, type EngineStatus, type ModelAccessSnapshot } from "../../shared/model-access"
 import type { LlmProviderSnapshot } from "../../shared/types"
-import { normalizeLlmProviderSnapshot } from "../llm-provider"
+import { readLlmProviderSnapshot } from "../llm-provider"
 import { refreshExecutables as invalidateExecutableProbes, resolveEngineExecutable } from "./executables"
 import { cleanConnectionEnv, executableEnvironment, legacyConnections, legacyEngineSetup, LEGACY_PI_ID, type RuntimeEnv } from "./legacy"
 import { CONNECTION_PRESETS } from "./presets"
-import { atomicJson, FileCredentialStore, readJson, type CredentialStore, type ModelAccessData } from "./storage"
+import { KeyringUnavailable, type Keyring } from "./keyring"
+import { atomicJson, ModelCredentialStore, readJson, type CredentialStore, type ModelAccessData } from "./storage"
 import { testEndpoint } from "./test-connection"
 import type { EngineModelReader, EngineModels } from "./engine-models"
 import { runUpgradePlan, upgradePlan, type UpgradePlan, type UpgradeRunner } from "./upgrade"
@@ -170,20 +171,26 @@ export class ModelAccessService {
   revision = 0
   private listeners = new Set<() => void>()
   private pending: Promise<unknown> = Promise.resolve()
-  constructor(args: { readEngineModels?: EngineModelReader; dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; runUpgrade?: UpgradeRunner; invalidateExecutables?: () => void; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
+  constructor(args: { readEngineModels?: EngineModelReader; dataDir?: string; env?: RuntimeEnv; credentials?: CredentialStore; keyring?: Keyring; readLegacyPi?: () => Promise<LlmProviderSnapshot | null>; runUpgrade?: UpgradeRunner; invalidateExecutables?: () => void; resolveExecutable?: typeof resolveEngineExecutable } = {}) {
     this.env = args.env ?? process.env
     this.resolveExecutable = args.resolveExecutable ?? resolveEngineExecutable
     this.runUpgrade = args.runUpgrade
     this.invalidateExecutables = args.invalidateExecutables ?? invalidateExecutableProbes
     this.readEngineModels = args.readEngineModels
     this.dataDir = args.dataDir ?? getDataDir(this.env.HOME || homedir(), this.env)
-    this.credentials = args.credentials ?? new FileCredentialStore(this.dataDir)
-    this.readLegacyPi = args.readLegacyPi ?? (async () => normalizeLlmProviderSnapshot(readJson(getLlmProviderFilePath(this.env.HOME || homedir(), this.env), null)))
+    this.credentials = args.credentials ?? new ModelCredentialStore(this.dataDir, args.keyring)
+    this.readLegacyPi = args.readLegacyPi ?? (() => readLlmProviderSnapshot(getLlmProviderFilePath(this.env.HOME || homedir(), this.env), args.keyring))
   }
   async initialize() {
     this.data = readJson(join(this.dataDir, "model-access.json"), this.data)
     if (this.data.version !== 1 || !Array.isArray(this.data.connections) || !this.data.engines) throw new Error("model-access-storage-unreadable")
     this.data.connections = this.data.connections.map(c => ({ ...validateConnection(c), id: c.id, keySource: c.keySource === "stored" ? "stored" : "none" }))
+    try { await this.credentials.migrate?.() }
+    catch (error) {
+      console.warn(error instanceof KeyringUnavailable
+        ? "[model-access] Unlock the OS credential store to finish migrating saved API keys."
+        : "[model-access] Could not migrate the saved credential file. The original file was retained.")
+    }
     this.engineModels = readEngineModelCache(join(this.dataDir, "engine-models.json"))
     await this.refreshExecutables()
     return this
@@ -232,10 +239,18 @@ export class ModelAccessService {
     }))
   }
   private async readCredential(id: string) {
-    try { return await this.credentials.get(id) } catch { throw new Error("model-access-storage-unreadable") }
+    try { return await this.credentials.get(id) }
+    catch (error) {
+      if (error instanceof KeyringUnavailable) throw error
+      throw new Error("model-access-storage-unreadable")
+    }
   }
   private async writeCredential(id: string, value: string | null) {
-    try { await this.credentials.set(id, value) } catch { throw new Error("model-access-storage-write-failed") }
+    try { await this.credentials.set(id, value) }
+    catch (error) {
+      if (error instanceof KeyringUnavailable) throw error
+      throw new Error("model-access-storage-write-failed")
+    }
   }
   connections() { return [...this.data.connections, ...legacyConnections(this.env, this.legacyPi)] }
   setup(engine: EngineId) { return this.data.engines[engine] ?? legacyEngineSetup(engine, this.env, this.connections()) }
@@ -257,7 +272,7 @@ export class ModelAccessService {
     if (existing?.readOnly || input.id?.startsWith("env-")) throw new Error("connection-read-only")
     if (input.id && !existing) throw new Error("connection-missing")
     const id = existing?.id ?? randomUUID()
-    const previousKey = await this.readCredential(id)
+    const previousKey = existing?.keySource === "stored" ? await this.readCredential(id) : undefined
     const key = input.apiKey === undefined ? previousKey : input.apiKey?.trim() || undefined
     const connection: ApiConnection = { ...clean, id, keySource: key ? "stored" : "none" }
     const reconciledEngines = { ...this.data.engines }
@@ -271,18 +286,28 @@ export class ModelAccessService {
       }
     }
     // Whitelist metadata above; unknown request fields and apiKey can never reach this file.
-    await this.writeCredential(id, key ?? null)
+    const keyChanged = key !== previousKey
+    if (keyChanged) await this.writeCredential(id, key ?? null)
     try { this.persist({ ...this.data, connections: [...this.data.connections.filter(c => c.id !== id), connection], engines: reconciledEngines }) }
-    catch (error) { await this.writeCredential(id, previousKey ?? null); throw error }
+    catch (error) {
+      if (keyChanged) await this.writeCredential(id, previousKey ?? null)
+      throw error
+    }
     await this.refreshExecutables()
     return structuredClone(connection)
   }) }
   deleteConnection(id: string) { return this.serialize(async () => {
-    if (this.connection(id)?.readOnly) throw new Error("connection-read-only")
-    if (!this.connection(id)) throw new Error("connection-missing")
+    const connection = this.connection(id)
+    if (connection?.readOnly) throw new Error("connection-read-only")
+    if (!connection) throw new Error("connection-missing")
     // Keep engine references so deletion reports connection-missing rather than silently using an account.
-    this.persist({ ...this.data, connections: this.data.connections.filter(c => c.id !== id) })
-    await this.writeCredential(id, null)
+    const previousKey = connection.keySource === "stored" ? await this.readCredential(id) : undefined
+    if (previousKey !== undefined) await this.writeCredential(id, null)
+    try { this.persist({ ...this.data, connections: this.data.connections.filter(c => c.id !== id) }) }
+    catch (error) {
+      if (previousKey !== undefined) await this.writeCredential(id, previousKey)
+      throw error
+    }
     await this.refreshExecutables()
   }) }
   setExecutablePath(engine: EngineId, executablePath: string | null) { return this.serialize(async () => {
@@ -364,7 +389,15 @@ export class ModelAccessService {
         const c = this.connection(setup.access.connectionId)
         if (!c) problem = "connection-missing"
         else if (!compatibleEndpointForEngine(engine, c)) problem = "connection-protocol-unsupported"
-        else if (connectionNeedsKey(c) && !(await this.getKey(c.id))) problem = "connection-key-missing"
+        else if (c.keySource === "stored" || connectionNeedsKey(c)) {
+          try {
+            const key = await this.getKey(c.id)
+            if (!key) problem = "connection-key-missing"
+          }
+          catch (error) {
+            problem = error instanceof KeyringUnavailable ? "model-access-keyring-unavailable" : "model-access-storage-unreadable"
+          }
+        }
       } else if (engine === "pi") problem = "connection-missing"
       const accountIsolated = setup.access.mode === "account" && engine !== "pi" && Boolean(this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR)
       let account: OpencodeAccountResult | undefined

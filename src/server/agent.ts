@@ -433,7 +433,7 @@ interface ActiveTurn {
 
 /** Model-access codes the client can explain; other preparation errors stay generic. */
 const PREPARATION_ERROR_CODES = new Set([
-  "connection-invalid", "connection-missing", "connection-key-missing", "connection-protocol-unsupported",
+  "connection-invalid", "connection-missing", "connection-key-missing", "model-access-keyring-unavailable", "connection-protocol-unsupported",
   "engine-setup-invalid", "model-unavailable", "account-signed-out", "executable-missing", "executable-broken",
   "executable-incompatible", "model-access-unavailable", "engine-runtime-mismatch",
 ])

@@ -9,7 +9,7 @@ import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ModelAccessService } from "../service"
-import { fakeExecutableResolver } from "../test-fixtures"
+import { testKeyring, fakeExecutableResolver } from "../test-fixtures"
 import { resolveEngineRuntime } from "../runtime"
 import { compatibleEndpointForEngine, connectionSupport, endpointForEngine } from "../../../shared/model-access"
 import { gatewayEndpoint, stopGateway } from "./index"
@@ -25,7 +25,7 @@ function sse(chunks: string[], done = true) { return new Response([...chunks, ..
 async function fixture(fetch: (r: Request) => Response | Promise<Response> = () => sse(textChunks)) {
   const up = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch }); servers.push(up)
   const dir = mkdtempSync(join(tmpdir(), "protocol-gateway-")); dirs.push(dir)
-  const service = await new ModelAccessService({ dataDir: dir, env: { MEMOSYNC_CLI_PROFILE_DIR: join(dir, "profiles"), MEMOSYNC_ISOLATE_CLI: "1", OPENAI_API_KEY: "ambient-key" }, resolveExecutable: fakeExecutableResolver, readLegacyPi: async () => null }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, dataDir: dir, env: { MEMOSYNC_CLI_PROFILE_DIR: join(dir, "profiles"), MEMOSYNC_ISOLATE_CLI: "1", OPENAI_API_KEY: "ambient-key" }, resolveExecutable: fakeExecutableResolver, readLegacyPi: async () => null }).initialize()
   const connection = await service.saveConnection({ name: "Chat only", apiKey: "upstream-secret", endpoints: [{ protocol: "openai-chat", baseUrl: `http://127.0.0.1:${up.port}/v1` }], models: [{ id: "m" }] })
   return { service, connection, up }
 }

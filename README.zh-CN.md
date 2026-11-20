@@ -180,7 +180,7 @@ bun run start
 3. 点**测试**，发一个很小的请求，确认能连通；
 4. 回到引擎卡片，选上这个连接和默认模型。
 
-用 API 连接时，引擎运行在 `~/.memosync/data/cli-profiles` 下的独立配置里，你自己的 `~/.claude` 和 `~/.codex` 不会被读取，也不会被改动。key 保存在 `~/.memosync/data/credentials.json`，只有你的账户能读，也不会回传给浏览器。
+用 API 连接时，引擎运行在 `~/.memosync/data/cli-profiles` 下的独立配置里，你自己的 `~/.claude` 和 `~/.codex` 不会被读取，也不会被改动。MemoSync 将保存的 API key 写入 macOS 钥匙串、Windows 凭据管理器或 Linux Secret Service。升级时会先把 `credentials.json` 和旧 Pi 配置里的 key 转入系统凭据存储，再清除明文。若迁移中断，解锁凭据存储并重启即可重试。无桌面环境的主机可以使用服务商环境变量。移动数据目录或在另一台机器恢复数据后，请在设置中重新输入 key。
 
 MemoSync 会在 `PATH` 和常见的安装位置里找 `claude` 和 `codex`。想指定某个可执行文件，在引擎卡片里填上它的路径。版本太旧且 MemoSync 能识别其安装方式时，引擎卡片上会出现**升级**按钮。
 

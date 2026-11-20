@@ -2072,7 +2072,7 @@ export function createWsRouter({
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : String(error)
       const messageText = command.type.startsWith("modelAccess.")
-        ? /^(connection-(invalid|missing|read-only|key-missing|protocol-unsupported)|engine-setup-invalid|model-unavailable|model-access-(unavailable|storage-unreadable|storage-write-failed))$/.test(rawMessage) ? rawMessage : "model-access-operation-failed"
+        ? /^(connection-(invalid|missing|read-only|key-missing|protocol-unsupported)|engine-setup-invalid|model-unavailable|model-access-(unavailable|keyring-unavailable|storage-unreadable|storage-write-failed))$/.test(rawMessage) ? rawMessage : "model-access-operation-failed"
         : rawMessage
       console.error("[ws-router] command failed", {
         id,
