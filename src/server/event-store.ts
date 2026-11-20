@@ -137,6 +137,7 @@ function getReplayEventPriority(event: StoreEvent) {
       return 3
     case "queued_message_enqueued":
     case "queued_message_removed":
+    case "queued_native_command_rejected":
       return 4
     case "turn_started":
       return 5
@@ -229,6 +230,7 @@ function isValidQueuedChatMessage(value: unknown): value is QueuedChatMessage {
   return isObject(value)
     && isString(value.id)
     && isString(value.content)
+    && (value.rejection === undefined || value.rejection === "stale_native_command")
     && Array.isArray(value.attachments)
     && isFiniteNumber(value.createdAt)
     && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi" || value.provider === "opencode")
@@ -287,6 +289,7 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
     case "queued_message_enqueued":
       return hasChatId() && isValidQueuedChatMessage(event.message)
     case "queued_message_removed":
+    case "queued_native_command_rejected":
       return hasChatId() && isString(event.queuedMessageId)
     case "turn_failed":
       return hasChatId() && isString(event.error)
@@ -886,6 +889,12 @@ export class EventStore {
         if (chat) {
           chat.updatedAt = event.timestamp
         }
+        break
+      }
+      case "queued_native_command_rejected": {
+        const row = this.state.queuedMessagesByChatId.get(event.chatId)
+          ?.find((entry) => entry.id === event.queuedMessageId)
+        if (row) row.rejection = "stale_native_command"
         break
       }
       case "queued_message_removed": {
@@ -1611,6 +1620,20 @@ export class EventStore {
     return queuedMessage
   }
 
+  async rejectQueuedNativeCommand(chatId: string, queuedMessageId: string) {
+    await this.enqueueWrite(async () => {
+      const row = this.getQueuedMessage(chatId, queuedMessageId)
+      if (!row || row.rejection) return
+      await this.writeEvent(this.queuedMessagesLogPath, {
+        v: STORE_VERSION,
+        type: "queued_native_command_rejected",
+        timestamp: Date.now(),
+        chatId,
+        queuedMessageId,
+      })
+    })
+  }
+
   async removeQueuedMessage(chatId: string, queuedMessageId: string) {
     this.requireChat(chatId)
     const existing = this.getQueuedMessages(chatId)
@@ -1801,11 +1824,11 @@ export class EventStore {
     return this.getQueuedMessages(chatId).find((entry) => entry.id === queuedMessageId) ?? null
   }
 
-  /** Chat ids that have at least one persisted queued message (order not significant). */
+  /** Chat ids that have at least one pending queued message (order not significant). */
   getChatIdsWithQueuedMessages(): string[] {
     const ids: string[] = []
     for (const [chatId, entries] of this.state.queuedMessagesByChatId) {
-      if (entries.length > 0) ids.push(chatId)
+      if (entries.some((entry) => !entry.rejection)) ids.push(chatId)
     }
     return ids
   }

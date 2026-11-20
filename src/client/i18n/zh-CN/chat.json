@@ -241,6 +241,7 @@
   "processing": "正在处理…",
   "copy": "复制",
   "queued": "已排队",
+  "staleQueuedNativeCommand": "请从当前斜杠菜单重新提交这条已保存的命令。",
   "steerNow": "立即发送",
   "removeQueuedMessage": "移除排队消息",
   "questionCount_one": "问题",

@@ -2,6 +2,7 @@ import { t, useI18n } from "../../i18n"
 import Markdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { QueuedChatMessage } from "../../../shared/types"
+import { cn } from "../../lib/utils"
 import { Button } from "../ui/button"
 import { escapeAngleBracketsOutsideCode, markdownComponentsWithLinks } from "./shared"
 import { ArrowUp, X } from "lucide-react"
@@ -33,13 +34,15 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
         <div className="relative group min-w-0 max-w-full">
           <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-2.5 rounded-[20px] border border-dashed border-border bg-transparent pl-3.5 pr-1.5 py-1.5 prose prose-sm prose-invert text-left text-primary [&_p]:whitespace-pre-line">
             <div className="min-w-0 [overflow-wrap:anywhere]">
-              {message.content ? (
+              {message.rejection ? (
+                <span className="whitespace-pre-wrap">{message.content}</span>
+              ) : message.content ? (
                 <Markdown remarkPlugins={[remarkGfm]} components={markdownComponentsWithLinks}>{escapeAngleBracketsOutsideCode(message.content)}</Markdown>
               ) : (
                 <p className="text-muted-foreground">{t("chat:queued")}</p>
               )}
             </div>
-            <Button
+            {message.rejection ? null : <Button
               type="button"
               variant="default"
               size="none"
@@ -48,13 +51,19 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
               onClick={onSendNow}
             >
               <ArrowUp className="size-3.5"/>
-            </Button>
+            </Button>}
+            {message.rejection ? (
+              <div className="col-span-2 pr-2 text-xs text-muted-foreground">{t("chat:staleQueuedNativeCommand")}</div>
+            ) : null}
           </div>
           <Button
             type="button"
             variant="none"
             size="none"
-            className="opacity-0 scale-[0.1] group-hover:scale-[1.0] group-hover:opacity-100 !p-0.5 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 left-0 bg-background -translate-x-[28%] -translate-y-[28%]"
+            className={cn(
+              "!p-0.5 border rounded-full text-xs font-medium text-muted-foreground hover:text-foreground gap-0.5 absolute top-0 left-0 bg-background -translate-x-[28%] -translate-y-[28%]",
+              !message.rejection && "opacity-0 scale-[0.1] group-hover:scale-100 group-hover:opacity-100 focus-visible:scale-100 focus-visible:opacity-100",
+            )}
             aria-label={t("chat:removeQueuedMessage")}
             onClick={onRemove}
           >

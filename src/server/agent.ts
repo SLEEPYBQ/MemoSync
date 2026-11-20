@@ -2883,9 +2883,14 @@ export class AgentCoordinator {
    */
   private async nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null> {
     while (true) {
-      const head = this.store.getQueuedMessages(chatId)[0]
+      const head = this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
       if (!head) return null
-      if (!this.isCancelledQueueRow(chatId, head.id)) return head
+      if (!this.isCancelledQueueRow(chatId, head.id)) {
+        if (!head.content.trimStart().startsWith("/")) return head
+        await this.store.rejectQueuedNativeCommand(chatId, head.id)
+        this.emitStateChange(chatId)
+        continue
+      }
       try {
         await this.store.removeQueuedMessage(chatId, head.id)
       } catch (error) {
@@ -4339,7 +4344,9 @@ export class AgentCoordinator {
       }
       return "cancelled"
     }
-    if (queuedMessage.content.trimStart().startsWith('/')) throw new Error('Queued native commands must be resubmitted through the current command catalog')
+    if (queuedMessage.rejection || queuedMessage.content.trimStart().startsWith('/')) {
+      throw new Error('Queued native commands must be resubmitted through the current command catalog')
+    }
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
@@ -7883,6 +7890,10 @@ export class AgentCoordinator {
     const queuedMessage = this.store.getQueuedMessage(command.chatId, command.queuedMessageId)
     if (!queuedMessage) {
       throw new Error("Queued message not found")
+    }
+
+    if (queuedMessage.rejection || queuedMessage.content.trimStart().startsWith('/')) {
+      throw new Error('Queued native commands must be resubmitted through the current command catalog')
     }
 
     logClaudeSteer("steer_requested", {

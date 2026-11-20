@@ -984,6 +984,7 @@ export function ChatPage() {
     isMobileRightSidebarOverlay,
   ])
 
+  const oldestPendingQueued = state.queuedMessages.find((message) => !message.rejection)
   const chatCard = (
     <Card
       ref={chatCardRef}
@@ -1089,7 +1090,7 @@ export function ChatPage() {
         }) : undefined}
         onSubmit={handleChatSubmit}
         isRunning={state.isProcessing || hasPendingMemoryPreview(state.messages)}
-        onSendOldestQueued={state.queuedMessages[0] ? () => { void state.handleSteerQueuedMessage(state.queuedMessages[0]!.id) } : undefined}
+        onSendOldestQueued={oldestPendingQueued ? () => { void state.handleSteerQueuedMessage(oldestPendingQueued.id) } : undefined}
         onCancel={handleCancel}
         showStopBanner={showStopBanner}
         onDismissStopBanner={handleDismissStopBanner}

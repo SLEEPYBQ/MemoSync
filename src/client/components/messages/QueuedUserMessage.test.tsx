@@ -49,3 +49,22 @@ for (const kind of ["text-only", "attachment-only", "mixed"] as const) {
     expect(html).toContain("[overflow-wrap:anywhere]")
   })
 }
+
+test("a rejected legacy command retains its input, attachments, and removal control", () => {
+  const message: QueuedChatMessage = {
+    id: "saved-command",
+    rejection: "stale_native_command",
+    content: "  /review *literal*",
+    attachments: [{
+      id: "file", kind: "image", displayName: "fixture.png", absolutePath: "/tmp/fixture.png",
+      relativePath: "fixture.png", contentUrl: "/media/fixture.png", mimeType: "image/png", size: 64,
+    }],
+    createdAt: 100,
+  }
+  const html = renderToStaticMarkup(<QueuedUserMessage message={message} onRemove={() => undefined} onSendNow={() => undefined} />)
+  expect(html).toContain(message.content)
+  expect(html).toContain("fixture.png")
+  expect(html).toContain(t("chat:staleQueuedNativeCommand"))
+  expect(html).toContain(t("chat:removeQueuedMessage"))
+  expect(html).not.toContain(t("chat:steerNow"))
+})

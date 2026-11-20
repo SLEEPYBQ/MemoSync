@@ -19,7 +19,7 @@ import {
   resolveClaudeSessionModel,
   toMemoryCandidateReferences,
 } from "./agent"
-import type { HarnessTurn } from "./harness-types"
+import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
@@ -1027,6 +1027,35 @@ describe("attachment prompt helpers", () => {
 })
 
 describe("AgentCoordinator codex integration", () => {
+  test("startup skips a legacy command and dispatches the following saved prompt", async () => {
+    const store = createFakeStore()
+    const legacy = await store.enqueueMessage("chat-1", { content: " 	/compact", provider: "codex" })
+    const next = await store.enqueueMessage("chat-1", { content: "continue the synthetic task", provider: "codex" })
+    const queue = new AsyncEventQueue<HarnessEvent>()
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      codexManager: {
+        async startSession() {},
+        async startTurn() {
+          return { provider: "codex", stream: queue, interrupt: async () => {}, close: () => queue.close() }
+        },
+      } as never,
+    })
+
+    try {
+      await coordinator.drainOrphanedQueues()
+      const prompts = store.messages.filter((entry) => entry.kind === "user_prompt")
+      expect(prompts.map((entry) => entry.content)).toEqual([next.content])
+      expect(store.getQueuedMessages()).toEqual([{ ...legacy, rejection: "stale_native_command" }])
+      await expect(coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "/compact" })).rejects.toThrow("current command catalog")
+      await expect(coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: legacy.id })).rejects.toThrow("resubmitted")
+      expect(store.messages.some((entry) => entry.kind === "interrupted")).toBe(false)
+    } finally {
+      queue.close()
+    }
+  })
+
   test("closes an idle Codex session when its chat is closed", async () => {
     const stopped: string[] = []
     const coordinator = new AgentCoordinator({
@@ -3438,6 +3467,10 @@ function createFakeStore() {
     },
     getQueuedMessage(_chatId: string, queuedMessageId: string) {
       return this.queuedMessages.find((entry) => entry.id === queuedMessageId) ?? null
+    },
+    async rejectQueuedNativeCommand(_chatId: string, queuedMessageId: string) {
+      const row = this.getQueuedMessage(_chatId, queuedMessageId)
+      if (row) row.rejection = "stale_native_command"
     },
     async removeQueuedMessage(_chatId: string, queuedMessageId: string) {
       this.queuedMessages = this.queuedMessages.filter((entry) => entry.id !== queuedMessageId)
