@@ -105,7 +105,7 @@ export async function resolveEngineRuntime(input: {
   let endpoint = compatibleEndpointForEngine(input.engine, connection)
   if (!endpoint) throw new Error("connection-protocol-unsupported")
   let key = await service.getKey(connection.id)
-  if (!key && connectionNeedsKey(connection)) throw new Error("connection-key-missing")
+  if (!key && (connection.keySource === "stored" || connectionNeedsKey(connection))) throw new Error("connection-key-missing")
   const translated = connectionSupport(input.engine, connection) === "translated"
   if (translated) ({ endpoint, key } = gatewayEndpoint(service, connection.id, input.engine === "claude" ? "anthropic" : "responses"))
   const requested = input.model?.replace(/\[1m\]$/, "")

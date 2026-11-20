@@ -204,6 +204,7 @@ const modelAccessErrorKeys = {
   "executable-broken": "errors:modelAccess_executable-broken",
   "executable-incompatible": "errors:modelAccess_executable-incompatible",
   "model-access-unavailable": "errors:modelAccess_model-access-unavailable",
+  "model-access-keyring-unavailable": "errors:modelAccess_model-access-keyring-unavailable",
   "model-access-storage-unreadable": "errors:modelAccess_model-access-storage-unreadable",
   "model-access-storage-write-failed": "errors:modelAccess_model-access-storage-write-failed",
   "model-access-operation-failed": "errors:modelAccess_model-access-operation-failed",

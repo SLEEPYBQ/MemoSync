@@ -179,7 +179,7 @@ When a connection speaks only OpenAI Chat, MemoSync translates for Claude Code a
 3. Press **Test** to send one small request and confirm the endpoint answers.
 4. Back on the engine, choose the connection and a default model.
 
-Engines on an API connection run in a separate profile under `~/.memosync/data/cli-profiles`, so your own `~/.claude` and `~/.codex` are never read or changed. Keys are stored in `~/.memosync/data/credentials.json`, readable only by you, and are never sent back to the browser.
+Engines on an API connection run in a separate profile under `~/.memosync/data/cli-profiles`, so your own `~/.claude` and `~/.codex` are never read or changed. MemoSync stores saved API keys in macOS Keychain, Windows Credential Manager, or the Linux Secret Service. On upgrade it copies keys from `credentials.json` and older Pi provider settings into the vault before removing the plaintext. Unlock the vault and restart to retry an interrupted migration. Headless hosts can use provider environment variables. If you move the data directory or restore it on another machine, re-enter your keys in Settings.
 
 MemoSync finds `claude` and `codex` on your `PATH` and in the usual install folders. To point an engine at a specific executable, set its path on the engine's card. When a version is too old and MemoSync recognises how it was installed, the engine card shows an **Upgrade** button.
 

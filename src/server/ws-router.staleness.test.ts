@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 import { applySidebarPatch, type SidebarPatch } from "../shared/sidebar-patch"
 import type { SidebarData } from "../shared/types"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
@@ -608,7 +609,7 @@ describe("ws-router broadcast staleness invariant", () => {
 
 test("model access commands and external edits leave model-access and composer subscribers fresh without secrets", async () => {
   const directory = await mkdtemp(path.join(tmpdir(), "ma-router-"))
-  const service = await new ModelAccessService({ dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
   setModelAccessService(service)
   const { router } = createWorld(service)
   const actor = new FakeWebSocket(), observer = new FakeWebSocket()

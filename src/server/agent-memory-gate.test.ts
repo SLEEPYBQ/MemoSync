@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 // Integration tests for the memory preview gate + injection lifecycle at the
 // AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
 // what memory set actually reaches the (fake) Claude engine, and how the
@@ -5548,7 +5549,7 @@ describe("memory on/off turn controls", () => {
   for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} delivers memory as prompt context and scopes tool dispatch`, async () => {
     const s = services()
     const dir = mkdtempSync(join(tmpdir(), "opencode-memory-gate-"))
-    const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
+    const service = await new ModelAccessService({ keyring: testKeyring, dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
       resolveExecutable: async engine => engine === "opencode" ? { state: "ready", path: process.execPath } : { state: "missing" },
     }).initialize()
     const connection = await service.saveConnection({ name: "Local fake", endpoints: [{ protocol: "openai-chat", baseUrl: "http://127.0.0.1:9" }], models: [{ id: "m" }] })
