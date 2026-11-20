@@ -15,6 +15,7 @@ import {
   OPENROUTER_BASE_URL,
   readLlmProviderSnapshot,
   resolveLlmProviderBaseUrl,
+  writeLlmProviderSettings,
   writeLlmProviderSnapshot,
 } from "./llm-provider"
 
@@ -228,6 +229,83 @@ describe("protected provider credentials", () => {
     await expect(writeLlmProviderSnapshot({ ...next, apiKey: "" }, filePath, unavailableKeyring)).rejects.toThrow("model-access-keyring-unavailable")
     expect(await readFile(filePath, "utf8")).toBe(committed)
     expect(await readLlmProviderSnapshot(filePath, testKeyring)).toMatchObject({ apiKey: connection.apiKey, model: connection.model })
+  })
+
+  test("preserves a masked Settings key after a transient vault read failure", async () => {
+    const filePath = await createTempFilePath()
+    await writeLlmProviderSnapshot(connection, filePath, testKeyring)
+    const saved = await readFile(filePath, "utf8")
+    let failRead = true
+    const brieflyUnavailable: Keyring = {
+      ...testKeyring,
+      get: async (entry) => {
+        if (failRead) {
+          failRead = false
+          throw new Error("synthetic read failure")
+        }
+        return testKeyring.get(entry)
+      },
+    }
+    const settings = { ...connection, apiKey: "", model: "edited-model" }
+    await expect(writeLlmProviderSettings(settings, filePath, brieflyUnavailable)).rejects.toThrow("model-access-keyring-unavailable")
+    expect(await readFile(filePath, "utf8")).toBe(saved)
+
+    expect(await writeLlmProviderSettings(settings, filePath, brieflyUnavailable)).toMatchObject({
+      apiKey: connection.apiKey, model: settings.model,
+    })
+  })
+
+  test("keeps a legacy key when a masked Settings edit cannot migrate it", async () => {
+    const filePath = await createTempFilePath()
+    const legacy = JSON.stringify(connection)
+    await writeFile(filePath, legacy)
+    const cannotStage: Keyring = { ...testKeyring, set: unavailableKeyring.set }
+    const settings = { ...connection, apiKey: "", model: "edited-model" }
+    await expect(writeLlmProviderSettings(settings, filePath, cannotStage)).rejects.toThrow("model-access-keyring-unavailable")
+    expect(await readFile(filePath, "utf8")).toBe(legacy)
+
+    expect(await writeLlmProviderSettings(settings, filePath, testKeyring)).toMatchObject({
+      apiKey: connection.apiKey, model: settings.model,
+    })
+    expect(await readFile(filePath, "utf8")).not.toContain(connection.apiKey)
+  })
+
+  test("preserves the latest rotation during a masked Settings edit", async () => {
+    const filePath = await createTempFilePath()
+    await writeLlmProviderSnapshot(connection, filePath, testKeyring)
+    const entered = Promise.withResolvers<void>()
+    const resume = Promise.withResolvers<void>()
+    const rotatingKeyring: Keyring = {
+      ...testKeyring,
+      set: async (entry) => {
+        entered.resolve()
+        await resume.promise
+        await testKeyring.set(entry)
+      },
+    }
+    const replacement = { ...connection, apiKey: "replacement-key" }
+    const rotating = writeLlmProviderSnapshot(replacement, filePath, rotatingKeyring)
+    await entered.promise
+    const editing = writeLlmProviderSettings({ ...connection, apiKey: "", model: "edited-model" }, filePath, testKeyring)
+    resume.resolve()
+    await rotating
+    expect(await editing).toMatchObject({ apiKey: replacement.apiKey, model: "edited-model" })
+    expect((await readLlmProviderSnapshot(filePath, testKeyring)).apiKey).toBe(replacement.apiKey)
+  })
+
+  test("leaves a different Settings endpoint blank and accepts a direct clear", async () => {
+    const filePath = await createTempFilePath()
+    const custom = { ...connection, provider: "custom", baseUrl: "https://original.example/v1" } as const
+    await writeLlmProviderSnapshot(custom, filePath, testKeyring)
+    expect(await writeLlmProviderSettings({
+      ...custom, apiKey: "", baseUrl: "https://different.example/v1",
+    }, filePath, testKeyring)).toMatchObject({ apiKey: "", enabled: false })
+    expect((await readLlmProviderSnapshot(filePath, testKeyring)).apiKey).toBe("")
+
+    await writeLlmProviderSnapshot(custom, filePath, testKeyring)
+    expect(await writeLlmProviderSnapshot({ ...custom, apiKey: "" }, filePath, testKeyring))
+      .toMatchObject({ apiKey: "", enabled: false })
+    expect((await readLlmProviderSnapshot(filePath, testKeyring)).apiKey).toBe("")
   })
 
   test("removes a staged vault entry if committing metadata fails", async () => {

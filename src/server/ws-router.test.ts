@@ -527,6 +527,7 @@ describe("ws-router", () => {
 
   test("reads and writes llm provider settings via commands", async () => {
     const writes: Array<Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">> = []
+    let reads = 0
     let storedSnapshot: LlmProviderSnapshot = {
       ...DEFAULT_LLM_PROVIDER_SNAPSHOT,
       apiKey: "stored-openai-key",
@@ -544,7 +545,7 @@ describe("ws-router", () => {
         onChange: () => () => {},
       } as never,
       llmProvider: {
-        read: async () => storedSnapshot,
+        read: async () => { reads++; return storedSnapshot },
         write: async (value) => {
           writes.push(value)
           return {
@@ -692,6 +693,7 @@ describe("ws-router", () => {
         },
       },
     ])
+    expect(reads).toBe(1)
     expect(writes).toEqual([
       {
         provider: "custom",

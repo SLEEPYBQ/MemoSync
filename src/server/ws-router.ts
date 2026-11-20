@@ -1,4 +1,5 @@
 import { diffSidebarIndex, indexSidebarData, type SidebarIndex } from "../shared/sidebar-patch"
+import { matchesLlmProviderEndpoint } from "./llm-provider"
 import type { ModelAccessService } from "./model-access/service"
 import { deployedProviders } from "./provider-catalog"
 import { describeServerUiText, withUiTextFields } from "../shared/ui-copy"
@@ -222,8 +223,7 @@ function resolveSubmittedLlmApiKey(
   if (submitted) return submitted
   // A saved key belongs to its provider. Reusing it after switching providers
   // could disclose that credential to a different (or custom) endpoint.
-  const sameEndpoint = provider !== "custom" || current.baseUrl.trim() === submittedBaseUrl.trim()
-  return current.provider === provider && sameEndpoint ? current.apiKey : ""
+  return matchesLlmProviderEndpoint(current, { provider, baseUrl: submittedBaseUrl }) ? current.apiKey : ""
 }
 
 function send(ws: ServerWebSocket<ClientState>, message: ServerEnvelope) {
@@ -1502,18 +1502,12 @@ export function createWsRouter({
           return
         }
         case "settings.writeLlmProvider": {
-          // Keep read-key-reuse-write as one ordered operation. Settings input
-          // events can overlap, and unique temp files alone do not guarantee
-          // that the last submitted value wins.
-          const snapshot = await enqueueLlmProviderWrite(async () => {
-            const current = await resolvedLlmProvider.read()
-            return resolvedLlmProvider.write({
-              provider: command.provider,
-              apiKey: resolveSubmittedLlmApiKey(current, command.provider, command.apiKey, command.baseUrl),
-              model: command.model,
-              baseUrl: command.baseUrl,
-            })
-          })
+          const snapshot = await enqueueLlmProviderWrite(() => resolvedLlmProvider.write({
+            provider: command.provider,
+            apiKey: command.apiKey,
+            model: command.model,
+            baseUrl: command.baseUrl,
+          }))
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: maskLlmProviderSnapshot(snapshot) })
           return
         }

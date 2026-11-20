@@ -5,7 +5,7 @@ import path from "node:path"
 import OpenAI from "openai"
 import { getLlmProviderFilePath } from "../shared/branding"
 import { acquireLlmProviderFileLock } from "./data-directory-lock"
-import { SystemCredentialStore, type Keyring } from "./model-access/keyring"
+import { KeyringUnavailable, SystemCredentialStore, type Keyring } from "./model-access/keyring"
 import { atomicJson } from "./model-access/storage"
 import {
   DEFAULT_OPENAI_SDK_MODEL,
@@ -273,21 +273,54 @@ export async function readLlmProviderSnapshot(filePath = getLlmProviderFilePath(
   })
 }
 
-export async function writeLlmProviderSnapshot(
-  value: Pick<LlmProviderFile, "provider" | "apiKey" | "model"> & { baseUrl: string },
+type ProviderInput = Pick<LlmProviderFile, "provider" | "apiKey" | "model"> & { baseUrl: string }
+
+export function matchesLlmProviderEndpoint(
+  current: Pick<LlmProviderSnapshot, "provider" | "baseUrl">,
+  submitted: Pick<LlmProviderSnapshot, "provider" | "baseUrl">,
+) {
+  return current.provider === submitted.provider
+    && (submitted.provider !== "custom" || current.baseUrl.trim() === submitted.baseUrl.trim())
+}
+
+export function writeLlmProviderSnapshot(
+  value: ProviderInput,
   filePath = getLlmProviderFilePath(homedir()),
   keyring?: Keyring
 ) {
-  const snapshot = normalizeLlmProviderSnapshot(value, filePath)
+  return updateLlmProviderFile(value, filePath, keyring, false)
+}
+
+/** Settings masks a saved key as a blank input while editing the same endpoint. */
+export function writeLlmProviderSettings(
+  value: ProviderInput,
+  filePath = getLlmProviderFilePath(homedir()),
+  keyring?: Keyring
+) {
+  return updateLlmProviderFile(value, filePath, keyring, true)
+}
+
+async function updateLlmProviderFile(
+  value: ProviderInput,
+  filePath: string,
+  keyring: Keyring | undefined,
+  preserveMaskedKey: boolean,
+) {
   return withProviderFile(filePath, async () => {
     const { value: previous } = await readProviderFile(filePath)
+    const source = providerRecord(previous)
     const vault = new SystemCredentialStore(filePath, keyring)
-    const oldRef = providerRecord(previous)?.credentialRef
+    const oldRef = source?.credentialRef
     const previousRef = isCredentialRef(oldRef) ? oldRef : undefined
     const previousKey = previousRef ? await vault.get(previousRef) : undefined
-    if (!snapshot.apiKey && normalizeString(providerRecord(previous)?.apiKey)) {
-      // A masked Settings submission must preserve legacy credential data
-      // while the vault remains unavailable.
+    const legacyKey = oldRef === undefined ? normalizeString(source?.apiKey) : ""
+    let snapshot = normalizeLlmProviderSnapshot(value, filePath)
+    if (preserveMaskedKey && !snapshot.apiKey && matchesLlmProviderEndpoint(normalizeLlmProviderSnapshot(source, filePath), snapshot)) {
+      if (oldRef !== undefined && !previousKey) throw new KeyringUnavailable()
+      snapshot = normalizeLlmProviderSnapshot({ ...value, apiKey: previousKey ?? legacyKey }, filePath)
+    }
+    if (!snapshot.apiKey && legacyKey) {
+      // Keep legacy credential data when the vault is unavailable.
       await vault.get("legacy-migration")
     }
     await saveProviderFile(filePath, vault, {
