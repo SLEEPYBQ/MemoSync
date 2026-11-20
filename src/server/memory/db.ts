@@ -148,6 +148,7 @@ CREATE TABLE IF NOT EXISTS memory_file_refs (
   content_hash TEXT,
   size INTEGER,
   mtime_ms REAL,
+  file_identity TEXT,
   drift TEXT,
   drift_hash TEXT,
   checked_at TEXT,
@@ -198,6 +199,11 @@ export function applySchema(db: Database): void {
   }
   if (!columns.has('version')) {
     db.exec(`ALTER TABLE memories ADD COLUMN version INTEGER NOT NULL DEFAULT 1`);
+  }
+
+  const fileRefColumns = db.query('PRAGMA table_info(memory_file_refs)').all() as Array<{ name: string }>;
+  if (!fileRefColumns.some(column => column.name === 'file_identity')) {
+    db.exec('ALTER TABLE memory_file_refs ADD COLUMN file_identity TEXT');
   }
 
   const dismissalColumns = new Set(
