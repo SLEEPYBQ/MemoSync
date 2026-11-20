@@ -5,7 +5,8 @@ const { createInterface } = require("node:readline")
 const path = require("node:path")
 const { trackBackendProcess } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
-const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
+const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers, isMainNavigationUrl } = require("./navigation.cjs")
+const { openUiPreferences } = require("./ui-preferences.cjs")
 
 if (process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR)
   app.setPath("userData", path.resolve(process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR))
@@ -17,6 +18,7 @@ let origin
 let quitting = false
 let stopped = false
 let desktopSession
+let uiPreferences
 const contentWindows = new Set()
 
 // The page runs up to the top edge, with the traffic lights centred in its 48px top band.
@@ -199,6 +201,18 @@ else {
     void backendLifecycle.waitForStop().then(() => { clearTimeout(timer); app.quit() })
     backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
   })
+  function isMainAppFrame(event) {
+    const owner = mainWindow
+    return owner && !owner.isDestroyed() && event.sender === owner.webContents
+      && event.senderFrame === owner.webContents.mainFrame && isMainNavigationUrl(event.senderFrame.url, origin)
+  }
+  ipcMain.on("memosync:get-ui-preference", (event, key) => {
+    event.returnValue = isMainAppFrame(event) ? uiPreferences.get(key) : null
+  })
+  ipcMain.on("memosync:set-ui-preference", (event, key, value) => {
+    if (isMainAppFrame(event)) uiPreferences.set(key, value)
+    event.returnValue = null
+  })
   let directorySelection
   ipcMain.handle("memosync:choose-directory", async (event, defaultPath) => {
     const owner = mainWindow
@@ -230,6 +244,7 @@ else {
   nativeTheme.on("updated", syncDockIcon)
   app.whenReady().then(async () => {
     syncDockIcon()
+    uiPreferences = openUiPreferences(app.getPath("userData"))
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       ...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
       { role: "fileMenu" }, { role: "editMenu" }, { role: "viewMenu" }, { role: "windowMenu" },

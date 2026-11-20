@@ -55,7 +55,7 @@ jobs:
       - name: Package native desktop
         run: bun run desktop:package
       - name: Test desktop host policies and lifecycle
-        run: node --test desktop/policy.test.cjs
+        run: node --test desktop/policy.test.cjs desktop/ui-preferences.test.cjs
       - name: Test staged desktop backend
         run: bun test desktop/runtime.test.ts --timeout 30000
       - name: Configure Linux smoke display

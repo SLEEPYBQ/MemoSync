@@ -4,6 +4,10 @@ const { contextBridge, ipcRenderer, webFrame } = require("electron")
 
 contextBridge.exposeInMainWorld("memosyncDesktop", {
   platform: process.platform,
+  uiPreferences: {
+    get: (key) => ipcRenderer.sendSync("memosync:get-ui-preference", key),
+    set: (key, value) => { ipcRenderer.sendSync("memosync:set-ui-preference", key, value) },
+  },
   setTheme: (theme) => ipcRenderer.send("memosync:set-theme", theme),
   chooseDirectory: (defaultPath) => ipcRenderer.invoke("memosync:choose-directory", defaultPath),
 })

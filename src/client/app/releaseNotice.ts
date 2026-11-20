@@ -1,3 +1,4 @@
+import { readLocalUiPreference, writeLocalUiPreference } from "../lib/localUiPreferences"
 import { useCallback, useState } from "react"
 import type { ReleaseNoticeSnapshot } from "../../shared/types"
 
@@ -18,23 +19,11 @@ export function getReleaseNotice(
   return { version: snapshot.latestVersion, url: snapshot.releaseUrl }
 }
 
-function readDismissedVersion() {
-  try {
-    return window.localStorage.getItem(DISMISSED_RELEASE_STORAGE_KEY)
-  } catch {
-    return null
-  }
-}
-
 export function useDismissedRelease() {
-  const [dismissedVersion, setDismissedVersion] = useState(readDismissedVersion)
+  const [dismissedVersion, setDismissedVersion] = useState(() => readLocalUiPreference(DISMISSED_RELEASE_STORAGE_KEY))
   const dismiss = useCallback((version: string) => {
     setDismissedVersion(version)
-    try {
-      window.localStorage.setItem(DISMISSED_RELEASE_STORAGE_KEY, version)
-    } catch {
-      // Without storage the notice simply returns next launch.
-    }
+    writeLocalUiPreference(DISMISSED_RELEASE_STORAGE_KEY, version)
   }, [])
   return { dismissedVersion, dismiss }
 }

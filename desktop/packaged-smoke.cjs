@@ -37,6 +37,12 @@ async function main() {
   const dataDir = path.join(home, "data")
   await mkdir(workspace, { recursive: true })
   await writeFile(path.join(workspace, "README.md"), "# Synthetic desktop snapshot\n")
+  await mkdir(dataDir, { recursive: true })
+  await writeFile(path.join(dataDir, "settings.json"), JSON.stringify({ language: "en" }))
+  await writeFile(path.join(dataDir, "release-check.json"), JSON.stringify({
+    checkedAt: Date.now(),
+    latest: { version: "999.0.0", url: "https://github.com/SLEEPYBQ/MemoSync/releases/tag/v999.0.0" },
+  }))
   const env = {
     ...process.env, HOME: home, USERPROFILE: home,
     APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"),
@@ -52,7 +58,7 @@ async function main() {
     app = await _electron.launch({ executablePath: executable, env, timeout: 60_000 })
     const page = await app.firstWindow({ timeout: 60_000 })
     await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 60_000 })
-    await page.waitForFunction(() => window.memosyncDesktop && document.getElementById("root")?.children.length > 0)
+    await page.waitForFunction(() => window.memosyncDesktop && document.getElementById("root")?.children.length > 0 && document.documentElement.lang === "en")
     const status = await page.evaluate(async () => (await fetch("/auth/status")).json())
     assert.equal(status.authenticated, true)
     assert.equal(status.canSignOut, false)
@@ -78,6 +84,7 @@ async function main() {
     assert.match(await content.locator("body").innerText(), /Synthetic desktop snapshot/)
     const contentWindow = await app.browserWindow(content)
     assert.equal(await contentWindow.evaluate(window => window.webContents.getLastWebPreferences().javascript), false)
+    assert.equal(await content.evaluate(() => typeof window.memosyncDesktop), "undefined")
     await contentWindow.evaluate(window => window.close())
     await command(page, { type: "settings.writeAppSettingsPatch", patch: { theme: "dark" } })
     await page.waitForFunction(() => document.documentElement.classList.contains("dark"))
@@ -87,6 +94,17 @@ async function main() {
     let machineName = os.hostname().replace(/\.local$|\.lan$/i, "")
     if (process.platform === "darwin") machineName = execFileSync("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8" }).trim() || machineName
     await page.screenshot({ path: path.join(outputDir, `${process.platform}-${process.arch}.png`), mask: [page.getByText(machineName)] })
+    const sidebarWidth = (page) => page.getByRole("separator", { name: "Resize sidebar" }).evaluate(
+      element => element.closest('[style*="--sidebar-width"]').style.getPropertyValue("--sidebar-width"),
+    )
+    await page.getByRole("separator", { name: "Resize sidebar" }).press("End")
+    assert.equal(await sidebarWidth(page), "520px")
+    await page.getByRole("button", { name: "Skip this version" }).click()
+    await page.locator("[data-release-notice]").waitFor({ state: "hidden" })
+    await page.goto(`${origin}/memory`)
+    await page.getByRole("button", { name: "Board", exact: true }).click()
+    await page.getByRole("button", { name: "Board", exact: true, pressed: true }).waitFor()
+    await page.evaluate(() => localStorage.setItem("memosync:smoke-ephemeral", "synthetic"))
     await app.close()
     app = undefined
     await assert.rejects(fetch(`${origin}/auth/status`, { signal: AbortSignal.timeout(1000) }))
@@ -94,6 +112,11 @@ async function main() {
     await page.getByText("Synthetic desktop project", { exact: true }).first().waitFor()
     await page.waitForFunction(() => document.documentElement.classList.contains("dark"))
     assert.equal(JSON.parse(await readFile(path.join(dataDir, "settings.json"), "utf8")).theme, "dark")
+    assert.equal(await sidebarWidth(page), "520px")
+    assert.equal(await page.locator("[data-release-notice]").count(), 0)
+    assert.equal(await page.evaluate(() => localStorage.getItem("memosync:smoke-ephemeral")), null)
+    await page.goto(`${new URL(page.url()).origin}/memory`)
+    await page.getByRole("button", { name: "Board", exact: true, pressed: true }).waitFor()
     await app.close()
     app = undefined
     console.log(`Packaged ${process.platform}/${process.arch}: authenticated launch, file window, sandbox, persistence and clean restart passed`)
