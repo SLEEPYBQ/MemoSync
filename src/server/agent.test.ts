@@ -19,7 +19,7 @@ import {
   resolveClaudeSessionModel,
   toMemoryCandidateReferences,
 } from "./agent"
-import type { HarnessTurn } from "./harness-types"
+import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
@@ -347,7 +347,10 @@ test("Claude Bash preserves the product environment while scrubbing parent CLI s
 
 describe("createClaudeHarnessStream", () => {
   test("partial text deltas become assistant_delta events; subagent and thinking deltas stay invisible", async () => {
+    const origins = new ClaudeOutboundOriginTracker(true)
+    origins.beginHumanTurn(1, "fixture-prompt")
     async function* sdkMessages() {
+      yield { type: "user", uuid: "fixture-prompt", message: { role: "user", content: "fixture" } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "message_start", message: { id: "msg-1" } } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello, " } } }
@@ -362,13 +365,14 @@ describe("createClaudeHarnessStream", () => {
     }
 
     const events: unknown[] = []
-    for await (const event of createClaudeHarnessStream(sdkMessages() as never)) {
+    for await (const event of createClaudeHarnessStream(sdkMessages() as never, undefined, undefined, origins)) {
       events.push(event)
     }
 
     const deltas = events.filter((event) => (event as { type: string }).type === "assistant_delta") as Array<{ itemId?: string; delta?: string }>
     expect(deltas.map((event) => event.delta)).toEqual(["Hello, ", "world."])
     expect(deltas.every((event) => event.itemId === "msg-1")).toBe(true)
+    expect(deltas).toMatchObject([{ assistantPromptId: "fixture-prompt" }, { assistantPromptId: "fixture-prompt" }])
 
     const texts = events.filter((event) => {
       const candidate = event as { type: string; entry?: TranscriptEntry }
@@ -2007,7 +2011,7 @@ describe("AgentCoordinator codex integration", () => {
     expect(interruptedMessages).toHaveLength(1)
   })
 
-  test("concurrent cancel calls only produce a single interrupted message", async () => {
+  test("concurrent Stop requests retain one copy of the exact Codex partial reply", async () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
@@ -2026,9 +2030,14 @@ describe("AgentCoordinator codex integration", () => {
               mcpServers: [],
             }),
           }
+          yield { type: "assistant_delta" as const, itemId: "fixture-item", delta: "  Incomplete" }
+          yield { type: "assistant_delta" as const, itemId: "fixture-item", delta: "\nreply " }
           await new Promise<void>((resolve) => {
             resolveStream = resolve
           })
+          yield { type: "transcript" as const, itemId: "fixture-item", entry: timestamped({
+            kind: "assistant_text", text: "  Incomplete\nreply with late text",
+          }) }
         }
 
         return {
@@ -2057,18 +2066,68 @@ describe("AgentCoordinator codex integration", () => {
       content: "work",
     })
 
-    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+    await waitFor(() => coordinator.getStreamingAssistantTexts().get("chat-1") === "  Incomplete\nreply ")
 
     // Fire multiple cancel calls concurrently (simulating repeated stop button clicks)
     await Promise.all([
-      coordinator.cancel("chat-1"),
-      coordinator.cancel("chat-1"),
-      coordinator.cancel("chat-1"),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
     ])
 
     // Only one "interrupted" message should exist
     const interruptedMessages = store.messages.filter((entry) => entry.kind === "interrupted")
-    expect(interruptedMessages).toHaveLength(1)
+    expect(interruptedMessages).toEqual([expect.objectContaining({ assistantText: "  Incomplete\nreply " })])
+    expect(store.messages.some((entry) => entry.kind === "assistant_text")).toBe(false)
+    expect(coordinator.getStreamingAssistantTexts().has("chat-1")).toBe(false)
+  })
+
+  test("a failed Stop write releases the cancelled Codex turn and stops its stream", async () => {
+    const store = createFakeStore()
+    const appendMessage = store.appendMessage.bind(store)
+    store.appendMessage = async (chatId, message) => {
+      if (message.kind === "interrupted") throw new Error("fixture: cancellation write failed")
+      await appendMessage(chatId, message)
+    }
+    const queues: Array<AsyncEventQueue<HarnessEvent>> = []
+    let interrupts = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange() {},
+      codexManager: {
+        async startSession() {},
+        async startTurn() {
+          const queue = new AsyncEventQueue<HarnessEvent>()
+          queues.push(queue)
+          return {
+            provider: "codex", stream: queue,
+            interrupt: async () => {
+              interrupts += 1
+              queue.push({ type: "assistant_delta", delta: "late fixture text" })
+            },
+            close: () => queue.close(),
+          }
+        },
+      } as never,
+    })
+    const send = (content: string) => coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content })
+
+    try {
+      await send("first fixture task")
+      queues[0]!.push({ type: "assistant_delta", delta: "partial fixture text" })
+      await waitFor(() => coordinator.getStreamingAssistantTexts().has("chat-1"))
+      await expect(coordinator.cancel("chat-1", { preserveStreamingText: true })).rejects.toThrow("cancellation write failed")
+      expect(interrupts).toBe(1)
+      expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
+      expect(coordinator.getStreamingAssistantTexts().has("chat-1")).toBe(false)
+
+      store.appendMessage = appendMessage
+      await send("second fixture task")
+      expect(queues).toHaveLength(2)
+      expect(store.messages.filter((message) => message.kind === "user_prompt").map((message) => message.content))
+        .toEqual(["first fixture task", "second fixture task"])
+    } finally {
+      for (const queue of queues) queue.close()
+    }
   })
 
   test("runTurn stops processing events after cancel", async () => {
@@ -3557,13 +3616,15 @@ describe("Claude prompt UUID lifecycle", () => {
     }
     const result = (promptIds?: string[], text = "done") => events.push({ type: "transcript", promptIds, entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: text }) })
     const flush = async () => {
-      const marker = timestamped({ kind: "assistant_text", text: "barrier" })
+      // A tool frame provides an ordering barrier even when the user turn
+      // has ended and assistant text can no longer belong to that turn.
+      const marker = crypto.randomUUID()
       if (sdkStream) {
-        events.push({ type: "assistant", uuid: marker._id, message: { content: [{ type: "text", text: "barrier" }] } })
+        events.push({ type: "assistant", uuid: marker, message: { content: [{ type: "tool_use", id: marker, name: "Read", input: {} }] } })
       } else {
-        events.push({ type: "transcript", entry: marker })
+        events.push({ type: "transcript", entry: { kind: "status", status: "barrier", _id: marker, createdAt: Date.now() } })
       }
-      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker._id : m._id === marker._id))
+      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker : m._id === marker))
     }
     return { events, store, prompts, passes, coordinator, send, init, result, flush }
   }
@@ -3723,6 +3784,41 @@ describe("Claude prompt UUID lifecycle", () => {
       await waitFor(() => h.store.turnFinishedCount === 1)
       expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
     } finally { h.events.close() }
+  })
+
+  test("a UUID result session keeps the next reply when Stop receives no acknowledgement or input echo", async () => {
+    const h = harness(true)
+    const emitDelta = (text: string) => h.events.push({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    })
+    const emitAssistant = (text: string) => h.events.push({
+      type: "assistant", uuid: crypto.randomUUID(), message: { content: [{ type: "text", text }] },
+    })
+    try {
+      await h.send("first fixture task")
+      h.init()
+      emitDelta("Stopped partial")
+      await waitFor(() => h.coordinator.getStreamingAssistantTexts().get("chat-1") === "Stopped partial")
+      await h.coordinator.cancel("chat-1", { preserveStreamingText: true })
+
+      await h.send("second fixture task")
+      emitAssistant("Late predecessor text")
+      h.init()
+      emitDelta("Next fixture")
+      await waitFor(() => h.coordinator.getStreamingAssistantTexts().get("chat-1") === "Next fixture")
+      emitAssistant("Next fixture reply")
+      h.events.push({ type: "result", subtype: "success", is_error: false, user_message_uuid: h.prompts[1]!.promptId })
+      await waitFor(() => h.store.turnFinishedCount === 1)
+
+      expect(h.store.messages.filter((message) => message.kind === "assistant_text").map((message) => message.text)).toEqual(["Next fixture reply"])
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toEqual([
+        expect.objectContaining({ assistantText: "Stopped partial" }),
+      ])
+      expect(h.coordinator.claudeSessions.get("chat-1")?.cancelledPromptSeqs.has(h.prompts[0]!.promptSeq)).toBe(true)
+    } finally {
+      h.events.close()
+    }
   })
 
   test("result UUID metadata survives normalization and releases only matching origin reservations", async () => {
