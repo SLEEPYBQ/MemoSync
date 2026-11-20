@@ -347,7 +347,10 @@ test("Claude Bash preserves the product environment while scrubbing parent CLI s
 
 describe("createClaudeHarnessStream", () => {
   test("partial text deltas become assistant_delta events; subagent and thinking deltas stay invisible", async () => {
+    const origins = new ClaudeOutboundOriginTracker(true)
+    origins.beginHumanTurn(1, "fixture-prompt")
     async function* sdkMessages() {
+      yield { type: "user", uuid: "fixture-prompt", message: { role: "user", content: "fixture" } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "message_start", message: { id: "msg-1" } } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "hmm" } } }
       yield { type: "stream_event", session_id: "s-1", parent_tool_use_id: null, event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Hello, " } } }
@@ -362,13 +365,14 @@ describe("createClaudeHarnessStream", () => {
     }
 
     const events: unknown[] = []
-    for await (const event of createClaudeHarnessStream(sdkMessages() as never)) {
+    for await (const event of createClaudeHarnessStream(sdkMessages() as never, undefined, undefined, origins)) {
       events.push(event)
     }
 
     const deltas = events.filter((event) => (event as { type: string }).type === "assistant_delta") as Array<{ itemId?: string; delta?: string }>
     expect(deltas.map((event) => event.delta)).toEqual(["Hello, ", "world."])
     expect(deltas.every((event) => event.itemId === "msg-1")).toBe(true)
+    expect(deltas).toMatchObject([{ assistantPromptId: "fixture-prompt" }, { assistantPromptId: "fixture-prompt" }])
 
     const texts = events.filter((event) => {
       const candidate = event as { type: string; entry?: TranscriptEntry }
@@ -2007,7 +2011,7 @@ describe("AgentCoordinator codex integration", () => {
     expect(interruptedMessages).toHaveLength(1)
   })
 
-  test("concurrent cancel calls only produce a single interrupted message", async () => {
+  test("concurrent Stop requests retain one copy of the exact Codex partial reply", async () => {
     let resolveStream!: () => void
 
     const fakeCodexManager = {
@@ -2026,9 +2030,14 @@ describe("AgentCoordinator codex integration", () => {
               mcpServers: [],
             }),
           }
+          yield { type: "assistant_delta" as const, itemId: "fixture-item", delta: "  Incomplete" }
+          yield { type: "assistant_delta" as const, itemId: "fixture-item", delta: "\nreply " }
           await new Promise<void>((resolve) => {
             resolveStream = resolve
           })
+          yield { type: "transcript" as const, itemId: "fixture-item", entry: timestamped({
+            kind: "assistant_text", text: "  Incomplete\nreply with late text",
+          }) }
         }
 
         return {
@@ -2057,18 +2066,20 @@ describe("AgentCoordinator codex integration", () => {
       content: "work",
     })
 
-    await waitFor(() => coordinator.getActiveStatuses().get("chat-1") === "running")
+    await waitFor(() => coordinator.getStreamingAssistantTexts().get("chat-1") === "  Incomplete\nreply ")
 
     // Fire multiple cancel calls concurrently (simulating repeated stop button clicks)
     await Promise.all([
-      coordinator.cancel("chat-1"),
-      coordinator.cancel("chat-1"),
-      coordinator.cancel("chat-1"),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
+      coordinator.cancel("chat-1", { preserveStreamingText: true }),
     ])
 
     // Only one "interrupted" message should exist
     const interruptedMessages = store.messages.filter((entry) => entry.kind === "interrupted")
-    expect(interruptedMessages).toHaveLength(1)
+    expect(interruptedMessages).toEqual([expect.objectContaining({ assistantText: "  Incomplete\nreply " })])
+    expect(store.messages.some((entry) => entry.kind === "assistant_text")).toBe(false)
+    expect(coordinator.getStreamingAssistantTexts().has("chat-1")).toBe(false)
   })
 
   test("runTurn stops processing events after cancel", async () => {
@@ -3557,13 +3568,15 @@ describe("Claude prompt UUID lifecycle", () => {
     }
     const result = (promptIds?: string[], text = "done") => events.push({ type: "transcript", promptIds, entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 1, result: text }) })
     const flush = async () => {
-      const marker = timestamped({ kind: "assistant_text", text: "barrier" })
+      // A tool frame provides an ordering barrier even when the user turn
+      // has ended and assistant text can no longer belong to that turn.
+      const marker = crypto.randomUUID()
       if (sdkStream) {
-        events.push({ type: "assistant", uuid: marker._id, message: { content: [{ type: "text", text: "barrier" }] } })
+        events.push({ type: "assistant", uuid: marker, message: { content: [{ type: "tool_use", id: marker, name: "Read", input: {} }] } })
       } else {
-        events.push({ type: "transcript", entry: marker })
+        events.push({ type: "transcript", entry: { kind: "status", status: "barrier", _id: marker, createdAt: Date.now() } })
       }
-      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker._id : m._id === marker._id))
+      await waitFor(() => store.messages.some(m => sdkStream ? m.messageId === marker : m._id === marker))
     }
     return { events, store, prompts, passes, coordinator, send, init, result, flush }
   }

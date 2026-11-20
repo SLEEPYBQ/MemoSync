@@ -55,6 +55,23 @@ describe("EventStore", () => {
     expect(compacted.getQueuedMessages(chat.id)[0]?.provider).toBe("opencode")
   })
 
+  test("a stopped reply and its interruption reload as one ordered transcript record", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(join(dataDir, "synthetic-project"))
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("assistant_text", 100, { text: "Earlier block" }))
+    await store.appendMessage(chat.id, { kind: "interrupted", _id: "fixture-stop", createdAt: 200, assistantText: "  Partial\ntext  " })
+    await store.appendMessage(chat.id, entry("user_prompt", 300, { content: "Another task" }))
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    const transcript = reloaded.getMessages(chat.id)
+    expect(transcript.map((message) => message.kind)).toEqual(["assistant_text", "interrupted", "user_prompt"])
+    expect(transcript[1]).toMatchObject({ assistantText: "  Partial\ntext  " })
+  })
+
   test("uses the runtime profile for the default data dir", () => {
     process.env.MEMOSYNC_RUNTIME_PROFILE = "dev"
 

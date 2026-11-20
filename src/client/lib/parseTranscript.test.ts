@@ -1,5 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import { processTranscriptMessages } from "./parseTranscript"
+
+test("retained Stop text hydrates immediately before the interruption in the transcript", () => {
+  const messages = processTranscriptMessages([
+    { kind: "interrupted", _id: "stop", createdAt: 100, assistantText: "  Partial\ntext  " },
+    { kind: "interrupted", _id: "other-stop", createdAt: 200 },
+  ])
+  expect(messages.map((message) => message.kind)).toEqual(["assistant_text", "interrupted", "interrupted"])
+  expect(messages[0]).toMatchObject({ id: "stop:assistant", text: "  Partial\ntext  " })
+  expect(messages[1]?.id).toBe("stop")
+})
 import { getLatestToolIds } from "../app/derived"
 import type { TranscriptEntry } from "../../shared/types"
 
