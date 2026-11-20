@@ -542,12 +542,7 @@ export class MemoryStore {
       if (!existing) throw new Error(`Memory not found: ${id}`);
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
       this.recordCandidateDismissal(existing);
-      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
-      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
-      this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
-      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
-      this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
-      this.db.query('DELETE FROM memories WHERE id = ?').run(id);
+      this.deleteCandidateArtifacts(id);
     })();
   }
 
@@ -562,13 +557,18 @@ export class MemoryStore {
       const existing = this.getById(id);
       if (!existing) return;
       if (existing.status !== 'candidate') throw new Error(`Memory is not a candidate: ${id}`);
-      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
-      this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
-      this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
-      this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
-      this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
-      this.db.query('DELETE FROM memories WHERE id = ?').run(id);
+      this.deleteCandidateArtifacts(id);
     })();
+  }
+
+  private deleteCandidateArtifacts(id: string): void {
+    this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_targets:${id}`);
+    this.db.query('DELETE FROM memory_kv WHERE key = ?').run(`revision_trace_evidence:${id}`);
+    this.db.query('DELETE FROM memory_relations WHERE source_id = ? OR target_id = ?').run(id, id);
+    this.db.query('DELETE FROM auto_project_copy_lineage WHERE source_memory_id = ? OR target_memory_id = ?').run(id, id);
+    this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
+    this.db.query('DELETE FROM memory_events WHERE memory_id = ?').run(id);
+    this.db.query('DELETE FROM memories WHERE id = ?').run(id);
   }
 
   dismissCandidate(id: string, meta: ActorMeta): MemoryItem {

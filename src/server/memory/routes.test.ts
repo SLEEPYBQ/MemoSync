@@ -1045,6 +1045,54 @@ describe('memory routes', () => {
     expect(memory.store.getById(secret.id)).toBeNull();
   });
 
+  it.each(['dismiss', 'rollback'] as const)('erases a candidate referenced by legacy copy lineage during %s', async (action) => {
+    const create = (content: string, projectId: string, candidate = false) => memory.store.create({
+      content,
+      detail: candidate ? 'Synthetic detail for erasure' : undefined,
+      scope: 'project',
+      projectId,
+      type: 'fact',
+      status: candidate ? 'candidate' : 'active',
+      sensitive: candidate,
+    }, { actor: 'agent' });
+    const source = create('Synthetic source rule', 'P0');
+    const secret = create('Synthetic candidate for erasure', 'P1', true);
+    const target = create('Synthetic target rule', 'P2');
+    const keptSource = create('Synthetic unrelated source', 'P1');
+
+    const receipt = memory.db.query(`INSERT INTO auto_project_copy_receipts
+      (transition_key, source_task_id, target_task_id, source_project_id, target_project_id,
+       source_representation_hash, target_representation_hash, copied_at)
+      VALUES (?, ?, ?, ?, ?, 'source-hash', 'target-hash', '2020-01-01T00:00:00.000Z')`);
+    receipt.run('incoming', 'T0', 'T1', 'P0', 'P1');
+    receipt.run('outgoing', 'T1', 'T2', 'P1', 'P2');
+    const lineage = memory.db.query(`INSERT INTO auto_project_copy_lineage
+      (transition_key, ordinal, target_memory_id, source_memory_id, source_version, source_content_hash)
+      VALUES (?, ?, ?, ?, ?, 'synthetic-content-hash')`);
+    lineage.run('incoming', 0, secret.id, source.id, source.version);
+    lineage.run('outgoing', 0, target.id, secret.id, secret.version);
+    const keptTarget = create('Synthetic unrelated target', 'P2');
+    lineage.run('outgoing', 1, keptTarget.id, keptSource.id, keptSource.version);
+    const beforeReceipts = memory.db.query('SELECT * FROM auto_project_copy_receipts ORDER BY transition_key').all();
+    const keptLineage = memory.db.query('SELECT * FROM auto_project_copy_lineage WHERE target_memory_id = ?').get(keptTarget.id);
+
+    if (action === 'dismiss') {
+      const response = await call('DELETE', `/api/memories/${secret.id}?surface=board`);
+      expect(response!.ok).toBe(true);
+      const restored = await call('POST', `/api/memories/${secret.id}/restore-candidate`, { surface: 'board' });
+      expect(restored!.status).toBe(410);
+    } else {
+      memory.store.eraseCandidate(secret.id);
+    }
+
+    expect(memory.store.getById(secret.id)).toBeNull();
+    expect(memory.store.getEvents(secret.id)).toEqual([]);
+    expect(memory.store.wasCandidateDismissed(secret.content, { scope: 'project', projectId: 'P1' })).toBe(action === 'dismiss');
+    expect(memory.db.query('SELECT * FROM auto_project_copy_lineage').all()).toEqual([keptLineage]);
+    expect(memory.db.query('SELECT * FROM auto_project_copy_receipts ORDER BY transition_key').all()).toEqual(beforeReceipts);
+    expect(memory.db.query('PRAGMA foreign_key_check').all()).toEqual([]);
+  });
+
   it('does not let public Unmute lift a hard-erased sensitive Candidate tombstone', async () => {
     const secret = memory.store.create(
       { content: 'secret-unmute-tombstone', scope: 'personal', type: 'fact', status: 'candidate', sensitive: true },
