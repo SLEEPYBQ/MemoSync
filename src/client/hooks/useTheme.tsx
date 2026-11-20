@@ -1,3 +1,4 @@
+import type { DesktopUiPreferences } from "../lib/localUiPreferences"
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import type { AppSettingsPatch } from "../../shared/types"
 import { RESOLVED_THEME_STORAGE_KEY, resolveTheme, type ResolvedTheme, type ThemePreference } from "../lib/theme"
@@ -29,6 +30,7 @@ declare global {
     /** Present only inside the desktop app (desktop/preload.cjs). */
     memosyncDesktop?: {
       platform: string
+      uiPreferences?: DesktopUiPreferences
       setTheme: (theme: "system" | "light" | "dark") => void
       chooseDirectory?: (defaultPath?: string) => Promise<string | null>
     }
