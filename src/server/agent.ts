@@ -4241,7 +4241,7 @@ export class AgentCoordinator {
     if (!session.retired) {
       session.retired = true
       session.retireReason = reason
-      this.clearStreamingAssistantText(session.chatId)
+      if (this.claudeSessions.get(session.chatId) === session) this.clearStreamingAssistantText(session.chatId)
       session.session.close()
     }
     if (!session.pump) return
@@ -8020,8 +8020,9 @@ export class AgentCoordinator {
           continue
         }
 
-        // Prefer the echoed input UUID. Without an echo, keep the FIFO fence
-        // while a transcript Stop's predecessor is still awaiting its result.
+        // Prefer the echoed input UUID. When the provider starts the next
+        // prompt, its system_init also opens the boundary for untagged text.
+        // Keep the stopped predecessor's UUID reserved for late results.
         const owner = this.activeTurns.get(session.chatId)
         const promptSeq = owner?.claudePromptSeq
         const headSeq = session.pendingPrompts[0]?.seq
@@ -8030,7 +8031,8 @@ export class AgentCoordinator {
             ? session.pendingPrompts.some((prompt) => prompt.id === event.assistantPromptId && prompt.seq === promptSeq)
             : event.promptIds?.length
               ? matchingPrompts.some((prompt) => prompt.seq === promptSeq)
-              : headSeq === promptSeq || (headSeq !== undefined && !session.stoppedPromptSeqs.has(headSeq)))
+              : owner.providerTurnStarted || headSeq === promptSeq
+                || (headSeq !== undefined && !session.stoppedPromptSeqs.has(headSeq)))
         if (event.type === "assistant_delta") {
           if (ownsAssistantFrame) this.appendAssistantDelta(owner, event)
           continue
@@ -8759,11 +8761,11 @@ export class AgentCoordinator {
     const preview = this.streamingAssistantTexts.get(chatId)
     const assistantText = options?.preserveStreamingText && preview?.owner === active ? preview.text : undefined
     this.clearStreamingAssistantText(chatId, active)
-    if (active.provider === "claude" && active.claudePromptSeq !== undefined) {
-      const session = this.claudeSessions.get(chatId)
-      session?.cancelledPromptSeqs.add(active.claudePromptSeq)
-      if (options?.preserveStreamingText) session?.stoppedPromptSeqs.add(active.claudePromptSeq)
-      session?.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
+    const claudeSession = active.provider === "claude" ? this.claudeSessions.get(chatId) : undefined
+    if (claudeSession && active.claudePromptSeq !== undefined) {
+      claudeSession.cancelledPromptSeqs.add(active.claudePromptSeq)
+      if (options?.preserveStreamingText) claudeSession.stoppedPromptSeqs.add(active.claudePromptSeq)
+      claudeSession.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
     }
     if (active.startupReservation) {
       this.cancelStartupReservation(chatId, active.startupReservation)
@@ -8771,72 +8773,77 @@ export class AgentCoordinator {
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
-
-    if (pendingTool) {
-      const result = discardedToolResult(pendingTool.tool)
-      await this.store.appendMessage(
-        chatId,
-        timestamped({
-          kind: "tool_result",
-          toolId: pendingTool.toolUseId,
-          content: result,
-        })
-      )
-      // Release all native waiters; their frozen policy scopes now deny replies.
-      pendingTool.resolve(result)
-    }
-
-    await this.store.appendMessage(chatId, timestamped({
-      kind: "interrupted",
-      hidden: options?.hideInterrupted,
-      ...(assistantText ? { assistantText } : {}),
-    }))
-    await this.store.recordTurnCancelled(chatId)
-    if (active.startupReservation) {
-      active.startupReservation.cancellationComplete = true
-      this.releaseStartupStatus(chatId, active.startupReservation)
-      if (active.startupReservation.startupSettled) {
-        this.settleStartupReservation(chatId, active.startupReservation)
+    let persisted = false
+    try {
+      if (pendingTool) {
+        const result = discardedToolResult(pendingTool.tool)
+        try {
+          await this.store.appendMessage(chatId, timestamped({
+            kind: "tool_result",
+            toolId: pendingTool.toolUseId,
+            content: result,
+          }))
+        } finally {
+          // Release native waiters even when the tool result could not be written.
+          pendingTool.resolve(result)
+        }
       }
-    }
-    active.hasFinalResult = true
+      await this.store.appendMessage(chatId, timestamped({
+        kind: "interrupted",
+        hidden: options?.hideInterrupted,
+        ...(assistantText ? { assistantText } : {}),
+      }))
+      await this.store.recordTurnCancelled(chatId)
+      persisted = true
+    } finally {
+      // Keep the exact turn reserved until its cancellation write settles.
+      // A storage failure must still release the turn and stop its provider.
+      if (active.startupReservation) {
+        active.startupReservation.cancellationComplete = true
+        this.releaseStartupStatus(chatId, active.startupReservation)
+        if (active.startupReservation.startupSettled) {
+          this.settleStartupReservation(chatId, active.startupReservation)
+        }
+      }
+      active.hasFinalResult = true
+      if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
+      this.emitStateChange(chatId)
 
-    // Remove from activeTurns immediately so the UI reflects the cancellation
-    // right away, rather than waiting for interrupt() which may hang.
-    this.activeTurns.delete(chatId)
-    this.emitStateChange(chatId)
-
-    // Per-memory interrupts skip post-turn work; ordinary Stop keeps it.
-    if (!options?.skipPostTurnMemoryPasses) {
-      const chat = this.store.getChat(chatId)
-      this.launchPostTurnMemoryPasses({
+      // Per-memory interrupts skip post-turn work; ordinary Stop keeps it.
+      if (persisted && !options?.skipPostTurnMemoryPasses) {
+        const chat = this.store.getChat(chatId)
+        this.launchPostTurnMemoryPasses({
+          chatId,
+          projectId: chat?.projectId,
+          engine: active.provider,
+          turnNumber: active.turnNumber,
+          turnId: active.turnId,
+          userText: active.userText ?? "",
+          assistantText: active.assistantChunks.join("\n"),
+          citedIds: [...active.citedIds],
+          memoryState: active.memoryState,
+          memoryDisabled: true,
+          injectedIds: [],
+        }, active)
+      }
+      logClaudeSteer("cancel_active_turn_deleted", {
         chatId,
-        projectId: chat?.projectId,
-        engine: active.provider,
-        turnNumber: active.turnNumber,
-        turnId: active.turnId,
-        userText: active.userText ?? "",
-        assistantText: active.assistantChunks.join("\n"),
-        citedIds: [...active.citedIds],
-        memoryState: active.memoryState,
-        memoryDisabled: true,
-        injectedIds: [],
-      }, active)
+        provider: active.provider,
+        activePromptSeq: active.claudePromptSeq ?? null,
+      })
+      await this.interruptCancelledTurn(active, claudeSession)
     }
-    logClaudeSteer("cancel_active_turn_deleted", {
-      chatId,
-      provider: active.provider,
-      activePromptSeq: active.claudePromptSeq ?? null,
-    })
+  }
 
+  private async interruptCancelledTurn(active: ActiveTurn, claudeSession?: ClaudeSessionState) {
+    const { chatId } = active
     // Keep the before-start guard: result UUIDs do not identify late assistant
     // or tool frames. Retiring the Query prevents those from contaminating the
     // next turn's transcript, memory citations, and capture/trace inputs.
     if (active.provider === "claude" && !active.providerTurnStarted) {
-      const session = this.claudeSessions.get(chatId)
-      if (session) {
+      if (claudeSession) {
         try {
-          await this.retireClaudeSession(session, "turn_cancel_before_start")
+          await this.retireClaudeSession(claudeSession, "turn_cancel_before_start")
         } catch (error) {
           // Stop already cancelled the turn; a slow pump must not turn that
           // into a user-visible failure. The session is retired and its

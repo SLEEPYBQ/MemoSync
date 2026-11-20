@@ -19,7 +19,7 @@ import {
   resolveClaudeSessionModel,
   toMemoryCandidateReferences,
 } from "./agent"
-import type { HarnessTurn } from "./harness-types"
+import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { fakeExecutableResolver } from "./model-access/test-fixtures"
@@ -2082,6 +2082,54 @@ describe("AgentCoordinator codex integration", () => {
     expect(coordinator.getStreamingAssistantTexts().has("chat-1")).toBe(false)
   })
 
+  test("a failed Stop write releases the cancelled Codex turn and stops its stream", async () => {
+    const store = createFakeStore()
+    const appendMessage = store.appendMessage.bind(store)
+    store.appendMessage = async (chatId, message) => {
+      if (message.kind === "interrupted") throw new Error("fixture: cancellation write failed")
+      await appendMessage(chatId, message)
+    }
+    const queues: Array<AsyncEventQueue<HarnessEvent>> = []
+    let interrupts = 0
+    const coordinator = new AgentCoordinator({
+      store: store as never, onStateChange() {},
+      codexManager: {
+        async startSession() {},
+        async startTurn() {
+          const queue = new AsyncEventQueue<HarnessEvent>()
+          queues.push(queue)
+          return {
+            provider: "codex", stream: queue,
+            interrupt: async () => {
+              interrupts += 1
+              queue.push({ type: "assistant_delta", delta: "late fixture text" })
+            },
+            close: () => queue.close(),
+          }
+        },
+      } as never,
+    })
+    const send = (content: string) => coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content })
+
+    try {
+      await send("first fixture task")
+      queues[0]!.push({ type: "assistant_delta", delta: "partial fixture text" })
+      await waitFor(() => coordinator.getStreamingAssistantTexts().has("chat-1"))
+      await expect(coordinator.cancel("chat-1", { preserveStreamingText: true })).rejects.toThrow("cancellation write failed")
+      expect(interrupts).toBe(1)
+      expect(coordinator.getActiveStatuses().has("chat-1")).toBe(false)
+      expect(coordinator.getStreamingAssistantTexts().has("chat-1")).toBe(false)
+
+      store.appendMessage = appendMessage
+      await send("second fixture task")
+      expect(queues).toHaveLength(2)
+      expect(store.messages.filter((message) => message.kind === "user_prompt").map((message) => message.content))
+        .toEqual(["first fixture task", "second fixture task"])
+    } finally {
+      for (const queue of queues) queue.close()
+    }
+  })
+
   test("runTurn stops processing events after cancel", async () => {
     let resolveStream!: () => void
 
@@ -3736,6 +3784,41 @@ describe("Claude prompt UUID lifecycle", () => {
       await waitFor(() => h.store.turnFinishedCount === 1)
       expect(h.coordinator.activeTurns.has("chat-1")).toBe(false)
     } finally { h.events.close() }
+  })
+
+  test("a UUID result session keeps the next reply when Stop receives no acknowledgement or input echo", async () => {
+    const h = harness(true)
+    const emitDelta = (text: string) => h.events.push({
+      type: "stream_event",
+      event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+    })
+    const emitAssistant = (text: string) => h.events.push({
+      type: "assistant", uuid: crypto.randomUUID(), message: { content: [{ type: "text", text }] },
+    })
+    try {
+      await h.send("first fixture task")
+      h.init()
+      emitDelta("Stopped partial")
+      await waitFor(() => h.coordinator.getStreamingAssistantTexts().get("chat-1") === "Stopped partial")
+      await h.coordinator.cancel("chat-1", { preserveStreamingText: true })
+
+      await h.send("second fixture task")
+      emitAssistant("Late predecessor text")
+      h.init()
+      emitDelta("Next fixture")
+      await waitFor(() => h.coordinator.getStreamingAssistantTexts().get("chat-1") === "Next fixture")
+      emitAssistant("Next fixture reply")
+      h.events.push({ type: "result", subtype: "success", is_error: false, user_message_uuid: h.prompts[1]!.promptId })
+      await waitFor(() => h.store.turnFinishedCount === 1)
+
+      expect(h.store.messages.filter((message) => message.kind === "assistant_text").map((message) => message.text)).toEqual(["Next fixture reply"])
+      expect(h.store.messages.filter((message) => message.kind === "interrupted")).toEqual([
+        expect.objectContaining({ assistantText: "Stopped partial" }),
+      ])
+      expect(h.coordinator.claudeSessions.get("chat-1")?.cancelledPromptSeqs.has(h.prompts[0]!.promptSeq)).toBe(true)
+    } finally {
+      h.events.close()
+    }
   })
 
   test("result UUID metadata survives normalization and releases only matching origin reservations", async () => {

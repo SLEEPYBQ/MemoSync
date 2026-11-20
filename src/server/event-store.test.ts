@@ -55,6 +55,14 @@ describe("EventStore", () => {
     expect(compacted.getQueuedMessages(chat.id)[0]?.provider).toBe("opencode")
   })
 
+  test("uses the runtime profile for the default data dir", () => {
+    process.env.MEMOSYNC_RUNTIME_PROFILE = "dev"
+
+    const store = new EventStore()
+
+    expect(store.dataDir).toEndWith("/.memosync-dev/data")
+  })
+
   test("a stopped reply and its interruption reload as one ordered transcript record", async () => {
     const dataDir = await createTempDataDir()
     const store = new EventStore(dataDir)
@@ -70,14 +78,6 @@ describe("EventStore", () => {
     const transcript = reloaded.getMessages(chat.id)
     expect(transcript.map((message) => message.kind)).toEqual(["assistant_text", "interrupted", "user_prompt"])
     expect(transcript[1]).toMatchObject({ assistantText: "  Partial\ntext  " })
-  })
-
-  test("uses the runtime profile for the default data dir", () => {
-    process.env.MEMOSYNC_RUNTIME_PROFILE = "dev"
-
-    const store = new EventStore()
-
-    expect(store.dataDir).toEndWith("/.memosync-dev/data")
   })
 
   test("migrates legacy snapshot and messages log transcripts into per-chat files", async () => {
