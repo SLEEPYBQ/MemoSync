@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import type { KeybindingsSnapshot, SidebarProjectGroup } from "../../shared/types"
+import { DEFAULT_KEYBINDINGS, type KeybindingsSnapshot, type SidebarProjectGroup } from "../../shared/types"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -206,6 +206,17 @@ describe("shouldShowSidebarNumberJumpHints", () => {
 })
 
 describe("getSidebarJumpTargetIndex", () => {
+  test("ignores AltGraph while accepting genuine Ctrl+Alt", () => {
+    const defaults = { ...KEYBINDINGS, bindings: DEFAULT_KEYBINDINGS }
+    const event = { code: "Digit2", metaKey: false, altKey: true, ctrlKey: true, shiftKey: false }
+    const altGraph = { ...event, getModifierState: (key: string) => key === "AltGraph" }
+    expect(shouldShowSidebarNumberJumpHints(defaults, altGraph)).toBe(false)
+    expect(getSidebarJumpTargetIndex(defaults, altGraph)).toBeNull()
+    expect(shouldShowSidebarNumberJumpHints(defaults, event)).toBe(true)
+    expect(getSidebarJumpTargetIndex(defaults, event)).toBe(2)
+    expect(getSidebarJumpTargetIndex(defaults, { ...event, getModifierState: () => false })).toBe(2)
+  })
+
   test("returns the pressed digit when the jump modifiers are held", () => {
     expect(getSidebarJumpTargetIndex(KEYBINDINGS, {
       key: "@",
@@ -243,5 +254,6 @@ describe("getSidebarNumberJumpHint", () => {
     expect(getSidebarNumberJumpHint(KEYBINDINGS, 1)).toBe("1")
     expect(getSidebarNumberJumpHint(KEYBINDINGS, 3)).toBe("3")
     expect(getSidebarNumberJumpHint(KEYBINDINGS, 10)).toBeNull()
+    expect(getSidebarNumberJumpHint({ ...KEYBINDINGS, bindings: { ...KEYBINDINGS.bindings, jumpToSidebarChat: [] } }, 1)).toBeNull()
   })
 })

@@ -101,10 +101,10 @@ export function KeybindingsSection({ state, appleOverride }: { state: Pick<AppSt
     return writeQueue.current
   }
 
-  function pickAction(action: KeybindingAction) {
+  function pickAction(action: KeybindingAction, binding: string) {
     document.getElementById(`keybinding-${action}`)?.scrollIntoView({ block: "nearest", behavior: reduced ? "auto" : "smooth" })
-    const binding = preferredBinding(drafts[action], apple)
-    setRecording({ action, index: binding === null ? "new" : drafts[action].indexOf(binding) })
+    const index = drafts[action].indexOf(binding)
+    setRecording({ action, index: index < 0 ? "new" : index })
     setRecordedCodes(new Set())
   }
 

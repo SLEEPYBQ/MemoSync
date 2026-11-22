@@ -1,5 +1,5 @@
 import type { KeybindingAction } from "../../../shared/types"
-import { keyToCode, parseBinding } from "../../lib/keybindings"
+import { keyToCode, parseBinding, parseModifiers, preferredBinding } from "../../lib/keybindings"
 
 export type ShortcutCategory = "panels" | "terminal" | "workspace"
 export type KeyboardKey = { code: string; label: string; width: number }
@@ -63,6 +63,14 @@ export function buildKeyUsage(bindings: Record<KeybindingAction, string[]>, acti
   return usage
 }
 
+export function bindingForKey(usage: Map<string, KeyUsage[]>, code: string, apple: boolean): KeyUsage | null {
+  const entries = usage.get(code) ?? []
+  const action = entries[0]?.action
+  if (!action) return null
+  const binding = preferredBinding(entries.filter((entry) => entry.action === action).map((entry) => entry.binding), apple)
+  return binding === null ? null : { action, binding }
+}
+
 export function chordCodes(binding: string, _apple: boolean): string[] {
   const tokens = binding.split("+").map((part) => part.trim().toLowerCase())
   const codes: string[] = []
@@ -85,8 +93,19 @@ export function findBindingConflict(
   action: KeybindingAction,
   chord: string,
 ): KeybindingAction | null {
-  return (Object.keys(SHORTCUT_CATEGORY_BY_ACTION) as KeybindingAction[])
-    .concat("openInEditor")
-    .find((other) => other !== action && bindings[other].some((binding) => binding.toLowerCase() === chord.toLowerCase()))
-    ?? null
+  const incomingKeyed = action === "jumpToSidebarChat" ? null : parseBinding(chord)
+  const incoming = action === "jumpToSidebarChat" ? parseModifiers(chord) : incomingKeyed
+  if (!incoming) return null
+  return (Object.keys(SHORTCUT_CATEGORY_BY_ACTION) as KeybindingAction[]).find((other) => {
+    if (other === action) return false
+    return bindings[other].some((binding) => {
+      const existingKeyed = other === "jumpToSidebarChat" ? null : parseBinding(binding)
+      const existing = other === "jumpToSidebarChat" ? parseModifiers(binding) : existingKeyed
+      if (!existing || incoming.ctrl !== existing.ctrl || incoming.meta !== existing.meta
+        || incoming.alt !== existing.alt || incoming.shift !== existing.shift) return false
+      if (action === "jumpToSidebarChat") return /^[1-9]$/.test(existingKeyed?.key ?? "")
+      if (other === "jumpToSidebarChat") return /^[1-9]$/.test(incomingKeyed?.key ?? "")
+      return incomingKeyed?.key === existingKeyed?.key
+    })
+  }) ?? null
 }

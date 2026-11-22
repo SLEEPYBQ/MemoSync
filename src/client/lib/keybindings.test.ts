@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import {
-  bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findMatchingActionBinding, formatBindingParts,
+  bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findMatchingActionBinding, formatBindingParts, getBindingsForAction, getResolvedKeybindings,
   isRecordableChord, keyToCode, modifierChordFromEvent, parseKeybindingInput, preferredBinding,
 } from "./keybindings"
-import type { KeybindingsSnapshot } from "../../shared/types"
+import { DEFAULT_KEYBINDINGS, type KeybindingsSnapshot } from "../../shared/types"
 
 describe("parseKeybindingInput", () => {
   test("splits comma-separated values, trims whitespace, and lowercases", () => {
@@ -25,6 +25,13 @@ describe("bindingMatchesEvent", () => {
   test("matches option-modified letters by physical key code", () => {
     const event = { key: "ø", code: "KeyO", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false } as KeyboardEvent
     expect(bindingMatchesEvent("Cmd+Alt+O", event)).toBe(true)
+  })
+
+  test("ignores AltGraph but allows genuine Ctrl+Alt", () => {
+    const event = { key: "n", code: "KeyN", metaKey: false, ctrlKey: true, altKey: true, shiftKey: false } as KeyboardEvent
+    expect(bindingMatchesEvent("ctrl+alt+n", { ...event, getModifierState: (key: string) => key === "AltGraph" } as KeyboardEvent)).toBe(false)
+    expect(bindingMatchesEvent("ctrl+alt+n", { ...event, getModifierState: () => false } as KeyboardEvent)).toBe(true)
+    expect(bindingMatchesEvent("ctrl+alt+n", event)).toBe(true)
   })
 })
 
@@ -48,6 +55,14 @@ describe("findMatchingActionBinding", () => {
     const event = { key: "˜", code: "KeyN", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false } as KeyboardEvent
 
     expect(findMatchingActionBinding(snapshot, "createChatInCurrentProject", event)).toBe("cmd+alt+n")
+  })
+
+  test("keeps an explicitly unassigned action unassigned", () => {
+    const snapshot = { bindings: { ...DEFAULT_KEYBINDINGS, toggleEmbeddedTerminal: [] }, warning: null, filePathDisplay: "" }
+    expect(getBindingsForAction(snapshot, "toggleEmbeddedTerminal")).toEqual([])
+    expect(getResolvedKeybindings(snapshot).bindings.toggleEmbeddedTerminal).toEqual([])
+    const event = { key: "j", code: "KeyJ", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false } as KeyboardEvent
+    expect(findMatchingActionBinding(snapshot, "toggleEmbeddedTerminal", event)).toBeNull()
   })
 })
 

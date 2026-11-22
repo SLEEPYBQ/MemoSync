@@ -25,15 +25,16 @@ export function parseKeybindingInput(value: string) {
     .filter(Boolean)
 }
 
-type ParsedBinding = {
-  key: string
+type ModifierFlags = {
   ctrl: boolean
   meta: boolean
   alt: boolean
   shift: boolean
 }
 
-const MODIFIER_TOKENS = new Map([
+type ParsedBinding = ModifierFlags & { key: string }
+
+const MODIFIER_TOKENS = new Map<string, keyof ModifierFlags>([
   ["cmd", "meta"],
   ["meta", "meta"],
   ["ctrl", "ctrl"],
@@ -44,6 +45,7 @@ const MODIFIER_TOKENS = new Map([
 ])
 
 export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
+  if (event.getModifierState?.("AltGraph")) return false
   const parsed = parseBinding(binding)
   if (!parsed) return false
 
@@ -96,6 +98,15 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
     warning: snapshot?.warning ?? null,
     filePathDisplay: snapshot?.filePathDisplay ?? "",
   }
+}
+
+export function parseModifiers(binding: string): ModifierFlags {
+  const modifiers: ModifierFlags = { ctrl: false, meta: false, alt: false, shift: false }
+  for (const part of binding.split("+")) {
+    const modifier = MODIFIER_TOKENS.get(part.trim().toLowerCase())
+    if (modifier) modifiers[modifier] = true
+  }
+  return modifiers
 }
 
 export function parseBinding(binding: string): ParsedBinding | null {

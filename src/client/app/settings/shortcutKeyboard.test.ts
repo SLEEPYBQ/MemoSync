@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction } from "../../../shared/types"
-import { buildKeyUsage, chordCodes, findBindingConflict, getKeyboardRows, SHORTCUT_CATEGORY_BY_ACTION } from "./shortcutKeyboardModel"
+import { bindingForKey, buildKeyUsage, chordCodes, findBindingConflict, getKeyboardRows, SHORTCUT_CATEGORY_BY_ACTION } from "./shortcutKeyboardModel"
 
 const actions = Object.keys(SHORTCUT_CATEGORY_BY_ACTION) as KeybindingAction[]
 
@@ -29,10 +29,32 @@ describe("shortcut keyboard model", () => {
     expect(chordCodes("cmd+alt", true)).toEqual(["MetaLeft", "AltLeft", ...Array.from({ length: 9 }, (_, index) => `Digit${index + 1}`)])
   })
 
-  test("reports another action using the chord, including the hidden editor action", () => {
+  test("selects the preferred binding actually represented by the clicked key", () => {
+    const usage = buildKeyUsage(DEFAULT_KEYBINDINGS, actions)
+    for (const apple of [true, false]) {
+      expect(bindingForKey(usage, "Backquote", apple)).toEqual({ action: "toggleEmbeddedTerminal", binding: "ctrl+`" })
+      expect(bindingForKey(usage, "KeyJ", apple)).toEqual({ action: "toggleEmbeddedTerminal", binding: "cmd+j" })
+      expect(bindingForKey(usage, "Digit0", apple)).toBeNull()
+    }
+  })
+
+  test("compares effective chords but ignores the hidden editor action", () => {
     expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "cmd+b")).toBe("toggleLeftSidebar")
     expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleLeftSidebar", "cmd+b")).toBeNull()
     expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "ctrl+shift+k")).toBeNull()
-    expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "cmd+shift+o")).toBe("openInEditor")
+    expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "cmd+shift+o")).toBeNull()
+    const aliases = { ...DEFAULT_KEYBINDINGS, toggleLeftSidebar: ["shift+control+b", "meta+option+x"] }
+    expect(findBindingConflict(aliases, "toggleRightSidebar", "ctrl+shift+b")).toBe("toggleLeftSidebar")
+    expect(findBindingConflict(aliases, "toggleRightSidebar", "cmd+alt+x")).toBe("toggleLeftSidebar")
+    expect(findBindingConflict(aliases, "toggleLeftSidebar", "ctrl+shift+b")).toBeNull()
+  })
+
+  test("conflicts with sidebar jump digits in either direction, but not zero", () => {
+    expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "option+meta+1")).toBe("jumpToSidebarChat")
+    expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "cmd+alt+9")).toBe("jumpToSidebarChat")
+    expect(findBindingConflict(DEFAULT_KEYBINDINGS, "toggleRightSidebar", "cmd+alt+0")).toBeNull()
+    const bindings = { ...DEFAULT_KEYBINDINGS, openAddProject: ["option+meta+2"] }
+    expect(findBindingConflict(bindings, "jumpToSidebarChat", "cmd+alt")).toBe("openAddProject")
+    expect(findBindingConflict({ ...bindings, openAddProject: ["cmd+alt+0"] }, "jumpToSidebarChat", "cmd+alt")).toBeNull()
   })
 })

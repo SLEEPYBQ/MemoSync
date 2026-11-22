@@ -5,7 +5,7 @@ import type { KeybindingAction } from "../../../shared/types"
 import { t, useI18n } from "../../i18n"
 import { formatBindingParts, KEYBINDING_ACTION_LABELS, preferredBinding } from "../../lib/keybindings"
 import { cn } from "../../lib/utils"
-import { buildKeyUsage, getKeyboardRows, SHORTCUT_CATEGORY_BY_ACTION, type KeyboardKey, type ShortcutCategory } from "./shortcutKeyboardModel"
+import { bindingForKey, buildKeyUsage, getKeyboardRows, SHORTCUT_CATEGORY_BY_ACTION, type KeyboardKey, type ShortcutCategory } from "./shortcutKeyboardModel"
 
 const categoryStyles: Record<ShortcutCategory, { key: string; active: string; dot: string }> = {
   panels: {
@@ -38,7 +38,7 @@ interface ShortcutKeyboardProps {
   activeCodes: string[]
   pressedCodes: Set<string>
   onHoverKey: (code: string | null) => void
-  onPickAction: (action: KeybindingAction) => void
+  onPickAction: (action: KeybindingAction, binding: string) => void
   focusedAction: KeybindingAction | null
 }
 
@@ -91,7 +91,10 @@ export function ShortcutKeyboard({ bindings, actions, apple, activeCodes, presse
         onMouseLeave={() => setHover(null)}
         onFocus={() => setHover(item.code)}
         onBlur={() => setHover(null)}
-        onClick={() => onPickAction(keyActions[0]!)}
+        onClick={() => {
+          const selected = bindingForKey(usage, item.code, apple)
+          if (selected) onPickAction(selected.action, selected.binding)
+        }}
       >
         <span className={cn(keyActions.length && !stacked && "-translate-y-0.5")}>{item.label}</span>
         <span className="absolute bottom-1 flex items-center gap-0.5" aria-hidden>

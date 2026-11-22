@@ -134,6 +134,11 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
       continue
     }
 
+    if (rawValue.length === 0) {
+      bindings[action] = []
+      continue
+    }
+
     const normalized = rawValue
       .filter((entry): entry is string => typeof entry === "string")
       .map((entry) => entry.trim())
@@ -142,9 +147,7 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
 
     if (normalized.length === 0) {
       bindings[action] = [...DEFAULT_KEYBINDINGS[action]]
-      if (rawValue.length > 0 || source[action] !== undefined) {
-        warnings.push(`${action} did not contain any valid shortcut strings`)
-      }
+      warnings.push(`${action} did not contain any valid shortcut strings`)
       continue
     }
 

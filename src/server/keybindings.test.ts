@@ -26,9 +26,21 @@ describe("normalizeKeybindings", () => {
       toggleRightSidebar: "Ctrl+B",
     }, TEST_FILE_PATH)
 
-    expect(snapshot.bindings).toEqual(DEFAULT_KEYBINDINGS)
-    expect(snapshot.warning).toContain("toggleEmbeddedTerminal")
+    expect(snapshot.bindings).toEqual({ ...DEFAULT_KEYBINDINGS, toggleEmbeddedTerminal: [] })
+    expect(snapshot.warning).not.toContain("toggleEmbeddedTerminal")
     expect(snapshot.warning).toContain("toggleRightSidebar")
+  })
+
+  test("resets a non-empty array containing only blank entries", () => {
+    const snapshot = normalizeKeybindings({ toggleEmbeddedTerminal: ["", " "] }, TEST_FILE_PATH)
+    expect(snapshot.bindings.toggleEmbeddedTerminal).toEqual(DEFAULT_KEYBINDINGS.toggleEmbeddedTerminal)
+    expect(snapshot.warning).toContain("toggleEmbeddedTerminal did not contain any valid shortcut strings")
+  })
+
+  test("accepts an explicit empty array without a warning", () => {
+    const snapshot = normalizeKeybindings({ toggleEmbeddedTerminal: [] }, TEST_FILE_PATH)
+    expect(snapshot.bindings.toggleEmbeddedTerminal).toEqual([])
+    expect(snapshot.warning).toBeNull()
   })
 
   test("moves an untouched old right-sidebar default off cmd+b", () => {
@@ -142,6 +154,20 @@ describe("KeybindingsManager", () => {
     })
     expect(JSON.parse(await Bun.file(filePath).text())).toEqual(snapshot.bindings)
 
+    manager.dispose()
+  })
+
+  test("persists an unassigned action across reload", async () => {
+    const filePath = await createTempFilePath()
+    const manager = new KeybindingsManager(filePath)
+    await manager.initialize()
+    const written = await manager.write({ toggleEmbeddedTerminal: [] })
+    expect(written.bindings.toggleEmbeddedTerminal).toEqual([])
+    expect(written.warning).toBeNull()
+    await manager.reload()
+    expect(manager.getSnapshot().bindings.toggleEmbeddedTerminal).toEqual([])
+    expect(manager.getSnapshot().warning).toBeNull()
+    expect((await Bun.file(filePath).json()).toggleEmbeddedTerminal).toEqual([])
     manager.dispose()
   })
 

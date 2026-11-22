@@ -3,7 +3,7 @@ import { Plus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import type { KeybindingAction } from "../../../shared/types"
 import { t, useI18n } from "../../i18n"
-import { chordFromKeyboardEvent, formatBindingParts, isRecordableChord, modifierChordFromEvent } from "../../lib/keybindings"
+import { chordFromKeyboardEvent, formatBindingParts, isRecordableChord, modifierChordFromEvent, parseModifiers } from "../../lib/keybindings"
 import { cn } from "../../lib/utils"
 import { SETTINGS_CONTROL_FILL_CLASS } from "./shared"
 
@@ -108,6 +108,11 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       if (propsRef.current.modifierOnly && modifierKeys.has(event.key) && largest) {
         const chord = largest
         largest = null
+        const modifiers = parseModifiers(chord)
+        if (!modifiers.ctrl && !modifiers.meta && !modifiers.alt) {
+          setError(t("settings:shortcutNeedsModifier"))
+          return
+        }
         commit(chord)
       }
     }
