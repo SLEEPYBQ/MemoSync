@@ -244,7 +244,7 @@ export const KEYBINDING_ROWS: Record<Exclude<KeybindingAction, "openInEditor">, 
     .filter(([action]) => action !== "openInEditor")
     .map(([action]) => [
       action,
-      { id: `keybinding-${action}`, sectionId: "keybindings", get title() { return KEYBINDING_ACTION_LABELS[action] }, get description() { return t("settings:commaSeparatedShortcuts") } },
+      { id: `keybinding-${action}`, sectionId: "keybindings", get title() { return KEYBINDING_ACTION_LABELS[action] }, get description() { return t("settings:shortcutRecordHint") } },
     ]),
 ) as Record<Exclude<KeybindingAction, "openInEditor">, SettingsRowDef>
 

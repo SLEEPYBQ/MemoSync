@@ -1,5 +1,6 @@
 import * as React from "react"
 import * as TooltipPrimitive from "@radix-ui/react-tooltip"
+import { isApplePlatform, preferredBinding } from "../../lib/keybindings"
 import { cn } from "../../lib/utils"
 import { Kbd, KbdGroup } from "./kbd"
 
@@ -57,11 +58,9 @@ const HotkeyTooltipContent = React.forwardRef<
   React.ComponentRef<typeof TooltipPrimitive.Content>,
   HotkeyTooltipContentProps
 >(({ className, sideOffset = 4, children, shortcut, ...props }, ref) => {
-  const firstShortcut = shortcut === undefined
-    ? null
-    : Array.isArray(shortcut)
-      ? shortcut[0] ?? null
-      : shortcut
+  const firstShortcut = Array.isArray(shortcut)
+    ? preferredBinding(shortcut, isApplePlatform())
+    : shortcut ?? null
 
   return (
     <TooltipPrimitive.Portal>

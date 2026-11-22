@@ -719,9 +719,9 @@ export const DEFAULT_KEYBINDINGS: Record<KeybindingAction, string[]> = {
   openInFinder: ["cmd+alt+f", "ctrl+alt+f"],
   openInEditor: ["cmd+shift+o", "ctrl+shift+o"],
   addSplitTerminal: ["cmd+/", "ctrl+/"],
-  jumpToSidebarChat: ["cmd+alt"],
-  createChatInCurrentProject: ["cmd+alt+n"],
-  openAddProject: ["cmd+alt+o"],
+  jumpToSidebarChat: ["cmd+alt", "ctrl+alt"],
+  createChatInCurrentProject: ["cmd+alt+n", "ctrl+alt+n"],
+  openAddProject: ["cmd+alt+o", "ctrl+alt+o"],
 }
 
 export interface KeybindingsSnapshot {

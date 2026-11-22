@@ -1,6 +1,8 @@
 import { t } from "../i18n"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../../shared/types"
+import { MODIFIER_TOKENS, parseBinding } from "../../shared/keybinding-chords"
 
+export { parseBinding, parseModifiers } from "../../shared/keybinding-chords"
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
   get toggleEmbeddedTerminal() { return t("settings:toggleEmbeddedTerminal") },
   get toggleLeftSidebar() { return t("settings:toggleLeftSidebar") },
@@ -25,30 +27,44 @@ export function parseKeybindingInput(value: string) {
     .filter(Boolean)
 }
 
-type ParsedBinding = {
-  key: string
-  ctrl: boolean
-  meta: boolean
-  alt: boolean
-  shift: boolean
+type ModifierEvent = Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">
+export type KeybindingEvent = ModifierEvent & Pick<KeyboardEvent, "code"> & Partial<Pick<KeyboardEvent, "key" | "getModifierState">>
+
+export function legacySymbolChord(event: KeybindingEvent): string | null {
+  if (event.getModifierState?.("AltGraph") || !event.key) return null
+  const literal = event.key.toLowerCase()
+  if (!/^[^\p{C}\s+]$/u.test(literal) || keyToCode(literal) !== null) return null
+  const physical = codeToKey(event.code ?? "")
+  if (!physical || physical === literal) return null
+  return [modifierChordFromEvent(event), literal].filter(Boolean).join("+")
 }
 
-const MODIFIER_TOKENS = new Map([
-  ["cmd", "meta"],
-  ["meta", "meta"],
-  ["ctrl", "ctrl"],
-  ["control", "ctrl"],
-  ["alt", "alt"],
-  ["option", "alt"],
-  ["shift", "shift"],
-])
+export function findLegacySymbolBinding(
+  bindings: Record<KeybindingAction, string[]>,
+  event: KeybindingEvent,
+): { action: KeybindingAction; binding: string } | null {
+  const chord = legacySymbolChord(event)
+  if (!chord) return null
+  const literal = parseBinding(chord)
+  if (!literal) return null
+  for (const action of Object.keys(bindings) as KeybindingAction[]) {
+    if (action === "openInEditor" || action === "jumpToSidebarChat") continue
+    for (const binding of bindings[action]) {
+      const parsed = parseBinding(binding)
+      if (parsed && parsed.key === literal.key && parsed.ctrl === literal.ctrl && parsed.meta === literal.meta
+        && parsed.alt === literal.alt && parsed.shift === literal.shift) return { action, binding }
+    }
+  }
+  return null
+}
 
-export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
+export function bindingMatchesEvent(binding: string, event: KeybindingEvent) {
+  if (event.getModifierState?.("AltGraph")) return false
   const parsed = parseBinding(binding)
   if (!parsed) return false
 
   return (
-    eventMatchesParsedKey(event, parsed.key) &&
+    (eventMatchesParsedKey(event, parsed.key) || (legacySymbolChord(event) !== null && event.key?.toLowerCase() === parsed.key)) &&
     event.ctrlKey === parsed.ctrl &&
     event.metaKey === parsed.meta &&
     event.altKey === parsed.alt &&
@@ -59,17 +75,18 @@ export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
 export function actionMatchesEvent(
   snapshot: KeybindingsSnapshot | null,
   action: KeybindingAction,
-  event: KeyboardEvent
+  event: KeybindingEvent
 ) {
-  const bindings = getBindingsForAction(snapshot, action)
-  return bindings.some((binding) => bindingMatchesEvent(binding, event))
+  return findMatchingActionBinding(snapshot, action, event) !== null
 }
 
 export function findMatchingActionBinding(
   snapshot: KeybindingsSnapshot | null,
   action: KeybindingAction,
-  event: KeyboardEvent
+  event: KeybindingEvent
 ) {
+  const owner = findLegacySymbolBinding(snapshot?.bindings ?? DEFAULT_KEYBINDINGS, event)
+  if (owner) return owner.action === action ? owner.binding : null
   return getBindingsForAction(snapshot, action).find((binding) => bindingMatchesEvent(binding, event)) ?? null
 }
 
@@ -98,60 +115,11 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   }
 }
 
-function parseBinding(binding: string): ParsedBinding | null {
-  const parts = binding.split("+").map((part) => part.trim()).filter(Boolean)
-  if (parts.length === 0) return null
-
-  const parsed: ParsedBinding = {
-    key: "",
-    ctrl: false,
-    meta: false,
-    alt: false,
-    shift: false,
-  }
-
-  for (const part of parts) {
-    const token = part.toLowerCase()
-    const modifier = MODIFIER_TOKENS.get(token)
-    if (modifier === "ctrl") {
-      parsed.ctrl = true
-      continue
-    }
-    if (modifier === "meta") {
-      parsed.meta = true
-      continue
-    }
-    if (modifier === "alt") {
-      parsed.alt = true
-      continue
-    }
-    if (modifier === "shift") {
-      parsed.shift = true
-      continue
-    }
-    if (parsed.key) {
-      return null
-    }
-    parsed.key = token
-  }
-
-  return parsed.key ? parsed : null
+function eventMatchesParsedKey(event: KeybindingEvent, key: string) {
+  return (codeToKey(event.code ?? "") ?? event.key?.toLowerCase()) === key
 }
 
-function eventMatchesParsedKey(event: KeyboardEvent, key: string) {
-  if (event.key.toLowerCase() === key) {
-    return true
-  }
-
-  const expectedCode = keyToCode(key)
-  if (!expectedCode) {
-    return false
-  }
-
-  return event.code === expectedCode
-}
-
-function keyToCode(key: string) {
+export function keyToCode(key: string): string | null {
   if (key.length === 1 && key >= "a" && key <= "z") {
     return `Key${key.toUpperCase()}`
   }
@@ -164,7 +132,86 @@ function keyToCode(key: string) {
       return "Slash"
     case "`":
       return "Backquote"
+    case "-": return "Minus"
+    case "=": return "Equal"
+    case "[": return "BracketLeft"
+    case "]": return "BracketRight"
+    case "\\": return "Backslash"
+    case ";": return "Semicolon"
+    case "'": return "Quote"
+    case ",": return "Comma"
+    case ".": return "Period"
+    case "space": return "Space"
     default:
       return null
   }
+}
+
+export function codeToKey(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5)
+  const codes: Record<string, string> = {
+    Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+    Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".",
+    Backquote: "`", Slash: "/", Space: "space",
+  }
+  return codes[code] ?? null
+}
+
+export function modifierChordFromEvent(event: ModifierEvent): string | null {
+  const parts = [
+    event.metaKey && "cmd",
+    event.ctrlKey && "ctrl",
+    event.altKey && "alt",
+    event.shiftKey && "shift",
+  ].filter(Boolean)
+  return parts.length ? parts.join("+") : null
+}
+
+export function chordFromKeyboardEvent(
+  event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+): string | null {
+  if (["Meta", "Control", "Alt", "AltGraph", "Shift", "CapsLock", "Dead", "Process", "Unidentified"].includes(event.key)) return null
+  const key = codeToKey(event.code) ?? event.key.toLowerCase()
+  if (!key.trim() || key === "+") return null
+  return [modifierChordFromEvent(event), key].filter(Boolean).join("+")
+}
+
+export function isRecordableChord(chord: string): boolean {
+  const parsed = parseBinding(chord)
+  return Boolean(parsed && (parsed.meta || parsed.ctrl || parsed.alt || /^f(?:[1-9]|1[0-2])$/.test(parsed.key)))
+}
+
+export function isApplePlatform(): boolean {
+  if (typeof navigator === "undefined") return false
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform
+  return /mac|iphone|ipad/i.test(platform)
+}
+
+export function formatBindingParts(binding: string, apple: boolean): string[] {
+  const tokens = binding.split("+").map((part) => part.trim()).filter(Boolean)
+  const parsed = parseBinding(binding)
+  if (!parsed && (!tokens.length || tokens.some((token) => !MODIFIER_TOKENS.has(token.toLowerCase())))) return [binding]
+
+  return tokens.map((token) => {
+    const value = token.toLowerCase()
+    const modifier = MODIFIER_TOKENS.get(value)
+    if (modifier === "meta") return apple ? "⌘" : "Win"
+    if (modifier === "ctrl") return apple ? "⌃" : "Ctrl"
+    if (modifier === "alt") return apple ? "⌥" : "Alt"
+    if (modifier === "shift") return apple ? "⇧" : "Shift"
+    if (/^[a-z]$/.test(value)) return value.toUpperCase()
+    if (/^f\d+$/.test(value)) return value.toUpperCase()
+    const labels: Record<string, string> = {
+      space: "Space", arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓",
+      enter: "↵", escape: "Esc", backspace: "⌫", tab: "Tab",
+    }
+    return labels[value] ?? token
+  })
+}
+
+export function preferredBinding(bindings: string[], apple: boolean): string | null {
+  return bindings.find((binding) => binding.split("+").some((part) => /^(cmd|meta)$/i.test(part.trim())) === apple)
+    ?? bindings[0]
+    ?? null
 }

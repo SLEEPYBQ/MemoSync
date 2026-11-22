@@ -3,11 +3,44 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getKeybindingsFilePath, LOG_PREFIX } from "../shared/branding"
+import { findBindingConflict } from "../shared/keybinding-chords"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../shared/types"
 
 const KEYBINDING_ACTIONS = Object.keys(DEFAULT_KEYBINDINGS) as KeybindingAction[]
 
-type KeybindingsFile = Partial<Record<KeybindingAction, unknown>>
+type KeybindingsFile = Partial<Record<KeybindingAction, unknown>> & { version?: unknown }
+
+// Version 2 added Ctrl+Alt variants to three defaults that were ⌘-only.
+const KEYBINDINGS_FILE_VERSION = 2
+const CMD_ONLY_DEFAULTS_BEFORE_V2: Partial<Record<KeybindingAction, string>> = {
+  jumpToSidebarChat: "cmd+alt",
+  createChatInCurrentProject: "cmd+alt+n",
+  openAddProject: "cmd+alt+o",
+}
+
+function serializeKeybindingsFile(bindings: Record<KeybindingAction, string[]>) {
+  return `${JSON.stringify({ version: KEYBINDINGS_FILE_VERSION, ...bindings }, null, 2)}\n`
+}
+
+function upgradeKeybindingsSnapshot(file: KeybindingsFile, snapshot: KeybindingsSnapshot): KeybindingsSnapshot {
+  if (!file || typeof file !== "object" || Array.isArray(file)) return snapshot
+  if (typeof file.version === "number" && file.version >= KEYBINDINGS_FILE_VERSION) return snapshot
+  for (const [action, legacy] of Object.entries(CMD_ONLY_DEFAULTS_BEFORE_V2) as [KeybindingAction, string][]) {
+    const value = file[action]
+    const normalized = snapshot.bindings[action]
+    const untouched = value === undefined || (
+      Array.isArray(value) && value.length === 1 && typeof value[0] === "string"
+      && normalized.length === 1 && normalized[0] === legacy
+    )
+    if (!untouched) continue
+    const alternative = DEFAULT_KEYBINDINGS[action].find((binding) => binding !== legacy)
+    if (!alternative) continue
+    snapshot.bindings[action] = findBindingConflict(snapshot.bindings, action, alternative)
+      ? [legacy]
+      : [...DEFAULT_KEYBINDINGS[action]]
+  }
+  return snapshot
+}
 
 export class KeybindingsManager {
   readonly filePath: string
@@ -24,7 +57,7 @@ export class KeybindingsManager {
     await mkdir(path.dirname(this.filePath), { recursive: true })
     const file = Bun.file(this.filePath)
     if (!(await file.exists())) {
-      await writeFile(this.filePath, `${JSON.stringify(DEFAULT_KEYBINDINGS, null, 2)}\n`, "utf8")
+      await writeFile(this.filePath, serializeKeybindingsFile(DEFAULT_KEYBINDINGS), "utf8")
     }
     await this.reload()
     this.startWatching()
@@ -55,7 +88,7 @@ export class KeybindingsManager {
   async write(bindings: Partial<Record<KeybindingAction, string[]>>) {
     const nextSnapshot = normalizeKeybindings(bindings, this.filePath)
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, `${JSON.stringify(nextSnapshot.bindings, null, 2)}\n`, "utf8")
+    await writeFile(this.filePath, serializeKeybindingsFile(nextSnapshot.bindings), "utf8")
     this.setSnapshot(nextSnapshot)
     return nextSnapshot
   }
@@ -92,7 +125,8 @@ export async function readKeybindingsSnapshot(filePath: string) {
       return createDefaultSnapshot(filePath, "Keybindings file was empty. Using defaults.")
     }
     const parsed = JSON.parse(text) as KeybindingsFile
-    return normalizeKeybindings(parsed, filePath)
+    const snapshot = normalizeKeybindings(parsed, filePath)
+    return upgradeKeybindingsSnapshot(parsed, snapshot)
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return createDefaultSnapshot(filePath)
@@ -134,6 +168,11 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
       continue
     }
 
+    if (rawValue.length === 0) {
+      bindings[action] = []
+      continue
+    }
+
     const normalized = rawValue
       .filter((entry): entry is string => typeof entry === "string")
       .map((entry) => entry.trim())
@@ -142,9 +181,7 @@ export function normalizeKeybindings(value: KeybindingsFile | null | undefined, 
 
     if (normalized.length === 0) {
       bindings[action] = [...DEFAULT_KEYBINDINGS[action]]
-      if (rawValue.length > 0 || source[action] !== undefined) {
-        warnings.push(`${action} did not contain any valid shortcut strings`)
-      }
+      warnings.push(`${action} did not contain any valid shortcut strings`)
       continue
     }
 

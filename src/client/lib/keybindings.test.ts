@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { bindingMatchesEvent, findMatchingActionBinding, parseKeybindingInput } from "./keybindings"
-import type { KeybindingsSnapshot } from "../../shared/types"
+import {
+  actionMatchesEvent, bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findLegacySymbolBinding, findMatchingActionBinding, formatBindingParts, getBindingsForAction, getResolvedKeybindings, legacySymbolChord,
+  isRecordableChord, keyToCode, modifierChordFromEvent, parseKeybindingInput, preferredBinding,
+} from "./keybindings"
+import { DEFAULT_KEYBINDINGS, type KeybindingsSnapshot } from "../../shared/types"
 
 describe("parseKeybindingInput", () => {
   test("splits comma-separated values, trims whitespace, and lowercases", () => {
@@ -23,9 +26,70 @@ describe("bindingMatchesEvent", () => {
     const event = { key: "ø", code: "KeyO", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false } as KeyboardEvent
     expect(bindingMatchesEvent("Cmd+Alt+O", event)).toBe(true)
   })
+
+  test("records and matches the same physical key on AZERTY layouts", () => {
+    const event = { key: "a", code: "KeyQ", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false } as KeyboardEvent
+    expect(chordFromKeyboardEvent(event)).toBe("ctrl+q")
+    expect(bindingMatchesEvent("ctrl+q", event)).toBe(true)
+    expect(bindingMatchesEvent("ctrl+a", event)).toBe(false)
+  })
+
+  test("falls back to event.key for unmapped, numpad, and missing codes", () => {
+    const base = { metaKey: false, ctrlKey: true, altKey: false, shiftKey: false }
+    for (const [key, code, binding] of [["1", "Numpad1", "ctrl+1"], ["Enter", "NumpadEnter", "ctrl+enter"], ["a", "Unidentified", "ctrl+a"], ["a", "", "ctrl+a"]]) {
+      const event = { ...base, key, code } as KeyboardEvent
+      expect(chordFromKeyboardEvent(event)).toBe(binding)
+      expect(bindingMatchesEvent(binding!, event)).toBe(true)
+    }
+    expect(bindingMatchesEvent("ctrl+a", { ...base, key: "a" } as KeyboardEvent)).toBe(true)
+  })
+
+  test("ignores AltGraph but allows genuine Ctrl+Alt", () => {
+    const event = { key: "n", code: "KeyN", metaKey: false, ctrlKey: true, altKey: true, shiftKey: false } as KeyboardEvent
+    expect(bindingMatchesEvent("ctrl+alt+n", { ...event, getModifierState: (key: string) => key === "AltGraph" } as KeyboardEvent)).toBe(false)
+    expect(bindingMatchesEvent("ctrl+alt+n", { ...event, getModifierState: () => false } as KeyboardEvent)).toBe(true)
+    expect(bindingMatchesEvent("ctrl+alt+n", event)).toBe(true)
+  })
 })
 
 describe("findMatchingActionBinding", () => {
+  test("prioritizes a saved literal symbol over physical keys on either layout", () => {
+    const bindings = { ...DEFAULT_KEYBINDINGS, toggleEmbeddedTerminal: ["ctrl+shift+/", "ctrl+shift+,"], toggleRightSidebar: ["control+shift+?"] }
+    const snapshot = { bindings, warning: null, filePathDisplay: "" }
+    for (const code of ["Slash", "Comma"]) {
+      const event = { key: "?", code, ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }
+      expect(legacySymbolChord(event)).toBe("ctrl+shift+?")
+      expect(bindingMatchesEvent("ctrl+shift+?", event)).toBe(true)
+      expect(findLegacySymbolBinding(bindings, event)).toEqual({ action: "toggleRightSidebar", binding: "control+shift+?" })
+      expect(actionMatchesEvent(snapshot, "toggleRightSidebar", event)).toBe(true)
+      expect(actionMatchesEvent(snapshot, "toggleEmbeddedTerminal", event)).toBe(false)
+      const physicalOnly = { ...snapshot, bindings: { ...bindings, toggleRightSidebar: [] } }
+      expect(actionMatchesEvent(physicalOnly, "toggleEmbeddedTerminal", event)).toBe(true)
+    }
+  })
+
+  test("keeps physical AZERTY keys exclusive and ignores AltGraph", () => {
+    const snapshot = { bindings: { ...DEFAULT_KEYBINDINGS, toggleLeftSidebar: ["ctrl+a"], toggleRightSidebar: ["ctrl+q"] }, warning: null, filePathDisplay: "" }
+    const event = { key: "a", code: "KeyQ", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false }
+    expect(legacySymbolChord(event)).toBeNull()
+    expect(actionMatchesEvent(snapshot, "toggleLeftSidebar", event)).toBe(false)
+    expect(actionMatchesEvent(snapshot, "toggleRightSidebar", event)).toBe(true)
+    const altGraph = { ...event, getModifierState: (name: string) => name === "AltGraph" }
+    expect(actionMatchesEvent(snapshot, "toggleRightSidebar", altGraph)).toBe(false)
+    expect(legacySymbolChord({ ...altGraph, key: "?", code: "Slash" })).toBeNull()
+    const inaccessible = new Proxy(snapshot.bindings, { ownKeys: () => { throw new Error("scanned bindings") } })
+    expect(findLegacySymbolBinding(inaccessible, event)).toBeNull()
+  })
+
+  test("does not treat nonprintable, unmapped-code, hidden or differently modified bindings as legacy owners", () => {
+    const event = { key: "?", code: "Slash", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }
+    for (const key of [" ", "+", "Enter", "\u0000"]) expect(legacySymbolChord({ ...event, key })).toBeNull()
+    expect(legacySymbolChord({ ...event, code: "NumpadAdd" })).toBeNull()
+    const bindings = { ...DEFAULT_KEYBINDINGS, openInEditor: ["ctrl+shift+?"], toggleRightSidebar: ["ctrl+?"] }
+    expect(findLegacySymbolBinding(bindings, event)).toBeNull()
+    expect(legacySymbolChord({ ...event, key: "😀" })).toBe("ctrl+shift+😀")
+  })
+
   test("returns the matching binding for multi-binding actions", () => {
     const snapshot: KeybindingsSnapshot = {
       bindings: {
@@ -45,5 +109,67 @@ describe("findMatchingActionBinding", () => {
     const event = { key: "˜", code: "KeyN", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false } as KeyboardEvent
 
     expect(findMatchingActionBinding(snapshot, "createChatInCurrentProject", event)).toBe("cmd+alt+n")
+  })
+
+  test("keeps an explicitly unassigned action unassigned", () => {
+    const snapshot = { bindings: { ...DEFAULT_KEYBINDINGS, toggleEmbeddedTerminal: [] }, warning: null, filePathDisplay: "" }
+    expect(getBindingsForAction(snapshot, "toggleEmbeddedTerminal")).toEqual([])
+    expect(getResolvedKeybindings(snapshot).bindings.toggleEmbeddedTerminal).toEqual([])
+    const event = { key: "j", code: "KeyJ", metaKey: true, ctrlKey: false, altKey: false, shiftKey: false } as KeyboardEvent
+    expect(findMatchingActionBinding(snapshot, "toggleEmbeddedTerminal", event)).toBeNull()
+  })
+})
+
+describe("shortcut recording and display", () => {
+  const event = (overrides: Partial<KeyboardEvent> = {}) => ({
+    key: "", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
+  }) as KeyboardEvent
+
+  test("records physical keys and canonical modifier order", () => {
+    expect(chordFromKeyboardEvent(event({ key: "∫", code: "KeyB", altKey: true }))).toBe("alt+b")
+    expect(chordFromKeyboardEvent(event({ key: "O", code: "KeyO", metaKey: true, shiftKey: true }))).toBe("cmd+shift+o")
+    expect(chordFromKeyboardEvent(event({ key: "Control", code: "ControlLeft", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: "+", code: "NumpadAdd", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: " ", code: "Space", ctrlKey: true }))).toBe("ctrl+space")
+    expect(chordFromKeyboardEvent(event({ key: " ", code: "", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: "AltGraph", code: "AltRight", ctrlKey: true, altKey: true }))).toBeNull()
+    for (const key of ["CapsLock", "Dead", "Process", "Unidentified"]) expect(chordFromKeyboardEvent(event({ key }))).toBeNull()
+  })
+
+  test("collects modifiers and checks which chords can be recorded", () => {
+    expect(modifierChordFromEvent(event())).toBeNull()
+    expect(modifierChordFromEvent(event({ metaKey: true, ctrlKey: true, altKey: true, shiftKey: true }))).toBe("cmd+ctrl+alt+shift")
+    expect(isRecordableChord("j")).toBe(false)
+    expect(isRecordableChord("shift+j")).toBe(false)
+    expect(isRecordableChord("f5")).toBe(true)
+    expect(isRecordableChord("f13")).toBe(false)
+    expect(isRecordableChord("cmd+j")).toBe(true)
+  })
+
+  test("formats platform-specific keycaps and modifier-only shortcuts", () => {
+    expect(formatBindingParts("cmd+ctrl+alt+shift+o", true)).toEqual(["⌘", "⌃", "⌥", "⇧", "O"])
+    expect(formatBindingParts("meta+control+option+shift+space", false)).toEqual(["Win", "Ctrl", "Alt", "Shift", "Space"])
+    expect(formatBindingParts("cmd+alt", true)).toEqual(["⌘", "⌥"])
+    expect(formatBindingParts("ctrl+arrowleft", false)).toEqual(["Ctrl", "←"])
+    expect(formatBindingParts("ctrl+f5", false)).toEqual(["Ctrl", "F5"])
+    expect(formatBindingParts("invalid+two+keys", true)).toEqual(["invalid+two+keys"])
+  })
+
+  test("prefers bindings for the active platform", () => {
+    expect(preferredBinding(["ctrl+b", "cmd+b"], true)).toBe("cmd+b")
+    expect(preferredBinding(["cmd+b", "ctrl+b"], false)).toBe("ctrl+b")
+    expect(preferredBinding(["cmd+b"], false)).toBe("cmd+b")
+    expect(preferredBinding([], true)).toBeNull()
+  })
+
+  test("translates physical punctuation and space in both directions", () => {
+    const pairs = { "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight", "\\": "Backslash", ";": "Semicolon", "'": "Quote", ",": "Comma", ".": "Period", "/": "Slash", "`": "Backquote", space: "Space", a: "KeyA", "1": "Digit1" }
+    for (const [key, code] of Object.entries(pairs)) {
+      expect(keyToCode(key)).toBe(code)
+      expect(codeToKey(code)).toBe(key)
+    }
+    expect(codeToKey("Unknown")).toBeNull()
+    expect(bindingMatchesEvent("ctrl+space", event({ key: "Unusual", code: "Space", ctrlKey: true }))).toBe(true)
+    expect(bindingMatchesEvent("cmd+,", event({ key: "≤", code: "Comma", metaKey: true }))).toBe(true)
   })
 })
