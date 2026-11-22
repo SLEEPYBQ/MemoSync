@@ -3,10 +3,12 @@ const { spawn } = require("node:child_process")
 const { randomBytes } = require("node:crypto")
 const { createInterface } = require("node:readline")
 const path = require("node:path")
-const { trackBackendProcess } = require("./backend-lifecycle.cjs")
+const { trackBackendProcess, stopBackendForUpdate } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
-const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers, isMainNavigationUrl } = require("./navigation.cjs")
+const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers, isMainAppFrame: isTrustedMainFrame } = require("./navigation.cjs")
 const { openUiPreferences } = require("./ui-preferences.cjs")
+const { createDesktopUpdater } = require("./updater.cjs")
+const { installUpdateHandlers } = require("./update-ipc.cjs")
 
 if (process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR)
   app.setPath("userData", path.resolve(process.env.MEMOSYNC_DESKTOP_USER_DATA_DIR))
@@ -19,6 +21,7 @@ let quitting = false
 let stopped = false
 let desktopSession
 let uiPreferences
+let updatePreparing = false
 const contentWindows = new Set()
 
 // The page runs up to the top edge, with the traffic lights centred in its 48px top band.
@@ -142,7 +145,7 @@ function startBackend(password) {
       clearTimeout(timeout)
       stopped = true
       if (!ready) reject(new Error(`The local backend exited (${code}). Check that no other MemoSync instance is using your data directory.`))
-      else if (!quitting) {
+      else if (!quitting && !updatePreparing) {
         dialog.showErrorBox("MemoSync backend stopped", "The local backend stopped unexpectedly. Quit and reopen MemoSync.")
         app.quit()
       }
@@ -202,9 +205,7 @@ else {
     backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
   })
   function isMainAppFrame(event) {
-    const owner = mainWindow
-    return owner && !owner.isDestroyed() && event.sender === owner.webContents
-      && event.senderFrame === owner.webContents.mainFrame && isMainNavigationUrl(event.senderFrame.url, origin)
+    return isTrustedMainFrame(event, mainWindow, origin)
   }
   ipcMain.on("memosync:get-ui-preference", (event, key) => {
     event.returnValue = isMainAppFrame(event) ? uiPreferences.get(key) : null
@@ -260,6 +261,55 @@ else {
     const password = randomBytes(32).toString("hex")
     origin = await startBackend(password)
     await authenticate(password)
+    const updater = createDesktopUpdater({
+      app,
+      shell,
+      prepareInstall: async () => {
+        updatePreparing = true
+        await stopBackendForUpdate(backend, backendLifecycle)
+        quitting = true
+      },
+    })
+    const removeUpdateHandlers = installUpdateHandlers({
+      ipcMain, updater,
+      getMainWindow: () => mainWindow,
+      getOrigin: () => origin,
+      confirmInstall: async () => {
+        if (!mainWindow || mainWindow.isDestroyed()) return false
+        const chinese = app.getLocale().toLowerCase().startsWith("zh")
+        const { response } = await dialog.showMessageBox(mainWindow, {
+          type: "question",
+          title: chinese ? "安装 MemoSync 更新" : "Install MemoSync update",
+          message: chinese ? "现在重启并安装更新？" : "Restart and install the update now?",
+          detail: chinese ? "正在运行的任务将会停止。请先完成需要保留的工作。" : "Running tasks will stop. Finish any work you need before restarting.",
+          buttons: chinese ? ["取消", "重启并安装"] : ["Cancel", "Restart and install"],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true,
+        })
+        return response === 1
+      },
+    })
+    const recoverFromInstallError = updater.onChange((snapshot) => {
+      if (snapshot.status !== "error" || !updatePreparing) return
+      updatePreparing = false
+      dialog.showErrorBox("MemoSync update failed", `${snapshot.error}\n\nMemoSync will reopen. Your existing data has not been removed.`)
+      app.relaunch()
+      app.quit()
+    })
+    // Check quietly after startup and periodically; downloading and installing
+    // always require the user's action in Settings.
+    const initialCheck = setTimeout(() => { void updater.checkForUpdates() }, 30_000)
+    const periodicCheck = setInterval(() => { void updater.checkForUpdates() }, 12 * 60 * 60 * 1000)
+    initialCheck.unref()
+    periodicCheck.unref()
+    app.once("will-quit", () => {
+      clearTimeout(initialCheck)
+      clearInterval(periodicCheck)
+      removeUpdateHandlers()
+      recoverFromInstallError()
+      updater.dispose()
+    })
     createWindow()
   }).catch((error) => {
     dialog.showErrorBox("MemoSync could not start", `${error.message}\n\nYour existing data has not been removed.`)

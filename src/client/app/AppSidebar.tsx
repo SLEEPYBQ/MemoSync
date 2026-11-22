@@ -29,6 +29,7 @@ import {
 } from "./sidebarNumberJump"
 import type { SocketStatus } from "./socket"
 import { getReleaseNotice, useDismissedRelease } from "./releaseNotice"
+import { getSettingsRowHref, SETTINGS_ROWS } from "./settings/registry"
 
 const SIDEBAR_WIDTH_STORAGE_KEY = "memosync:sidebar-width"
 /** How close to the window's left edge the pointer must come to reveal a collapsed sidebar. */
@@ -517,6 +518,7 @@ function AppSidebarImpl({
   const isUpdating = updateSnapshot?.status === "updating" || updateSnapshot?.status === "restart_pending"
   const { dismissedVersion, dismiss: dismissRelease } = useDismissedRelease()
   const release = getReleaseNotice(releaseNotice, dismissedVersion)
+  const desktopUpdates = typeof window !== "undefined" && Boolean(window.memosyncDesktop?.updates)
 
   return (
     <>
@@ -713,9 +715,14 @@ function AppSidebarImpl({
           {release ? (
             <div data-release-notice className={cn(SIDEBAR_ROW_CLASS, "gap-1 pl-2.5 pr-1")}>
               <a
-                href={release.url}
-                target="_blank"
-                rel="noopener noreferrer"
+                href={desktopUpdates ? getSettingsRowHref(SETTINGS_ROWS.applicationUpdate) : release.url}
+                target={desktopUpdates ? undefined : "_blank"}
+                rel={desktopUpdates ? undefined : "noopener noreferrer"}
+                onClick={desktopUpdates ? (event) => {
+                  event.preventDefault()
+                  navigate(getSettingsRowHref(SETTINGS_ROWS.applicationUpdate))
+                  onClose()
+                } : undefined}
                 className="flex min-w-0 flex-1 items-center gap-2 self-stretch text-[13px] text-muted-foreground transition-colors hover:text-foreground"
               >
                 <CircleArrowUp aria-hidden="true" className="h-4 w-4 shrink-0 text-logo" />

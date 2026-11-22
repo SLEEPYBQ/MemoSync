@@ -132,6 +132,8 @@ The app isn't notarized yet, so macOS blocks it the first time. Try to open it, 
 
 Windows packages are not publisher-signed. Linux requires a graphical session and support for Electron's sandbox; on Ubuntu, prefer the `.deb` package.
 
+In the desktop app, open **Settings → About** to check for updates and download them without leaving MemoSync. Windows installer and Linux AppImage installations can restart to install a downloaded update. macOS, Linux Debian packages and Windows ZIP installations download and verify the matching installer, then open it so you can finish installation. MemoSync asks before closing for an update; finish any running work first. Source installations continue to update through their existing installation method.
+
 The app doesn't include any agents, so install Claude Code or Codex first. To use Pi, install `@earendil-works/pi-coding-agent` 1.3.0 or newer. The app shares `~/.memosync/data` with a source install, and only one of them can run at a time.
 
 ### From source
@@ -275,6 +277,8 @@ bun run desktop:smoke        # staged backend checks
 ```
 
 Pull requests run compatibility checks without requiring installers. The manually dispatched **Desktop release** workflow builds all four native targets and exercises each packaged app before it can publish a release.
+
+Desktop releases also include `latest.yml`, `latest-linux.yml` and the Windows installer blockmap for in-app updates. Publication verifies that the metadata version, package sizes and SHA512 hashes match the complete set of built packages, then writes `SHA256SUMS` for every published asset. macOS update feeds are not published while builds use ad-hoc signing; the app downloads the verified DMG instead.
 
 ## Acknowledgements
 
