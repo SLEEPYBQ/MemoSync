@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { DEFAULT_KEYBINDINGS, type KeybindingsSnapshot, type SidebarProjectGroup } from "../../shared/types"
+import { actionMatchesEvent } from "../lib/keybindings"
 import {
   getSidebarJumpTargetIndex,
   getSidebarNumberJumpHint,
@@ -206,6 +207,17 @@ describe("shouldShowSidebarNumberJumpHints", () => {
 })
 
 describe("getSidebarJumpTargetIndex", () => {
+  test("a saved literal number-row symbol takes precedence without hiding modifier hints", () => {
+    const bindings = { ...KEYBINDINGS.bindings, jumpToSidebarChat: ["ctrl+shift"], toggleEmbeddedTerminal: ["shift+control+!"] }
+    const snapshot = { ...KEYBINDINGS, bindings }
+    const event = { key: "!", code: "Digit1", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }
+    expect(shouldShowSidebarNumberJumpHints(snapshot, event)).toBe(true)
+    expect(actionMatchesEvent(snapshot, "toggleEmbeddedTerminal", event)).toBe(true)
+    expect(getSidebarJumpTargetIndex(snapshot, event)).toBeNull()
+    expect(getSidebarJumpTargetIndex({ ...snapshot, bindings: { ...bindings, toggleEmbeddedTerminal: [] } }, event)).toBe(1)
+    expect(getSidebarJumpTargetIndex(snapshot, { ...event, getModifierState: () => true })).toBeNull()
+  })
+
   test("ignores AltGraph while accepting genuine Ctrl+Alt", () => {
     const defaults = { ...KEYBINDINGS, bindings: DEFAULT_KEYBINDINGS }
     const event = { code: "Digit2", metaKey: false, altKey: true, ctrlKey: true, shiftKey: false }

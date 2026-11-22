@@ -137,8 +137,8 @@ export function KeybindingsSection({ state, appleOverride }: { state: Pick<AppSt
                   onStartRecording={(index) => { setRecordedCodes(new Set()); setRecording({ action, index }) }}
                   onStopRecording={() => { setRecordedCodes(new Set()); setRecording(null) }}
                   onCommit={(next) => void save(action, next)}
-                  conflictLabel={(chord) => {
-                    const conflict = findBindingConflict(drafts, action, chord)
+                  conflictLabel={(chord, alias) => {
+                    const conflict = findBindingConflict(drafts, action, chord) ?? (alias ? findBindingConflict(drafts, action, alias) : null)
                     return conflict ? KEYBINDING_ACTION_LABELS[conflict] : null
                   }}
                   modifierOnly={action === "jumpToSidebarChat"}

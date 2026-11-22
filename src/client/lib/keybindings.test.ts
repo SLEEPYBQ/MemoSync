@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
-  bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findMatchingActionBinding, formatBindingParts, getBindingsForAction, getResolvedKeybindings,
+  actionMatchesEvent, bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findLegacySymbolBinding, findMatchingActionBinding, formatBindingParts, getBindingsForAction, getResolvedKeybindings, legacySymbolChord,
   isRecordableChord, keyToCode, modifierChordFromEvent, parseKeybindingInput, preferredBinding,
 } from "./keybindings"
 import { DEFAULT_KEYBINDINGS, type KeybindingsSnapshot } from "../../shared/types"
@@ -53,6 +53,43 @@ describe("bindingMatchesEvent", () => {
 })
 
 describe("findMatchingActionBinding", () => {
+  test("prioritizes a saved literal symbol over physical keys on either layout", () => {
+    const bindings = { ...DEFAULT_KEYBINDINGS, toggleEmbeddedTerminal: ["ctrl+shift+/", "ctrl+shift+,"], toggleRightSidebar: ["control+shift+?"] }
+    const snapshot = { bindings, warning: null, filePathDisplay: "" }
+    for (const code of ["Slash", "Comma"]) {
+      const event = { key: "?", code, ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }
+      expect(legacySymbolChord(event)).toBe("ctrl+shift+?")
+      expect(bindingMatchesEvent("ctrl+shift+?", event)).toBe(true)
+      expect(findLegacySymbolBinding(bindings, event)).toEqual({ action: "toggleRightSidebar", binding: "control+shift+?" })
+      expect(actionMatchesEvent(snapshot, "toggleRightSidebar", event)).toBe(true)
+      expect(actionMatchesEvent(snapshot, "toggleEmbeddedTerminal", event)).toBe(false)
+      const physicalOnly = { ...snapshot, bindings: { ...bindings, toggleRightSidebar: [] } }
+      expect(actionMatchesEvent(physicalOnly, "toggleEmbeddedTerminal", event)).toBe(true)
+    }
+  })
+
+  test("keeps physical AZERTY keys exclusive and ignores AltGraph", () => {
+    const snapshot = { bindings: { ...DEFAULT_KEYBINDINGS, toggleLeftSidebar: ["ctrl+a"], toggleRightSidebar: ["ctrl+q"] }, warning: null, filePathDisplay: "" }
+    const event = { key: "a", code: "KeyQ", ctrlKey: true, shiftKey: false, altKey: false, metaKey: false }
+    expect(legacySymbolChord(event)).toBeNull()
+    expect(actionMatchesEvent(snapshot, "toggleLeftSidebar", event)).toBe(false)
+    expect(actionMatchesEvent(snapshot, "toggleRightSidebar", event)).toBe(true)
+    const altGraph = { ...event, getModifierState: (name: string) => name === "AltGraph" }
+    expect(actionMatchesEvent(snapshot, "toggleRightSidebar", altGraph)).toBe(false)
+    expect(legacySymbolChord({ ...altGraph, key: "?", code: "Slash" })).toBeNull()
+    const inaccessible = new Proxy(snapshot.bindings, { ownKeys: () => { throw new Error("scanned bindings") } })
+    expect(findLegacySymbolBinding(inaccessible, event)).toBeNull()
+  })
+
+  test("does not treat nonprintable, unmapped-code, hidden or differently modified bindings as legacy owners", () => {
+    const event = { key: "?", code: "Slash", ctrlKey: true, shiftKey: true, altKey: false, metaKey: false }
+    for (const key of [" ", "+", "Enter", "\u0000"]) expect(legacySymbolChord({ ...event, key })).toBeNull()
+    expect(legacySymbolChord({ ...event, code: "NumpadAdd" })).toBeNull()
+    const bindings = { ...DEFAULT_KEYBINDINGS, openInEditor: ["ctrl+shift+?"], toggleRightSidebar: ["ctrl+?"] }
+    expect(findLegacySymbolBinding(bindings, event)).toBeNull()
+    expect(legacySymbolChord({ ...event, key: "😀" })).toBe("ctrl+shift+😀")
+  })
+
   test("returns the matching binding for multi-binding actions", () => {
     const snapshot: KeybindingsSnapshot = {
       bindings: {

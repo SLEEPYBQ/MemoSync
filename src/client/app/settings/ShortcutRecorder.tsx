@@ -33,7 +33,7 @@ interface ShortcutRecorderProps {
   onStartRecording: (index: number | "new") => void
   onStopRecording: () => void
   onCommit: (nextBindings: string[]) => void
-  conflictLabel: (chord: string) => string | null
+  conflictLabel: (chord: string, alias?: string) => string | null
   modifierOnly: boolean
   onRecordingCodesChange?: (codes: Set<string>) => void
 }
@@ -59,9 +59,9 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       propsRef.current.onRecordingCodesChange?.(new Set())
       propsRef.current.onStopRecording()
     }
-    const commit = (chord: string) => {
+    const commit = (chord: string, alias?: string) => {
       const current = propsRef.current
-      const conflict = current.conflictLabel(chord)
+      const conflict = alias ? current.conflictLabel(chord, alias) : current.conflictLabel(chord)
       if (conflict) {
         setError(t("settings:shortcutInUseBy", { action: conflict }))
         if (!reduced) void shakeControls.start({ x: [0, -4, 4, -3, 3, 0], transition: { duration: 0.28 } })

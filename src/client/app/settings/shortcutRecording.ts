@@ -1,8 +1,8 @@
-import { chordFromKeyboardEvent, isRecordableChord, modifierChordFromEvent, parseModifiers } from "../../lib/keybindings"
+import { chordFromKeyboardEvent, isRecordableChord, legacySymbolChord, modifierChordFromEvent, parseModifiers } from "../../lib/keybindings"
 
 interface ShortcutRecordingCallbacks {
   isModifierOnly: () => boolean
-  commit: (chord: string) => void
+  commit: (chord: string, alias?: string) => void
   stop: () => void
   remove: () => void
   setModifiers: (modifiers: string | null) => void
@@ -43,7 +43,9 @@ export function createShortcutRecordingHandlers(callbacks: ShortcutRecordingCall
     const chord = chordFromKeyboardEvent(event)
     if (!chord) return
     if (!isRecordableChord(chord)) return callbacks.needsModifier()
-    callbacks.commit(chord)
+    const alias = legacySymbolChord(event)
+    if (alias) callbacks.commit(chord, alias)
+    else callbacks.commit(chord)
   }
 
   function keyup(event: KeyboardEvent) {

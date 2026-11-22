@@ -27,13 +27,44 @@ export function parseKeybindingInput(value: string) {
     .filter(Boolean)
 }
 
-export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
+type ModifierEvent = Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">
+export type KeybindingEvent = ModifierEvent & Pick<KeyboardEvent, "code"> & Partial<Pick<KeyboardEvent, "key" | "getModifierState">>
+
+export function legacySymbolChord(event: KeybindingEvent): string | null {
+  if (event.getModifierState?.("AltGraph") || !event.key) return null
+  const literal = event.key.toLowerCase()
+  if (!/^[^\p{C}\s+]$/u.test(literal) || keyToCode(literal) !== null) return null
+  const physical = codeToKey(event.code ?? "")
+  if (!physical || physical === literal) return null
+  return [modifierChordFromEvent(event), literal].filter(Boolean).join("+")
+}
+
+export function findLegacySymbolBinding(
+  bindings: Record<KeybindingAction, string[]>,
+  event: KeybindingEvent,
+): { action: KeybindingAction; binding: string } | null {
+  const chord = legacySymbolChord(event)
+  if (!chord) return null
+  const literal = parseBinding(chord)
+  if (!literal) return null
+  for (const action of Object.keys(bindings) as KeybindingAction[]) {
+    if (action === "openInEditor" || action === "jumpToSidebarChat") continue
+    for (const binding of bindings[action]) {
+      const parsed = parseBinding(binding)
+      if (parsed && parsed.key === literal.key && parsed.ctrl === literal.ctrl && parsed.meta === literal.meta
+        && parsed.alt === literal.alt && parsed.shift === literal.shift) return { action, binding }
+    }
+  }
+  return null
+}
+
+export function bindingMatchesEvent(binding: string, event: KeybindingEvent) {
   if (event.getModifierState?.("AltGraph")) return false
   const parsed = parseBinding(binding)
   if (!parsed) return false
 
   return (
-    eventMatchesParsedKey(event, parsed.key) &&
+    (eventMatchesParsedKey(event, parsed.key) || (legacySymbolChord(event) !== null && event.key?.toLowerCase() === parsed.key)) &&
     event.ctrlKey === parsed.ctrl &&
     event.metaKey === parsed.meta &&
     event.altKey === parsed.alt &&
@@ -44,17 +75,18 @@ export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
 export function actionMatchesEvent(
   snapshot: KeybindingsSnapshot | null,
   action: KeybindingAction,
-  event: KeyboardEvent
+  event: KeybindingEvent
 ) {
-  const bindings = getBindingsForAction(snapshot, action)
-  return bindings.some((binding) => bindingMatchesEvent(binding, event))
+  return findMatchingActionBinding(snapshot, action, event) !== null
 }
 
 export function findMatchingActionBinding(
   snapshot: KeybindingsSnapshot | null,
   action: KeybindingAction,
-  event: KeyboardEvent
+  event: KeybindingEvent
 ) {
+  const owner = findLegacySymbolBinding(snapshot?.bindings ?? DEFAULT_KEYBINDINGS, event)
+  if (owner) return owner.action === action ? owner.binding : null
   return getBindingsForAction(snapshot, action).find((binding) => bindingMatchesEvent(binding, event)) ?? null
 }
 
@@ -83,8 +115,8 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   }
 }
 
-function eventMatchesParsedKey(event: KeyboardEvent, key: string) {
-  return (codeToKey(event.code ?? "") ?? event.key.toLowerCase()) === key
+function eventMatchesParsedKey(event: KeybindingEvent, key: string) {
+  return (codeToKey(event.code ?? "") ?? event.key?.toLowerCase()) === key
 }
 
 export function keyToCode(key: string): string | null {
@@ -125,8 +157,6 @@ export function codeToKey(code: string): string | null {
   }
   return codes[code] ?? null
 }
-
-type ModifierEvent = Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">
 
 export function modifierChordFromEvent(event: ModifierEvent): string | null {
   const parts = [

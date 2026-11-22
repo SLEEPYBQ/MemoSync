@@ -1,5 +1,5 @@
-import { findMatchingActionBinding, getBindingsForAction, parseModifiers } from "../lib/keybindings"
-import type { SidebarChatRow, SidebarProjectGroup, KeybindingsSnapshot } from "../../shared/types"
+import { findLegacySymbolBinding, findMatchingActionBinding, getBindingsForAction, parseModifiers, type KeybindingEvent } from "../lib/keybindings"
+import { DEFAULT_KEYBINDINGS, type SidebarChatRow, type SidebarProjectGroup, type KeybindingsSnapshot } from "../../shared/types"
 
 export const SIDEBAR_NUMBER_JUMP_LIMIT = 9
 type ModifierKeyEvent = Pick<KeyboardEvent, "metaKey" | "altKey" | "ctrlKey" | "shiftKey"> & Partial<Pick<KeyboardEvent, "getModifierState">>
@@ -38,12 +38,13 @@ export function getVisibleSidebarChats(
 
 export function getSidebarJumpTargetIndex(
   snapshot: KeybindingsSnapshot | null,
-  event: ModifierKeyEvent & Pick<KeyboardEvent, "code">
+  event: KeybindingEvent
 ): number | null {
   if (!shouldShowSidebarNumberJumpHints(snapshot, event)) return null
   if (!event.code.startsWith("Digit")) return null
   const digit = Number(event.code.slice("Digit".length))
-  return Number.isInteger(digit) && digit >= 1 && digit <= SIDEBAR_NUMBER_JUMP_LIMIT ? digit : null
+  if (!Number.isInteger(digit) || digit < 1 || digit > SIDEBAR_NUMBER_JUMP_LIMIT) return null
+  return findLegacySymbolBinding(snapshot?.bindings ?? DEFAULT_KEYBINDINGS, event) ? null : digit
 }
 
 export function getSidebarNumberJumpHint(

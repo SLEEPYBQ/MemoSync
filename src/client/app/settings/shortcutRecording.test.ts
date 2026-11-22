@@ -14,7 +14,7 @@ function keyboardEvent(key: string, code: string, overrides: Partial<KeyboardEve
 }
 
 function recording(modifierOnly: boolean) {
-  const commit = mock((_chord: string) => {})
+  const commit = mock((_chord: string, _alias?: string) => {})
   const stop = mock(() => {})
   const remove = mock(() => {})
   const setModifiers = mock((_modifiers: string | null) => {})
@@ -29,6 +29,18 @@ function recording(modifierOnly: boolean) {
 }
 
 describe("shortcut recording handlers", () => {
+  test("passes the typed symbol as a conflict candidate without changing the physical chord", () => {
+    const session = recording(false)
+    session.keydown(keyboardEvent("?", "Slash", { ctrlKey: true, shiftKey: true }))
+    session.keydown(keyboardEvent("?", "Comma", { ctrlKey: true, shiftKey: true }))
+    session.keydown(keyboardEvent("a", "KeyQ", { ctrlKey: true }))
+    expect(session.commit.mock.calls).toEqual([
+      ["ctrl+shift+/", "ctrl+shift+?"],
+      ["ctrl+shift+,", "ctrl+shift+?"],
+      ["ctrl+q"],
+    ])
+  })
+
   test("discards an AltGr sequence and records genuine Ctrl+Alt in the same session", () => {
     const session = recording(true)
     const ctrlDown = keyboardEvent("Control", "ControlLeft", { ctrlKey: true })
