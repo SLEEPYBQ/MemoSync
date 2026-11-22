@@ -109,6 +109,7 @@ export type StandaloneTranscriptExportCommandResult = StandaloneTranscriptExport
 
 export interface QueuedChatMessage {
   id: string
+  rejection?: "stale_native_command"
   content: string
   attachments: ChatAttachment[]
   createdAt: number

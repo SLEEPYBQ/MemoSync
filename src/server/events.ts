@@ -168,7 +168,7 @@ export type QueuedMessageEvent =
     }
   | {
       v: 2
-      type: "queued_message_removed"
+      type: "queued_message_removed" | "queued_native_command_rejected"
       timestamp: number
       chatId: string
       queuedMessageId: string

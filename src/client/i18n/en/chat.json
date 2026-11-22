@@ -241,6 +241,7 @@
   "processing": "Processing...",
   "copy": "Copy",
   "queued": "Queued",
+  "staleQueuedNativeCommand": "This saved command needs to be submitted again from the current slash menu.",
   "steerNow": "Send now",
   "removeQueuedMessage": "Remove queued message",
   "questionCount_one": "Question",
