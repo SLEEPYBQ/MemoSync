@@ -1915,7 +1915,7 @@ export function createWsRouter({
           return
         }
         case "chat.cancel": {
-          await agent.cancel(command.chatId)
+          await agent.cancel(command.chatId, { preserveStreamingText: true })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           return
         }

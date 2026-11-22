@@ -1097,6 +1097,8 @@ export interface ContextClearedEntry extends TranscriptEntryBase {
 
 export interface InterruptedEntry extends TranscriptEntryBase {
   kind: "interrupted"
+  /** Partial reply retained by the transcript Stop action. */
+  assistantText?: string
   /** Durable tombstone for an Auto queue row stopped before delivery. Internal
    * queue recovery metadata; omitted from ordinary active-turn interruptions. */
   cancelledQueuedMessageId?: string

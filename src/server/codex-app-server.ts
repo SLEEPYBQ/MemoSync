@@ -1828,6 +1828,7 @@ export class CodexAppServerManager {
     if (notification.item.type === "agentMessage") {
       pendingTurn.queue.push({
         type: "transcript",
+        itemId: notification.item.id,
         entry: timestamped({
           kind: "assistant_text",
           text: notification.item.text,
