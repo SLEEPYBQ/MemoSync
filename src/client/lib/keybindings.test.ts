@@ -27,6 +27,23 @@ describe("bindingMatchesEvent", () => {
     expect(bindingMatchesEvent("Cmd+Alt+O", event)).toBe(true)
   })
 
+  test("records and matches the same physical key on AZERTY layouts", () => {
+    const event = { key: "a", code: "KeyQ", metaKey: false, ctrlKey: true, altKey: false, shiftKey: false } as KeyboardEvent
+    expect(chordFromKeyboardEvent(event)).toBe("ctrl+q")
+    expect(bindingMatchesEvent("ctrl+q", event)).toBe(true)
+    expect(bindingMatchesEvent("ctrl+a", event)).toBe(false)
+  })
+
+  test("falls back to event.key for unmapped, numpad, and missing codes", () => {
+    const base = { metaKey: false, ctrlKey: true, altKey: false, shiftKey: false }
+    for (const [key, code, binding] of [["1", "Numpad1", "ctrl+1"], ["Enter", "NumpadEnter", "ctrl+enter"], ["a", "Unidentified", "ctrl+a"], ["a", "", "ctrl+a"]]) {
+      const event = { ...base, key, code } as KeyboardEvent
+      expect(chordFromKeyboardEvent(event)).toBe(binding)
+      expect(bindingMatchesEvent(binding!, event)).toBe(true)
+    }
+    expect(bindingMatchesEvent("ctrl+a", { ...base, key: "a" } as KeyboardEvent)).toBe(true)
+  })
+
   test("ignores AltGraph but allows genuine Ctrl+Alt", () => {
     const event = { key: "n", code: "KeyN", metaKey: false, ctrlKey: true, altKey: true, shiftKey: false } as KeyboardEvent
     expect(bindingMatchesEvent("ctrl+alt+n", { ...event, getModifierState: (key: string) => key === "AltGraph" } as KeyboardEvent)).toBe(false)

@@ -1,6 +1,8 @@
 import { t } from "../i18n"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../../shared/types"
+import { MODIFIER_TOKENS, parseBinding } from "../../shared/keybinding-chords"
 
+export { parseBinding, parseModifiers } from "../../shared/keybinding-chords"
 export const KEYBINDING_ACTION_LABELS: Record<KeybindingAction, string> = {
   get toggleEmbeddedTerminal() { return t("settings:toggleEmbeddedTerminal") },
   get toggleLeftSidebar() { return t("settings:toggleLeftSidebar") },
@@ -24,25 +26,6 @@ export function parseKeybindingInput(value: string) {
     .map((binding) => binding.toLowerCase())
     .filter(Boolean)
 }
-
-type ModifierFlags = {
-  ctrl: boolean
-  meta: boolean
-  alt: boolean
-  shift: boolean
-}
-
-type ParsedBinding = ModifierFlags & { key: string }
-
-const MODIFIER_TOKENS = new Map<string, keyof ModifierFlags>([
-  ["cmd", "meta"],
-  ["meta", "meta"],
-  ["ctrl", "ctrl"],
-  ["control", "ctrl"],
-  ["alt", "alt"],
-  ["option", "alt"],
-  ["shift", "shift"],
-])
 
 export function bindingMatchesEvent(binding: string, event: KeyboardEvent) {
   if (event.getModifierState?.("AltGraph")) return false
@@ -100,66 +83,8 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   }
 }
 
-export function parseModifiers(binding: string): ModifierFlags {
-  const modifiers: ModifierFlags = { ctrl: false, meta: false, alt: false, shift: false }
-  for (const part of binding.split("+")) {
-    const modifier = MODIFIER_TOKENS.get(part.trim().toLowerCase())
-    if (modifier) modifiers[modifier] = true
-  }
-  return modifiers
-}
-
-export function parseBinding(binding: string): ParsedBinding | null {
-  const parts = binding.split("+").map((part) => part.trim()).filter(Boolean)
-  if (parts.length === 0) return null
-
-  const parsed: ParsedBinding = {
-    key: "",
-    ctrl: false,
-    meta: false,
-    alt: false,
-    shift: false,
-  }
-
-  for (const part of parts) {
-    const token = part.toLowerCase()
-    const modifier = MODIFIER_TOKENS.get(token)
-    if (modifier === "ctrl") {
-      parsed.ctrl = true
-      continue
-    }
-    if (modifier === "meta") {
-      parsed.meta = true
-      continue
-    }
-    if (modifier === "alt") {
-      parsed.alt = true
-      continue
-    }
-    if (modifier === "shift") {
-      parsed.shift = true
-      continue
-    }
-    if (parsed.key) {
-      return null
-    }
-    parsed.key = token
-  }
-
-  return parsed.key ? parsed : null
-}
-
 function eventMatchesParsedKey(event: KeyboardEvent, key: string) {
-  if (event.key.toLowerCase() === key) {
-    return true
-  }
-
-  const expectedCode = keyToCode(key)
-  if (!expectedCode) {
-    return false
-  }
-
-  return event.code === expectedCode
+  return (codeToKey(event.code ?? "") ?? event.key.toLowerCase()) === key
 }
 
 export function keyToCode(key: string): string | null {

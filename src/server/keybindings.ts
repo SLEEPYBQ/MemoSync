@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getKeybindingsFilePath, LOG_PREFIX } from "../shared/branding"
+import { findBindingConflict } from "../shared/keybinding-chords"
 import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } from "../shared/types"
 
 const KEYBINDING_ACTIONS = Object.keys(DEFAULT_KEYBINDINGS) as KeybindingAction[]
@@ -21,22 +22,24 @@ function serializeKeybindingsFile(bindings: Record<KeybindingAction, string[]>) 
   return `${JSON.stringify({ version: KEYBINDINGS_FILE_VERSION, ...bindings }, null, 2)}\n`
 }
 
-/**
- * A file from before version 2 that still holds an old ⌘-only default takes
- * the new default. Files this version wrote are left alone, so removing the
- * Ctrl+Alt variant afterwards sticks.
- */
-function upgradeKeybindingsFile(file: KeybindingsFile): KeybindingsFile {
-  if (!file || typeof file !== "object" || Array.isArray(file)) return file
-  if (typeof file.version === "number" && file.version >= KEYBINDINGS_FILE_VERSION) return file
-  const upgraded: KeybindingsFile = { ...file }
+function upgradeKeybindingsSnapshot(file: KeybindingsFile, snapshot: KeybindingsSnapshot): KeybindingsSnapshot {
+  if (!file || typeof file !== "object" || Array.isArray(file)) return snapshot
+  if (typeof file.version === "number" && file.version >= KEYBINDINGS_FILE_VERSION) return snapshot
   for (const [action, legacy] of Object.entries(CMD_ONLY_DEFAULTS_BEFORE_V2) as [KeybindingAction, string][]) {
     const value = file[action]
-    if (Array.isArray(value) && value.length === 1 && typeof value[0] === "string" && value[0].trim().toLowerCase() === legacy) {
-      upgraded[action] = undefined
-    }
+    const normalized = snapshot.bindings[action]
+    const untouched = value === undefined || (
+      Array.isArray(value) && value.length === 1 && typeof value[0] === "string"
+      && normalized.length === 1 && normalized[0] === legacy
+    )
+    if (!untouched) continue
+    const alternative = DEFAULT_KEYBINDINGS[action].find((binding) => binding !== legacy)
+    if (!alternative) continue
+    snapshot.bindings[action] = findBindingConflict(snapshot.bindings, action, alternative)
+      ? [legacy]
+      : [...DEFAULT_KEYBINDINGS[action]]
   }
-  return upgraded
+  return snapshot
 }
 
 export class KeybindingsManager {
@@ -122,7 +125,8 @@ export async function readKeybindingsSnapshot(filePath: string) {
       return createDefaultSnapshot(filePath, "Keybindings file was empty. Using defaults.")
     }
     const parsed = JSON.parse(text) as KeybindingsFile
-    return normalizeKeybindings(upgradeKeybindingsFile(parsed), filePath)
+    const snapshot = normalizeKeybindings(parsed, filePath)
+    return upgradeKeybindingsSnapshot(parsed, snapshot)
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return createDefaultSnapshot(filePath)

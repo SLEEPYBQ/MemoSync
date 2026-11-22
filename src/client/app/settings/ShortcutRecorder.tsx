@@ -3,8 +3,9 @@ import { Plus } from "lucide-react"
 import { useEffect, useRef, useState } from "react"
 import type { KeybindingAction } from "../../../shared/types"
 import { t, useI18n } from "../../i18n"
-import { chordFromKeyboardEvent, formatBindingParts, isRecordableChord, modifierChordFromEvent, parseModifiers } from "../../lib/keybindings"
+import { formatBindingParts } from "../../lib/keybindings"
 import { cn } from "../../lib/utils"
+import { createShortcutRecordingHandlers } from "./shortcutRecording"
 import { SETTINGS_CONTROL_FILL_CLASS } from "./shared"
 
 const spring = { type: "spring" as const, stiffness: 420, damping: 32, mass: 0.7 }
@@ -54,9 +55,6 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       setError(null)
       return
     }
-    let largest: string | null = null
-    let held = new Set<string>()
-    const modifierKeys = new Set(["Meta", "Control", "Alt", "Shift"])
     const stop = () => {
       propsRef.current.onRecordingCodesChange?.(new Set())
       propsRef.current.onStopRecording()
@@ -77,55 +75,18 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       }
       stop()
     }
-    const keydown = (event: KeyboardEvent) => {
-      event.preventDefault()
-      event.stopPropagation()
-      if (event.repeat || event.isComposing || event.keyCode === 229) return
-      // Windows reports AltGr as Ctrl+Alt; shortcut matching ignores it, so it must not be recorded.
-      if (event.key === "AltGraph" || event.getModifierState("AltGraph")) {
-        // Drop the Ctrl keydown Windows sends just before AltGr.
-        largest = null
-        held = new Set()
-        setModifiers(null)
-        propsRef.current.onRecordingCodesChange?.(new Set())
-        return
-      }
-      setError(null)
-      held.add(event.code)
-      propsRef.current.onRecordingCodesChange?.(new Set(held))
-      const currentModifiers = modifierChordFromEvent(event)
-      setModifiers(currentModifiers)
-      if (currentModifiers && (!largest || currentModifiers.split("+").length > largest.split("+").length)) largest = currentModifiers
-      if (!currentModifiers && event.key === "Escape") return stop()
-      if (!currentModifiers && (event.key === "Backspace" || event.key === "Delete")) {
+    const { keydown, keyup } = createShortcutRecordingHandlers({
+      isModifierOnly: () => propsRef.current.modifierOnly,
+      commit,
+      stop,
+      remove: () => {
         if (recording !== "new") propsRef.current.onCommit(propsRef.current.bindings.filter((_, index) => index !== recording))
-        return stop()
-      }
-      if (propsRef.current.modifierOnly) return
-      const chord = chordFromKeyboardEvent(event)
-      if (!chord) return
-      if (!isRecordableChord(chord)) {
-        setError(t("settings:shortcutNeedsModifier"))
-        return
-      }
-      commit(chord)
-    }
-    const keyup = (event: KeyboardEvent) => {
-      if (event.key === "AltGraph" || event.getModifierState("AltGraph")) return
-      held.delete(event.code)
-      propsRef.current.onRecordingCodesChange?.(new Set(held))
-      setModifiers(modifierChordFromEvent(event))
-      if (propsRef.current.modifierOnly && modifierKeys.has(event.key) && largest) {
-        const chord = largest
-        largest = null
-        const modifiers = parseModifiers(chord)
-        if (!modifiers.ctrl && !modifiers.meta && !modifiers.alt) {
-          setError(t("settings:shortcutNeedsModifier"))
-          return
-        }
-        commit(chord)
-      }
-    }
+      },
+      setModifiers,
+      setCodes: (codes) => propsRef.current.onRecordingCodesChange?.(codes),
+      clearError: () => setError(null),
+      needsModifier: () => setError(t("settings:shortcutNeedsModifier")),
+    })
     const outside = (event: PointerEvent) => {
       if (!activeRef.current?.contains(event.target as Node)) stop()
     }

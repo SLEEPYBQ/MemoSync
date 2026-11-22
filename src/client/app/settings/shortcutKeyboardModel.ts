@@ -1,5 +1,7 @@
 import type { KeybindingAction } from "../../../shared/types"
-import { keyToCode, parseBinding, parseModifiers, preferredBinding } from "../../lib/keybindings"
+import { keyToCode, parseBinding, preferredBinding } from "../../lib/keybindings"
+
+export { findBindingConflict } from "../../../shared/keybinding-chords"
 
 export type ShortcutCategory = "panels" | "terminal" | "workspace"
 export type KeyboardKey = { code: string; label: string; width: number }
@@ -86,26 +88,4 @@ export function chordCodes(binding: string, _apple: boolean): string[] {
     codes.push(...Array.from({ length: 9 }, (_, index) => `Digit${index + 1}`))
   }
   return codes
-}
-
-export function findBindingConflict(
-  bindings: Record<KeybindingAction, string[]>,
-  action: KeybindingAction,
-  chord: string,
-): KeybindingAction | null {
-  const incomingKeyed = action === "jumpToSidebarChat" ? null : parseBinding(chord)
-  const incoming = action === "jumpToSidebarChat" ? parseModifiers(chord) : incomingKeyed
-  if (!incoming) return null
-  return (Object.keys(SHORTCUT_CATEGORY_BY_ACTION) as KeybindingAction[]).find((other) => {
-    if (other === action) return false
-    return bindings[other].some((binding) => {
-      const existingKeyed = other === "jumpToSidebarChat" ? null : parseBinding(binding)
-      const existing = other === "jumpToSidebarChat" ? parseModifiers(binding) : existingKeyed
-      if (!existing || incoming.ctrl !== existing.ctrl || incoming.meta !== existing.meta
-        || incoming.alt !== existing.alt || incoming.shift !== existing.shift) return false
-      if (action === "jumpToSidebarChat") return /^[1-9]$/.test(existingKeyed?.key ?? "")
-      if (other === "jumpToSidebarChat") return /^[1-9]$/.test(incomingKeyed?.key ?? "")
-      return incomingKeyed?.key === existingKeyed?.key
-    })
-  }) ?? null
 }
