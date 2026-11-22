@@ -12,13 +12,13 @@ import { deployedProviders } from "../provider-catalog"
 import { buildRegistryModel } from "../pi-agent"
 import { ModelAccessService, setModelAccessService } from "./service"
 import { resolveEngineRuntime } from "./runtime"
-import { fakeExecutableResolver } from "./test-fixtures"
+import { testKeyring, fakeExecutableResolver } from "./test-fixtures"
 
 const dirs: string[] = []
 afterEach(() => { setModelAccessService(undefined); for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }) })
 async function fixture(realDiscovery = false) {
   const directory = mkdtempSync(join(tmpdir(), "ma-launch-")); dirs.push(directory)
-  const service = await new ModelAccessService({ resolveExecutable: realDiscovery ? undefined : fakeExecutableResolver, dataDir: directory, env: { HOME: directory, PATH: directory }, readLegacyPi: async () => null }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, resolveExecutable: realDiscovery ? undefined : fakeExecutableResolver, dataDir: directory, env: { HOME: directory, PATH: directory }, readLegacyPi: async () => null }).initialize()
   return { directory, service }
 }
 

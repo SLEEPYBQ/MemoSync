@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 // Integration tests for the memory preview gate + injection lifecycle at the
 // AgentCoordinator level: park → decide → boot/cancel, queueing while parked,
 // what memory set actually reaches the (fake) Claude engine, and how the
@@ -5306,6 +5307,35 @@ describe("transfer card (Transfer design 2026-08-08)", () => {
 })
 
 describe("streaming preview lifecycle", () => {
+  test("Stop retains the exact live reply and suppresses late Claude text and interruption frames", async () => {
+    const h = createHarness({})
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "task" })
+      await waitFor(() => h.prompts.length > 0)
+      h.emitEntry({ kind: "system_init", provider: "claude", model: "synthetic", tools: [], agents: [], slashCommands: [], mcpServers: [] })
+      h.emitEvent({ type: "assistant_delta", itemId: "complete", delta: "Already stored" })
+      h.emitEvent({ type: "assistant_delta", itemId: "partial", delta: "  Partial" })
+      h.emitEvent({ type: "transcript", itemId: "complete", entry: {
+        _id: "fixture-complete", createdAt: Date.now(), kind: "assistant_text", text: "Already stored",
+      } })
+      h.emitEvent({ type: "assistant_delta", itemId: "partial", delta: "\ntext  " })
+      await waitFor(() => h.coordinator.getStreamingAssistantTexts().get("chat-1") === "  Partial\ntext  ")
+
+      await h.coordinator.cancel("chat-1", { preserveStreamingText: true })
+      h.emitEntry({ kind: "assistant_text", text: "Partial text plus late content" })
+      h.emitEntry({ kind: "interrupted" })
+      h.emitEntry({ kind: "status", status: "fixture barrier" })
+      await waitFor(() => h.store.messages.some((entry) => entry.kind === "status"))
+      expect(h.coordinator.getStreamingAssistantTexts().size).toBe(0)
+      expect(h.store.messages.filter((entry) => entry.kind === "assistant_text").map((entry) => entry.text)).toEqual(["Already stored"])
+      expect(h.store.messages.filter((entry) => entry.kind === "interrupted")).toEqual([
+        expect.objectContaining({ assistantText: "  Partial\ntext  " }),
+      ])
+    } finally {
+      h.cleanup()
+    }
+  })
+
   test("a stream that dies mid-reply sweeps the streaming preview", async () => {
     const h = createHarness({})
     try {
@@ -5548,7 +5578,7 @@ describe("memory on/off turn controls", () => {
   for (const mode of ["off", "readonly", "on"] as const) test(`OpenCode ${mode} delivers memory as prompt context and scopes tool dispatch`, async () => {
     const s = services()
     const dir = mkdtempSync(join(tmpdir(), "opencode-memory-gate-"))
-    const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
+    const service = await new ModelAccessService({ keyring: testKeyring, dataDir: dir, env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
       resolveExecutable: async engine => engine === "opencode" ? { state: "ready", path: process.execPath } : { state: "missing" },
     }).initialize()
     const connection = await service.saveConnection({ name: "Local fake", endpoints: [{ protocol: "openai-chat", baseUrl: "http://127.0.0.1:9" }], models: [{ id: "m" }] })

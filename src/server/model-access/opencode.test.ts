@@ -1,3 +1,4 @@
+import { testKeyring } from "./test-fixtures"
 import { afterEach, expect, test } from 'bun:test'
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, realpathSync } from 'node:fs'
 import { join, delimiter } from 'node:path'
@@ -78,7 +79,7 @@ test('discovery skips obsolete PATH candidates and finds ~/.opencode/bin at the 
 })
 test('account refresh probes connected models, keeps secrets out of snapshots and re-probes errors', async () => {
   const home = root(), env = { HOME: home, PATH: process.env.PATH, FAKE_OC_CONFIG: '', FAKE_OC_MODEL: 'connected/vendor/m' }
-  const service = await new ModelAccessService({ dataDir: join(home, 'store'), env, readLegacyPi: async () => null,
+  const service = await new ModelAccessService({ keyring: testKeyring, dataDir: join(home, 'store'), env, readLegacyPi: async () => null,
     resolveExecutable: async engine => engine === 'opencode' ? { state: 'ready', path: fixture } : { state: 'missing' },
   }).initialize()
   expect(service.getSnapshot().engines.opencode).toMatchObject({ ready: true, accountDefaultModel: 'connected/vendor/m', accountModels: [{ id: 'connected/vendor/m' }] })
@@ -99,7 +100,7 @@ test('account refresh probes connected models, keeps secrets out of snapshots an
 }, 15_000)
 test('account isolation refuses without consulting an invalid account config', async () => {
   const home = root()
-  const service = await new ModelAccessService({ dataDir: home, env: { HOME: home, MEMOSYNC_ISOLATE_CLI: '1' }, readLegacyPi: async () => null, resolveExecutable: async engine => engine === 'opencode' ? { state: 'ready', path: fixture } : { state: 'missing' } }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, dataDir: home, env: { HOME: home, MEMOSYNC_ISOLATE_CLI: '1' }, readLegacyPi: async () => null, resolveExecutable: async engine => engine === 'opencode' ? { state: 'ready', path: fixture } : { state: 'missing' } }).initialize()
   expect(service.getSnapshot().engines.opencode).toMatchObject({ problem: 'account-signed-out', accountIsolated: true })
 })
 test('account probe failure never returns raw process stderr', async () => {

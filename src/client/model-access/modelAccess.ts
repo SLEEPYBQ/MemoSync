@@ -31,6 +31,8 @@ export function engineProblemMessage(status: EngineStatus) {
     "executable-incompatible": "modelAccess:executableIncompatible",
     "executable-broken": "modelAccess:executableBroken",
     "connection-missing": "modelAccess:connectionMissing",
+    "model-access-storage-unreadable": "errors:modelAccess_model-access-storage-unreadable",
+    "model-access-keyring-unavailable": "errors:modelAccess_model-access-keyring-unavailable",
     "connection-key-missing": "modelAccess:keyMissing",
     "connection-protocol-unsupported": "modelAccess:protocolUnsupported",
     "account-signed-out": "modelAccess:signedOut",

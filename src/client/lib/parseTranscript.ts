@@ -242,6 +242,14 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
         })
         break
       case "interrupted":
+        if (entry.assistantText) {
+          messages.push({
+            ...createBaseMessage(entry),
+            id: `${entry._id}:assistant`,
+            kind: "assistant_text",
+            text: entry.assistantText,
+          })
+        }
         messages.push({
           ...createBaseMessage(entry),
           kind: "interrupted",

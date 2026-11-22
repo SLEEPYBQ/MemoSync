@@ -5,10 +5,12 @@ export interface HarnessEvent {
   entry?: TranscriptEntry
   /** Claude result: outbound prompt UUIDs answered by this event. */
   promptIds?: string[]
+  /** Claude assistant frame: exact outbound UUID when the input echoed. */
+  assistantPromptId?: string
   sessionToken?: string
 
   origin?: "human" | "task-notification" | "auto-continuation" | "channel" | "peer" | "coordinator" | "unknown"
-  /** assistant_delta: id of the engine message item this chunk belongs to. */
+  /** Engine item ID shared by assistant deltas and their completed text. */
   itemId?: string
   /** assistant_delta: the raw text chunk (append to same-item chunks). */
   delta?: string

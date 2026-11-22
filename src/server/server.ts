@@ -30,7 +30,7 @@ import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
 import { resolveInstallId } from "./install-id"
 import { KeybindingsManager } from "./keybindings"
-import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSnapshot } from "./llm-provider"
+import { readLlmProviderSnapshot, validateLlmProviderCredentials, writeLlmProviderSettings } from "./llm-provider"
 import { getMachineDisplayName } from "./machine-name"
 import { MemoryService } from "./memory"
 import { createBranchJsonCaller, memoryRequestContext } from "./memory/branch-caller"
@@ -525,7 +525,7 @@ async function startLockedMemoSyncServer(
     appSettings,
     llmProvider: {
       read: readLlmProviderSnapshot,
-      write: writeLlmProviderSnapshot,
+      write: writeLlmProviderSettings,
       validate: validateLlmProviderCredentials,
     },
     refreshDiscovery,

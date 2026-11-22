@@ -397,7 +397,6 @@ interface ActiveTurn {
   postToolFollowUp: { content: string; planMode: boolean } | null
   hasFinalResult: boolean
   cancelRequested: boolean
-  cancelRecorded: boolean
   startupReservation?: StartupReservation
   /**
    * Claude only: the provider emitted this turn's `system_init`. A Stop after
@@ -433,7 +432,7 @@ interface ActiveTurn {
 
 /** Model-access codes the client can explain; other preparation errors stay generic. */
 const PREPARATION_ERROR_CODES = new Set([
-  "connection-invalid", "connection-missing", "connection-key-missing", "connection-protocol-unsupported",
+  "connection-invalid", "connection-missing", "connection-key-missing", "model-access-keyring-unavailable", "connection-protocol-unsupported",
   "engine-setup-invalid", "model-unavailable", "account-signed-out", "executable-missing", "executable-broken",
   "executable-incompatible", "model-access-unavailable", "engine-runtime-mismatch",
 ])
@@ -492,6 +491,7 @@ interface ClaudeSessionState {
   accountInfoLoaded: boolean
   nextPromptSeq: number
   cancelledPromptSeqs: Set<number>
+  stoppedPromptSeqs: Set<number>
   pendingPrompts: Array<{ seq: number; id: string }>
   echoesPromptIds: boolean
   /** Retired sessions may still have SDK messages queued while Query.close() settles. */
@@ -1019,6 +1019,7 @@ export async function* createClaudeHarnessStream(
   // continuations may interleave with a human root and must never inherit its
   // authority merely because their assistant frame omits origin.
   let rootOrigin: HarnessEvent["origin"] = outboundOrigins?.current() ?? "unknown"
+  let rootPromptId: string | undefined
   const lineageOrigins = new Map<string, HarnessEvent["origin"]>()
 
   for await (const sdkMessage of q as AsyncIterable<any>) {
@@ -1052,8 +1053,10 @@ export async function* createClaudeHarnessStream(
         || sdkMessage?.isReplay === true
         || sdkMessage?.shouldQuery === false
       )
+      const echoedOrigin = typeof sdkMessage.uuid === "string" ? outboundOrigins?.originForPromptId(sdkMessage.uuid) : undefined
+      rootPromptId = echoedOrigin !== undefined ? sdkMessage.uuid : undefined
       rootOrigin = explicitOrigin
-        ?? (typeof sdkMessage.uuid === 'string' ? outboundOrigins?.originForPromptId(sdkMessage.uuid) : undefined)
+        ?? echoedOrigin
         ?? (internalOriginlessFrame ? "unknown" : outboundOrigins?.current())
         ?? "human"
       outboundOrigins?.observeRoot(rootOrigin)
@@ -1139,7 +1142,7 @@ export async function* createClaudeHarnessStream(
           && typeof event.delta.text === "string"
           && event.delta.text
         ) {
-          yield { type: "assistant_delta", itemId: streamingAssistantMessageId, delta: event.delta.text, origin }
+          yield { type: "assistant_delta", itemId: streamingAssistantMessageId, delta: event.delta.text, origin, assistantPromptId: rootPromptId }
         }
       }
       continue
@@ -1202,10 +1205,14 @@ export async function* createClaudeHarnessStream(
     }
 
     for (const entry of normalizeClaudeStreamMessage(sdkMessage)) {
-      yield { type: "transcript", entry, origin, promptIds }
+      const itemId = entry.kind === "assistant_text" && typeof sdkMessage?.message?.id === "string"
+        ? sdkMessage.message.id : undefined
+      const assistantPromptId = entry.kind === "assistant_text" && !parentToolUseId ? rootPromptId : undefined
+      yield { type: "transcript", entry, origin, promptIds, itemId, assistantPromptId }
     }
     if (sdkMessage?.type === "result") {
       rootOrigin = "unknown"
+      if (!promptIds?.length || (rootPromptId && promptIds.includes(rootPromptId))) rootPromptId = undefined
       outboundOrigins?.finishResult(origin, promptIds, sdkMessage.is_error === true || sdkMessage.subtype === "cancelled")
       rootOrigin = outboundOrigins?.current() ?? "unknown"
       // Results from background and user roots may interleave. Retire
@@ -1959,11 +1966,10 @@ export class AgentCoordinator {
   private readonly finalizingClaudeSessions = new Set<ClaudeSessionState>()
   /**
    * In-flight assistant text per chat, accumulated from assistant_delta harness
-   * events (DeepSeek/codex agentMessage deltas). Broadcast via ChatRuntime.
-   * streamingText only — never persisted; cleared the moment the final
-   * assistant_text entry is appended so no snapshot carries both.
+   * events. Owned by the exact provider turn, including when a logical turn
+   * spans more than one provider run.
    */
-  private readonly streamingAssistantTexts = new Map<string, { itemId: string; text: string }>()
+  private readonly streamingAssistantTexts = new Map<string, { owner: ActiveTurn; itemId: string; text: string }>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.hostActions = args.hostActions
@@ -2868,6 +2874,8 @@ export class AgentCoordinator {
     return applied
   }
 
+  private readonly queueDispatches = new Set<string>()
+
   private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
       entry.kind === "interrupted"
@@ -2883,9 +2891,14 @@ export class AgentCoordinator {
    */
   private async nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null> {
     while (true) {
-      const head = this.store.getQueuedMessages(chatId)[0]
+      const head = this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
       if (!head) return null
-      if (!this.isCancelledQueueRow(chatId, head.id)) return head
+      if (!this.isCancelledQueueRow(chatId, head.id)) {
+        if (!head.content.trimStart().startsWith("/")) return head
+        await this.store.rejectQueuedNativeCommand(chatId, head.id)
+        this.emitStateChange(chatId)
+        continue
+      }
       try {
         await this.store.removeQueuedMessage(chatId, head.id)
       } catch (error) {
@@ -3874,20 +3887,32 @@ export class AgentCoordinator {
   }
 
   /** Fold an assistant_delta harness event into the chat's streaming buffer. */
-  private appendAssistantDelta(chatId: string, event: HarnessEvent) {
-    if (!event.delta) return
+  private appendAssistantDelta(owner: ActiveTurn, event: HarnessEvent) {
+    const { chatId } = owner
+    if (!event.delta || owner.cancelRequested || owner.hasFinalResult || this.activeTurns.get(chatId) !== owner) return
     const itemId = event.itemId ?? ""
     const current = this.streamingAssistantTexts.get(chatId)
     this.streamingAssistantTexts.set(chatId, {
+      owner,
       itemId,
       // A new message item starts a fresh reply (text → tools → more text).
-      text: current && current.itemId === itemId ? current.text + event.delta : event.delta,
+      text: current?.owner === owner && current.itemId === itemId ? current.text + event.delta : event.delta,
     })
     this.emitStateChange(chatId)
   }
 
-  private clearStreamingAssistantText(chatId: string) {
-    this.streamingAssistantTexts.delete(chatId)
+  private retireFinalizedAssistantText(owner: ActiveTurn, itemId: string | undefined, text: string) {
+    const preview = this.streamingAssistantTexts.get(owner.chatId)
+    if (preview?.owner !== owner || (itemId && preview.itemId && itemId !== preview.itemId)) return
+    const remaining = preview.text.startsWith(text) ? preview.text.slice(text.length) : ""
+    // Claude can split a single assistant item into multiple persisted text
+    // blocks. Keep any streamed suffix that a later block has yet to replace.
+    if (owner.provider === "claude" && remaining) preview.text = remaining
+    else this.clearStreamingAssistantText(owner.chatId, owner)
+  }
+
+  private clearStreamingAssistantText(chatId: string, owner?: ActiveTurn) {
+    if (!owner || this.streamingAssistantTexts.get(chatId)?.owner === owner) this.streamingAssistantTexts.delete(chatId)
   }
 
   private cancelIdleClose(chatId: string) {
@@ -3909,7 +3934,8 @@ export class AgentCoordinator {
       || this.pendingTransferGates.has(chatId) || this.pendingCheckupGates.has(chatId)
       || this.activePreparations.has(chatId) || this.inFlightCheckups.has(chatId)
       || this.claimedPreviewResponses.has(chatId) || (this.memoryWork.get(chatId) ?? 0) > 0
-      || this.store.getQueuedMessages(chatId).length > 0
+      || this.queueDispatches.has(chatId)
+      || this.store.getQueuedMessages(chatId).some((entry) => !entry.rejection)
       || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
         !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
       || Boolean(this.codexManager.hasPendingWork?.(chatId))
@@ -4223,7 +4249,7 @@ export class AgentCoordinator {
     if (!session.retired) {
       session.retired = true
       session.retireReason = reason
-      this.clearStreamingAssistantText(session.chatId)
+      if (this.claudeSessions.get(session.chatId) === session) this.clearStreamingAssistantText(session.chatId)
       session.session.close()
     }
     if (!session.pump) return
@@ -4324,6 +4350,7 @@ export class AgentCoordinator {
     queuedMessage: QueuedChatMessage,
     options?: {
       steered?: boolean
+      releaseDispatch?: () => void
     },
   ): Promise<"started" | "cancelled" | "missing"> {
     if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
@@ -4339,7 +4366,9 @@ export class AgentCoordinator {
       }
       return "cancelled"
     }
-    if (queuedMessage.content.trimStart().startsWith('/')) throw new Error('Queued native commands must be resubmitted through the current command catalog')
+    if (queuedMessage.rejection || queuedMessage.content.trimStart().startsWith('/')) {
+      throw new Error('Queued native commands must be resubmitted through the current command catalog')
+    }
     try {
       await this.store.removeQueuedMessage(chatId, queuedMessage.id)
     } catch (error) {
@@ -4354,6 +4383,8 @@ export class AgentCoordinator {
     const provider = this.resolveProvider(queuedMessage, chat.provider)
     const settings = this.getProviderSettings(provider, queuedMessage)
     this.commandSelections.set(chatId, { provider, model: queuedMessage.model, modelOptions: queuedMessage.modelOptions, planMode: queuedMessage.planMode })
+    // startTurnForChat takes the startup reservation before its first await.
+    options?.releaseDispatch?.()
     await this.startTurnForChat({
       chatId,
       provider,
@@ -4399,14 +4430,33 @@ export class AgentCoordinator {
   }
 
   private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.commandRegistry.isRunning(chatId) || this.activeTurns.has(chatId)) return false
-    const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
-    if (!nextQueuedMessage) return false
-    await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage)
-    return true
+    if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
+      || this.activeTurns.has(chatId) || this.startingChats.has(chatId)
+      || this.hasPendingPreviewActivity(chatId) || this.isEngineStartBlocked(chatId)) return false
+
+    this.queueDispatches.add(chatId)
+    let ownsDispatch = true
+    const releaseDispatch = () => {
+      if (!ownsDispatch) return
+      ownsDispatch = false
+      this.queueDispatches.delete(chatId)
+    }
+    try {
+      while (!this.isEngineStartBlocked(chatId)) {
+        const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
+        if (!nextQueuedMessage || this.isEngineStartBlocked(chatId)) return false
+        const outcome = await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage, { releaseDispatch })
+        if (outcome === "started") return true
+      }
+      return false
+    } finally {
+      releaseDispatch()
+      this.updateIdleClose(chatId)
+    }
   }
 
   private async startTurnForChat(args: StartTurnArgs) {
+    if (this.queueDispatches.has(args.chatId)) throw new Error("Queued messages are being recovered")
     if (this.commandRegistry.isRunning(args.chatId)) throw new Error('Native context control is running')
     if (/^\s*\/compact(?:\s|$)/.test(args.content)) throw new Error('Compact must use the native command control route')
     const logicalTurnId = args.turnId ?? crypto.randomUUID()
@@ -7116,7 +7166,6 @@ export class AgentCoordinator {
       postToolFollowUp: null,
       hasFinalResult: false,
       cancelRequested: false,
-      cancelRecorded: false,
       startupReservation: reservation,
       providerTurnStarted: false,
       clientTraceId: args.profile?.traceId,
@@ -7553,6 +7602,7 @@ export class AgentCoordinator {
         nextPromptSeq: 0,
         pendingPrompts: [],
         cancelledPromptSeqs: new Set(),
+        stoppedPromptSeqs: new Set(),
         echoesPromptIds: started.echoesPromptIds ?? false,
         retired: false,
         retireReason: null,
@@ -7822,8 +7872,10 @@ export class AgentCoordinator {
       // as well as chat/sidebar subscribers, including native slash submissions.
       this.emitStateChange()
     }
+    const dispatchingQueue = this.queueDispatches.has(chatId)
     if (
-      this.activeTurns.has(chatId)
+      dispatchingQueue
+      || this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
     ) {
@@ -7834,6 +7886,14 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
       })
+      if (dispatchingQueue) {
+        // The dispatcher may have reached the end before this enqueue landed.
+        void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+          this.reportBackgroundError?.(
+            `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+          )
+        })
+      }
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
@@ -7885,6 +7945,12 @@ export class AgentCoordinator {
       throw new Error("Queued message not found")
     }
 
+    if (queuedMessage.rejection || queuedMessage.content.trimStart().startsWith('/')) {
+      throw new Error('Queued native commands must be resubmitted through the current command catalog')
+    }
+
+    if (this.queueDispatches.has(command.chatId)) throw new Error("Queued messages are being recovered")
+
     logClaudeSteer("steer_requested", {
       chatId: command.chatId,
       queuedMessageId: command.queuedMessageId,
@@ -7914,7 +7980,7 @@ export class AgentCoordinator {
     // busy (e.g. the previewing-memory reservation cancel can't yet abort), the
     // startTurnForChat guard would throw AFTER the message was already deleted —
     // losing it entirely (BUG AGENT-1). Guarding here keeps it in the queue.
-    if (isBusy()) {
+    if (isBusy() || this.queueDispatches.has(command.chatId)) {
       throw new Error("Chat is still running")
     }
 
@@ -8002,10 +8068,24 @@ export class AgentCoordinator {
           continue
         }
 
+        // Prefer the echoed input UUID. When the provider starts the next
+        // prompt, its system_init also opens the boundary for untagged text.
+        // Keep the stopped predecessor's UUID reserved for late results.
+        const owner = this.activeTurns.get(session.chatId)
+        const promptSeq = owner?.claudePromptSeq
+        const headSeq = session.pendingPrompts[0]?.seq
+        const ownsAssistantFrame = owner?.provider === "claude" && !owner.cancelRequested && promptSeq !== undefined
+          && (event.assistantPromptId
+            ? session.pendingPrompts.some((prompt) => prompt.id === event.assistantPromptId && prompt.seq === promptSeq)
+            : event.promptIds?.length
+              ? matchingPrompts.some((prompt) => prompt.seq === promptSeq)
+              : owner.providerTurnStarted || headSeq === promptSeq
+                || (headSeq !== undefined && !session.stoppedPromptSeqs.has(headSeq)))
         if (event.type === "assistant_delta") {
-          this.appendAssistantDelta(session.chatId, event)
+          if (ownsAssistantFrame) this.appendAssistantDelta(owner, event)
           continue
         }
+        if (event.entry?.kind === "assistant_text" && !ownsAssistantFrame) continue
 
         if (!event.entry) continue
         // Result-derived usage arrives before the result itself. Suppress it
@@ -8019,17 +8099,25 @@ export class AgentCoordinator {
         // to the cancelled prompts, even if steer has started a new turn.
         const cancelledResult = completedPromptSeqs.length > 0
           && completedPromptSeqs.every(seq => session.cancelledPromptSeqs.has(seq))
-        for (const seq of completedPromptSeqs) session.cancelledPromptSeqs.delete(seq)
-        if (cancelledResult && event.entry.kind === "result") continue
-        if (event.entry.kind === "assistant_text" || event.entry.kind === "result" || event.entry.kind === "interrupted") {
-          // Final text replaces the streaming preview in the same broadcast;
-          // result/interrupted also sweep it in case no final text arrived.
-          this.clearStreamingAssistantText(session.chatId)
+        const stoppedResult = completedPromptSeqs.length > 0
+          && completedPromptSeqs.every(seq => session.stoppedPromptSeqs.has(seq))
+        for (const seq of completedPromptSeqs) {
+          session.cancelledPromptSeqs.delete(seq)
+          session.stoppedPromptSeqs.delete(seq)
+        }
+        if (cancelledResult && (event.entry.kind === "result" || stoppedResult)) continue
+        if (ownsAssistantFrame || (promptSeq !== undefined && completedPromptSeqs.includes(promptSeq))) {
+          if (owner && event.entry.kind === "assistant_text") {
+            this.retireFinalizedAssistantText(owner, event.itemId, event.entry.text)
+          } else if (event.entry.kind === "result" || event.entry.kind === "interrupted") {
+            this.clearStreamingAssistantText(session.chatId, owner)
+          }
+          if (owner && event.entry.kind === "result") owner.hasFinalResult = true
         }
         const policyScope = this.policyScopes.get(session.chatId)
         if (policyScope) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(session.chatId, event.entry)
-        const active = this.activeTurns.get(session.chatId)
+        const active = owner && this.activeTurns.get(session.chatId) === owner ? owner : undefined
         if (event.entry.kind === "compact_boundary") this.invalidateNativeContext(session.chatId)
         if (event.entry.kind === "compact_boundary" && (active?.memoryState ?? session.memoryState)?.memoryActive !== false) {
           // Longitudinal signal: recall/citation behavior changes character
@@ -8062,7 +8150,10 @@ export class AgentCoordinator {
               const releasedOriginReservations = session.session
                 .discardHumanTurnReservations?.(orphaned) ?? 0
               session.pendingPrompts = session.pendingPrompts.filter(prompt => prompt.seq >= activeSeq)
-              for (const seq of orphaned) session.cancelledPromptSeqs.delete(seq)
+              for (const seq of orphaned) {
+                session.cancelledPromptSeqs.delete(seq)
+                session.stoppedPromptSeqs.delete(seq)
+              }
               logClaudeSteer("claude_prompt_fifo_resync", {
                 chatId: session.chatId,
                 sessionId: session.id,
@@ -8100,7 +8191,6 @@ export class AgentCoordinator {
         })
 
         if (event.entry.kind === "result" && active && active.claudePromptSeq !== undefined && completedPromptSeqs.includes(active.claudePromptSeq)) {
-          active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(session.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
@@ -8176,10 +8266,7 @@ export class AgentCoordinator {
         if (isCurrent) this.clearStreamingAssistantText(session.chatId)
         if (isCurrent) this.claudeSessions.delete(session.chatId)
         const active = this.activeTurns.get(session.chatId)
-        if (isCurrent && active?.provider === "claude") {
-          if (active.cancelRequested && !active.cancelRecorded) {
-            await this.store.recordTurnCancelled(session.chatId)
-          }
+        if (isCurrent && active?.provider === "claude" && !active.cancelRequested) {
           this.endPolicyTurn(session.chatId, active.turnId)
           this.activeTurns.delete(session.chatId)
         }
@@ -8239,17 +8326,18 @@ export class AgentCoordinator {
         }
 
         if (event.type === "assistant_delta") {
-          this.appendAssistantDelta(active.chatId, event)
+          this.appendAssistantDelta(active, event)
           continue
         }
 
         if (!event.entry) continue
         if (event.entry.kind === "compact_boundary") this.invalidateNativeContext(active.chatId)
         if (event.entry.kind === "assistant_text") {
-          // Retire the streaming preview in the same broadcast that carries
-          // the final entry — a snapshot must never show the text twice.
-          this.clearStreamingAssistantText(active.chatId)
+          this.retireFinalizedAssistantText(active, event.itemId, event.entry.text)
+        } else if (event.entry.kind === "result" || event.entry.kind === "interrupted") {
+          this.clearStreamingAssistantText(active.chatId, active)
         }
+        if (event.entry.kind === "result") active.hasFinalResult = true
         const policyScope = this.policyScopes.get(active.chatId)
         if (policyScope && policyScope.turnId === active.turnId) event.entry = this.bindPolicyEntry(policyScope, event.entry)
         await this.store.appendMessage(active.chatId, event.entry)
@@ -8265,7 +8353,6 @@ export class AgentCoordinator {
         }
 
         if (event.entry.kind === "result") {
-          active.hasFinalResult = true
           if (event.entry.isError) {
             await this.store.recordTurnFailed(active.chatId, event.entry.result || "Turn failed")
           } else if (!active.cancelRequested) {
@@ -8316,15 +8403,12 @@ export class AgentCoordinator {
     } finally {
       // Whatever ended the stream (result, error, cancel), no partial reply
       // may keep rendering as if it were still being written.
-      this.clearStreamingAssistantText(active.chatId)
-      if (active.cancelRequested && !active.cancelRecorded) {
-        await this.store.recordTurnCancelled(active.chatId)
-      }
+      this.clearStreamingAssistantText(active.chatId, active)
       active.turn.close()
       // Only remove if we're still the active turn for this chat.
       // We may have already been removed by result handling or cancel(),
       // and a new turn may have started for the same chatId.
-      if (this.activeTurns.get(active.chatId) === active) {
+      if (!active.cancelRequested && this.activeTurns.get(active.chatId) === active) {
         this.endPolicyTurn(active.chatId, active.turnId)
         this.activeTurns.delete(active.chatId)
       }
@@ -8586,6 +8670,8 @@ export class AgentCoordinator {
     chatId: string,
     options?: {
       hideInterrupted?: boolean
+      /** The transcript Stop action preserves its visible partial reply. */
+      preserveStreamingText?: boolean
       /** C3 per-memory interrupt: the incomplete turn must produce no automatic
        * Capture, Trace, Checkup precompute, or Transfer source preparation. */
       skipPostTurnMemoryPasses?: boolean
@@ -8608,9 +8694,6 @@ export class AgentCoordinator {
     this.endPolicyTurn(chatId, undefined, false)
     this.restoreUndeliveredEnforcement(chatId)
     this.disposeMemoryBranches(chatId)
-    // Drop any half-written streaming reply right away — the engine unwind
-    // below may take a moment and the partial must not linger as if live.
-    this.clearStreamingAssistantText(chatId)
     // Also clean up any draining stream for this chat.
     const draining = this.drainingStreams.get(chatId)
     if (draining) {
@@ -8721,12 +8804,16 @@ export class AgentCoordinator {
     })
 
     // Guard against concurrent cancel() calls — only the first one does work.
-    if (active.cancelRequested) return
+    if (active.cancelRequested || (options?.preserveStreamingText && active.hasFinalResult)) return
     active.cancelRequested = true
-    if (active.provider === "claude" && active.claudePromptSeq !== undefined) {
-      const session = this.claudeSessions.get(chatId)
-      session?.cancelledPromptSeqs.add(active.claudePromptSeq)
-      session?.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
+    const preview = this.streamingAssistantTexts.get(chatId)
+    const assistantText = options?.preserveStreamingText && preview?.owner === active ? preview.text : undefined
+    this.clearStreamingAssistantText(chatId, active)
+    const claudeSession = active.provider === "claude" ? this.claudeSessions.get(chatId) : undefined
+    if (claudeSession && active.claudePromptSeq !== undefined) {
+      claudeSession.cancelledPromptSeqs.add(active.claudePromptSeq)
+      if (options?.preserveStreamingText) claudeSession.stoppedPromptSeqs.add(active.claudePromptSeq)
+      claudeSession.session.revokeHumanTurnReservation?.(active.claudePromptSeq)
     }
     if (active.startupReservation) {
       this.cancelStartupReservation(chatId, active.startupReservation)
@@ -8734,69 +8821,77 @@ export class AgentCoordinator {
 
     const pendingTool = active.pendingTool
     active.pendingTool = null
-
-    if (pendingTool) {
-      const result = discardedToolResult(pendingTool.tool)
-      await this.store.appendMessage(
-        chatId,
-        timestamped({
-          kind: "tool_result",
-          toolId: pendingTool.toolUseId,
-          content: result,
-        })
-      )
-      // Release all native waiters; their frozen policy scopes now deny replies.
-      pendingTool.resolve(result)
-    }
-
-    await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden: options?.hideInterrupted }))
-    await this.store.recordTurnCancelled(chatId)
-    if (active.startupReservation) {
-      active.startupReservation.cancellationComplete = true
-      this.releaseStartupStatus(chatId, active.startupReservation)
-      if (active.startupReservation.startupSettled) {
-        this.settleStartupReservation(chatId, active.startupReservation)
+    let persisted = false
+    try {
+      if (pendingTool) {
+        const result = discardedToolResult(pendingTool.tool)
+        try {
+          await this.store.appendMessage(chatId, timestamped({
+            kind: "tool_result",
+            toolId: pendingTool.toolUseId,
+            content: result,
+          }))
+        } finally {
+          // Release native waiters even when the tool result could not be written.
+          pendingTool.resolve(result)
+        }
       }
-    }
-    active.cancelRecorded = true
-    active.hasFinalResult = true
+      await this.store.appendMessage(chatId, timestamped({
+        kind: "interrupted",
+        hidden: options?.hideInterrupted,
+        ...(assistantText ? { assistantText } : {}),
+      }))
+      await this.store.recordTurnCancelled(chatId)
+      persisted = true
+    } finally {
+      // Keep the exact turn reserved until its cancellation write settles.
+      // A storage failure must still release the turn and stop its provider.
+      if (active.startupReservation) {
+        active.startupReservation.cancellationComplete = true
+        this.releaseStartupStatus(chatId, active.startupReservation)
+        if (active.startupReservation.startupSettled) {
+          this.settleStartupReservation(chatId, active.startupReservation)
+        }
+      }
+      active.hasFinalResult = true
+      if (this.activeTurns.get(chatId) === active) this.activeTurns.delete(chatId)
+      this.emitStateChange(chatId)
 
-    // Remove from activeTurns immediately so the UI reflects the cancellation
-    // right away, rather than waiting for interrupt() which may hang.
-    this.activeTurns.delete(chatId)
-    this.emitStateChange(chatId)
-
-    // Per-memory interrupts skip post-turn work; ordinary Stop keeps it.
-    if (!options?.skipPostTurnMemoryPasses) {
-      const chat = this.store.getChat(chatId)
-      this.launchPostTurnMemoryPasses({
+      // Per-memory interrupts skip post-turn work; ordinary Stop keeps it.
+      if (persisted && !options?.skipPostTurnMemoryPasses) {
+        const chat = this.store.getChat(chatId)
+        this.launchPostTurnMemoryPasses({
+          chatId,
+          projectId: chat?.projectId,
+          engine: active.provider,
+          turnNumber: active.turnNumber,
+          turnId: active.turnId,
+          userText: active.userText ?? "",
+          assistantText: active.assistantChunks.join("\n"),
+          citedIds: [...active.citedIds],
+          memoryState: active.memoryState,
+          memoryDisabled: true,
+          injectedIds: [],
+        }, active)
+      }
+      logClaudeSteer("cancel_active_turn_deleted", {
         chatId,
-        projectId: chat?.projectId,
-        engine: active.provider,
-        turnNumber: active.turnNumber,
-        turnId: active.turnId,
-        userText: active.userText ?? "",
-        assistantText: active.assistantChunks.join("\n"),
-        citedIds: [...active.citedIds],
-        memoryState: active.memoryState,
-        memoryDisabled: true,
-        injectedIds: [],
-      }, active)
+        provider: active.provider,
+        activePromptSeq: active.claudePromptSeq ?? null,
+      })
+      await this.interruptCancelledTurn(active, claudeSession)
     }
-    logClaudeSteer("cancel_active_turn_deleted", {
-      chatId,
-      provider: active.provider,
-      activePromptSeq: active.claudePromptSeq ?? null,
-    })
+  }
 
+  private async interruptCancelledTurn(active: ActiveTurn, claudeSession?: ClaudeSessionState) {
+    const { chatId } = active
     // Keep the before-start guard: result UUIDs do not identify late assistant
     // or tool frames. Retiring the Query prevents those from contaminating the
     // next turn's transcript, memory citations, and capture/trace inputs.
     if (active.provider === "claude" && !active.providerTurnStarted) {
-      const session = this.claudeSessions.get(chatId)
-      if (session) {
+      if (claudeSession) {
         try {
-          await this.retireClaudeSession(session, "turn_cancel_before_start")
+          await this.retireClaudeSession(claudeSession, "turn_cancel_before_start")
         } catch (error) {
           // Stop already cancelled the turn; a slow pump must not turn that
           // into a user-visible failure. The session is retired and its

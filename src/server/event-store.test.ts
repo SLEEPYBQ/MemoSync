@@ -55,12 +55,56 @@ describe("EventStore", () => {
     expect(compacted.getQueuedMessages(chat.id)[0]?.provider).toBe("opencode")
   })
 
+  test("legacy slash rejection survives replay and compaction without removing the saved message", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(join(dataDir, "synthetic-project"))
+    const chat = await store.createChat(project.id)
+    const saved = await store.enqueueMessage(chat.id, { content: "  /review 'example'", attachments: [], provider: "codex" })
+    await Promise.all([
+      store.rejectQueuedNativeCommand(chat.id, saved.id),
+      store.rejectQueuedNativeCommand(chat.id, saved.id),
+    ])
+    const queueLog = await readFile(join(dataDir, "queued-messages.jsonl"), "utf8")
+    expect(queueLog.match(/queued_native_command_rejected/g)).toHaveLength(1)
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    const rejected = { ...saved, rejection: "stale_native_command" as const }
+    expect(reloaded.getQueuedMessages(chat.id)).toEqual([rejected])
+    expect(reloaded.getChatIdsWithQueuedMessages()).toEqual([])
+    await reloaded.compact()
+    const compacted = new EventStore(dataDir)
+    await compacted.initialize()
+    expect(compacted.getQueuedMessages(chat.id)).toEqual([rejected])
+    await compacted.removeQueuedMessage(chat.id, saved.id)
+    expect(compacted.getQueuedMessages(chat.id)).toEqual([])
+  })
+
   test("uses the runtime profile for the default data dir", () => {
     process.env.MEMOSYNC_RUNTIME_PROFILE = "dev"
 
     const store = new EventStore()
 
     expect(store.dataDir).toEndWith("/.memosync-dev/data")
+  })
+
+  test("a stopped reply and its interruption reload as one ordered transcript record", async () => {
+    const dataDir = await createTempDataDir()
+    const store = new EventStore(dataDir)
+    await store.initialize()
+    const project = await store.openProject(join(dataDir, "synthetic-project"))
+    const chat = await store.createChat(project.id)
+    await store.appendMessage(chat.id, entry("assistant_text", 100, { text: "Earlier block" }))
+    await store.appendMessage(chat.id, { kind: "interrupted", _id: "fixture-stop", createdAt: 200, assistantText: "  Partial\ntext  " })
+    await store.appendMessage(chat.id, entry("user_prompt", 300, { content: "Another task" }))
+
+    const reloaded = new EventStore(dataDir)
+    await reloaded.initialize()
+    const transcript = reloaded.getMessages(chat.id)
+    expect(transcript.map((message) => message.kind)).toEqual(["assistant_text", "interrupted", "user_prompt"])
+    expect(transcript[1]).toMatchObject({ assistantText: "  Partial\ntext  " })
   })
 
   test("migrates legacy snapshot and messages log transcripts into per-chat files", async () => {

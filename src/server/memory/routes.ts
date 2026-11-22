@@ -287,14 +287,16 @@ export async function handleMemoryRequest(
           sessionId,
           status: status as MemoryStatus | undefined,
         });
-        const syncProjects = projectId ? [projectId] : url.searchParams.get('syncFileRefs') === '1'
+        const syncFileRefs = url.searchParams.get('syncFileRefs');
+        const verifyContents = syncFileRefs === '1';
+        const syncProjects = projectId ? [projectId] : verifyContents || syncFileRefs === 'metadata'
           ? [...new Set([...items.flatMap(item => item.scope === 'project' && item.projectId ? [item.projectId] : []), ...(services.listProjectIds?.() ?? [])])] : [];
         for (const id of syncProjects) {
           const path = services.resolveProjectPath?.(id);
           if (path) {
             memory.team.queueNotice(id, memory.team.syncProject(id, path));
             memory.expireDue();
-            memory.fileDrift.syncProject(id, path);
+            memory.fileDrift.syncProject(id, path, { verifyContents });
           }
         }
         if (syncProjects.length) items = memory.store.list({ scope: scope as MemoryScope | undefined, projectId, sessionId, status: status as MemoryStatus | undefined });

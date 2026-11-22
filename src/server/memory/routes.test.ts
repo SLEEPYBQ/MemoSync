@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -222,12 +222,16 @@ describe('memory routes', () => {
   it('decorates and acknowledges project file drift without affecting other memories', async () => {
     const project = join(dir, 'synthetic-project');
     mkdirSync(project);
-    writeFileSync(join(project, 'auth.ts'), 'baseline');
+    const file = join(project, 'auth.ts');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    writeFileSync(file, 'baseline');
+    utimesSync(file, stamp, stamp);
     const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
     const a = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
     const b = memory.store.create({ content: 'Review auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
     await call('GET', '/api/memories?projectId=P1', undefined, services);
-    writeFileSync(join(project, 'auth.ts'), 'changed synthetic file');
+    writeFileSync(file, 'modified');
+    utimesSync(file, stamp, stamp);
     const list = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
     expect(list.data.find((item: MemoryItem) => item.id === a.id).fileRefs).toEqual([{ path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: statSync(join(project, 'auth.ts')).mtime.toISOString() }]);
     expect((await json(await call('GET', `/api/memories/${a.id}`, undefined, services))).data.fileRefs[0].drift).toBe('changed');
@@ -238,10 +242,40 @@ describe('memory routes', () => {
     expect(memory.store.getEvents(a.id).at(-1)).toMatchObject({ kind: 'file_check', meta: { paths: ['auth.ts'] } });
   });
 
+  it('verifies Board refresh contents even when routine file stamps match', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    const file = join(project, 'auth.ts');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const input = { scope: 'project', projectId: 'P1', type: 'fact' } as const;
+    writeFileSync(file, 'baseline');
+    utimesSync(file, stamp, stamp);
+    const item = memory.store.create({ ...input, content: 'Use auth.ts' }, { actor: 'user' });
+    await call('GET', '/api/memories?syncFileRefs=1', undefined, services);
+
+    writeFileSync(file, 'modified');
+    utimesSync(file, stamp, stamp);
+    const control = memory.store.create({ ...input, content: 'Inspect auth.ts' }, { actor: 'user' });
+    memory.fileDrift.baseline(control.id, project);
+    // Simulate a filesystem returning the same metadata for both versions.
+    memory.db.query(`UPDATE memory_file_refs SET file_identity =
+      (SELECT file_identity FROM memory_file_refs WHERE memory_id = ?) WHERE memory_id = ?`)
+      .run(control.id, item.id);
+
+    const polled = await json(await call('GET', '/api/memories?syncFileRefs=metadata', undefined, services));
+    expect(polled.data.find((row: MemoryItem) => row.id === item.id).fileRefs[0].drift).toBeNull();
+    const refreshed = await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services));
+    expect(refreshed.data.find((row: MemoryItem) => row.id === item.id).fileRefs[0].drift).toBe('changed');
+  });
+
   it('imports project source files and rejects outside paths', async () => {
     const project = join(dir, 'synthetic-project');
     mkdirSync(project);
-    writeFileSync(join(project, 'AGENTS.md'), '- Synthetic sourced rule\n');
+    const file = join(project, 'AGENTS.md');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    writeFileSync(file, '- Synthetic sourced rule\n');
+    utimesSync(file, stamp, stamp);
     writeFileSync(join(dir, 'outside.md'), '- Synthetic outside rule\n');
     const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
     expect((await json(await call('GET', '/api/memories/md-import/sources?projectId=P1', undefined, services))).data.sources).toEqual(['AGENTS.md']);
@@ -251,8 +285,9 @@ describe('memory routes', () => {
     const id = result.data.created[0];
     expect(id).toBeDefined();
     expect((await json(await call('GET', `/api/memories/${id}`, undefined, services))).data.fileRefs).toEqual([{ path: 'AGENTS.md', kind: 'source', drift: null }]);
-    writeFileSync(join(project, 'AGENTS.md'), '- Another synthetic rule\n');
-    const updated = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
+    writeFileSync(file, '- Synthetic changed rule\n');
+    utimesSync(file, stamp, stamp);
+    const updated = await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services));
     expect(updated.data.find((item: MemoryItem) => item.id === id).fileRefs[0].drift).toBe('line_removed');
     expect((await json(await call('POST', `/api/memories/${id}/file-refs/acknowledge`, undefined, services))).data.fileRefs).toBeUndefined();
   });
@@ -1043,6 +1078,54 @@ describe('memory routes', () => {
     expect(body.error.code).toBe('CANDIDATE_NOT_RECOVERABLE');
     expect(JSON.stringify(body)).not.toContain('secret-token-never-return');
     expect(memory.store.getById(secret.id)).toBeNull();
+  });
+
+  it.each(['dismiss', 'rollback'] as const)('erases a candidate referenced by legacy copy lineage during %s', async (action) => {
+    const create = (content: string, projectId: string, candidate = false) => memory.store.create({
+      content,
+      detail: candidate ? 'Synthetic detail for erasure' : undefined,
+      scope: 'project',
+      projectId,
+      type: 'fact',
+      status: candidate ? 'candidate' : 'active',
+      sensitive: candidate,
+    }, { actor: 'agent' });
+    const source = create('Synthetic source rule', 'P0');
+    const secret = create('Synthetic candidate for erasure', 'P1', true);
+    const target = create('Synthetic target rule', 'P2');
+    const keptSource = create('Synthetic unrelated source', 'P1');
+
+    const receipt = memory.db.query(`INSERT INTO auto_project_copy_receipts
+      (transition_key, source_task_id, target_task_id, source_project_id, target_project_id,
+       source_representation_hash, target_representation_hash, copied_at)
+      VALUES (?, ?, ?, ?, ?, 'source-hash', 'target-hash', '2020-01-01T00:00:00.000Z')`);
+    receipt.run('incoming', 'T0', 'T1', 'P0', 'P1');
+    receipt.run('outgoing', 'T1', 'T2', 'P1', 'P2');
+    const lineage = memory.db.query(`INSERT INTO auto_project_copy_lineage
+      (transition_key, ordinal, target_memory_id, source_memory_id, source_version, source_content_hash)
+      VALUES (?, ?, ?, ?, ?, 'synthetic-content-hash')`);
+    lineage.run('incoming', 0, secret.id, source.id, source.version);
+    lineage.run('outgoing', 0, target.id, secret.id, secret.version);
+    const keptTarget = create('Synthetic unrelated target', 'P2');
+    lineage.run('outgoing', 1, keptTarget.id, keptSource.id, keptSource.version);
+    const beforeReceipts = memory.db.query('SELECT * FROM auto_project_copy_receipts ORDER BY transition_key').all();
+    const keptLineage = memory.db.query('SELECT * FROM auto_project_copy_lineage WHERE target_memory_id = ?').get(keptTarget.id);
+
+    if (action === 'dismiss') {
+      const response = await call('DELETE', `/api/memories/${secret.id}?surface=board`);
+      expect(response!.ok).toBe(true);
+      const restored = await call('POST', `/api/memories/${secret.id}/restore-candidate`, { surface: 'board' });
+      expect(restored!.status).toBe(410);
+    } else {
+      memory.store.eraseCandidate(secret.id);
+    }
+
+    expect(memory.store.getById(secret.id)).toBeNull();
+    expect(memory.store.getEvents(secret.id)).toEqual([]);
+    expect(memory.store.wasCandidateDismissed(secret.content, { scope: 'project', projectId: 'P1' })).toBe(action === 'dismiss');
+    expect(memory.db.query('SELECT * FROM auto_project_copy_lineage').all()).toEqual([keptLineage]);
+    expect(memory.db.query('SELECT * FROM auto_project_copy_receipts ORDER BY transition_key').all()).toEqual(beforeReceipts);
+    expect(memory.db.query('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
   it('does not let public Unmute lift a hard-erased sensitive Candidate tombstone', async () => {

@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -253,7 +254,7 @@ test("per-chat connectionId routes identical model names to different credential
   const { ModelAccessService, setModelAccessService } = await import("./model-access/service")
   const directory = mkdtempSync(join(tmpdir(), "memosync-chat-connection-"))
   const { fakeExecutableResolver } = await import("./model-access/test-fixtures")
-  const service = await new ModelAccessService({ resolveExecutable: fakeExecutableResolver, dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, resolveExecutable: fakeExecutableResolver, dataDir: directory, env: { HOME: directory }, readLegacyPi: async () => null }).initialize()
   const connections = await Promise.all(["A", "B"].map(name => service.saveConnection({ name, apiKey: `fake-key-${name}`, endpoints: [{ protocol: "anthropic-messages", baseUrl: `https://${name.toLowerCase()}.test` }], models: [{ id: "same-model" }] })))
   setModelAccessService(service)
   const store = new EventStore(join(directory, "events")); await store.initialize()

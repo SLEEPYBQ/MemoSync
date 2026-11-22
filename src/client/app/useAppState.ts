@@ -131,6 +131,7 @@ function sameHistory(left: ChatSnapshot["history"] | null | undefined, right: Ch
 function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
   return left.id === right.id
     && left.content === right.content
+    && left.rejection === right.rejection
     && left.createdAt === right.createdAt
     && left.provider === right.provider
     && left.model === right.model

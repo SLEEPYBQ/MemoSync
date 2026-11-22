@@ -326,7 +326,7 @@ export class OpencodeAgentManager {
     const calls = new Set<string>(), results = new Set<string>(), completedParts = new Set<string>(), usages = new Set<string>()
     const questions = new Set<string>(), permissions = new Set<string>()
     let questionQueue = Promise.resolve()
-    const transcript = (value: Parameters<typeof entry>[0]) => queue.push({ type: 'transcript', entry: entry(value) })
+    const transcript = (value: Parameters<typeof entry>[0], itemId?: string) => queue.push({ type: 'transcript', entry: entry(value), itemId })
     const finalize = (message = '', isError = false, cancel = false) => {
       if (finished) return
       finished = true
@@ -386,7 +386,7 @@ export class OpencodeAgentManager {
       // Reasoning stays out of the transcript, as it does for Codex and Pi.
       if (part.type !== 'text' || !part.text) return
       completedParts.add(part.id); output = true
-      transcript({ kind: 'assistant_text', text: part.text })
+      transcript({ kind: 'assistant_text', text: part.text }, part.id)
     }
     const handle = (event: Event) => {
       if (finished) return
