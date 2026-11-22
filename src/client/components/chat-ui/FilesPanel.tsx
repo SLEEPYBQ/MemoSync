@@ -5,7 +5,7 @@ import { t, useI18n, getLocale } from "../../i18n"
 // in the main area, and a filterable lazy-loaded file tree on the right.
 // Markdown keeps a rendered preview (toggle to source), images/PDF render
 // inline, and text files are editable with ⌘S / save-button persistence.
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import Markdown from "react-markdown"
 import { copyTextToClipboard } from "../../lib/clipboard"
 import remarkGfm from "remark-gfm"
@@ -23,7 +23,8 @@ import {
   ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuTrigger,
 } from "../ui/context-menu"
 import { cn } from "../../lib/utils"
-import { classifyFilePreview, type FilePreviewKind } from "../../lib/filePreview"
+import { classifyFilePreview } from "../../lib/filePreview"
+import { fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
 import {
   ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename,
 } from "../../lib/filesWorkbench"
@@ -50,19 +51,6 @@ type DirState =
   | { status: "loading" }
   | { status: "error"; message: string }
   | { status: "ready"; entries: FileEntry[] }
-
-interface FileBuffer {
-  kind: FilePreviewKind
-  status: "loading" | "ready" | "error"
-  error?: string
-  /** Last saved content; `current !== original` marks the buffer dirty. */
-  original: string
-  current: string
-  saving: boolean
-  saveError: string | null
-  justSaved: boolean
-  mdMode: "preview" | "source"
-}
 
 interface FileIndex {
   files: string[]
@@ -199,9 +187,10 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
   useI18n()
   const [dirs, setDirs] = useState<Record<string, DirState>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
-  const [tabs, setTabs] = useState<string[]>([])
-  const [active, setActive] = useState<string | null>(null)
-  const [buffers, setBuffers] = useState<Map<string, FileBuffer>>(new Map())
+  const editorStore = useMemo(() => fileEditorDrafts(projectId), [projectId])
+  const { tabs, active, buffers } = useSyncExternalStore(editorStore.subscribe, editorStore.getSnapshot, editorStore.getSnapshot)
+  const { setTabs, setActive, setBuffers } = editorStore
+  useLayoutEffect(() => editorStore.mount(), [editorStore])
   const [filter, setFilter] = useState("")
   const [index, setIndex] = useState<FileIndex | null>(null)
   const [indexError, setIndexError] = useState<string | null>(null)
@@ -233,7 +222,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       next.set(path, { ...existing, ...patch })
       return next
     })
-  }, [])
+  }, [setBuffers])
 
   const updateBufferContent = useCallback((path: string, current: string) => {
     setBuffers((prev) => {
@@ -246,7 +235,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       })
       return next
     })
-  }, [])
+  }, [setBuffers])
 
   const loadDir = useCallback(
     async (rel: string) => {
@@ -316,24 +305,10 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
   }, [filter, index, indexError, loadIndex])
 
   const activeBuffer = active ? (buffers.get(active) ?? null) : null
-  const hasDirty = useMemo(
-    () => [...buffers.values()].some((b) => b.status === "ready" && b.current !== b.original),
-    [buffers],
-  )
-
   // Fall back to the tree when the last tab closes in narrow mode.
   useEffect(() => {
     if (!active && !hostState.activeId) setNarrowShowTree(true)
   }, [active, hostState.activeId])
-
-  useEffect(() => {
-    if (!hasDirty) return
-    const guard = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-    }
-    window.addEventListener("beforeunload", guard)
-    return () => window.removeEventListener("beforeunload", guard)
-  }, [hasDirty])
 
   const openFile = useCallback(
     (path: string) => {
@@ -357,6 +332,8 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           status: needsFetch ? "loading" : "ready",
           original: "",
           current: "",
+          revision: null,
+          incarnation: {},
           saving: false,
           saveError: null,
           justSaved: false,
@@ -365,7 +342,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         return next
       })
     },
-    [workbench],
+    [workbench, setTabs, setActive, setBuffers],
   )
 
   // Ensure ancestor dir listings exist for the active file (reveal-in-tree
@@ -382,8 +359,8 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
     const pending = [...buffers.entries()].filter(([, b]) => b.status === "loading")
     if (pending.length === 0) return
     let cancelled = false
-    for (const [path] of pending) {
-      fetch(contentUrl(projectId, path))
+    for (const [path, buffer] of pending) {
+      fetch(`${contentUrl(projectId, path)}?editor=1`)
         .then(async (res) => {
           if (!res.ok) throw new Error(t("files:loadFailedValue0", { v0: res.status }))
           const length = Number(res.headers.get("content-length"))
@@ -392,19 +369,21 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           }
           const text = await res.text()
           if (text.length > MAX_INLINE_TEXT_BYTES) throw new Error(t("files:fileTooLargeToOpenInTheEditor"))
-          return text
+          const revision = res.headers.get("etag")
+          if (!revision) throw new Error(t("files:failedToLoadFile"))
+          return { text, revision }
         })
-        .then((text) => {
-          if (!cancelled) updateBuffer(path, { status: "ready", original: text, current: text })
+        .then(({ text, revision }) => {
+          if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "ready", original: text, current: text, revision })
         })
         .catch((err) => {
-          if (!cancelled) updateBuffer(path, { status: "error", error: fetchFailMessage(err, t("files:failedToLoadFile")) })
+          if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "error", error: fetchFailMessage(err, t("files:failedToLoadFile")) })
         })
     }
     return () => {
       cancelled = true
     }
-  }, [buffers, projectId, updateBuffer])
+  }, [buffers, projectId, editorStore])
 
   const closeTab = useCallback(
     (path: string) => {
@@ -420,38 +399,44 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         return next
       })
     },
-    [buffers, tabs, getLocale()],
+    [buffers, tabs, setActive, setTabs, setBuffers, getLocale()],
   )
 
   const saveFile = useCallback(
     async (path: string) => {
-      const buffer = buffers.get(path)
+      const buffer = editorStore.getSnapshot().buffers.get(path)
       if (!buffer || buffer.status !== "ready" || buffer.saving) return
       if (buffer.current === buffer.original) return
+      if (!buffer.revision) return
       const content = buffer.current
-      updateBuffer(path, { saving: true, saveError: null })
+      const incarnation = buffer.incarnation
+      editorStore.patch(path, incarnation, { saving: true, saveError: null })
       try {
-        const headers: Record<string, string> = { "Content-Type": "text/plain;charset=utf-8" }
-        const res = await fetch(contentUrl(projectId, path), {
+        const headers: Record<string, string> = { "Content-Type": "text/plain;charset=utf-8", "If-Match": buffer.revision }
+        const res = await fetch(`${contentUrl(projectId, path)}?editor=1`, {
           method: "PUT",
           headers,
           body: content,
         })
         if (!res.ok) {
+          if (res.status === 412 || res.status === 404) throw new Error(t("files:fileChangedCopyEditsBeforeReload"))
           const body = (await res.json().catch(() => null)) as HttpUiError | null
           throw new Error(httpUiError(body, t("files:saveFailedValue0", { v0: res.status })))
         }
-        updateBuffer(path, {
+        const revision = res.headers.get("etag")
+        if (!revision) throw new Error(t("files:failedToSaveFile"))
+        editorStore.patch(path, incarnation, {
           saving: false,
           original: content,
+          revision,
           justSaved: true,
         })
-        window.setTimeout(() => updateBuffer(path, { justSaved: false }), 1500)
+        window.setTimeout(() => editorStore.patch(path, incarnation, { justSaved: false }), 1500)
       } catch (err) {
-        updateBuffer(path, { saving: false, saveError: fetchFailMessage(err, t("files:failedToSaveFile")) })
+        editorStore.patch(path, incarnation, { saving: false, saveError: fetchFailMessage(err, t("files:failedToSaveFile")) })
       }
     },
-    [buffers, projectId, updateBuffer, getLocale()],
+    [editorStore, projectId, getLocale()],
   )
 
   const refresh = useCallback(() => {
@@ -584,7 +569,10 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         setActive((prev) => (prev ? remapPathAfterRename(prev, from, to) : prev))
         setBuffers((prev) => {
           const next = new Map<string, FileBuffer>()
-          for (const [p, b] of prev) next.set(remapPathAfterRename(p, from, to), b)
+          for (const [p, b] of prev) {
+            const renamed = remapPathAfterRename(p, from, to)
+            next.set(renamed, renamed !== p && b.saving ? { ...b, saving: false } : b)
+          }
           return next
         })
         setExpanded((prev) => {
@@ -611,7 +599,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       if (treeEdit.mode === "create-file") openFile(rel)
       setIndex(null)
     },
-    [treeEdit, runFileOp, loadDir, openFile],
+    [treeEdit, runFileOp, loadDir, openFile, setTabs, setActive, setBuffers],
   )
 
   const deleteEntry = useCallback(
@@ -629,7 +617,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       void loadDir(dirName(path))
       setIndex(null)
     },
-    [runFileOp, loadDir],
+    [runFileOp, loadDir, setTabs, setActive, setBuffers],
   )
 
   const toggleDir = useCallback(
@@ -660,7 +648,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       if (from === -1 || to === -1) return prev
       return arrayMove(prev, from, to)
     })
-  }, [])
+  }, [setTabs])
 
   const copyActivePath = useCallback(async () => {
     if (!active) return

@@ -1,0 +1,129 @@
+import { describe, expect, test } from "bun:test"
+import { fileEditorDrafts, type FileBuffer } from "./fileEditorDrafts"
+
+function buffer(original: string, current: string): FileBuffer {
+  return {
+    kind: "text", status: "ready", original, current, revision: '"base"',
+    incarnation: {}, saving: false, saveError: null, justSaved: false, mdMode: "source",
+  }
+}
+
+function open(store: ReturnType<typeof fileEditorDrafts>, path: string, value: FileBuffer) {
+  store.setTabs([path])
+  store.setActive(path)
+  store.setBuffers(new Map([[path, value]]))
+}
+
+describe("project file editor drafts", () => {
+  test("retains dirty tabs across unmount and isolates projects while evicting clean tabs", () => {
+    const a = fileEditorDrafts("draft-test-a")
+    const b = fileEditorDrafts("draft-test-b")
+    const releaseA = a.mount()
+    const releaseB = b.mount()
+    const dirty = buffer("base a", "edited a")
+    open(a, "one.ts", dirty)
+    a.setTabs(["one.ts", "clean.ts"])
+    a.setBuffers(current => new Map(current).set("clean.ts", buffer("clean", "clean")))
+    open(b, "one.ts", buffer("base b", "edited b"))
+    const snapshot = a.getSnapshot()
+    expect(a.getSnapshot()).toBe(snapshot)
+    releaseA()
+    const restored = fileEditorDrafts("draft-test-a")
+    expect(restored).toBe(a)
+    expect(restored.getSnapshot().tabs).toEqual(["one.ts"])
+    expect(restored.getSnapshot().active).toBe("one.ts")
+    expect(restored.getSnapshot().buffers.get("one.ts")).toEqual(dirty)
+    expect(b.getSnapshot().buffers.get("one.ts")?.current).toBe("edited b")
+    const remount = restored.mount()
+    restored.setBuffers(new Map())
+    b.setBuffers(new Map())
+    remount()
+    releaseB()
+  })
+
+  test("a save settling after remount preserves newer edits and ignores a discarded incarnation", () => {
+    const store = fileEditorDrafts("draft-test-save")
+    const release = store.mount()
+    const first = buffer("base", "sent")
+    first.saving = true
+    open(store, "x.ts", first)
+    release()
+    const restored = fileEditorDrafts("draft-test-save")
+    const releaseAgain = restored.mount()
+    restored.patch("x.ts", first.incarnation, { current: "new typing" })
+    store.patch("x.ts", first.incarnation, { saving: false, original: "sent", revision: '"saved"' })
+    expect(restored.getSnapshot().buffers.get("x.ts")).toMatchObject({
+      original: "sent", current: "new typing", revision: '"saved"', saving: false,
+    })
+    releaseAgain()
+    const releaseThird = restored.mount()
+    expect(restored.getSnapshot().buffers.get("x.ts")?.current).toBe("new typing")
+    restored.setBuffers(new Map())
+    const replacement = buffer("disk", "replacement edits")
+    restored.setBuffers(new Map([["x.ts", replacement]]))
+    store.patch("x.ts", first.incarnation, { original: "stale", saving: false })
+    expect(restored.getSnapshot().buffers.get("x.ts")).toEqual(replacement)
+    restored.setBuffers(new Map())
+    releaseThird()
+  })
+
+  test("a completed save after unmount evicts its now-clean draft", () => {
+    const store = fileEditorDrafts("draft-test-clean-save")
+    const release = store.mount()
+    const value = buffer("base", "sent")
+    value.saving = true
+    open(store, "x.ts", value)
+    release()
+    store.patch("x.ts", value.incarnation, { saving: false, original: "sent", revision: '"saved"' })
+    expect(store.getSnapshot().buffers.size).toBe(0)
+    expect(fileEditorDrafts("draft-test-clean-save").getSnapshot().buffers.size).toBe(0)
+  })
+
+  test("an empty unmount and remount keeps the same project owner", () => {
+    const store = fileEditorDrafts("draft-test-strict")
+    const first = store.mount()
+    first()
+    const second = store.mount()
+    open(store, "x.ts", buffer("base", "edit"))
+    expect(fileEditorDrafts("draft-test-strict")).toBe(store)
+    second()
+    expect(fileEditorDrafts("draft-test-strict").getSnapshot().buffers.get("x.ts")?.current).toBe("edit")
+    const discard = store.mount()
+    store.setBuffers(new Map())
+    discard()
+  })
+
+  test("one unload guard stays installed until the last project is discarded", () => {
+    const previous = Object.getOwnPropertyDescriptor(globalThis, "window")
+    const fakeWindow = new EventTarget()
+    Object.defineProperty(globalThis, "window", { value: fakeWindow, configurable: true })
+    const a = fileEditorDrafts("draft-test-guard-a")
+    const b = fileEditorDrafts("draft-test-guard-b")
+    const releaseA = a.mount()
+    const releaseB = b.mount()
+    try {
+      open(a, "a", buffer("base", "edit a"))
+      open(b, "b", buffer("base", "edit b"))
+      releaseA()
+      releaseB()
+      const first = new Event("beforeunload", { cancelable: true })
+      fakeWindow.dispatchEvent(first)
+      expect(first.defaultPrevented).toBe(true)
+      const remountA = a.mount()
+      a.setBuffers(new Map())
+      remountA()
+      const second = new Event("beforeunload", { cancelable: true })
+      fakeWindow.dispatchEvent(second)
+      expect(second.defaultPrevented).toBe(true)
+      const remountB = b.mount()
+      b.setBuffers(new Map())
+      remountB()
+      const last = new Event("beforeunload", { cancelable: true })
+      fakeWindow.dispatchEvent(last)
+      expect(last.defaultPrevented).toBe(false)
+    } finally {
+      if (previous) Object.defineProperty(globalThis, "window", previous)
+      else Reflect.deleteProperty(globalThis, "window")
+    }
+  })
+})

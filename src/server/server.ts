@@ -4,7 +4,8 @@ import { stopGateway } from "./model-access/gateway"
 import { resolveEngineRuntime } from "./model-access/runtime"
 import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { uiJson } from "../shared/ui-copy"
-import { stat } from "node:fs/promises"
+import { open, stat, type FileHandle } from "node:fs/promises"
+import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import path from "node:path"
 import { APP_NAME, APP_VERSION, LOG_PREFIX, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
@@ -74,6 +75,44 @@ const MAX_UPLOAD_TOTAL_SIZE_BYTES = 200 * 1024 * 1024
 const MAX_EDITOR_SAVE_BYTES = 10 * 1024 * 1024
 const MAX_REQUEST_BODY_SIZE_BYTES = MAX_UPLOAD_TOTAL_SIZE_BYTES + 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
+const editorWrites = new Map<string, Promise<void>>()
+
+async function editorSnapshot(handle: FileHandle): Promise<Buffer | null> {
+  const info = await handle.stat()
+  if (!info.isFile()) throw new Error("File not found")
+  if (info.size > MAX_EDITOR_SAVE_BYTES) return null
+  const chunks: Buffer[] = []
+  const scratch = Buffer.allocUnsafe(64 * 1024)
+  let offset = 0
+  while (offset <= MAX_EDITOR_SAVE_BYTES) {
+    const length = Math.min(scratch.length, MAX_EDITOR_SAVE_BYTES + 1 - offset)
+    const { bytesRead } = await handle.read(scratch, 0, length, offset)
+    if (!bytesRead) break
+    offset += bytesRead
+    if (offset > MAX_EDITOR_SAVE_BYTES) return null
+    chunks.push(Buffer.from(scratch.subarray(0, bytesRead)))
+  }
+  return Buffer.concat(chunks, offset)
+}
+
+function editorEtag(bytes: Uint8Array): string {
+  return `"${createHash("sha256").update(bytes).digest("hex")}"`
+}
+
+async function serializeEditorWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
+  const previous = editorWrites.get(filePath)
+  let release!: () => void
+  const current = new Promise<void>(resolve => { release = resolve })
+  const tail = previous ? previous.then(() => current) : current
+  editorWrites.set(filePath, tail)
+  if (previous) await previous
+  try {
+    return await write()
+  } finally {
+    release()
+    if (editorWrites.get(filePath) === tail) editorWrites.delete(filePath)
+  }
+}
 
 export async function persistUploadedFiles(args: {
   projectId: string
@@ -1008,9 +1047,10 @@ export async function handleProjectFileContent(
     const filePath = resolved.path
 
     const file = Bun.file(filePath)
+    let initialInfo: Awaited<ReturnType<typeof stat>>
     try {
-      const info = await stat(filePath)
-      if (!info.isFile()) {
+      initialInfo = await stat(filePath)
+      if (!initialInfo.isFile()) {
         return uiJson({ error: "File not found" }, { status: 404 })
       }
     } catch {
@@ -1021,12 +1061,53 @@ export async function handleProjectFileContent(
       // Save from the Files editor. Existing files only (resolve above already
       // 404s otherwise), so the panel can't create paths the tree doesn't show.
       const declaredSize = Number(req.headers.get("content-length"))
+      const editor = url.searchParams.get("editor") === "1"
+      const expected = req.headers.get("if-match")
+      if (editor && !expected) return uiJson({ error: "If-Match is required" }, { status: 428 })
       if (Number.isFinite(declaredSize) && declaredSize > MAX_EDITOR_SAVE_BYTES) {
         return uiJson({ error: "File too large to save" }, { status: 413 })
       }
       const body = await req.text()
       if (Buffer.byteLength(body, "utf8") > MAX_EDITOR_SAVE_BYTES) {
         return uiJson({ error: "File too large to save" }, { status: 413 })
+      }
+      if (editor) {
+        return await serializeEditorWrite(filePath, async () => {
+          try {
+            const handle = await open(filePath, "r+")
+            try {
+              const handleInfo = await handle.stat()
+              if (!handleInfo.isFile()) return uiJson({ error: "File not found" }, { status: 404 })
+              if (handleInfo.dev !== initialInfo.dev || handleInfo.ino !== initialInfo.ino) {
+                return uiJson({ error: "File changed" }, { status: 412 })
+              }
+              const current = await editorSnapshot(handle)
+              if (!current || editorEtag(current) !== expected) return uiJson({ error: "File changed" }, { status: 412 })
+              const currentPath = await resolveExistingPathWithinRoot(project.localPath, relativePath)
+              if (!currentPath.ok) return uiJson({ error: "File not found" }, { status: 404 })
+              if (currentPath.path !== filePath) return uiJson({ error: "File changed" }, { status: 412 })
+              const currentInfo = await stat(currentPath.path)
+              if (!currentInfo.isFile()) return uiJson({ error: "File not found" }, { status: 404 })
+              if (currentInfo.dev !== handleInfo.dev || currentInfo.ino !== handleInfo.ino) {
+                return uiJson({ error: "File changed" }, { status: 412 })
+              }
+              const bytes = Buffer.from(body, "utf8")
+              let offset = 0
+              while (offset < bytes.length) {
+                const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset)
+                if (!bytesWritten) throw new Error("Failed to write file")
+                offset += bytesWritten
+              }
+              await handle.truncate(bytes.length)
+              return uiJson({ data: { saved: true, size: bytes.length } }, { headers: { ETag: editorEtag(bytes) } })
+            } finally {
+              await handle.close()
+            }
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return uiJson({ error: "File not found" }, { status: 404 })
+            return uiJson({ error: "Failed to write file" }, { status: 500 })
+          }
+        })
       }
       try {
         await Bun.write(filePath, body)
@@ -1042,6 +1123,25 @@ export async function handleProjectFileContent(
       return uiJson({ data: { saved: true, size: Buffer.byteLength(body, "utf8") } })
     }
 
+    if (url.searchParams.get("editor") === "1") {
+      try {
+        const handle = await open(filePath, "r")
+        try {
+          const bytes = await editorSnapshot(handle)
+          if (!bytes) return uiJson({ error: "File too large to open" }, { status: 413 })
+          return new Response(bytes, { headers: {
+            "Content-Type": inferProjectFileContentType(relativePath, file.type),
+            "Content-Length": String(bytes.byteLength),
+            "X-Content-Type-Options": "nosniff",
+            ETag: editorEtag(bytes),
+          } })
+        } finally {
+          await handle.close()
+        }
+      } catch {
+        return uiJson({ error: "File not found" }, { status: 404 })
+      }
+    }
     return new Response(file, {
       headers: {
         "Content-Type": inferProjectFileContentType(relativePath, file.type),

@@ -11,6 +11,7 @@
   "fileTooLargeToOpenInTheEditor": "文件过大，无法在编辑器中打开",
   "failedToLoadFile": "无法加载文件",
   "failedToSaveFile": "无法保存文件",
+  "fileChangedCopyEditsBeforeReload": "磁盘上的文件已更改或删除。重新加载前请先复制您的编辑内容。",
   "searchFailed": "搜索失败",
   "loading": "正在加载…",
   "retry": "重试",

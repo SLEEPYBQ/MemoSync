@@ -11,6 +11,7 @@
   "fileTooLargeToOpenInTheEditor": "file too large to open in the editor",
   "failedToLoadFile": "failed to load file",
   "failedToSaveFile": "failed to save file",
+  "fileChangedCopyEditsBeforeReload": "This file changed or was removed on disk. Copy your edits before reloading.",
   "searchFailed": "search failed",
   "loading": " loading…",
   "retry": "retry",
