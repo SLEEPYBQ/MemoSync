@@ -98,7 +98,7 @@ export function getResolvedKeybindings(snapshot: KeybindingsSnapshot | null): Ke
   }
 }
 
-function parseBinding(binding: string): ParsedBinding | null {
+export function parseBinding(binding: string): ParsedBinding | null {
   const parts = binding.split("+").map((part) => part.trim()).filter(Boolean)
   if (parts.length === 0) return null
 
@@ -151,7 +151,7 @@ function eventMatchesParsedKey(event: KeyboardEvent, key: string) {
   return event.code === expectedCode
 }
 
-function keyToCode(key: string) {
+export function keyToCode(key: string): string | null {
   if (key.length === 1 && key >= "a" && key <= "z") {
     return `Key${key.toUpperCase()}`
   }
@@ -164,7 +164,88 @@ function keyToCode(key: string) {
       return "Slash"
     case "`":
       return "Backquote"
+    case "-": return "Minus"
+    case "=": return "Equal"
+    case "[": return "BracketLeft"
+    case "]": return "BracketRight"
+    case "\\": return "Backslash"
+    case ";": return "Semicolon"
+    case "'": return "Quote"
+    case ",": return "Comma"
+    case ".": return "Period"
+    case "space": return "Space"
     default:
       return null
   }
+}
+
+export function codeToKey(code: string): string | null {
+  if (/^Key[A-Z]$/.test(code)) return code.slice(3).toLowerCase()
+  if (/^Digit[0-9]$/.test(code)) return code.slice(5)
+  const codes: Record<string, string> = {
+    Minus: "-", Equal: "=", BracketLeft: "[", BracketRight: "]",
+    Backslash: "\\", Semicolon: ";", Quote: "'", Comma: ",", Period: ".",
+    Backquote: "`", Slash: "/", Space: "space",
+  }
+  return codes[code] ?? null
+}
+
+type ModifierEvent = Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "altKey" | "shiftKey">
+
+export function modifierChordFromEvent(event: ModifierEvent): string | null {
+  const parts = [
+    event.metaKey && "cmd",
+    event.ctrlKey && "ctrl",
+    event.altKey && "alt",
+    event.shiftKey && "shift",
+  ].filter(Boolean)
+  return parts.length ? parts.join("+") : null
+}
+
+export function chordFromKeyboardEvent(
+  event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
+): string | null {
+  if (["Meta", "Control", "Alt", "Shift", "CapsLock", "Dead", "Process", "Unidentified"].includes(event.key)) return null
+  const key = codeToKey(event.code) ?? event.key.toLowerCase()
+  if (!key.trim() || key === "+") return null
+  return [modifierChordFromEvent(event), key].filter(Boolean).join("+")
+}
+
+export function isRecordableChord(chord: string): boolean {
+  const parsed = parseBinding(chord)
+  return Boolean(parsed && (parsed.meta || parsed.ctrl || parsed.alt || /^f(?:[1-9]|1[0-2])$/.test(parsed.key)))
+}
+
+export function isApplePlatform(): boolean {
+  if (typeof navigator === "undefined") return false
+  const platform = (navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ?? navigator.platform
+  return /mac|iphone|ipad/i.test(platform)
+}
+
+export function formatBindingParts(binding: string, apple: boolean): string[] {
+  const tokens = binding.split("+").map((part) => part.trim()).filter(Boolean)
+  const parsed = parseBinding(binding)
+  if (!parsed && (!tokens.length || tokens.some((token) => !MODIFIER_TOKENS.has(token.toLowerCase())))) return [binding]
+
+  return tokens.map((token) => {
+    const value = token.toLowerCase()
+    const modifier = MODIFIER_TOKENS.get(value)
+    if (modifier === "meta") return apple ? "⌘" : "Win"
+    if (modifier === "ctrl") return apple ? "⌃" : "Ctrl"
+    if (modifier === "alt") return apple ? "⌥" : "Alt"
+    if (modifier === "shift") return apple ? "⇧" : "Shift"
+    if (/^[a-z]$/.test(value)) return value.toUpperCase()
+    if (/^f\d+$/.test(value)) return value.toUpperCase()
+    const labels: Record<string, string> = {
+      space: "Space", arrowleft: "←", arrowright: "→", arrowup: "↑", arrowdown: "↓",
+      enter: "↵", escape: "Esc", backspace: "⌫", tab: "Tab",
+    }
+    return labels[value] ?? token
+  })
+}
+
+export function preferredBinding(bindings: string[], apple: boolean): string | null {
+  return bindings.find((binding) => binding.split("+").some((part) => /^(cmd|meta)$/i.test(part.trim())) === apple)
+    ?? bindings[0]
+    ?? null
 }

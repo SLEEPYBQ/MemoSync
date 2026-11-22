@@ -734,10 +734,10 @@
   overflow-wrap: anywhere;
 }
 
-/* Model access settings and their portalled controls retain keyboard focus
-   outlines despite the app-wide button shadow reset above. */
+/* These settings surfaces opt back into visible keyboard focus. */
 @layer base {
-  .model-access-ui :is(button, a, input, summary, [tabindex]):focus-visible {
+  .model-access-ui :is(button, a, input, summary, [tabindex]):focus-visible,
+  .shortcut-settings-ui :is(button, a, input, summary, [tabindex]):focus-visible {
     outline: 2px solid hsl(var(--focus) / 0.6) !important;
     outline-offset: 1px;
   }

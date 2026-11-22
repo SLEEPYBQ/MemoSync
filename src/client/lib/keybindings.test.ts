@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { bindingMatchesEvent, findMatchingActionBinding, parseKeybindingInput } from "./keybindings"
+import {
+  bindingMatchesEvent, chordFromKeyboardEvent, codeToKey, findMatchingActionBinding, formatBindingParts,
+  isRecordableChord, keyToCode, modifierChordFromEvent, parseKeybindingInput, preferredBinding,
+} from "./keybindings"
 import type { KeybindingsSnapshot } from "../../shared/types"
 
 describe("parseKeybindingInput", () => {
@@ -45,5 +48,58 @@ describe("findMatchingActionBinding", () => {
     const event = { key: "˜", code: "KeyN", metaKey: true, ctrlKey: false, altKey: true, shiftKey: false } as KeyboardEvent
 
     expect(findMatchingActionBinding(snapshot, "createChatInCurrentProject", event)).toBe("cmd+alt+n")
+  })
+})
+
+describe("shortcut recording and display", () => {
+  const event = (overrides: Partial<KeyboardEvent> = {}) => ({
+    key: "", code: "", metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...overrides,
+  }) as KeyboardEvent
+
+  test("records physical keys and canonical modifier order", () => {
+    expect(chordFromKeyboardEvent(event({ key: "∫", code: "KeyB", altKey: true }))).toBe("alt+b")
+    expect(chordFromKeyboardEvent(event({ key: "O", code: "KeyO", metaKey: true, shiftKey: true }))).toBe("cmd+shift+o")
+    expect(chordFromKeyboardEvent(event({ key: "Control", code: "ControlLeft", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: "+", code: "NumpadAdd", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: " ", code: "Space", ctrlKey: true }))).toBe("ctrl+space")
+    expect(chordFromKeyboardEvent(event({ key: " ", code: "", ctrlKey: true }))).toBeNull()
+    for (const key of ["CapsLock", "Dead", "Process", "Unidentified"]) expect(chordFromKeyboardEvent(event({ key }))).toBeNull()
+  })
+
+  test("collects modifiers and checks which chords can be recorded", () => {
+    expect(modifierChordFromEvent(event())).toBeNull()
+    expect(modifierChordFromEvent(event({ metaKey: true, ctrlKey: true, altKey: true, shiftKey: true }))).toBe("cmd+ctrl+alt+shift")
+    expect(isRecordableChord("j")).toBe(false)
+    expect(isRecordableChord("shift+j")).toBe(false)
+    expect(isRecordableChord("f5")).toBe(true)
+    expect(isRecordableChord("f13")).toBe(false)
+    expect(isRecordableChord("cmd+j")).toBe(true)
+  })
+
+  test("formats platform-specific keycaps and modifier-only shortcuts", () => {
+    expect(formatBindingParts("cmd+ctrl+alt+shift+o", true)).toEqual(["⌘", "⌃", "⌥", "⇧", "O"])
+    expect(formatBindingParts("meta+control+option+shift+space", false)).toEqual(["Win", "Ctrl", "Alt", "Shift", "Space"])
+    expect(formatBindingParts("cmd+alt", true)).toEqual(["⌘", "⌥"])
+    expect(formatBindingParts("ctrl+arrowleft", false)).toEqual(["Ctrl", "←"])
+    expect(formatBindingParts("ctrl+f5", false)).toEqual(["Ctrl", "F5"])
+    expect(formatBindingParts("invalid+two+keys", true)).toEqual(["invalid+two+keys"])
+  })
+
+  test("prefers bindings for the active platform", () => {
+    expect(preferredBinding(["ctrl+b", "cmd+b"], true)).toBe("cmd+b")
+    expect(preferredBinding(["cmd+b", "ctrl+b"], false)).toBe("ctrl+b")
+    expect(preferredBinding(["cmd+b"], false)).toBe("cmd+b")
+    expect(preferredBinding([], true)).toBeNull()
+  })
+
+  test("translates physical punctuation and space in both directions", () => {
+    const pairs = { "-": "Minus", "=": "Equal", "[": "BracketLeft", "]": "BracketRight", "\\": "Backslash", ";": "Semicolon", "'": "Quote", ",": "Comma", ".": "Period", "/": "Slash", "`": "Backquote", space: "Space", a: "KeyA", "1": "Digit1" }
+    for (const [key, code] of Object.entries(pairs)) {
+      expect(keyToCode(key)).toBe(code)
+      expect(codeToKey(code)).toBe(key)
+    }
+    expect(codeToKey("Unknown")).toBeNull()
+    expect(bindingMatchesEvent("ctrl+space", event({ key: "Unusual", code: "Space", ctrlKey: true }))).toBe(true)
+    expect(bindingMatchesEvent("cmd+,", event({ key: "≤", code: "Comma", metaKey: true }))).toBe(true)
   })
 })
