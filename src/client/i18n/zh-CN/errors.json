@@ -164,6 +164,7 @@
   "modelAccess_executable-broken": "引擎可执行文件无法运行。",
   "modelAccess_executable-incompatible": "引擎可执行文件不兼容。",
   "modelAccess_model-access-unavailable": "模型访问设置不可用。",
+  "modelAccess_model-access-keyring-unavailable": "请解锁系统凭据存储。在无桌面环境的主机上，可以使用服务商的环境变量。",
   "modelAccess_model-access-storage-unreadable": "无法读取模型访问设置。",
   "modelAccess_model-access-storage-write-failed": "无法保存模型访问设置。",
   "modelAccess_model-access-operation-failed": "模型访问操作失败。",

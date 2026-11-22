@@ -22,7 +22,7 @@ import {
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
 import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
-import { fakeExecutableResolver } from "./model-access/test-fixtures"
+import { testKeyring, fakeExecutableResolver } from "./model-access/test-fixtures"
 import type { EngineRuntime } from "./model-access/runtime"
 
 for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
@@ -30,7 +30,7 @@ for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
     if (engine === "opencode" && payload !== "top-level" && payload !== "default") continue
     test(`${engine} chat selection resolves connection B over default A (${payload})`, async () => {
       const dir = mkdtempSync(join(tmpdir(), "chat-connection-"))
-      const service = await new ModelAccessService({ dataDir: dir, env: { HOME: dir }, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
+      const service = await new ModelAccessService({ keyring: testKeyring, dataDir: dir, env: { HOME: dir }, readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver }).initialize()
       const endpoints = [
         { protocol: "anthropic-messages" as const, baseUrl: "http://127.0.0.1:1234" },
         { protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" },
@@ -79,7 +79,7 @@ for (const engine of ["claude", "codex"] as const) {
       writeFileSync(join(dir, ".codex", "auth.json"), JSON.stringify({ tokens: {} }))
       writeFileSync(join(dir, ".claude.json"), JSON.stringify({ oauthAccount: {} }))
       const id = engine === "claude" ? (selection === "versioned" ? "claude-opus-4-8" : "claude-fable-5-1[1m]") : (selection === "versioned" ? "gpt-5-codex" : "gpt-live")
-      const service = await new ModelAccessService({
+      const service = await new ModelAccessService({ keyring: testKeyring,
         dataDir: dir, env: { HOME: dir, CODEX_MODEL: "ambient-default" }, readLegacyPi: async () => null,
         resolveExecutable: fakeExecutableResolver,
         readEngineModels: async current => current === engine ? { defaultModel: id, models: [

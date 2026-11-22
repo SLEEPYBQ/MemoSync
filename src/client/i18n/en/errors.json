@@ -164,6 +164,7 @@
   "modelAccess_executable-broken": "The engine executable could not run.",
   "modelAccess_executable-incompatible": "The engine executable is incompatible.",
   "modelAccess_model-access-unavailable": "Model access settings are unavailable.",
+  "modelAccess_model-access-keyring-unavailable": "Unlock your operating system’s credential store, or use a provider environment variable on a headless host.",
   "modelAccess_model-access-storage-unreadable": "Model access settings could not be read.",
   "modelAccess_model-access-storage-write-failed": "Model access settings could not be saved.",
   "modelAccess_model-access-operation-failed": "The model access operation failed.",

@@ -54,3 +54,16 @@ export function acquireDataDirectoryLock(dataDir: string) {
   })
   return { dataDir: resolvedDir, release: lock.release }
 }
+
+/** Serialize reads and updates to one provider file even across data directories. */
+export async function acquireLlmProviderFileLock(filePath: string) {
+  const busyMessage = "Another MemoSync instance is updating the LLM provider configuration. Please try again."
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return acquireFileLock(`${filePath}.lock.sqlite`, { busyTimeoutMs: 0, busyMessage })
+    } catch (error) {
+      if (attempt === 100 || !(error instanceof Error) || error.message !== busyMessage) throw error
+      await Bun.sleep(50)
+    }
+  }
+}

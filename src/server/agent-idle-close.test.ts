@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
@@ -129,7 +130,7 @@ async function harness(provider: "claude" | "codex" | "opencode" = "claude", slo
     ...overrides,
   })
   if (provider === "opencode") {
-    const service = await new ModelAccessService({ dataDir: join(dir, "model-access"), env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
+    const service = await new ModelAccessService({ keyring: testKeyring, dataDir: join(dir, "model-access"), env: { HOME: dir, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null,
       resolveExecutable: async engine => engine === "opencode" ? { state: "ready", path: process.execPath } : { state: "missing" },
     }).initialize()
     const connection = await service.saveConnection({ name: "fake", endpoints: [{ protocol: "openai-chat", baseUrl: "http://127.0.0.1:9" }], models: [{ id: "m" }] })

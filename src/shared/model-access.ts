@@ -156,6 +156,8 @@ export interface EngineStatus {
     | "executable-broken"
     | "connection-missing"
     | "connection-key-missing"
+    | "model-access-keyring-unavailable"
+    | "model-access-storage-unreadable"
     | "connection-protocol-unsupported"
     | "account-signed-out"
     | "account-config-invalid"

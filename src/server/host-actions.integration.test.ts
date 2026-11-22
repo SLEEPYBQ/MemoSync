@@ -1,3 +1,4 @@
+import { testKeyring } from "./model-access/test-fixtures"
 import { expect, test } from "bun:test"
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
@@ -31,7 +32,7 @@ test('the first resolved Claude runtime admits host actions with memory disabled
   await mkdir(workspace); await writeFile(path.join(workspace, 'README.md'), '# Cold start\n')
   const project = await store.openProject(workspace), chat = await store.createChat(project.id)
   await store.renameChat(chat.id, 'Synthetic cold start')
-  const access = await new ModelAccessService({ dataDir: path.join(root, 'access'), env: { HOME: root, PATH: '' }, readLegacyPi: async () => null,
+  const access = await new ModelAccessService({ keyring: testKeyring, dataDir: path.join(root, 'access'), env: { HOME: root, PATH: '' }, readLegacyPi: async () => null,
     resolveExecutable: async () => ({ state: 'ready', path: '/synthetic/claude', version: '2.1.241' }) }).initialize()
   const connection = await access.saveConnection({ name: 'Synthetic local', apiKey: 'synthetic', endpoints: [{ protocol: 'anthropic-messages', baseUrl: 'http://127.0.0.1:1' }], models: [{ id: 'synthetic' }] })
   await access.setEngine('claude', { access: { mode: 'connection', connectionId: connection.id } })

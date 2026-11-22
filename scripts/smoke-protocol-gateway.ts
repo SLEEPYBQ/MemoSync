@@ -1,3 +1,4 @@
+import { testKeyring } from "../src/server/model-access/test-fixtures"
 // Optional live smoke: bundled Claude Code -> loopback gateway -> fake Chat upstream.
 // Run with: bun scripts/smoke-protocol-gateway.ts (no real keys or user profiles).
 import { mkdtempSync, rmSync } from "node:fs"
@@ -25,7 +26,7 @@ const upstream = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(req) {
   return new Response(chunks.map(c => `data: ${JSON.stringify(c)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
 } })
 try {
-  const service = await new ModelAccessService({ dataDir: join(scratch, "data"), env: { HOME: scratch, PATH: process.env.PATH, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null, resolveExecutable: async () => ({ state: "ready", path: executable, source: "bundled" }) }).initialize()
+  const service = await new ModelAccessService({ keyring: testKeyring, dataDir: join(scratch, "data"), env: { HOME: scratch, PATH: process.env.PATH, MEMOSYNC_ISOLATE_CLI: "1" }, readLegacyPi: async () => null, resolveExecutable: async () => ({ state: "ready", path: executable, source: "bundled" }) }).initialize()
   const c = await service.saveConnection({ name: "Fake smoke upstream", apiKey: "fake-upstream-only", endpoints: [{ protocol: "openai-chat", baseUrl: `http://127.0.0.1:${upstream.port}/v1` }], models: [{ id: "gateway-smoke-model" }] })
   const runtime = await resolveEngineRuntime({ engine: "claude", connectionId: c.id, service })
   if (JSON.stringify(runtime.env).includes("fake-upstream-only")) throw new Error("Upstream key leaked")
