@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
-import { MemoryRouter } from "react-router-dom"
+import { MemoryRouter, useLocation } from "react-router-dom"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { useAppState } from "../../../app/useAppState"
@@ -29,10 +29,23 @@ interface AppStateFixtureApi {
   historyRequest: (index: number) => { type: string; chatId?: string; beforeCursor?: string } | undefined
   resolveHistory: (index: number, page: unknown) => void
   rejectHistory: (index: number, reason: string) => void
+  send: (content: string, draft?: { chatId: string; projectId: string }) => void
+  sendFromPath: (content: string) => void
+  sendCount: () => number
+  resolveSend: (index: number, chatId: string) => void
+  rejectSend: (index: number) => void
+  location: () => string
+  runtimeStatus: () => string | null
+  activeProjectId: () => string | null
+  projectCount: () => number
+  resolveProject: (index: number, projectId: string) => void
+  ask: () => Promise<string>
 }
 
 const subscriptions: ChatSubscription[] = []
 const historyRequests: HistoryRequest[] = []
+const sendRequests: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = []
+const projectRequests: Array<{ resolve: (value: unknown) => void }> = []
 
 const fixtureApi: AppStateFixtureApi = {
   transcriptRevision: () => 0,
@@ -56,6 +69,17 @@ const fixtureApi: AppStateFixtureApi = {
   },
   resolveHistory: (index, page) => historyRequests[index]?.resolve(page),
   rejectHistory: (index, reason) => historyRequests[index]?.reject(new Error(reason)),
+  send: () => {},
+  sendFromPath: () => {},
+  sendCount: () => sendRequests.length,
+  resolveSend: (index, chatId) => sendRequests[index]?.resolve({ chatId }),
+  rejectSend: (index) => sendRequests[index]?.reject(new Error("fixture send failed")),
+  location: () => "",
+  runtimeStatus: () => null,
+  activeProjectId: () => null,
+  projectCount: () => projectRequests.length,
+  resolveProject: (index, projectId) => projectRequests[index]?.resolve({ projectId }),
+  ask: async () => "",
 }
 
 Object.assign(AppSocket.prototype, {
@@ -106,6 +130,12 @@ Object.assign(AppSocket.prototype, {
         filePathDisplay: "",
       })
     }
+    if (command.type === "chat.send") return new Promise((resolve, reject) => {
+      sendRequests.push({ resolve, reject })
+    })
+    if (command.type === "project.open") return new Promise(resolve => {
+      projectRequests.push({ resolve })
+    })
     if (command.type !== "chat.loadHistory") return Promise.resolve({})
     return new Promise((resolve, reject) => {
       historyRequests.push({ command, resolve, reject })
@@ -118,6 +148,7 @@ export function mountAppStateFixture(root: HTMLElement) {
   let transcriptRevision = 0
   function AppStateHost() {
     const [activeChatId, setActiveChatId] = useState<string | null>("chat-a")
+    const location = useLocation()
     const state = useAppState(activeChatId)
     if (lastMessages !== state.messages) {
       lastMessages = state.messages
@@ -129,6 +160,19 @@ export function mountAppStateFixture(root: HTMLElement) {
       .filter((message) => message.kind === "user_prompt")
       .map((message) => message.content)
     fixtureApi.setChatId = setActiveChatId
+    fixtureApi.send = (content, draft) => { void state.handleSend(content, { draft }).catch(() => {}) }
+    fixtureApi.sendFromPath = content => { void state.handleSend(content, { projectLocalPath: "/fixture/project-a" }).catch(() => {}) }
+    fixtureApi.location = () => location.pathname
+    fixtureApi.runtimeStatus = () => state.runtimeStatus
+    fixtureApi.activeProjectId = () => state.activeProjectId
+    fixtureApi.ask = async () => {
+      try {
+        await state.handleAskUserQuestion("fixture", [], {})
+        return "resolved"
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    }
     const renderedState = {
       activeChatId: state.activeChatId,
       snapshotChatId: state.chatSnapshot?.runtime.chatId ?? null,

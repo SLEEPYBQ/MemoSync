@@ -6,6 +6,8 @@ if (view === "terminal-workspace") {
   void import("./terminalWorkspaceFixture").then(({ mountTerminalWorkspaceFixture }) => mountTerminalWorkspaceFixture(root))
 } else if (view === "app-state") {
   void import("./appStateFixture").then(({ mountAppStateFixture }) => mountAppStateFixture(root))
+} else if (view === "question-git") {
+  void import("./questionGitFixture").then(({ mountQuestionGitFixture }) => mountQuestionGitFixture(root))
 } else {
   void import("./chatInputFixture").then(({ mountChatInputFixture }) => mountChatInputFixture(root))
 }

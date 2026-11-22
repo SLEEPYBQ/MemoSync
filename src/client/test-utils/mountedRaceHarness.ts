@@ -4,7 +4,7 @@ import { chromium, type Browser, type Page } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
 import { PROVIDERS } from "../../shared/types"
 
-export type MountedRaceView = "app-state" | "chat-input" | "terminal-workspace"
+export type MountedRaceView = "app-state" | "chat-input" | "terminal-workspace" | "question-git"
 
 export async function startMountedRaceHarness() {
   const vite: ViteDevServer = await createServer({

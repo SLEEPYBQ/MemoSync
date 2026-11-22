@@ -14,6 +14,18 @@ interface AppStateFixtureApi {
   historyRequest: (index: number) => { type: string; chatId?: string; beforeCursor?: string } | undefined
   resolveHistory: (index: number, page: unknown) => void
   rejectHistory: (index: number, reason: string) => void
+  setChatId: (chatId: string | null) => void
+  send: (content: string, draft?: { chatId: string; projectId: string }) => void
+  sendFromPath: (content: string) => void
+  sendCount: () => number
+  resolveSend: (index: number, chatId: string) => void
+  rejectSend: (index: number) => void
+  location: () => string
+  runtimeStatus: () => string | null
+  activeProjectId: () => string | null
+  projectCount: () => number
+  resolveProject: (index: number, projectId: string) => void
+  ask: () => Promise<string>
 }
 
 interface RenderedAppState {
@@ -178,6 +190,79 @@ async function rejectHistory(target: Page, index: number, reason: string) {
 }
 
 describe("mounted useAppState history races", () => {
+  test("a late landing ACK cannot redirect or replace a newer send", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.send("first", { chatId: "draft-a", projectId: "project-a" }))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 1)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId("chat-b"))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === "chat-b")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.send("second"))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 2)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-a"))
+    await target.waitForTimeout(100)
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe("/")
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.runtimeStatus())).toBe("starting")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(1, "chat-b"))
+  })
+
+  test("a landing ACK redirects when the same view is still current", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.send("first", { chatId: "draft-a", projectId: "project-a" }))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 1)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-a"))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location() === "/chat/draft-a")
+  })
+
+  test("a previous landing visit cannot redirect a later visit or settle its processing", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.send("first", { chatId: "draft-a", projectId: "project-a" }))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 1)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId("chat-b"))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === "chat-b")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.send("second", { chatId: "draft-b", projectId: "project-b" }))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 2)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-a"))
+    await target.waitForTimeout(100)
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe("/")
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.runtimeStatus())).toBe("starting")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(1, "draft-b"))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location() === "/chat/draft-b")
+  })
+
+  test("late project.open cannot replace the new chat's selected project", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendFromPath("first"))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.projectCount() === 1)
+    await activateChat(target, "chat-b", 0)
+    await emitChat(target, "chat-b", 0, snapshot("chat-b", null, false, []))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.activeProjectId() === "project-chat-b")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveProject(0, "project-a"))
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 1)
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.activeProjectId())).toBe("project-chat-b")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-a"))
+    await target.waitForTimeout(50)
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe("/")
+  })
+
+  test("an answer with no active chat rejects rather than appearing submitted", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
+    await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ask())).toBe("No active chat")
+  })
+
   test("keeps paged transcript identity during streaming while retaining same-ID content changes", async () => {
     const target = await openFixture()
     const recent = snapshot("chat-a", "idx:100", true, numberedIds(100, 125))

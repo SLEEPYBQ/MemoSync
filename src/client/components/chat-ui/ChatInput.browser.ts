@@ -3,7 +3,9 @@ import type { Page, Route } from "playwright"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
 interface ChatInputFixtureApi {
-  setChatId: (chatId: string) => void
+  setChatId: (chatId: string | null) => void
+  setProjectId: (projectId: string) => void
+  setMounted: (mounted: boolean) => void
   submissions: () => Array<{ value: string; options: { attachments?: Array<{ id: string }> } }>
   resolveSubmit: (index: number) => void
   rejectSubmit: (index: number, reason: string) => void
@@ -336,6 +338,76 @@ describe("mounted ChatInput submission races", () => {
 
     await expectInputValue(target, "")
     expect(await readDraft(target, "chat-one")).toBe("")
+  })
+
+  test("keeps landing attachments by project across remounts and clears only the accepted project", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    await attach(target, "a.txt", "landing:project-a")
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-b"))
+    await attach(target, "b.txt", "landing:project-b")
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-a"))
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    expect(await target.getByText("uploaded-2.txt", { exact: true }).count()).toBe(0)
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setMounted(false))
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setMounted(true))
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    await target.reload()
+    await target.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1)
+    await settle(target, 0, true)
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.attachments("landing:project-a").length === 0)
+    expect(await readAttachments(target, "landing:project-b")).toHaveLength(1)
+  })
+
+  test("an obsolete upload cannot free a slot or post new project files to the old project", async () => {
+    const target = await openFixture()
+    const held: Route[] = []
+    await target.route("**/uploads", async route => { held.push(route) })
+    const waitForRoutes = async (count: number) => {
+      const deadline = Date.now() + 5_000
+      while (held.length < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      expect(held).toHaveLength(count)
+    }
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    const file = (name: string) => ({ name, mimeType: "text/plain", buffer: Buffer.from(name) })
+    await target.locator('input[type="file"]').setInputFiles(file("a.txt"))
+    await waitForRoutes(1)
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-b"))
+    await target.locator('input[type="file"]').setInputFiles(["b1.txt", "b2.txt", "b3.txt", "b4.txt"].map(file))
+    await waitForRoutes(4)
+    const fulfill = (route: Route, id: string) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ attachments: [{
+        id, kind: "file", displayName: `${id}.txt`, absolutePath: `/fixture/${id}`,
+        relativePath: id, contentUrl: `/api/projects/fixture/uploads/${id}/content`, mimeType: "text/plain", size: 1,
+      }] }),
+    })
+    expect(held[0].request().url()).toContain("/project-a/uploads")
+    expect(held[0].request().postData()).not.toContain("b1.txt")
+    expect(held.slice(1).every(route => route.request().url().includes("/project-b/uploads"))).toBe(true)
+    await fulfill(held[0], "stale-a")
+    await target.waitForTimeout(100)
+    expect(held).toHaveLength(4)
+    await fulfill(held[1], "b1")
+    await waitForRoutes(5)
+    expect(held[4].request().url()).toContain("/project-b/uploads")
+    await Promise.all(held.slice(2).map((route, index) => fulfill(route, `b${index + 2}`)))
   })
 })
 

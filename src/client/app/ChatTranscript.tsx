@@ -502,7 +502,7 @@ interface TranscriptSingleRowProps {
     toolUseId: string,
     questions: AskUserQuestionItem[],
     answers: AskUserQuestionAnswerMap
-  ) => void
+  ) => void | Promise<void>
   onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
   onMemoryPreviewRespond?: (previewId: string, decision: MemoryPreviewDecision, memoryIds?: string[], expectedUses?: ExpectedMemoryUse[]) => void
   onMemoryProposalsRespond?: (proposalsId: string, decision: "reviewed" | "skipped") => Promise<void> | void
@@ -895,7 +895,7 @@ export interface ChatTranscriptRowProps {
     toolUseId: string,
     questions: AskUserQuestionItem[],
     answers: AskUserQuestionAnswerMap
-  ) => void
+  ) => void | Promise<void>
   onExitPlanModeConfirm: (toolUseId: string, confirmed: boolean, clearContext?: boolean, message?: string) => void
   onMemoryPreviewRespond?: (previewId: string, decision: MemoryPreviewDecision, memoryIds?: string[], expectedUses?: ExpectedMemoryUse[]) => void
   onMemoryProposalsRespond?: (proposalsId: string, decision: "reviewed" | "skipped") => Promise<void> | void

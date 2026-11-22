@@ -16,7 +16,9 @@ interface SubmissionRecord {
 }
 
 interface ChatInputFixtureApi {
-  setChatId: (chatId: string) => void
+  setChatId: (chatId: string | null) => void
+  setProjectId: (projectId: string) => void
+  setMounted: (mounted: boolean) => void
   submissions: () => Array<{ value: string; options: unknown }>
   resolveSubmit: (index: number) => void
   rejectSubmit: (index: number, reason: string) => void
@@ -28,6 +30,8 @@ const submissions: SubmissionRecord[] = []
 
 const fixtureApi: ChatInputFixtureApi = {
   setChatId: () => {},
+  setProjectId: () => {},
+  setMounted: () => {},
   submissions: () => submissions.map(({ value, options }) => ({ value, options })),
   resolveSubmit: (index) => submissions[index]?.resolve(),
   rejectSubmit: (index, reason) => submissions[index]?.reject(new Error(reason)),
@@ -37,8 +41,12 @@ const fixtureApi: ChatInputFixtureApi = {
 
 export function mountChatInputFixture(root: HTMLElement) {
   function ChatInputHost() {
-    const [chatId, setChatId] = useState("chat-one")
+    const [chatId, setChatId] = useState<string | null>("chat-one")
+    const [projectId, setProjectId] = useState("fixture-project")
+    const [mounted, setMounted] = useState(true)
     fixtureApi.setChatId = setChatId
+    fixtureApi.setProjectId = setProjectId
+    fixtureApi.setMounted = setMounted
     const onSubmit: ComponentProps<typeof ChatInput>["onSubmit"] = (value, options) =>
       new Promise((resolve, reject) => {
         submissions.push({ value, options, resolve, reject })
@@ -48,16 +56,17 @@ export function mountChatInputFixture(root: HTMLElement) {
       <main>
         <div data-testid="fixture-ready" />
         <output data-testid="current-chat">{chatId}</output>
-        <ChatInput
-          key={chatId}
+        {mounted && <ChatInput
+          key={chatId ?? "landing"}
           chatId={chatId}
-          projectId="fixture-project"
+          draftKey={chatId ? undefined : "landing"}
+          projectId={projectId}
           onSubmit={onSubmit}
           disabled={false}
           canCancel={false}
           activeProvider={null}
           availableProviders={PROVIDERS}
-        />
+        />}
       </main>
     )
   }

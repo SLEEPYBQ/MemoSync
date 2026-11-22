@@ -408,7 +408,7 @@ export function LocalDevContent({
 
             <div className="w-full">
               <ChatInput
-                key="landing"
+                key={selectedPath ?? "landing"}
                 onSubmit={(value, options) => {
                   if (!selectedPath) return Promise.reject(new Error(t("chat:openAProjectFirst")))
                   return onSend(value, { ...options, projectLocalPath: selectedPath, draft: draft ?? undefined })

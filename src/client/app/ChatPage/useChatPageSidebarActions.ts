@@ -1,6 +1,6 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
 import type {
   BranchActionFailure,
   BranchActionSuccess,
@@ -49,7 +49,7 @@ export function useChatPageSidebarActions({
   const activeChatIdRef = useRef<string | null>(state.activeChatId)
   const projectPathRef = useRef<string | null>(state.runtime?.localPath ?? state.navbarLocalPath ?? null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeChatIdRef.current = state.activeChatId
   }, [state.activeChatId])
 
@@ -202,7 +202,7 @@ export function useChatPageSidebarActions({
   }, [state.handleOpenExternalPath])
 
   const handleCommitDiffs = useCallback(async (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => {
-    const chatId = activeChatIdRef.current
+    const chatId = state.activeChatId
     if (!chatId) {
       return null
     }
@@ -215,10 +215,10 @@ export function useChatPageSidebarActions({
         description: args.description,
         mode: args.mode,
       })
-      if (result.snapshotChanged) {
+      if (result.snapshotChanged && activeChatIdRef.current === chatId) {
         refreshDiffs()
       }
-      if (!result.ok) {
+      if (!result.ok && activeChatIdRef.current === chatId) {
         await dialog.alert({
           title: translateUiText(result.title),
           description: result.localCommitCreated
@@ -229,14 +229,14 @@ export function useChatPageSidebarActions({
       }
       return result
     } catch (error) {
-      await dialog.alert({
+      if (activeChatIdRef.current === chatId) await dialog.alert({
         title: t("sidebar:commitFailed"),
         description: error instanceof Error ? error.message : String(error),
         closeLabel: t("common:ok"),
       })
       return null
     }
-  }, [dialog, refreshDiffs, state.socket, getLocale()])
+  }, [dialog, refreshDiffs, state.socket, state.activeChatId, getLocale()])
 
   const handleSyncBranch = useCallback(async (action: "fetch" | "pull" | "push" | "publish") => {
     const chatId = activeChatIdRef.current
@@ -272,7 +272,7 @@ export function useChatPageSidebarActions({
   }, [dialog, refreshDiffs, state.socket, getLocale()])
 
   const handleGenerateCommitMessage = useCallback(async (args: { paths: string[] }) => {
-    const chatId = activeChatIdRef.current
+    const chatId = state.activeChatId
     if (!chatId) {
       return { subject: "", body: "" }
     }
@@ -292,14 +292,14 @@ export function useChatPageSidebarActions({
       // Every other Git action surfaces failures via dialog.alert; this one
       // silently swallowed them, leaving the user with an empty box and no clue
       // (BUG PANEL-5). Especially likely on the DeepSeek deployment (AGENT-6).
-      await dialog.alert({
+      if (activeChatIdRef.current === chatId) await dialog.alert({
         title: t("sidebar:couldnTGenerateACommitMessage"),
         description: error instanceof Error ? error.message : String(error),
         closeLabel: t("common:ok"),
       })
       return { subject: "", body: "" }
     }
-  }, [dialog, state.socket, getLocale()])
+  }, [dialog, state.socket, state.activeChatId, getLocale()])
 
   const handleInitializeGit = useCallback(async () => {
     const chatId = activeChatIdRef.current

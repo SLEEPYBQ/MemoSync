@@ -1,5 +1,5 @@
 import { t, useI18n } from "../../i18n"
-import { useState } from "react"
+import { useRef, useState } from "react"
 import { Check, ChevronLeft, MessageCircleQuestion } from "lucide-react"
 import type { ProcessedToolCall, AskUserQuestionItem, AskUserQuestionOption } from "./types"
 import type { AskUserQuestionAnswerMap } from "../../../shared/types"
@@ -10,7 +10,7 @@ import { useTranscriptRenderOptions } from "./render-context"
 
 interface Props {
   message: Extract<ProcessedToolCall, { toolKind: "ask_user_question" }>
-  onSubmit: (toolUseId: string, questions: AskUserQuestionItem[], answers: AskUserQuestionAnswerMap) => void
+  onSubmit: (toolUseId: string, questions: AskUserQuestionItem[], answers: AskUserQuestionAnswerMap) => void | Promise<void>
   isLatest: boolean
 }
 
@@ -170,6 +170,8 @@ export function AskUserQuestionMessage({ message, onSubmit, isLatest }: Props) {
   const [customInputs, setCustomInputs] = useState<Record<string, string>>({})
   const [submittedAnswers, setSubmittedAnswers] = useState<AskUserQuestionAnswerMap | null>(savedAnswers ?? null)
   const [isSubmitted, setIsSubmitted] = useState(isComplete)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const submittingRef = useRef(false)
 
   const getEffectiveAnswers = (questionKey: string, question?: AskUserQuestionItem) => {
     const custom = customInputs[questionKey]?.trim()
@@ -240,17 +242,25 @@ export function AskUserQuestionMessage({ message, onSubmit, isLatest }: Props) {
     }
   }
 
-  const handleSubmit = () => {
-    if (!allQuestionsAnswered) return
+  const handleSubmit = async () => {
+    if (!allQuestionsAnswered || submittingRef.current) return
 
+    submittingRef.current = true
+    setIsSubmitting(true)
     const finalAnswers: AskUserQuestionAnswerMap = {}
     for (const q of questions) {
       const key = getQuestionKey(q)
       finalAnswers[key] = getEffectiveAnswers(key, q)
     }
-    setSubmittedAnswers(finalAnswers)
-    setIsSubmitted(true)
-    onSubmit(message.toolId, questions, finalAnswers)
+    try {
+      await onSubmit(message.toolId, questions, finalAnswers)
+      setSubmittedAnswers(finalAnswers)
+      setIsSubmitted(true)
+    } catch {
+    } finally {
+      submittingRef.current = false
+      setIsSubmitting(false)
+    }
   }
 
   const handleCustomInputEnter = (event: React.KeyboardEvent<HTMLInputElement>) => {
@@ -262,7 +272,7 @@ export function AskUserQuestionMessage({ message, onSubmit, isLatest }: Props) {
     event.preventDefault()
 
     if (isLastQuestion) {
-      handleSubmit()
+      void handleSubmit()
       return
     }
 
@@ -353,7 +363,7 @@ export function AskUserQuestionMessage({ message, onSubmit, isLatest }: Props) {
   const customInput = customInputs[getQuestionKey(currentQuestion)] || ""
 
   return (
-    <div className="w-full space-y-3">
+    <fieldset disabled={isSubmitting} className="w-full min-w-0 space-y-3">
       <QuestionCard
         question={currentQuestion.question}
         currentIndex={currentIndex}
@@ -398,13 +408,13 @@ export function AskUserQuestionMessage({ message, onSubmit, isLatest }: Props) {
         {isLastQuestion && (
           <Button
             size="sm"
-            onClick={handleSubmit}
-            disabled={!allQuestionsAnswered}
+            onClick={() => { void handleSubmit() }}
+            disabled={!allQuestionsAnswered || isSubmitting}
             className={cn(!allQuestionsAnswered && "opacity-50 cursor-not-allowed", "rounded-full")}
           >
             {t("chat:submit")}</Button>
         )}
       </div>
-    </div>
+    </fieldset>
   )
 }
