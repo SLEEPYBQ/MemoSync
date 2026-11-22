@@ -27,6 +27,7 @@
       "policy.cjs",
       "navigation.cjs",
       "preload.cjs",
+      "ui-preferences.cjs",
       "icon-dark.png",
       "icon-light.png",
       "package.json"

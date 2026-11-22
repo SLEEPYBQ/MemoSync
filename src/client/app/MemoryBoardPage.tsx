@@ -1,3 +1,4 @@
+import { readLocalUiPreference, writeLocalUiPreference } from "../lib/localUiPreferences"
 import { translateUiText } from "../i18n/uiText"
 import { t, useI18n, getLocale } from "../i18n"
 import { Trans } from "react-i18next"
@@ -71,11 +72,7 @@ type MemoryBoardView = "graph" | "board"
 const BOARD_VIEW_STORAGE_KEY = "memosync:memory-view"
 
 function readStoredBoardView(): MemoryBoardView {
-  try {
-    return window.localStorage.getItem(BOARD_VIEW_STORAGE_KEY) === "board" ? "board" : "graph"
-  } catch {
-    return "graph"
-  }
+  return readLocalUiPreference(BOARD_VIEW_STORAGE_KEY) === "board" ? "board" : "graph"
 }
 
 export interface MemoryBoardOverlayMode {
@@ -185,11 +182,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   const [reviewOpen, setReviewOpen] = useState(false)
   const changeView = useCallback((next: MemoryBoardView) => {
     setView(next)
-    try {
-      window.localStorage.setItem(BOARD_VIEW_STORAGE_KEY, next)
-    } catch {
-      // A remembered tab is a convenience; the switch still works without it.
-    }
+    writeLocalUiPreference(BOARD_VIEW_STORAGE_KEY, next)
   }, [])
   // Proposals just created by a Save & sync / import: pinged and scrolled to
   // in the review list so the report line has a visible landing (friction #7).

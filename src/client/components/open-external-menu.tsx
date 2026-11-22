@@ -1,3 +1,4 @@
+import { readLocalUiPreference, writeLocalUiPreference } from "../lib/localUiPreferences"
 import { t, useI18n } from "../i18n"
 import { useEffect, useMemo, useState } from "react"
 import { ChevronDown } from "lucide-react"
@@ -174,7 +175,7 @@ export function OpenExternalSelect({
   const [lastValue, setLastValue] = useState<OpenAppValue>(fallbackValue)
 
   useEffect(() => {
-    setLastValue(normalizeOpenAppValue(window.localStorage.getItem(OPEN_SELECT_STORAGE_KEY), fallbackValue))
+    setLastValue(normalizeOpenAppValue(readLocalUiPreference(OPEN_SELECT_STORAGE_KEY), fallbackValue))
   }, [fallbackValue])
 
   const items = useMemo(() => getOpenAppItems({
@@ -187,7 +188,7 @@ export function OpenExternalSelect({
 
   function handleOpenValue(value: OpenAppValue) {
     setLastValue(value)
-    window.localStorage.setItem(OPEN_SELECT_STORAGE_KEY, value)
+    writeLocalUiPreference(OPEN_SELECT_STORAGE_KEY, value)
     openAppValue({ value, editorCommandTemplate, onOpenExternal })
   }
 

@@ -1,3 +1,4 @@
+import { readLocalUiPreference, writeLocalUiPreference } from "../lib/localUiPreferences"
 import { chatTitle } from "../i18n/uiText"
 import { t, useI18n } from "../i18n"
 import { BrainCircuit, CircleArrowUp, Loader2, Menu, PanelLeft, Plus, Settings, X } from "lucide-react"
@@ -47,14 +48,12 @@ export function clampSidebarWidth(width: number) {
 }
 
 function readStoredSidebarWidth() {
-  if (typeof window === "undefined") return DEFAULT_SIDEBAR_WIDTH
-  const stored = window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY)
+  const stored = readLocalUiPreference(SIDEBAR_WIDTH_STORAGE_KEY)
   return stored ? clampSidebarWidth(Number(stored)) : DEFAULT_SIDEBAR_WIDTH
 }
 
 function persistSidebarWidth(width: number) {
-  if (typeof window === "undefined") return
-  window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
+  writeLocalUiPreference(SIDEBAR_WIDTH_STORAGE_KEY, String(clampSidebarWidth(width)))
 }
 
 export function MemoryPendingBadge({ count, automatic }: { count: number; automatic: boolean }) {
