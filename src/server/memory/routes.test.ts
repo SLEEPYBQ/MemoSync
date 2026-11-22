@@ -1,6 +1,6 @@
 import { Database } from 'bun:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryService } from './index';
@@ -222,12 +222,16 @@ describe('memory routes', () => {
   it('decorates and acknowledges project file drift without affecting other memories', async () => {
     const project = join(dir, 'synthetic-project');
     mkdirSync(project);
-    writeFileSync(join(project, 'auth.ts'), 'baseline');
+    const file = join(project, 'auth.ts');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    writeFileSync(file, 'baseline');
+    utimesSync(file, stamp, stamp);
     const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
     const a = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
     const b = memory.store.create({ content: 'Review auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
     await call('GET', '/api/memories?projectId=P1', undefined, services);
-    writeFileSync(join(project, 'auth.ts'), 'changed synthetic file');
+    writeFileSync(file, 'modified');
+    utimesSync(file, stamp, stamp);
     const list = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
     expect(list.data.find((item: MemoryItem) => item.id === a.id).fileRefs).toEqual([{ path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: statSync(join(project, 'auth.ts')).mtime.toISOString() }]);
     expect((await json(await call('GET', `/api/memories/${a.id}`, undefined, services))).data.fileRefs[0].drift).toBe('changed');
@@ -238,10 +242,40 @@ describe('memory routes', () => {
     expect(memory.store.getEvents(a.id).at(-1)).toMatchObject({ kind: 'file_check', meta: { paths: ['auth.ts'] } });
   });
 
+  it('verifies Board refresh contents even when routine file stamps match', async () => {
+    const project = join(dir, 'synthetic-project');
+    mkdirSync(project);
+    const file = join(project, 'auth.ts');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
+    const input = { scope: 'project', projectId: 'P1', type: 'fact' } as const;
+    writeFileSync(file, 'baseline');
+    utimesSync(file, stamp, stamp);
+    const item = memory.store.create({ ...input, content: 'Use auth.ts' }, { actor: 'user' });
+    await call('GET', '/api/memories?syncFileRefs=1', undefined, services);
+
+    writeFileSync(file, 'modified');
+    utimesSync(file, stamp, stamp);
+    const control = memory.store.create({ ...input, content: 'Inspect auth.ts' }, { actor: 'user' });
+    memory.fileDrift.baseline(control.id, project);
+    // Simulate a filesystem returning the same metadata for both versions.
+    memory.db.query(`UPDATE memory_file_refs SET file_identity =
+      (SELECT file_identity FROM memory_file_refs WHERE memory_id = ?) WHERE memory_id = ?`)
+      .run(control.id, item.id);
+
+    const polled = await json(await call('GET', '/api/memories?syncFileRefs=metadata', undefined, services));
+    expect(polled.data.find((row: MemoryItem) => row.id === item.id).fileRefs[0].drift).toBeNull();
+    const refreshed = await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services));
+    expect(refreshed.data.find((row: MemoryItem) => row.id === item.id).fileRefs[0].drift).toBe('changed');
+  });
+
   it('imports project source files and rejects outside paths', async () => {
     const project = join(dir, 'synthetic-project');
     mkdirSync(project);
-    writeFileSync(join(project, 'AGENTS.md'), '- Synthetic sourced rule\n');
+    const file = join(project, 'AGENTS.md');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    writeFileSync(file, '- Synthetic sourced rule\n');
+    utimesSync(file, stamp, stamp);
     writeFileSync(join(dir, 'outside.md'), '- Synthetic outside rule\n');
     const services = { resolveProjectPath: (id: string) => id === 'P1' ? project : undefined };
     expect((await json(await call('GET', '/api/memories/md-import/sources?projectId=P1', undefined, services))).data.sources).toEqual(['AGENTS.md']);
@@ -251,8 +285,9 @@ describe('memory routes', () => {
     const id = result.data.created[0];
     expect(id).toBeDefined();
     expect((await json(await call('GET', `/api/memories/${id}`, undefined, services))).data.fileRefs).toEqual([{ path: 'AGENTS.md', kind: 'source', drift: null }]);
-    writeFileSync(join(project, 'AGENTS.md'), '- Another synthetic rule\n');
-    const updated = await json(await call('GET', '/api/memories?projectId=P1', undefined, services));
+    writeFileSync(file, '- Synthetic changed rule\n');
+    utimesSync(file, stamp, stamp);
+    const updated = await json(await call('GET', '/api/memories?syncFileRefs=1', undefined, services));
     expect(updated.data.find((item: MemoryItem) => item.id === id).fileRefs[0].drift).toBe('line_removed');
     expect((await json(await call('POST', `/api/memories/${id}/file-refs/acknowledge`, undefined, services))).data.fileRefs).toBeUndefined();
   });

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileDrift, extractPaths, gitBlobHash, readProjectSource } from './file-drift';
 import { MemoryService } from './index';
+import { applySchema } from './db';
 
 let dir: string;
 let project: string;
@@ -137,8 +138,30 @@ describe('file drift', () => {
     expect(hashes).toBe(1);
     drift.syncProject('P1', project);
     expect(hashes).toBe(1);
+    drift.syncProject('P1', project, { verifyContents: true });
+    expect(hashes).toBe(2);
     memory.store.eraseCandidate(item.id);
     expect(drift.refsFor([item.id]).size).toBe(0);
+  });
+
+  it('rechecks legacy refs with their original content baselines after migration', () => {
+    const file = join(project, 'auth.ts');
+    const stamp = new Date('2024-04-03T12:30:00.000Z');
+    writeFileSync(file, 'baseline');
+    utimesSync(file, stamp, stamp);
+    const item = memory.store.create({ content: 'Use auth.ts', scope: 'project', projectId: 'P1', type: 'fact' }, { actor: 'user' });
+    memory.fileDrift.syncProject('P1', project);
+
+    memory.db.exec('ALTER TABLE memory_file_refs DROP COLUMN file_identity');
+    applySchema(memory.db);
+    expect(memory.db.query('SELECT file_identity FROM memory_file_refs').get()).toEqual({ file_identity: null });
+    writeFileSync(file, 'modified');
+    utimesSync(file, stamp, stamp);
+
+    memory.fileDrift.syncProject('P1', project);
+    expect(memory.fileDrift.refsFor([item.id]).get(item.id)).toEqual([
+      { path: 'auth.ts', kind: 'mention', drift: 'changed', changedAt: stamp.toISOString() },
+    ]);
   });
 
   it('re-extracts candidate mention refs when a draft changes without a version bump', () => {

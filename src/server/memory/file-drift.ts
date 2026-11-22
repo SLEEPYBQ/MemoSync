@@ -20,6 +20,7 @@ type RefRow = {
   content_hash: string | null;
   size: number | null;
   mtime_ms: number | null;
+  file_identity: string | null;
   drift: MemoryFileRef['drift'];
   drift_hash: string | null;
 };
@@ -37,15 +38,30 @@ function excluded(path: string): boolean {
   return path.split(sep).some(part => part === '.git' || part === 'node_modules');
 }
 
-function projectFile(root: string, candidate: string): { path: string; fullPath: string; size: number; mtimeMs: number } | null {
+type ProjectFileStamp = {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  identity: string;
+};
+
+type ProjectSource = ProjectFileStamp & { bytes: Buffer };
+
+function projectFile(root: string, candidate: string): (ProjectFileStamp & { fullPath: string }) | null {
   try {
     const lexical = resolve(root, candidate);
     if (!inside(root, lexical) || excluded(relative(root, lexical))) return null;
     const actual = realpathSync(lexical);
     if (!inside(root, actual) || excluded(relative(root, actual))) return null;
-    const stat = statSync(actual);
+    const stat = statSync(actual, { bigint: true });
     if (!stat.isFile()) return null;
-    return { path: relative(root, lexical).split(sep).join('/'), fullPath: actual, size: stat.size, mtimeMs: stat.mtimeMs };
+    return {
+      path: relative(root, lexical).split(sep).join('/'),
+      fullPath: actual,
+      size: Number(stat.size),
+      mtimeMs: Number(stat.mtimeNs) / 1e6,
+      identity: `${stat.dev}:${stat.ino}:${stat.ctimeNs}`,
+    };
   } catch {
     return null;
   }
@@ -69,13 +85,13 @@ export function extractPaths(text: string, localPath: string): string[] {
   }
 }
 
-export function readProjectSource(localPath: string, sourcePath: string): { path: string; bytes: Buffer; size: number; mtimeMs: number } | null {
+export function readProjectSource(localPath: string, sourcePath: string): ProjectSource | null {
   try {
     if (isAbsolute(sourcePath)) return null;
     const root = realpathSync(localPath);
     const file = projectFile(root, sourcePath);
     if (!file) return null;
-    return { path: file.path, bytes: readFileSync(file.fullPath), size: file.size, mtimeMs: file.mtimeMs };
+    return { path: file.path, bytes: readFileSync(file.fullPath), size: file.size, mtimeMs: file.mtimeMs, identity: file.identity };
   } catch {
     return null;
   }
@@ -101,9 +117,9 @@ export class FileDrift {
     this.db.transaction(() => {
       this.db.query("DELETE FROM memory_file_refs WHERE memory_id = ? AND kind = 'mention'").run(item.id);
       for (const ref of refs) this.db.query(`INSERT INTO memory_file_refs
-        (memory_id, path, kind, blob_hash, memory_version, content_hash, size, mtime_ms, checked_at)
-        VALUES (?, ?, 'mention', ?, ?, ?, ?, ?, ?)`)
-        .run(item.id, ref.path, ref.hash, item.version, contentHash, ref.size, ref.mtimeMs, new Date().toISOString());
+        (memory_id, path, kind, blob_hash, memory_version, content_hash, size, mtime_ms, file_identity, checked_at)
+        VALUES (?, ?, 'mention', ?, ?, ?, ?, ?, ?, ?)`)
+        .run(item.id, ref.path, ref.hash, item.version, contentHash, ref.size, ref.mtimeMs, ref.identity, new Date().toISOString());
     })();
   }
 
@@ -126,7 +142,7 @@ export class FileDrift {
     }
   }
 
-  syncProject(projectId: string, localPath: string): void {
+  syncProject(projectId: string, localPath: string, options?: { verifyContents?: boolean }): void {
     let root: string;
     try {
       root = realpathSync(localPath);
@@ -154,29 +170,37 @@ export class FileDrift {
         this.reconcile(item, root, existing);
       }
       const current = this.db.query(`SELECT r.* FROM memory_file_refs r JOIN memories m ON m.id = r.memory_id
-        WHERE m.scope = 'project' AND m.project_id = ? AND m.status IN ('active', 'candidate')`)
+        WHERE m.scope = 'project' AND m.project_id = ? AND m.status IN ('active', 'candidate') ORDER BY r.path`)
         .all(projectId) as RefRow[];
+      // Adjacent refs can share one read, hash and Markdown parse.
+      let blob: { key: string; bytes: Buffer; hash: string; lineHashes?: Set<string> } | undefined;
       for (const ref of current) {
         try {
           const file = projectFile(root, ref.path);
           if (!file) {
-            this.db.query(`UPDATE memory_file_refs SET drift = ?, drift_hash = '', size = NULL, mtime_ms = NULL, checked_at = ?
+            this.db.query(`UPDATE memory_file_refs SET drift = ?, drift_hash = '', size = NULL, mtime_ms = NULL, file_identity = NULL, checked_at = ?
               WHERE memory_id = ? AND path = ? AND kind = ?`)
               .run(ref.kind === 'source' ? 'line_removed' : 'missing', new Date().toISOString(), ref.memory_id, ref.path, ref.kind);
             continue;
           }
-          if (file.size === ref.size && file.mtimeMs === ref.mtime_ms) continue;
-          const bytes = readFileSync(file.fullPath);
-          const hash = this.hash(bytes);
-          const drift = ref.kind === 'mention'
-            ? (hash === ref.blob_hash ? null : 'changed')
-            : bytes.toString('utf8').split('\n').some(line => {
+          if (!options?.verifyContents && file.size === ref.size && file.mtimeMs === ref.mtime_ms && file.identity === ref.file_identity) continue;
+          const key = JSON.stringify([file.fullPath, file.size, file.mtimeMs, file.identity]);
+          if (blob?.key !== key) {
+            const bytes = readFileSync(file.fullPath);
+            blob = { key, bytes, hash: this.hash(bytes) };
+          }
+          if (ref.kind === 'source' && !blob.lineHashes) {
+            blob.lineHashes = new Set(blob.bytes.toString('utf8').split('\n').flatMap(line => {
               const content = markdownBulletContent(line);
-              return content !== null && semanticHash(normalizeContent(content)) === ref.line_hash;
-            }) ? null : 'line_removed';
-          this.db.query(`UPDATE memory_file_refs SET drift = ?, drift_hash = ?, size = ?, mtime_ms = ?, checked_at = ?
+              return content === null ? [] : [semanticHash(normalizeContent(content))];
+            }));
+          }
+          const drift = ref.kind === 'mention'
+            ? (blob.hash === ref.blob_hash ? null : 'changed')
+            : (ref.line_hash !== null && blob.lineHashes?.has(ref.line_hash) ? null : 'line_removed');
+          this.db.query(`UPDATE memory_file_refs SET drift = ?, drift_hash = ?, size = ?, mtime_ms = ?, file_identity = ?, checked_at = ?
             WHERE memory_id = ? AND path = ? AND kind = ?`)
-            .run(drift, drift ? hash : null, file.size, file.mtimeMs, new Date().toISOString(), ref.memory_id, ref.path, ref.kind);
+            .run(drift, drift ? blob.hash : null, file.size, file.mtimeMs, file.identity, new Date().toISOString(), ref.memory_id, ref.path, ref.kind);
         } catch {
           console.warn('[memory] Could not check a referenced file');
         }
@@ -186,13 +210,13 @@ export class FileDrift {
     }
   }
 
-  addSource(id: string, source: { path: string; bytes: Buffer; size: number; mtimeMs: number }): void {
+  addSource(id: string, source: ProjectSource): void {
     const item = this.store.getById(id);
     if (!item || item.scope !== 'project' || !item.projectId || !['active', 'candidate'].includes(item.status)) return;
     this.db.query(`INSERT OR REPLACE INTO memory_file_refs
-      (memory_id, path, kind, blob_hash, line_hash, memory_version, size, mtime_ms, checked_at)
-      VALUES (?, ?, 'source', ?, ?, ?, ?, ?, ?)`)
-      .run(id, source.path, this.hash(source.bytes), semanticHash(normalizeContent(item.content)), item.version, source.size, source.mtimeMs, new Date().toISOString());
+      (memory_id, path, kind, blob_hash, line_hash, memory_version, size, mtime_ms, file_identity, checked_at)
+      VALUES (?, ?, 'source', ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, source.path, this.hash(source.bytes), semanticHash(normalizeContent(item.content)), item.version, source.size, source.mtimeMs, source.identity, new Date().toISOString());
   }
 
   refsFor(ids: readonly string[]): Map<string, MemoryFileRef[]> {

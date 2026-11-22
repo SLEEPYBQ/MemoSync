@@ -241,7 +241,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   })
 
   useEffect(() => {
-    void loadAll({ syncFileRefs: true })
+    void loadAll({ syncFileRefs: "verify" })
   }, [loadAll])
 
   const refreshNeedsAttention = useCallback(() => {
@@ -310,17 +310,18 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
   // "merge" looked like nothing changed. Refresh on window focus and poll
   // lightly while visible.
   useEffect(() => {
-    const refresh = () => {
-      void loadAll({ syncFileRefs: true })
+    const refresh = (syncFileRefs: "verify" | "metadata") => {
+      void loadAll({ syncFileRefs })
       refreshNeedsAttention()
       refreshOriginTitles()
     }
-    window.addEventListener("focus", refresh)
+    const refreshOnFocus = () => refresh("verify")
+    window.addEventListener("focus", refreshOnFocus)
     const interval = setInterval(() => {
-      if (!document.hidden) refresh()
+      if (!document.hidden) refresh("metadata")
     }, 10_000)
     return () => {
-      window.removeEventListener("focus", refresh)
+      window.removeEventListener("focus", refreshOnFocus)
       clearInterval(interval)
     }
   }, [loadAll, refreshNeedsAttention, refreshOriginTitles])
