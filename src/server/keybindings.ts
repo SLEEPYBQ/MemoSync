@@ -7,7 +7,37 @@ import { DEFAULT_KEYBINDINGS, type KeybindingAction, type KeybindingsSnapshot } 
 
 const KEYBINDING_ACTIONS = Object.keys(DEFAULT_KEYBINDINGS) as KeybindingAction[]
 
-type KeybindingsFile = Partial<Record<KeybindingAction, unknown>>
+type KeybindingsFile = Partial<Record<KeybindingAction, unknown>> & { version?: unknown }
+
+// Version 2 added Ctrl+Alt variants to three defaults that were ⌘-only.
+const KEYBINDINGS_FILE_VERSION = 2
+const CMD_ONLY_DEFAULTS_BEFORE_V2: Partial<Record<KeybindingAction, string>> = {
+  jumpToSidebarChat: "cmd+alt",
+  createChatInCurrentProject: "cmd+alt+n",
+  openAddProject: "cmd+alt+o",
+}
+
+function serializeKeybindingsFile(bindings: Record<KeybindingAction, string[]>) {
+  return `${JSON.stringify({ version: KEYBINDINGS_FILE_VERSION, ...bindings }, null, 2)}\n`
+}
+
+/**
+ * A file from before version 2 that still holds an old ⌘-only default takes
+ * the new default. Files this version wrote are left alone, so removing the
+ * Ctrl+Alt variant afterwards sticks.
+ */
+function upgradeKeybindingsFile(file: KeybindingsFile): KeybindingsFile {
+  if (!file || typeof file !== "object" || Array.isArray(file)) return file
+  if (typeof file.version === "number" && file.version >= KEYBINDINGS_FILE_VERSION) return file
+  const upgraded: KeybindingsFile = { ...file }
+  for (const [action, legacy] of Object.entries(CMD_ONLY_DEFAULTS_BEFORE_V2) as [KeybindingAction, string][]) {
+    const value = file[action]
+    if (Array.isArray(value) && value.length === 1 && typeof value[0] === "string" && value[0].trim().toLowerCase() === legacy) {
+      upgraded[action] = undefined
+    }
+  }
+  return upgraded
+}
 
 export class KeybindingsManager {
   readonly filePath: string
@@ -24,7 +54,7 @@ export class KeybindingsManager {
     await mkdir(path.dirname(this.filePath), { recursive: true })
     const file = Bun.file(this.filePath)
     if (!(await file.exists())) {
-      await writeFile(this.filePath, `${JSON.stringify(DEFAULT_KEYBINDINGS, null, 2)}\n`, "utf8")
+      await writeFile(this.filePath, serializeKeybindingsFile(DEFAULT_KEYBINDINGS), "utf8")
     }
     await this.reload()
     this.startWatching()
@@ -55,7 +85,7 @@ export class KeybindingsManager {
   async write(bindings: Partial<Record<KeybindingAction, string[]>>) {
     const nextSnapshot = normalizeKeybindings(bindings, this.filePath)
     await mkdir(path.dirname(this.filePath), { recursive: true })
-    await writeFile(this.filePath, `${JSON.stringify(nextSnapshot.bindings, null, 2)}\n`, "utf8")
+    await writeFile(this.filePath, serializeKeybindingsFile(nextSnapshot.bindings), "utf8")
     this.setSnapshot(nextSnapshot)
     return nextSnapshot
   }
@@ -92,7 +122,7 @@ export async function readKeybindingsSnapshot(filePath: string) {
       return createDefaultSnapshot(filePath, "Keybindings file was empty. Using defaults.")
     }
     const parsed = JSON.parse(text) as KeybindingsFile
-    return normalizeKeybindings(parsed, filePath)
+    return normalizeKeybindings(upgradeKeybindingsFile(parsed), filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return createDefaultSnapshot(filePath)

@@ -109,6 +109,30 @@ describe("readKeybindingsSnapshot", () => {
   })
 })
 
+describe("files from before the Ctrl+Alt defaults", () => {
+  test("take the new default where the old ⌘-only default was untouched", async () => {
+    const filePath = await createTempFilePath()
+    await Bun.write(filePath, JSON.stringify({
+      jumpToSidebarChat: ["cmd+alt"],
+      createChatInCurrentProject: ["Cmd+Alt+N"],
+      openAddProject: ["cmd+shift+p"],
+      toggleEmbeddedTerminal: ["cmd+k"],
+    }))
+    const snapshot = await readKeybindingsSnapshot(filePath)
+    expect(snapshot.bindings.jumpToSidebarChat).toEqual(DEFAULT_KEYBINDINGS.jumpToSidebarChat)
+    expect(snapshot.bindings.createChatInCurrentProject).toEqual(DEFAULT_KEYBINDINGS.createChatInCurrentProject)
+    expect(snapshot.bindings.openAddProject).toEqual(["cmd+shift+p"])
+    expect(snapshot.bindings.toggleEmbeddedTerminal).toEqual(["cmd+k"])
+    expect(snapshot.warning).toBeNull()
+  })
+
+  test("leave a version 2 file alone", async () => {
+    const filePath = await createTempFilePath()
+    await Bun.write(filePath, JSON.stringify({ version: 2, jumpToSidebarChat: ["cmd+alt"] }))
+    expect((await readKeybindingsSnapshot(filePath)).bindings.jumpToSidebarChat).toEqual(["cmd+alt"])
+  })
+})
+
 describe("KeybindingsManager", () => {
   test("creates the keybindings file with defaults during initialization", async () => {
     const filePath = await createTempFilePath()
@@ -116,7 +140,7 @@ describe("KeybindingsManager", () => {
 
     await manager.initialize()
 
-    expect(await Bun.file(filePath).json()).toEqual(DEFAULT_KEYBINDINGS)
+    expect(await Bun.file(filePath).json()).toEqual({ version: 2, ...DEFAULT_KEYBINDINGS })
     manager.dispose()
   })
 
@@ -152,7 +176,10 @@ describe("KeybindingsManager", () => {
       warning: null,
       filePathDisplay: filePath,
     })
-    expect(JSON.parse(await Bun.file(filePath).text())).toEqual(snapshot.bindings)
+    expect(JSON.parse(await Bun.file(filePath).text())).toEqual({ version: 2, ...snapshot.bindings })
+    await manager.reload()
+    expect(manager.getSnapshot().bindings.jumpToSidebarChat).toEqual(["cmd+alt"])
+    expect(manager.getSnapshot().bindings.createChatInCurrentProject).toEqual(["cmd+alt+n"])
 
     manager.dispose()
   })
