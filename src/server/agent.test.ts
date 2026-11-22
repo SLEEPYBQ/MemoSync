@@ -3508,13 +3508,14 @@ describe("durable queued startup", () => {
     store.getProject = () => projectAvailable ? { id: "project-1", localPath: directory } : undefined as never
     const queues: Array<AsyncEventQueue<HarnessEvent>> = []
     const starts: unknown[] = []
+    const runtimes: Array<EngineRuntime | undefined> = []
     const coordinator = new AgentCoordinator({
       store: store as never,
       onStateChange: () => {},
       getMemorySettings: () => ({ enabled: false, learn: false }),
       generateTitle: async () => ({ title: "fixture", usedFallback: true, failureMessage: null }),
       codexManager: {
-        async startSession() {},
+        async startSession(args: { runtime?: EngineRuntime }) { runtimes.push(args.runtime) },
         async startTurn(args: unknown) {
           starts.push(args)
           const queue = new AsyncEventQueue<HarnessEvent>()
@@ -3527,7 +3528,8 @@ describe("durable queued startup", () => {
     })
     const drain = () => (coordinator as unknown as { maybeStartNextQueuedMessage(chatId: string): Promise<boolean> }).maybeStartNextQueuedMessage("chat-1")
     return {
-      store, coordinator, starts, drain,
+      store, coordinator, starts, runtimes, drain,
+      finish() { queues.at(-1)?.close() },
       setProjectAvailable(value: boolean) { projectAvailable = value },
       async cleanup() { for (const queue of queues) queue.close(); await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) },
     }
@@ -3655,6 +3657,53 @@ describe("durable queued startup", () => {
       expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(0)
       expect(h.starts).toHaveLength(0)
     } finally { release(); await h.cleanup() }
+  })
+
+  test("a dequeued preflight cannot associate a new selection with an older cached runtime", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "queue-runtime-cache-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const endpoints = [{ protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" }]
+    const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
+    const b = await service.saveConnection({ name: "B", endpoints, models: [{ id: "model-b" }] })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: a.id, defaultModel: "model-a" } })
+    setModelAccessService(service)
+    const h = harness()
+    let release!: () => void
+    let markWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { markWaiting = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", model: "model-a", content: "first" })
+      expect(h.runtimes[0]).toMatchObject({ connectionId: a.id, model: "model-a" })
+      h.finish()
+      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
+      const row = await h.store.enqueueMessage("chat-1", {
+        id: "aborted-b", content: "aborted", provider: "codex", model: "model-b", modelOptions: { connectionId: b.id },
+      })
+      const append = h.store.appendMessage.bind(h.store)
+      h.store.appendMessage = async (chatId, entry, options) => {
+        if (entry._id === row.id) { markWaiting(); await gate }
+        return append(chatId, entry, options)
+      }
+      const dispatch = h.drain()
+      await waiting
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: row.id })
+      release()
+      expect(await dispatch).toBe(false)
+      await h.store.enqueueMessage("chat-1", {
+        id: "valid-b", content: "second", provider: "codex", model: "model-b", modelOptions: { connectionId: b.id },
+      })
+      expect(await h.drain()).toBe(true)
+      expect(h.runtimes.at(-1)).toMatchObject({ connectionId: b.id, model: "model-b" })
+    } finally {
+      release?.()
+      await h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test("enqueue-and-steer leaves a row claimed by auto-dispatch in place", async () => {

@@ -1888,6 +1888,7 @@ describe("memory preview gate (coordinator)", () => {
         _id: "unrelated-prompt", createdAt: Date.now(), kind: "user_prompt", content: "unrelated",
         attachments: [{ ...attachment, id: "unrelated" }],
       })
+      active.userText = "generated follow-up, not the durable task"
       await h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: memory.id })
       const index = h.store.messages.findIndex(entry => entry.kind === "memory_interrupt")
       const interruption = JSON.parse(JSON.stringify(h.store.messages[index])) as Extract<TranscriptEntry, { kind: "memory_interrupt" }>
@@ -1917,6 +1918,137 @@ describe("memory preview gate (coordinator)", () => {
       setModelAccessService(undefined)
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  test("an interrupt resumes the resolved connection model rather than an unavailable request", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "interrupt-fallback-model-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const connection = await service.saveConnection({
+      name: "fixture", endpoints: [{ protocol: "anthropic-messages", baseUrl: "http://127.0.0.1:1234" }],
+      models: [{ id: "available-model", contextWindow: 1_000_000 }],
+    })
+    await service.saveConnection({
+      name: "other fixture", endpoints: [{ protocol: "anthropic-messages", baseUrl: "http://127.0.0.1:5678" }],
+      models: [{ id: "old-requested-model" }],
+    })
+    await service.setEngine("claude", { access: { mode: "connection", connectionId: connection.id, defaultModel: "available-model" } })
+    setModelAccessService(service)
+    const h = createHarness({ preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Use accessible controls", scope: "project", projectId: "project-1", type: "constraint" },
+        { actor: "user" },
+      )
+      await h.coordinator.send({
+        type: "chat.send", chatId: "chat-1", provider: "claude", model: "old-requested-model", content: "original task",
+      })
+      const active = h.coordinator.activeTurns.get("chat-1")!
+      expect(active.model.replace(/\[1m\]$/, "")).toBe("old-requested-model")
+      expect(active.engineRuntime).toMatchObject({ connectionId: connection.id, model: "available-model[1m]" })
+      await h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: memory.id })
+      const interruption = h.store.messages.find(entry => entry.kind === "memory_interrupt") as Extract<TranscriptEntry, { kind: "memory_interrupt" }>
+      expect(interruption.turnSettings).toMatchObject({ model: "available-model[1m]", connectionId: connection.id })
+      await h.coordinator.resumeInterrupted({ chatId: "chat-1", interruptId: interruption.interruptId, correction: "Fix it", selectedIds: [memory.id] })
+      expect(h.coordinator.activeTurns.get("chat-1")?.engineRuntime).toMatchObject({ model: "available-model[1m]", connectionId: connection.id })
+    } finally {
+      await h.coordinator.shutdownRuntime()
+      h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("a Codex plan follow-up keeps the original task when interrupted", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "interrupt-codex-followup-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const connection = await service.saveConnection({
+      name: "fixture", endpoints: [{ protocol: "openai-responses", baseUrl: "http://127.0.0.1:1234/v1" }],
+      models: [{ id: "effective-plan-model" }],
+    })
+    const other = await service.saveConnection({
+      name: "other fixture", endpoints: [{ protocol: "openai-responses", baseUrl: "http://127.0.0.1:5678/v1" }],
+      models: [{ id: "requested-plan-model" }],
+    })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: connection.id, defaultModel: "effective-plan-model" } })
+    setModelAccessService(service)
+    const queues: AsyncEventQueue<any>[] = []
+    const launches: Array<{ content: string; model: string }> = []
+    const runtimes: Array<{ connectionId?: string; model: string } | undefined> = []
+    const toolRequests: Array<(request: any) => Promise<unknown>> = []
+    const h = createHarness({ preview: false, codexManager: {
+      async startSession(args: { runtime?: { connectionId?: string; model: string } }) { runtimes.push(args.runtime) },
+      async startTurn(args: { content: string; model: string; onToolRequest: (request: any) => Promise<unknown> }) {
+        launches.push(args)
+        toolRequests.push(args.onToolRequest)
+        const queue = new AsyncEventQueue<any>()
+        queues.push(queue)
+        return { provider: "codex", stream: queue, interrupt: async () => {}, close: () => queue.close() }
+      },
+      async stopAll() { queues.forEach(queue => queue.close()) },
+      stopSession() {},
+    } as never })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Use accessible controls", scope: "project", projectId: "project-1", type: "constraint" },
+        { actor: "user" },
+      )
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", model: "requested-plan-model", content: "Build the real task", planMode: true })
+      const first = h.coordinator.activeTurns.get("chat-1")!
+      expect(first.model).toBe("requested-plan-model")
+      expect(first.engineRuntime).toMatchObject({ connectionId: connection.id, model: "effective-plan-model" })
+      const tool = toolRequests[0]({ tool: {
+        kind: "tool", toolKind: "exit_plan_mode", toolName: "ExitPlanMode", toolId: "exit-plan",
+        input: { plan: "Build the task", summary: "Plan" },
+      } })
+      await waitFor(() => h.coordinator.getPendingTool("chat-1")?.toolKind === "exit_plan_mode")
+      await service.setEngine("codex", { access: { mode: "connection", connectionId: other.id, defaultModel: "requested-plan-model" } })
+      await h.coordinator.respondTool({
+        type: "chat.respondTool", chatId: "chat-1", toolUseId: h.coordinator.getPendingTool("chat-1")!.toolUseId,
+        result: { confirmed: true },
+      })
+      await tool
+      queues[0].close()
+      await waitFor(() => launches.length === 2 && h.coordinator.activeTurns.get("chat-1") !== first && !!h.coordinator.activeTurns.get("chat-1"))
+      const followUp = h.coordinator.activeTurns.get("chat-1")!
+      expect(followUp.turnId).toBe(first.turnId)
+      expect(followUp.userText).toBe("Build the real task")
+      expect(runtimes[1]).toMatchObject({ connectionId: connection.id, model: "effective-plan-model" })
+      expect(launches[1].model).toBe("effective-plan-model")
+      expect(launches[1].content).toContain("Proceed with the approved plan.")
+      await h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: memory.id })
+      const interruption = h.store.messages.find(entry => entry.kind === "memory_interrupt") as Extract<TranscriptEntry, { kind: "memory_interrupt" }>
+      expect(interruption.prompt).toBe("Build the real task")
+      await h.coordinator.resumeInterrupted({ chatId: "chat-1", interruptId: interruption.interruptId, correction: "Fix it", selectedIds: [memory.id] })
+      expect(h.store.messages.find(entry => entry.kind === "user_prompt" && entry._id === interruption.interruptId)).toMatchObject({ content: "Build the real task" })
+    } finally {
+      await h.coordinator.shutdownRuntime()
+      h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("legacy wrapped steer content recovers the raw active user text", async () => {
+    const h = createHarness({ preview: false })
+    try {
+      const memory = h.memory.store.create(
+        { content: "Use accessible controls", scope: "project", projectId: "project-1", type: "constraint" },
+        { actor: "user" },
+      )
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "claude", content: "raw task" })
+      const active = h.coordinator.activeTurns.get("chat-1")!
+      const prompt = h.store.messages.find(entry => entry.kind === "user_prompt" && entry._id === active.turnId) as Extract<TranscriptEntry, { kind: "user_prompt" }>
+      delete prompt.participantContent
+      prompt.content = "<system-message>\nThe user would like to inform you of something while you continue to work. Acknowledge receipt immediately with a text response, then continue with the task at hand, incorporating the user's feedback if needed.\n</system-message>\n\nraw task"
+      await h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: memory.id })
+      expect(h.store.messages.find(entry => entry.kind === "memory_interrupt")).toMatchObject({ prompt: "raw task" })
+    } finally { await h.coordinator.shutdownRuntime(); h.cleanup() }
   })
 
   test("an account-backed interrupt fails closed when the default changes to a connection", async () => {

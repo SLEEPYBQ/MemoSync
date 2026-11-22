@@ -323,6 +323,7 @@ interface StartTurnArgs {
   approvedMemoryViewRevision?: string
   connectionId?: string
   engineRuntime?: EngineRuntime
+  runtimeSelection?: string
   memoryState?: TurnMemoryState
   memoryPreviewSettings?: Readonly<Required<MemoryPreviewSettings>>
   chatId: string
@@ -4514,17 +4515,15 @@ export class AgentCoordinator {
     // before freezing capability revisions: an initially unknown version must
     // not invalidate the very first turn when its native process starts.
     this.hostActions?.revokeChat(args.chatId, "A new turn superseded this admission")
-    let runtimeSelection: string | undefined
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
-      runtimeSelection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
-      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === runtimeSelection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
+      args.runtimeSelection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
+      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === args.runtimeSelection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
       args.engineRuntime ??= await resolveEngineRuntime({ engine: args.provider, model: args.model, connectionId: args.connectionId })
     }
     if (startupCancelled()) return
     if (args.resume?.expectedAccess && (args.engineRuntime?.connectionId ?? args.connectionId) !== args.resume.expectedAccess.connectionId) {
       throw new Error("Model connection changed since this turn was interrupted")
     }
-    if (runtimeSelection) this.runtimeSelections.set(args.chatId, runtimeSelection)
     // Freeze execution and host admission together, before native/memory startup awaits.
     if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
@@ -6765,7 +6764,11 @@ export class AgentCoordinator {
     let turn: HarnessTurn
     try {
     this.disposeMemoryBranches(args.chatId)
-    if (args.engineRuntime) this.sessionRuntimes.set(args.chatId, args.engineRuntime)
+    if (args.engineRuntime) {
+      this.sessionRuntimes.set(args.chatId, args.engineRuntime)
+      if (args.runtimeSelection) this.runtimeSelections.set(args.chatId, args.runtimeSelection)
+      else this.runtimeSelections.delete(args.chatId)
+    }
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
@@ -8482,7 +8485,9 @@ export class AgentCoordinator {
             provider: active.provider,
             content: active.postToolFollowUp.content,
             attachments: [],
-            model: active.model,
+            model: active.engineRuntime?.model ?? active.model,
+            connectionId: active.engineRuntime?.connectionId ?? active.connectionId,
+            memoryUserText: active.userText,
             effort: active.effort,
             serviceTier: active.serviceTier,
             planMode: active.postToolFollowUp.planMode,
@@ -8571,13 +8576,15 @@ export class AgentCoordinator {
       (entry): entry is Extract<TranscriptEntry, { kind: "user_prompt" }> =>
         entry.kind === "user_prompt" && entry._id === active.turnId,
     )
-    const prompt = active.userText ?? promptEntry?.participantContent ?? promptEntry?.content ?? ""
+    const prompt = promptEntry?.participantContent
+      ?? (promptEntry?.content?.startsWith(STEERED_MESSAGE_PREFIX) ? active.userText ?? promptEntry.content : promptEntry?.content)
+      ?? active.userText ?? ""
     const attachments = promptEntry?.attachments?.map(({ id, kind, displayName, absolutePath, relativePath, contentUrl, mimeType, size }) => ({
       id, kind, displayName, absolutePath, relativePath, contentUrl, mimeType, size,
     }))
     const turnSettings = {
       provider: active.provider,
-      model: active.model,
+      model: active.engineRuntime?.model ?? active.model,
       connectionId: active.engineRuntime?.connectionId ?? active.connectionId,
       effort: active.effort,
       serviceTier: active.serviceTier,
