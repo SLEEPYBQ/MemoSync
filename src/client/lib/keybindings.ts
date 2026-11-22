@@ -216,7 +216,7 @@ export function modifierChordFromEvent(event: ModifierEvent): string | null {
 export function chordFromKeyboardEvent(
   event: Pick<KeyboardEvent, "key" | "code" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey">,
 ): string | null {
-  if (["Meta", "Control", "Alt", "Shift", "CapsLock", "Dead", "Process", "Unidentified"].includes(event.key)) return null
+  if (["Meta", "Control", "Alt", "AltGraph", "Shift", "CapsLock", "Dead", "Process", "Unidentified"].includes(event.key)) return null
   const key = codeToKey(event.code) ?? event.key.toLowerCase()
   if (!key.trim() || key === "+") return null
   return [modifierChordFromEvent(event), key].filter(Boolean).join("+")

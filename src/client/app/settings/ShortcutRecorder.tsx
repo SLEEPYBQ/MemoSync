@@ -81,6 +81,15 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       event.preventDefault()
       event.stopPropagation()
       if (event.repeat || event.isComposing || event.keyCode === 229) return
+      // Windows reports AltGr as Ctrl+Alt; shortcut matching ignores it, so it must not be recorded.
+      if (event.key === "AltGraph" || event.getModifierState("AltGraph")) {
+        // Drop the Ctrl keydown Windows sends just before AltGr.
+        largest = null
+        held = new Set()
+        setModifiers(null)
+        propsRef.current.onRecordingCodesChange?.(new Set())
+        return
+      }
       setError(null)
       held.add(event.code)
       propsRef.current.onRecordingCodesChange?.(new Set(held))
@@ -102,6 +111,7 @@ export function ShortcutRecorder(props: ShortcutRecorderProps) {
       commit(chord)
     }
     const keyup = (event: KeyboardEvent) => {
+      if (event.key === "AltGraph" || event.getModifierState("AltGraph")) return
       held.delete(event.code)
       propsRef.current.onRecordingCodesChange?.(new Set(held))
       setModifiers(modifierChordFromEvent(event))

@@ -78,6 +78,7 @@ describe("shortcut recording and display", () => {
     expect(chordFromKeyboardEvent(event({ key: "+", code: "NumpadAdd", ctrlKey: true }))).toBeNull()
     expect(chordFromKeyboardEvent(event({ key: " ", code: "Space", ctrlKey: true }))).toBe("ctrl+space")
     expect(chordFromKeyboardEvent(event({ key: " ", code: "", ctrlKey: true }))).toBeNull()
+    expect(chordFromKeyboardEvent(event({ key: "AltGraph", code: "AltRight", ctrlKey: true, altKey: true }))).toBeNull()
     for (const key of ["CapsLock", "Dead", "Process", "Unidentified"]) expect(chordFromKeyboardEvent(event({ key }))).toBeNull()
   })
 
