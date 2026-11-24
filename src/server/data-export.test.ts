@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -16,7 +16,7 @@ describe("data export", () => {
     tempDirs.push(root)
     const experiments = path.join(root, "experiments")
     const out = path.join(experiments, "backups")
-    await mkdir(out, { recursive: true })
+    await mkdir(experiments)
     await writeFile(path.join(experiments, "events.jsonl"), '{"event":"synthetic"}\n')
     const run = (extra: string[]) => Bun.spawnSync([process.execPath, script, "--out", out, ...extra], {
       env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: root },
@@ -24,10 +24,28 @@ describe("data export", () => {
     const rejected = run(["--full"])
     expect(rejected.exitCode).not.toBe(0)
     expect(rejected.stderr.toString()).toContain("outside the exported directory")
-    expect(await readdir(out)).toEqual([])
+    expect(await readdir(experiments)).toEqual(["events.jsonl"])
     // Default mode only archives events.jsonl, not the whole experiments directory.
     expect(run([]).exitCode).toBe(0)
     expect(await readdir(out)).toHaveLength(1)
+  })
+
+  test("resolves linked directories before allowing a new nested destination", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "memosync-export-link-"))
+    tempDirs.push(root)
+    const library = path.join(root, "shared-library")
+    const data = path.join(root, "data")
+    await mkdir(library)
+    await mkdir(data)
+    await symlink(library, path.join(data, "memories"), process.platform === "win32" ? "junction" : "dir")
+    for (const base of [library, path.join(data, "memories")]) {
+      const result = Bun.spawnSync([process.execPath, script, "--out", path.join(base, "new", "output")], {
+        env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: data },
+      })
+      expect(result.exitCode).not.toBe(0)
+      expect(result.stderr.toString()).toContain("outside the exported directory")
+    }
+    expect(await readdir(library)).toEqual([])
   })
 
   test("preserves both snapshots when run twice in the same minute", async () => {
@@ -90,7 +108,7 @@ describe("data export", () => {
     const archivePath = path.join(outDir, archives[0]!)
     const listing = Bun.spawnSync(["tar", "-tzf", archivePath], { stdout: "pipe", stderr: "pipe" })
     expect(listing.exitCode).toBe(0)
-    const names = listing.stdout.toString().trim().split("\n")
+    const names = listing.stdout.toString().trimEnd().split(/\r?\n/)
     expect(names).toContain("memory.sqlite")
     expect(names).toContain("experiments/events.jsonl")
     for (const name of Object.keys(entries).filter((name) => entries[name]!.startsWith("PRIVATE_"))) {

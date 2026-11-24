@@ -9,7 +9,7 @@
 // The default bundle deliberately excludes chat transcripts and project logs:
 // they can contain private code and prose. --full is opt-in.
 import { spawnSync } from "node:child_process"
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir } from "../src/shared/branding"
@@ -78,17 +78,30 @@ function claimArchive(dir: string, stem: string) {
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/T/, "-").slice(0, 13)
 const archiveStem = `memosync-export-${installId}-${stamp}${full ? "-full" : ""}`
 const targetDir = outDir ? path.resolve(outDir) : process.cwd()
-mkdirSync(targetDir, { recursive: true })
-const destination = realpathSync(targetDir)
+// Every source already exists: a new destination can only be inside it if its
+// closest existing ancestor is inside it too. Don't create folders to find out.
+function existingAncestor(dir: string): string {
+  for (;;) {
+    try {
+      return realpathSync.native(dir)
+    } catch (error) {
+      const parent = path.dirname(dir)
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || parent === dir) throw error
+      dir = parent
+    }
+  }
+}
+const destination = existingAncestor(targetDir)
 for (const entry of present) {
   const source = path.join(dataDir, entry)
-  if (!lstatSync(source).isDirectory()) continue // tar does not follow symbolic links.
-  const relative = path.relative(realpathSync(source), destination)
+  if (!statSync(source).isDirectory()) continue
+  const relative = path.relative(realpathSync.native(source), destination)
   if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
     console.error(`Choose --out outside the exported directory "${entry}".`)
     process.exit(1)
   }
 }
+mkdirSync(targetDir, { recursive: true })
 const { archivePath, fd } = claimArchive(targetDir, archiveStem)
 
 let tarStatus: number | null = null
