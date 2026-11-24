@@ -1,21 +1,29 @@
 import { afterEach, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { ClientCommand, ServerEnvelope } from "../shared/protocol"
 import { AgentCoordinator } from "./agent"
 import { EventStore } from "./event-store"
+import { MemoryService } from "./memory"
+import { getModelAccessService, ModelAccessService, setModelAccessService } from "./model-access/service"
+import { testKeyring } from "./model-access/test-fixtures"
+import { OpencodeAgentManager } from "./opencode-agent"
+import { startOpencodeServer } from "./opencode-server"
 import type { StartPiTurnArgs } from "./pi-agent"
 import { createWsRouter } from "./ws-router"
 
 const cleanups: (() => Promise<void>)[] = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
 
-async function fixture(beforeConnection?: () => Promise<void>, beforeInterrupt?: () => Promise<void>) {
+type AgentOptions = Partial<ConstructorParameters<typeof AgentCoordinator>[0]>
+async function fixture(beforeConnection?: () => Promise<void>, beforeInterrupt?: () => Promise<void>,
+  options?: (root: string) => AgentOptions | Promise<AgentOptions>) {
   const root = await mkdtemp(join(tmpdir(), "memosync-project-chat-lifecycle-"))
   const store = new EventStore(join(root, "data"))
   await store.initialize()
   const project = await store.openProject(join(root, "workspace"))
+  await mkdir(project.localPath)
   const chat = await store.createChat(project.id)
   const prompts: string[] = [], interrupted: string[] = [], closed: string[] = []
   const agent = new AgentCoordinator({
@@ -31,6 +39,7 @@ async function fixture(beforeConnection?: () => Promise<void>, beforeInterrupt?:
       },
       closeChat(chatId: string) { closed.push(chatId) }, dispose() {},
     } as never,
+    ...await options?.(root),
   })
   const router = createWsRouter({
     store, agent, terminals: { onEvent: () => () => {} } as never,
@@ -85,6 +94,114 @@ test("a fresh send in a reopened project reaches the provider on the original ch
   expect(reloaded.getMessages(f.chat.id)).toEqual([...history, expect.objectContaining({ kind: "user_prompt", content: "after reopen" })])
   for (const id of [deleted.id, draft.chatId]) await expect(f.send(id, "not restored")).rejects.toThrow("Chat not found")
 })
+
+test.each([false, true])("Hide durably dismisses the published memory preview (response planning: %s)", async planning => {
+  const published = Promise.withResolvers<string>(), startedPlanning = Promise.withResolvers<void>(), finishPlanning = Promise.withResolvers<void>()
+  const f = await fixture(undefined, undefined, root => {
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: join(root, "memory") })
+    cleanups.push(async () => memory.close())
+    memory.store.create({ content: "Use fixture formatting", type: "fact", scope: "personal" }, { actor: "user" })
+    return {
+      memory, memoryPreview: true, getMemorySettings: () => ({ enabled: true, learn: false }),
+      getMemoryPreviewSettings: () => ({ enabled: true, autoProceedWhenEmpty: false, confirmationMode: "every_turn" }),
+      memoryUsePlan: { async plan() { startedPlanning.resolve(); await finishPlanning.promise; return [] } },
+      onStateChange(chatId) {
+        const preview = chatId && f.agent.pendingPreviews.get(chatId)
+        if (preview && preview.published) published.resolve(preview.previewId)
+      },
+    }
+  })
+  await f.send(f.chat.id, "Review synthetic formatting")
+  const previewId = await published.promise
+  await f.send(f.chat.id, "Stay in the queue")
+  const response = planning ? f.command({ type: "chat.respondMemoryPreview", chatId: f.chat.id, previewId, decision: "go_on" })
+    .then(() => null, (error: Error) => error.message) : undefined
+  if (planning) await startedPlanning.promise
+
+  const writing = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  const cancel = f.store.recordTurnCancelled.bind(f.store)
+  f.store.recordTurnCancelled = async id => { writing.resolve(); await release.promise; await cancel(id) }
+  let acked = false
+  const hiding = f.hide().then(() => { acked = true })
+  try {
+    await Promise.race([writing.promise, hiding])
+    expect(acked).toBe(false)
+    await expect(f.send(f.chat.id, "During Hide")).rejects.toThrow("Project not found")
+    expect(f.prompts).toEqual([])
+    release.resolve()
+    await hiding
+    await f.open()
+    finishPlanning.resolve()
+    if (response) expect(await response).toContain("cancelled")
+    const reloaded = new EventStore(f.store.dataDir)
+    await reloaded.initialize()
+    expect(reloaded.requireChat(f.chat.id).lastTurnOutcome).toBe("cancelled")
+    expect(reloaded.getMessages(f.chat.id).filter(entry => entry.kind === "memory_preview_decision"))
+      .toEqual([expect.objectContaining({ previewId, decision: "dismiss" })])
+    expect(reloaded.getQueuedMessages(f.chat.id).map(row => row.content)).toEqual(["Stay in the queue"])
+    expect(f.agent.pendingPreviews.has(f.chat.id)).toBe(false)
+    expect(f.prompts).toEqual([])
+  } finally {
+    release.resolve(); finishPlanning.resolve()
+    await Promise.allSettled([hiding, response])
+  }
+})
+
+test("Hide waits for the exact OpenCode launch to retire before a reopened send reaches native prompt_async", async () => {
+  const started = Promise.withResolvers<void>(), stopping = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+  const received = Promise.withResolvers<unknown>()
+  const observer = Bun.serve({ hostname: "127.0.0.1", port: 0, async fetch(request) {
+    const event = await request.json() as { path?: string; body?: unknown }
+    if (event.path?.endsWith("/prompt_async")) received.resolve(event.body)
+    return Response.json(true)
+  } })
+  const prior = getModelAccessService()
+  let retired = false, first = true
+  const f = await fixture(undefined, undefined, async root => {
+    const executable = join(import.meta.dir, "fixtures/opencode-agent-lifecycle-fixture.ts")
+    const access = await new ModelAccessService({ keyring: testKeyring, dataDir: join(root, "access"),
+      env: { HOME: root, PATH: process.env.PATH }, readLegacyPi: async () => null,
+      resolveExecutable: async () => ({ state: "ready", path: executable, version: "1.19.5" }),
+    }).initialize()
+    const connection = await access.saveConnection({ name: "Fixture", endpoints: [{ protocol: "openai-chat", baseUrl: "http://127.0.0.1:1" }], models: [{ id: "fixture-model" }] })
+    await access.setEngine("opencode", { access: { mode: "connection", connectionId: connection.id } })
+    setModelAccessService(access)
+    return { opencodeManager: new OpencodeAgentManager(async args => {
+      const server = await startOpencodeServer({ ...args, env: { ...args.env, FAKE_OC_OBSERVER: observer.url.origin } })
+      if (!first) return server
+      first = false
+      started.resolve()
+      // This native launch owns a process but hasn't handed it to the manager.
+      // Hold the abort cleanup independently of OS-specific termination timing.
+      await new Promise<void>(resolve => args.signal!.addEventListener("abort", () => resolve(), { once: true }))
+      stopping.resolve()
+      await release.promise
+      await server.close()
+      retired = true
+      throw new Error("Synthetic launch cancelled")
+    }) }
+  })
+  const send = (content: string) => f.command({ type: "chat.send", chatId: f.chat.id, content, provider: "opencode", model: "fixture-model" })
+  const starting = send("Cancelled before dispatch")
+  try {
+    await Promise.race([started.promise, starting.then(() => { throw new Error("Native launch was not reached") })])
+    const hiding = f.hide().then(() => expect(retired).toBe(true))
+    try {
+      await stopping.promise
+      const neighbor = await f.store.openProject(join(f.project.localPath, "neighbor"))
+      const other = await f.store.createChat(neighbor.id)
+      await f.send(other.id, "Neighbor remains available")
+      expect(f.prompts).toEqual(["Neighbor remains available"])
+    } finally { release.resolve(); await hiding }
+    await f.open()
+    await send("Fresh after reopening")
+    expect(await received.promise).toMatchObject({ parts: [{ text: "Fresh after reopening" }] })
+    expect(f.store.getMessages(f.chat.id).some(entry => entry.kind === "result" && entry.isError)).toBe(false)
+  } finally {
+    release.resolve(); await starting
+    setModelAccessService(prior); observer.stop(true)
+  }
+}, 10_000)
 
 test("hiding interrupts and closes an archived turn, not a neighboring project's turn", async () => {
   const f = await fixture()

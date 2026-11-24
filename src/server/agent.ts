@@ -1810,8 +1810,14 @@ interface PendingMemoryPreview {
     memoryIds?: string[],
     expectedUses?: ExpectedMemoryUse[],
     operationId?: string,
-  ) => void
+  ) => Promise<void>
   reopen?: (from: "proposals" | "checkup" | "transfer", stageId: string) => void
+}
+
+interface PreviewResponseClaim {
+  pending: PendingMemoryPreview
+  submitted?: boolean
+  dismissal?: Promise<void>
 }
 
 type TransferGateDecision = "handled" | "skipped" | "cancelled"
@@ -1880,7 +1886,7 @@ export class AgentCoordinator {
   private reportBackgroundError: ((message: string) => void) | null = null
   /** A response owns the parked preview from before its first await until its
    * decision has finished. This closes concurrent Start/without-memory races. */
-  private readonly claimedPreviewResponses = new Map<string, string>()
+  private readonly claimedPreviewResponses = new Map<string, PreviewResponseClaim>()
   readonly activeTurns = new Map<string, ActiveTurn>()
   /**
    * Chats parked on a per-turn memory-preview decision (SPEC §4.10b).
@@ -2271,23 +2277,30 @@ export class AgentCoordinator {
 
   /** Atomically transfer one exact parked preview to a response owner. */
   private claimPendingPreviewResponse(chatId: string, pending: PendingMemoryPreview) {
-    if (this.claimedPreviewResponses.has(chatId)) return false
-    if (this.pendingPreviews.get(chatId) !== pending) return false
+    if (this.claimedPreviewResponses.has(chatId)) return
+    if (this.pendingPreviews.get(chatId) !== pending) return
     this.pendingPreviews.delete(chatId)
-    this.claimedPreviewResponses.set(chatId, pending.previewId)
-    return true
+    const claim: PreviewResponseClaim = { pending }
+    this.claimedPreviewResponses.set(chatId, claim)
+    return claim
   }
 
-  private restorePendingPreviewResponse(chatId: string, pending: PendingMemoryPreview) {
-    if (this.claimedPreviewResponses.get(chatId) !== pending.previewId) return
+  private restorePendingPreviewResponse(chatId: string, claim: PreviewResponseClaim) {
+    if (this.claimedPreviewResponses.get(chatId) !== claim || claim.submitted) return
     this.claimedPreviewResponses.delete(chatId)
-    if (!this.pendingPreviews.has(chatId)) this.pendingPreviews.set(chatId, pending)
+    if (!this.pendingPreviews.has(chatId)) this.pendingPreviews.set(chatId, claim.pending)
   }
 
   private releasePendingPreviewResponse(chatId: string, previewId: string) {
-    if (this.claimedPreviewResponses.get(chatId) === previewId) {
+    if (this.claimedPreviewResponses.get(chatId)?.pending.previewId === previewId) {
       this.claimedPreviewResponses.delete(chatId)
     }
+  }
+
+  private dismissClaimedPreview(claim: PreviewResponseClaim, operationId?: string) {
+    claim.submitted = true
+    claim.pending.autoProceed = false
+    return claim.dismissal ??= claim.pending.respond("dismiss", undefined, undefined, operationId)
   }
 
   private deletePendingPreviewIfCurrent(chatId: string, pending: PendingMemoryPreview) {
@@ -2307,7 +2320,7 @@ export class AgentCoordinator {
   }
 
   private async respondToMemoryPreview(command: Parameters<AgentCoordinator["respondMemoryPreview"]>[0], auto = false) {
-    if (this.claimedPreviewResponses.get(command.chatId) === command.previewId) {
+    if (this.claimedPreviewResponses.get(command.chatId)?.pending.previewId === command.previewId) {
       throw new Error("This Working Memory preview is already being handled")
     }
     // Note: a respond is accepted even before `published` flips — the card a
@@ -2340,17 +2353,19 @@ export class AgentCoordinator {
     // Claim and remove this exact map entry before expected-use planning (or
     // any other await). A second response sees the claim and cannot emit its
     // own attempted event, expire the winner's card, or dispatch Claude.
-    if (!this.claimPendingPreviewResponse(command.chatId, pending)) {
+    const claim = this.claimPendingPreviewResponse(command.chatId, pending)
+    if (!claim) {
       throw new Error("This Working Memory preview is already being handled")
     }
     pending.autoProceed = auto
 
-    let handedOff = false
     try {
-
+      if (command.decision === "dismiss") return await this.dismissClaimedPreview(claim, command.operationId)
       const authoritativeExpectedUses = command.decision === "go_on"
         ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
         : []
+      // Stop/Hide may have dismissed this exact published card while planning.
+      if (claim.submitted || this.claimedPreviewResponses.get(command.chatId) !== claim) throw new Error("Working Memory preview cancelled")
       if (command.decision === 'go_on') pending.assertCurrentView?.()
       if (command.decision === 'go_on' && this.memory) {
         const chat = this.store.requireChat(command.chatId)
@@ -2364,8 +2379,8 @@ export class AgentCoordinator {
         ).length) throw new Error("Working memory needs confirmation.")
       }
 
-      handedOff = true
-      pending.respond(
+      claim.submitted = true
+      void pending.respond(
         command.decision,
         command.decision === "go_on"
           ? effectiveIds
@@ -2374,7 +2389,7 @@ export class AgentCoordinator {
         command.operationId,
       )
     } catch (error) {
-      if (!handedOff) this.restorePendingPreviewResponse(command.chatId, pending)
+      this.restorePendingPreviewResponse(command.chatId, claim)
       throw error
     }
   }
@@ -3980,7 +3995,7 @@ export class AgentCoordinator {
     this.commandPreparations.delete(chatId)
     this.codexManager.stopSession(chatId)
     this.piManager.closeChat(chatId)
-    this.opencodeManager.closeChat(chatId)
+    await this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
     if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
     await this.retireHarnessPolicyIfAbsent(chatId)
@@ -4209,7 +4224,7 @@ export class AgentCoordinator {
     await this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
-    this.opencodeManager.closeChat(chatId)
+    await this.opencodeManager.closeChat(chatId)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
@@ -6223,7 +6238,7 @@ export class AgentCoordinator {
       respond: (decision, selectedIds, expectedUses, operationId) => {
         finishWaiting(decision)
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
-        void this.finishMemoryPreview({
+        return this.finishMemoryPreview({
           args,
           chat: ctx.chat,
           project: ctx.project,
@@ -6513,7 +6528,7 @@ export class AgentCoordinator {
               finishWaiting(decision)
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
-              void this.finishMemoryPreview({
+              return this.finishMemoryPreview({
                 args,
                 chat: ctx.chat,
                 project: ctx.project,
@@ -6723,11 +6738,15 @@ export class AgentCoordinator {
   }) {
     const { args, decision } = ctx
     try {
-      if (args.startupReservation) {
-        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
-      } else if (this.startupReservations.has(args.chatId) || this.activeTurns.has(args.chatId)
-        || this.isEngineStartBlocked(args.chatId)) return
-      this.reserveStartup(args)
+      if (decision === "dismiss") {
+        // A terminal decision needs ownership of the card, not permission to
+        // start an engine. Hide has already closed admission for the project.
+        if (this.claimedPreviewResponses.get(args.chatId)?.pending.previewId !== ctx.previewId) return
+      } else {
+        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)
+          || (!args.startupReservation && this.activeTurns.has(args.chatId))) return
+        this.reserveStartup(args)
+      }
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       if ((this.memoryBranches || ctx.confirmationMode === "on_change") && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
         memory: this.memory, projectId: ctx.chat.projectId, chatId: args.chatId, restrictToIds: [...selected],
@@ -6740,7 +6759,7 @@ export class AgentCoordinator {
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses,
           ...(ctx.auto ? { auto: true, ...(ctx.selectedIds?.length ? { autoReason: "confirmed" as const } : {}) } : {}) })
       )
-      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      if (decision !== "dismiss" && !this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       if (!ctx.auto && decision !== "dismiss" && this.memory) {
         recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [], this.memory.fileDrift)
       }
@@ -6774,7 +6793,7 @@ export class AgentCoordinator {
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
         this.releaseStartupStatus(args.chatId, args.startupReservation)
         this.emitStateChange(args.chatId, { immediate: true })
-        await this.maybeStartNextQueuedMessage(args.chatId)
+        if (!this.projectUnavailable(ctx.chat.projectId)) this.wakeQueue(args.chatId)
         return
       }
 
@@ -6786,6 +6805,7 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision === "without_memory",
       })
     } catch (error) {
+      if (decision === "dismiss") throw error // Hide must not acknowledge a failed cancellation write.
       if (args.startupReservation?.cancelled || args.startupReservation?.superseded
         || this.isEngineStartBlocked(args.chatId)) return
       this.restoreUndeliveredEnforcement(args.chatId)
@@ -8890,10 +8910,13 @@ export class AgentCoordinator {
     // once the card is published. Before that, a "dismiss" decision would
     // reference a preview entry that may never land; unwind through the
     // cancelled-during-preview path instead (the gate coroutine observes it).
-    const parked = this.pendingPreviews.get(chatId)
+    const claim = this.claimedPreviewResponses.get(chatId)
+    if (claim?.dismissal) return await claim.dismissal
+    const parked = this.pendingPreviews.get(chatId) ?? (claim?.submitted ? undefined : claim?.pending)
     if (parked) {
       if (parked.published) {
-        parked.respond("dismiss")
+        const owner = claim ?? this.claimPendingPreviewResponse(chatId, parked)
+        if (owner) await this.dismissClaimedPreview(owner)
         return
       }
       this.pendingPreviews.delete(chatId)
