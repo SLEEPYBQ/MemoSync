@@ -454,6 +454,48 @@ describe('memory routes', () => {
     expect(collection.map((item: { id: string }) => item.id)).not.toContain(proposal!.id);
     expect(memory.store.listOpenRevisions('RenderX')).toEqual([]);
     expect(memory.store.getById(target.id)?.status).toBe('active');
+
+    // Restore on the Board's archived shelf sends this PATCH, not an acceptance.
+    const path = `/api/memories/${proposal!.id}`;
+    const before = memory.store.getEvents(proposal!.id);
+    expect(before.at(-1)).toMatchObject({ kind: 'status', actor: 'system', meta: { via: 'trace_correction' } });
+    const restored = await call('PATCH', path, { status: 'active', surface: 'board' });
+    expect(memory.store.list({ status: 'active' }).map(item => item.id)).toEqual([target.id]);
+    expect(restored!.status).toBe(409);
+    expect((await json(restored)).error.message).toContain('audit correction');
+    expect((await json(await call('GET', '/api/memories?status=archived'))).data)
+      .toMatchObject([{ id: proposal!.id, invalidatedRevision: true }]);
+    expect((await json(await call('GET', path))).data.invalidatedRevision).toBe(true);
+    expect((await call('POST', `${path}/revert`, { toSeq: before[0]!.seq, surface: 'board' }))!.status).toBe(409);
+    expect(memory.store.getEvents(proposal!.id)).toEqual(before);
+    expect(memory.store.getById(proposal!.id)?.status).toBe('archived');
+    expect(readFileSync(projectionPath, 'utf8')).not.toContain(proposal!.content);
+
+    const fresh = (await json(await call('POST', `/api/memories/${target.id}/draft-revision`, { sessionId: 'chat' }, { revision: service }))).data;
+    expect(fresh.status).toBe('candidate');
+    expect(fresh.id).not.toBe(proposal!.id);
+    expect(memory.store.getById(target.id)?.status).toBe('active');
+    expect((await json(await call('PATCH', `/api/memories/${fresh.id}`, { status: 'active', surface: 'board' }))).data.replacedId).toBe(target.id);
+    expect(memory.store.getById(target.id)?.status).toBe('archived');
+  });
+
+  it('restores accepted Board memories, including revisions, without reapplying their replacement', async () => {
+    const input = { scope: 'personal' as const, type: 'fact' as const };
+    const target = memory.store.create({ ...input, content: 'Synthetic original rule', status: 'candidate' }, { actor: 'agent' });
+    const patch = (id: string, status: string) => call('PATCH', `/api/memories/${id}`, { status, surface: 'board' });
+    expect((await patch(target.id, 'active'))!.status).toBe(200);
+    expect((await call('DELETE', `/api/memories/${target.id}?surface=board`))!.status).toBe(200);
+    expect((await json(await patch(target.id, 'active'))).data.status).toBe('active');
+    const revision = memory.store.createRevisionProposal({ ...input, content: 'Synthetic reviewed replacement' }, target.id, { actor: 'system' })!;
+    expect((await json(await patch(revision.id, 'active'))).data.replacedId).toBe(target.id);
+    expect(memory.store.getById(target.id)?.status).toBe('archived');
+    expect((await call('DELETE', `/api/memories/${revision.id}?surface=board`))!.status).toBe(200);
+    // The user deliberately brings the original back and edits it. Restoring
+    // the already-accepted revision is not another review of that target.
+    expect((await json(await patch(target.id, 'active'))).data.status).toBe('active');
+    const edited = (await json(await call('PATCH', `/api/memories/${target.id}`, { content: 'Synthetic edited original', surface: 'board' }))).data;
+    expect((await json(await patch(revision.id, 'active'))).data.status).toBe('active');
+    expect(memory.store.getById(target.id)).toMatchObject({ content: edited.content, status: 'active' });
   });
 
   it('rejects a new audit correction after archival without changing history or broadcasting', async () => {

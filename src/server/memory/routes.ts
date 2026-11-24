@@ -140,10 +140,12 @@ export async function handleMemoryRequest(
     return fail(404, 'NOT_FOUND', 'route not found');
   }
 
+  const decorateArchive = (item: MemoryItem): MemoryItem => memory.store.nonRevokingArchiveReason(item) === 'trace_correction'
+    ? { ...item, invalidatedRevision: true } : item;
   const decorate = (item: MemoryItem): MemoryItem => {
     const refs = memory.fileDrift.refsFor([item.id]).get(item.id);
     const withRefs = refs?.length ? { ...item, fileRefs: refs } : item;
-    return memory.team.decorate(withRefs);
+    return decorateArchive(memory.team.decorate(withRefs));
   };
   const assertNotTeam = (id: string) => {
     if (memory.store.isTeamLinked(id)) throw new RouteError(409, 'CONFLICT', 'Team rules change through .memosync/team.md');
@@ -319,7 +321,7 @@ export async function handleMemoryRequest(
               const target = memory.store.revisionTargetOf(out.id);
               if (target) out = { ...out, revisionOf: { id: target.id, content: target.content } };
             }
-            return out;
+            return decorateArchive(out);
           }),
         );
       }
@@ -472,7 +474,7 @@ export async function handleMemoryRequest(
           try {
             return memory.store.rollback(id, b.toSeq as number, UI_ACTOR);
           } catch (e) {
-            if (e instanceof CandidateDismissalTransitionError) throw e;
+            if (e instanceof CandidateDismissalTransitionError || e instanceof RevisionConflictError) throw e;
             throw new RouteError(400, 'BAD_REQUEST', e instanceof Error ? e.message : 'rollback failed');
           }
         })();
@@ -488,7 +490,7 @@ export async function handleMemoryRequest(
       memory.syncProjection(existing.projectId);
       baseline(reverted);
       if (reverted.projectId !== existing.projectId) memory.syncProjection(reverted.projectId);
-      return ok(reverted);
+      return ok(decorateArchive(reverted));
     }
 
     // POST /api/memories/attention-resolve { kind, id, action, otherId? }

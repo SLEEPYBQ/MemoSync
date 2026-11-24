@@ -452,7 +452,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   )
                 })}
               </div>
-              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
+              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t(item.invalidatedRevision ? "memory:revisionWithdrawn" : "memory:restoreBeforeMoving")}</p> : null}
               {expiryDirty ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:saveExpiryBeforeScopeOrSensitivity")}</p> : null}
             </div> : null}
 

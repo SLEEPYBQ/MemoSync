@@ -48,7 +48,7 @@ export const MEMORY_PROPOSALS_HELP_COPY =
 export const PERMANENT_CANDIDATE_DISMISSAL_COPY =
   en.memory.dismissedCandidatePermanentlyRemovedItsSensitiveDraftIsNotRetained
 
-export type CandidateReviewState = "candidate" | "accepted" | "discarded" | "optimistic-dismissed" | "missing"
+export type CandidateReviewState = "candidate" | "accepted" | "withdrawn" | "discarded" | "optimistic-dismissed" | "missing"
 
 /** Canonical store state always outranks a transient dismissal receipt held by
  * another mounted surface. */
@@ -57,6 +57,7 @@ export function candidateReviewState(
   optimisticallyDismissed: boolean,
 ): CandidateReviewState {
   if (item?.status === "candidate") return "candidate"
+  if (item?.invalidatedRevision) return "withdrawn"
   if (item?.status === "active" || item?.status === "archived") return "accepted"
   if (item?.status === "discarded") return "discarded"
   return optimisticallyDismissed ? "optimistic-dismissed" : "missing"

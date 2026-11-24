@@ -103,6 +103,8 @@ export interface MemoryItem {
   lastTraceCorrected?: boolean;
   /** For REVISION candidates: the memory this proposal would replace (decorated on list reads). */
   revisionOf?: { id: string; content: string };
+  /** Archived pending revision withdrawn by an audit correction, not a saved memory to restore. */
+  invalidatedRevision?: true;
   citedInCurrentSession: number; // times cited this session
   citedAtSteps?: number[]; // which steps cited it this session
   relations?: MemoryRelation[];
