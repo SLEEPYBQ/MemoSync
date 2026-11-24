@@ -16,7 +16,7 @@ import {
   Plus,
   Terminal,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ComponentType, type DragEvent, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
@@ -24,6 +24,7 @@ import { PageHeader } from "../app/PageHeader"
 import type { AppSocket, SocketStatus } from "../app/socket"
 import { useLandingDraft } from "../app/useLandingDraft"
 import { useRuntimeCommands } from "../app/ChatPage/useRuntimeCommands"
+import { hasFileDragTypes } from "../app/ChatPage/utils"
 import { NEW_CHAT_COMPOSER_ID, useChatPreferencesStore } from "../stores/chatPreferencesStore"
 import type { ChatHarnessSnapshot } from "../../shared/harness-capabilities"
 import type { AppState } from "../app/useAppState"
@@ -50,7 +51,7 @@ interface LocalDevProps {
   socket: AppSocket
   onSend: AppState["handleSend"]
   availableProviders: AppState["availableProviders"]
-  /** localPath → projectId for projects the server already knows (enables attachment uploads pre-send). */
+  /** Saved projects can accept uploads even before their hidden draft is ready. */
   projectIdByPath: Record<string, string>
 }
 
@@ -302,7 +303,9 @@ export function LocalDevContent({
   const [pickedPath, setPickedPath] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
-  const { draft, runtime } = useLandingDraft(socket, selectedPath, isConnected)
+  const { draft, runtime, pending } = useLandingDraft(socket, selectedPath, isConnected)
+  const projectId = selectedPath ? draft?.projectId ?? projectIdByPath[selectedPath] ?? null : null
+  const waitingForProject = !projectId && pending
   const draftChatId = draft?.chatId ?? null
   const commands = useRuntimeCommands(socket, draftChatId, runtime?.provider ?? null, isConnected, runtime?.commandCatalog)
   const machineName = snapshot?.machine.displayName ?? t("chat:thisMachine")
@@ -312,8 +315,18 @@ export function LocalDevContent({
 
   const composerElementRef = useRef<HTMLTextAreaElement | null>(null)
   useEffect(() => {
-    if (isConnected && selectedPath) composerElementRef.current?.focus()
-  }, [isConnected, selectedPath])
+    if (isConnected && selectedPath && !waitingForProject && document.activeElement === document.body) {
+      composerElementRef.current?.focus()
+    }
+  }, [isConnected, selectedPath, waitingForProject])
+
+  function blockPendingFileDrop(event: DragEvent) {
+    // A disabled composer does not handle drops. Don't let the browser open the file instead.
+    if (waitingForProject && hasFileDragTypes(event.dataTransfer.types)) {
+      event.preventDefault()
+      event.dataTransfer.dropEffect = "none"
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-background overflow-y-auto">
@@ -406,17 +419,18 @@ export function LocalDevContent({
               {landingHeadline(selectedName)}
             </h1>
 
-            <div className="w-full">
+            <div className="w-full" onDragOver={blockPendingFileDrop} onDrop={blockPendingFileDrop}>
               <ChatInput
                 key={selectedPath ?? "landing"}
                 onSubmit={(value, options) => {
                   if (!selectedPath) return Promise.reject(new Error(t("chat:openAProjectFirst")))
                   return onSend(value, { ...options, projectLocalPath: selectedPath, draft: draft ?? undefined })
                 }}
-                disabled={!selectedPath}
+                disabled={!selectedPath || waitingForProject}
                 chatId={null}
                 nativeChatId={draftChatId}
                 draftKey="landing"
+                landingProjectPath={selectedPath}
                 commandCatalog={draftChatId ? commands.catalog : undefined}
                 commandBusy={commands.busy}
                 commandError={commands.error}
@@ -432,7 +446,7 @@ export function LocalDevContent({
                 harness={runtime?.harness}
                 onReadHarness={draftChatId ? engine => socket.command<ChatHarnessSnapshot>({ type: "chat.readHarness", chatId: draftChatId, engine }) : undefined}
                 onExecutionPolicyChange={draftChatId ? (policy, expectedRevision) => socket.command({ type: "chat.setExecutionPolicy", chatId: draftChatId, policy, expectedRevision }) : undefined}
-                projectId={selectedPath ? projectIdByPath[selectedPath] ?? null : null}
+                projectId={projectId}
                 inputElementRef={composerElementRef}
                 activeProvider={null}
                 availableProviders={availableProviders}
@@ -462,6 +476,11 @@ export function LocalDevContent({
                         />
                       )}
                     </InputPopover>
+                    {waitingForProject ? (
+                      <span role="status" className="flex items-center gap-1 text-xs text-muted-foreground">
+                        <Loader2 aria-hidden className="size-3 animate-spin motion-reduce:animate-none" />{t("common:loading")}
+                      </span>
+                    ) : null}
                     <span className="flex items-center gap-1.5 whitespace-nowrap px-2 py-1 text-sm text-muted-foreground/70">
                       <Monitor className="h-3.5 w-3.5 shrink-0" />
                       <span>{machineName}</span>

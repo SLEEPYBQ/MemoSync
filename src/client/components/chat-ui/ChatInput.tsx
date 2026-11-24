@@ -153,6 +153,8 @@ interface Props {
    * navigation (BUG LAND-1). Defaults to chatId.
    */
   draftKey?: string | null
+  /** Uploads live under this folder even if leaving discards its temporary project ID. */
+  landingProjectPath?: string | null
   projectId?: string | null
   inputElementRef?: React.Ref<HTMLTextAreaElement>
   activeProvider: AgentProvider | null
@@ -257,6 +259,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   chatId,
   nativeChatId,
   draftKey,
+  landingProjectPath,
   projectId,
   inputElementRef,
   activeProvider,
@@ -296,7 +299,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // for the landing composer (which has no chatId yet) so typed text survives
   // navigation (BUG LAND-1).
   const textDraftKey = draftKey ?? chatId ?? null
-  const attachmentDraftKey = chatId ?? (draftKey && projectId ? `${draftKey}:${projectId}` : null)
+  const projectDraftKey = !chatId && draftKey && projectId ? `${draftKey}:${projectId}` : null
+  const workspaceDraftKey = projectDraftKey && landingProjectPath ? `${draftKey}:path:${landingProjectPath}` : null
+  const attachmentDraftKey = chatId ?? workspaceDraftKey ?? projectDraftKey
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const draftRevisionRef = useRef(0)
@@ -318,7 +323,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const isStandalone = useIsStandalone()
   const draftMemoryDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftMemoryDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
-  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []))
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => {
+    // A workspace draft may contain retired image URLs. Bind it before showing any cards.
+    return attachmentDraftKey && !workspaceDraftKey ? hydrateComposerAttachments(getAttachmentDrafts(attachmentDraftKey)) : []
+  })
   const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
     draftRevisionRef.current += 1
@@ -349,7 +357,28 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     removedAttachmentIdsRef.current.clear()
     setSelectedAttachmentId(null)
     setUploadError(null)
-    attachmentsRef.current = hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : [])
+    let stored = attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []
+    if (workspaceDraftKey && projectDraftKey && landingProjectPath && projectId) {
+      // Migrate only the current project's old landing bucket. Don't look up drafts by filename.
+      const legacy = getAttachmentDrafts(projectDraftKey)
+      if (legacy.length) {
+        const merged = [...stored]
+        const unmoved: ChatAttachment[] = []
+        for (const item of legacy) {
+          const bound = bindLandingUpload(item, landingProjectPath, projectId)
+          if (!bound || bound.contentUrl !== item.contentUrl) unmoved.push(item)
+          else if (!merged.some(other => other.id === item.id || other.relativePath === item.relativePath)) merged.push(item)
+        }
+        if (unmoved.length !== legacy.length) {
+          stored = merged
+          setAttachmentDrafts(workspaceDraftKey, stored)
+          setAttachmentDrafts(projectDraftKey, unmoved)
+        }
+      }
+      // Rebinding a URL for display/send isn't a user edit; don't invalidate a pending send's revision.
+      stored = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+    }
+    attachmentsRef.current = hydrateComposerAttachments(stored)
     setAttachmentsState(attachmentsRef.current)
     return () => {
       draftRevisionRef.current += 1
@@ -359,7 +388,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       activeUploadsRef.current = 0
       attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, projectId, textDraftKey, attachmentDraftKey, getDraft, getAttachmentDrafts, cleanupAttachmentPreview])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)
@@ -1190,6 +1219,21 @@ async function deleteUploadedAttachment(attachment: ChatAttachment) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
   await fetch(deleteUrl, { method: "DELETE" }).catch(() => undefined)
+}
+
+/** Only retarget a first-party upload whose actual stored file belongs to this exact workspace. */
+export function bindLandingUpload(attachment: ChatAttachment, localPath: string, projectId: string): ChatAttachment | null {
+  const url = /^\/api\/projects\/[\w-]+\/uploads\/([^/\\?#]+)\/content$/.exec(attachment.contentUrl)
+  if (!url) return null
+  let name: string
+  try { name = decodeURIComponent(url[1]!) } catch { return null }
+  if (name === "." || name === ".." || /[/\\\0]/.test(name)) return null
+  if (attachment.relativePath !== `./.memosync/uploads/${name}` && attachment.relativePath !== `./.kanna/uploads/${name}`) return null
+  const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(localPath)
+  const root = (windows ? localPath.replaceAll("\\", "/") : localPath).replace(/\/+$/, "")
+  const absolutePath = windows ? attachment.absolutePath?.replaceAll("\\", "/") : attachment.absolutePath
+  if (absolutePath !== `${root}/${attachment.relativePath.slice(2)}`) return null
+  return { ...attachment, contentUrl: `/api/projects/${encodeURIComponent(projectId)}/uploads/${url[1]}/content` }
 }
 
 function hydrateComposerAttachments(attachments: ChatAttachment[]): ComposerAttachment[] {
