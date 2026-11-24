@@ -108,8 +108,12 @@ const { archivePath, fd } = claimArchive(targetDir, archiveStem)
 
 let tarStatus: number | null = null
 try {
+  // Keep the allowlist and the link traversal policy independent of shell defaults.
+  const tarEnv = { ...process.env }
+  delete tarEnv.TAR_OPTIONS
   // Write through the descriptor we claimed, without reopening the archive path.
   tarStatus = spawnSync("tar", ["-czf", "-", "-C", dataDir, ...present], {
+    env: tarEnv,
     stdio: ["inherit", fd, "inherit"],
   }).status
 } finally {

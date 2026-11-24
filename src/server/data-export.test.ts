@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, readdir, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readdir, readlink, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 
@@ -40,7 +40,7 @@ describe("data export", () => {
     await symlink(library, path.join(data, "memories"), process.platform === "win32" ? "junction" : "dir")
     for (const base of [library, path.join(data, "memories")]) {
       const result = Bun.spawnSync([process.execPath, script, "--out", path.join(base, "new", "output")], {
-        env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: data },
+        env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: data, TAR_OPTIONS: "--dereference" },
       })
       if (process.platform === "win32") {
         expect(result.exitCode).not.toBe(0)
@@ -56,9 +56,11 @@ describe("data export", () => {
       const archives = await readdir(out)
       expect(archives).toHaveLength(2)
       for (const archive of archives) {
-        const listing = Bun.spawnSync(["tar", "-tzf", path.join(out, archive)])
-        expect(listing.exitCode).toBe(0)
-        expect(listing.stdout.toString().trim()).toBe("memories")
+        const extracted = await mkdtemp(path.join(root, "extract-"))
+        const result = Bun.spawnSync(["tar", "-xzf", path.join(out, archive), "-C", extracted])
+        expect(result.exitCode).toBe(0)
+        expect(await readdir(extracted)).toEqual(["memories"])
+        expect(await readlink(path.join(extracted, "memories"))).toBe(library)
       }
     }
   })
