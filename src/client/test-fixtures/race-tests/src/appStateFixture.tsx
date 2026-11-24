@@ -89,10 +89,11 @@ Object.assign(AppSocket.prototype, {
     listener("connected")
     return () => {}
   },
-  subscribe(topic: { type: string; chatId?: string }, listener: (snapshot: unknown) => void) {
+  subscribe(topic: { type: string; chatId?: string; projectId?: string }, listener: (snapshot: unknown) => void) {
     const subscription = { topic, listener, active: true }
     subscriptions.push(subscription)
     if (topic.type === "sidebar") listener({ projectGroups: [] })
+    if (topic.type === "project-git") listener({ status: "ready", branchName: `branch-${topic.projectId}`, files: [] })
     if (topic.type === "local-projects") {
       listener({
         machine: { id: "local", displayName: "Fixture", platform: "linux" },
@@ -185,6 +186,7 @@ export function mountAppStateFixture(root: HTMLElement) {
     return (
       <main>
         <div data-testid="fixture-ready" />
+        <output data-testid="diff-branch">{state.chatDiffSnapshot?.branchName ?? ""}</output>
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
         <button

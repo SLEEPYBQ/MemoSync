@@ -597,11 +597,6 @@ export function composerStateFromSendOptions(options?: {
   return null
 }
 
-function getProjectIdForChat(projectGroups: SidebarData["projectGroups"], chatId: string | null) {
-  if (!chatId) return null
-  return projectGroups.find((group) => group.chats.some((chat) => chat.chatId === chatId))?.groupKey ?? null
-}
-
 export function shouldAutoFollowTranscript(distanceFromBottom: number) {
   return distanceFromBottom < 24
 }
@@ -1366,12 +1361,14 @@ export function useAppState(activeChatId: string | null): AppState {
     () => getActiveChatSnapshot(chatSnapshot, activeChatId),
     [activeChatId, chatSnapshot]
   )
-  const activeProjectId = useMemo(
-    () => activeChatSnapshot?.runtime.projectId
-      ?? getProjectIdForChat(sidebarProjectGroups, activeChatId)
-      ?? selectedProjectId,
-    [activeChatId, activeChatSnapshot?.runtime.projectId, selectedProjectId, sidebarProjectGroups]
+  const sidebarChatProject = useMemo(
+    () => activeChatId ? sidebarProjectGroups.find(group => group.chats.some(chat => chat.chatId === activeChatId)) : undefined,
+    [activeChatId, sidebarProjectGroups]
   )
+  // A remembered landing selection is not evidence that the newly opened chat belongs to it.
+  const activeProjectId = activeChatId
+    ? activeChatSnapshot?.runtime.projectId ?? sidebarChatProject?.groupKey ?? null
+    : selectedProjectId
   const chatDiffSnapshot = useMemo(() => {
     const currentDiffs = activeProjectId ? (projectDiffSnapshots[activeProjectId] ?? null) : null
     if (activeProjectId && currentDiffs) {
@@ -1485,16 +1482,12 @@ export function useAppState(activeChatId: string | null): AppState {
   const canCancel = canCancelStatus(effectiveRuntimeStatus ?? undefined)
   const isDraining = runtime?.isDraining ?? false
   const fallbackLocalProjectPath = localProjects?.projects[0]?.localPath ?? null
-  const navbarLocalPath =
-    runtime?.localPath
-    ?? fallbackLocalProjectPath
-    ?? sidebarProjectGroups[0]?.localPath
-  const hasSelectedProject = Boolean(
-    selectedProjectId
-    ?? runtime?.projectId
-    ?? sidebarProjectGroups[0]?.groupKey
-    ?? fallbackLocalProjectPath
-  )
+  const navbarLocalPath = activeChatId
+    ? runtime?.localPath ?? sidebarChatProject?.localPath
+    : fallbackLocalProjectPath ?? sidebarProjectGroups[0]?.localPath
+  const hasSelectedProject = activeChatId
+    ? Boolean(activeProjectId)
+    : Boolean(selectedProjectId ?? sidebarProjectGroups[0]?.groupKey ?? fallbackLocalProjectPath)
 
   useEffect(() => {
     if (optimisticProcessing?.scopeId !== optimisticScopeId) {

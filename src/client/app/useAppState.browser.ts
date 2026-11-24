@@ -237,6 +237,18 @@ describe("mounted useAppState history races", () => {
     await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location() === "/chat/draft-b")
   })
 
+  test("an unresolved chat never displays Git from the previously selected project", async () => {
+    const target = await openFixture()
+    await emitChat(target, "chat-a", 0, snapshot("chat-a", null, false, []))
+    const branch = target.getByTestId("diff-branch")
+    await branch.filter({ hasText: "branch-project-chat-a" }).waitFor()
+
+    await activateChat(target, "chat-b", 0)
+    expect(await branch.textContent()).toBe("")
+    await emitChat(target, "chat-b", 0, snapshot("chat-b", null, false, []))
+    await branch.filter({ hasText: "branch-project-chat-b" }).waitFor()
+  })
+
   test("late project.open cannot replace the new chat's selected project", async () => {
     const target = await openFixture()
     await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
