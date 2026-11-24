@@ -23,7 +23,7 @@ async function workspace() {
   return root
 }
 
-async function runtime(root: string) {
+async function runtime(root: string, onFileTurn?: (requestFile: () => Promise<void>) => void) {
   const store = new EventStore(join(root, "data"))
   await store.initialize()
   const project = await store.openProject(join(root, "workspace"))
@@ -40,10 +40,14 @@ async function runtime(root: string) {
     piManager: {
       async startTurn(args: StartPiTurnArgs) {
         if (args.content !== "hold") {
-          const reply = await args.memoryDispatch!(HOST_ACTION_TOOL_NAMES.openFile, { path: "README.md" }, undefined, {
-            engineInstanceId: "test-pi", nativeSessionId: "test-session", nativeToolCallId: crypto.randomUUID(),
-          })
-          receipts.push(JSON.parse(reply.text))
+          const requestFile = async () => {
+            const reply = await args.memoryDispatch!(HOST_ACTION_TOOL_NAMES.openFile, { path: "README.md" }, undefined, {
+              engineInstanceId: "test-pi", nativeSessionId: "test-session", nativeToolCallId: crypto.randomUUID(),
+            })
+            receipts.push(JSON.parse(reply.text))
+          }
+          if (onFileTurn) onFileTurn(requestFile)
+          else await requestFile()
         }
         const stop = Promise.withResolvers<void>()
         return { provider: "pi", stream: (async function* () { await stop.promise })(),
@@ -132,6 +136,34 @@ for (const compact of [false, true]) test(`queue origin survives ${compact ? "sn
   const unavailable = expect.objectContaining({ status: "unavailable", reason: "No eligible originating chat client" })
   expect(r.receipts).toEqual([expect.objectContaining({ status: "accepted", delivery: "sent" }), unavailable, unavailable])
   expect(r.store.getQueuedMessages(r.chatId)).toEqual([])
+})
+
+test("startup drains before desktop rebind; each native request checks the original window at call time", async () => {
+  const root = await workspace(), old = await runtime(root), desktop = await old.window()
+  const origin = await desktop.bind()
+  await desktop.submit("chat.send", "hold")
+  const row = await desktop.submit("chat.send", "Show fixture file on replay")
+  await old.close()
+
+  const tool = Promise.withResolvers<() => Promise<void>>()
+  const r = await runtime(root, tool.resolve)
+  await r.agent.drainOrphanedQueues() // No sockets, not even a subscription.
+  expect(r.agent.activeTurns.get(r.chatId)?.turnId).toBe(row.queuedMessageId)
+  expect(r.store.getQueuedMessages(r.chatId)).toEqual([])
+  const requestFile = await tool.promise
+  const other = await r.window()
+  expect((await other.bind()).clientId).not.toBe(origin.clientId)
+  await requestFile()
+  expect(r.receipts).toEqual([expect.objectContaining({ status: "unavailable", delivery: "not-sent", reason: "No eligible originating chat client" })])
+  expect(other.requests()).toEqual([])
+
+  const resumed = await r.window()
+  expect((await resumed.bind(origin.resumeToken)).clientId).toBe(origin.clientId)
+  expect(resumed.requests()).toEqual([]) // Do not deliver the earlier denied request on reconnect.
+  await requestFile() // A new native call in the same replayed turn.
+  expect(r.receipts[1]).toMatchObject({ status: "accepted", delivery: "sent" })
+  expect(resumed.requests().map(e => [e.turnId, e.targetClientId])).toEqual([[row.queuedMessageId, origin.clientId]])
+  expect(other.requests()).toEqual([])
 })
 
 test("queued chat.send and cross-window dequeue ACK after persistence and publish the authoritative queue to both subscribers", async () => {

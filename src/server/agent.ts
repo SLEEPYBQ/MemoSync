@@ -3714,9 +3714,11 @@ export class AgentCoordinator {
   private async retireCommandSession(chatId: string) {
     await this.codexManager.stopSession?.(chatId)
     this.piManager.closeChat?.(chatId)
-    this.opencodeManager.closeChat?.(chatId)
     const session = this.claudeSessions.get(chatId)
-    if (session && !session.retired) await this.retireClaudeSession(session, 'session_rebuild')
+    await Promise.all([
+      this.opencodeManager.closeChat?.(chatId),
+      session && !session.retired ? this.retireClaudeSession(session, 'session_rebuild') : undefined,
+    ])
   }
 
   private async initializeCommandSession(chatId: string, record: CommandPreparation) {
