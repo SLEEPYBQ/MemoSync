@@ -3995,9 +3995,11 @@ export class AgentCoordinator {
     this.commandPreparations.delete(chatId)
     this.codexManager.stopSession(chatId)
     this.piManager.closeChat(chatId)
-    await this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
-    if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
+    await Promise.all([
+      this.opencodeManager.closeChat(chatId),
+      session && !session.retired ? this.retireClaudeSession(session, "idle_timeout") : undefined,
+    ])
     await this.retireHarnessPolicyIfAbsent(chatId)
     this.emitStateChange(chatId)
   }
@@ -7333,7 +7335,9 @@ export class AgentCoordinator {
     bootedActive = active
     admitTurn()
     } catch (error) {
-      const scope = this.policyScopes.get(args.chatId)
+      // A cancelled provider may reject after Hide/reopen admitted another
+      // turn. Only the failing launch's own policy scope can be rejected.
+      const scope = args.policyScope
       if (scope) {
         const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
         if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)

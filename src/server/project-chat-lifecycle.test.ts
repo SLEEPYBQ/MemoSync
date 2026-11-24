@@ -223,11 +223,14 @@ test("hiding interrupts and closes an archived turn, not a neighboring project's
   expect(f.prompts).toEqual(["neighbor", "archive while running", "after unarchive"])
 })
 
-test("a startup suspended before hide cannot dispatch when it resolves after a fresh reopened send", async () => {
+test.each([false, true])("a startup suspended before hide cannot disturb a fresh reopened send (late failure: %s)", async fail => {
   const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
   let first = true
   const f = await fixture(async () => {
-    if (first) { first = false; entered.resolve(); await release.promise }
+    if (first) {
+      first = false; entered.resolve(); await release.promise
+      if (fail) throw new Error("Cancelled synthetic connection failed late")
+    }
   })
   const starting = f.send(f.chat.id, "stale send")
   try {
@@ -243,6 +246,7 @@ test("a startup suspended before hide cannot dispatch when it resolves after a f
   }
   expect(f.prompts).toEqual(["fresh send"])
   expect(f.agent.activeTurns.get(f.chat.id)?.userText).toBe("fresh send")
+  expect(f.store.requireChat(f.chat.id).executionPolicyStates?.pi?.status).not.toBe("rejected")
 })
 
 test("a slow interrupt in one chat cannot leave another admitted prompt without an outcome", async () => {

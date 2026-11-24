@@ -197,6 +197,21 @@ describe("idle provider sessions", () => {
     expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(true)
   })
 
+  test("idle retirement claims the old Claude query before awaiting OpenCode cleanup", async () => {
+    const release = deferred()
+    const h = await harness("claude", false, {
+      opencodeManager: { closeChat: () => release.promise, dispose() {} } as never,
+    })
+    try {
+      await h.send(); await h.finish(); await advance(TIMEOUT)
+      expect(h.closes()).toBe(1)
+      await h.send()
+      release.resolve()
+      expect(h.tokens).toEqual([null, "saved-token"])
+      expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(true)
+    } finally { release.resolve() }
+  })
+
   test("shutdown waits for Claude EOF policy persistence after registry removal", async () => {
     const h = await harness()
     await h.send()

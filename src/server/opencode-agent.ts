@@ -162,7 +162,7 @@ export class OpencodeAgentManager {
   }
   /** Analysis-only cleanup is awaited before its process group is closed. */
   async deleteSession(chatId: string, sessionToken: string, launch?: Pick<StartOpencodeTurnArgs, 'cwd' | 'runtime' | 'model' | 'agent'>): Promise<void> {
-    await this.interruptions.get(chatId)
+    await Promise.all([this.interruptions.get(chatId), this.stopping.get(chatId)])
     let chat = this.chats.get(chatId)
     if ((!chat || chat.closed) && launch?.runtime) {
       chat = await this.ensureServer({ ...launch, chatId, content: '' }, launch.runtime)
@@ -182,6 +182,7 @@ export class OpencodeAgentManager {
     if (previous) await this.retireServer(args.chatId, previous)
     const mcp = !args.agent && args.memorySpecs?.length ? createOpencodeMemoryMcp(args.memorySpecs) : undefined
     let server: OpencodeServer | undefined
+    let registered: ChatServer | undefined
     let hostPlugin: ChatServer['hostPlugin']
     try {
       if (mcp && args.memorySpecs?.some(spec => isHostActionTool(spec.name))) hostPlugin = await createOpencodeHostPlugin(mcp.nativeConfig)
@@ -197,6 +198,7 @@ export class OpencodeAgentManager {
       const chat: ChatServer = { key, runtime, server, client, mcp, hostPlugin, instance: crypto.randomUUID(), controller, retiredMessages: new Set(), closed: false }
       if (this.disposed || generation !== (this.generations.get(args.chatId) ?? 0)) throw new Error('OpenCode start cancelled')
       this.chats.set(args.chatId, chat)
+      registered = chat
       server.child.once('exit', () => {
         if (!chat.closed) { chat.turn?.fail('OpenCode server exited during the turn'); this.retireServer(args.chatId, chat) }
       })
@@ -232,9 +234,11 @@ export class OpencodeAgentManager {
       } finally { clearTimeout(timer); args.signal?.removeEventListener('abort', abortStartup) }
       return chat
     } catch (error) {
-      mcp?.close(); await server?.close()
-      await hostPlugin?.close()
-      this.chats.delete(args.chatId)
+      if (registered) await this.retireServer(args.chatId, registered)
+      else {
+        mcp?.close()
+        try { await server?.close() } finally { await hostPlugin?.close() }
+      }
       throw error
     }
   }
