@@ -17,7 +17,11 @@ function installWindowLifecycle(app, { confirmDiscard, stopBackend }) {
     get quitting() { return quitting },
     guardWindow(owner) {
       owner.on("close", (event) => {
-        if (owner === installWindow && !quitting) event.preventDefault()
+        if (owner === installWindow && !quitting) {
+          event.preventDefault()
+          // Cocoa can end the setEnabled(false) sheet before delivering close.
+          if (owner.isEnabled()) owner.setEnabled(false)
+        }
       })
       owner.webContents.on("will-prevent-unload", (event) => {
         // Electron keeps the document by default. preventDefault here *allows* the unload.

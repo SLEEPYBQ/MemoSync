@@ -15,7 +15,9 @@ function fixture() {
   owner.webContents = new EventEmitter()
   owner.isDestroyed = () => false
   const actions = []
-  owner.setEnabled = enabled => actions.push(enabled ? "enable" : "disable")
+  owner.enabled = true
+  owner.isEnabled = () => owner.enabled
+  owner.setEnabled = enabled => { owner.enabled = enabled; actions.push(enabled ? "enable" : "disable") }
   app.quit = () => actions.push("quit")
   let answer = false
   let exited = false
@@ -66,11 +68,14 @@ test("a failed automatic install preflight restores the editor and its discard g
   const f = fixture()
   f.lifecycle.beginInstall(f.owner)
   assert.equal(prevented(f.owner, "close"), true)
+  f.owner.enabled = true // Cocoa dismissed the lock sheet on the way to close.
+  assert.equal(prevented(f.owner, "close"), true)
+  assert.equal(f.owner.isEnabled(), false)
   assert.equal(prevented(f.owner.webContents, "will-prevent-unload"), false)
   f.lifecycle.cancelInstall()
   assert.equal(prevented(f.owner, "close"), false)
   assert.equal(prevented(f.owner.webContents, "will-prevent-unload"), false)
-  assert.deepEqual(f.actions, ["disable", "enable", "ask"])
+  assert.deepEqual(f.actions, ["disable", "disable", "enable", "ask"])
   assert.equal(f.lifecycle.quitting, false)
 })
 
