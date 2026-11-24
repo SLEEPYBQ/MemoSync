@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { lstatSync, rmSync, type BigIntStats } from "node:fs"
+import { constants, lstatSync, rmSync, type BigIntStats } from "node:fs"
 import { lstat, mkdir, open, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileTypeFromBuffer } from "file-type"
@@ -17,6 +17,7 @@ const DEFAULT_BINARY_MIME_TYPE = "application/octet-stream"
 const IMAGE_MIME_PREFIX = "image/"
 const TEXT_PLAIN_CONTENT_TYPE = "text/plain; charset=utf-8"
 const MAX_RECENT_DRAFT_UPLOAD_RECEIPTS = 1024
+const DRAFT_VERIFY_CHUNK_BYTES = 256 * 1024
 
 const TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
   [".csv", "text/csv; charset=utf-8"],
@@ -152,6 +153,28 @@ function fileVersion(s: BigIntStats) {
   return s.isFile() && s.ino !== 0n ? `${fileIdentity(s)}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : undefined
 }
 
+// The writer has closed (Windows can publish its last-write time on close).
+// A workspace edit can keep the same inode and length, so neither alone
+// proves this is still our upload. Compare the bytes using one bounded buffer.
+async function verifiedDraftVersion(physicalPath: string, identity: string, expected: Uint8Array) {
+  const before = await lstat(physicalPath, { bigint: true })
+  const version = fileVersion(before)
+  if (!version || fileIdentity(before) !== identity || before.size !== BigInt(expected.byteLength)) return
+
+  const reader = await open(physicalPath, process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    if (fileVersion(await reader.stat({ bigint: true })) !== version) return
+    const chunk = Buffer.allocUnsafe(Math.min(expected.byteLength, DRAFT_VERIFY_CHUNK_BYTES))
+    for (let pos = 0; pos < expected.byteLength;) {
+      const { bytesRead } = await reader.read(chunk, 0, Math.min(chunk.length, expected.byteLength - pos), pos)
+      if (!bytesRead || !chunk.subarray(0, bytesRead).equals(expected.subarray(pos, pos + bytesRead))) return
+      pos += bytesRead
+    }
+    // Keep the checked stamp, never a newer version observed after the read.
+    if (fileVersion(await lstat(physicalPath, { bigint: true })) === version) return version
+  } finally { await reader.close() }
+}
+
 /** Only unadopted POST results use these receipts. Eviction forgets authority, never files. */
 export class DraftUploadReceipts {
   private readonly byPath = new Map<string, DraftUploadWrite>()
@@ -245,9 +268,7 @@ export async function persistProjectUpload(args: {
         await handle.close()
       }
       if (write && identity) {
-        // Windows may publish the last write time on close. Don't stamp a replacement at this path.
-        const info = await lstat(physicalPath, { bigint: true }).catch(() => undefined)
-        if (info && fileIdentity(info) === identity) write.version = fileVersion(info)
+        write.version = await verifiedDraftVersion(physicalPath, identity, args.bytes).catch(() => undefined)
       }
       break
     } catch (error) {
