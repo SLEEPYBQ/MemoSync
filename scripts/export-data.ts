@@ -9,7 +9,7 @@
 // The default bundle deliberately excludes chat transcripts and project logs:
 // they can contain private code and prose. --full is opt-in.
 import { spawnSync } from "node:child_process"
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs"
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir } from "../src/shared/branding"
@@ -92,9 +92,11 @@ function existingAncestor(dir: string): string {
   }
 }
 const destination = existingAncestor(targetDir)
+// POSIX tar stores a source symlink itself; a Windows source may be a junction.
+const sourceStat = process.platform === "win32" ? statSync : lstatSync
 for (const entry of present) {
   const source = path.join(dataDir, entry)
-  if (!statSync(source).isDirectory()) continue
+  if (!sourceStat(source).isDirectory()) continue
   const relative = path.relative(realpathSync.native(source), destination)
   if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
     console.error(`Choose --out outside the exported directory "${entry}".`)

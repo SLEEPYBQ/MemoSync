@@ -30,7 +30,7 @@ describe("data export", () => {
     expect(await readdir(out)).toHaveLength(1)
   })
 
-  test("resolves linked directories before allowing a new nested destination", async () => {
+  test("treats linked sources according to the native archiver", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "memosync-export-link-"))
     tempDirs.push(root)
     const library = path.join(root, "shared-library")
@@ -42,10 +42,40 @@ describe("data export", () => {
       const result = Bun.spawnSync([process.execPath, script, "--out", path.join(base, "new", "output")], {
         env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: data },
       })
-      expect(result.exitCode).not.toBe(0)
-      expect(result.stderr.toString()).toContain("outside the exported directory")
+      if (process.platform === "win32") {
+        expect(result.exitCode).not.toBe(0)
+        expect(result.stderr.toString()).toContain("outside the exported directory")
+      } else {
+        expect(result.exitCode).toBe(0)
+      }
     }
-    expect(await readdir(library)).toEqual([])
+    if (process.platform === "win32") {
+      expect(await readdir(library)).toEqual([])
+    } else {
+      const out = path.join(library, "new", "output")
+      const archives = await readdir(out)
+      expect(archives).toHaveLength(2)
+      for (const archive of archives) {
+        const listing = Bun.spawnSync(["tar", "-tzf", path.join(out, archive)])
+        expect(listing.exitCode).toBe(0)
+        expect(listing.stdout.toString().trim()).toBe("memories")
+      }
+    }
+  })
+
+  test("refuses an output alias into a regular exported directory", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "memosync-export-alias-"))
+    tempDirs.push(root)
+    const memories = path.join(root, "memories")
+    const alias = path.join(root, "external-alias")
+    await mkdir(memories)
+    await symlink(memories, alias, process.platform === "win32" ? "junction" : "dir")
+    const result = Bun.spawnSync([process.execPath, script, "--out", path.join(alias, "new", "backups")], {
+      env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: root },
+    })
+    expect(result.exitCode).not.toBe(0)
+    expect(result.stderr.toString()).toContain("outside the exported directory")
+    expect(await readdir(memories)).toEqual([])
   })
 
   test("preserves both snapshots when run twice in the same minute", async () => {
