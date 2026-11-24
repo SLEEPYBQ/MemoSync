@@ -9,7 +9,7 @@
 // The default bundle deliberately excludes chat transcripts and project logs:
 // they can contain private code and prose. --full is opt-in.
 import { spawnSync } from "node:child_process"
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "node:fs"
+import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir } from "../src/shared/branding"
@@ -79,6 +79,16 @@ const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/T/, "-").sl
 const archiveStem = `memosync-export-${installId}-${stamp}${full ? "-full" : ""}`
 const targetDir = outDir ? path.resolve(outDir) : process.cwd()
 mkdirSync(targetDir, { recursive: true })
+const destination = realpathSync(targetDir)
+for (const entry of present) {
+  const source = path.join(dataDir, entry)
+  if (!lstatSync(source).isDirectory()) continue // tar does not follow symbolic links.
+  const relative = path.relative(realpathSync(source), destination)
+  if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
+    console.error(`Choose --out outside the exported directory "${entry}".`)
+    process.exit(1)
+  }
+}
 const { archivePath, fd } = claimArchive(targetDir, archiveStem)
 
 let tarStatus: number | null = null

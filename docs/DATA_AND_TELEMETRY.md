@@ -75,6 +75,8 @@ the exporter. The archive is written as
 `memosync-export-<install-id>-<timestamp>[-full].tar.gz` in the current
 directory by default (it is gitignored). If that name is taken, the exporter
 adds `-2`, `-3`, and so on before `.tar.gz` rather than overwriting an archive.
+Choose an output directory outside the folders being archived. For example,
+`--full` cannot write into `experiments/`, since it includes that entire folder.
 
 ## Offline chat exports
 

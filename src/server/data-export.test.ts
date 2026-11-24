@@ -11,6 +11,25 @@ afterEach(async () => {
 })
 
 describe("data export", () => {
+  test("does not write an archive into a directory it will recursively export", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "memosync-export-nested-"))
+    tempDirs.push(root)
+    const experiments = path.join(root, "experiments")
+    const out = path.join(experiments, "backups")
+    await mkdir(out, { recursive: true })
+    await writeFile(path.join(experiments, "events.jsonl"), '{"event":"synthetic"}\n')
+    const run = (extra: string[]) => Bun.spawnSync([process.execPath, script, "--out", out, ...extra], {
+      env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: root },
+    })
+    const rejected = run(["--full"])
+    expect(rejected.exitCode).not.toBe(0)
+    expect(rejected.stderr.toString()).toContain("outside the exported directory")
+    expect(await readdir(out)).toEqual([])
+    // Default mode only archives events.jsonl, not the whole experiments directory.
+    expect(run([]).exitCode).toBe(0)
+    expect(await readdir(out)).toHaveLength(1)
+  })
+
   test("preserves both snapshots when run twice in the same minute", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "memosync-export-collision-"))
     tempDirs.push(root)
