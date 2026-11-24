@@ -6,6 +6,10 @@ import path from "node:path"
 const tempDirs: string[] = []
 const script = path.resolve(import.meta.dir, "../../scripts/export-data.ts")
 
+function inspectArchive(...args: string[]) {
+  return Bun.spawnSync(["tar", ...args], { env: { ...process.env, TAR_OPTIONS: "" } })
+}
+
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
@@ -57,7 +61,7 @@ describe("data export", () => {
       expect(archives).toHaveLength(2)
       for (const archive of archives) {
         const extracted = await mkdtemp(path.join(root, "extract-"))
-        const result = Bun.spawnSync(["tar", "-xzf", path.join(out, archive), "-C", extracted])
+        const result = inspectArchive("-xzf", path.join(out, archive), "-C", extracted)
         expect(result.exitCode).toBe(0)
         expect(await readdir(extracted)).toEqual(["memories"])
         expect(await readlink(path.join(extracted, "memories"))).toBe(library)
@@ -103,7 +107,7 @@ describe("data export", () => {
       expect(result.exitCode).toBe(0)
     }
     for (const { archive, settings } of snapshots) {
-      const contents = Bun.spawnSync(["tar", "-xzOf", path.join(outDir, archive), "settings.json"])
+      const contents = inspectArchive("-xzOf", path.join(outDir, archive), "settings.json")
       expect(contents.exitCode).toBe(0)
       expect(contents.stdout.toString()).toBe(settings)
     }
@@ -138,7 +142,7 @@ describe("data export", () => {
     const archives = await readdir(outDir)
     expect(archives).toHaveLength(1)
     const archivePath = path.join(outDir, archives[0]!)
-    const listing = Bun.spawnSync(["tar", "-tzf", archivePath], { stdout: "pipe", stderr: "pipe" })
+    const listing = inspectArchive("-tzf", archivePath)
     expect(listing.exitCode).toBe(0)
     const names = listing.stdout.toString().trimEnd().split(/\r?\n/)
     expect(names).toContain("memory.sqlite")
@@ -146,7 +150,7 @@ describe("data export", () => {
     for (const name of Object.keys(entries).filter((name) => entries[name]!.startsWith("PRIVATE_"))) {
       expect(names.includes(name)).toBe(full)
     }
-    const contents = Bun.spawnSync(["tar", "-xzOf", archivePath], { stdout: "pipe", stderr: "pipe" })
+    const contents = inspectArchive("-xzOf", archivePath)
     expect(contents.exitCode).toBe(0)
     expect(contents.stdout.toString()).toContain("MEMORY_LIBRARY")
     expect(contents.stdout.toString().includes("PRIVATE_")).toBe(full)
