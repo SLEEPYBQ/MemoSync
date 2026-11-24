@@ -9,6 +9,7 @@
   "failedToListDirectory": "无法列出目录",
   "failedToIndexFiles": "无法索引文件",
   "fileTooLargeToOpenInTheEditor": "文件过大，无法在编辑器中打开",
+  "unsupportedEditorEncoding": "此编辑器仅支持不含空字节（NUL）的 UTF-8 文本。请使用其他编辑器打开此文件。",
   "failedToLoadFile": "无法加载文件",
   "failedToSaveFile": "无法保存文件",
   "fileChangedCopyEditsBeforeReload": "磁盘上的文件已更改或删除。重新加载前请先复制您的编辑内容。",

@@ -24,6 +24,38 @@ async function waitForCurrent(target: Page, project: string, expected: string) {
   { project, expected })
 }
 
+describe("FilesPanel text format", () => {
+  test("a CodeMirror edit and a new line preserve the file's CRLFs on save", async () => {
+    page = await harness.openPage("file-editor")
+    await page.route("**/files/**/content?editor=1", route => route.fulfill(route.request().method() === "PUT"
+      ? { json: { data: { saved: true } }, headers: { etag: '"saved"' } }
+      : { body: "one\r\ntwo\r\n", headers: { etag: '"base"' } }))
+    await page.getByRole("button", { name: "note.txt" }).first().click()
+    const editor = page.locator(".cm-content")
+    await editor.press("x")
+    await editor.press("Enter")
+    const [save] = await Promise.all([
+      page.waitForRequest(req => req.method() === "PUT"),
+      page.getByTitle("Save (⌘S)").click(),
+    ])
+    expect(save.postDataBuffer()).toEqual(Buffer.from("x\r\none\r\ntwo\r\n"))
+  })
+
+  test.each([
+    ["en", "This editor only supports UTF-8 text without NUL bytes. Use another editor for this file."],
+    ["zh-CN", "此编辑器仅支持不含空字节（NUL）的 UTF-8 文本。请使用其他编辑器打开此文件。"],
+  ] as const)("explains a refused read in %s without opening an editor", async (language, message) => {
+    page = await harness.openPage("file-editor")
+    await page.evaluate(lang => localStorage.setItem("memosync:resolved-language", lang), language)
+    await page.reload()
+    await page.route("**/files/**/content?editor=1", route => route.fulfill({ status: 415, json: { error: "Unsupported file encoding" } }))
+    await page.getByRole("button", { name: "note.txt" }).first().click()
+    await page.getByRole("button", { name: /retry|重试/i }).waitFor()
+    expect(await page.getByText(message, { exact: true }).count()).toBe(1)
+    expect(await page.locator(".cm-content").count()).toBe(0)
+  })
+})
+
 describe("FilesPanel draft ownership", () => {
   test("preserves project drafts and newer typing while a save resolves after remount", async () => {
     page = await harness.openPage("file-editor")

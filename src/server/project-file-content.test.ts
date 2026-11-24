@@ -69,6 +69,75 @@ describe("project file content route", () => {
     expect(res!.headers.get("Allow")).toBe("GET, PUT")
   })
 
+  it.each([
+    ["Latin-1", Buffer.from("café", "latin1")],
+    ["UTF-16LE with BOM", Buffer.from("\uFEFFtext", "utf16le")],
+    ["UTF-16 without BOM", Buffer.from("text", "utf16le")],
+    ["NUL in otherwise valid UTF-8", Buffer.from("a\0b")],
+  ] as const)("keeps %s available byte-for-byte but refuses to edit it", async (_, bytes) => {
+    const file = join(dir, "hello.ts")
+    writeFileSync(file, bytes)
+    const download = await call("hello.ts")
+    expect(download!.status).toBe(200)
+    expect(download!.headers.get("etag")).toBeNull()
+    expect(Buffer.from(await download!.arrayBuffer())).toEqual(bytes)
+
+    const editor = await call("hello.ts", undefined, true)
+    const tag = `"${createHash("sha256").update(bytes).digest("hex")}"`
+    const saved = await call("hello.ts", { method: "PUT", headers: { "If-Match": tag }, body: "edit" }, true)
+    expect([editor!.status, saved!.status]).toEqual([415, 415])
+    expect(editor!.headers.get("etag")).toBeNull()
+    expect((await editor!.json()).error).toContain("UTF-8")
+    expect(readFileSync(file)).toEqual(bytes)
+  })
+
+  it.each([
+    ["invalid UTF-8", Buffer.from([0xe9])], ["NUL", Buffer.from("a\0b")],
+  ] as const)("rejects %s in an editor PUT without writing", async (_, body) => {
+    const read = await call("hello.ts", undefined, true)
+    const tag = read!.headers.get("etag")!
+    const saved = await call("hello.ts", { method: "PUT", headers: { "If-Match": tag }, body }, true)
+    expect(saved!.status).toBe(415)
+    expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe("export const x = 1\n")
+  })
+
+  it("preserves the UTF-8 BOM across text edits and hashes the saved bytes", async () => {
+    const file = join(dir, "hello.ts")
+    const initial = Buffer.from("\uFEFFcafé ✓\n")
+    writeFileSync(file, initial)
+    const read = await call("hello.ts", undefined, true)
+    const text = await read!.text()
+    expect(text).toBe("café ✓\n")
+    const tag = read!.headers.get("etag")!
+    expect(tag).toBe(`"${createHash("sha256").update(initial).digest("hex")}"`)
+    const edited = text.replace("✓", "中")
+    const saved = await call("hello.ts", { method: "PUT", headers: { "If-Match": tag }, body: edited }, true)
+    const expected = Buffer.from(`\uFEFF${edited}`)
+    expect(saved!.status).toBe(200)
+    expect(readFileSync(file)).toEqual(expected)
+    expect((await saved!.json()).data.size).toBe(expected.length)
+    const nextTag = saved!.headers.get("etag")!
+    expect(nextTag).toBe(`"${createHash("sha256").update(expected).digest("hex")}"`)
+    const cleared = await call("hello.ts", { method: "PUT", headers: { "If-Match": nextTag }, body: "" }, true)
+    expect(cleared!.status).toBe(200)
+    expect(readFileSync(file)).toEqual(Buffer.from("\uFEFF"))
+  })
+
+  it("counts the retained BOM toward the editor's 10 MiB save limit", async () => {
+    const file = join(dir, "hello.ts")
+    writeFileSync(file, "\uFEFFx")
+    const read = await call("hello.ts", undefined, true)
+    const headers = { "If-Match": read!.headers.get("etag")! }
+    const limit = 10 * 1024 * 1024
+    const fits = "x".repeat(limit - Buffer.byteLength("\uFEFF"))
+    const over = await call("hello.ts", { method: "PUT", headers, body: fits + "x" }, true)
+    expect(over!.status).toBe(413)
+    expect(readFileSync(file, "utf8")).toBe("\uFEFFx")
+    const exact = await call("hello.ts", { method: "PUT", headers, body: fits }, true)
+    expect(exact!.status).toBe(200)
+    expect(statSync(file).size).toBe(limit)
+  })
+
   it("compares exact bytes despite equal size and mtime, then supports successive saves", async () => {
     const file = join(dir, "hello.ts")
     const fixedTime = new Date("2024-01-01T00:00:00.000Z")

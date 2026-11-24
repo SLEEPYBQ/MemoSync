@@ -9,6 +9,7 @@
   "failedToListDirectory": "failed to list directory",
   "failedToIndexFiles": "failed to index files",
   "fileTooLargeToOpenInTheEditor": "file too large to open in the editor",
+  "unsupportedEditorEncoding": "This editor only supports UTF-8 text without NUL bytes. Use another editor for this file.",
   "failedToLoadFile": "failed to load file",
   "failedToSaveFile": "failed to save file",
   "fileChangedCopyEditsBeforeReload": "This file changed or was removed on disk. Copy your edits before reloading.",

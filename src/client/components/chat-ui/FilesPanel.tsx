@@ -362,6 +362,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
     for (const [path, buffer] of pending) {
       fetch(`${contentUrl(projectId, path)}?editor=1`)
         .then(async (res) => {
+          if (res.status === 415) throw new Error(t("files:unsupportedEditorEncoding"))
           if (!res.ok) throw new Error(t("files:loadFailedValue0", { v0: res.status }))
           const length = Number(res.headers.get("content-length"))
           if (Number.isFinite(length) && length > MAX_INLINE_TEXT_BYTES) {
@@ -420,6 +421,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         })
         if (!res.ok) {
           if (res.status === 412 || res.status === 404) throw new Error(t("files:fileChangedCopyEditsBeforeReload"))
+          if (res.status === 415) throw new Error(t("files:unsupportedEditorEncoding"))
           const body = (await res.json().catch(() => null)) as HttpUiError | null
           throw new Error(httpUiError(body, t("files:saveFailedValue0", { v0: res.status })))
         }
@@ -987,7 +989,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
             <Loader2 className="size-4 animate-spin" /> {t("common:loading")}</div>
         ) : activeBuffer.status === "error" ? (
           <div className="flex flex-col items-start gap-2 p-4">
-            <p className="text-sm text-muted-foreground">{activeBuffer.error}</p>
+            <p className="text-sm text-muted-foreground">{translateUiText(activeBuffer.error)}</p>
             <button
               type="button"
               onClick={() => updateBuffer(active, { status: "loading", error: undefined })}

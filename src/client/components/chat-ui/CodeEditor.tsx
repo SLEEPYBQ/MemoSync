@@ -127,6 +127,8 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
   useEffect(() => {
     if (!containerRef.current) return
 
+    // CodeMirror accepts CRLF, CR and LF on input. Mixed endings use the first style when edited.
+    const lineEnding = initialValue.match(/\r\n?|\n/)?.[0] ?? "\n"
     const state = EditorState.create({
       doc: initialValue,
       extensions: [
@@ -164,7 +166,7 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
         compartments.language.of([]),
         compartments.readOnly.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChangeRef.current?.(update.state.doc.toString())
+          if (update.docChanged) onChangeRef.current?.(update.state.doc.sliceString(0, undefined, lineEnding))
         }),
       ],
     })

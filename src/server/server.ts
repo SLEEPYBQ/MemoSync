@@ -5,6 +5,7 @@ import { resolveEngineRuntime } from "./model-access/runtime"
 import { renderStandalonePreviewError } from "../shared/standalone-ui-copy"
 import { uiJson } from "../shared/ui-copy"
 import { open, stat, type FileHandle } from "node:fs/promises"
+import { isUtf8 } from "node:buffer"
 import { createHash } from "node:crypto"
 import { homedir } from "node:os"
 import path from "node:path"
@@ -73,6 +74,7 @@ const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
 const MAX_UPLOAD_TOTAL_SIZE_BYTES = 200 * 1024 * 1024
 const MAX_EDITOR_SAVE_BYTES = 10 * 1024 * 1024
+const UTF8_BOM = Buffer.from("\uFEFF")
 const MAX_REQUEST_BODY_SIZE_BYTES = MAX_UPLOAD_TOTAL_SIZE_BYTES + 1024 * 1024
 const STALE_EMPTY_CHAT_PRUNE_INTERVAL_MS = 60 * 1000
 const editorWrites = new Map<string, Promise<void>>()
@@ -97,6 +99,11 @@ async function editorSnapshot(handle: FileHandle): Promise<Buffer | null> {
 
 function editorEtag(bytes: Uint8Array): string {
   return `"${createHash("sha256").update(bytes).digest("hex")}"`
+}
+
+function editorEncodingError(bytes: Buffer): Response | null {
+  if (isUtf8(bytes) && !bytes.includes(0)) return null
+  return uiJson({ error: "The editor requires UTF-8 text without NUL bytes" }, { status: 415 })
 }
 
 async function serializeEditorWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
@@ -1067,11 +1074,11 @@ export async function handleProjectFileContent(
       if (Number.isFinite(declaredSize) && declaredSize > MAX_EDITOR_SAVE_BYTES) {
         return uiJson({ error: "File too large to save" }, { status: 413 })
       }
-      const body = await req.text()
+      const body = editor ? Buffer.from(await req.arrayBuffer()) : await req.text()
       if (Buffer.byteLength(body, "utf8") > MAX_EDITOR_SAVE_BYTES) {
         return uiJson({ error: "File too large to save" }, { status: 413 })
       }
-      if (editor) {
+      if (Buffer.isBuffer(body)) {
         return await serializeEditorWrite(filePath, async () => {
           try {
             const handle = await open(filePath, "r+")
@@ -1083,6 +1090,8 @@ export async function handleProjectFileContent(
               }
               const current = await editorSnapshot(handle)
               if (!current || editorEtag(current) !== expected) return uiJson({ error: "File changed" }, { status: 412 })
+              const encodingError = editorEncodingError(current) ?? editorEncodingError(body)
+              if (encodingError) return encodingError
               const currentPath = await resolveExistingPathWithinRoot(project.localPath, relativePath)
               if (!currentPath.ok) return uiJson({ error: "File not found" }, { status: 404 })
               if (currentPath.path !== filePath) return uiJson({ error: "File changed" }, { status: 412 })
@@ -1091,7 +1100,9 @@ export async function handleProjectFileContent(
               if (currentInfo.dev !== handleInfo.dev || currentInfo.ino !== handleInfo.ino) {
                 return uiJson({ error: "File changed" }, { status: 412 })
               }
-              const bytes = Buffer.from(body, "utf8")
+              // Response.text() consumes the file's leading BOM on open; restore it outside the editable text.
+              const bytes = current.subarray(0, UTF8_BOM.length).equals(UTF8_BOM) ? Buffer.concat([UTF8_BOM, body]) : body
+              if (bytes.length > MAX_EDITOR_SAVE_BYTES) return uiJson({ error: "File too large to save" }, { status: 413 })
               let offset = 0
               while (offset < bytes.length) {
                 const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset, offset)
@@ -1129,6 +1140,8 @@ export async function handleProjectFileContent(
         try {
           const bytes = await editorSnapshot(handle)
           if (!bytes) return uiJson({ error: "File too large to open" }, { status: 413 })
+          const encodingError = editorEncodingError(bytes)
+          if (encodingError) return encodingError
           return new Response(bytes, { headers: {
             "Content-Type": inferProjectFileContentType(relativePath, file.type),
             "Content-Length": String(bytes.byteLength),
