@@ -23,7 +23,6 @@ import type {
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
-  QueuedChatMessage,
   TranscriptEntry,
 } from "../shared/types"
 import { resolveClaudeApiModelId, resolveModelReasoningEffort } from "../shared/types"
@@ -31,6 +30,7 @@ import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
 import { EventStore } from "./event-store"
+import type { StoredQueuedMessage } from "./events"
 import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
@@ -2897,7 +2897,7 @@ export class AgentCoordinator {
   }
 
   private readonly queueDispatches = new Map<string, "fifo" | "steer">()
-  private readonly pendingEnqueues = new Map<string, Promise<QueuedChatMessage>>()
+  private readonly pendingEnqueues = new Map<string, Promise<StoredQueuedMessage>>()
 
   private queuedHead(chatId: string) {
     return this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
@@ -2916,7 +2916,7 @@ export class AgentCoordinator {
    * failed, recovery removes it without ever reinterpreting it as a prompt.
    * Failure is fail-closed: do not jump over the tombstoned head to q2.
    */
-  private async nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null> {
+  private async nextDispatchableQueuedMessage(chatId: string): Promise<StoredQueuedMessage | null> {
     while (true) {
       const head = this.queuedHead(chatId)
       if (!head) return null
@@ -4399,18 +4399,17 @@ export class AgentCoordinator {
     chatId: string,
     content: string,
     attachments: ChatAttachment[],
-    options?: SendMessageOptions,
-    steer = false,
+    options: SendMessageOptions & { hostClientId?: string; steer?: boolean },
   ) {
     if (content.trimStart().startsWith('/')) throw new Error('Native commands require an idle session and its current command catalog')
     const write = this.store.enqueueMessage(chatId, {
       content,
       attachments,
-      provider: options?.provider,
-      model: options?.model,
-      modelOptions: options?.modelOptions,
-      planMode: options?.planMode,
-    })
+      provider: options.provider,
+      model: options.model,
+      modelOptions: options.modelOptions,
+      planMode: options.planMode,
+    }, options.hostClientId)
     // EventStore serializes inserts. Until the last write settles, a fresh send
     // must join the queue even if its first row isn't visible yet.
     this.pendingEnqueues.set(chatId, write)
@@ -4419,7 +4418,7 @@ export class AgentCoordinator {
       this.emitStateChange(chatId)
       // The previous turn may have finished before this insert. Send now owns
       // its targeted dispatch; don't race it with an ordinary FIFO wake.
-      if (!steer) this.wakeQueue(chatId)
+      if (!options.steer) this.wakeQueue(chatId)
       return queued
     } finally {
       if (this.pendingEnqueues.get(chatId) === write) this.pendingEnqueues.delete(chatId)
@@ -4434,7 +4433,7 @@ export class AgentCoordinator {
 
   private async dequeueAndStartQueuedMessage(
     chatId: string,
-    queuedMessage: QueuedChatMessage,
+    queuedMessage: StoredQueuedMessage,
     options?: {
       steered?: boolean
       releaseDispatch?: () => void
@@ -4477,6 +4476,8 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       steered: options?.steered,
       queuedMessageId: queuedMessage.id,
+      // Never borrow the socket that woke the queue or clicked Send now.
+      hostClientId: queuedMessage.hostClientId,
       turnId: queuedMessage.id,
     })
     return this.isConsumedQueueRow(chatId, queuedMessage.id) ? "started" : "missing"
@@ -8036,6 +8037,7 @@ export class AgentCoordinator {
         modelOptions: command.modelOptions,
         effort: command.effort,
         planMode: command.planMode,
+        hostClientId,
       })
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
@@ -8073,13 +8075,15 @@ export class AgentCoordinator {
     return { chatId }
   }
 
-  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>, hostClientId?: string) {
     const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
       modelOptions: command.modelOptions,
       planMode: command.planMode,
-    }, command.steer)
+      steer: command.steer,
+      hostClientId,
+    })
     return { queuedMessageId: queuedMessage.id }
   }
 

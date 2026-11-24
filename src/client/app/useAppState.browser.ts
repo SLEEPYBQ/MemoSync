@@ -14,12 +14,15 @@ interface AppStateFixtureApi {
   historyRequest: (index: number) => { type: string; chatId?: string; beforeCursor?: string } | undefined
   resolveHistory: (index: number, page: unknown) => void
   rejectHistory: (index: number, reason: string) => void
+  ackQueuedSend: () => void
 }
 
 interface RenderedAppState {
   activeChatId: string | null
   snapshotChatId: string | null
   transcriptIds: string[]
+  queuedIds: string[]
+  isProcessing: boolean
   isHistoryLoading: boolean
   hasOlderHistory: boolean
   commandError: string | null
@@ -178,6 +181,35 @@ async function rejectHistory(target: Page, index: number, reason: string) {
 }
 
 describe("mounted useAppState history races", () => {
+  test.each(["ack first", "removed before ack", "dispatched before ack"])("queued send: %s", async timing => {
+    const target = await openFixture()
+    const baseline = snapshot("chat-a", null, false, ["existing"])
+    await emitChat(target, "chat-a", 0, baseline)
+    await target.getByTestId("send-prompt").click()
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })
+      .__appStateFixture.promptContents().length === 2)
+    const ack = () => target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ackQueuedSend())
+    const waitForQueue = (ids: string[]) => target.waitForFunction(expected => {
+      const state: RenderedAppState = JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!)
+      return JSON.stringify(state.queuedIds) === JSON.stringify(expected)
+    }, ids)
+    if (timing === "ack first") { await ack(); await expectTranscript(target, ["existing"]) }
+    const row = { id: "queued-row", content: "content-existing", attachments: [], createdAt: 2 }
+    await emitChat(target, "chat-a", 0, { ...baseline, queuedMessages: [row] })
+    await waitForQueue([row.id])
+    // This snapshot could be a deletion or FIFO dispatch from another window.
+    const dispatched = timing === "dispatched before ack"
+    const messages = dispatched
+      ? [...baseline.messages, { ...baseline.messages[0]!, _id: row.id }]
+      : baseline.messages
+    await emitChat(target, "chat-a", 0, { ...baseline, messages })
+    await waitForQueue([])
+    if (timing !== "ack first") await ack()
+    await expectTranscript(target, dispatched ? ["existing", row.id] : ["existing"])
+    expect((await readState(target)).queuedIds).toEqual([])
+    await target.waitForFunction(() => !JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).isProcessing)
+  })
+
   test("keeps paged transcript identity during streaming while retaining same-ID content changes", async () => {
     const target = await openFixture()
     const recent = snapshot("chat-a", "idx:100", true, numberedIds(100, 125))
@@ -309,6 +341,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-b",
       snapshotChatId: "chat-b",
       transcriptIds: ["b-recent"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,
@@ -342,6 +376,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-b",
       snapshotChatId: "chat-b",
       transcriptIds: ["b-recent"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,
@@ -375,6 +411,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-a",
       snapshotChatId: "chat-a",
       transcriptIds: ["a-current"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,

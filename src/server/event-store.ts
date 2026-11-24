@@ -11,6 +11,7 @@ import {
   type ProjectEvent,
   type QueuedMessageEvent,
   type SnapshotFile,
+  type StoredQueuedMessage,
   type StoreEvent,
   type StoreState,
   type TurnEvent,
@@ -226,11 +227,12 @@ function isValidTranscriptEntry(value: unknown): value is TranscriptEntry {
     && isString(value.kind)
 }
 
-function isValidQueuedChatMessage(value: unknown): value is QueuedChatMessage {
+function isValidQueuedChatMessage(value: unknown): value is StoredQueuedMessage {
   return isObject(value)
     && isString(value.id)
     && isString(value.content)
     && (value.rejection === undefined || value.rejection === "stale_native_command")
+    && (value.hostClientId === undefined || isString(value.hostClientId))
     && Array.isArray(value.attachments)
     && isFiniteNumber(value.createdAt)
     && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi" || value.provider === "opencode")
@@ -1597,9 +1599,9 @@ export class EventStore {
     })
   }
 
-  async enqueueMessage(chatId: string, message: Omit<QueuedChatMessage, "id" | "createdAt"> & Partial<Pick<QueuedChatMessage, "id" | "createdAt">>) {
+  async enqueueMessage(chatId: string, message: Omit<QueuedChatMessage, "id" | "createdAt"> & Partial<Pick<QueuedChatMessage, "id" | "createdAt">>, hostClientId?: string) {
     this.requireChat(chatId)
-    const queuedMessage: QueuedChatMessage = {
+    const queuedMessage: StoredQueuedMessage = {
       id: message.id ?? crypto.randomUUID(),
       content: message.content,
       attachments: [...(message.attachments ?? [])],
@@ -1608,6 +1610,7 @@ export class EventStore {
       model: message.model,
       modelOptions: message.modelOptions,
       planMode: message.planMode,
+      ...(hostClientId ? { hostClientId } : {}),
     }
     const event: QueuedMessageEvent = {
       v: STORE_VERSION,

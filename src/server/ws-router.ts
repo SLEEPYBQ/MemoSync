@@ -1710,6 +1710,7 @@ export function createWsRouter({
             chatId: result.chatId ?? null,
             payloadBytes,
           })
+          if ("queuedMessageId" in result) await broadcastChatAndSidebar(result.chatId)
           return
         }
         case "chat.refreshDiffs": {
@@ -1985,11 +1986,11 @@ export function createWsRouter({
         }
         case "message.enqueue": {
           const result = await enqueueAndMaybeSteer(command, {
-            enqueue: (value) => agent.enqueue(value),
+            enqueue: (value) => agent.enqueue(value, hostActions?.originatingClient(ws)),
             steer: (value) => agent.steer(value),
             isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
             isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
-            remove: (chatId, messageId) => store.removeQueuedMessage(chatId, messageId),
+            remove: (chatId, queuedMessageId) => agent.dequeue({ type: "message.dequeue", chatId, queuedMessageId }),
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)

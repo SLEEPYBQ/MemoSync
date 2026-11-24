@@ -29,10 +29,12 @@ interface AppStateFixtureApi {
   historyRequest: (index: number) => { type: string; chatId?: string; beforeCursor?: string } | undefined
   resolveHistory: (index: number, page: unknown) => void
   rejectHistory: (index: number, reason: string) => void
+  ackQueuedSend: () => void
 }
 
 const subscriptions: ChatSubscription[] = []
 const historyRequests: HistoryRequest[] = []
+let resolveSend: ((result: unknown) => void) | undefined
 
 const fixtureApi: AppStateFixtureApi = {
   transcriptRevision: () => 0,
@@ -56,6 +58,7 @@ const fixtureApi: AppStateFixtureApi = {
   },
   resolveHistory: (index, page) => historyRequests[index]?.resolve(page),
   rejectHistory: (index, reason) => historyRequests[index]?.reject(new Error(reason)),
+  ackQueuedSend: () => resolveSend?.({ chatId: "chat-a", queued: true, queuedMessageId: "queued-row" }),
 }
 
 Object.assign(AppSocket.prototype, {
@@ -106,6 +109,7 @@ Object.assign(AppSocket.prototype, {
         filePathDisplay: "",
       })
     }
+    if (command.type === "chat.send") return new Promise(resolve => { resolveSend = resolve })
     if (command.type !== "chat.loadHistory") return Promise.resolve({})
     return new Promise((resolve, reject) => {
       historyRequests.push({ command, resolve, reject })
@@ -133,6 +137,8 @@ export function mountAppStateFixture(root: HTMLElement) {
       activeChatId: state.activeChatId,
       snapshotChatId: state.chatSnapshot?.runtime.chatId ?? null,
       transcriptIds: state.messages.map((message) => message.id),
+      queuedIds: state.queuedMessages.map(row => row.id),
+      isProcessing: state.isProcessing,
       isHistoryLoading: state.isHistoryLoading,
       hasOlderHistory: state.hasOlderHistory,
       commandError: state.commandError,
@@ -143,6 +149,7 @@ export function mountAppStateFixture(root: HTMLElement) {
         <div data-testid="fixture-ready" />
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
+        <button type="button" data-testid="send-prompt" onClick={() => void state.handleSend("content-existing")}>Send</button>
         <button
           type="button"
           data-testid="load-history"
