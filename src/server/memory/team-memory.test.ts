@@ -145,6 +145,39 @@ test('publish creates and extends topic sections, proposes and unshares', () => 
   expect(parseTeamFile(readFileSync(file, 'utf8')).rules.map(rule => rule.id)).not.toContain(published.team!.id);
 });
 
+const literalDateRule = 'Keep the synthetic fixture (until 2099-01-02)';
+
+test.each(['publish', 'propose'] as const)('%s rejects a literal expiry suffix on an undated rule before writing', action => {
+  const original = '- [T-a123] Check the synthetic fixture\n';
+  writeFileSync(file, original);
+  const item = action === 'publish'
+    ? memory.store.create({ content: literalDateRule, scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' })
+    : memory.store.getById(memory.team.syncProject('P1', project).added[0]!)!;
+  const before = memory.team.decorate(item);
+  let error: string | undefined;
+  try {
+    if (action === 'publish') memory.team.publish(item.id, project, { actor: 'user' });
+    else memory.team.propose(item.id, literalDateRule, project, { actor: 'user' });
+  } catch (e) { error = (e as Error).message; }
+  expect({ error, text: readFileSync(file, 'utf8'), item: memory.team.decorate(memory.store.getById(item.id)!) })
+    .toEqual({ error: expect.stringContaining('(until YYYY-MM-DD)'), text: original, item: before });
+});
+
+test('publish and propose keep a literal date in the text when there is a separate real expiry', () => {
+  const expiresAt = new Date(2099, 0, 3, 23, 59, 59, 999).toISOString();
+  const item = memory.store.create({ content: literalDateRule, expiresAt, scope: 'project', projectId: 'P1', type: 'constraint' }, { actor: 'user' });
+  expect(memory.team.publish(item.id, project, { actor: 'user' })).toMatchObject({ content: literalDateRule, expiresAt });
+  const text = readFileSync(file, 'utf8');
+  expect(text).toContain(`] ${literalDateRule} (until 2099-01-03)\n`);
+
+  writeFileSync(file, text.replace('(until 2099-01-03)', '(until 2099-01-04)'));
+  const content = 'Review the synthetic fixture (until 2099-01-02)';
+  expect(memory.team.propose(item.id, content, project, { actor: 'user' })).toMatchObject({
+    content, expiresAt: new Date(2099, 0, 4, 23, 59, 59, 999).toISOString(),
+  });
+  expect(readFileSync(file, 'utf8')).toContain(`] ${content} (until 2099-01-04)\n`);
+});
+
 test('a proposal preserves notices for other file changes synced in the same pass', () => {
   writeFileSync(file, '- [T-a123] First synthetic rule\n');
   const first = memory.team.syncProject('P1', project).added[0]!;

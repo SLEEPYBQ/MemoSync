@@ -42,6 +42,12 @@ function localDate(value: string): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+function parseRuleBody(raw: string): Pick<TeamRule, 'content' | 'expiresAt'> {
+  const suffix = / \(until (\d{4}-\d{2}-\d{2})\)$/.exec(raw);
+  const expiresAt = suffix && localEndOfDay(suffix[1]!);
+  return suffix && expiresAt ? { content: raw.slice(0, suffix.index).trim(), expiresAt } : { content: raw };
+}
+
 export function parseTeamFile(text: string): { rules: TeamRule[]; conflict: boolean } {
   if (CONFLICT.test(text)) return { rules: [], conflict: true };
   const rules: TeamRule[] = [];
@@ -56,17 +62,18 @@ export function parseTeamFile(text: string): { rules: TeamRule[]; conflict: bool
     const match = RULE.exec(line.trim());
     if (!match || seen.has(match[1]!)) continue;
     seen.add(match[1]!);
-    const raw = match[2]!;
-    const suffix = / \(until (\d{4}-\d{2}-\d{2})\)$/.exec(raw);
-    const expiresAt = suffix ? localEndOfDay(suffix[1]!) : null;
-    const content = suffix && expiresAt ? raw.slice(0, suffix.index).trim() : raw;
-    if (content) rules.push({ id: match[1]!, content, ...(topic ? { topic } : {}), ...(expiresAt ? { expiresAt } : {}) });
+    const body = parseRuleBody(match[2]!);
+    if (body.content) rules.push({ id: match[1]!, ...body, ...(topic ? { topic } : {}) });
   }
   return { rules, conflict: false };
 }
 
 export function serializeRule(rule: TeamRule): string {
-  return `- [${rule.id}] ${rule.content.replace(/\s+/g, ' ').trim()}${rule.expiresAt ? ` (until ${localDate(rule.expiresAt)})` : ''}`;
+  const content = rule.content.replace(/\s+/g, ' ').trim();
+  if (!rule.expiresAt && parseRuleBody(content).expiresAt) {
+    throw new Error('A final " (until YYYY-MM-DD)" sets the expiry in team.md. Rephrase the ending or add a period to keep it as rule text.');
+  }
+  return `- [${rule.id}] ${content}${rule.expiresAt ? ` (until ${localDate(rule.expiresAt)})` : ''}`;
 }
 
 const ruleHash = (rule: TeamRule) => semanticHash([rule.content, rule.topic ?? null, rule.expiresAt ?? null]);
@@ -208,18 +215,19 @@ export class TeamMemory {
     if (!rule.content || looksLikeSecret(rule.content)) throw new Error('A sensitive or empty memory cannot be shared');
     if (ids.size >= 65536) throw new Error('Team file has no available rule ids');
     do { rule.id = `T-${randomBytes(2).toString('hex')}`; } while (ids.has(rule.id));
+    const serialized = serializeRule(rule);
     const section = rule.topic ?? 'General';
     const lines = text.replace(/\s*$/, '').split('\n');
     const heading = lines.findIndex(line => line.trim() === `## ${section}`);
-    if (heading < 0) lines.push('', `## ${section}`, serializeRule(rule));
+    if (heading < 0) lines.push('', `## ${section}`, serialized);
     else {
       let end = heading + 1;
       while (end < lines.length && !lines[end]!.startsWith('## ')) end++;
       while (end > heading + 1 && !lines[end - 1]!.trim()) end--;
-      lines.splice(end, 0, serializeRule(rule));
+      lines.splice(end, 0, serialized);
     }
     this.write(localPath, `${lines.join('\n')}\n`);
-    const canonical = parseTeamFile(`## ${section}\n${serializeRule(rule)}\n`).rules[0]!;
+    const canonical = parseTeamFile(`## ${section}\n${serialized}\n`).rules[0]!;
     this.db.query('INSERT INTO team_memory_links (memory_id, project_id, team_id, content_hash) VALUES (?, ?, ?, ?)')
       .run(item.id, item.projectId, rule.id, ruleHash(canonical));
     if (item.content !== canonical.content || item.detail || (item.topic ?? null) !== (canonical.topic ?? null) || (item.expiresAt ?? null) !== (canonical.expiresAt ?? null)) {
