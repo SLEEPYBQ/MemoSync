@@ -24,7 +24,7 @@ import {
 } from "../ui/context-menu"
 import { cn } from "../../lib/utils"
 import { classifyFilePreview } from "../../lib/filePreview"
-import { fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
+import { detectLineEnding, fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
 import {
   ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename,
 } from "../../lib/filesWorkbench"
@@ -332,6 +332,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           status: needsFetch ? "loading" : "ready",
           original: "",
           current: "",
+          lineEnding: "\n",
           revision: null,
           incarnation: {},
           saving: false,
@@ -375,7 +376,9 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           return { text, revision }
         })
         .then(({ text, revision }) => {
-          if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "ready", original: text, current: text, revision })
+          if (!cancelled) editorStore.patch(path, buffer.incarnation, {
+            status: "ready", original: text, current: text, lineEnding: detectLineEnding(text), revision,
+          })
         })
         .catch((err) => {
           if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "error", error: fetchFailMessage(err, t("files:failedToLoadFile")) })
@@ -1011,6 +1014,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
               key={active}
               fileName={baseName(active)}
               initialValue={activeBuffer.current}
+              lineEnding={activeBuffer.lineEnding}
               onChange={(doc) => updateBufferContent(active, doc)}
               onSave={() => void saveFile(active)}
               reveal={reveal && reveal.path === active ? { line: reveal.line, nonce: reveal.nonce } : undefined}

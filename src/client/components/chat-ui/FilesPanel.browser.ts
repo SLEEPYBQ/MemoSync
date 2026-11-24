@@ -1,5 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Page, Route } from "playwright"
+import type { EventStore } from "../../../server/event-store"
+import { handleProjectFileContent } from "../../../server/server"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
 interface Fixture {
@@ -24,12 +29,23 @@ async function waitForCurrent(target: Page, project: string, expected: string) {
   { project, expected })
 }
 
+// Route just this fixture file through the real content handler, including its raw GET bytes and ETags.
+async function routeDiskFile(target: Page, dir: string) {
+  const store = { getProject: () => ({ id: "project-a", localPath: dir }) } as unknown as EventStore
+  await target.route("**/projects/project-a/files/note.txt/content?editor=1", async route => {
+    const r = route.request()
+    const req = new Request(r.url(), { method: r.method(), headers: r.headers(), body: r.postDataBuffer() })
+    const res = (await handleProjectFileContent(req, new URL(req.url), store))!
+    await route.fulfill({ status: res.status, headers: Object.fromEntries(res.headers), body: Buffer.from(await res.arrayBuffer()) })
+  })
+}
+
 describe("FilesPanel text format", () => {
-  test("a CodeMirror edit and a new line preserve the file's CRLFs on save", async () => {
+  test("a CodeMirror edit keeps the BOM out of the PUT and preserves old and new CRLFs", async () => {
     page = await harness.openPage("file-editor")
     await page.route("**/files/**/content?editor=1", route => route.fulfill(route.request().method() === "PUT"
       ? { json: { data: { saved: true } }, headers: { etag: '"saved"' } }
-      : { body: "one\r\ntwo\r\n", headers: { etag: '"base"' } }))
+      : { body: Buffer.from("\uFEFFone\r\ntwo\r\n"), headers: { etag: '"base"' } }))
     await page.getByRole("button", { name: "note.txt" }).first().click()
     const editor = page.locator(".cm-content")
     await editor.press("x")
@@ -39,6 +55,46 @@ describe("FilesPanel text format", () => {
       page.getByTitle("Save (⌘S)").click(),
     ])
     expect(save.postDataBuffer()).toEqual(Buffer.from("x\r\none\r\ntwo\r\n"))
+  })
+
+  test.each([
+    ["CRLF", "", "\r\n"],
+    ["CR", "", "\r"],
+    ["BOM + CRLF", "\uFEFF", "\r\n"],
+  ])("preserves %s on disk after switching away from a dirty single-line draft", async (_, bom, eol) => {
+    page = await harness.openPage("file-editor")
+    const dir = mkdtempSync(join(tmpdir(), "memosync-files-format-"))
+    const file = join(dir, "note.txt")
+    try {
+      const text = `one${eol}two${eol}`
+      writeFileSync(file, bom + text)
+      await routeDiskFile(page, dir)
+      await page.getByRole("button", { name: "note.txt" }).click()
+      const editor = page.locator(".cm-content")
+      await waitForCurrent(page, "project-a", text)
+      await editor.fill("draft")
+      await waitForCurrent(page, "project-a", "draft")
+      await page.getByRole("button", { name: "other.txt" }).click()
+      await editor.getByText("base a", { exact: true }).waitFor()
+      await page.getByTitle("note.txt", { exact: true }).click()
+      await editor.getByText("draft", { exact: true }).waitFor()
+      await editor.press("x")
+      await editor.press("Enter")
+
+      const [saved] = await Promise.all([
+        page.waitForResponse(res => res.request().method() === "PUT"),
+        page.getByTitle("Save (⌘S)").click(),
+      ])
+      expect(saved.status()).toBe(200)
+      const expected = `x${eol}draft`
+      expect(readFileSync(file)).toEqual(Buffer.from(bom + expected))
+      await page.getByTitle("Unsaved changes — close").waitFor({ state: "hidden" })
+      expect(await buffer(page, "project-a")).toMatchObject({
+        original: expected, current: expected, revision: saved.headers().etag,
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   test.each([

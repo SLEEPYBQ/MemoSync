@@ -1,11 +1,21 @@
 import type { FilePreviewKind } from "./filePreview"
 
+export type LineEnding = "\n" | "\r\n" | "\r"
+
+/** Mixed endings use the first break's style when edited; a file without breaks defaults to LF. */
+export function detectLineEnding(text: string): LineEnding {
+  const first = text.search(/[\r\n]/)
+  if (text[first] === "\r") return text[first + 1] === "\n" ? "\r\n" : "\r"
+  return "\n"
+}
+
 export interface FileBuffer {
   kind: FilePreviewKind
   status: "loading" | "ready" | "error"
   error?: string
   original: string
   current: string
+  lineEnding: LineEnding
   revision: string | null
   incarnation: object
   saving: boolean

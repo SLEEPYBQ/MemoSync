@@ -101,13 +101,13 @@ describe("project file content route", () => {
     expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe("export const x = 1\n")
   })
 
-  it("preserves the UTF-8 BOM across text edits and hashes the saved bytes", async () => {
+  it.each([["LF", "\n"], ["CRLF", "\r\n"]])("preserves the UTF-8 BOM and %s across text edits and hashes the saved bytes", async (_, eol) => {
     const file = join(dir, "hello.ts")
-    const initial = Buffer.from("\uFEFFcafé ✓\n")
+    const initial = Buffer.from(`\uFEFFcafé ✓${eol}`)
     writeFileSync(file, initial)
     const read = await call("hello.ts", undefined, true)
     const text = await read!.text()
-    expect(text).toBe("café ✓\n")
+    expect(text).toBe(`café ✓${eol}`)
     const tag = read!.headers.get("etag")!
     expect(tag).toBe(`"${createHash("sha256").update(initial).digest("hex")}"`)
     const edited = text.replace("✓", "中")
@@ -121,6 +121,34 @@ describe("project file content route", () => {
     const cleared = await call("hello.ts", { method: "PUT", headers: { "If-Match": nextTag }, body: "" }, true)
     expect(cleared!.status).toBe(200)
     expect(readFileSync(file)).toEqual(Buffer.from("\uFEFF"))
+  })
+
+  it.each([
+    ["moved to the front of a BOM-less file", "prefix\uFEFFtext"],
+    ["already present after a file BOM", "\uFEFF\uFEFFtext"],
+  ])("round-trips a content U+FEFF %s across successive saves", async (_, initial) => {
+    const file = join(dir, "hello.ts")
+    writeFileSync(file, initial)
+    const read = await call("hello.ts", undefined, true)
+    let tag = read!.headers.get("etag")!
+    const draft = (await read!.text()).replace("prefix", "") + "!"
+
+    // Keep editing the same draft. A separately reopened view must agree after *each* save.
+    const snapshots = []
+    for (const body of [draft, draft + "?"]) {
+      const saved = await call("hello.ts", { method: "PUT", headers: { "If-Match": tag }, body }, true)
+      expect(saved!.status).toBe(200)
+      const bytes = readFileSync(file)
+      tag = saved!.headers.get("etag")!
+      expect(tag).toBe(`"${createHash("sha256").update(bytes).digest("hex")}"`)
+      const reopened = await call("hello.ts", undefined, true)
+      expect(reopened!.headers.get("etag")).toBe(tag)
+      snapshots.push({ bytes, text: await reopened!.text() })
+    }
+    expect(snapshots).toEqual([
+      { bytes: Buffer.from("\uFEFF\uFEFFtext!"), text: "\uFEFFtext!" },
+      { bytes: Buffer.from("\uFEFF\uFEFFtext!?"), text: "\uFEFFtext!?" },
+    ])
   })
 
   it("counts the retained BOM toward the editor's 10 MiB save limit", async () => {

@@ -106,6 +106,10 @@ function editorEncodingError(bytes: Buffer): Response | null {
   return uiJson({ error: "The editor requires UTF-8 text without NUL bytes" }, { status: 415 })
 }
 
+function startsWithBom(bytes: Buffer): boolean {
+  return bytes.subarray(0, UTF8_BOM.length).equals(UTF8_BOM)
+}
+
 async function serializeEditorWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
   const previous = editorWrites.get(filePath)
   let release!: () => void
@@ -1100,8 +1104,9 @@ export async function handleProjectFileContent(
               if (currentInfo.dev !== handleInfo.dev || currentInfo.ino !== handleInfo.ino) {
                 return uiJson({ error: "File changed" }, { status: 412 })
               }
-              // Response.text() consumes the file's leading BOM on open; restore it outside the editable text.
-              const bytes = current.subarray(0, UTF8_BOM.length).equals(UTF8_BOM) ? Buffer.concat([UTF8_BOM, body]) : body
+              // GET's Response.text() consumes one BOM. Keep a metadata BOM ahead of the draft
+              // if the file had one or if a newly leading content U+FEFF would otherwise be lost.
+              const bytes = startsWithBom(current) || startsWithBom(body) ? Buffer.concat([UTF8_BOM, body]) : body
               if (bytes.length > MAX_EDITOR_SAVE_BYTES) return uiJson({ error: "File too large to save" }, { status: 413 })
               let offset = 0
               while (offset < bytes.length) {
