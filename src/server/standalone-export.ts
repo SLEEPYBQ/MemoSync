@@ -71,7 +71,7 @@ export async function writeStandaloneTranscriptExport(
   const exportRootDir = getProjectExportDir(args.localPath)
   await ensureDir(exportRootDir, { recursive: true })
 
-  const outputDir = await resolveUniqueExportDir(exportRootDir, args.title || args.chatId, now, pathExists)
+  const outputDir = await createUniqueExportDir(exportRootDir, args.title || args.chatId, now, ensureDir)
   await copyDirectory(viewerDistDir, outputDir)
 
   const attachmentsDir = path.join(outputDir, "attachments")
@@ -212,22 +212,23 @@ function rewriteAttachmentAsMetadata(attachment: {
   attachment.contentUrl = ""
 }
 
-async function resolveUniqueExportDir(
+async function createUniqueExportDir(
   exportRootDir: string,
   title: string,
   now: Date,
-  pathExists: (targetPath: string) => Promise<boolean>,
+  mkdirImpl: typeof mkdir,
 ) {
   const baseName = `${sanitizeFileNameSegment(title) || "chat"}-${formatExportTimestamp(now)}`
-  let candidate = path.join(exportRootDir, baseName)
-  let suffix = 2
-
-  while (await pathExists(candidate)) {
-    candidate = path.join(exportRootDir, `${baseName}-${suffix}`)
-    suffix += 1
+  for (let attempt = 1; ; attempt += 1) {
+    const suffix = attempt === 1 ? "" : `-${attempt}`
+    const candidate = path.join(exportRootDir, `${baseName}${suffix}`)
+    try {
+      await mkdirImpl(candidate)
+      return candidate
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+    }
   }
-
-  return candidate
 }
 
 function formatExportTimestamp(value: Date) {
