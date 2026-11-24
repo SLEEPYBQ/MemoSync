@@ -267,7 +267,6 @@ export interface OptimisticUserPrompt {
 }
 
 interface OptimisticProcessingState {
-  optimisticId: string
   scopeId: string
   ackedAt: number | null
 }
@@ -1808,7 +1807,6 @@ export function useAppState(activeChatId: string | null): AppState {
     const signature = getUserPromptSignature(content, attachments)
     const optimisticScopeId = activeChatId ?? NEW_CHAT_OPTIMISTIC_SCOPE
     setOptimisticProcessing({
-      optimisticId,
       scopeId: optimisticScopeId,
       ackedAt: null,
     })
@@ -1875,7 +1873,7 @@ export function useAppState(activeChatId: string | null): AppState {
         }
       }
 
-      const sent = await socket.command<{ chatId?: string; queued?: boolean }>({
+      const sent = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? draft?.chatId,
         projectId: activeChatId || draft ? undefined : projectId ?? undefined,
@@ -1891,18 +1889,10 @@ export function useAppState(activeChatId: string | null): AppState {
       const result = { chatId: sent.chatId ?? draft?.chatId }
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
-      if (sent.queued) {
-        // Only the queue snapshot owns this row, even if it was already
-        // removed or dispatched in another window before our ACK arrived.
-        setOptimisticUserPrompts(current => current.filter(prompt => prompt.id !== optimisticId))
-        sendToStartingProfilesRef.current.delete(clientTraceId)
-      }
       setOptimisticProcessing((current) => {
-        if (current?.optimisticId !== optimisticId) return current
-        if (sent.queued) return null
+        if (!current) return current
         const nextScopeId = !activeChatId && result.chatId ? result.chatId : current.scopeId
         return {
-          optimisticId,
           scopeId: nextScopeId,
           ackedAt: performance.now(),
         }
@@ -1926,7 +1916,7 @@ export function useAppState(activeChatId: string | null): AppState {
       setCommandError(null)
     } catch (error) {
       setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
-      setOptimisticProcessing(current => current?.optimisticId === optimisticId ? null : current)
+      setOptimisticProcessing(null)
       logSendToStartingTrace(sendTrace, "handle_send_failed", {
         error: error instanceof Error ? error.message : String(error),
       })
