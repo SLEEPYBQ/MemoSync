@@ -263,8 +263,10 @@ test("an upload resolving after discard cannot write into the reacquired folder'
   await obsolete.fulfill({ json: { attachments: [{
     id: "late", displayName: "abandoned.txt", kind: "file", absolutePath: "/fixture/alpha/.memosync/uploads/abandoned.txt",
     relativePath: "./.memosync/uploads/abandoned.txt", contentUrl: `${staleUrl}/content`, mimeType: "text/plain", size: 1,
-  }] } })
-  expect(new URL((await cleanup).url()).pathname).toBe(staleUrl)
+  }], cleanupReceipts: { late: "fixture-receipt" } } })
+  const request = await cleanup
+  expect(new URL(request.url()).pathname).toBe(staleUrl)
+  expect(await request.headerValue("X-MemoSync-Upload-Receipt")).toBe("fixture-receipt")
   await pick("alpha", "saved")
   await pick("saved", "alpha")
   await resolveActive(4, "alpha-3")

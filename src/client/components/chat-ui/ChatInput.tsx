@@ -620,14 +620,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             throw new Error(httpUiError(payload, t("chat:uploadFailed")))
           }
 
-          const payload = await response.json() as { attachments: ChatAttachment[] }
+          const payload = await response.json() as { attachments: ChatAttachment[]; cleanupReceipts?: Record<string, string> }
           const uploaded = payload.attachments[0]
           if (!uploaded) {
             throw new Error(t("chat:uploadFailed"))
           }
 
           if (generation !== uploadGenerationRef.current) {
-            void deleteUploadedAttachment(uploaded)
+            void deleteUploadedAttachment(uploaded, payload.cleanupReceipts?.[uploaded.id])
             if (previewUrl) URL.revokeObjectURL(previewUrl)
             return
           }
@@ -635,7 +635,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           if (removedAttachmentIdsRef.current.has(tempId)) {
             removedAttachmentIdsRef.current.delete(tempId)
             if (previewUrl) URL.revokeObjectURL(previewUrl)
-            void deleteUploadedAttachment(uploaded)
+            void deleteUploadedAttachment(uploaded, payload.cleanupReceipts?.[uploaded.id])
             return
           }
 
@@ -1215,10 +1215,12 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
 export const ChatInput = memo(ChatInputInner)
 
-async function deleteUploadedAttachment(attachment: ChatAttachment) {
+async function deleteUploadedAttachment(attachment: ChatAttachment, receipt?: string) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
-  await fetch(deleteUrl, { method: "DELETE" }).catch(() => undefined)
+  await fetch(deleteUrl, {
+    method: "DELETE", headers: receipt ? { "X-MemoSync-Upload-Receipt": receipt } : undefined,
+  }).catch(() => undefined)
 }
 
 /** Only retarget a first-party upload whose actual stored file belongs to this exact workspace. */

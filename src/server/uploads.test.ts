@@ -3,13 +3,17 @@ import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import type { ChatAttachment } from "../shared/types"
+import { EventStore } from "./event-store"
 import { getProjectUploadDir } from "./paths"
 import {
+  handleProjectUpload,
+  handleProjectUploadDelete,
   persistUploadedFiles,
   startMemoSyncServer,
   validateUploadFiles
 } from "./server"
-import { deleteProjectUpload, inferAttachmentContentType, persistProjectUpload } from "./uploads"
+import { deleteProjectUpload, DraftUploadReceipts, inferAttachmentContentType, persistProjectUpload } from "./uploads"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="
@@ -42,6 +46,103 @@ async function startIsolatedServer() {
 }
 
 describe("uploads", () => {
+  async function setupDraft() {
+    const dir = await mkdtemp(path.join(tmpdir(), "memosync-draft-upload-"))
+    tempDirs.push(dir)
+    const store = new EventStore(path.join(dir, "data"))
+    await store.initialize()
+    const receipts = new DraftUploadReceipts()
+    const first = await store.ensureDraft({ localPath: dir })
+    function post(projectId: string, ...files: File[]) {
+      const form = new FormData()
+      for (const file of files) form.append("files", file)
+      const req = new Request(`http://localhost/api/projects/${projectId}/uploads`, { method: "POST", body: form })
+      return handleProjectUpload(req, new URL(req.url), store, receipts)
+    }
+    function remove(projectId: string, name: string, receipt?: string) {
+      const req = new Request(`http://localhost/api/projects/${projectId}/uploads/${encodeURIComponent(name)}`, {
+        method: "DELETE", headers: receipt ? { "X-MemoSync-Upload-Receipt": receipt } : undefined,
+      })
+      return handleProjectUploadDelete(req, new URL(req.url), store, receipts)
+    }
+    return { dir, store, receipts, first, post, remove }
+  }
+
+  test("rolls back just the in-flight batch when its draft project retires between writes", async () => {
+    const { dir, store, receipts, first, post } = await setupDraft()
+    await post(first.projectId, new File(["already delivered"], "note.txt"))
+    const form = new FormData()
+    form.append("files", new File(["first in batch"], "note.txt"))
+    form.append("files", new File(["last in batch"], "last.txt"))
+    // Bun can return fresh File wrappers on each getAll. Gate the actual read
+    // of file #2, after file #1 is on disk, without a timer or a mocked writer.
+    const files = form.getAll("files")
+    const last = files[1] as File
+    const read = last.arrayBuffer.bind(last)
+    const entered = Promise.withResolvers<void>(), resume = Promise.withResolvers<void>()
+    last.arrayBuffer = async () => { entered.resolve(); await resume.promise; return read() }
+    const getAll = form.getAll.bind(form)
+    form.getAll = name => name === "files" ? files : getAll(name)
+    const req = new Request(`http://localhost/api/projects/${first.projectId}/uploads`, { method: "POST" })
+    req.formData = async () => form
+    const result = handleProjectUpload(req, new URL(req.url), store, receipts)
+    const file = (name: string) => Bun.file(path.join(getProjectUploadDir(dir), name))
+    await entered.promise
+    try {
+      expect(await file("note-1.txt").text()).toBe("first in batch")
+      await store.discardDraft(first.chatId)
+      const next = await store.ensureDraft({ localPath: dir })
+      await post(next.projectId, new File(["current draft"], "last.txt"))
+    } finally { resume.resolve() }
+    const response = await result
+    expect(await file("note-1.txt").exists()).toBe(false)
+    expect(await file("last-1.txt").exists()).toBe(false)
+    expect(await file("note.txt").text()).toBe("already delivered")
+    expect(await file("last.txt").text()).toBe("current draft")
+    expect(response?.status).toBe(404)
+  })
+
+  test.each([false, true])("discards only the undelivered result after HTTP finalization and draft retirement (name reused=%s)", async reused => {
+    const { dir, store, first, post, remove } = await setupDraft()
+    await post(first.projectId, new File(["keep this attachment"], "kept.txt"))
+    // POST has finalized, but the old composer hasn't processed its response.
+    const response = await post(first.projectId, new File(["abandoned"], "late.txt"))
+    expect(response?.status).toBe(200)
+    await store.discardDraft(first.chatId)
+    const next = await store.ensureDraft({ localPath: dir })
+    expect(next.projectId).not.toBe(first.projectId)
+    const oldPath = path.join(getProjectUploadDir(dir), "late.txt")
+    expect(await Bun.file(oldPath).text()).toBe("abandoned")
+    if (reused) await remove(next.projectId, "late.txt")
+    const current = await post(next.projectId, new File(["current draft"], "late.txt"))
+    const { attachments: [live] } = await current!.json() as { attachments: ChatAttachment[] }
+    expect(live!.absolutePath === oldPath).toBe(reused)
+
+    const { attachments: [abandoned], cleanupReceipts } = await response!.json() as {
+      attachments: ChatAttachment[]; cleanupReceipts?: Record<string, string>
+    }
+    const receipt = cleanupReceipts?.[abandoned!.id]
+    expect(receipt).toEqual(expect.any(String))
+    expect((await remove(first.projectId, "late.txt"))?.status).toBe(404)
+    expect(await (await remove(first.projectId, "late.txt", receipt))!.json()).toEqual({ ok: !reused })
+    if (!reused) expect(await Bun.file(oldPath).exists()).toBe(false)
+    expect(await Bun.file(live!.absolutePath).text()).toBe("current draft")
+    expect(await Bun.file(path.join(getProjectUploadDir(dir), "kept.txt")).text()).toBe("keep this attachment")
+  })
+
+  test("leaves a draft upload alone if its on-disk contents changed before late cleanup", async () => {
+    const { store, first, post, remove } = await setupDraft()
+    const response = await post(first.projectId, new File(["original"], "Résumé.txt"))
+    const { attachments: [attachment], cleanupReceipts } = await response!.json() as {
+      attachments: ChatAttachment[]; cleanupReceipts: Record<string, string>
+    }
+    await store.discardDraft(first.chatId)
+    await writeFile(attachment!.absolutePath, "edited in the workspace")
+    const removed = await remove(first.projectId, "Résumé.txt", cleanupReceipts[attachment!.id])
+    expect(await removed!.json()).toEqual({ ok: false })
+    expect(await Bun.file(attachment!.absolutePath).text()).toBe("edited in the workspace")
+  })
+
   test("returns a controlled 400 for malformed multipart without writing files", async () => {
     const projectDir = await mkdtemp(path.join(tmpdir(), "memosync-upload-malformed-"))
     tempDirs.push(projectDir)
@@ -97,6 +198,7 @@ describe("uploads", () => {
       })
       expect(response.status).toBe(200)
       const payload = await response.json() as { attachments: Array<{ size: number; absolutePath: string }> }
+      expect(Object.keys(payload)).toEqual(["attachments"]) // Saved projects need no draft cleanup receipts.
       expect(payload.attachments.map((attachment) => attachment.size)).toEqual([6, 0])
       expect(await Bun.file(payload.attachments[0]!.absolutePath).text()).toBe("你好")
       expect(await Bun.file(payload.attachments[1]!.absolutePath).text()).toBe("")

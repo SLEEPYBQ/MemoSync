@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
-import { lstat, mkdir, open, realpath, rm, stat } from "node:fs/promises"
+import { lstatSync, rmSync, type BigIntStats } from "node:fs"
+import { lstat, mkdir, open, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileTypeFromBuffer } from "file-type"
 import type { ChatAttachment } from "../shared/types"
@@ -15,6 +16,7 @@ import {
 const DEFAULT_BINARY_MIME_TYPE = "application/octet-stream"
 const IMAGE_MIME_PREFIX = "image/"
 const TEXT_PLAIN_CONTENT_TYPE = "text/plain; charset=utf-8"
+const MAX_RECENT_DRAFT_UPLOAD_RECEIPTS = 1024
 
 const TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
   [".csv", "text/csv; charset=utf-8"],
@@ -133,21 +135,90 @@ function getUploadCandidateNames(originalName: string) {
   }
 }
 
+export interface DraftUploadWrite {
+  projectId: string
+  localPath: string
+  physicalPath: string
+  storedName: string
+  receipt: string
+  version?: string
+}
+
+function fileIdentity(s: BigIntStats) {
+  return `${s.dev}:${s.ino}:${s.birthtimeNs}`
+}
+
+function fileVersion(s: BigIntStats) {
+  return s.isFile() && s.ino !== 0n ? `${fileIdentity(s)}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : undefined
+}
+
+/** Only unadopted POST results use these receipts. Eviction forgets authority, never files. */
+export class DraftUploadReceipts {
+  private readonly byPath = new Map<string, DraftUploadWrite>()
+  private readonly published = new Map<string, DraftUploadWrite>()
+
+  private forget(write: DraftUploadWrite) {
+    this.published.delete(write.receipt)
+    if (this.byPath.get(write.physicalPath) === write) this.byPath.delete(write.physicalPath)
+  }
+
+  opened(physicalPath: string, localPath: string, projectId: string, batch?: DraftUploadWrite[]) {
+    const previous = this.byPath.get(physicalPath)
+    if (previous) this.forget(previous) // A new exclusive create supersedes any old receipt.
+    if (!batch) return
+    const write: DraftUploadWrite = { projectId, localPath, physicalPath, storedName: path.basename(physicalPath), receipt: randomUUID() }
+    this.byPath.set(physicalPath, write)
+    batch.push(write)
+    return write
+  }
+
+  publish(write: DraftUploadWrite) {
+    if (this.byPath.get(write.physicalPath) === write) {
+      // Bound completed responses, not writes still owned by a running POST.
+      if (this.published.size >= MAX_RECENT_DRAFT_UPLOAD_RECEIPTS) this.forget(this.published.values().next().value!)
+      this.published.set(write.receipt, write)
+    }
+    return write.receipt
+  }
+
+  take(projectId: string, storedName: string, receipt: string) {
+    const write = this.published.get(receipt)
+    if (write?.projectId !== projectId || write.storedName !== storedName) return
+    this.published.delete(receipt)
+    return write
+  }
+
+  async discard(write: DraftUploadWrite) {
+    try {
+      return await deleteProjectUpload({
+        localPath: write.localPath, storedName: write.storedName,
+        beforeDelete: physicalPath => this.byPath.get(write.physicalPath) === write
+          && path.relative(path.dirname(write.physicalPath), path.dirname(physicalPath)) === ""
+          && !!write.version && fileVersion(lstatSync(physicalPath, { bigint: true })) === write.version,
+      })
+    } finally { this.forget(write) }
+  }
+}
+
+export interface UploadTracking {
+  receipts: DraftUploadReceipts
+  draftWrites?: DraftUploadWrite[]
+}
+
 export async function persistProjectUpload(args: {
   projectId: string
   localPath: string
   fileName: string
   bytes: Uint8Array
   fallbackMimeType?: string
+  tracking?: UploadTracking
 }): Promise<ChatAttachment> {
   const resolvedUploadDir = await resolveProjectUploadDirectory(args.localPath, true)
   if (!resolvedUploadDir.ok) {
     throw new Error("Project upload directory is missing or escapes the project root")
   }
-  // Keep the attachment path in the same lexical form the caller supplied;
-  // the directory tree above has already been verified as real, contained
-  // directories, so writing through this path is safe without changing the
-  // public absolutePath shape (for example /var vs /private/var on macOS).
+  // Write in the verified directory, but keep the public attachment path in
+  // the lexical form the caller supplied (e.g. /var vs /private/var on macOS).
   const uploadDir = getProjectUploadDir(args.localPath)
 
   const detectedType = await fileTypeFromBuffer(args.bytes)
@@ -163,11 +234,20 @@ export async function persistProjectUpload(args: {
 
   while (true) {
     try {
-      const handle = await open(absolutePath, "wx")
+      const physicalPath = path.join(resolvedUploadDir.path, storedName)
+      const handle = await open(physicalPath, "wx")
+      const write = args.tracking?.receipts.opened(physicalPath, resolvedUploadDir.root, args.projectId, args.tracking.draftWrites)
+      let identity: string | undefined
       try {
         await handle.writeFile(args.bytes)
+        if (write) identity = await handle.stat({ bigint: true }).then(fileIdentity, () => undefined)
       } finally {
         await handle.close()
+      }
+      if (write && identity) {
+        // Windows may publish the last write time on close. Don't stamp a replacement at this path.
+        const info = await lstat(physicalPath, { bigint: true }).catch(() => undefined)
+        if (info && fileIdentity(info) === identity) write.version = fileVersion(info)
       }
       break
     } catch (error) {
@@ -215,6 +295,7 @@ export function inferProjectFileContentType(fileName: string, fallbackType?: str
 export async function deleteProjectUpload(args: {
   localPath: string
   storedName: string
+  beforeDelete?: (physicalPath: string) => boolean
 }): Promise<boolean> {
   const storedName = args.storedName
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
@@ -224,7 +305,9 @@ export async function deleteProjectUpload(args: {
   const resolved = await resolveExistingProjectUpload(args.localPath, storedName)
   if (!resolved.ok) return false
   try {
-    await rm(resolved.path, { force: true })
+    // No intervening MemoSync delete/recreate between the ownership check and unlink.
+    if (args.beforeDelete && !args.beforeDelete(resolved.path)) return false
+    rmSync(resolved.path, { force: true })
     return true
   } catch {
     return false
