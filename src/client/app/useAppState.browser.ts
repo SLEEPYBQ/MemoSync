@@ -56,8 +56,13 @@ afterAll(async () => {
   await harness?.close()
 })
 
-async function openFixture(beforeNavigation?: (page: Page) => Promise<void>) {
-  page = await harness.openPage("app-state", beforeNavigation)
+async function openFixture(withClock = false) {
+  page = await harness.openPage("app-state")
+  if (withClock) {
+    // Start the tested document with controlled timers, before its React code runs.
+    await page.clock.install({ time: "2026-01-01T00:00:00Z" })
+    await page.reload()
+  }
   await page.waitForFunction(() => {
     const text = document.querySelector('[data-testid="app-state"]')?.textContent
     return Boolean(text && JSON.parse(text).activeChatId === "chat-a")
@@ -279,7 +284,7 @@ describe("mounted useAppState history races", () => {
   })
 
   test.each(["ack first", "removed before ack", "dispatched before ack"])("queued send: %s", async timing => {
-    const target = await openFixture(page => page.clock.install({ time: "2026-01-01T00:00:00Z" }))
+    const target = await openFixture(true)
     const baseline = snapshot("chat-a", null, false, ["existing"])
     await emitChat(target, "chat-a", 0, baseline)
     // React may commit asynchronously; application timers must not advance.
