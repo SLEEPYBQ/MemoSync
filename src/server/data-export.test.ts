@@ -10,7 +10,36 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
 })
 
-describe("data export privacy", () => {
+describe("data export", () => {
+  test("preserves both snapshots when run twice in the same minute", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "memosync-export-collision-"))
+    tempDirs.push(root)
+    const dataDir = path.join(root, "data")
+    const outDir = path.join(root, "out")
+    await mkdir(dataDir)
+    await writeFile(path.join(dataDir, "install-id"), "synthetic-install")
+    const clock = path.join(root, "fixed-clock.ts")
+    await writeFile(clock, 'import { setSystemTime } from "bun:test"\nsetSystemTime(new Date("2026-04-23T12:34:56Z"))\n')
+
+    const stem = "memosync-export-synthetic-install-20260423-1234"
+    const snapshots = [
+      { archive: `${stem}.tar.gz`, settings: '{"revision":1}' },
+      { archive: `${stem}-2.tar.gz`, settings: '{"revision":2}' },
+    ]
+    for (const { settings } of snapshots) {
+      await writeFile(path.join(dataDir, "settings.json"), settings)
+      const result = Bun.spawnSync([process.execPath, "--preload", clock, script, "--out", outDir], {
+        env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: dataDir },
+      })
+      expect(result.exitCode).toBe(0)
+    }
+    for (const { archive, settings } of snapshots) {
+      const contents = Bun.spawnSync(["tar", "-xzOf", path.join(outDir, archive), "settings.json"])
+      expect(contents.exitCode).toBe(0)
+      expect(contents.stdout.toString()).toBe(settings)
+    }
+  })
+
   test.each([false, true])("exports raw historical data only with explicit --full (full=%s)", async (full) => {
     const root = await mkdtemp(path.join(tmpdir(), "memosync-export-privacy-"))
     tempDirs.push(root)
@@ -32,7 +61,7 @@ describe("data export privacy", () => {
       await writeFile(target, contents)
     }
     const result = Bun.spawnSync([process.execPath, script, "--out", outDir, ...(full ? ["--full"] : [])], {
-      env: { PATH: process.env.PATH, HOME: root, DATA_DIR: dataDir },
+      env: { PATH: process.env.PATH, HOME: root, TMPDIR: tmpdir(), DATA_DIR: dataDir },
       stdout: "pipe",
       stderr: "pipe",
     })

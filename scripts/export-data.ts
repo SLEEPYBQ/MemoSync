@@ -9,7 +9,7 @@
 // The default bundle deliberately excludes chat transcripts and project logs:
 // they can contain private code and prose. --full is opt-in.
 import { spawnSync } from "node:child_process"
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 import { getDataDir } from "../src/shared/branding"
@@ -63,16 +63,37 @@ const installId = (() => {
   }
 })()
 
+function claimArchive(dir: string, stem: string) {
+  for (let attempt = 1; ; attempt += 1) {
+    const suffix = attempt === 1 ? "" : `-${attempt}`
+    const archivePath = path.join(dir, `${stem}${suffix}.tar.gz`)
+    try {
+      return { archivePath, fd: openSync(archivePath, "wx") }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
+    }
+  }
+}
+
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/T/, "-").slice(0, 13)
-const archiveName = `memosync-export-${installId}-${stamp}${full ? "-full" : ""}.tar.gz`
+const archiveStem = `memosync-export-${installId}-${stamp}${full ? "-full" : ""}`
 const targetDir = outDir ? path.resolve(outDir) : process.cwd()
 mkdirSync(targetDir, { recursive: true })
-const archivePath = path.join(targetDir, archiveName)
+const { archivePath, fd } = claimArchive(targetDir, archiveStem)
 
-const tar = spawnSync("tar", ["-czf", archivePath, "-C", dataDir, ...present], { stdio: "inherit" })
-if (tar.status !== 0) {
+let tarStatus: number | null = null
+try {
+  // Write through the descriptor we claimed, without reopening the archive path.
+  tarStatus = spawnSync("tar", ["-czf", "-", "-C", dataDir, ...present], {
+    stdio: ["inherit", fd, "inherit"],
+  }).status
+} finally {
+  closeSync(fd)
+  if (tarStatus !== 0) unlinkSync(archivePath)
+}
+if (tarStatus !== 0) {
   console.error("tar failed — archive not created")
-  process.exit(tar.status ?? 1)
+  process.exit(tarStatus ?? 1)
 }
 
 const sizeMb = (statSync(archivePath).size / (1024 * 1024)).toFixed(1)
