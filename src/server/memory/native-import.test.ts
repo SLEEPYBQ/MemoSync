@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   linkSync,
   mkdirSync,
@@ -91,6 +92,19 @@ function unit() {
 }
 function plan(id = "plan") {
   return service.plan({ operationId: id, unitIds: [unit().unitId] });
+}
+function auditRevision(content: string) {
+  const input = { scope: "project", projectId: "p", type: "fact" } as const;
+  const target = memory.store.create({ ...input, content: "Synthetic audit target." }, { actor: "user" });
+  for (let turn = 1; turn <= 3; turn++)
+    memory.store.recordTraceLabel(target.id, "violated", { actor: "agent", sessionId: "synthetic-chat", turn });
+  const draft = memory.store.createRevisionProposal({ ...input, content }, target.id, { actor: "system" }, {
+    traceEvidence: memory.store.recentTraceEvidence(target.id).map(row => row.seq),
+  })!;
+  const withdraw = () => expect(memory.store.recordTraceCorrection(target.id, {
+    sessionId: "synthetic-chat", turn: 2, label: "operational",
+  }).invalidatedIds).toEqual([draft.id]);
+  return { draft, withdraw };
 }
 function accept(op: NativeImportOperation) {
   return service.commit(op.plan.operationId, {
@@ -497,6 +511,29 @@ describe("reviewed writes, lineage and rollback", () => {
     ]);
     expect(service.rollback("plan", true).archived).toHaveLength(1);
     expect(plan("reimport").plan.items[0]!.disposition).toBe("suppressed");
+  });
+  it.each(["marked", "legacy"])("imports text from a %s withdrawn revision as a new memory, not a restore", async (format) => {
+    const content = plan("before-withdrawal").plan.items[0]!.content;
+    const { draft, withdraw } = auditRevision(content);
+    withdraw();
+    if (format === "legacy") {
+      // Earlier versions wrote the same correction + relation, but no archive marker
+      // and a scoped negative receipt for the draft.
+      memory.db.query("UPDATE memory_events SET meta=NULL WHERE memory_id=? AND kind='status'").run(draft.id);
+      const fingerprint = createHash("sha256").update(content.trim().replace(/\s+/g, " ").toLowerCase()).digest("hex");
+      memory.db.query("INSERT INTO memory_revocations(memory_id,fingerprint,scope,owner_id,revoked_at) VALUES(?,?,'project','p',?)")
+        .run(draft.id, fingerprint, draft.updatedAt);
+    }
+    const reviewed = plan("after-withdrawal");
+    expect(reviewed.plan.items[0]!.disposition).toBe("new");
+    const imported = (await accept(reviewed)).accepted[0]!;
+    expect(imported.created).toBe(true);
+    expect(imported.memoryId).not.toBe(draft.id);
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
+    expect(memory.store.getById(imported.memoryId)).toMatchObject({ content, status: "active" });
+
+    memory.store.archive(imported.memoryId, { actor: "user" });
+    expect(plan("after-user-archive").plan.items[0]!.disposition).toBe("suppressed");
   });
   it("honors scoped rejections and shared suppression, including transaction-time rechecks", async () => {
     const op = plan();
@@ -1825,6 +1862,34 @@ describe("removed native claims", () => {
     expect(memory.store.getById(id)).toMatchObject({ content: original.content, status: "active" });
     expect(service.listRemoved().items).toMatchObject([{ operationId: again.receipt.operationId }]);
     expect(service.rollback("first", true).archived).toEqual([id]);
+  });
+  it("does not count a withdrawn revision as a competing target for an undone update", async () => {
+    const { id, changed, removalIds } = await undoUpdate();
+    const { draft, withdraw } = auditRevision(changed.content);
+    withdraw();
+    const again = await service.restoreRemoved({ mode: "import", removalIds });
+    expect(again).toMatchObject({ receipt: { accepted: [{ memoryId: id, updated: true }] } });
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
+  });
+  it.each(["withdrawn", "user-archived"])("does not reactivate an undone exact match that was later %s", async state => {
+    const { draft, withdraw } = auditRevision(plan("source").plan.items[0]!.content);
+    memory.store.acceptRevision(draft.id, { actor: "user" });
+    const exact = plan("exact");
+    expect(exact.plan.items[0]!.disposition).toBe("exact-match");
+    expect((await accept(exact)).accepted[0]).toMatchObject({ memoryId: draft.id, created: false });
+    expect(service.rollback("exact", true).archived).toEqual([]);
+    const removalIds = removedIds();
+    if (state === "withdrawn") {
+      memory.store.revertAutoAccept(draft.id, { actor: "user" });
+      withdraw();
+      const again = await service.restoreRemoved({ mode: "import", removalIds });
+      expect(again).toMatchObject({ receipt: { accepted: [{ created: true, updated: false }] } });
+    } else {
+      memory.store.archive(draft.id, { actor: "user" });
+      await expect(service.restoreRemoved({ mode: "import", removalIds })).rejects.toThrow("suppression");
+      expect(removedIds()).toEqual(removalIds);
+    }
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
   });
   it.each(["edit", "rescope", "event only", "team rule", "unrelated exact match", "newer rollback", "legacy undo"])(
     "leaves the removal and all memories alone when the undone update is stale or ambiguous: %s",

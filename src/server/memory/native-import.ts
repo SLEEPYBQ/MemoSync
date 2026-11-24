@@ -192,6 +192,11 @@ export class NativeMemoryImportService {
       .list({ scope: owner.scope })
       .filter((m) => sameOwner(m, owner) && !this.memory.store.isTeamLinked(m.id));
   }
+  private matchesImportClaim(memory: MemoryItem, claimHash: string): boolean {
+    // A withdrawn proposal is neither a rejection nor a competing import target.
+    return hashClaim(memory.content) === claimHash &&
+      this.memory.store.nonRevokingArchiveReason(memory) !== "trace_correction";
+  }
   private suppressed(
     content: string,
     quoteHash: string,
@@ -211,6 +216,7 @@ export class NativeMemoryImportService {
       ["archived", "discarded"].includes(m.status),
     );
     for (const fragment of fragments) {
+      const fragmentHash = hashClaim(fragment);
       if (
         this.db
           .query(
@@ -221,7 +227,7 @@ export class NativeMemoryImportService {
             owner.scope === "project"
               ? ownerKey({ scope: "project" }, projectPath)
               : ownerKey(owner),
-            hashClaim(fragment),
+            fragmentHash,
             quoteHash,
           ) ||
         (owner.scope === "project" && !owner.projectId
@@ -230,7 +236,7 @@ export class NativeMemoryImportService {
               fragment,
               owner as NativeMemoryOwner,
             )) ||
-        discarded.some((m) => hashClaim(m.content) === hashClaim(fragment))
+        discarded.some((m) => this.matchesImportClaim(m, fragmentHash))
       )
         return true;
     }
@@ -537,9 +543,11 @@ export class NativeMemoryImportService {
   }
   private archivedByRollback({ item, summary }: Removal): string | undefined {
     if (!summary.undone) return undefined;
+    // Undo of an exact match revoked only the link. Any subsequent archive
+    // of that pre-existing memory belongs to its own lifecycle, not this import.
     const row = this.db
       .query(
-        "SELECT memory_id FROM native_v2_links WHERE unit_id=? AND item_key=? AND operation_id=?",
+        "SELECT memory_id FROM native_v2_links WHERE unit_id=? AND item_key=? AND operation_id=? AND decision='revoked' AND created=1",
       )
       .get(item.unitId, item.itemKey, summary.operationId) as {
       memory_id: string | null;
@@ -1108,7 +1116,7 @@ export class NativeMemoryImportService {
                 link.event_seq !== expected.event_seq)
                 conflict("The mapping changed after the update was undone");
               if (this.pool(item.owner).some((m) =>
-                m.id !== expected.memory_id && hashClaim(m.content) === item.claimHash,
+                m.id !== expected.memory_id && this.matchesImportClaim(m, item.claimHash),
               ) || plan.items.some((other) => other !== item && (
                 other.target?.memoryId === expected.memory_id ||
                 (ownerKey(other.owner) === ownerKey(item.owner) && other.claimHash === item.claimHash)
@@ -1156,7 +1164,7 @@ export class NativeMemoryImportService {
             } else if (
               link ||
               this.pool(item.owner).some(
-                (m) => hashClaim(m.content) === item.claimHash,
+                (m) => this.matchesImportClaim(m, item.claimHash),
               )
             )
               conflict("A memory or mapping appeared after review");

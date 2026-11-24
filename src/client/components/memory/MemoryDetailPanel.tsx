@@ -538,7 +538,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         ) : (
-          <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} readOnly={Boolean(item.team || readonly || previewDemo)} />
+          <MemoryHistoryPanel key={item.id} item={item} onReverted={onUpdated} surface={surface} readOnly={Boolean(item.team || readonly || previewDemo)} />
         )}
       </div>
     </div>
