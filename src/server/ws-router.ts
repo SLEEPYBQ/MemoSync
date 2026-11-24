@@ -1573,20 +1573,7 @@ export function createWsRouter({
           return
         }
         case "project.remove": {
-          // Cancel + close any running turns in this project's chats before
-          // hiding it — otherwise an agent keeps executing tools against the
-          // project directory with no UI left to see or stop it (BUG WS-3).
-          // Mirrors chat.delete's cancel + closeChat.
-          for (const chat of [...store.listChatsByProject(command.projectId),
-            ...[...store.state.chatsById.values()].filter(chat => chat.projectId === command.projectId && chat.draft && !chat.deletedAt)]) {
-            if (chat.draft) {
-              await agent.discardDraft(chat.id)
-              continue
-            }
-            await agent.cancel(chat.id)
-            await agent.closeChat(chat.id)
-          }
-          await store.removeProject(command.projectId)
+          await agent.hideProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }

@@ -271,6 +271,7 @@ function createWorld(modelAccess?: ModelAccessRouterService) {
     getPendingTool: () => null,
     getStreamingAssistantTexts: () => new Map(),
     setMemoryDisabled: async (chatId: string, disabled: boolean) => { requireChat(chatId).memoryDisabled = disabled },
+    hideProject: store.removeProject,
     cancel: async () => {},
     closeChat: async () => {},
     forkChat: async (chatId: string) => {

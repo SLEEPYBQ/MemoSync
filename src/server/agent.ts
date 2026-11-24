@@ -1827,7 +1827,7 @@ export class AgentCoordinator {
   private readonly harnessPolicies: HarnessPolicyService
   private readonly policyScopes = new Map<string, PolicyCallScope>()
   private readonly policyApprovals = new Map<string, PolicyCallScope>()
-  private readonly policyChanges = new Set<string>()
+  private readonly policyChanges = new Map<string, { wakeQueue: boolean }>()
   private readonly interactionQueues = new Map<string, Promise<unknown>>()
   private readonly respondingTools = new Set<string>()
   private readonly questionToolIds = new Map<string, string>()
@@ -1959,6 +1959,7 @@ export class AgentCoordinator {
   private readonly startupReservations = new Map<string, StartupReservation>()
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
+  private readonly hidingProjects = new Set<string>()
   private runtimeStopping = false
   private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly memoryWork = new Map<string, number>()
@@ -2880,7 +2881,12 @@ export class AgentCoordinator {
     return applied
   }
 
-  private readonly queueDispatches = new Set<string>()
+  private readonly queueDispatches = new Map<string, "fifo" | "steer">()
+  private readonly pendingEnqueues = new Map<string, Promise<QueuedChatMessage>>()
+
+  private queuedHead(chatId: string) {
+    return this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
+  }
 
   private isConsumedQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
@@ -2897,7 +2903,7 @@ export class AgentCoordinator {
    */
   private async nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null> {
     while (true) {
-      const head = this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
+      const head = this.queuedHead(chatId)
       if (!head) return null
       if (!this.isConsumedQueueRow(chatId, head.id)) {
         if (!head.content.trimStart().startsWith("/")) return head
@@ -4130,8 +4136,42 @@ export class AgentCoordinator {
     return reservation.cancellation
   }
 
-  private isEngineStartBlocked(chatId: string) {
+  private projectForChat(chatId: string) {
+    const chat = this.store.getChat(chatId)
+    return chat && this.store.getProject(chat.projectId)
+  }
+
+  // A reopened project has the same ID but a new record. Pin the old record
+  // across waits that precede a startup reservation (FIFO scans and steering).
+  private isEngineStartBlocked(chatId: string, project = this.projectForChat(chatId)) {
     return this.runtimeStopping || this.closedChats.has(chatId) || this.policyChanges.has(chatId)
+      || !project || Boolean(project.deletedAt) || this.hidingProjects.has(project.id)
+  }
+
+  private projectUnavailable(projectId: string) {
+    return this.hidingProjects.has(projectId) || !this.store.getProject(projectId)
+  }
+
+  async hideProject(projectId: string) {
+    if (this.projectUnavailable(projectId)) throw new Error("Project not found")
+    this.hidingProjects.add(projectId)
+    try {
+      const chats = [...this.store.state.chatsById.values()].filter(chat => chat.projectId === projectId && !chat.deletedAt)
+      // Cancel all admitted turns before waiting on any one provider. Archived
+      // chats and drafts can own native sessions even though the sidebar omits them.
+      const stopped = await Promise.allSettled(chats.map(async chat => {
+        if (chat.draft && await this.discardDraft(chat.id)) return
+        await this.cancel(chat.id)
+        await this.closeChatSession(chat.id)
+      }))
+      const failed = stopped.find(result => result.status === "rejected")
+      if (failed) throw failed.reason
+      await this.store.removeProject(projectId)
+      for (const chat of chats) this.queueDispatches.delete(chat.id)
+    } finally {
+      // A hidden project stays unavailable through the store, until actually reopened.
+      this.hidingProjects.delete(projectId)
+    }
   }
 
   async discardDraft(chatId: string) {
@@ -4139,14 +4179,19 @@ export class AgentCoordinator {
     // first makes this a no-op, so its real session cannot be cancelled here.
     const discarded = await this.store.discardDraft(chatId)
     if (discarded) await this.closeChat(chatId)
+    return discarded
   }
 
   async closeChat(chatId: string) {
+    this.closedChats.add(chatId)
+    await this.closeChatSession(chatId)
+  }
+
+  private async closeChatSession(chatId: string) {
     this.hostActions?.revokeChat(chatId, "Chat closed")
     this.commandRegistry.unbind(chatId)
     this.endPolicyTurn(chatId)
     this.cancelIdleClose(chatId)
-    this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
     this.cancelAudits(chatId)
     this.disposeMemoryBranches(chatId)
@@ -4340,10 +4385,10 @@ export class AgentCoordinator {
     content: string,
     attachments: ChatAttachment[],
     options?: SendMessageOptions,
-    channel: "chat.send" | "message.enqueue" = "chat.send",
+    steer = false,
   ) {
     if (content.trimStart().startsWith('/')) throw new Error('Native commands require an idle session and its current command catalog')
-    const queued = await this.store.enqueueMessage(chatId, {
+    const write = this.store.enqueueMessage(chatId, {
       content,
       attachments,
       provider: options?.provider,
@@ -4351,8 +4396,25 @@ export class AgentCoordinator {
       modelOptions: options?.modelOptions,
       planMode: options?.planMode,
     })
-    this.emitStateChange(chatId)
-    return queued
+    // EventStore serializes inserts. Until the last write settles, a fresh send
+    // must join the queue even if its first row isn't visible yet.
+    this.pendingEnqueues.set(chatId, write)
+    try {
+      const queued = await write
+      this.emitStateChange(chatId)
+      // The previous turn may have finished before this insert. Send now owns
+      // its targeted dispatch; don't race it with an ordinary FIFO wake.
+      if (!steer) this.wakeQueue(chatId)
+      return queued
+    } finally {
+      if (this.pendingEnqueues.get(chatId) === write) this.pendingEnqueues.delete(chatId)
+    }
+  }
+
+  private wakeQueue(chatId: string) {
+    void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+      this.reportBackgroundError?.(`[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`)
+    })
   }
 
   private async dequeueAndStartQueuedMessage(
@@ -4405,15 +4467,7 @@ export class AgentCoordinator {
     return this.isConsumedQueueRow(chatId, queuedMessage.id) ? "started" : "missing"
   }
 
-  /**
-   * After a restart, in-memory run state (activeTurns/pendingPreviews/
-   * startingChats) is empty, but queued messages persisted to disk are replayed
-   * back into the store. Nothing re-triggers them: send() only consults the
-   * in-memory maps, so a chat that was mid-run at restart leaves its queue stuck
-   * forever, and a fresh message jumps ahead of it, garbling turn order (BUG
-   * CORE-2). Re-prime the pipeline by starting the head of every non-running
-   * chat's queue; each turn's completion drains the next as usual.
-   */
+  /** Resume persisted queues after a restart without waiting for a fresh send. */
   async drainOrphanedQueues(): Promise<void> {
     for (const chatId of this.store.getChatIdsWithQueuedMessages()) {
       if (
@@ -4432,27 +4486,38 @@ export class AgentCoordinator {
   }
 
   private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
+    const project = this.projectForChat(chatId)
+    if (!project && this.queuedHead(chatId)) throw new Error("Project not found")
+    const startBlocked = () => {
+      if (project?.deletedAt) return true
+      const change = this.policyChanges.get(chatId)
+      if (change) {
+        change.wakeQueue ||= Boolean(this.queuedHead(chatId))
+        return true
+      }
+      return this.isEngineStartBlocked(chatId, project)
+    }
+    if (startBlocked() || this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
       || this.activeTurns.has(chatId) || this.startingChats.has(chatId)
-      || this.hasPendingPreviewActivity(chatId) || this.isEngineStartBlocked(chatId)) return false
+      || this.hasPendingPreviewActivity(chatId)) return false
 
-    this.queueDispatches.add(chatId)
+    this.queueDispatches.set(chatId, "fifo")
     let ownsDispatch = true
     const releaseDispatch = () => {
       if (!ownsDispatch) return
       ownsDispatch = false
-      this.queueDispatches.delete(chatId)
+      if (!project?.deletedAt) this.queueDispatches.delete(chatId)
     }
     try {
-      while (!this.isEngineStartBlocked(chatId)) {
+      while (!startBlocked()) {
         const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
-        if (!nextQueuedMessage || this.isEngineStartBlocked(chatId)) return false
+        if (!nextQueuedMessage || startBlocked()) return false
         const outcome = await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage, { releaseDispatch })
         if (outcome === "started") return true
         if (this.activeTurns.has(chatId) || this.startingChats.has(chatId) || this.hasPendingPreviewActivity(chatId)) return false
         if (!ownsDispatch) {
-          if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)) return false
-          this.queueDispatches.add(chatId)
+          if (project?.deletedAt || this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)) return false
+          this.queueDispatches.set(chatId, "fifo")
           ownsDispatch = true
         }
       }
@@ -4484,6 +4549,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(args.chatId)
+    if (this.projectUnavailable(chat.projectId)) throw new Error("Project not found")
     args.memoryState ??= resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
     if (!args.memoryPreviewSettings) {
       const settings = this.getMemoryPreviewSettings()
@@ -7761,8 +7827,9 @@ export class AgentCoordinator {
     const selected = this.executionPolicyFor(command.chatId, command.policy.engine)
     this.harnessPolicies.snapshot(command.chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[command.policy.engine], this.harnessRuntimeVersion(command.policy.engine, lastEngineExecutable(command.policy.engine)?.version))
     const running = this.harnessNativeRuntime(command.chatId, command.policy.engine) !== "absent"
-    const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
-    this.policyChanges.add(command.chatId)
+    let state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
+    const change = { wakeQueue: false }
+    this.policyChanges.set(command.chatId, change)
     this.cancelAutomaticCapture(command.chatId, 'execution-policy-changed')
     this.cancelAudits(command.chatId)
     this.disposeMemoryBranches(command.chatId)
@@ -7779,11 +7846,10 @@ export class AgentCoordinator {
       await this.opencodeManager.closeChat(command.chatId)
       this.parentLaunches.delete(command.chatId)
       // Some adapters stop asynchronously. A remaining live handle is still pending retirement.
-      const retired = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
+      state = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
         ? this.harnessPolicies.state(command.chatId, command.policy.engine)
         : this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
-      await this.store.setExecutionPolicyState(command.chatId, retired)
-      return retired
+      await this.store.setExecutionPolicyState(command.chatId, state)
     } catch (error) {
       this.releasePolicyInteraction(command.chatId)
       throw error
@@ -7791,6 +7857,9 @@ export class AgentCoordinator {
       this.policyChanges.delete(command.chatId)
       this.emitStateChange(command.chatId)
     }
+    // Replay a missed wake, not an idle queue left parked by an explicit Stop.
+    if (change.wakeQueue) this.wakeQueue(command.chatId)
+    return state
   }
 
   private bindPolicyQuestion(scope: PolicyCallScope, tool: HarnessToolRequest["tool"]): HarnessToolRequest["tool"] {
@@ -7902,6 +7971,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(chatId)
+    if (this.projectUnavailable(chat.projectId)) throw new Error("Project not found")
     const provider = this.resolveProvider(command, chat.provider)
     if (this.commandRegistry.isRunning(chatId)) throw new Error('Native context control is running')
     if (chat.draft && command.memoryDisabled !== undefined) {
@@ -7931,13 +8001,15 @@ export class AgentCoordinator {
       // as well as chat/sidebar subscribers, including native slash submissions.
       this.emitStateChange()
     }
-    const dispatchingQueue = this.queueDispatches.has(chatId)
     if (
-      dispatchingQueue
+      this.queueDispatches.has(chatId)
       || this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
+      || this.pendingEnqueues.has(chatId)
+      || this.queuedHead(chatId)
     ) {
+      if (nativeCommandValidated) throw new Error('Native commands require an idle session and its current command catalog')
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
@@ -7945,14 +8017,6 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
       })
-      if (dispatchingQueue) {
-        // The dispatcher may have reached the end before this enqueue landed.
-        void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
-          this.reportBackgroundError?.(
-            `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        })
-      }
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
@@ -7995,7 +8059,7 @@ export class AgentCoordinator {
       model: command.model,
       modelOptions: command.modelOptions,
       planMode: command.planMode,
-    }, "message.enqueue")
+    }, command.steer)
     return { queuedMessageId: queuedMessage.id }
   }
 
@@ -8016,7 +8080,8 @@ export class AgentCoordinator {
       await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
       return
     }
-    if (this.queueDispatches.has(command.chatId)) throw new Error("Queued messages are being recovered")
+    const dispatch = this.queueDispatches.get(command.chatId)
+    if (dispatch) throw new Error(dispatch === "steer" ? "Chat is still running" : "Queued messages are being recovered")
 
     logClaudeSteer("steer_requested", {
       chatId: command.chatId,
@@ -8034,7 +8099,18 @@ export class AgentCoordinator {
       || this.startingChats.has(command.chatId)
 
     if (isBusy()) {
-      await this.cancel(command.chatId, { hideInterrupted: true })
+      const project = this.projectForChat(command.chatId)
+      if (!project || this.hidingProjects.has(project.id)) throw new Error("Project not found")
+      // cancel releases the active turn before its native interrupt settles.
+      // Keep that gap owned by Send now rather than a concurrent FIFO wake.
+      this.queueDispatches.set(command.chatId, "steer")
+      try {
+        await this.cancel(command.chatId, { hideInterrupted: true })
+      } finally {
+        if (!project.deletedAt) this.queueDispatches.delete(command.chatId)
+        this.updateIdleClose(command.chatId)
+      }
+      if (this.isEngineStartBlocked(command.chatId, project)) return
     }
 
     logClaudeSteer("steer_after_cancel", {

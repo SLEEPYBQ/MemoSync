@@ -229,13 +229,14 @@ describe("idle provider sessions", () => {
     }
   })
 
-  test("queued messages pin the session until removed and restart the full idle wait", async () => {
+  test("a parked queue row pins the session until removed and restarts the full idle wait", async () => {
     const h = await harness()
     await h.send(); await h.finish()
-    const queued = await h.coordinator.enqueue({ type: "message.enqueue", chatId: h.chat.id, content: "queued" })
+    // Start with a persisted, parked row. A new enqueue to an idle chat now starts a turn.
+    const queued = await h.store.enqueueMessage(h.chat.id, { content: "queued", attachments: [] })
     await advance(TIMEOUT * 2)
     expect(h.closes()).toBe(0)
-    await h.coordinator.dequeue({ type: "message.dequeue", chatId: h.chat.id, queuedMessageId: queued.queuedMessageId })
+    await h.coordinator.dequeue({ type: "message.dequeue", chatId: h.chat.id, queuedMessageId: queued.id })
     await advance(TIMEOUT - 1); expect(h.closes()).toBe(0)
     await advance(1); expect(h.closes()).toBe(1)
   })
