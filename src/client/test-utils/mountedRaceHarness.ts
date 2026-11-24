@@ -31,7 +31,7 @@ export async function startMountedRaceHarness() {
   let uploadCount = 0
 
   return {
-    async openPage(view: MountedRaceView): Promise<Page> {
+    async openPage(view: MountedRaceView, beforeNavigation?: (page: Page) => Promise<void>): Promise<Page> {
       uploadCount = 0
       const page = await browser.newPage()
       page.setDefaultTimeout(5_000)
@@ -81,6 +81,7 @@ export async function startMountedRaceHarness() {
           body: "{}",
         })
       })
+      await beforeNavigation?.(page)
       await page.goto(`${baseUrl}/?view=${view}`)
       await page.getByTestId("fixture-ready").waitFor({ state: "attached" })
       return page

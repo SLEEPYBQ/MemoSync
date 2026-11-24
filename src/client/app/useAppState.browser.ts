@@ -56,8 +56,8 @@ afterAll(async () => {
   await harness?.close()
 })
 
-async function openFixture() {
-  page = await harness.openPage("app-state")
+async function openFixture(beforeNavigation?: (page: Page) => Promise<void>) {
+  page = await harness.openPage("app-state", beforeNavigation)
   await page.waitForFunction(() => {
     const text = document.querySelector('[data-testid="app-state"]')?.textContent
     return Boolean(text && JSON.parse(text).activeChatId === "chat-a")
@@ -279,13 +279,24 @@ describe("mounted useAppState history races", () => {
   })
 
   test.each(["ack first", "removed before ack", "dispatched before ack"])("queued send: %s", async timing => {
-    const target = await openFixture()
+    const target = await openFixture(page => page.clock.install({ time: "2026-01-01T00:00:00Z" }))
     const baseline = snapshot("chat-a", null, false, ["existing"])
     await emitChat(target, "chat-a", 0, baseline)
+    // React may commit asynchronously; application timers must not advance.
+    // In particular the ordinary send ACK's 300 ms idle fallback cannot help.
+    await target.clock.pauseAt("2026-01-01T01:00:00Z")
     await target.getByTestId("send-prompt").click()
     await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })
       .__appStateFixture.promptContents().length === 2)
-    const ack = () => target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ackQueuedSend())
+    const ack = async () => {
+      expect((await readState(target)).isProcessing).toBe(true)
+      const atAck = await target.evaluate(() => {
+        (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ackQueuedSend()
+        return performance.now()
+      })
+      await target.waitForFunction(() => !JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).isProcessing)
+      expect(await target.evaluate(() => performance.now())).toBe(atAck)
+    }
     const waitForQueue = (ids: string[]) => target.waitForFunction(expected => {
       const state: RenderedAppState = JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!)
       return JSON.stringify(state.queuedIds) === JSON.stringify(expected)
@@ -304,7 +315,6 @@ describe("mounted useAppState history races", () => {
     if (timing !== "ack first") await ack()
     await expectTranscript(target, dispatched ? ["existing", row.id] : ["existing"])
     expect((await readState(target)).queuedIds).toEqual([])
-    await target.waitForFunction(() => !JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).isProcessing)
   })
 
   test("keeps paged transcript identity during streaming while retaining same-ID content changes", async () => {
