@@ -55,7 +55,7 @@ jobs:
       - name: Package native desktop
         run: bun run desktop:package
       - name: Test desktop host policies and lifecycle
-        run: node --test desktop/policy.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
+        run: node --test desktop/policy.test.cjs desktop/window-lifecycle.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
       - name: Test release asset validation
         run: bun test desktop/release-assets.test.ts
       - name: Test staged desktop backend

@@ -4,6 +4,7 @@ const { randomBytes } = require("node:crypto")
 const { createInterface } = require("node:readline")
 const path = require("node:path")
 const { trackBackendProcess, stopBackendForUpdate } = require("./backend-lifecycle.cjs")
+const { installWindowLifecycle } = require("./window-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
 const { canGrantDesktopPermission, contentWindowOptions, installNavigationHandlers, isMainAppFrame: isTrustedMainFrame } = require("./navigation.cjs")
 const { openUiPreferences } = require("./ui-preferences.cjs")
@@ -17,12 +18,32 @@ let backend
 let backendLifecycle
 let mainWindow
 let origin
-let quitting = false
-let stopped = false
 let desktopSession
 let uiPreferences
 let updatePreparing = false
 const contentWindows = new Set()
+
+const lifecycle = installWindowLifecycle(app, {
+  confirmDiscard(owner) {
+    if (owner.isMinimized()) owner.restore()
+    if (!owner.isVisible()) owner.show()
+    const chinese = app.getLocale().toLowerCase().startsWith("zh")
+    return dialog.showMessageBoxSync(owner, {
+      type: "warning",
+      message: chinese ? "放弃未保存的文件更改？" : "Discard unsaved file changes?",
+      buttons: chinese ? ["取消", "放弃更改"] : ["Cancel", "Discard changes"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+    }) === 1
+  },
+  stopBackend() {
+    if (!backendLifecycle || backendLifecycle.stopped) return
+    const timer = setTimeout(() => { backend.kill("SIGKILL") }, 20_000)
+    if (!backend.stdin.writableEnded) backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
+    return backendLifecycle.waitForStop().finally(() => clearTimeout(timer))
+  },
+})
 
 // The page runs up to the top edge, with the traffic lights centred in its 48px top band.
 const MAC_WINDOW_OPTIONS = process.platform === "darwin"
@@ -60,7 +81,7 @@ async function openExternal(url) {
 }
 
 function createWindow() {
-  if (!origin || quitting) return
+  if (!origin || lifecycle.quitting) return
   mainWindow = new BrowserWindow({
     title: "MemoSync",
     width: 1320,
@@ -81,6 +102,7 @@ function createWindow() {
       webviewTag: false,
     },
   })
+  lifecycle.guardWindow(mainWindow)
   installNavigationHandlers(mainWindow.webContents, origin, "main", {
     openContent: (url) => { createContentWindow(url) },
     openExternal: (url) => { void openExternal(url) },
@@ -97,7 +119,7 @@ function createWindow() {
   }
   mainWindow.on("closed", () => { mainWindow = undefined })
   mainWindow.loadURL(origin).catch((error) => {
-    if (!quitting) {
+    if (!lifecycle.quitting) {
       dialog.showErrorBox("MemoSync failed to load", error.message)
       app.quit()
     }
@@ -105,7 +127,7 @@ function createWindow() {
 }
 
 function createContentWindow(url) {
-  if (!origin || quitting || !desktopSession) return
+  if (!origin || lifecycle.quitting || !desktopSession) return
   const contentWindow = new BrowserWindow(contentWindowOptions(desktopSession))
   contentWindows.add(contentWindow)
   installNavigationHandlers(contentWindow.webContents, origin, "content", {
@@ -138,14 +160,12 @@ function startBackend(password) {
     backend.stdin.on("error", () => {})
     backend.once("error", (error) => {
       clearTimeout(timeout)
-      stopped = true
       reject(error)
     })
     backend.once("exit", (code) => {
       clearTimeout(timeout)
-      stopped = true
       if (!ready) reject(new Error(`The local backend exited (${code}). Check that no other MemoSync instance is using your data directory.`))
-      else if (!quitting && !updatePreparing) {
+      else if (!lifecycle.quitting && !updatePreparing) {
         dialog.showErrorBox("MemoSync backend stopped", "The local backend stopped unexpectedly. Quit and reopen MemoSync.")
         app.quit()
       }
@@ -193,17 +213,6 @@ else {
   })
   app.on("activate", () => { if (!mainWindow) createWindow() })
   app.on("window-all-closed", () => { if (process.platform !== "darwin") app.quit() })
-  app.on("before-quit", (event) => {
-    for (const contentWindow of contentWindows) contentWindow.close()
-    if (!backend || stopped || backendLifecycle.stopped) return
-    event.preventDefault()
-    if (quitting) return
-    quitting = true
-    mainWindow?.hide()
-    const timer = setTimeout(() => { backend.kill("SIGKILL") }, 20_000)
-    void backendLifecycle.waitForStop().then(() => { clearTimeout(timer); app.quit() })
-    backend.stdin.end(`${JSON.stringify({ type: "stop" })}\n`)
-  })
   function isMainAppFrame(event) {
     return isTrustedMainFrame(event, mainWindow, origin)
   }
@@ -266,8 +275,8 @@ else {
       shell,
       prepareInstall: async () => {
         updatePreparing = true
-        await stopBackendForUpdate(backend, backendLifecycle)
-        quitting = true
+        try { await stopBackendForUpdate(backend, backendLifecycle) }
+        finally { lifecycle.finishInstall() } // quitAndInstall, or relaunch after a shutdown error
       },
     })
     const removeUpdateHandlers = installUpdateHandlers({
@@ -275,23 +284,26 @@ else {
       getMainWindow: () => mainWindow,
       getOrigin: () => origin,
       confirmInstall: async () => {
-        if (!mainWindow || mainWindow.isDestroyed()) return false
+        const owner = mainWindow
+        if (!owner || owner.isDestroyed()) return false
         const chinese = app.getLocale().toLowerCase().startsWith("zh")
-        const { response } = await dialog.showMessageBox(mainWindow, {
+        const { response } = await dialog.showMessageBox(owner, {
           type: "question",
           title: chinese ? "安装 MemoSync 更新" : "Install MemoSync update",
           message: chinese ? "现在重启并安装更新？" : "Restart and install the update now?",
-          detail: chinese ? "正在运行的任务将会停止。请先完成需要保留的工作。" : "Running tasks will stop. Finish any work you need before restarting.",
+          detail: chinese ? "正在运行的任务将会停止，未保存的文件更改将被放弃。" : "Running tasks will stop and unsaved file changes will be discarded.",
           buttons: chinese ? ["取消", "重启并安装"] : ["Cancel", "Restart and install"],
           defaultId: 0,
           cancelId: 0,
           noLink: true,
         })
-        return response === 1
+        return response === 1 && owner === mainWindow && !owner.isDestroyed()
       },
     })
     const recoverFromInstallError = updater.onChange((snapshot) => {
-      if (snapshot.status !== "error" || !updatePreparing) return
+      if (snapshot.status === "installing" && snapshot.installMode === "automatic") lifecycle.beginInstall(mainWindow)
+      if (snapshot.status !== "error") return
+      if (!updatePreparing) { lifecycle.cancelInstall(); return }
       updatePreparing = false
       dialog.showErrorBox("MemoSync update failed", `${snapshot.error}\n\nMemoSync will reopen. Your existing data has not been removed.`)
       app.relaunch()
