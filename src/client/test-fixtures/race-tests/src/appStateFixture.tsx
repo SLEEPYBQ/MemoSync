@@ -40,6 +40,7 @@ interface AppStateFixtureApi {
   projectCount: () => number
   resolveProject: (index: number, projectId: string) => void
   ask: () => Promise<string>
+  ackQueuedSend: () => void
 }
 
 const subscriptions: ChatSubscription[] = []
@@ -80,6 +81,7 @@ const fixtureApi: AppStateFixtureApi = {
   projectCount: () => projectRequests.length,
   resolveProject: (index, projectId) => projectRequests[index]?.resolve({ projectId }),
   ask: async () => "",
+  ackQueuedSend: () => sendRequests[0]?.resolve({ chatId: "chat-a", queued: true, queuedMessageId: "queued-row" }),
 }
 
 Object.assign(AppSocket.prototype, {
@@ -178,6 +180,8 @@ export function mountAppStateFixture(root: HTMLElement) {
       activeChatId: state.activeChatId,
       snapshotChatId: state.chatSnapshot?.runtime.chatId ?? null,
       transcriptIds: state.messages.map((message) => message.id),
+      queuedIds: state.queuedMessages.map(row => row.id),
+      isProcessing: state.isProcessing,
       isHistoryLoading: state.isHistoryLoading,
       hasOlderHistory: state.hasOlderHistory,
       commandError: state.commandError,
@@ -189,6 +193,7 @@ export function mountAppStateFixture(root: HTMLElement) {
         <output data-testid="diff-branch">{state.chatDiffSnapshot?.branchName ?? ""}</output>
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
+        <button type="button" data-testid="send-prompt" onClick={() => void state.handleSend("content-existing")}>Send</button>
         <button
           type="button"
           data-testid="load-history"
