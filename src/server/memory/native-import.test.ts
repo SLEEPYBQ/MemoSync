@@ -851,6 +851,13 @@ describe("scope proposals and reviewed project homes", () => {
     expect(service.rollback("move", true).restored).toEqual([id]);
     expect(memory.store.getById(id)!.projectId).toBe("p");
     expect(plan("after").plan.items[0]!.disposition).toBe("unchanged");
+    const again = await service.restoreRemoved({
+      mode: "import", removalIds: service.listRemoved().items.map((r) => r.removalId),
+    });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    expect(memory.store.getById(id)!.scope).toBe("personal");
+    expect(service.rollback(again.receipt.operationId, true).restored).toEqual([id]);
+    expect(memory.store.getById(id)!.projectId).toBe("p");
   });
   it("allows a reviewed model scope change on existing lineage and lets review correct it", async () => {
     const first = await accept(plan("first"));
@@ -1782,6 +1789,85 @@ describe("removed native claims", () => {
       again.receipt.operationId,
     ]);
   });
+  async function undoUpdate() {
+    const first = plan("first");
+    const original = first.plan.items[0]!;
+    const id = (await accept(first)).accepted[0]!.memoryId;
+    put(topic, "Keep the synthetic parser in /Src/RevisedParser.ts for all new builds.\n");
+    const next = plan("update");
+    const changed = next.plan.items[0]!;
+    expect(changed).toMatchObject({
+      disposition: "changed", itemKey: original.itemKey, target: { memoryId: id },
+    });
+    expect((await accept(next)).accepted[0]).toMatchObject({ memoryId: id, updated: true });
+    expect(memory.store.getById(id)!.content).toBe(changed.content);
+    expect(service.rollback("update", true).restored).toEqual([id]);
+    expect(memory.store.getById(id)!.content).toBe(original.content);
+    expect(service.listRemoved().items).toMatchObject([
+      { operationId: "update", content: changed.content, undone: true },
+    ]);
+    return { id, original, changed, removalIds: removedIds() };
+  }
+  it("reapplies an undone update to the original memory and can undo the update again", async () => {
+    const { id, original, changed, removalIds } = await undoUpdate();
+    await service.close();
+    open();
+    const again = await service.restoreRemoved({ mode: "import", removalIds });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    expect(memory.store.list({ status: "active" }).map((m) => [m.id, m.content])).toEqual([
+      [id, changed.content],
+    ]);
+    expect(again.receipt.accepted[0]).toMatchObject({ memoryId: id, created: false, updated: true });
+    expect(removedIds()).toEqual([]);
+    expect(service.rollback(again.receipt.operationId, true)).toMatchObject({
+      restored: [id], archived: [], conflicts: [],
+    });
+    expect(memory.store.getById(id)).toMatchObject({ content: original.content, status: "active" });
+    expect(service.listRemoved().items).toMatchObject([{ operationId: again.receipt.operationId }]);
+    expect(service.rollback("first", true).archived).toEqual([id]);
+  });
+  it.each(["edit", "rescope", "event only", "team rule", "unrelated exact match", "newer rollback", "legacy undo"])(
+    "leaves the removal and all memories alone when the undone update is stale or ambiguous: %s",
+    async (change) => {
+      const { id, changed, removalIds } = await undoUpdate();
+      const user = { actor: "user" as const };
+      switch (change) {
+        case "edit":
+          memory.store.update(id, { content: "Independently edited synthetic rule." }, user);
+          break;
+        case "rescope":
+          memory.store.update(id, { scope: "personal" }, user);
+          break;
+        case "event only":
+          memory.store.recordReinforce(id, user);
+          break;
+        case "team rule":
+          memory.team.publish(id, project, user);
+          break;
+        case "unrelated exact match":
+          memory.store.create({
+            content: changed.content, scope: "project", projectId: "p", type: "fact", status: "active",
+          }, user);
+          break;
+        case "newer rollback":
+          put(topic, "A later synthetic revision keeps all parser fixtures in /Src/FixtureParser.ts.\n");
+          expect((await accept(plan("later"))).accepted[0]).toMatchObject({ memoryId: id, updated: true });
+          expect(service.rollback("later", true).restored).toEqual([id]);
+          break;
+        case "legacy undo":
+          memory.db.exec("UPDATE native_v2_operations SET undo=json_remove(undo, '$[0].restoredLink') WHERE operation_id='update'");
+          break;
+      }
+      const before = memory.store.list(), removed = removedIds(), history = service.listOperations();
+      const result = await request("POST", "/restore", { mode: "import", removalIds });
+      expect(result.status).toBe(409);
+      expect(await result.json()).toMatchObject({ error: { code: "IMPORT_CONFLICT" } });
+      expect(memory.store.list()).toEqual(before);
+      expect(removedIds()).toEqual(removed);
+      expect(service.listOperations()).toEqual(history);
+      expect(memory.db.query("SELECT * FROM native_v2_restores").all()).toEqual([]);
+    },
+  );
   it("restores a project-scoped claim to its reviewed project", async () => {
     await reject();
     const result = await service.restoreRemoved({
