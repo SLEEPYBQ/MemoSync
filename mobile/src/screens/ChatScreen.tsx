@@ -546,6 +546,9 @@ export function ChatScreen({ route, navigation }: Props) {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
+  const [planModeOverride, setPlanModeOverride] = useState<boolean | null>(null)
+  const knownEntriesRef = useRef<TranscriptEntry[]>([])
+  const windowUpdatesRef = useRef<Promise<void>>(Promise.resolve())
   const historyInitializedRef = useRef(false)
   const historyGenerationRef = useRef(0)
   const historyLoadingRef = useRef(false)
@@ -582,6 +585,9 @@ export function ChatScreen({ route, navigation }: Props) {
     historyInitializedRef.current = false
     historyGenerationRef.current += 1
     historyLoadingRef.current = false
+    knownEntriesRef.current = []
+    windowUpdatesRef.current = Promise.resolve()
+    setPlanModeOverride(null)
     setKnownEntries([])
     setOlderEntries([])
     setHistoryCursor(null)
@@ -590,20 +596,75 @@ export function ChatScreen({ route, navigation }: Props) {
     const unsubscribe = socket.subscribe<ChatSnapshot | null>(
       { type: "chat", chatId, recentLimit: 200 },
       (value) => {
-        if (value) {
-          if (!historyInitializedRef.current) {
-            historyInitializedRef.current = true
-            setKnownEntries(value.messages)
-            setHistoryCursor(value.history.olderCursor)
-            setHasOlderHistory(value.history.hasOlder)
-          } else {
-            setKnownEntries((current) => mergeTranscriptEntries(current, value.messages))
-          }
-          setSnapshot(value)
-          setMissing(false)
-        } else {
+        if (!value) {
           setMissing(true)
+          return
         }
+        setSnapshot(value)
+        setMissing(false)
+        if (!historyInitializedRef.current) {
+          historyInitializedRef.current = true
+          knownEntriesRef.current = value.messages
+          setKnownEntries(value.messages)
+          setHistoryCursor(value.history.olderCursor)
+          setHasOlderHistory(value.history.hasOlder)
+          return
+        }
+
+        // Live chat snapshots are sliding windows. If a reconnect jumps ahead
+        // by more than that window, fill the missing range backward from the
+        // new window until the previous newest row is reached. The user's
+        // older-history cursor is deliberately left unchanged.
+        const generation = historyGenerationRef.current
+        const applyWindow = async () => {
+          const current = knownEntriesRef.current
+          const anchorId = current[current.length - 1]?._id
+          let incoming = value.messages
+          if (anchorId && value.messages.length > 0 && !value.messages.some((entry) => entry._id === anchorId)) {
+            let cursor = value.history.olderCursor
+            let bridge: TranscriptEntry[] = []
+            let foundAnchor = false
+            const visited = new Set<string>()
+            while (cursor && !visited.has(cursor)) {
+              visited.add(cursor)
+              const page = await socket.command<ChatHistoryPage>({
+                type: "chat.loadHistory",
+                chatId,
+                beforeCursor: cursor,
+                limit: 100,
+              })
+              if (historyGenerationRef.current !== generation) return
+              const anchorIndex = page.messages.findIndex((entry) => entry._id === anchorId)
+              bridge = mergeTranscriptEntries(
+                anchorIndex >= 0 ? page.messages.slice(anchorIndex + 1) : page.messages,
+                bridge,
+              )
+              if (anchorIndex >= 0) {
+                foundAnchor = true
+                break
+              }
+              cursor = page.hasOlder ? page.olderCursor : null
+            }
+            if (!foundAnchor) throw new Error("Chat history changed while reconnecting; reload the chat")
+            incoming = mergeTranscriptEntries(bridge, value.messages)
+          }
+          if (historyGenerationRef.current !== generation) return
+          const merged = mergeTranscriptEntries(knownEntriesRef.current, incoming)
+          knownEntriesRef.current = merged
+          setKnownEntries(merged)
+        }
+        windowUpdatesRef.current = windowUpdatesRef.current.then(applyWindow).catch((error) => {
+          if (historyGenerationRef.current !== generation) return
+          // A failed backfill must not strand the user on a stale transcript.
+          // Resynchronize to the latest window; its cursor can still reach all
+          // older rows, including the gap, on demand.
+          knownEntriesRef.current = value.messages
+          setKnownEntries(value.messages)
+          setOlderEntries([])
+          setHistoryCursor(value.history.olderCursor)
+          setHasOlderHistory(value.history.hasOlder)
+          setHistoryError(error instanceof Error ? error.message : "Chat history could not be synchronized")
+        })
       },
     )
     const unsubscribeSidebar = socket.subscribe<SidebarData>({ type: "sidebar" }, (value) => {
@@ -622,6 +683,10 @@ export function ChatScreen({ route, navigation }: Props) {
     })
     return () => subscription.remove()
   }, [])
+
+  useEffect(() => {
+    if (snapshot?.runtime.planMode === false) setPlanModeOverride(null)
+  }, [snapshot?.runtime.planMode])
 
   // Clear the authoritative sidebar unread flag only while this transcript is
   // visible in the foreground. Unlike transcript length, that flag still changes
@@ -705,7 +770,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const send = useCallback(async () => {
     const content = draft.trim()
     const socket = getSocket()
-    const planMode = snapshot?.runtime.planMode
+    const planMode = planModeOverride ?? snapshot?.runtime.planMode
     if (!content || !socket || sending || socketStatus !== "connected" || planMode === undefined) return
     setSending(true)
     setSendError(null)
@@ -733,7 +798,7 @@ export function ChatScreen({ route, navigation }: Props) {
     } finally {
       setSending(false)
     }
-  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode])
+  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode, planModeOverride])
 
   const interrupt = useCallback(() => {
     getSocket()
@@ -758,13 +823,24 @@ export function ChatScreen({ route, navigation }: Props) {
       setSendError(null)
       try {
         await socket.command({ type: "chat.respondTool", chatId, toolUseId, result: option.result })
+        const toolEntry = (snapshot?.messages ?? []).find((entry): entry is ToolCallEntry => {
+          if (entry.kind !== "tool_call") return false
+          const candidate = entry as ToolCallEntry
+          return (candidate.tool.toolId ?? candidate._id) === toolUseId
+        })
+        const confirmed = typeof option.result === "object" && option.result !== null && (option.result as { confirmed?: unknown }).confirmed === true
+        if (toolEntry && normalizedToolKind(toolEntry) === "exit_plan_mode" && confirmed) {
+          // Match the desktop composer: approving a plan means the next user
+          // message executes normally until the host reports that transition.
+          setPlanModeOverride(false)
+        }
       } catch (error) {
         setSendError(describeSendError(error))
       } finally {
         setRespondingKey(null)
       }
     },
-    [chatId],
+    [chatId, snapshot?.messages],
   )
 
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
