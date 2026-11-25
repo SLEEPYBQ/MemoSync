@@ -147,6 +147,8 @@ describe("restart notice", () => {
     })
     expect(html).toContain("stays exposed")
     expect(html).toContain("0.0.0.0")
+    expect(html).toContain("--remote")
+    expect(html).toContain("HOST=127.0.0.1")
     expect(html).not.toContain("Remote access stays on until MemoSync restarts.")
   })
 })

@@ -141,9 +141,11 @@ export class DeviceStore {
   readonly filePath: string
   private readonly now: () => number
   private devices = new Map<string, StoredDevice>()
-  // The file-write throttle must compare against the last timestamp that
-  // actually reached devices.json, not the in-memory timestamp refreshed by
+  // The file-write throttle must compare against the watermark of the last
+  // devices.json write attempt, not the in-memory timestamp refreshed by
   // every request; otherwise steady traffic can starve persistence forever.
+  // Failed writes count as attempts so a broken disk is retried at most once
+  // a minute instead of on every request.
   private readonly lastSeenPersistedAt = new Map<string, number>()
   private readonly pairingRequests = new Map<string, PairingRequest>()
   private readonly pairingRequestIps = new Map<string, number[]>()
@@ -420,7 +422,15 @@ export class DeviceStore {
       // in-memory device timestamp advances on every request.
       const persistedLastSeenAt = this.lastSeenPersistedAt.get(device.id) ?? device.lastSeenAt
       if (updated.lastSeenAt - persistedLastSeenAt >= 60_000) {
-        await this.writeDevicesFile(nextDevices)
+        // Authentication is on the hot path of every device request, so a
+        // failed activity write must never reject a valid token. Counting the
+        // attempt as the throttle watermark keeps a broken disk from being
+        // hammered on every request; the minute of granularity is by design.
+        try {
+          await this.writeDevicesFile(nextDevices)
+        } catch (error) {
+          console.error("[memosync] failed to persist device activity:", error)
+        }
         this.lastSeenPersistedAt.set(device.id, updated.lastSeenAt)
       }
       this.devices = nextDevices

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -282,6 +282,34 @@ describe("DeviceStore limits and redaction", () => {
     const reloaded = new DeviceStore(dataDir, { now: () => clock.value })
     await reloaded.initialize()
     expect(reloaded.listDevices()[0]?.lastSeenAt).toBe(pairedAt + 120_000)
+  })
+
+  test("authenticates a valid token even when persisting activity fails", async () => {
+    const { store, dataDir, clock } = await createStore()
+    const request = await store.createRequest("Phone", "198.51.100.92")
+    const approved = await store.approveRequest(request.id)
+
+    // A directory cannot be replaced by the atomic rename, so every write
+    // fails. The valid device token must still authenticate, and the failed
+    // write counts as the throttle attempt instead of retrying per request.
+    await rm(path.join(dataDir, "devices.json"))
+    await mkdir(path.join(dataDir, "devices.json"))
+
+    const logger = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      clock.advance(61_000)
+      const device = await store.authenticateToken(approved.token)
+      expect(device).toMatchObject({ id: approved.device.id, lastSeenAt: clock.value })
+      expect(logger).toHaveBeenCalled()
+
+      logger.mockClear()
+      clock.advance(30_000)
+      const again = await store.authenticateToken(approved.token)
+      expect(again).toMatchObject({ id: approved.device.id, lastSeenAt: clock.value })
+      expect(logger).not.toHaveBeenCalled()
+    } finally {
+      logger.mockRestore()
+    }
   })
 })
 
