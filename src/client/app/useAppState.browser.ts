@@ -5,6 +5,7 @@ import { PROVIDERS } from "../../shared/types"
 import { startMountedRaceHarness } from "../test-utils/mountedRaceHarness"
 
 interface AppStateFixtureApi {
+  createdBranchBases: () => string[]
   transcriptRevision: () => number
   streamingText: () => string | null
   promptContents: () => string[]
@@ -141,7 +142,7 @@ test("a retained Files draft is confirmed before logout; cancel and a failed req
   await dialog.waitFor()
   expect(requests).toBe(0)
   const cancel = dialog.getByRole("button", { name: "Cancel" })
-  await cancel.focus()
+  await target.waitForFunction(() => document.activeElement?.closest('[role="dialog"]') && document.activeElement.textContent === "Cancel")
   await cancel.press("Enter")
   await toggle.click()
   expect(await target.locator(".cm-content").innerText()).toBe("edit before sign-out")
@@ -169,6 +170,24 @@ test("a retained Files draft is confirmed before logout; cancel and a failed req
   ])
   expect(requests).toBe(2)
   expect(unloadPrompts).toBe(0)
+})
+
+test("Enter chooses the current branch by default and respects an explicitly focused alternative", async () => {
+  const target = await openFixture()
+  for (const [index, selectAlternative] of [false, true].entries()) {
+    await target.getByRole("button", { name: "Create branch" }).click()
+    const input = target.getByPlaceholder("feature/my-branch")
+    await input.fill(`feature/synthetic-${index}`)
+    await input.press("Enter")
+    const dialog = target.getByRole("dialog", { name: "Branch Base" })
+    await dialog.waitFor()
+    await target.waitForFunction(() => document.querySelector('[role="dialog"]')?.contains(document.activeElement))
+    if (selectAlternative) await dialog.getByRole("button", { name: "From main" }).focus()
+    await target.keyboard.press("Enter")
+    await target.waitForFunction(n => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.createdBranchBases().length === n, index + 1)
+  }
+  expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.createdBranchBases()))
+    .toEqual(["feature/current", "main"])
 })
 
 async function emitChat(target: Page, chatId: string, subscriptionIndex: number, value: ChatSnapshot) {
