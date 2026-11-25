@@ -50,6 +50,27 @@ export const remoteAccessApi = {
   revokeDevice: (id: string) => post(`/api/devices/${encodeURIComponent(id)}/revoke`),
 }
 
+export interface RemoteAccessOverview {
+  status: RemoteAccessStatus
+  pendingRequests: PairingRequestEntry[]
+  devices: PairedDevice[]
+}
+
+/** One coherent settings-section read: bind state, approval queue, and the
+ * device list can all change in another window or after a restart. */
+export async function fetchRemoteAccessOverview(): Promise<RemoteAccessOverview> {
+  const [status, pending, devices] = await Promise.all([
+    remoteAccessApi.status(),
+    remoteAccessApi.pendingRequests(),
+    remoteAccessApi.devices(),
+  ])
+  return {
+    status,
+    pendingRequests: pending.requests,
+    devices: devices.devices,
+  }
+}
+
 /** The settings patch written by the toggle, matching the frozen ws contract. */
 export function buildRemoteAccessPatch(enabled: boolean): AppSettingsPatch {
   return { remoteAccess: { enabled } }

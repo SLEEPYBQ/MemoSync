@@ -1,8 +1,8 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
 import { networkInterfaces, tmpdir } from "node:os"
 import path from "node:path"
-import { startMemoSyncServer, authorizeMemoSyncRequest, isLoopbackBindHost, isLoopbackClientAddress } from "./server"
+import { startMemoSyncServer, authorizeMemoSyncRequest, isLoopbackBindHost, isLoopbackClientAddress, listRemoteAccessLanUrls, remoteAccessLanAddressRank } from "./server"
 import { DEVICE_TOKEN_PREFIX, formatPairingCode } from "./devices"
 
 const tempDirs: string[] = []
@@ -18,9 +18,13 @@ async function startRemoteAccessServer(options: {
   host?: string
   persistedRemoteAccess?: boolean
   remoteAccess?: boolean
+  corruptDevicesFile?: boolean
 } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "memosync-remote-access-data-"))
   tempDirs.push(dataDir)
+  if (options.corruptDevicesFile) {
+    await writeFile(path.join(dataDir, "devices.json"), "{not-json", "utf8")
+  }
   if (options.persistedRemoteAccess !== undefined) {
     await writeFile(path.join(dataDir, "settings.json"), JSON.stringify({
       remoteAccess: { enabled: options.persistedRemoteAccess },
@@ -136,7 +140,85 @@ function waitForWebSocketClose(ws: WebSocket) {
   })
 }
 
+async function writeRemoteAccessSetting(baseUrl: string, enabled: boolean, headers: Record<string, string> = {}) {
+  const ws = createWebSocketWithHeaders(`${baseUrl.replace(/^http/, "ws")}/ws`, headers)
+  await waitForWebSocketOpen(ws)
+  const id = `write-remote-access-${enabled}`
+  const ack = new Promise<unknown>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("settings write ack timed out")), 5_000)
+    const finish = (callback: () => void) => {
+      clearTimeout(timer)
+      callback()
+    }
+    ws.addEventListener("message", (event) => {
+      void (async () => {
+        try {
+          const raw = typeof event.data === "string"
+            ? event.data
+            : event.data instanceof Blob
+              ? await event.data.text()
+              : String(event.data)
+          const payload = JSON.parse(raw) as { type?: string; id?: string; message?: string }
+          if (payload.id !== id) return
+          if (payload.type === "ack") finish(() => resolve(payload))
+          else finish(() => reject(new Error(payload.message ?? "settings write failed")))
+        } catch (error) {
+          finish(() => reject(error))
+        }
+      })()
+    })
+    ws.addEventListener("close", () => finish(() => reject(new Error("WebSocket closed before settings write ack"))), { once: true })
+  })
+  ws.send(JSON.stringify({
+    v: 1,
+    type: "command",
+    id,
+    command: {
+      type: "settings.writeAppSettingsPatch",
+      patch: { remoteAccess: { enabled } },
+    },
+  }))
+  try {
+    await ack
+  } finally {
+    ws.close()
+  }
+}
+
 describe("remote access authorization decision", () => {
+  test("ranks RFC1918 LAN addresses before VPN and other non-private ranges", () => {
+    for (const privateAddress of ["10.0.0.8", "172.16.0.8", "172.31.255.8", "192.168.1.8"]) {
+      expect(remoteAccessLanAddressRank(privateAddress)).toBe(0)
+    }
+    for (const otherAddress of ["172.15.0.8", "172.32.0.8", "100.64.0.8", "198.18.0.8", "203.0.113.8"]) {
+      expect(remoteAccessLanAddressRank(otherAddress)).toBe(1)
+    }
+    expect(remoteAccessLanAddressRank("not-an-ip")).toBe(2)
+    expect(remoteAccessLanAddressRank("198.18.0.8")).toBeGreaterThan(remoteAccessLanAddressRank("192.168.1.8"))
+  })
+
+  test("sorts one url per interface with RFC1918 LAN addresses before VPN fake-ip ranges", () => {
+    const interfaceEntry = (address: string) => ({
+      address,
+      netmask: "255.255.255.0",
+      family: "IPv4" as const,
+      mac: "00:00:00:00:00:00",
+      internal: false,
+      cidr: `${address}/24`,
+    })
+    const urls = listRemoteAccessLanUrls(3210, {
+      vpn0: [interfaceEntry("198.18.0.2")],
+      lan0: [interfaceEntry("192.168.1.20"), interfaceEntry("10.0.0.20")],
+      overlay0: [interfaceEntry("100.64.0.2")],
+    })
+
+    expect(urls).toEqual([
+      "http://192.168.1.20:3210",
+      "http://198.18.0.2:3210",
+      "http://100.64.0.2:3210",
+    ])
+  })
+
   test("keeps loopback open without a password but never opens non-loopback without credentials", () => {
     expect(isLoopbackClientAddress("127.0.0.1")).toBe(true)
     expect(isLoopbackClientAddress("127.255.255.255")).toBe(true)
@@ -255,6 +337,84 @@ describe("remote access HTTP integration", () => {
       enabled: false,
       active: false,
       bindHost: "127.0.0.1",
+    })
+  })
+
+  test("starts with an empty device list after quarantining a corrupt devices file", async () => {
+    const logger = spyOn(console, "error").mockImplementation(() => {})
+    let started!: Awaited<ReturnType<typeof startRemoteAccessServer>>
+    try {
+      started = await startRemoteAccessServer({ corruptDevicesFile: true })
+    } finally {
+      logger.mockRestore()
+    }
+
+    const devices = await fetch(`${started.baseUrl}/api/devices`)
+    expect(devices.status).toBe(200)
+    expect(await devices.json()).toEqual({ devices: [] })
+    expect((await readdir(started.dataDir)).some((name) => name.startsWith("devices.json.corrupt-"))).toBe(true)
+  })
+
+  test("allows pairing on an explicit non-loopback bind even when the setting was never enabled", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ host: "0.0.0.0" })
+    const pairing = await fetch(`${baseUrl}/api/pairing/requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceName: "CLI Bind Phone" }),
+    })
+    expect(pairing.status).toBe(201)
+    const status = await fetch(`${baseUrl}/api/remote-access/status`)
+    expect(await status.json()).toMatchObject({
+      enabled: false,
+      active: true,
+      bindHost: "0.0.0.0",
+    })
+  })
+
+  test("stops device tokens and pairing once effective remote access becomes false on a loopback bind", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ password: "secret", persistedRemoteAccess: true, host: "127.0.0.1" })
+    const cookie = await login(baseUrl)
+    const authHeaders = { Cookie: cookie }
+    const paired = await pairDevice(baseUrl, authHeaders)
+    const deviceHeaders = { Authorization: `Bearer ${paired.token}` }
+    // Password auth closes the loopback exemption, so this 200 can only come
+    // from the device bearer token rather than from the loopback client address.
+    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(200)
+
+    await writeRemoteAccessSetting(baseUrl, false, authHeaders)
+
+    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(401)
+    const pairing = await fetch(`${baseUrl}/api/pairing/requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceName: "Too Late" }),
+    })
+    expect(pairing.status).toBe(403)
+    const pairingStatus = await fetch(`${baseUrl}/api/pairing/requests/${paired.requestId}/status?code=${encodeURIComponent(paired.code)}`)
+    expect(pairingStatus.status).toBe(403)
+  })
+
+  test("keeps device tokens and pairing effective while a non-loopback bind remains after the setting is disabled", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ password: "secret", persistedRemoteAccess: true })
+    const cookie = await login(baseUrl)
+    const authHeaders = { Cookie: cookie }
+    const paired = await pairDevice(baseUrl, authHeaders)
+    const deviceHeaders = { Authorization: `Bearer ${paired.token}` }
+
+    await writeRemoteAccessSetting(baseUrl, false, authHeaders)
+
+    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(200)
+    const pairing = await fetch(`${baseUrl}/api/pairing/requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deviceName: "Still Bind-Exposed" }),
+    })
+    expect(pairing.status).toBe(201)
+    const status = await fetch(`${baseUrl}/api/remote-access/status`, { headers: authHeaders })
+    expect(await status.json()).toMatchObject({
+      enabled: false,
+      active: true,
+      bindHost: "0.0.0.0",
     })
   })
 

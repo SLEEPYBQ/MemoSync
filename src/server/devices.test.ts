@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { afterEach, describe, expect, spyOn, test } from "bun:test"
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import {
@@ -118,6 +118,22 @@ describe("DeviceStore pairing lifecycle", () => {
     expect(await errorOf(store.denyRequest(request.id))).toMatchObject({ code: "request_not_pending" })
   })
 
+  test("reports terminal approval or denial even when the ttl elapses afterwards", async () => {
+    const { store, clock } = await createStore()
+    const approvedRequest = await store.createRequest("Phone", "198.51.100.31")
+    const approved = await store.approveRequest(approvedRequest.id)
+    clock.advance(PAIRING_REQUEST_TTL_MS)
+    expect(store.getRequestStatus(approvedRequest.id, approvedRequest.code)).toEqual({
+      status: "approved",
+      token: approved.token,
+    })
+
+    const deniedRequest = await store.createRequest("Tablet", "198.51.100.32")
+    await store.denyRequest(deniedRequest.id)
+    clock.advance(PAIRING_REQUEST_TTL_MS)
+    expect(store.getRequestStatus(deniedRequest.id, deniedRequest.code)).toEqual({ status: "denied" })
+  })
+
   test("makes approval and denial single-use", async () => {
     const { store } = await createStore()
     const approvedRequest = await store.createRequest("Phone", "198.51.100.40")
@@ -143,12 +159,29 @@ describe("DeviceStore limits and redaction", () => {
   test("rate-limits five new pairing requests per minute per IP", async () => {
     const { store, clock } = await createStore()
     for (let index = 0; index < 5; index += 1) {
-      await store.createRequest(`Device ${index}`, "198.51.100.50")
+      const request = await store.createRequest(`Device ${index}`, "198.51.100.50")
+      // Keep the pending-per-IP cap from masking the creation-rate window:
+      // denied requests no longer count as pending, but their creations still
+      // count toward the per-minute limit.
+      if (index < 4) await store.denyRequest(request.id)
     }
     expect(await errorOf(store.createRequest("One too many", "198.51.100.50"))).toMatchObject({ code: "rate_limited" })
     await store.createRequest("Other IP is independent", "198.51.100.51")
     clock.advance(60_001)
     await store.createRequest("Window moved", "198.51.100.50")
+  })
+
+  test("allows at most two pending pairing requests from one IP", async () => {
+    const { store } = await createStore()
+    const first = await store.createRequest("First", "198.51.100.52")
+    await store.createRequest("Second", "198.51.100.52")
+    expect(await errorOf(store.createRequest("Third", "198.51.100.52"))).toMatchObject({ code: "rate_limited" })
+
+    // The cap is on live pending requests, not total creations: resolving one
+    // lets the same source ask again, while other source addresses stay independent.
+    await store.denyRequest(first.id)
+    await store.createRequest("Replacement", "198.51.100.52")
+    await store.createRequest("Other IP is independent", "198.51.100.53")
   })
 
   test("allows at most ten pending pairing requests per server instance", async () => {
@@ -182,5 +215,43 @@ describe("DeviceStore limits and redaction", () => {
     const second = await store.authenticateToken(approved.token)
     expect(second?.lastSeenAt).toBe(clock.value)
     expect(second?.lastSeenAt).toBeGreaterThan(first?.lastSeenAt ?? 0)
+  })
+})
+
+describe("DeviceStore corrupt persistence recovery", () => {
+  test("quarantines unreadable json or shapes and starts with an empty store", async () => {
+    const corruptPayloads = [
+      "",
+      "{not-json",
+      JSON.stringify({ devices: [{ id: "missing-required-fields" }] }),
+    ]
+    const logger = spyOn(console, "error").mockImplementation(() => {})
+    try {
+      for (const [index, payload] of corruptPayloads.entries()) {
+        const dataDir = await mkdtemp(path.join(tmpdir(), "memosync-devices-corrupt-"))
+        tempDirs.push(dataDir)
+        await writeFile(path.join(dataDir, "devices.json"), payload, "utf8")
+
+        const store = new DeviceStore(dataDir, { now: () => 1_700_000_000_000 + index })
+        await store.initialize()
+
+        expect(store.listDevices()).toEqual([])
+        const files = await readdir(dataDir)
+        const corruptName = `devices.json.corrupt-${1_700_000_000_000 + index}`
+        expect(files).toContain(corruptName)
+        expect(files).not.toContain("devices.json")
+        expect(await readFile(path.join(dataDir, corruptName), "utf8")).toBe(payload)
+
+        // Recovery is usable, not just non-crashing: the next approval recreates
+        // a clean store file beside the quarantined bytes.
+        const request = await store.createRequest("Recovered phone", `198.51.100.${100 + index}`)
+        const approved = await store.approveRequest(request.id)
+        expect(approved.device.name).toBe("Recovered phone")
+        expect(JSON.parse(await readFile(path.join(dataDir, "devices.json"), "utf8")).devices).toHaveLength(1)
+      }
+      expect(logger).toHaveBeenCalledTimes(corruptPayloads.length)
+    } finally {
+      logger.mockRestore()
+    }
   })
 })

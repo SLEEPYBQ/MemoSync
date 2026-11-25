@@ -8,6 +8,7 @@ import { copyTextToClipboard } from "../../lib/clipboard"
 import {
   buildPairingUrl,
   buildRemoteAccessPatch,
+  fetchRemoteAccessOverview,
   formatPairingCode,
   formatPairingCountdown,
   parseTimeMs,
@@ -264,40 +265,33 @@ export function SharingAccessSection({ state }: { state: SharingState }) {
     setPendingRequests(result.requests)
   }, [])
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const [nextStatus, nextDevices] = await Promise.all([remoteAccessApi.status(), remoteAccessApi.devices()])
-        if (cancelled) return
-        setStatus(nextStatus)
-        setDevices(nextDevices.devices)
-      } catch (error) {
-        if (cancelled) return
-        setError(error instanceof Error ? error.message : t("settings:sharingUnableToLoad"))
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // Poll pairing requests for as long as the section is on screen. The list
-  // is empty while remote access is off, but loopback pairing tests can
-  // create requests before the LAN bind is active, so the poll is not gated
-  // on the bind state. inFlight guards against overlapping ticks.
+  // Poll the whole remote-access overview for as long as the section is on
+  // screen: restart-dependent bind state can be corrected externally, and a
+  // second window can approve or revoke devices. The list is empty while
+  // remote access is off, but loopback pairing tests can create requests
+  // before the LAN bind is active, so the poll is not gated on bind state.
+  // inFlight guards against overlapping ticks.
   useEffect(() => {
     let cancelled = false
     let inFlight = false
+    let initialLoad = true
     async function poll() {
       if (inFlight) return
       inFlight = true
       try {
-        const result = await remoteAccessApi.pendingRequests()
-        if (!cancelled) setPendingRequests(result.requests)
-      } catch {
-        // Transient — the next tick retries; only the initial load surfaces errors.
+        const overview = await fetchRemoteAccessOverview()
+        if (cancelled) return
+        setStatus(overview.status)
+        setDevices(overview.devices)
+        setPendingRequests(overview.pendingRequests)
+      } catch (error) {
+        // Transient after the first load — the next tick retries; only the
+        // initial load surfaces errors.
+        if (!cancelled && initialLoad) {
+          setError(error instanceof Error ? error.message : t("settings:sharingUnableToLoad"))
+        }
       } finally {
+        initialLoad = false
         inFlight = false
       }
     }

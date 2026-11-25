@@ -4,6 +4,7 @@ import { AppDialogProvider } from "../../components/ui/app-dialog"
 import {
   buildPairingUrl,
   buildRemoteAccessPatch,
+  fetchRemoteAccessOverview,
   formatPairingCode,
   formatPairingCountdown,
   parseTimeMs,
@@ -77,7 +78,7 @@ describe("SharingAccessGroups toggle", () => {
     expect(html).toContain("Only enable remote access on networks you trust.")
     // Nothing network-facing shows before the status endpoint answers.
     expect(html).not.toContain("Pair a new device")
-    expect(html).not.toContain("restarting MemoSync")
+    expect(html).not.toContain("will turn on after MemoSync restarts")
   })
 
   test("renders the toggle on when enabled", () => {
@@ -97,7 +98,7 @@ describe("restart notice", () => {
       enabled: true,
       status: { enabled: true, active: false, lanUrls: [] },
     })
-    expect(html).toContain("Remote access takes effect after restarting MemoSync.")
+    expect(html).toContain("Remote access will turn on after MemoSync restarts.")
     expect(html).not.toContain("Pair a new device")
   })
 
@@ -111,7 +112,7 @@ describe("restart notice", () => {
 
   test("hides the notice once setting and bind agree", () => {
     const html = renderGroups({ enabled: true, status: ACTIVE_STATUS })
-    expect(html).not.toContain("restarting MemoSync")
+    expect(html).not.toContain("will turn on after MemoSync restarts")
     expect(html).not.toContain("until MemoSync restarts")
   })
 })
@@ -264,6 +265,26 @@ describe("remoteAccessApi", () => {
     expect(await remoteAccessApi.devices()).toEqual({ devices: [SAMPLE_DEVICE] })
     expect(calls.map((call) => call.url)).toEqual(["/api/remote-access/status", "/api/pairing/pending", "/api/devices"])
     expect(calls.every((call) => call.method === "GET")).toBe(true)
+  })
+
+  test("fetchRemoteAccessOverview reads bind state, requests and devices in one poll payload", async () => {
+    const calls = stubFetch((url) => {
+      if (url === "/api/remote-access/status") return Response.json(ACTIVE_STATUS)
+      if (url === "/api/pairing/pending") return Response.json({ requests: [SAMPLE_REQUEST] })
+      if (url === "/api/devices") return Response.json({ devices: [SAMPLE_DEVICE] })
+      return new Response("nope", { status: 404 })
+    })
+
+    await expect(fetchRemoteAccessOverview()).resolves.toEqual({
+      status: ACTIVE_STATUS,
+      pendingRequests: [SAMPLE_REQUEST],
+      devices: [SAMPLE_DEVICE],
+    })
+    expect(calls.map((call) => call.url)).toEqual([
+      "/api/remote-access/status",
+      "/api/pairing/pending",
+      "/api/devices",
+    ])
   })
 
   test("approve, deny and revoke post to the request or device url", async () => {

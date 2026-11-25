@@ -8,6 +8,7 @@ export const PAIRING_CODE_LENGTH = 12
 export const PAIRING_REQUEST_TTL_MS = 10 * 60 * 1000
 
 const MAX_PENDING_PAIRING_REQUESTS = 10
+const MAX_PENDING_PAIRING_REQUESTS_PER_IP = 2
 const MAX_PAIRING_REQUESTS_PER_MINUTE_PER_IP = 5
 const PAIRING_REQUEST_RATE_WINDOW_MS = 60 * 1000
 const EXPIRED_REQUEST_RETENTION_MS = PAIRING_REQUEST_TTL_MS
@@ -47,6 +48,7 @@ export interface PairingRequestStatusResult {
 
 interface PairingRequest extends PairingRequestInfo {
   status: "pending" | "approved" | "denied"
+  clientIp: string
   token?: string
   deviceId?: string
 }
@@ -157,18 +159,33 @@ export class DeviceStore {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return
       throw error
     }
-    if (!text.trim()) return
+    try {
+      const parsed = JSON.parse(text) as DevicesFile
+      if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.devices)) {
+        throw new Error("devices-store-unreadable")
+      }
+      const devices = new Map<string, StoredDevice>()
+      for (const value of parsed.devices) {
+        if (!isStoredDevice(value)) throw new Error("devices-store-unreadable")
+        devices.set(value.id, { ...value })
+      }
+      this.devices = devices
+    } catch (error) {
+      await this.quarantineUnreadableFile(error)
+    }
+  }
 
-    const parsed = JSON.parse(text) as DevicesFile
-    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.devices)) {
-      throw new Error("devices-store-unreadable")
+  private async quarantineUnreadableFile(error: unknown) {
+    const corruptPath = `${this.filePath}.corrupt-${this.now()}`
+    try {
+      await rename(this.filePath, corruptPath)
+      console.error(`[memosync] devices.json is unreadable; moved it to ${corruptPath}:`, error)
+    } catch (renameError) {
+      console.error(`[memosync] devices.json is unreadable and could not be moved to ${corruptPath}:`, error, renameError)
     }
-    const devices = new Map<string, StoredDevice>()
-    for (const value of parsed.devices) {
-      if (!isStoredDevice(value)) throw new Error("devices-store-unreadable")
-      devices.set(value.id, { ...value })
-    }
-    this.devices = devices
+    // A corrupt device list must never prevent the rest of MemoSync from
+    // starting. Pairing can always be redone; refusing to boot cannot.
+    this.devices = new Map()
   }
 
   private serialize<T>(operation: () => T | Promise<T>): Promise<T> {
@@ -214,6 +231,14 @@ export class DeviceStore {
     return count
   }
 
+  private pendingRequestCountForIp(ip: string, now: number) {
+    let count = 0
+    for (const request of this.pairingRequests.values()) {
+      if (request.clientIp === ip && request.status === "pending" && !this.isExpired(request, now)) count += 1
+    }
+    return count
+  }
+
   private newId() {
     return randomBytes(16).toString("base64url")
   }
@@ -226,6 +251,9 @@ export class DeviceStore {
         throw new DeviceStoreError("rate_limited", "Too many pending pairing requests")
       }
       const ip = clientIp || "unknown"
+      if (this.pendingRequestCountForIp(ip, now) >= MAX_PENDING_PAIRING_REQUESTS_PER_IP) {
+        throw new DeviceStoreError("rate_limited", "Too many pending pairing requests from this address")
+      }
       const recent = this.pairingRequestIps.get(ip) ?? []
       if (recent.length >= MAX_PAIRING_REQUESTS_PER_MINUTE_PER_IP) {
         throw new DeviceStoreError("rate_limited", "Too many pairing requests")
@@ -240,6 +268,7 @@ export class DeviceStore {
         createdAt: now,
         expiresAt: now + PAIRING_REQUEST_TTL_MS,
         status: "pending",
+        clientIp: ip,
       }
       this.pairingRequests.set(id, request)
       this.pairingRequestIps.set(ip, [...recent, now])
@@ -311,8 +340,12 @@ export class DeviceStore {
   getRequestStatus(id: string, code: string): PairingRequestStatusResult | null {
     const request = this.pairingRequests.get(id)
     if (!request || !safeCompare(request.code, normalizePairingCode(code))) return null
-    if (this.isExpired(request)) return { status: "expired" }
+    // Approval/denial is a terminal decision made while the request was live.
+    // In particular, a device that polls after the TTL must still receive the
+    // token it was approved for instead of losing it to an "expired" answer.
     if (request.status === "approved") return { status: "approved", token: request.token }
+    if (request.status === "denied") return { status: "denied" }
+    if (this.isExpired(request)) return { status: "expired" }
     return { status: request.status }
   }
 

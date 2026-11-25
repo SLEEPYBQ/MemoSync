@@ -264,14 +264,40 @@ function usableLanIpv4(address: string) {
   return !(octets[0] === 169 && octets[1] === 254)
 }
 
-/** First usable non-internal IPv4 URL per interface, resolved on every read. */
-export function listRemoteAccessLanUrls(port: number) {
-  const urls: string[] = []
-  for (const entries of Object.values(networkInterfaces())) {
+/** Lower ranks are better pairing URLs. RFC1918 space is a real LAN far more
+ * often than carrier-grade, benchmarking, or VPN fake-IP ranges. */
+export function remoteAccessLanAddressRank(address: string) {
+  const octets = ipv4Octets(address)
+  if (!octets) return 2
+  const [first, second] = octets
+  if (first === 10) return 0
+  if (first === 172 && second >= 16 && second <= 31) return 0
+  if (first === 192 && second === 168) return 0
+  return 1
+}
+
+/** First usable non-internal IPv4 URL per interface, resolved on every read.
+ * Interfaces keep one entry each, but real RFC1918 LAN addresses sort before
+ * other ranges (notably VPN fake-IP space such as 198.18/15). */
+export function listRemoteAccessLanUrls(
+  port: number,
+  interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces(),
+) {
+  const urls: Array<{ url: string; rank: number; interfaceIndex: number }> = []
+  let interfaceIndex = 0
+  for (const entries of Object.values(interfaces)) {
     const address = entries?.find((entry) => entry.family === "IPv4" && !entry.internal && usableLanIpv4(entry.address))?.address
-    if (address) urls.push(`http://${address}:${port}`)
+    if (address) {
+      urls.push({
+        url: `http://${address}:${port}`,
+        rank: remoteAccessLanAddressRank(address),
+        interfaceIndex,
+      })
+    }
+    interfaceIndex += 1
   }
-  return urls
+  urls.sort((left, right) => left.rank - right.rank || left.interfaceIndex - right.interfaceIndex)
+  return urls.map((entry) => entry.url)
 }
 
 function deviceStoreErrorResponse(error: unknown) {
@@ -338,6 +364,9 @@ async function handlePublicPairingEndpoint(args: {
   if (statusMatch) {
     if (req.method !== "GET") {
       return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    if (!args.remoteAccessEnabled()) {
+      return uiJson({ error: "Remote access is disabled" }, { status: 403 })
     }
     const code = url.searchParams.get("code")
     if (!code) {
@@ -628,6 +657,17 @@ async function startLockedMemoSyncServer(
   // Callers turn their host env vars into this explicit option (scripts/serve
   // uses HOST); an explicit value always wins over the remote-access default.
   const hostname = options.host ?? (remoteAccessEnabled() ? "0.0.0.0" : "127.0.0.1")
+  let actualBindHost = hostname
+  // Pairing and device-token access follow the exposure that actually exists:
+  // either the user-enabled setting, or a process already bound beyond
+  // loopback through --remote/--host/desktop startup. Turning the setting off
+  // cannot retract access while that non-loopback socket is still bound.
+  const remoteAccessEffective = () => remoteAccessEnabled() || !isLoopbackBindHost(actualBindHost)
+  const authenticateDeviceRequest = async (req: Request) => {
+    if (!remoteAccessEffective()) return null
+    const bearerToken = readDeviceBearerToken(req)
+    return bearerToken ? deviceStore.authenticateToken(bearerToken) : null
+  }
   let prevMemoryPreviewSettings = JSON.stringify(appSettings.getSnapshot().memoryPreview)
   appSettings.onChange((snapshot) => {
     const next = JSON.stringify(snapshot.memoryPreview)
@@ -869,7 +909,6 @@ async function startLockedMemoSyncServer(
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port
-  let actualBindHost = hostname
 
   for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
     try {
@@ -896,6 +935,22 @@ async function startLockedMemoSyncServer(
           const previewPort = previewProxyTarget(req, actualPort)
           const onPreviewOrigin = previewOriginHost !== null && url.host === previewOriginHost
           if (previewPort !== null || onPreviewOrigin) {
+            // The preview branch intentionally runs before the /api gate below,
+            // so proxied upstream traffic must repeat the same network exposure
+            // decision here. The preview cookie counts as session evidence only
+            // for this decision; the stricter preview-cookie check below still
+            // prevents an app session cookie alone from unlocking this origin.
+            const proxiesPreviewUpstream = previewPort !== null && (isPreviewHostForm(url.host) || onPreviewOrigin)
+            const authenticatedPreviewDevice = proxiesPreviewUpstream ? await authenticateDeviceRequest(req) : null
+            const previewCredentialAuthenticated = proxiesPreviewUpstream && auth !== null && previewPort !== null
+              ? auth.isPreviewAuthenticated(req, previewPort)
+              : false
+            const previewUpstreamAuthorized = proxiesPreviewUpstream && authorizeMemoSyncRequest({
+              isLoopbackClient: isLoopbackClientAddress(clientAddress),
+              passwordAuthEnabled: auth !== null,
+              sessionAuthenticated: (auth?.isAuthenticated(req) ?? false) || previewCredentialAuthenticated,
+              deviceAuthenticated: authenticatedPreviewDevice !== null,
+            })
             if (auth && url.pathname === PREVIEW_CALLBACK_PATH) {
               return auth.handlePreviewCallback(req)
             }
@@ -932,9 +987,12 @@ async function startLockedMemoSyncServer(
             })) {
               return new Response("Forbidden", { status: 403 })
             }
-            if (auth && !auth.isPreviewAuthenticated(req, previewPort)) {
+            if (auth && !previewCredentialAuthenticated) {
               const bootstrap = auth.previewBootstrapRedirect(req, previewPort)
               if (bootstrap) return bootstrap
+              return new Response("Unauthorized", { status: 401 })
+            }
+            if (!previewUpstreamAuthorized) {
               return new Response("Unauthorized", { status: 401 })
             }
             return proxyPreviewRequest(req, url, previewPort)
@@ -965,21 +1023,18 @@ async function startLockedMemoSyncServer(
 
           let authenticatedDevice: Device | null = null
           if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
-            const bearerToken = readDeviceBearerToken(req)
-            if (bearerToken) {
-              authenticatedDevice = await deviceStore.authenticateToken(bearerToken)
-            }
+            authenticatedDevice = await authenticateDeviceRequest(req)
           }
 
           // Pairing creation and status polling are the only unauthenticated
           // /api routes. The code is the proof of possession for status reads;
-          // creation is rate-limited and exists only while remote access is on.
+          // both exist only while remote access is effectively exposed.
           const publicPairingResponse = await handlePublicPairingEndpoint({
             req,
             url,
             deviceStore,
             clientIp: clientAddress ?? "unknown",
-            remoteAccessEnabled,
+            remoteAccessEnabled: remoteAccessEffective,
           })
           if (publicPairingResponse) {
             return publicPairingResponse

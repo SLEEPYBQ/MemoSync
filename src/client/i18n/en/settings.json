@@ -253,7 +253,7 @@
   "remoteAccess": "Remote Access",
   "remoteAccessDescription": "Let devices on your local network connect to this MemoSync server.",
   "sharingSearchKeywords": "sharing,remote access,pair,device,lan,共享,远程访问,配对,设备",
-  "sharingTakesEffectAfterRestart": "Remote access takes effect after restarting MemoSync.",
+  "sharingTakesEffectAfterRestart": "Remote access will turn on after MemoSync restarts.",
   "sharingStaysOnUntilRestart": "Remote access stays on until MemoSync restarts.",
   "sharingPairing": "Pairing",
   "sharingPairNewDevice": "Pair a new device",

@@ -253,7 +253,7 @@
   "remoteAccess": "远程访问",
   "remoteAccessDescription": "允许同一局域网内的设备连接此 MemoSync 服务。",
   "sharingSearchKeywords": "sharing,remote access,pair,device,lan,共享,远程访问,配对,设备",
-  "sharingTakesEffectAfterRestart": "远程访问将在重启 MemoSync 后生效。",
+  "sharingTakesEffectAfterRestart": "远程访问将在 MemoSync 重启后开启。",
   "sharingStaysOnUntilRestart": "远程访问会保持开启，直到 MemoSync 重启。",
   "sharingPairing": "配对",
   "sharingPairNewDevice": "配对新设备",

@@ -225,6 +225,8 @@ bun run start --password <pw>    # ask for a password before the app loads
 bun run start --share            # temporary public URL with a QR code
 ```
 
+Binding beyond loopback never leaves a passwordless server open to the LAN: pair a device from **Settings → Sharing & access** first, or start with `--password` and sign in. Pairing endpoints are available whenever remote access is enabled or the running server is bound to a non-loopback interface (for example through `--remote` or a LAN `--host`). The bind itself is fixed for the lifetime of the process, so changes to the remote-access toggle apply fully after a restart.
+
 `bun run start --help` lists every option.
 
 ## Data and privacy
