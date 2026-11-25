@@ -272,13 +272,15 @@ test("a rebound chip sent after the ID change retires once its ACK lands, even a
   // The send must use the rebound URL (new project), not the stale retired one.
   expect(await page.evaluate(() => window.landingFixture.sends[0]?.[1]?.attachments?.[0]?.contentUrl))
     .toContain("/api/projects/project-alpha-2/")
-  // Edit the draft while the ACK is pending so the clean-clear path refuses.
-  await attach("later.txt")
+  // Edit only the text while the ACK is pending. Unlike attaching another file
+  // (which rewrites the chip's stored URL through setAttachments), this leaves
+  // the persisted chip on the retired project's URL — exact-URL matching would
+  // keep the consumed file, so this test discriminates identity-based retirement.
+  await page.locator("textarea").fill("edited while acknowledging")
   await page.evaluate(() => window.landingFixture.acceptSend())
-  // Identity-based retirement removes the consumed file even though the persisted
-  // draft still names the retired project URL.
   await page.getByText("submitted.txt", { exact: true }).waitFor({ state: "detached" })
-  expect(await page.getByText("later.txt", { exact: true }).count()).toBe(1)
+  // The newer text is the user's own edit: retirement must not clear it.
+  expect(await page.locator("textarea").inputValue()).toBe("edited while acknowledging")
 })
 
 test("an upload resolving after discard cannot write into the reacquired folder's draft", async () => {
