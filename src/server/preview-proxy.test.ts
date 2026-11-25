@@ -59,6 +59,21 @@ describe("preview proxy", () => {
     expect(authorization).toBeNull()
   })
 
+  it("strips the device bearer however the scheme is cased, since authentication accepts any casing", async () => {
+    for (const scheme of ["bearer", "BEARER", "bEaReR"]) {
+      const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", {
+        headers: { Authorization: `${scheme} memosync_device_0123456789abcdef0123456789abcdef0123456789abcdef` },
+      })
+      let authorization: string | null | undefined
+      const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+        authorization = new Headers(init?.headers).get("authorization")
+        return new Response("ok")
+      }) as typeof fetch
+      await proxyPreviewRequest(req, new URL(req.url), 8901, fetchImpl)
+      expect(authorization).toBeNull()
+    }
+  })
+
   it("preserves project-owned authorization headers inside the preview", async () => {
     const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", {
       headers: { Authorization: "Bearer project-api-token" },
