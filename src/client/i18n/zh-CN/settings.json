@@ -259,6 +259,7 @@
   "sharingPairNewDevice": "配对新设备",
   "sharingPairInstructions": "用新设备上的 MemoSync 应用扫码，然后在这里批准它的请求。",
   "sharingPairingQrLabel": "配对二维码",
+  "sharingOtherAddresses": "其他地址",
   "sharingCopy": "复制",
   "sharingCopied": "已复制",
   "sharingExpiresIn": "{{time}} 后过期",

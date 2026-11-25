@@ -125,6 +125,12 @@ export interface ClientState {
   protectedDraftChatIds?: Set<string>
   /** Present when this socket authenticated with a paired-device bearer token. */
   deviceId?: string
+  /**
+   * True only when the upgrade carried host-level evidence (a password
+   * session, or loopback while no password exists). Absence is fail-closed
+   * for sockets that also carry a deviceId.
+   */
+  hostAuthenticated?: boolean
 }
 
 /** Model access service (src/server/model-access/). Optional so tests can omit it. */
@@ -1501,6 +1507,15 @@ export function createWsRouter({
           return
         }
         case "settings.writeAppSettingsPatch": {
+          // App settings include the remote-access toggle itself. A paired
+          // device is not host evidence: without this check one compromised
+          // device token could disable pairing protections or otherwise take
+          // control of host configuration. A socket that presented both a
+          // device token and host-level evidence is explicitly marked by the
+          // HTTP upgrade and keeps full access.
+          if (ws.data.deviceId && ws.data.hostAuthenticated !== true) {
+            throw new Error("Writing app settings requires host access")
+          }
           const snapshot = await resolvedAppSettings.writePatch(command.patch)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result: snapshot })
           return

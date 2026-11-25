@@ -243,6 +243,63 @@ export function authorizeMemoSyncRequest(args: {
     || (!args.passwordAuthEnabled && args.isLoopbackClient)
 }
 
+// Deliberately self-contained: a passwordless LAN browser must receive a
+// usable explanation without fetching any asset that would itself be gated.
+// The 403 status is intentional — this is an authorization interstitial, not
+// the application shell.
+const REMOTE_ACCESS_INTERSTITIAL_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MemoSync access approval required</title>
+<style>
+:root{color-scheme:light}
+*{box-sizing:border-box}
+body{
+margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;
+background:#faf9f7;color:#302d29;
+font:14px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+}
+.card{
+width:min(100%,420px);padding:28px;border:1px solid rgba(70,60,45,.1);
+border-radius:18px;background:#fffefb;box-shadow:0 12px 34px rgba(74,64,51,.08);
+}
+.brand{margin-bottom:18px;color:#8a8176;font-size:12px;font-weight:600;letter-spacing:.08em;text-transform:uppercase}
+h1{margin:0 0 10px;font-size:20px;font-weight:600;letter-spacing:-.01em}
+p{margin:0;color:#6f6961}
+</style>
+</head>
+<body>
+<main class="card" data-memosync-access-interstitial>
+<div class="brand">MemoSync</div>
+<h1>Access approval required</h1>
+<p>This MemoSync host requires access approval. Pair the mobile app using the pairing flow on the host, or ask the host to set an access password.</p>
+</main>
+</body>
+</html>`
+
+function remoteAccessInterstitialResponse() {
+  return new Response(REMOTE_ACCESS_INTERSTITIAL_HTML, {
+    status: 403,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store",
+    },
+  })
+}
+
+/** Browser document navigations carry text/html in Accept. API/WebSocket
+ * paths and extension-bearing static assets are never treated as documents;
+ * extensionless paths remain SPA routes because the client router uses them. */
+function isHtmlDocumentNavigationRequest(req: Request, url: URL) {
+  if (req.method !== "GET" && req.method !== "HEAD") return false
+  if (!req.headers.get("accept")?.toLowerCase().includes("text/html")) return false
+  if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) return false
+  const finalSegment = url.pathname.split("/").at(-1) ?? ""
+  return !/\.[a-z0-9]+$/i.test(finalSegment)
+}
+
 // Device bearer tokens are replayable by an attacker on the network path;
 // LAN pairing is intentionally limited to trusted networks until token-bound
 // transport hardening lands.
@@ -1017,6 +1074,12 @@ async function startLockedMemoSyncServer(
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
           const clientAddress = serverInstance.requestIP(req)?.address ?? null
+          const isLoopbackClient = isLoopbackClientAddress(clientAddress)
+          const sessionAuthenticated = auth?.isAuthenticated(req) ?? false
+          // Host-level evidence is a password session or the
+          // loopback-no-password exemption — never a device bearer token.
+          const hostAuthenticated = sessionAuthenticated || (auth === null && isLoopbackClient)
+          const htmlDocumentNavigation = isHtmlDocumentNavigationRequest(req, url)
 
           // Dev-server preview requests encode the target port in either a
           // localhost subdomain or /__memosync/preview/<port> path, then proxy
@@ -1039,9 +1102,9 @@ async function startLockedMemoSyncServer(
               ? auth.isPreviewAuthenticated(req, previewPort)
               : false
             const previewUpstreamAuthorized = proxiesPreviewUpstream && authorizeMemoSyncRequest({
-              isLoopbackClient: isLoopbackClientAddress(clientAddress),
+              isLoopbackClient,
               passwordAuthEnabled: auth !== null,
-              sessionAuthenticated: (auth?.isAuthenticated(req) ?? false) || previewCredentialAuthenticated,
+              sessionAuthenticated: sessionAuthenticated || previewCredentialAuthenticated,
               deviceAuthenticated: authenticatedPreviewDevice !== null,
             })
             if (auth && url.pathname === PREVIEW_CALLBACK_PATH) {
@@ -1115,7 +1178,7 @@ async function startLockedMemoSyncServer(
           }
 
           let authenticatedDevice: Device | null = null
-          if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
+          if (url.pathname === "/ws" || url.pathname.startsWith("/api/") || htmlDocumentNavigation) {
             authenticatedDevice = await authenticateDeviceRequest(req)
           }
 
@@ -1160,8 +1223,6 @@ async function startLockedMemoSyncServer(
           }
 
           if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
-            const isLoopbackClient = isLoopbackClientAddress(clientAddress)
-            const sessionAuthenticated = auth?.isAuthenticated(req) ?? false
             const authorized = authorizeMemoSyncRequest({
               isLoopbackClient,
               passwordAuthEnabled: auth !== null,
@@ -1181,9 +1242,7 @@ async function startLockedMemoSyncServer(
               port: actualPort,
               bindHost: actualBindHost,
               remoteAccessEnabled,
-              // Host-level evidence is a password session or the
-              // loopback-no-password exemption — never a device bearer token.
-              hostAuthenticated: sessionAuthenticated || (auth === null && isLoopbackClient),
+              hostAuthenticated,
             })
             if (remoteAccessResponse) {
               return remoteAccessResponse
@@ -1195,6 +1254,7 @@ async function startLockedMemoSyncServer(
               data: {
                 subscriptions: new Map(),
                 snapshotSignatures: new Map(),
+                hostAuthenticated,
                 ...(authenticatedDevice ? { deviceId: authenticatedDevice.id } : {}),
               },
             })
@@ -1276,6 +1336,21 @@ async function startLockedMemoSyncServer(
           // filesystem so users can select a path where the agent runs.
           if (url.pathname === "/api/workspace/dirs") {
             return uiJson({ data: listWorkspaceDirectories(url.searchParams.get("path") ?? undefined) })
+          }
+
+          // Without a password there is no sign-in wall for a LAN browser to
+          // discover. Do not hand it an app shell whose every API and socket
+          // call then fails; explain pairing/password approval instead. When
+          // a password exists the app's own auth wall remains the correct UX.
+          if (
+            htmlDocumentNavigation
+            && !isLoopbackClient
+            && remoteAccessEffective()
+            && auth === null
+            && !sessionAuthenticated
+            && authenticatedDevice === null
+          ) {
+            return remoteAccessInterstitialResponse()
           }
 
           return serveStatic(distDir, url.pathname)

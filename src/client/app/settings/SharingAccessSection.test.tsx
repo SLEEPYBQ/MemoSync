@@ -126,6 +126,30 @@ describe("pairing while active", () => {
     expect(html).toContain("memosync://pair?host=192.168.1.5&amp;port=5175")
     expect(html).toContain(">Copy</button>")
     expect(html).toContain("Scan with the MemoSync app on the new device")
+    expect(html).not.toContain("Other addresses")
+  })
+
+  test("renders additional lan urls as selectable copyable rows in a compact disclosure", () => {
+    const html = renderGroups({
+      enabled: true,
+      status: {
+        enabled: true,
+        active: true,
+        lanUrls: [
+          "http://192.168.1.5:5175",
+          "http://10.0.0.8:5175",
+          "http://198.18.0.2:5175",
+        ],
+      },
+    })
+
+    expect(html).toContain("<details")
+    expect(html).toContain("Other addresses")
+    expect(html).toContain("http://10.0.0.8:5175")
+    expect(html).toContain("http://198.18.0.2:5175")
+    expect(html).toContain("select-text")
+    // One copy action for the primary pairing link, plus one per alternate.
+    expect(html.match(/>Copy<\/button>/g)).toHaveLength(3)
   })
 
   test("hides the QR row when no lan url is usable", () => {

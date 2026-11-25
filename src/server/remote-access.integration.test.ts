@@ -5,6 +5,7 @@ import { networkInterfaces, tmpdir } from "node:os"
 import path from "node:path"
 import { startMemoSyncServer, authorizeMemoSyncRequest, isLoopbackBindHost, isLoopbackClientAddress, listRemoteAccessLanUrls, remoteAccessLanAddressRank } from "./server"
 import { DEVICE_TOKEN_PREFIX, formatPairingCode } from "./devices"
+import type { ClientCommand } from "../shared/protocol"
 
 const tempDirs: string[] = []
 const liveServers: Array<{ stop: () => Promise<void> }> = []
@@ -56,6 +57,10 @@ function firstLanIpv4() {
     if (address) return address
   }
   return null
+}
+
+const HTML_NAVIGATION_HEADERS = {
+  Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 async function pairDevice(baseUrl: string, authHeaders: Record<string, string> = {}) {
@@ -165,17 +170,23 @@ function rawHttpExchange(port: number, requestText: string) {
   })
 }
 
-async function writeRemoteAccessSetting(baseUrl: string, enabled: boolean, headers: Record<string, string> = {}) {
-  const ws = createWebSocketWithHeaders(`${baseUrl.replace(/^http/, "ws")}/ws`, headers)
-  await waitForWebSocketOpen(ws)
-  const id = `write-remote-access-${enabled}`
-  const ack = new Promise<unknown>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("settings write ack timed out")), 5_000)
+type WsCommandResponse = {
+  type?: string
+  id?: string
+  message?: string
+  result?: unknown
+}
+
+function sendWsCommand(ws: WebSocket, id: string, command: ClientCommand) {
+  const response = new Promise<WsCommandResponse>((resolve, reject) => {
+    const timer = setTimeout(() => finish(() => reject(new Error(`command ${id} timed out`))), 5_000)
     const finish = (callback: () => void) => {
       clearTimeout(timer)
+      ws.removeEventListener("message", onMessage)
+      ws.removeEventListener("close", onClose)
       callback()
     }
-    ws.addEventListener("message", (event) => {
+    const onMessage = (event: MessageEvent) => {
       void (async () => {
         try {
           const raw = typeof event.data === "string"
@@ -183,28 +194,38 @@ async function writeRemoteAccessSetting(baseUrl: string, enabled: boolean, heade
             : event.data instanceof Blob
               ? await event.data.text()
               : String(event.data)
-          const payload = JSON.parse(raw) as { type?: string; id?: string; message?: string }
+          const payload = JSON.parse(raw) as WsCommandResponse
           if (payload.id !== id) return
-          if (payload.type === "ack") finish(() => resolve(payload))
-          else finish(() => reject(new Error(payload.message ?? "settings write failed")))
+          finish(() => resolve(payload))
         } catch (error) {
           finish(() => reject(error))
         }
       })()
-    })
-    ws.addEventListener("close", () => finish(() => reject(new Error("WebSocket closed before settings write ack"))), { once: true })
+    }
+    const onClose = () => finish(() => reject(new Error(`WebSocket closed before command ${id} answered`)))
+    ws.addEventListener("message", onMessage)
+    ws.addEventListener("close", onClose)
   })
   ws.send(JSON.stringify({
     v: 1,
     type: "command",
     id,
-    command: {
+    command,
+  }))
+  return response
+}
+
+async function writeRemoteAccessSetting(baseUrl: string, enabled: boolean, headers: Record<string, string> = {}) {
+  const ws = createWebSocketWithHeaders(`${baseUrl.replace(/^http/, "ws")}/ws`, headers)
+  await waitForWebSocketOpen(ws)
+  try {
+    const payload = await sendWsCommand(ws, `write-remote-access-${enabled}`, {
       type: "settings.writeAppSettingsPatch",
       patch: { remoteAccess: { enabled } },
-    },
-  }))
-  try {
-    await ack
+    })
+    if (payload.type !== "ack") {
+      throw new Error(payload.message ?? "settings write failed")
+    }
   } finally {
     ws.close()
   }
@@ -335,6 +356,53 @@ describe("remote access HTTP integration", () => {
     expect(payload.devices[0]).toMatchObject({ id: paired.device.id, name: "Test Phone" })
     expect(payload.devices[0]).not.toHaveProperty("token")
     expect(payload.devices[0]).not.toHaveProperty("tokenHash")
+  })
+
+  test("serves a passwordless LAN navigation interstitial while loopback and paired devices reach the app shell", async () => {
+    const { baseUrl, server } = await startRemoteAccessServer({ persistedRemoteAccess: true })
+
+    const loopback = await fetch(`${baseUrl}/`, { headers: HTML_NAVIGATION_HEADERS })
+    expect(loopback.status).toBe(200)
+    const loopbackHtml = await loopback.text()
+    expect(loopbackHtml).toContain('<div id="root"')
+    expect(loopbackHtml).not.toContain("data-memosync-access-interstitial")
+
+    const lanAddress = firstLanIpv4()
+    if (!lanAddress) return
+    const lanBaseUrl = `http://${lanAddress}:${server.port}`
+    const unauthenticated = await fetch(`${lanBaseUrl}/`, { headers: HTML_NAVIGATION_HEADERS })
+    // 403 is deliberate: the response is an authorization interstitial, not
+    // the application shell, even though browsers render its explanatory HTML.
+    expect(unauthenticated.status).toBe(403)
+    const interstitialHtml = await unauthenticated.text()
+    expect(interstitialHtml).toContain("data-memosync-access-interstitial")
+    expect(interstitialHtml).toContain("Pair the mobile app using the pairing flow on the host")
+    expect(interstitialHtml).not.toContain('<div id="root"')
+
+    // Navigation detection must not swallow static assets, even when their
+    // request is artificially given a document-like Accept header.
+    const asset = await fetch(`${lanBaseUrl}/icon-192.png`, { headers: HTML_NAVIGATION_HEADERS })
+    expect(asset.status).toBe(200)
+    expect(asset.headers.get("content-type")).toContain("image/png")
+
+    const paired = await pairDevice(baseUrl)
+    const deviceNavigation = await fetch(`${lanBaseUrl}/`, {
+      headers: { ...HTML_NAVIGATION_HEADERS, Authorization: `Bearer ${paired.token}` },
+    })
+    expect(deviceNavigation.status).toBe(200)
+    expect(await deviceNavigation.text()).toContain('<div id="root"')
+  })
+
+  test("does not intercept LAN navigations when password auth can show the app sign-in wall", async () => {
+    const { server } = await startRemoteAccessServer({ password: "secret", persistedRemoteAccess: true })
+    const lanAddress = firstLanIpv4()
+    if (!lanAddress) return
+
+    const response = await fetch(`http://${lanAddress}:${server.port}/`, { headers: HTML_NAVIGATION_HEADERS })
+    expect(response.status).toBe(200)
+    const html = await response.text()
+    expect(html).toContain('<div id="root"')
+    expect(html).not.toContain("data-memosync-access-interstitial")
   })
 
   test("honors an explicit loopback host override while reporting that remote access is not active", async () => {
@@ -479,6 +547,58 @@ describe("remote access HTTP integration", () => {
     expect(afterRevoke.status).toBe(401)
     const wsAfterRevoke = await fetch(`${baseUrl}/ws`, { headers: deviceHeaders })
     expect(wsAfterRevoke.status).toBe(401)
+  })
+
+  test("rejects settings writes from a device-token websocket while ordinary chat commands still work", async () => {
+    const { baseUrl, server, dataDir } = await startRemoteAccessServer({ password: "secret", persistedRemoteAccess: true })
+    const cookie = await login(baseUrl)
+    const authHeaders = { Cookie: cookie }
+    const paired = await pairDevice(baseUrl, authHeaders)
+    const project = await server.store.openProject(path.join(dataDir, "device-command-project"), "Device Command Project")
+
+    const deviceWs = createWebSocketWithHeaders(`${baseUrl.replace(/^http/, "ws")}/ws`, {
+      Authorization: `Bearer ${paired.token}`,
+    })
+    await waitForWebSocketOpen(deviceWs)
+    try {
+      const settingsWrite = await sendWsCommand(deviceWs, "device-settings-write", {
+        type: "settings.writeAppSettingsPatch",
+        patch: { remoteAccess: { enabled: false } },
+      })
+      expect(settingsWrite.type).toBe("error")
+      expect(settingsWrite.message).toContain("requires host access")
+
+      const chatCreate = await sendWsCommand(deviceWs, "device-chat-create", {
+        type: "chat.create",
+        projectId: project.id,
+      })
+      expect(chatCreate.type).toBe("ack")
+      expect(chatCreate.result).toMatchObject({ chatId: expect.any(String) })
+    } finally {
+      deviceWs.close()
+    }
+
+    // A password session is host evidence even when the same write is sent
+    // over a websocket rather than the settings HTTP/UI path.
+    const hostWs = createWebSocketWithHeaders(`${baseUrl.replace(/^http/, "ws")}/ws`, authHeaders)
+    await waitForWebSocketOpen(hostWs)
+    try {
+      const hostWrite = await sendWsCommand(hostWs, "host-settings-write", {
+        type: "settings.writeAppSettingsPatch",
+        patch: { remoteAccess: { enabled: true } },
+      })
+      expect(hostWrite.type).toBe("ack")
+    } finally {
+      hostWs.close()
+    }
+
+    const status = await fetch(`${baseUrl}/api/remote-access/status`, { headers: authHeaders })
+    expect(await status.json()).toMatchObject({ enabled: true })
+  })
+
+  test("lets a loopback websocket write app settings while no password exists", async () => {
+    const { baseUrl } = await startRemoteAccessServer()
+    await writeRemoteAccessSetting(baseUrl, true)
   })
 
   test("forbids device tokens on all pairing-admin and device-management endpoints without mutating state", async () => {

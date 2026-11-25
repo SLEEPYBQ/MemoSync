@@ -259,6 +259,7 @@
   "sharingPairNewDevice": "Pair a new device",
   "sharingPairInstructions": "Scan with the MemoSync app on the new device, then approve its request here.",
   "sharingPairingQrLabel": "Pairing QR code",
+  "sharingOtherAddresses": "Other addresses",
   "sharingCopy": "Copy",
   "sharingCopied": "Copied",
   "sharingExpiresIn": "Expires in {{time}}",

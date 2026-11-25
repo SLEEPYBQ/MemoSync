@@ -64,7 +64,7 @@ function PairingQrCode({ value }: { value: string }) {
 }
 
 /** Inline description action; flips to "Copied" briefly after a successful write. */
-function CopyPairingUrlButton({ value }: { value: string }) {
+function CopyUrlButton({ value }: { value: string }) {
   useI18n()
   const [copied, setCopied] = useState(false)
   useEffect(() => {
@@ -126,6 +126,7 @@ export function SharingAccessGroups({
   const busy = busyIds ?? new Set<string>()
   const active = status?.active === true
   const pairing = status ? buildPairingUrl(status.lanUrls) : null
+  const alternateLanUrls = status?.lanUrls.slice(1) ?? []
   // The bind cannot change on a running server, so a mismatch between the
   // persisted setting and the live bind means a restart is pending — in
   // either direction.
@@ -162,8 +163,23 @@ export function SharingAccessGroups({
                   <p>{t("settings:sharingPairInstructions")}</p>
                   <p className="flex flex-wrap items-baseline gap-x-2">
                     <span className="break-all font-mono text-[12px]">{pairing.pairingUrl}</span>
-                    <CopyPairingUrlButton value={pairing.pairingUrl} />
+                    <CopyUrlButton value={pairing.pairingUrl} />
                   </p>
+                  {alternateLanUrls.length > 0 ? (
+                    <details className="pt-1 text-[12px] text-muted-foreground">
+                      <summary className="w-fit cursor-pointer select-none font-medium text-foreground/80 transition-colors hover:text-foreground">
+                        {t("settings:sharingOtherAddresses")}
+                      </summary>
+                      <div className="mt-1.5 space-y-1">
+                        {alternateLanUrls.map((lanUrl) => (
+                          <div key={lanUrl} className="flex max-w-xl items-center gap-2">
+                            <span className="min-w-0 flex-1 select-text break-all font-mono text-[11.5px]">{lanUrl}</span>
+                            <CopyUrlButton value={lanUrl} />
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : null}
                 </div>
               )}
             >
