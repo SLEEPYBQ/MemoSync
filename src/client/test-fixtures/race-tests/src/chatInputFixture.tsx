@@ -7,6 +7,7 @@ import { TooltipProvider } from "../../../components/ui/tooltip"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { useChatInputStore } from "../../../stores/chatInputStore"
 import { ChatInput } from "../../../components/chat-ui/ChatInput"
+import { AppSocket } from "../../../app/socket"
 
 interface SubmissionRecord {
   value: string
@@ -24,9 +25,11 @@ interface ChatInputFixtureApi {
   rejectSubmit: (index: number, reason: string) => void
   draft: (chatId: string) => string
   attachments: (chatId: string) => unknown[]
+  connectDraft: (url: string, draftChatId: string) => void
 }
 
 const submissions: SubmissionRecord[] = []
+let connectedDraft: { socket: AppSocket; chatId: string } | undefined
 
 const fixtureApi: ChatInputFixtureApi = {
   setChatId: () => {},
@@ -37,6 +40,11 @@ const fixtureApi: ChatInputFixtureApi = {
   rejectSubmit: (index, reason) => submissions[index]?.reject(new Error(reason)),
   draft: (chatId) => useChatInputStore.getState().getDraft(chatId),
   attachments: (chatId) => useChatInputStore.getState().getAttachmentDrafts(chatId),
+  connectDraft: (url, chatId) => {
+    const socket = new AppSocket(url)
+    socket.start()
+    connectedDraft = { socket, chatId }
+  },
 }
 
 export function mountChatInputFixture(root: HTMLElement) {
@@ -47,10 +55,15 @@ export function mountChatInputFixture(root: HTMLElement) {
     fixtureApi.setChatId = setChatId
     fixtureApi.setProjectId = setProjectId
     fixtureApi.setMounted = setMounted
-    const onSubmit: ComponentProps<typeof ChatInput>["onSubmit"] = (value, options) =>
-      new Promise((resolve, reject) => {
+    const onSubmit: ComponentProps<typeof ChatInput>["onSubmit"] = async (value, options) => {
+      if (connectedDraft) {
+        await connectedDraft.socket.command({ type: "chat.send", chatId: connectedDraft.chatId, content: value, ...options })
+        return
+      }
+      return new Promise((resolve, reject) => {
         submissions.push({ value, options, resolve, reject })
       })
+    }
 
     return (
       <main>

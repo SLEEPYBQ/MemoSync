@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { AttachmentsNotAdmittedError } from "../shared/protocol"
 import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
 import {
   AgentCoordinator,
@@ -24,6 +25,31 @@ import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { testKeyring, fakeExecutableResolver } from "./model-access/test-fixtures"
 import type { EngineRuntime } from "./model-access/runtime"
+
+test("slash validation refuses the upload; a failing prompt write does not prove refusal", async () => {
+  const store = createFakeStore()
+  const coordinator = new AgentCoordinator({
+    store: store as never, onStateChange() {},
+    resolvePiConnection: async () => { throw new Error("Unexpected provider boot") },
+  })
+  const attachments: ChatAttachment[] = [{
+    id: "upload", kind: "file", displayName: "notes.txt", size: 1, mimeType: "text/plain",
+    absolutePath: "/fixture/notes.txt", relativePath: "notes.txt", contentUrl: "/fixture/notes.txt",
+  }]
+  const options = { chatId: "chat-1", provider: "pi" as const, attachments }
+  try {
+    await expect(coordinator.send({ type: "chat.send", ...options, content: "/not-a-command" })).rejects.toBeInstanceOf(AttachmentsNotAdmittedError)
+    await expect(coordinator.enqueue({ type: "message.enqueue", ...options, content: "/not-a-command" })).rejects.toBeInstanceOf(AttachmentsNotAdmittedError)
+    expect(store.messages).toHaveLength(0)
+    expect(store.queuedMessages).toHaveLength(0)
+    const failure = new Error("Synthetic failure after writing")
+    store.appendMessage = async (_id, entry) => { store.messages.push(entry); throw failure }
+    await expect(coordinator.send({ type: "chat.send", ...options, content: "fixture" })).rejects.toBe(failure)
+    expect(store.messages.at(-1)).toMatchObject({ kind: "user_prompt", attachments })
+  } finally {
+    await coordinator.shutdownRuntime()
+  }
+})
 
 for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
   for (const payload of ["top-level", "legacy", "both", "default"] as const) {

@@ -1,5 +1,17 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import type { ServerWebSocket } from "bun"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Page, Route } from "playwright"
+import { AgentCoordinator } from "../../../server/agent"
+import { EventStore } from "../../../server/event-store"
+import { KeybindingsManager } from "../../../server/keybindings"
+import { getProjectUploadDir } from "../../../server/paths"
+import { handleProjectUpload, handleProjectUploadDelete } from "../../../server/server"
+import { TerminalManager } from "../../../server/terminal-manager"
+import { DraftUploadReceipts } from "../../../server/uploads"
+import { createWsRouter, type ClientState } from "../../../server/ws-router"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
 interface ChatInputFixtureApi {
@@ -11,6 +23,7 @@ interface ChatInputFixtureApi {
   rejectSubmit: (index: number, reason: string) => void
   draft: (chatId: string) => string
   attachments: (chatId: string) => Array<{ id: string; displayName: string }>
+  connectDraft: (url: string, draftChatId: string) => void
 }
 
 let harness: Awaited<ReturnType<typeof startMountedRaceHarness>>
@@ -147,6 +160,92 @@ describe("mounted ChatInput submission races", () => {
     ])
     await settle(target, 0, true)
     expect(deletes.map(url => new URL(url).pathname)).toEqual(["/api/projects/fixture/uploads/2"])
+  })
+
+  test.each([false, true])("removing a rejected landing slash upload deletes it only if no earlier reply was lost (lost reply=%s)", async loseFirstReply => {
+    const target = await openFixture()
+    const dir = await mkdtemp(join(tmpdir(), "memosync-upload-refusal-"))
+    const store = new EventStore(join(dir, "data"))
+    const receipts = new DraftUploadReceipts()
+    const agent = new AgentCoordinator({ store, onStateChange() {} })
+    const router = createWsRouter({
+      store, agent, terminals: new TerminalManager(), keybindings: new KeybindingsManager(join(dir, "keybindings.json")),
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Fixture", updateManager: null,
+    })
+    try {
+      const workspace = join(dir, "workspace")
+      await mkdir(workspace)
+      await store.initialize()
+      const { projectId, chatId } = await store.ensureDraft({ localPath: workspace })
+      // Use the production handlers without starting discovery, reading user
+      // settings or exposing a command socket outside this browser fixture.
+      const deletes: string[] = []
+      await target.route("**/auth/status", route => route.fulfill({ json: { enabled: false } }))
+      await target.route("**/uploads**", async route => {
+        const req = route.request()
+        const url = new URL(req.url())
+        const request = new Request(url, { method: req.method(), headers: req.headers(), body: req.postDataBuffer() })
+        if (req.method() === "DELETE") deletes.push(url.pathname)
+        const result = await handleProjectUpload(request, url, store, receipts) ?? await handleProjectUploadDelete(request, url, store, receipts)
+        await route.fulfill({ status: result?.status ?? 404, json: await result?.json() })
+      })
+      let dropReply = loseFirstReply
+      await target.routeWebSocket("**/refusal-ws", peer => {
+        const socket = {
+          data: { subscriptions: new Map(), snapshotSignatures: new Map() },
+          send(raw: string) {
+            if (dropReply && JSON.parse(raw).type === "error") {
+              dropReply = false
+              void peer.close({ code: 1001 })
+            } else peer.send(raw)
+            return raw.length
+          },
+        } as unknown as ServerWebSocket<ClientState>
+        router.handleOpen(socket)
+        peer.onMessage(raw => { void router.handleMessage(socket, raw.toString()) })
+        peer.onClose(() => router.handleClose(socket))
+      })
+      await target.reload()
+      await target.getByTestId("fixture-ready").waitFor({ state: "attached" })
+      await target.evaluate(({ projectId, chatId }) => {
+        const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+        fixture.setChatId(null)
+        fixture.setProjectId(projectId)
+        fixture.connectDraft(`ws://${location.host}/refusal-ws`, chatId)
+      }, { projectId, chatId })
+      await attach(target, "notes.txt", `landing:${projectId}`)
+      const path = join(getProjectUploadDir(workspace), "notes.txt")
+      expect(await Bun.file(path).text()).toBe("notes.txt")
+      const input = target.locator("textarea")
+      const send = target.getByRole("button", { name: "Send", exact: true })
+      await input.fill("/not-a-command")
+      await send.click()
+      if (loseFirstReply) {
+        await target.getByText("Disconnected", { exact: true }).waitFor()
+        await send.click()
+      }
+      await target.getByText("Native commands do not accept attachments", { exact: true }).waitFor()
+      expect(store.getMessages(chatId)).toEqual([])
+      expect(store.getQueuedMessages(chatId)).toEqual([])
+      const remove = target.getByRole("button", { name: "Remove notes.txt" })
+      if (loseFirstReply) {
+        await remove.click()
+        await remove.waitFor({ state: "detached" })
+        expect(deletes).toEqual([])
+        expect(await Bun.file(path).text()).toBe("notes.txt")
+      } else {
+        const [deleted] = await Promise.all([target.waitForResponse(r => r.request().method() === "DELETE"), remove.click()])
+        expect(await deleted.json()).toEqual({ ok: true })
+        expect(deletes).toEqual([`/api/projects/${projectId}/uploads/notes.txt`])
+        expect(await Bun.file(path).exists()).toBe(false)
+      }
+    } finally {
+      await target.close()
+      page = undefined
+      router.dispose()
+      await agent.shutdownRuntime()
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   test("treats editing away and back as a newer draft revision", async () => {
