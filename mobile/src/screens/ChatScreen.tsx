@@ -671,6 +671,10 @@ export function ChatScreen({ route, navigation }: Props) {
       setSidebarUnread(value ? sidebarChatIsUnread(value, chatId) : false)
     })
     return () => {
+      // Invalidate queued/in-flight window backfills as well as the topic
+      // subscription; the next page response must not continue paging or write
+      // state for a closed chat.
+      historyGenerationRef.current += 1
       offStatus()
       unsubscribe()
       unsubscribeSidebar()
