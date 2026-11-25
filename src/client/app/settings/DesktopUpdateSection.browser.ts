@@ -90,6 +90,19 @@ test("macOS offers the verified installer with Chinese replacement instructions"
   expect(await page.evaluate(() => window.desktopUpdateFixture.calls())).toEqual(["install"])
 })
 
+test("AppImage users can reveal a verified download while offline, or check for a newer one", async () => {
+  await open("?platform=linux")
+  await page.evaluate(() => window.desktopUpdateFixture.publish({ status: "downloaded", latestVersion: "1.1.0", error: "Network unavailable" }))
+  await page.getByRole("status").filter({ hasText: "1.1.0" }).waitFor()
+  await page.getByText(/quit MemoSync before launching it from that folder/).waitFor()
+  await page.getByRole("button", { name: "Show AppImage in folder" }).click()
+  await page.evaluate(() => window.desktopUpdateFixture.finish({ status: "downloaded", error: null }))
+  await page.getByRole("button", { name: "Check for updates" }).click()
+  await page.evaluate(() => window.desktopUpdateFixture.finish({ status: "available", latestVersion: "1.2.0" }))
+  await page.getByRole("button", { name: "Download update" }).waitFor()
+  expect(await page.evaluate(() => window.desktopUpdateFixture.calls())).toEqual(["install", "check"])
+})
+
 test("late initial replies cannot overwrite download progress and unmount removes the listener", async () => {
   await open("?deferInitial")
   await page.evaluate(() => window.desktopUpdateFixture.publish({ status: "downloading", latestVersion: "1.1.0", progress: 73 }))

@@ -94,6 +94,18 @@ describe("desktop update IPC", () => {
     assert.deepEqual(f.calls, ["install"])
   })
 
+  it("does not apply an old confirmation to a newer download", async () => {
+    const f = fixture()
+    let answer
+    f.setSnapshot({ status: "downloaded", installMode: "automatic", latestVersion: "1.0.1" })
+    f.setConfirm(() => new Promise(resolve => { answer = resolve }))
+    const pending = f.invoke("install")
+    f.setSnapshot({ status: "downloaded", installMode: "automatic", latestVersion: "1.0.2" })
+    answer(true)
+    assert.equal((await pending).latestVersion, "1.0.2")
+    assert.deepEqual(f.calls, [])
+  })
+
   it("opens a verified manual installer without promising an automatic restart", async () => {
     const f = fixture()
     f.setSnapshot({ status: "downloaded", installMode: "installer" })

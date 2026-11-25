@@ -9,7 +9,7 @@ const platform = parameters.get("platform") ?? "win32"
 let snapshot: DesktopUpdateSnapshot = {
   status: "idle", currentVersion: "1.0.0", latestVersion: null, releaseUrl: null,
   progress: null, error: null, lastCheckedAt: null,
-  installMode: platform === "darwin" ? "installer" : "automatic",
+  installMode: platform === "linux" ? "appimage" : platform === "darwin" ? "installer" : "automatic",
 }
 const listeners = new Set<(next: DesktopUpdateSnapshot) => void>()
 const calls: string[] = []

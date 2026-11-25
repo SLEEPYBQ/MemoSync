@@ -31,6 +31,10 @@ jobs:
         run: node --test desktop/policy.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
       - name: Release asset validation
         run: bun test desktop/release-assets.test.ts
+      - name: Test the locked update provider without building or running installers
+        run: |
+          bun install --cwd desktop --production --frozen-lockfile --ignore-scripts
+          node --test desktop/updater-provider.test.cjs
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

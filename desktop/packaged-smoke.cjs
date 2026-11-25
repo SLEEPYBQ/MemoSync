@@ -65,7 +65,7 @@ async function main() {
     assert.equal(await page.evaluate(() => window.memosyncDesktop.platform), process.platform)
     const update = await page.evaluate(() => window.memosyncDesktop.updates.getSnapshot())
     assert.equal(update.currentVersion, require("./package.json").version)
-    assert.ok(["automatic", "installer"].includes(update.installMode))
+    assert.ok(["automatic", "installer", "appimage"].includes(update.installMode))
     assert.notEqual(update.status, "unsupported")
     assert.equal(await page.evaluate(() => typeof window.memosyncDesktop.updates.onChange), "function")
     const preferences = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences())
