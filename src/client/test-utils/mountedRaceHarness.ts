@@ -31,7 +31,7 @@ export async function startMountedRaceHarness() {
   let uploadCount = 0
 
   return {
-    async openPage(view: MountedRaceView): Promise<Page> {
+    async openPage(view: MountedRaceView | "file-editor"): Promise<Page> {
       uploadCount = 0
       const page = await browser.newPage()
       page.setDefaultTimeout(5_000)
@@ -43,11 +43,26 @@ export async function startMountedRaceHarness() {
         if (response.status() >= 400) {
           void response.text().then((body) => {
             console.error(`[race fixture response ${response.status()}] ${response.url()}\n${body}`)
-          })
+          }).catch(() => {})
         }
       })
       await page.route("**/api/**", async (route) => {
         const url = new URL(route.request().url())
+        if (view === "file-editor") {
+          if (url.pathname === "/api/projects") {
+            await route.fulfill({ json: { data: [{ id: "project-a", title: "A" }, { id: "project-b", title: "B" }] } })
+            return
+          }
+          if (/\/files$/.test(url.pathname)) {
+            await route.fulfill({ json: { data: { dir: "", entries: [{ name: "note.txt", kind: "file", size: 6 }] } } })
+            return
+          }
+          if (url.pathname.endsWith("/content") && route.request().method() === "GET") {
+            const project = url.pathname.includes("project-a") ? "a" : "b"
+            await route.fulfill({ body: `base ${project}`, headers: { etag: `"${project}-base"`, "content-type": "text/plain" } })
+            return
+          }
+        }
         if (url.pathname === "/api/providers") {
           await route.fulfill({
             contentType: "application/json",

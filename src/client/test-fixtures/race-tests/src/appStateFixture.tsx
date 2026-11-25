@@ -2,8 +2,11 @@ import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
+import { TooltipProvider } from "../../../components/ui/tooltip"
+import { FilesPanel } from "../../../components/chat-ui/FilesPanel"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { useAppState } from "../../../app/useAppState"
+import { useChatPageSidebarActions } from "../../../app/ChatPage/useChatPageSidebarActions"
 import { AppSocket } from "../../../app/socket"
 
 interface ChatSubscription {
@@ -19,6 +22,7 @@ interface HistoryRequest {
 }
 
 interface AppStateFixtureApi {
+  createdBranchBases: () => string[]
   transcriptRevision: () => number
   streamingText: () => string | null
   promptContents: () => string[]
@@ -33,8 +37,10 @@ interface AppStateFixtureApi {
 
 const subscriptions: ChatSubscription[] = []
 const historyRequests: HistoryRequest[] = []
+const createdBranchBases: string[] = []
 
 const fixtureApi: AppStateFixtureApi = {
+  createdBranchBases: () => [...createdBranchBases],
   transcriptRevision: () => 0,
   streamingText: () => null,
   promptContents: () => [],
@@ -79,7 +85,12 @@ Object.assign(AppSocket.prototype, {
       subscription.active = false
     }
   },
-  command(command: { type: string; chatId?: string; beforeCursor?: string }) {
+  command(command: { type: string; chatId?: string; beforeCursor?: string; baseBranchName?: string }) {
+    if (command.type === "chat.listBranches") return Promise.resolve({ currentBranchName: "feature/current", defaultBranchName: "main" })
+    if (command.type === "chat.createBranch") {
+      createdBranchBases.push(command.baseBranchName!)
+      return Promise.resolve({ ok: true })
+    }
     if (command.type === "settings.readAppSettings") {
       return Promise.resolve({
         browserSettingsMigrated: true,
@@ -118,7 +129,9 @@ export function mountAppStateFixture(root: HTMLElement) {
   let transcriptRevision = 0
   function AppStateHost() {
     const [activeChatId, setActiveChatId] = useState<string | null>("chat-a")
+    const [showFiles, setShowFiles] = useState(false)
     const state = useAppState(activeChatId)
+    const { handleCreateBranch } = useChatPageSidebarActions({ state, projectId: null, showRightSidebar: false })
     if (lastMessages !== state.messages) {
       lastMessages = state.messages
       transcriptRevision += 1
@@ -141,6 +154,10 @@ export function mountAppStateFixture(root: HTMLElement) {
     return (
       <main>
         <div data-testid="fixture-ready" />
+        <button onClick={() => setShowFiles(!showFiles)}>Toggle Files</button>
+        <button onClick={() => void state.handleSignOut()}>Sign out</button>
+        <button onClick={() => void handleCreateBranch()}>Create branch</button>
+        {showFiles && <TooltipProvider><FilesPanel projectId="project-a" /></TooltipProvider>}
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
         <button
