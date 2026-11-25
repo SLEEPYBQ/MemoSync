@@ -122,10 +122,11 @@ test("a retained Files draft is confirmed before logout; cancel and a failed req
     body: "base", headers: { etag: '"base"' },
   }))
   let requests = 0
+  let holdFirstRequest = false
   const release = Promise.withResolvers<void>()
   await target.route("**/auth/logout", async route => {
     requests++
-    if (requests === 1) await release.promise
+    if (requests === 1 && holdFirstRequest) await release.promise
     return route.fulfill({ status: requests === 1 ? 503 : 200, json: {} })
   })
   const toggle = target.getByRole("button", { name: "Toggle Files" })
@@ -139,13 +140,16 @@ test("a retained Files draft is confirmed before logout; cancel and a failed req
   const dialog = target.getByRole("dialog")
   await dialog.waitFor()
   expect(requests).toBe(0)
-  await dialog.getByRole("button", { name: "Cancel" }).click()
+  const cancel = dialog.getByRole("button", { name: "Cancel" })
+  await cancel.focus()
+  await cancel.press("Enter")
   await toggle.click()
   expect(await target.locator(".cm-content").innerText()).toBe("edit before sign-out")
   await toggle.click()
   expect(requests).toBe(0)
+  holdFirstRequest = true
   await signOut.click()
-  await dialog.getByRole("button", { name: "Discard edits and sign out" }).click()
+  await dialog.getByRole("button", { name: "Discard edits and sign out" }).press("Enter")
   await target.waitForFunction(() => document.body.inert)
   expect(await target.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true)
   release.resolve()

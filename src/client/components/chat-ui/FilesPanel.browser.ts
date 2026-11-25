@@ -120,7 +120,7 @@ describe("FilesPanel tree edits", () => {
     expect(await target.locator(".cm-content").innerText()).toBe("keep this edit")
   })
 
-  test("a missing file's restored draft blocks renaming into it until explicitly discarded", async () => {
+  test.each(["note.txt", "NOTE.txt"])("a missing file's restored draft blocks renaming to %s until explicitly discarded", async (name) => {
     page = await harness.openPage("file-editor")
     const target = page
     await target.getByRole("button", { name: "note.txt" }).first().click()
@@ -139,7 +139,7 @@ describe("FilesPanel tree edits", () => {
     await showFiles(target, true)
     await target.getByRole("button", { name: "scratch.txt" }).click()
     await target.locator(".cm-content").fill("keep source draft too")
-    await renameEntry(target, "scratch.txt", "note.txt")
+    await renameEntry(target, "scratch.txt", name)
     await target.getByText(/Close “note\.txt” in Files before renaming/).waitFor()
     expect(moves).toBe(0)
     expect(await target.locator(".cm-content").innerText()).toBe("keep source draft too")
@@ -148,8 +148,8 @@ describe("FilesPanel tree edits", () => {
     expect(await target.locator(".cm-content").innerText()).toBe("keep missing file's draft")
     target.once("dialog", dialog => void dialog.accept())
     await dest.getByTitle("Unsaved changes — close").click()
-    await renameEntry(target, "scratch.txt", "note.txt")
-    await dest.waitFor()
+    await renameEntry(target, "scratch.txt", name)
+    await target.getByTitle(name, { exact: true }).waitFor()
     expect(moves).toBe(1)
     expect(await target.locator(".cm-content").innerText()).toBe("keep source draft too")
   })

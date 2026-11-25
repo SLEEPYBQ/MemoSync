@@ -34,6 +34,12 @@ function needsProtection(buffer: FileBuffer) {
   return buffer.status === "ready" && (buffer.current !== buffer.original || buffer.saving)
 }
 
+// The browser cannot infer the workspace volume's case/normalization rules from its own OS.
+// Use a conservative comparison for reservations only; keep actual tab and file names exact.
+function reservationKey(path: string) {
+  return path.normalize("NFD").toUpperCase().normalize("NFC")
+}
+
 export function hasUnsavedFileDrafts() {
   return [...projects.values()].some(store => [...store.getSnapshot().buffers.values()].some(needsProtection))
 }
@@ -55,7 +61,7 @@ export class FileEditorDrafts {
   private snapshot: Snapshot = { tabs: [], active: null, buffers: new Map() }
   private listeners = new Set<() => void>()
   private mounts = 0
-  private renaming: { from: string; to: string } | null = null
+  private renaming: { fromKey: string; toKey: string } | null = null
 
   getSnapshot = () => this.snapshot
   subscribe = (listener: () => void) => {
@@ -87,18 +93,23 @@ export class FileEditorDrafts {
   }
 
   isRenaming(path: string) {
-    return this.renaming !== null && (isSameOrUnder(path, this.renaming.from) || isSameOrUnder(path, this.renaming.to))
+    if (!this.renaming) return false
+    const key = reservationKey(path)
+    return isSameOrUnder(key, this.renaming.fromKey) || isSameOrUnder(key, this.renaming.toKey)
   }
 
   async rename(from: string, to: string, move: () => Promise<boolean>) {
     if (this.renaming) return { status: "busy" } as const
+    const reservation = { fromKey: reservationKey(from), toKey: reservationKey(to) }
     for (const [path, buffer] of this.snapshot.buffers) {
+      const key = reservationKey(path)
       // Even a clean destination tab could be edited while the request is outstanding.
-      if (isSameOrUnder(path, to)) return { status: "open", path } as const
-      if (isSameOrUnder(path, from) && buffer.saving) return { status: "busy" } as const
+      // The exact source subtree itself follows the rename, including a case-only rename.
+      if (!isSameOrUnder(path, from) && isSameOrUnder(key, reservation.toKey)) return { status: "open", path } as const
+      if (isSameOrUnder(key, reservation.fromKey) && buffer.saving) return { status: "busy" } as const
     }
 
-    this.renaming = { from, to }
+    this.renaming = reservation
     try {
       if (!await move()) return { status: "failed" } as const
       // Read the latest state: the user may have typed, switched tabs, or unmounted.

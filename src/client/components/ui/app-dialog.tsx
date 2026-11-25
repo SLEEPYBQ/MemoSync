@@ -140,14 +140,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
           resolveCancel()
         }}
       >
-        <DialogContent
-          size="sm"
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.shiftKey || !dialogState || dialogState.kind !== "confirm") return
-            event.preventDefault()
-            resolveConfirm()
-          }}
-        >
+        <DialogContent size="sm">
           {dialogState ? (
             <>
               <DialogBody className="space-y-4">

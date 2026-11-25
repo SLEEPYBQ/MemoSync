@@ -87,6 +87,7 @@ describe("project file editor drafts", () => {
     release()
     const unexpectedMove = () => { throw new Error("A collision must not reach the filesystem") }
     expect(await store.rename("incoming", "archive", unexpectedMove)).toEqual({ status: "open", path: "archive/deep/file.txt" })
+    expect(await store.rename("incoming", "Archive", unexpectedMove)).toEqual({ status: "open", path: "archive/deep/file.txt" })
     expect(await store.rename("archive", "elsewhere", unexpectedMove)).toEqual({ status: "busy" })
     expect(store.getSnapshot().buffers.get("archive/deep/file.txt")).toEqual(saving)
     store.clear()
@@ -100,6 +101,7 @@ describe("project file editor drafts", () => {
     const gate = Promise.withResolvers<boolean>()
     const move = store.rename("src", "dest", () => gate.promise)
     expect(store.isRenaming("dest/note.txt")).toBe(true)
+    expect(store.isRenaming("DEST/note.txt")).toBe(true)
     expect(store.isRenaming("src/note.txt")).toBe(true)
     expect(store.isRenaming("destination/note.txt")).toBe(false)
     store.patch("src/note.txt", draft.incarnation, { current: "typed during rename" })
@@ -113,6 +115,18 @@ describe("project file editor drafts", () => {
     expect(store.getSnapshot().active).toBe("dest/note.txt")
     expect(store.getSnapshot().buffers.get("dest/note.txt")?.current).toBe("typed during rename")
     store.clear()
+  })
+
+  test("an open source can follow its own case-only rename without claiming a separate destination tab", async () => {
+    const store = fileEditorDrafts("draft-rename-source-case")
+    const release = store.mount()
+    const draft = buffer("base", "edit")
+    open(store, "notes/a.txt", draft)
+    expect(await store.rename("notes", "Notes", async () => true)).toEqual({ status: "renamed" })
+    expect(store.getSnapshot().active).toBe("Notes/a.txt")
+    expect(store.getSnapshot().buffers.get("Notes/a.txt")).toEqual(draft)
+    store.clear()
+    release()
   })
 
   test("an empty unmount and remount keeps the same project owner", () => {
