@@ -1,0 +1,29 @@
+name: Native exports
+
+on:
+  pull_request:
+    paths:
+      - "scripts/export-data.ts"
+      - "src/server/data-export.test.ts"
+      - "src/server/standalone-export*.ts"
+      - ".github/workflows/export-compatibility.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-exports:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun test src/server/data-export.test.ts src/server/standalone-export.test.ts --timeout 30000

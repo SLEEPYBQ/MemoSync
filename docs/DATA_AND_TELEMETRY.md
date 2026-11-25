@@ -73,7 +73,12 @@ Even the default archive can contain private memory contents, settings, and
 paths. It is not anonymized: review it before sharing. Nothing is uploaded by
 the exporter. The archive is written as
 `memosync-export-<install-id>-<timestamp>[-full].tar.gz` in the current
-directory (it is gitignored).
+directory by default (it is gitignored). If that name is taken, the exporter
+adds `-2`, `-3`, and so on before `.tar.gz` rather than overwriting an archive.
+Choose an output directory outside the folders being archived. For example,
+`--full` cannot write into `experiments/`, since it includes that entire folder.
+The exporter ignores `TAR_OPTIONS` so personal tar defaults cannot change
+which files are included. On macOS and Linux, symbolic links are archived as links.
 
 ## Offline chat exports
 
