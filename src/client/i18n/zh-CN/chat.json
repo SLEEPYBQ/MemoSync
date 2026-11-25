@@ -4,6 +4,8 @@
   "unlock": "解锁",
   "checkingSession": "正在检查会话…",
   "waitingForYourResponse": "等待你的回复。",
+  "responseUnrecorded": "这条消息没有留下回复记录。请先检查工作区，再决定是否重新发送。",
+  "queuedConnectionMissing": "这条消息保存的连接不可用。你可以移除这条消息，换个连接重新提交，也可以选择另一条排队消息并立即发送。",
   "chatHistoryChangedWhileLoadingReopenTheChatToReload": "加载期间对话历史发生了变化，请重新打开对话。",
   "failedToLoadInterveningChatHistory": "无法加载中间的对话历史",
   "openAProjectFirst": "请先打开一个项目",

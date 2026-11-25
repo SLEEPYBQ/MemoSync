@@ -9,12 +9,16 @@ import { ArrowUp, X } from "lucide-react"
 
 interface QueuedUserMessageProps {
   message: QueuedChatMessage
+  connections?: readonly { id: string }[]
   onRemove: () => void
   onSendNow: () => void
 }
 
-export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMessageProps) {
+export function QueuedUserMessage({ message, connections, onRemove, onSendNow }: QueuedUserMessageProps) {
   useI18n()
+  const connectionId = message.modelOptions?.connectionId
+    ?? (message.provider && message.provider !== "opencode" ? message.modelOptions?.[message.provider]?.connectionId : undefined)
+  const missingConnection = connectionId && connections && !connections.some(connection => connection.id === connectionId)
   return (
     <div className="flex justify-end py-2">
       <div className="flex min-w-0 max-w-[85%] sm:max-w-[80%] flex-col items-end gap-1.5">
@@ -54,6 +58,8 @@ export function QueuedUserMessage({ message, onRemove, onSendNow }: QueuedUserMe
             </Button>}
             {message.rejection ? (
               <div className="col-span-2 pr-2 text-xs text-muted-foreground">{t("chat:staleQueuedNativeCommand")}</div>
+            ) : missingConnection ? (
+              <div className="col-span-2 pr-2 text-xs text-muted-foreground">{t("chat:queuedConnectionMissing")}</div>
             ) : null}
           </div>
           <Button
