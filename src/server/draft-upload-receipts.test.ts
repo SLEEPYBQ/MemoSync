@@ -95,3 +95,26 @@ test("a new native file at the same name is not owned by the old receipt", async
   expect(await f.abandon()).toBe(false)
   expect((await fs.readFile(f.physicalPath)).equals(f.bytes)).toBe(true)
 })
+
+test("a workspace reached through a symlinked alias keeps receipt authority over the real file", async () => {
+  const target = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "memosync-alias-target-")))
+  dirs.push(target)
+  const aliasParent = await fs.realpath(await fs.mkdtemp(path.join(tmpdir(), "memosync-alias-parent-")))
+  dirs.push(aliasParent)
+  const alias = path.join(aliasParent, "workspace-link")
+  await fs.symlink(target, alias)
+
+  const receipts = new DraftUploadReceipts(), draftWrites: DraftUploadWrite[] = []
+  const attachment = await persistProjectUpload({
+    projectId: "draft", localPath: alias, fileName: "sample.bin", bytes: Buffer.from("aliased bytes"),
+    tracking: { receipts, draftWrites },
+  })
+  // The public path keeps the caller's lexical form while the bytes land in the real workspace.
+  expect(attachment.absolutePath.startsWith(alias)).toBe(true)
+  const realFile = path.join(getProjectUploadDir(target), "sample.bin")
+  expect((await fs.readFile(realFile)).toString()).toBe("aliased bytes")
+
+  const ticket = receipts.publish(draftWrites[0]!)
+  expect(await receipts.discard(receipts.take("draft", "sample.bin", ticket)!)).toBe(true)
+  expect(await Bun.file(realFile).exists()).toBe(false)
+})

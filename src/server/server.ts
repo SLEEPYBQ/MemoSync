@@ -1219,9 +1219,15 @@ export async function handleProjectUploadDelete(
   if (!project) {
     return uiJson({ error: "Project not found" }, { status: 404 })
   }
+  // Without a receipt the caller proves which bytes it means to remove. A
+  // rebound or restored chip can name a file that has since been replaced;
+  // deleting by stored name alone could unlink somebody else's content.
+  const sha256 = req.headers.get("X-MemoSync-Upload-Sha256")
+  if (!sha256) return uiJson({ ok: false })
   const deleted = await deleteProjectUpload({
     localPath: project.localPath,
     storedName,
+    expectedSha256: sha256,
   })
 
   return uiJson({ ok: deleted })

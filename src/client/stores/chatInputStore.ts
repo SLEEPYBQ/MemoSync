@@ -21,6 +21,11 @@ interface ChatInputState {
   setAttachmentDrafts: (chatId: string, attachments: ChatAttachment[], edited?: boolean) => void
   clearAttachmentDrafts: (chatId: string) => void
   retireSubmittedAttachments: (key: string, submitted: readonly ChatAttachment[]) => void
+  migrateAttachmentDrafts: (
+    sourceKey: string,
+    targetKey: string,
+    migrate: (source: ChatAttachment[], target: ChatAttachment[]) => { source: ChatAttachment[]; target: ChatAttachment[] } | null,
+  ) => boolean
   getAttachmentDrafts: (chatId: string) => ChatAttachment[]
   getDraftRevision: (textKey: string | null, attachmentKey: string | null) => DraftRevision
   clearSubmittedDraft: (revision: DraftRevision) => boolean
@@ -120,6 +125,63 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
             || accepted.absolutePath !== item.absolutePath || accepted.size !== item.size
         })
         if (remaining.length !== current.length) get().setAttachmentDrafts(key, remaining)
+      },
+
+      // A migration writes nobody's edits: resolve it against the latest
+      // persisted snapshot, then mirror the same move inside this tab's memory.
+      // Routing it through ordinary setters would persist this tab's stale
+      // whole snapshot over unrelated keys other tabs have since replaced.
+      migrateAttachmentDrafts: (sourceKey, targetKey, migrate) => {
+        let persisted: { state?: { attachmentDrafts?: Record<string, ChatAttachment[]>; attachmentDraftRevisions?: Record<string, number> }; version?: number } | null = null
+        try {
+          const raw = localStorage.getItem("chat-input-drafts")
+          if (raw) persisted = JSON.parse(raw)
+        } catch { persisted = null }
+        const storedDrafts = persisted?.state?.attachmentDrafts
+        if (!storedDrafts) return false
+        const applyMove = (
+          drafts: Record<string, ChatAttachment[]>, revisions: Record<string, number>,
+          source: ChatAttachment[], target: ChatAttachment[],
+        ) => {
+          const moved = migrate(source, target)
+          if (!moved) return null
+          const nextDrafts = { ...drafts }
+          const nextRevisions = { ...revisions }
+          if (moved.source.length) nextDrafts[sourceKey] = moved.source
+          else delete nextDrafts[sourceKey]
+          if (moved.target.length) nextDrafts[targetKey] = moved.target
+          else delete nextDrafts[targetKey]
+          if (!sameAttachments(source, moved.source)) nextRevisions[sourceKey] = (revisions[sourceKey] ?? 0) + 1
+          if (!sameAttachments(target, moved.target)) nextRevisions[targetKey] = (revisions[targetKey] ?? 0) + 1
+          return { attachmentDrafts: nextDrafts, attachmentDraftRevisions: nextRevisions }
+        }
+        const storedRevisions = { ...(persisted?.state?.attachmentDraftRevisions ?? {}) }
+        const storedMove = applyMove({ ...storedDrafts }, storedRevisions, storedDrafts[sourceKey] ?? [], storedDrafts[targetKey] ?? [])
+        if (!storedMove) return false
+        try {
+          const state = { ...(persisted?.state ?? {}), attachmentDrafts: storedMove.attachmentDrafts, attachmentDraftRevisions: storedMove.attachmentDraftRevisions }
+          localStorage.setItem("chat-input-drafts", JSON.stringify({ ...(persisted ?? {}), state }))
+        } catch { return false }
+        // Mirror the persisted move in memory: memory can only lag storage
+        // (writes persist synchronously), never lead it — except removal
+        // notices mirrored without persisting, which the filter re-applies.
+        setLocal(state => {
+          const removedId = state.lastDeletedUploadId
+          const mirror = (items: ChatAttachment[] | undefined) => {
+            const filtered = (items ?? []).filter(item => item.id !== removedId)
+            return filtered
+          }
+          const attachmentDrafts = { ...state.attachmentDrafts }
+          const attachmentDraftRevisions = { ...state.attachmentDraftRevisions }
+          for (const key of [sourceKey, targetKey]) {
+            const next = mirror(storedMove.attachmentDrafts[key])
+            if (next.length) attachmentDrafts[key] = next
+            else delete attachmentDrafts[key]
+            if (storedMove.attachmentDraftRevisions[key] !== undefined) attachmentDraftRevisions[key] = storedMove.attachmentDraftRevisions[key]!
+          }
+          return { attachmentDrafts, attachmentDraftRevisions }
+        })
+        return true
       },
 
       getAttachmentDrafts: (chatId) => get().attachmentDrafts[chatId] ?? [],

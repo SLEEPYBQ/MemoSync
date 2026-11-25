@@ -285,6 +285,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
+    migrateAttachmentDrafts,
   } = useChatInputStore()
   const {
     providerDefaults,
@@ -360,21 +361,18 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     let stored = attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []
     if (workspaceDraftKey && projectDraftKey && landingProjectPath && projectId) {
       // Migrate only the current project's old landing bucket. Don't look up drafts by filename.
-      const legacy = getAttachmentDrafts(projectDraftKey)
-      if (legacy.length) {
-        const merged = [...stored]
+      const moved = migrateAttachmentDrafts(projectDraftKey, workspaceDraftKey, (legacy, target) => {
+        if (!legacy.length) return null
+        const merged = [...target]
         const unmoved: ChatAttachment[] = []
         for (const item of legacy) {
           const bound = bindLandingUpload(item, landingProjectPath, projectId)
           if (!bound || bound.contentUrl !== item.contentUrl) unmoved.push(item)
           else if (!merged.some(other => other.id === item.id || other.relativePath === item.relativePath)) merged.push(item)
         }
-        if (unmoved.length !== legacy.length) {
-          stored = merged
-          setAttachmentDrafts(workspaceDraftKey, stored)
-          setAttachmentDrafts(projectDraftKey, unmoved)
-        }
-      }
+        return unmoved.length === legacy.length ? null : { source: unmoved, target: merged }
+      })
+      if (moved) stored = getAttachmentDrafts(workspaceDraftKey)
       // Rebinding a URL for display/send isn't a user edit; don't invalidate a
       // pending send's revision. Keep it in memory only: writing the rebound
       // array back would persist this tab's entire stale draft snapshot over
@@ -391,7 +389,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       activeUploadsRef.current = 0
       attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, cleanupAttachmentPreview])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, migrateAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)
@@ -1240,9 +1238,14 @@ export const ChatInput = memo(ChatInputInner)
 async function deleteUploadedAttachment(attachment: ChatAttachment, receipt?: string) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
+  const headers: Record<string, string> = {}
+  if (receipt !== undefined) headers["X-MemoSync-Upload-Receipt"] = receipt
+  // The server unlinks only when the bytes still match the upload this chip
+  // refers to; a name reused or replaced since then detaches without deletion.
+  if (attachment.uploadSha256) headers["X-MemoSync-Upload-Sha256"] = attachment.uploadSha256
   try {
     const response = await fetch(deleteUrl, {
-      method: "DELETE", headers: receipt === undefined ? undefined : { "X-MemoSync-Upload-Receipt": receipt },
+      method: "DELETE", headers,
     })
     if (response.ok && (await response.json()).ok === true) localStorage.setItem(DELETED_UPLOAD_NOTIFICATION, attachment.id)
   } catch { /* No confirmation: do not tell another tab its file was deleted. */ }

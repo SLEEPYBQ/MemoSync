@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { existsSync } from "node:fs"
+import { existsSync, rmSync } from "node:fs"
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
@@ -59,9 +59,12 @@ describe("uploads", () => {
       const req = new Request(`http://localhost/api/projects/${projectId}/uploads`, { method: "POST", body: form })
       return handleProjectUpload(req, new URL(req.url), store, receipts)
     }
-    function remove(projectId: string, name: string, receipt?: string) {
+    function remove(projectId: string, name: string, receipt?: string, sha256?: string) {
+      const headers: Record<string, string> = {}
+      if (receipt) headers["X-MemoSync-Upload-Receipt"] = receipt
+      if (sha256) headers["X-MemoSync-Upload-Sha256"] = sha256
       const req = new Request(`http://localhost/api/projects/${projectId}/uploads/${encodeURIComponent(name)}`, {
-        method: "DELETE", headers: receipt ? { "X-MemoSync-Upload-Receipt": receipt } : undefined,
+        method: "DELETE", headers: Object.keys(headers).length ? headers : undefined,
       })
       return handleProjectUploadDelete(req, new URL(req.url), store, receipts)
     }
@@ -113,7 +116,7 @@ describe("uploads", () => {
     expect(next.projectId).not.toBe(first.projectId)
     const oldPath = path.join(getProjectUploadDir(dir), "late.txt")
     expect(await Bun.file(oldPath).text()).toBe("abandoned")
-    if (reused) await remove(next.projectId, "late.txt")
+    if (reused) rmSync(path.join(getProjectUploadDir(dir), "late.txt"), { force: true })
     const current = await post(next.projectId, new File(["new draft"], "late.txt"))
     const { attachments: [live] } = await current!.json() as { attachments: ChatAttachment[] }
     expect(live!.absolutePath === oldPath).toBe(reused)
@@ -149,6 +152,32 @@ describe("uploads", () => {
     const removed = await remove(first.projectId, "Résumé.txt", cleanupReceipts[attachment!.id])
     expect(await removed!.json()).toEqual({ ok: false })
     expect(await Bun.file(attachment!.absolutePath).text()).toBe("edited in the workspace")
+  })
+
+  test("a receiptless delete unlinks only bytes identical to the chip's upload", async () => {
+    const { first, post, remove } = await setupDraft()
+    const response = await post(first.projectId, new File(["original upload"], "notes.txt"))
+    const { attachments: [attachment] } = await response!.json() as { attachments: ChatAttachment[] }
+    expect(attachment!.uploadSha256).toMatch(/^[0-9a-f]{64}$/)
+    const file = () => Bun.file(attachment!.absolutePath)
+    // No byte proof: the chip detaches but nothing is unlinked.
+    expect(await (await remove(first.projectId, "notes.txt"))!.json()).toEqual({ ok: false })
+    expect(await file().text()).toBe("original upload")
+    // A wrong digest proves nothing either.
+    expect(await (await remove(first.projectId, "notes.txt", undefined, "0".repeat(64)))!.json()).toEqual({ ok: false })
+    expect(await file().text()).toBe("original upload")
+    expect(await (await remove(first.projectId, "notes.txt", undefined, attachment!.uploadSha256))!.json()).toEqual({ ok: true })
+    expect(await file().exists()).toBe(false)
+  })
+
+  test("a rebound chip cannot unlink a replacement occupying its stored name", async () => {
+    const { first, post, remove } = await setupDraft()
+    const response = await post(first.projectId, new File(["original upload"], "notes.txt"))
+    const { attachments: [attachment] } = await response!.json() as { attachments: ChatAttachment[] }
+    // The workspace file is replaced behind the draft's back, keeping the name.
+    await writeFile(attachment!.absolutePath, "someone else's replacement")
+    expect(await (await remove(first.projectId, "notes.txt", undefined, attachment!.uploadSha256))!.json()).toEqual({ ok: false })
+    expect(await Bun.file(attachment!.absolutePath).text()).toBe("someone else's replacement")
   })
 
   test("returns a controlled 400 for malformed multipart without writing files", async () => {

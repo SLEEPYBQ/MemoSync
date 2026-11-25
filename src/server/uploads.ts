@@ -346,10 +346,31 @@ export function inferProjectFileContentType(fileName: string, fallbackType?: str
   return inferAttachmentContentType(fileName, fallbackType)
 }
 
+// Hash the bytes through one bounded stream and keep the stamp they were read
+// under. An in-place write during the read changes ctime/mtime; substituting
+// the file afterwards changes the version the unlink guard compares.
+async function verifiedUploadVersion(physicalPath: string, sha256: string): Promise<string | undefined> {
+  try {
+    const handle = await open(physicalPath, process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const version = fileVersion(await handle.stat({ bigint: true }))
+      if (!version) return
+      const hash = createHash("sha256")
+      for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk)
+      if (hash.digest("hex") !== sha256) return
+      if (fileVersion(await handle.stat({ bigint: true })) !== version) return
+      return version
+    } finally {
+      await handle.close()
+    }
+  } catch { return }
+}
+
 export async function deleteProjectUpload(args: {
   localPath: string
   storedName: string
   beforeDelete?: (physicalPath: string) => boolean
+  expectedSha256?: string
 }): Promise<boolean> {
   const storedName = args.storedName
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
@@ -358,9 +379,17 @@ export async function deleteProjectUpload(args: {
 
   const resolved = await resolveExistingProjectUpload(args.localPath, storedName)
   if (!resolved.ok) return false
+  let beforeDelete = args.beforeDelete
+  if (args.expectedSha256 !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(args.expectedSha256)) return false
+    const version = await verifiedUploadVersion(resolved.path, args.expectedSha256)
+    if (!version) return false
+    beforeDelete = physicalPath => fileVersion(lstatSync(physicalPath, { bigint: true })) === version
+      && (!args.beforeDelete || args.beforeDelete(physicalPath))
+  }
   try {
     // No intervening MemoSync delete/recreate between the ownership check and unlink.
-    if (args.beforeDelete && !args.beforeDelete(resolved.path)) return false
+    if (beforeDelete && !beforeDelete(resolved.path)) return false
     rmSync(resolved.path, { force: true })
     return true
   } catch {

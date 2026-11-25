@@ -124,4 +124,71 @@ describe("chatInputStore", () => {
     store.retireSubmittedAttachments("alpha", [sent])
     expect(store.getDraftRevision("landing", "alpha")).toEqual(revision)
   })
+
+  test("migration merges against the persisted snapshot, not this tab's stale memory", () => {
+    const backing = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => void backing.set(key, String(value)),
+      removeItem: (key: string) => void backing.delete(key),
+    }
+    ;(globalThis as unknown as { localStorage: typeof storage }).localStorage = storage
+    try {
+      const movedUpload = {
+        id: "legacy-upload", kind: "file" as const, displayName: "notes.txt",
+        absolutePath: "/fixture/alpha/.memosync/uploads/notes.txt",
+        relativePath: "./.memosync/uploads/notes.txt",
+        contentUrl: "/api/projects/alpha/uploads/notes.txt/content", mimeType: "text/plain", size: 1,
+      }
+      // Another tab has since written a newer text draft and its own attachment;
+      // this tab's memory never saw either write.
+      backing.set("chat-input-drafts", JSON.stringify({
+        state: {
+          drafts: { "landing:path:/fixture/beta": "other tab's fresh text" },
+          draftRevisions: { "landing:path:/fixture/beta": 3 },
+          attachmentDrafts: {
+            "landing:alpha": [movedUpload],
+            "landing:path:/fixture/beta": [{ ...movedUpload, id: "beta-upload" }],
+          },
+          attachmentDraftRevisions: { "landing:alpha": 2, "landing:path:/fixture/beta": 4 },
+        },
+        version: 0,
+      }))
+      useChatInputStore.setState({ drafts: {}, attachmentDrafts: {}, draftRevisions: {}, attachmentDraftRevisions: {} })
+
+      const store = useChatInputStore.getState()
+      const migrated = store.migrateAttachmentDrafts("landing:alpha", "landing:path:/fixture/alpha", (legacy, target) => {
+        if (!legacy.length) return null
+        return { source: [], target: [...target, ...legacy] }
+      })
+      expect(migrated).toBe(true)
+
+      const persisted = JSON.parse(backing.get("chat-input-drafts")!) as {
+        state: {
+          drafts: Record<string, string>
+          attachmentDrafts: Record<string, Array<{ id: string }>>
+          attachmentDraftRevisions: Record<string, number>
+        }
+      }
+      // The migration rewrote only its own two keys; the other tab's text and
+      // attachment survive even though this tab never had them in memory.
+      expect(persisted.state.drafts["landing:path:/fixture/beta"]).toBe("other tab's fresh text")
+      expect(persisted.state.attachmentDrafts["landing:path:/fixture/beta"]?.map(item => item.id)).toEqual(["beta-upload"])
+      expect(persisted.state.attachmentDraftRevisions["landing:path:/fixture/beta"]).toBe(4)
+      expect(persisted.state.attachmentDrafts["landing:alpha"]).toBeUndefined()
+      expect(persisted.state.attachmentDrafts["landing:path:/fixture/alpha"]?.map(item => item.id)).toEqual(["legacy-upload"])
+
+      // Memory mirrors the move so this composer's next edit builds on it.
+      expect(useChatInputStore.getState().getAttachmentDrafts("landing:alpha")).toEqual([])
+      expect(useChatInputStore.getState().getAttachmentDrafts("landing:path:/fixture/alpha").map(item => item.id)).toEqual(["legacy-upload"])
+
+      // A second pass is a no-op: nothing left in the source bucket.
+      expect(store.migrateAttachmentDrafts("landing:alpha", "landing:path:/fixture/alpha", (legacy, target) => {
+        if (!legacy.length) return null
+        return { source: [], target: [...target, ...legacy] }
+      })).toBe(false)
+    } finally {
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    }
+  })
 })
