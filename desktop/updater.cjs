@@ -9,6 +9,25 @@ const LATEST_RELEASE_URL = `https://api.github.com/repos/${REPOSITORY}/releases/
 const ALLOWED_HOSTS = new Set(["api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"])
 const MAX_PACKAGE_SIZE = 4 * 1024 * 1024 * 1024
 
+// The public tag request uses Node fetch; the native manifest request uses
+// Chromium's network stack. Unknown failures (including TLS errors) fail closed.
+const TEMPORARY_NETWORK_CODES = new Set([
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH", "EPIPE",
+  "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
+  "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE",
+  "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_TIMED_OUT",
+])
+
+function isTemporaryLookupFailure(error) {
+  if (Number.isInteger(error?.statusCode)) {
+    return error.rateLimited === true || [408, 429].includes(error.statusCode) || (error.statusCode >= 500 && error.statusCode < 600)
+  }
+  return TEMPORARY_NETWORK_CODES.has(error?.cause?.code) || TEMPORARY_NETWORK_CODES.has(error?.code)
+    || TEMPORARY_NETWORK_CODES.has(error?.message?.match(/^net::(ERR_[A-Z_]+)$/)?.[1])
+    // builder-util-runtime uses plain errors for these two transport failures.
+    || error?.message === "Request timed out" || error?.message === "Request has been aborted by the server"
+}
+
 function stableVersion(value) {
   return typeof value === "string" && /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)
     ? value.replace(/^v/, "") : null
@@ -82,18 +101,19 @@ async function readText(response, limit) {
   return Buffer.concat(chunks).toString("utf8")
 }
 
-function parseNativeRelease(info, platform, arch, mode) {
+function parseNativeRelease(info, platform, arch, mode, tag) {
   const version = stableVersion(info?.version)
-  if (!version || (info.tag != null && stableVersion(info.tag) !== version)) throw new Error("The release has an invalid stable version.")
+  if (!version || stableVersion(tag) !== version || (info.tag != null && info.tag !== tag)) {
+    throw new Error("The update manifest does not match the stable release tag.")
+  }
   const expected = installerName(version, platform, arch, mode)
-  const tag = info.tag ?? `v${version}`
   const names = platform === "win32"
     ? [expected, `MemoSync-${version}-windows-${arch}.zip`]
     : [expected, `MemoSync-${version}-linux-${arch}.deb`]
   // Only the checked platform asset from this repository's release is usable.
   const matches = Array.isArray(info.files) ? info.files.filter(file => file?.url === expected) : []
   const file = matches[0]
-  if (matches.length !== 1 || info.files.some(file => !names.includes(file?.url))
+  if (matches.length !== 1 || info.files.some(file => !names.includes(file?.url)) || info.packages != null
     || typeof file.sha512 !== "string" || !/^[A-Za-z0-9+/]{86}==$/.test(file.sha512)
     || !Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_PACKAGE_SIZE
     || (info.path != null && !names.includes(info.path))) {
@@ -138,8 +158,9 @@ function createDesktopUpdater({
   }
 
   function errorMessage(error) {
-    // GitHubProvider embeds the Atom feed and a stack trace in this error.
-    if (error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED") return "Could not refresh the GitHub release feed. Please try again."
+    if (error?.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND") return "The release is missing its update manifest."
+    if (error?.code === "ERR_UPDATER_INVALID_UPDATE_INFO") return "The release has an invalid update manifest."
+    if (Number.isInteger(error?.statusCode)) return `Could not download update information (HTTP ${error.statusCode}). Please try again.`
     return error instanceof Error ? error.message : String(error)
   }
 
@@ -161,7 +182,6 @@ function createDesktopUpdater({
     // Full downloads also work when upgrading from releases without blockmaps.
     nativeUpdater.disableDifferentialDownload = true
     nativeUpdater.disableWebInstaller = true
-    nativeUpdater.setFeedURL({ provider: "github", owner: "SLEEPYBQ", repo: "MemoSync", releaseType: "release" })
     const progress = ({ percent }) => {
       if (snapshot.status === "downloading" && Number.isFinite(percent)) publish({ progress: Math.max(0, Math.min(100, percent)) })
     }
@@ -186,14 +206,19 @@ function createDesktopUpdater({
       })
       if ([301, 302, 303, 307, 308].includes(response.status)) {
         const location = response.headers.get("location")
-        await response.body?.cancel()
+        await response.body?.cancel().catch(() => {})
         if (!location) throw new Error("The update server returned an invalid redirect.")
         url = new URL(location, url).href
         continue
       }
       if (!response.ok) {
-        await response.body?.cancel()
-        throw new Error(`Could not download update information (HTTP ${response.status}). Please try again.`)
+        // Cleanup must not turn a definitive HTTP status into a socket error.
+        await response.body?.cancel().catch(() => {})
+        throw Object.assign(new Error(`Update request failed (HTTP ${response.status})`), {
+          statusCode: response.status,
+          // GitHub can return 403 (rather than 429) for exhausted API quotas.
+          rateLimited: response.status === 403 && (response.headers.get("x-ratelimit-remaining") === "0" || response.headers.has("retry-after")),
+        })
       }
       return response
     }
@@ -203,7 +228,7 @@ function createDesktopUpdater({
   async function withSignal(timeout, callback) {
     controller = new AbortController()
     const active = controller
-    const timer = setTimeout(() => active.abort(new Error("The update request timed out. Please try again.")), timeout)
+    const timer = setTimeout(() => active.abort(Object.assign(new Error("The update request timed out. Please try again."), { code: "ETIMEDOUT" })), timeout)
     timer.unref?.()
     try { return await callback(active.signal) }
     finally {
@@ -228,8 +253,8 @@ function createDesktopUpdater({
       let body
       try {
         body = await withSignal(20_000, async signal => {
-          // Same public tag lookup as electron-updater's GitHubProvider. A
-          // native check needn't spend/share an api.github.com REST request.
+          // The public /latest endpoint serves the native tag without spending
+          // a shared REST quota. Manual installers also need the API asset list.
           const response = usesManifest
             ? await request(`${RELEASES_URL}/latest`, signal, "application/json")
             : await request(LATEST_RELEASE_URL, signal, "application/vnd.github+json")
@@ -237,43 +262,42 @@ function createDesktopUpdater({
         })
       } catch (error) {
         // A scheduled check while offline shouldn't strand a verified download.
-        if (downloaded) return keepVerifiedDownload(error)
+        if (downloaded && isTemporaryLookupFailure(error)) return keepVerifiedDownload(error)
         release = null
+        downloaded = null
         throw error
       }
       const previous = release
       const cached = downloaded
       release = null
       downloaded = null
-      let version = stableVersion(body?.tag_name)
+      const version = stableVersion(body?.tag_name)
       if (!version || body.draft || body.prerelease) throw new Error("No stable desktop release is available.")
-      let releaseUrl = `${RELEASES_URL}/tag/${body.tag_name}`
+      const releaseUrl = `${RELEASES_URL}/tag/${body.tag_name}`
       const newer = isNewerVersion(snapshot.currentVersion, version)
       // Releases published before in-app updates have no updater manifests.
       // Current/older versions must not report a spurious missing-manifest error.
       if (newer && usesManifest) {
+        // Bind the native provider to the one public tag we actually checked.
+        // GitHubProvider repeats /latest and wraps both a reset and a 404 as
+        // INVALID_RELEASE_FEED. GenericProvider reads the tagged manifest
+        // directly and preserves the distinction. No caller supplies the URL.
+        const native = getNativeUpdater()
+        native.setFeedURL({ provider: "generic", url: `${RELEASES_URL}/download/${body.tag_name}/`, useMultipleRangeRequest: false })
         let result
-        try { result = await getNativeUpdater().checkForUpdates() }
+        try { result = await native.checkForUpdates() }
         catch (error) {
-          // 6.8.11 wraps its own /latest transport errors as INVALID_RELEASE_FEED
-          // before it reads the manifest. Keep only the previously verified
-          // same-tag download, not a new target or a missing/invalid manifest.
-          const lookupFailed = error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED" || !String(error?.code).startsWith("ERR_UPDATER_")
-          if (cached && previous.releaseUrl === releaseUrl && lookupFailed) {
+          if (cached && previous.releaseUrl === releaseUrl && isTemporaryLookupFailure(error)) {
             release = previous
             downloaded = cached
             return keepVerifiedDownload(error)
           }
           throw error
         }
-        const checked = parseNativeRelease(result?.updateInfo, platform, arch, mode)
-        version = checked.version
-        releaseUrl = checked.releaseUrl
-        if (isNewerVersion(snapshot.currentVersion, version)) {
-          if (result.isUpdateAvailable !== true) throw new Error("This update is not available for this system yet.")
-          release = checked
-          nativeCancellation = result.cancellationToken
-        }
+        const checked = parseNativeRelease(result?.updateInfo, platform, arch, mode, body.tag_name)
+        if (result.isUpdateAvailable !== true) throw new Error("This update is not available for this system yet.")
+        release = checked
+        nativeCancellation = result.cancellationToken
       } else if (newer) {
         release = parseRelease(body, { platform, arch, mode })
       }

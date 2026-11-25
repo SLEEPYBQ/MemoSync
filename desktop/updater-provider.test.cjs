@@ -3,10 +3,12 @@
 const assert = require("node:assert/strict")
 const { createHash } = require("node:crypto")
 const { mkdtemp, readFile, readdir, rm, writeFile } = require("node:fs/promises")
+const { createRequire } = require("node:module")
 const os = require("node:os")
 const path = require("node:path")
 const { test } = require("node:test")
 const { AppImageUpdater, NsisUpdater } = require("electron-updater")
+const { HttpError } = createRequire(require.resolve("electron-updater"))("builder-util-runtime")
 const { createDesktopUpdater } = require("./updater.cjs")
 
 for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: stable feed, digest and handoff`, async t => {
@@ -38,19 +40,17 @@ for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: st
   native._testOnlyOptions = { platform }
   const requests = []
   const handoff = []
-  let disconnectTag = false
+  let manifestError
   let providerError
   native.on("error", error => { providerError = error.code })
   native.httpExecutor = {
-    async request({ hostname, path: pathname }) {
-      const url = `https://${hostname}${pathname}`
+    async request({ protocol, hostname, path: pathname }) {
+      // GenericProvider adds a noCache query to channel files, not to assets.
+      const parsed = new URL(`${protocol}//${hostname}${pathname}`)
+      const url = parsed.origin + parsed.pathname
       requests.push(url)
-      if (url === `${base}.atom`) return `<feed><entry><link href="${base}/tag/v1.0.1"/><title>Synthetic</title></entry></feed>`
-      if (url === `${base}/latest`) {
-        if (disconnectTag) throw Object.assign(new Error("Synthetic connection reset"), { code: "ECONNRESET" })
-        return JSON.stringify({ tag_name: "v1.0.1" })
-      }
       assert.equal(url, `${base}/download/v1.0.1/${feed}`)
+      if (manifestError) throw manifestError
       return JSON.stringify(info) // JSON is also valid YAML
     },
     async download(url, filename, options) {
@@ -90,6 +90,7 @@ for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: st
     } },
     fetch: async (url, options) => {
       if (url === `${base}/latest`) {
+        requests.push(url)
         assert.equal(options.headers.Accept, "application/json")
         return Response.json({ tag_name: "v1.0.1" })
       }
@@ -99,17 +100,26 @@ for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: st
   })
   t.after(() => updater.dispose())
   assert.equal((await updater.checkForUpdates()).status, "available")
-  assert.deepEqual(requests, [`${base}.atom`, `${base}/latest`, `${base}/download/v1.0.1/${feed}`])
+  assert.deepEqual(requests, [`${base}/latest`, `${base}/download/v1.0.1/${feed}`])
   assert.equal((await updater.downloadUpdate()).status, "downloaded")
-  // Our public preflight still sees the same tag; only the provider's own
-  // request loses the connection. Exercise its real nested error wrapping.
-  disconnectTag = true
+  // The public lookup still sees the same tag. Exercise the locked provider's
+  // real error propagation for the two different tagged-manifest outcomes.
+  manifestError = Object.assign(new Error("Synthetic connection reset"), { code: "ECONNRESET" })
   const offline = await updater.checkForUpdates()
-  assert.equal(providerError, "ERR_UPDATER_INVALID_RELEASE_FEED")
+  assert.equal(providerError, "ECONNRESET")
   assert.equal(offline.status, "downloaded")
   assert.equal(offline.latestVersion, "1.0.1")
-  assert.match(offline.error, /could not refresh/i)
-  assert.doesNotMatch(offline.error, /XML:|<feed>/)
+  assert.match(offline.error, /connection reset/i)
+  manifestError = new HttpError(404)
+  const missing = await updater.checkForUpdates()
+  assert.equal(providerError, "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND")
+  assert.equal(missing.status, "error", "404 is not a connectivity loss")
+  assert.equal(missing.error, "The release is missing its update manifest.")
+  assert.match((await updater.installUpdate()).error, /Download the update/)
+  assert.match((await updater.downloadUpdate()).error, /Check for a newer version/)
+  manifestError = null
+  assert.equal((await updater.checkForUpdates()).status, "available")
+  assert.equal((await updater.downloadUpdate()).status, "downloaded")
   assert.equal((await updater.installUpdate()).status, linux ? "downloaded" : "installing")
   assert.deepEqual(handoff, linux ? ["opened folder only"] : ["publisher check", "stop backend", ["--updated", "--force-run"]])
   assert.equal(await readFile(old, "utf8"), "synthetic old launcher; never execute")

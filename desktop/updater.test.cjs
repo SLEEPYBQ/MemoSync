@@ -242,7 +242,7 @@ test("installed NSIS uses the public tag and native provider, never the shared R
   assert.equal(native.allowPrerelease, false)
   assert.equal(native.allowDowngrade, false)
   assert.equal(native.disableWebInstaller, true)
-  assert.deepEqual(native.feed, { provider: "github", owner: "SLEEPYBQ", repo: "MemoSync", releaseType: "release" })
+  assert.deepEqual(native.feed, { provider: "generic", url: BASE_URL, useMultipleRangeRequest: false })
   assert.deepEqual(actions, [])
   assert.equal((await updater.downloadUpdate()).status, "downloaded")
   assert.ok(states.some(state => state.progress === 25))
@@ -260,12 +260,14 @@ test("invalid native release paths, tags, sizes and digests cannot be downloaded
     { version: "0.47.0", files: [{ url: "https://example.com/installer.AppImage" }] },
     { version: "0.47.0", files: [{ url: "../../installer.AppImage" }] },
     { ...nativeInfo("linux"), tag: "v0.46.0" },
+    { ...nativeInfo("linux", "0.48.0"), tag: undefined }, // valid manifest, but not for the public tag
+    { ...nativeInfo("linux"), packages: { x64: { path: "extra-package.7z" } } },
     { ...nativeInfo("linux"), files: [file, file] },
     { ...nativeInfo("linux"), files: [{ ...file, sha512: "" }] },
     { ...nativeInfo("linux"), files: [{ ...file, size: -1 }] },
   ]) {
     const native = nativeFixture()
-    native.checkForUpdates = async () => ({ updateInfo: info })
+    native.checkForUpdates = async () => ({ updateInfo: info, isUpdateAvailable: true })
     native.downloadUpdate = async () => { assert.fail("Invalid metadata must never be downloaded") }
     const { updater } = await fixture(t, { platform: "linux", arch: "x64", env: { APPIMAGE: "/tmp/app" }, getAutoUpdater: () => native })
     assert.equal((await updater.checkForUpdates()).status, "error")
@@ -399,7 +401,8 @@ test("temporary provider failure preserves the verified target, but withdrawing 
 
 test("failed checks never revive a different tag or a download whose manifest is known invalid", async t => {
   for (const [tag, code] of [
-    ["v0.48.0", "ERR_UPDATER_INVALID_RELEASE_FEED"],
+    ["v0.48.0", "ECONNRESET"],
+    ["v0.47.0", "ERR_UPDATER_INVALID_RELEASE_FEED"],
     ["v0.47.0", "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND"],
     ["v0.47.0", "ERR_UPDATER_INVALID_UPDATE_INFO"],
   ]) {
@@ -418,6 +421,35 @@ test("failed checks never revive a different tag or a download whose manifest is
   }
 })
 
+test("a 404 from release discovery invalidates the receipt; a temporary outage does not", async t => {
+  for (const nativeMode of [false, true]) {
+    const native = nativeFixture()
+    const body = releaseBody()
+    let lookup = () => Response.json(nativeMode ? { tag_name: body.tag_name } : body)
+    const { updater } = await fixture(t, {
+      ...(nativeMode ? WINDOWS : {}), getAutoUpdater: () => native,
+      fetch: async url => {
+        if (url === (nativeMode ? WEB_URL : API_URL)) return lookup()
+        if (url === body.assets[1].browser_download_url) return new Response(`${DIGEST}  ${body.assets[0].name}\n`)
+        assert.equal(url, body.assets[0].browser_download_url)
+        return new Response(PACKAGE)
+      },
+    })
+    assert.equal((await updater.checkForUpdates()).status, "available")
+    assert.equal((await updater.downloadUpdate()).status, "downloaded")
+    lookup = () => new Response(null, { status: 403, headers: { "x-ratelimit-remaining": "0" } })
+    assert.equal((await updater.checkForUpdates()).status, "downloaded")
+    lookup = () => new Response(null, { status: 404 })
+    const missing = await updater.checkForUpdates()
+    assert.equal(missing.status, "error")
+    assert.match(missing.error, /HTTP 404/)
+    lookup = () => new Response(null, { status: 503 })
+    assert.equal((await updater.checkForUpdates()).status, "error", "a later outage cannot revive the withdrawn receipt")
+    assert.match((await updater.installUpdate()).error, /Download the update/)
+    assert.match((await updater.downloadUpdate()).error, /Check for a newer version/)
+  }
+})
+
 test("rechecks preserve the same verified download but never offer a superseded or withdrawn installer", async t => {
   for (const automatic of [false, true]) {
     let version = "0.47.0"
@@ -431,7 +463,7 @@ test("rechecks preserve the same verified download but never offer a superseded 
     const { updater, opened } = await fixture(t, {
       ...(automatic ? WINDOWS : {}), getAutoUpdater: () => native,
       fetch: async url => {
-        if (offline) throw new Error("Network unavailable")
+        if (offline) throw new TypeError("Network unavailable", { cause: Object.assign(new Error("Connection reset"), { code: "ECONNRESET" }) })
         const body = releaseBody("darwin", "arm64", "installer", version)
         if (url === WEB_URL && automatic) return Response.json({ tag_name: body.tag_name })
         if (url === API_URL && !automatic) return Response.json(body)
