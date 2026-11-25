@@ -75,6 +75,22 @@ describe("chatInputStore", () => {
     expect(store.getDraft("chat")).toBe("submitted")
   })
 
+  test("canonical rebinding keeps the pending revision and lets the accepted send retire the chip", () => {
+    const store = useChatInputStore.getState()
+    const upload = (project: string) => ({
+      id: "same-upload", kind: "file" as const, displayName: "notes.txt", absolutePath: "/fixture/notes.txt",
+      relativePath: "notes.txt", contentUrl: `/api/projects/${project}/uploads/same-upload/content`, mimeType: "text/plain", size: 1,
+    })
+    store.setAttachmentDrafts("alpha", [upload("retired")])
+    const before = store.getDraftRevision("landing", "alpha")
+    store.rebindAttachmentDrafts("alpha", [upload("current")])
+    expect(store.getDraftRevision("landing", "alpha")).toEqual(before)
+    store.setDraft("landing", "edited while acknowledgement is pending")
+    expect(store.clearSubmittedDraft(before)).toBe(false)
+    store.retireSubmittedAttachments("alpha", [upload("current")])
+    expect(store.getAttachmentDrafts("alpha")).toEqual([])
+  })
+
   test("retires only references owned by the accepted landing send", () => {
     const store = useChatInputStore.getState()
     const upload = (id: string, project = "alpha") => ({

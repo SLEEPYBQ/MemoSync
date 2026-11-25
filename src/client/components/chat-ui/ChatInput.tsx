@@ -285,6 +285,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
+    rebindAttachmentDrafts,
   } = useChatInputStore()
   const {
     providerDefaults,
@@ -375,8 +376,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           setAttachmentDrafts(projectDraftKey, unmoved)
         }
       }
-      // Rebinding a URL for display/send isn't a user edit; don't invalidate a pending send's revision.
-      stored = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+      // Rebinding a URL for display/send isn't a user edit; don't invalidate a
+      // pending send's revision. Persist the canonical binding too, otherwise a
+      // later edit can make the accepted send look different from the stored chip.
+      const rebound = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+      if (rebound.length !== stored.length || rebound.some((item, index) => item.contentUrl !== stored[index]?.contentUrl)) {
+        rebindAttachmentDrafts(workspaceDraftKey, rebound)
+      }
+      stored = rebound
     }
     attachmentsRef.current = hydrateComposerAttachments(stored)
     setAttachmentsState(attachmentsRef.current)
@@ -388,7 +395,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       activeUploadsRef.current = 0
       attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, cleanupAttachmentPreview])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, rebindAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)

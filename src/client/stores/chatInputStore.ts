@@ -21,6 +21,7 @@ interface ChatInputState {
   setAttachmentDrafts: (chatId: string, attachments: ChatAttachment[], edited?: boolean) => void
   clearAttachmentDrafts: (chatId: string) => void
   retireSubmittedAttachments: (key: string, submitted: readonly ChatAttachment[]) => void
+  rebindAttachmentDrafts: (key: string, attachments: ChatAttachment[]) => void
   getAttachmentDrafts: (chatId: string) => ChatAttachment[]
   getDraftRevision: (textKey: string | null, attachmentKey: string | null) => DraftRevision
   clearSubmittedDraft: (revision: DraftRevision) => boolean
@@ -115,6 +116,18 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
         const remaining = current.filter(item => sent.get(item.id) !== item.contentUrl)
         if (remaining.length !== current.length) get().setAttachmentDrafts(key, remaining)
       },
+
+      rebindAttachmentDrafts: (key, attachments) =>
+        set((state) => {
+          const current = state.attachmentDrafts[key] ?? []
+          if (sameAttachments(current, attachments)) return state
+          const attachmentDrafts = { ...state.attachmentDrafts }
+          if (attachments.length) attachmentDrafts[key] = attachments
+          else delete attachmentDrafts[key]
+          // URL rebinding is canonicalization, not a user edit. Keep the draft
+          // revision stable so an in-flight acknowledgement remains valid.
+          return { attachmentDrafts }
+        }),
 
       getAttachmentDrafts: (chatId) => get().attachmentDrafts[chatId] ?? [],
 
