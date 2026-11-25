@@ -397,6 +397,27 @@ test("temporary provider failure preserves the verified target, but withdrawing 
   assert.match((await updater.installUpdate()).error, /Download the update/)
 })
 
+test("failed checks never revive a different tag or a download whose manifest is known invalid", async t => {
+  for (const [tag, code] of [
+    ["v0.48.0", "ERR_UPDATER_INVALID_RELEASE_FEED"],
+    ["v0.47.0", "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND"],
+    ["v0.47.0", "ERR_UPDATER_INVALID_UPDATE_INFO"],
+  ]) {
+    const native = nativeFixture()
+    let publicTag = "v0.47.0"
+    const { updater } = await fixture(t, {
+      ...WINDOWS, getAutoUpdater: () => native,
+      fetch: async url => { assert.equal(url, WEB_URL); return Response.json({ tag_name: publicTag }) },
+    })
+    await updater.checkForUpdates()
+    assert.equal((await updater.downloadUpdate()).status, "downloaded")
+    publicTag = tag
+    native.checkForUpdates = async () => { throw Object.assign(new Error("Synthetic provider failure"), { code }) }
+    assert.equal((await updater.checkForUpdates()).status, "error")
+    assert.match((await updater.installUpdate()).error, /Download the update/)
+  }
+})
+
 test("rechecks preserve the same verified download but never offer a superseded or withdrawn installer", async t => {
   for (const automatic of [false, true]) {
     let version = "0.47.0"

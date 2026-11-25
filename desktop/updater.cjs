@@ -137,12 +137,18 @@ function createDesktopUpdater({
     return snapshot
   }
 
+  function errorMessage(error) {
+    // GitHubProvider embeds the Atom feed and a stack trace in this error.
+    if (error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED") return "Could not refresh the GitHub release feed. Please try again."
+    return error instanceof Error ? error.message : String(error)
+  }
+
   function fail(error) {
-    return publish({ status: "error", error: error instanceof Error ? error.message : String(error) })
+    return publish({ status: "error", error: errorMessage(error) })
   }
 
   function keepVerifiedDownload(error) {
-    return publish({ status: "downloaded", progress: 100, error: error instanceof Error ? error.message : String(error) })
+    return publish({ status: "downloaded", progress: 100, error: errorMessage(error) })
   }
 
   function getNativeUpdater() {
@@ -249,10 +255,11 @@ function createDesktopUpdater({
         let result
         try { result = await getNativeUpdater().checkForUpdates() }
         catch (error) {
-          // The public tag was reachable, but the subsequent provider request
-          // can still lose the network. A different tag or an invalid feed
-          // must not revive an old target.
-          if (cached && previous.releaseUrl === releaseUrl && !String(error.code).startsWith("ERR_UPDATER_")) {
+          // 6.8.11 wraps its own /latest transport errors as INVALID_RELEASE_FEED
+          // before it reads the manifest. Keep only the previously verified
+          // same-tag download, not a new target or a missing/invalid manifest.
+          const lookupFailed = error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED" || !String(error?.code).startsWith("ERR_UPDATER_")
+          if (cached && previous.releaseUrl === releaseUrl && lookupFailed) {
             release = previous
             downloaded = cached
             return keepVerifiedDownload(error)
