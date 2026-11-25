@@ -292,6 +292,33 @@ describe("idle provider sessions", () => {
     await advance(1); expect(h.closes()).toBe(1)
   })
 
+  test("closing a chat waits for asynchronous memory branch cleanup", async () => {
+    const cleanup = deferred()
+    let cleanupDone = false
+    cleanup.promise.then(() => { cleanupDone = true })
+    const branch = {
+      id: "branch", mode: "fork" as const, sessionToken: "branch-token",
+      dispose: () => cleanup.promise,
+      async ask() { return {} },
+    }
+    const h = await harness("claude", false, { createMemoryBranch: () => branch })
+    try {
+      await h.send(); await h.finish()
+      const tracked = (h.coordinator as any).newMemoryBranch({ chatId: h.chat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      ;(h.coordinator as any).workingBranches.set(h.chat.id, tracked)
+      const closing = h.coordinator.closeChat(h.chat.id)
+      await Bun.sleep(20)
+      expect(cleanupDone).toBe(false)
+      let closed = false
+      void closing.then(() => { closed = true })
+      await Bun.sleep(20)
+      expect(closed).toBe(false)
+      cleanup.resolve()
+      await closing
+      expect(closed).toBe(true)
+    } finally { cleanup.resolve() }
+  })
+
   test("a disposed memory branch still pins its chat until its running ask settles", async () => {
     const h = await harness()
     await h.send(); await h.finish()

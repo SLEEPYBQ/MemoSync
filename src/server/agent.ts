@@ -4222,6 +4222,10 @@ export class AgentCoordinator {
     this.cancelAutomaticCapture(chatId)
     this.cancelAudits(chatId)
     this.disposeMemoryBranches(chatId)
+    // Branch disposal starts OpenCode cleanup asynchronously. Hide/close is
+    // the lifecycle boundary, so wait for those child processes too instead
+    // of letting them outlive the project removal acknowledgement.
+    const memoryBranchCleanups = [...this.branchCleanups]
     const commandPreparation = this.commandPreparations.get(chatId)?.promise
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
@@ -4237,6 +4241,7 @@ export class AgentCoordinator {
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
     await this.opencodeManager.closeChat(chatId)
+    await Promise.allSettled(memoryBranchCleanups)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
