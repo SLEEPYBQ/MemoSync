@@ -21,7 +21,6 @@ interface ChatInputState {
   setAttachmentDrafts: (chatId: string, attachments: ChatAttachment[], edited?: boolean) => void
   clearAttachmentDrafts: (chatId: string) => void
   retireSubmittedAttachments: (key: string, submitted: readonly ChatAttachment[]) => void
-  rebindAttachmentDrafts: (key: string, attachments: ChatAttachment[]) => void
   getAttachmentDrafts: (chatId: string) => ChatAttachment[]
   getDraftRevision: (textKey: string | null, attachmentKey: string | null) => DraftRevision
   clearSubmittedDraft: (revision: DraftRevision) => boolean
@@ -110,24 +109,18 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
       clearAttachmentDrafts: (chatId) => get().setAttachmentDrafts(chatId, []),
 
       retireSubmittedAttachments: (key, submitted) => {
-        // An upload rebound to a new project URL belongs to that newer draft.
-        const sent = new Map(submitted.map(item => [item.id, item.contentUrl]))
+        // Match the physical upload, not the exact URL: rebinding only swaps the
+        // project segment of contentUrl for the same file. An accepted send
+        // consumed that file, and keeping the chip would invite a duplicate.
+        const sent = new Map(submitted.map(item => [item.id, item]))
         const current = get().getAttachmentDrafts(key)
-        const remaining = current.filter(item => sent.get(item.id) !== item.contentUrl)
+        const remaining = current.filter(item => {
+          const accepted = sent.get(item.id)
+          return !accepted || accepted.relativePath !== item.relativePath
+            || accepted.absolutePath !== item.absolutePath || accepted.size !== item.size
+        })
         if (remaining.length !== current.length) get().setAttachmentDrafts(key, remaining)
       },
-
-      rebindAttachmentDrafts: (key, attachments) =>
-        set((state) => {
-          const current = state.attachmentDrafts[key] ?? []
-          if (sameAttachments(current, attachments)) return state
-          const attachmentDrafts = { ...state.attachmentDrafts }
-          if (attachments.length) attachmentDrafts[key] = attachments
-          else delete attachmentDrafts[key]
-          // URL rebinding is canonicalization, not a user edit. Keep the draft
-          // revision stable so an in-flight acknowledgement remains valid.
-          return { attachmentDrafts }
-        }),
 
       getAttachmentDrafts: (chatId) => get().attachmentDrafts[chatId] ?? [],
 

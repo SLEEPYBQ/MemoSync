@@ -285,7 +285,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
-    rebindAttachmentDrafts,
   } = useChatInputStore()
   const {
     providerDefaults,
@@ -377,13 +376,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
       }
       // Rebinding a URL for display/send isn't a user edit; don't invalidate a
-      // pending send's revision. Persist the canonical binding too, otherwise a
-      // later edit can make the accepted send look different from the stored chip.
-      const rebound = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
-      if (rebound.length !== stored.length || rebound.some((item, index) => item.contentUrl !== stored[index]?.contentUrl)) {
-        rebindAttachmentDrafts(workspaceDraftKey, rebound)
-      }
-      stored = rebound
+      // pending send's revision. Keep it in memory only: writing the rebound
+      // array back would persist this tab's entire stale draft snapshot over
+      // other tabs' edits. Retirement matches physical upload identity instead.
+      stored = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
     }
     attachmentsRef.current = hydrateComposerAttachments(stored)
     setAttachmentsState(attachmentsRef.current)
@@ -395,7 +391,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       activeUploadsRef.current = 0
       attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, rebindAttachmentDrafts, cleanupAttachmentPreview])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)

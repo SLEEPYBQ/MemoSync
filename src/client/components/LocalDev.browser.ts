@@ -251,9 +251,34 @@ test.each([false, true])("an older send ACK clears only unchanged workspace uplo
   expect(await submitted.count()).toBe(1)
   if (edited) await attach("later.txt")
   await page.evaluate(() => window.landingFixture.acceptSend())
-  if (!edited) await submitted.waitFor({ state: "detached" })
-  expect(await submitted.count()).toBe(edited ? 1 : 0)
+  // The accepted send consumed the physical file: the chip retires even when a
+  // later edit forces the fallback retirement path (an edit only keeps the
+  // draft text and the later, unsent upload).
+  await submitted.waitFor({ state: "detached" })
+  expect(await submitted.count()).toBe(0)
   expect(await page.getByText("later.txt", { exact: true }).count()).toBe(edited ? 1 : 0)
+})
+
+test("a rebound chip sent after the ID change retires once its ACK lands, even after an edit", async () => {
+  await resolveActive(0, "alpha-1")
+  await attach("submitted.txt")
+  // Rebind BEFORE sending: the workspace is discarded and reacquired under a new ID.
+  await pick("alpha", "beta")
+  await pick("beta", "alpha")
+  await resolveActive(2, "alpha-2")
+  expect(await page.getByText("submitted.txt", { exact: true }).count()).toBe(1)
+  await page.evaluate(() => window.landingFixture.holdSend())
+  await sendAndWaitForDispatch()
+  // The send must use the rebound URL (new project), not the stale retired one.
+  expect(await page.evaluate(() => window.landingFixture.sends[0]?.[1]?.attachments?.[0]?.contentUrl))
+    .toContain("/api/projects/project-alpha-2/")
+  // Edit the draft while the ACK is pending so the clean-clear path refuses.
+  await attach("later.txt")
+  await page.evaluate(() => window.landingFixture.acceptSend())
+  // Identity-based retirement removes the consumed file even though the persisted
+  // draft still names the retired project URL.
+  await page.getByText("submitted.txt", { exact: true }).waitFor({ state: "detached" })
+  expect(await page.getByText("later.txt", { exact: true }).count()).toBe(1)
 })
 
 test("an upload resolving after discard cannot write into the reacquired folder's draft", async () => {

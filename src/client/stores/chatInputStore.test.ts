@@ -75,20 +75,31 @@ describe("chatInputStore", () => {
     expect(store.getDraft("chat")).toBe("submitted")
   })
 
-  test("canonical rebinding keeps the pending revision and lets the accepted send retire the chip", () => {
+  test("retirement matches a rebound upload across project URLs", () => {
     const store = useChatInputStore.getState()
     const upload = (project: string) => ({
       id: "same-upload", kind: "file" as const, displayName: "notes.txt", absolutePath: "/fixture/notes.txt",
       relativePath: "notes.txt", contentUrl: `/api/projects/${project}/uploads/same-upload/content`, mimeType: "text/plain", size: 1,
     })
+    // The workspace draft still holds the retired project's URL because rebinding
+    // is memory-only. The accepted send used the rebound URL for the same file.
     store.setAttachmentDrafts("alpha", [upload("retired")])
     const before = store.getDraftRevision("landing", "alpha")
-    store.rebindAttachmentDrafts("alpha", [upload("current")])
-    expect(store.getDraftRevision("landing", "alpha")).toEqual(before)
     store.setDraft("landing", "edited while acknowledgement is pending")
     expect(store.clearSubmittedDraft(before)).toBe(false)
     store.retireSubmittedAttachments("alpha", [upload("current")])
     expect(store.getAttachmentDrafts("alpha")).toEqual([])
+  })
+
+  test("retirement never matches a different physical file with a colliding id", () => {
+    const store = useChatInputStore.getState()
+    const upload = (path: string, project = "alpha") => ({
+      id: "same-upload", kind: "file" as const, displayName: "notes.txt", absolutePath: path,
+      relativePath: "notes.txt", contentUrl: `/api/projects/${project}/uploads/same-upload/content`, mimeType: "text/plain", size: 1,
+    })
+    store.setAttachmentDrafts("alpha", [upload("/fixture/other.txt")])
+    store.retireSubmittedAttachments("alpha", [upload("/fixture/notes.txt")])
+    expect(store.getAttachmentDrafts("alpha")).toHaveLength(1)
   })
 
   test("retires only references owned by the accepted landing send", () => {
@@ -105,7 +116,9 @@ describe("chatInputStore", () => {
     store.setAttachmentDrafts("beta", [later])
     store.retireSubmittedAttachments("alpha", [sent, upload("rebound")])
     expect(store.getDraft("landing")).toBe("new text")
-    expect(store.getAttachmentDrafts("alpha")).toEqual([later, rebound])
+    // The rebound chip is the same physical file the send consumed, so it retires
+    // even though its persisted URL still names the older project.
+    expect(store.getAttachmentDrafts("alpha")).toEqual([later])
     expect(store.getAttachmentDrafts("beta")).toEqual([later])
     const revision = store.getDraftRevision("landing", "alpha")
     store.retireSubmittedAttachments("alpha", [sent])
