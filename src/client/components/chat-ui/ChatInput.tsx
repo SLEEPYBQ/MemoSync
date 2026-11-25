@@ -30,7 +30,7 @@ import { SlashCommandMenu } from "./SlashCommandMenu"
 import { isSlashInput, resolveRuntimeSlash, runtimeCatalogSettling, runtimeCommandToken } from "../../lib/runtimeCommands"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
 import { useChatInputStore } from "../../stores/chatInputStore"
-import { runRetainedDraftSubmission } from "./chatDraftSubmission"
+import { recordUnsentUpload, runRetainedDraftSubmission, takeUnsentUpload } from "./chatDraftSubmission"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
@@ -484,12 +484,17 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       valueRef.current = state.drafts[textDraftKey] ?? ""
       setValueState(valueRef.current)
     }
-    if (attachmentDraftKey && previous.attachmentDrafts[attachmentDraftKey] && !state.attachmentDrafts[attachmentDraftKey]) {
-      const retained = attachmentsRef.current.filter((attachment) => attachment.status !== "uploaded")
-      attachmentsRef.current.filter((attachment) => attachment.status === "uploaded").forEach(cleanupAttachmentPreview)
+    if (attachmentDraftKey && previous.attachmentDrafts[attachmentDraftKey] !== state.attachmentDrafts[attachmentDraftKey]) {
+      const ids = new Set(state.attachmentDrafts[attachmentDraftKey]?.map(item => item.id))
+      const retained = attachmentsRef.current.filter(attachment => {
+        if (attachment.status !== "uploaded" || ids.has(attachment.id)) return true
+        cleanupAttachmentPreview(attachment)
+        return false
+      })
+      if (retained.length === attachmentsRef.current.length) return
       attachmentsRef.current = retained
       setAttachmentsState(retained)
-      setSelectedAttachmentId(null)
+      setSelectedAttachmentId(id => retained.some(item => item.id === id) ? id : null)
     }
   }), [attachmentDraftKey, textDraftKey, cleanupAttachmentPreview])
 
@@ -639,6 +644,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return
           }
 
+          recordUnsentUpload(uploaded.id)
           setAttachments((current) => current.map((attachment) => (
             attachment.id !== tempId
               ? attachment
@@ -749,11 +755,20 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return
           }
         }
+        // The server may accept before its ACK (or even if that ACK is lost).
+        // A pending or restored chip may still be removed, but not its file.
+        attachmentsForSubmit.forEach(attachment => takeUnsentUpload(attachment.id))
         await onSubmit(nextValue, submitOptions)
       },
       onAccepted: () => {
-        if (submissionRef.current === submission && !ownsDraft()) return
-        if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
+        const store = useChatInputStore.getState()
+        if ((submissionRef.current === submission && !ownsDraft()) || !store.clearSubmittedDraft(persistedRevision)) {
+          if (!chatId && attachmentDraftKey) {
+            // A landing ACK promotes these files into a chat, not the next draft.
+            store.retireSubmittedAttachments(attachmentDraftKey, attachmentsForSubmit)
+          }
+          return
+        }
         if (!ownsDraft()) return
         if (!chatId) setDraftMemoryDisabled(false)
         setValue("")
@@ -962,7 +977,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
     if (attachment.status === "uploaded") {
       removedAttachmentIdsRef.current.delete(attachment.id)
-      void deleteUploadedAttachment(attachment)
+      if (takeUnsentUpload(attachment.id)) void deleteUploadedAttachment(attachment)
     }
   }
 

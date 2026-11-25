@@ -1,6 +1,6 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type {
   BranchActionFailure,
   BranchActionSuccess,
@@ -40,7 +40,7 @@ export function useChatPageSidebarActions({
   showRightSidebar,
 }: UseChatPageSidebarActionsArgs) {
   useI18n()
-  const dialog = useAppDialog()
+  const appDialog = useAppDialog()
   const [diffRenderMode, setDiffRenderMode] = useState<"unified" | "split">("unified")
   const [wrapDiffLines, setWrapDiffLines] = useState(false)
   const terminalDiffRefreshTimeoutRef = useRef<number | null>(null)
@@ -48,10 +48,24 @@ export function useChatPageSidebarActions({
   const lastProjectGitRefreshProjectIdRef = useRef<string | null>(null)
   const activeChatIdRef = useRef<string | null>(state.activeChatId)
   const projectPathRef = useRef<string | null>(state.runtime?.localPath ?? state.navbarLocalPath ?? null)
+  // The dialog provider outlives the chat. A completed command still returns its
+  // result to its caller, but it cannot open an alert on a later visit.
+  const visit = useMemo(() => ({ current: false }), [state.activeChatId])
+  const dialog = useMemo(() => ({
+    ...appDialog,
+    alert: async (options: Parameters<typeof appDialog.alert>[0]) => {
+      if (visit.current) await appDialog.alert(options)
+    },
+  }), [appDialog, visit])
 
   useLayoutEffect(() => {
     activeChatIdRef.current = state.activeChatId
-  }, [state.activeChatId])
+    visit.current = !!state.activeChatId
+    return () => {
+      activeChatIdRef.current = null
+      visit.current = false
+    }
+  }, [state.activeChatId, visit])
 
   useEffect(() => {
     projectPathRef.current = state.runtime?.localPath ?? state.navbarLocalPath ?? null
@@ -218,7 +232,7 @@ export function useChatPageSidebarActions({
       if (result.snapshotChanged && activeChatIdRef.current === chatId) {
         refreshDiffs()
       }
-      if (!result.ok && activeChatIdRef.current === chatId) {
+      if (!result.ok) {
         await dialog.alert({
           title: translateUiText(result.title),
           description: result.localCommitCreated
@@ -229,7 +243,7 @@ export function useChatPageSidebarActions({
       }
       return result
     } catch (error) {
-      if (activeChatIdRef.current === chatId) await dialog.alert({
+      await dialog.alert({
         title: t("sidebar:commitFailed"),
         description: error instanceof Error ? error.message : String(error),
         closeLabel: t("common:ok"),
@@ -292,7 +306,7 @@ export function useChatPageSidebarActions({
       // Every other Git action surfaces failures via dialog.alert; this one
       // silently swallowed them, leaving the user with an empty box and no clue
       // (BUG PANEL-5). Especially likely on the DeepSeek deployment (AGENT-6).
-      if (activeChatIdRef.current === chatId) await dialog.alert({
+      await dialog.alert({
         title: t("sidebar:couldnTGenerateACommitMessage"),
         description: error instanceof Error ? error.message : String(error),
         closeLabel: t("common:ok"),

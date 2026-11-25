@@ -794,7 +794,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }, isCurrentLandingVisit?: () => boolean) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -1779,12 +1779,9 @@ export function useAppState(activeChatId: string | null): AppState {
     }
   }, [getLocale()])
 
-  const handleSend = useCallback(async (
-    content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }
-  ) => {
+  const handleSend = useCallback<AppState["handleSend"]>(async (content, options, isCurrentLandingVisit) => {
     const origin = viewOwnerRef.current
-    const isOrigin = () => origin !== null && viewOwnerRef.current === origin
+    const isOrigin = () => origin !== null && viewOwnerRef.current === origin && (isCurrentLandingVisit?.() ?? true)
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
       try {

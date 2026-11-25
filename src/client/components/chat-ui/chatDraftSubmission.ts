@@ -15,3 +15,21 @@ export async function runRetainedDraftSubmission(options: {
     options.onRejected(error)
   }
 }
+
+// A persisted chip is a reference, not proof that the draft still owns a file.
+// Keep this one-way handoff separate from the draft snapshot: restoring a stale
+// snapshot (including in another tab) must never restore permission to unlink.
+const unsentUploadKey = (id: string) => `memosync.unsent-upload.${id}`
+
+export function recordUnsentUpload(id: string) {
+  try { localStorage.setItem(unsentUploadKey(id), "1") } catch { /* Detach only if storage is unavailable. */ }
+}
+
+export function takeUnsentUpload(id: string): boolean {
+  try {
+    const key = unsentUploadKey(id)
+    if (localStorage.getItem(key) !== "1") return false
+    localStorage.removeItem(key)
+    return true
+  } catch { return false }
+}

@@ -8,6 +8,8 @@ interface Fixture {
   resolve(index: number): void
   commands(): Array<{ type: string; chatId?: string }>
   resolveGenerate(): void
+  settleGit(reject: boolean): void
+  gitReturned(): boolean
 }
 
 let harness: Awaited<ReturnType<typeof startMountedRaceHarness>>
@@ -55,5 +57,24 @@ describe("question ACK and git origin", () => {
     const commands = await target.evaluate(() => (window as unknown as { __questionGitFixture: Fixture }).__questionGitFixture.commands())
     expect(commands.filter(c => c.type === "chat.commitDiffs")).toEqual([expect.objectContaining({ chatId: "chat-a" })])
     expect(commands.filter(c => c.chatId === "chat-b")).toEqual([])
+  })
+
+  test.each([["Commit", false], ["Commit", true], ["Fetch", true]] as const)("a late %s failure cannot open an alert on the landing page (rejection=%s)", async (action, reject) => {
+    page = await harness.openPage("question-git")
+    const target = page
+    await target.getByRole("button", { name: action, exact: true }).click()
+    await target.getByRole("button", { name: "Leave chat" }).click()
+    await target.getByRole("heading", { name: "Fixture landing" }).waitFor()
+    await target.evaluate(reject => (window as unknown as { __questionGitFixture: Fixture }).__questionGitFixture.settleGit(reject), reject)
+    await target.waitForFunction(() => (window as unknown as { __questionGitFixture: Fixture }).__questionGitFixture.gitReturned() || document.querySelector('[role="dialog"]'))
+    expect(await target.getByRole("dialog").count()).toBe(0)
+    expect(await target.evaluate(() => (window as unknown as { __questionGitFixture: Fixture }).__questionGitFixture.gitReturned())).toBe(true)
+  })
+
+  test("the originating chat still shows a commit failure", async () => {
+    page = await harness.openPage("question-git")
+    await page.getByRole("button", { name: "Commit", exact: true }).click()
+    await page.evaluate(() => (window as unknown as { __questionGitFixture: Fixture }).__questionGitFixture.settleGit(false))
+    await page.getByRole("dialog", { name: "Fixture Git failure" }).waitFor()
   })
 })

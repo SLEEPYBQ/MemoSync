@@ -10,16 +10,24 @@ import type { AppState } from "../../../app/useAppState"
 const submissions: Array<{ answers: unknown; resolve: () => void; reject: () => void }> = []
 const commands: Array<{ type: string; chatId?: string }> = []
 let resolveGenerate: ((value: { subject: string; body: string }) => void) | undefined
+let settleGit: ((reject: boolean) => void) | undefined
+let holdGit = false
+let gitReturned = false
 const socket = {
   command(command: { type: string; chatId?: string }) {
     commands.push(command)
     if (command.type === "chat.generateCommitMessage") return new Promise(resolve => { resolveGenerate = resolve as typeof resolveGenerate })
+    if ((command.type === "chat.commitDiffs" || command.type === "chat.syncBranch") && holdGit) return new Promise((resolve, reject) => {
+      settleGit = failed => failed ? reject(new Error("Fixture Git failure")) : resolve({
+        ok: false, title: "Fixture Git failure", message: "Synthetic failure", snapshotChanged: true,
+      })
+    })
     return Promise.resolve({ ok: true, snapshotChanged: true })
   },
 }
 
 export function mountQuestionGitFixture(root: HTMLElement) {
-  function Fixture() {
+  function Chat() {
     const [chatId, setChatId] = useState("chat-a")
     const actions = useChatPageSidebarActions({
       state: { activeChatId: chatId, socket, isProcessing: false } as unknown as AppState,
@@ -39,6 +47,15 @@ export function mountQuestionGitFixture(root: HTMLElement) {
         })}
       />
       <button data-testid="switch-chat" onClick={() => setChatId("chat-b")}>Switch</button>
+      <button onClick={() => {
+        holdGit = true
+        void actions.handleCommitDiffs({ paths: ["fixture.txt"], summary: "fixture", description: "", mode: "commit_only" })
+          .then(() => { gitReturned = true })
+      }}>Commit</button>
+      <button onClick={() => {
+        holdGit = true
+        void actions.handleSyncBranch("fetch").then(() => { gitReturned = true })
+      }}>Fetch</button>
       <button data-testid="generate-and-commit" onClick={() => {
         const { handleGenerateCommitMessage, handleCommitDiffs } = actions
         void (async () => {
@@ -48,12 +65,20 @@ export function mountQuestionGitFixture(root: HTMLElement) {
       }}>Generate</button>
     </main>
   }
+  function Fixture() {
+    const [inChat, setInChat] = useState(true)
+    return inChat
+      ? <><Chat /><button onClick={() => setInChat(false)}>Leave chat</button></>
+      : <h1>Fixture landing</h1>
+  }
   Object.assign(window, { __questionGitFixture: {
     answers: () => submissions.map(entry => entry.answers),
     reject: (index: number) => submissions[index]?.reject(),
     resolve: (index: number) => submissions[index]?.resolve(),
     commands: () => commands,
     resolveGenerate: () => resolveGenerate?.({ subject: "fixture", body: "" }),
+    settleGit: (reject: boolean) => settleGit?.(reject),
+    gitReturned: () => gitReturned,
   } })
   createRoot(root).render(<MemoryRouter><ThemeProvider><AppDialogProvider><Fixture /></AppDialogProvider></ThemeProvider></MemoryRouter>)
 }
