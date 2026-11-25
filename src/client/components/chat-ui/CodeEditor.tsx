@@ -18,10 +18,12 @@ import { highlightSelectionMatches, searchKeymap } from "@codemirror/search"
 import { languages } from "@codemirror/language-data"
 import { tags as t } from "@lezer/highlight"
 import { useTheme } from "../../hooks/useTheme"
+import { detectLineEnding, type LineEnding } from "../../lib/fileEditorDrafts"
 
 interface CodeEditorProps {
   fileName: string
   initialValue: string
+  lineEnding?: LineEnding
   readOnly?: boolean
   onChange?: (doc: string) => void
   /** Invoked on Mod-S. Return true when handled (always preventDefaults). */
@@ -106,7 +108,7 @@ export function matchEditorLanguage(fileName: string): LanguageDescription | nul
   return LanguageDescription.matchFilename(languages, fileName)
 }
 
-export function CodeEditor({ fileName, initialValue, readOnly = false, onChange, onSave, onReady, reveal }: CodeEditorProps) {
+export function CodeEditor({ fileName, initialValue, lineEnding, readOnly = false, onChange, onSave, onReady, reveal }: CodeEditorProps) {
   const { resolvedTheme } = useTheme()
   const containerRef = useRef<HTMLDivElement | null>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -127,6 +129,7 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
   useEffect(() => {
     if (!containerRef.current) return
 
+    const separator = lineEnding ?? detectLineEnding(initialValue)
     const state = EditorState.create({
       doc: initialValue,
       extensions: [
@@ -164,7 +167,7 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
         compartments.language.of([]),
         compartments.readOnly.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) onChangeRef.current?.(update.state.doc.toString())
+          if (update.docChanged) onChangeRef.current?.(update.state.doc.sliceString(0, undefined, separator))
         }),
       ],
     })
@@ -191,7 +194,7 @@ export function CodeEditor({ fileName, initialValue, readOnly = false, onChange,
     // Recreated only per file (parent keys this component by path); initial
     // doc changes for the same file are handled by CodeMirror itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileName, compartments])
+  }, [fileName, compartments, lineEnding])
 
   useEffect(() => {
     viewRef.current?.dispatch({ effects: compartments.highlight.reconfigure([

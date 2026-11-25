@@ -54,7 +54,8 @@ export async function startMountedRaceHarness() {
             return
           }
           if (/\/files$/.test(url.pathname)) {
-            await route.fulfill({ json: { data: { dir: "", entries: [{ name: "note.txt", kind: "file", size: 6 }] } } })
+            const entries = ["note.txt", "other.txt"].map(name => ({ name, kind: "file", size: 6 }))
+            await route.fulfill({ json: { data: { dir: "", entries } } })
             return
           }
           if (url.pathname.endsWith("/content") && route.request().method() === "GET") {

@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { fileEditorDrafts, type FileBuffer } from "./fileEditorDrafts"
+import { detectLineEnding, fileEditorDrafts, type FileBuffer } from "./fileEditorDrafts"
 
 function buffer(original: string, current: string): FileBuffer {
   return {
-    kind: "text", status: "ready", original, current, revision: '"base"',
+    kind: "text", status: "ready", original, current, lineEnding: detectLineEnding(original), revision: '"base"',
     incarnation: {}, saving: false, saveError: null, justSaved: false, mdMode: "source",
   }
 }

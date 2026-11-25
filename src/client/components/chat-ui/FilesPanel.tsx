@@ -24,7 +24,7 @@ import {
 } from "../ui/context-menu"
 import { cn } from "../../lib/utils"
 import { classifyFilePreview } from "../../lib/filePreview"
-import { fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
+import { detectLineEnding, fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
 import {
   ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename, renameDestination,
 } from "../../lib/filesWorkbench"
@@ -336,6 +336,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           status: needsFetch ? "loading" : "ready",
           original: "",
           current: "",
+          lineEnding: "\n",
           revision: null,
           incarnation: {},
           saving: false,
@@ -366,6 +367,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
     for (const [path, buffer] of pending) {
       fetch(`${contentUrl(projectId, path)}?editor=1`)
         .then(async (res) => {
+          if (res.status === 415) throw new Error(t("files:unsupportedEditorEncoding"))
           if (!res.ok) throw new Error(t("files:loadFailedValue0", { v0: res.status }))
           const length = Number(res.headers.get("content-length"))
           if (Number.isFinite(length) && length > MAX_INLINE_TEXT_BYTES) {
@@ -378,7 +380,9 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
           return { text, revision }
         })
         .then(({ text, revision }) => {
-          if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "ready", original: text, current: text, revision })
+          if (!cancelled) editorStore.patch(path, buffer.incarnation, {
+            status: "ready", original: text, current: text, lineEnding: detectLineEnding(text), revision,
+          })
         })
         .catch((err) => {
           if (!cancelled) editorStore.patch(path, buffer.incarnation, { status: "error", error: fetchFailMessage(err, t("files:failedToLoadFile")) })
@@ -428,6 +432,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         })
         if (!res.ok) {
           if (res.status === 412 || res.status === 404) throw new Error(t("files:fileChangedCopyEditsBeforeReload"))
+          if (res.status === 415) throw new Error(t("files:unsupportedEditorEncoding"))
           const body = (await res.json().catch(() => null)) as HttpUiError | null
           throw new Error(httpUiError(body, t("files:saveFailedValue0", { v0: res.status })))
         }
@@ -987,7 +992,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
             <Loader2 className="size-4 animate-spin" /> {t("common:loading")}</div>
         ) : activeBuffer.status === "error" ? (
           <div className="flex flex-col items-start gap-2 p-4">
-            <p className="text-sm text-muted-foreground">{activeBuffer.error}</p>
+            <p className="text-sm text-muted-foreground">{translateUiText(activeBuffer.error)}</p>
             <button
               type="button"
               onClick={() => updateBuffer(active, { status: "loading", error: undefined })}
@@ -1009,6 +1014,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
               key={active}
               fileName={baseName(active)}
               initialValue={activeBuffer.current}
+              lineEnding={activeBuffer.lineEnding}
               onChange={(doc) => updateBufferContent(active, doc)}
               onSave={() => void saveFile(active)}
               reveal={reveal && reveal.path === active ? { line: reveal.line, nonce: reveal.nonce } : undefined}
