@@ -33,6 +33,7 @@
   "serverUploadMetadata": "Invalid upload size metadata.",
   "serverUploadMismatch": "The uploaded file size does not match. Please try again.",
   "serverStaleChatUpload": "An attached upload is missing or has changed. Remove it and attach the file again.",
+  "serverUploadSendStopped": "Send stopped before the attachments were submitted.",
   "serverUploadFailed": "Upload failed",
   "serverAttachmentPath": "Invalid attachment path",
   "serverAttachmentNotFound": "Attachment not found",
