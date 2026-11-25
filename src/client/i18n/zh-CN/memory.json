@@ -16,6 +16,7 @@
   "expiry": "到期时间",
   "expiredDate": "{{date}}已到期",
   "restoreForSevenDays": "恢复并保留 7 天",
+  "revisionWithdrawn": "审计结论已更正，此修订提案已撤回。如需修改，请重新起草修订。",
   "extendOnBoard": "在记忆看板延长",
   "expiredSinceTurn_one": "上轮以来 {{count}} 条记忆到期",
   "expiredSinceTurn_other": "上轮以来 {{count}} 条记忆到期",

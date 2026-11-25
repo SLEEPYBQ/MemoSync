@@ -1,9 +1,12 @@
 import { afterAll, beforeAll, expect, test } from "bun:test"
 import react from "@vitejs/plugin-react"
-import { mkdir } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { chromium, type Browser, type Page } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
+import { MemoryService } from "../../../server/memory"
+import { handleMemoryRequest } from "../../../server/memory/routes"
 
 let vite: ViteDevServer
 let browser: Browser
@@ -414,6 +417,59 @@ test("citation opens the matching active or archived Board detail without leavin
     releaseLoad()
   }
 }, 60_000)
+
+test("a withdrawn revision retains its history and only archived snapshots can be rolled back", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "memosync-withdrawn-history-"))
+  const memory = new MemoryService({ dbPath: ":memory:", dataDir: dir })
+  try {
+    const input = { scope: "personal", type: "fact" } as const
+    const target = memory.store.create({ ...input, content: "Synthetic audit target." }, { actor: "user" })
+    for (let turn = 1; turn <= 3; turn++)
+      memory.store.recordTraceLabel(target.id, "violated", { actor: "agent", sessionId: "synthetic-chat", turn })
+    const draft = memory.store.createRevisionProposal({ ...input, content: "Synthetic audit draft." }, target.id, { actor: "system" }, {
+      traceEvidence: memory.store.recentTraceEvidence(target.id).map(row => row.seq),
+    })!
+    expect(memory.store.recordTraceCorrection(target.id, { sessionId: "synthetic-chat", turn: 2, label: "operational" }).invalidatedIds).toEqual([draft.id])
+    memory.store.update(draft.id, { content: "Edited synthetic archive." }, { actor: "user" })
+
+    page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
+    page.setDefaultTimeout(5_000)
+    await page.route("**/api/**", async route => {
+      const request = route.request()
+      const req = new Request(request.url(), { method: request.method(), body: request.postData() })
+      const res = await handleMemoryRequest(req, new URL(req.url), memory)
+      await route.fulfill({ status: res?.status ?? 200, contentType: "application/json", body: res ? await res.text() : '{"data":[]}' })
+    })
+    await page.goto(url)
+    const chip = page.locator("#board-citations").getByText(`[${draft.id}]`, { exact: true })
+    const hover = page.locator("[data-radix-popper-content-wrapper]")
+    await chip.hover()
+    await hover.getByRole("button", { name: "Open in Board" }).click()
+    const board = page.getByRole("dialog", { name: "Memory Board" })
+    const detail = board.locator(`aside[data-memory-detail-id="${draft.id}"]`)
+    await board.getByRole("heading", { name: "Archived" }).waitFor()
+    await detail.getByRole("button", { name: "History" }).click()
+    for (const label of ["Created", "Status changed", "Edited"]) await detail.getByText(label, { exact: true }).waitFor()
+    const rollback = detail.getByRole("button", { name: "Roll back to this version" })
+    expect(await rollback.count()).toBe(1)
+    await rollback.click()
+    await detail.getByRole("button", { name: "Confirm rollback" }).click()
+    await detail.getByText("Rolled back", { exact: true }).waitFor()
+    expect(memory.store.getById(draft.id)).toMatchObject({ status: "archived", content: draft.content })
+
+    // The same archived item can be inspected from a transcript reference without offering Undo.
+    await page.keyboard.press("Escape")
+    await board.waitFor({ state: "hidden" })
+    await chip.hover()
+    await hover.getByRole("button", { name: "Open in Board" }).waitFor()
+    expect(await hover.getByRole("button", { name: "Undo" }).count()).toBe(0)
+    expect(await hover.innerText()).toContain("withdrawn after an audit correction")
+  } finally {
+    await page?.close()
+    memory.close()
+    await rm(dir, { recursive: true, force: true })
+  }
+}, 30_000)
 
 test("citation Board entry is hidden without live Board navigation", async () => {
   page = await browser.newPage({ viewport: { width: 1100, height: 900 } })

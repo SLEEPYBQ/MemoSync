@@ -29,6 +29,8 @@ describe("MemoryProposalsGate", () => {
       citedInCurrentSession: 0,
     } as MemoryItem
     expect(candidateReviewState(candidate, true)).toBe("candidate")
+    expect(candidateReviewState({ ...candidate, status: "archived" }, false)).toBe("accepted")
+    expect(candidateReviewState({ ...candidate, status: "archived", invalidatedRevision: true }, false)).toBe("withdrawn")
     expect(candidateReviewState({ ...candidate, status: "discarded" }, false)).toBe("discarded")
     expect(candidateReviewState(undefined, true)).toBe("optimistic-dismissed")
   })
