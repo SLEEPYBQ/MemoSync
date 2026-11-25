@@ -8,6 +8,11 @@ function isMainNavigationUrl(value, origin) {
     || /^\/(?:settings(?:\/[^/]+)?|memory|chat\/[^/]+)\/?$/.test(pathname)
 }
 
+function isMainAppFrame(event, mainWindow, origin) {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents
+    && event.senderFrame === mainWindow.webContents.mainFrame && isMainNavigationUrl(event.senderFrame.url, origin))
+}
+
 function classifyNavigation(value, origin, target) {
   if (target === "content") return isAppContentUrl(value, origin) ? "content" : "deny"
   if (isAppContentUrl(value, origin)) return "content"
@@ -81,4 +86,5 @@ module.exports = {
   installNavigationHandlers,
   isAppContentUrl,
   isMainNavigationUrl,
+  isMainAppFrame,
 }

@@ -10,6 +10,17 @@ contextBridge.exposeInMainWorld("memosyncDesktop", {
   },
   setTheme: (theme) => ipcRenderer.send("memosync:set-theme", theme),
   chooseDirectory: (defaultPath) => ipcRenderer.invoke("memosync:choose-directory", defaultPath),
+  updates: {
+    getSnapshot: () => ipcRenderer.invoke("memosync:updates:get-snapshot"),
+    checkForUpdates: () => ipcRenderer.invoke("memosync:updates:check"),
+    downloadUpdate: () => ipcRenderer.invoke("memosync:updates:download"),
+    installUpdate: () => ipcRenderer.invoke("memosync:updates:install"),
+    onChange: (listener) => {
+      const handler = (_event, snapshot) => listener(snapshot)
+      ipcRenderer.on("memosync:updates:changed", handler)
+      return () => ipcRenderer.removeListener("memosync:updates:changed", handler)
+    },
+  },
 })
 
 // The traffic lights leave in full screen, so the room kept for them has to go too.

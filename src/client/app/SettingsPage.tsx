@@ -11,6 +11,7 @@ import { useTerminalPreferencesStore } from "../stores/terminalPreferencesStore"
 import type { AppState } from "./useAppState"
 import { ALL_SETTINGS_ROWS, SETTINGS_NAV_GROUPS, SETTINGS_ROWS, SETTINGS_SECTIONS as sidebarItems, getSettingsRowHref, resolveSettingsSectionId } from "./settings/registry"
 import { GeneralSection } from "./settings/GeneralSection"
+import { DesktopUpdateSection } from "./settings/DesktopUpdateSection"
 import { MemorySection } from "./settings/MemorySection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
@@ -74,6 +75,7 @@ export function SettingsPage() {
   const machineName = state.localProjects?.machine.displayName ?? t("common:unavailable")
   const projectCount = state.localProjects?.projects.length ?? 0
   const appVersion = SDK_CLIENT_APP.split("/")[1] ?? "unknown"
+  const desktop = typeof window === "undefined" ? undefined : window.memosyncDesktop
   const availableRelease = getReleaseNotice(state.releaseNotice)
   const resolvedKeybindings = useMemo(() => getResolvedKeybindings(state.keybindings), [state.keybindings])
   const keybindingsFilePathDisplay = resolvedKeybindings.filePathDisplay || getKeybindingsFilePathDisplay()
@@ -340,8 +342,8 @@ export function SettingsPage() {
                     <h1 className="text-[22px] font-semibold tracking-[-0.015em] text-foreground">
                       {selectedSection.label}
                     </h1>
-                    {selectedPage === "general" && SELF_UPDATE_ENABLED ? (
-                      <SettingsActionButton onClick={() => navigate("/settings/changelog")}>
+                    {selectedPage === "general" && (desktop?.updates || SELF_UPDATE_ENABLED) ? (
+                      <SettingsActionButton onClick={() => navigate(desktop?.updates ? getSettingsRowHref(SETTINGS_ROWS.applicationUpdate) : "/settings/changelog")}>
                         {t("settings:checkForUpdates")}</SettingsActionButton>
                     ) : null}
                   </div>
@@ -352,11 +354,11 @@ export function SettingsPage() {
                   <GeneralSection state={state} appVersion={appVersion} part={selectedPage} />
                 ) : selectedPage === "about" ? (
                   <SettingsGroups>
-                    {SELF_UPDATE_ENABLED ? <GeneralSection state={state} appVersion={appVersion} part="about" /> : null}
+                    {desktop?.updates ? <DesktopUpdateSection bridge={desktop.updates} platform={desktop.platform} /> : SELF_UPDATE_ENABLED ? <GeneralSection state={state} appVersion={appVersion} part="about" /> : null}
                     <SettingsGroup>
                       <SettingsRow
                         title={t("settings:aboutVersion")}
-                        description={availableRelease ? (
+                        description={availableRelease && !desktop?.updates ? (
                           <a
                             href={availableRelease.url}
                             target="_blank"

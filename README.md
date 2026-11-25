@@ -132,6 +132,8 @@ The app isn't notarized yet, so macOS blocks it the first time. Try to open it, 
 
 Windows packages are not publisher-signed. Linux requires a graphical session and support for Electron's sandbox; on Ubuntu, prefer the `.deb` package.
 
+In the desktop app, open **Settings → About** to check for updates and download them without leaving MemoSync. Installed Windows NSIS builds ask before restarting to install. On Linux, AppImage updates are verified against the release manifest and saved in a new folder in Downloads; open that folder, save your work, quit MemoSync, then launch the new AppImage. The old AppImage is never replaced. macOS, Debian and Windows ZIP builds open the verified system installer for you to finish. Source installations keep their existing update method.
+
 The app doesn't include any agents, so install Claude Code or Codex first. To use Pi, install `@earendil-works/pi-coding-agent` 1.3.0 or newer. The app shares `~/.memosync/data` with a source install, and only one of them can run at a time.
 
 ### From source
@@ -275,6 +277,12 @@ bun run desktop:smoke        # staged backend checks
 ```
 
 Pull requests run compatibility checks without requiring installers. The manually dispatched **Desktop release** workflow builds all four native targets and exercises each packaged app before it can publish a release.
+
+Desktop releases also include `latest.yml`, `latest-linux.yml` and the Windows installer blockmap for in-app updates. Publication verifies that the metadata version, package sizes and SHA512 hashes match the complete set of built packages, then writes `SHA256SUMS` for every published asset. macOS update feeds are not published while builds use ad-hoc signing; the app downloads the verified DMG instead.
+
+The first release with in-app updates needs a **new stable version** in both package manifests and matching release notes. Do not replace the existing `v0.46.0` packages or backfill feeds on that tag. Users of pre-updater releases install the first updater-enabled version manually.
+
+The packaged smoke test launches an unpacked app; it does not prove that an installed NSIS upgrade succeeds. Before shipping automatic Windows upgrades, rehearse two updater-enabled versions on a disposable Windows machine with synthetic data. Check that the backend stops cleanly, a single updated instance opens, and the fixture data survives. Linux AppImage updates have no automatic restart to hand off.
 
 ## Acknowledgements
 
