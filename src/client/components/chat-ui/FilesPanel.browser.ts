@@ -58,6 +58,35 @@ describe("FilesPanel text format", () => {
   })
 
   test.each([
+    ["CRLF first, mostly LF", "one\r\ntwo\nthree\n", "\r\n"],
+    ["LF first, mostly CRLF", "one\ntwo\r\nthree\r\n", "\n"],
+  ])("a mixed-ending file saves in its first break's style: %s", async (_, initial, eol) => {
+    page = await harness.openPage("file-editor")
+    const dir = mkdtempSync(join(tmpdir(), "memosync-files-mixed-"))
+    const file = join(dir, "note.txt")
+    try {
+      writeFileSync(file, initial)
+      await routeDiskFile(page, dir)
+      await page.getByRole("button", { name: "note.txt" }).click()
+      const editor = page.locator(".cm-content")
+      // The raw mixed bytes load verbatim; editing normalizes every break to
+      // the style of the file's first one.
+      await waitForCurrent(page, "project-a", initial)
+      await editor.press("x")
+      await editor.press("Enter")
+      await waitForCurrent(page, "project-a", `x${eol}one${eol}two${eol}three${eol}`)
+      const [saved] = await Promise.all([
+        page.waitForResponse(res => res.request().method() === "PUT"),
+        page.getByTitle("Save (⌘S)").click(),
+      ])
+      expect(saved.status()).toBe(200)
+      expect(readFileSync(file)).toEqual(Buffer.from(`x${eol}one${eol}two${eol}three${eol}`))
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test.each([
     ["CRLF", "", "\r\n"],
     ["CR", "", "\r"],
     ["BOM + CRLF", "\uFEFF", "\r\n"],
