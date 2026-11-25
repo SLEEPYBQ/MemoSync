@@ -107,13 +107,14 @@ function errorMessage(error: unknown): string {
 
 export class OpencodeAgentManager {
   private chats = new Map<string, ChatServer>()
-  private pending = new Map<string, Promise<ChatServer>>()
+  private pending = new Map<string, { promise: Promise<ChatServer>; controller: AbortController }>()
   private generations = new Map<string, number>()
   private interruptions = new Map<string, Promise<void>>()
-  private stopping = new Set<Promise<unknown>>()
+  private stopping = new Map<string, Promise<void>>()
   private disposed = false
 
-  private track(promise: Promise<unknown>) { this.stopping.add(promise); void promise.finally(() => this.stopping.delete(promise)).catch(() => {}); return promise }
+  constructor(private readonly startServer = startOpencodeServer) {}
+
   private async stop(chat: ChatServer) {
     if (chat.closed) return
     chat.closed = true
@@ -121,8 +122,7 @@ export class OpencodeAgentManager {
     // An analysis session may already exist without having reached its caller.
     // Keep the server alive until initialization has deleted that orphan.
     await chat.initializing?.done
-    await chat.server.close()
-    await chat.hostPlugin?.close()
+    try { await chat.server.close() } finally { await chat.hostPlugin?.close() }
   }
   getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
     const chat = this.chats.get(chatId)
@@ -137,21 +137,32 @@ export class OpencodeAgentManager {
   }
   hasSession(chatId: string) { return Boolean(this.chats.get(chatId) && !this.chats.get(chatId)!.closed) }
   hasPendingWork(chatId: string) { const chat = this.chats.get(chatId); return this.pending.has(chatId) || Boolean(chat?.turn || chat?.initializing) }
-  closeChat(chatId: string): void {
-    this.generations.set(chatId, (this.generations.get(chatId) ?? 0) + 1)
-    const chat = this.chats.get(chatId)
+  private retireServer(chatId: string, chat: ChatServer) {
+    if (this.chats.get(chatId) !== chat) return this.stopping.get(chatId)
     this.chats.delete(chatId)
-    if (chat) this.track(this.stop(chat))
+    const stopping = this.stop(chat)
+    this.stopping.set(chatId, stopping)
+    void stopping.finally(() => { if (this.stopping.get(chatId) === stopping) this.stopping.delete(chatId) }).catch(() => {})
+    return stopping
+  }
+  async closeChat(chatId: string): Promise<void> {
+    this.generations.set(chatId, (this.generations.get(chatId) ?? 0) + 1)
+    const pending = this.pending.get(chatId)
+    pending?.controller.abort()
+    const chat = this.chats.get(chatId)
+    // An aborted launch rejects only AFTER its process cleanup. A transport
+    // already detached by an exit/interrupt still belongs to this chat too.
+    await Promise.all([pending?.promise.catch(() => {}), this.interruptions.get(chatId),
+      chat ? this.retireServer(chatId, chat) : this.stopping.get(chatId)])
   }
   async dispose(): Promise<void> {
     this.disposed = true
-    for (const id of new Set([...this.chats.keys(), ...this.pending.keys()])) this.closeChat(id)
-    await Promise.allSettled([...this.pending.values(), ...this.interruptions.values(), ...this.stopping])
-    await Promise.allSettled([...this.stopping])
+    const ids = new Set([...this.chats.keys(), ...this.pending.keys(), ...this.interruptions.keys(), ...this.stopping.keys()])
+    await Promise.allSettled([...ids].map(id => this.closeChat(id)))
   }
   /** Analysis-only cleanup is awaited before its process group is closed. */
   async deleteSession(chatId: string, sessionToken: string, launch?: Pick<StartOpencodeTurnArgs, 'cwd' | 'runtime' | 'model' | 'agent'>): Promise<void> {
-    await this.interruptions.get(chatId)
+    await Promise.all([this.interruptions.get(chatId), this.stopping.get(chatId)])
     let chat = this.chats.get(chatId)
     if ((!chat || chat.closed) && launch?.runtime) {
       chat = await this.ensureServer({ ...launch, chatId, content: '' }, launch.runtime)
@@ -167,15 +178,16 @@ export class OpencodeAgentManager {
     const key = createHash('sha256').update(JSON.stringify([args.cwd, runtime, args.agent, args.executionPolicy, (args.memorySpecs ?? []).map(s => [s.name, s.description, s.schema])])).digest('hex')
     const previous = this.chats.get(args.chatId)
     if (previous?.key === key && !previous.closed) return previous
-    if (previous) { this.chats.delete(args.chatId); await this.stop(previous) }
     const generation = this.generations.get(args.chatId) ?? 0
+    if (previous) await this.retireServer(args.chatId, previous)
     const mcp = !args.agent && args.memorySpecs?.length ? createOpencodeMemoryMcp(args.memorySpecs) : undefined
     let server: OpencodeServer | undefined
+    let registered: ChatServer | undefined
     let hostPlugin: ChatServer['hostPlugin']
     try {
       if (mcp && args.memorySpecs?.some(spec => isHostActionTool(spec.name))) hostPlugin = await createOpencodeHostPlugin(mcp.nativeConfig)
       const { createOpencodeClient } = await loadSdk()
-      server = await startOpencodeServer({ executable: runtime.executable.path!, cwd: args.cwd, env: runtime.env, signal: args.signal,
+      server = await this.startServer({ executable: runtime.executable.path!, cwd: args.cwd, env: runtime.env, signal: args.signal,
         config: { ...runtime.opencodeConfig, permission: { '*': args.executionPolicy?.permission ?? 'allow' },
           agent: { 'memosync-branch': OPENCODE_BRANCH_AGENT }, ...(mcp ? { mcp: { memosync: mcp.config } } : {}),
           ...(hostPlugin ? { plugin: [...Array.isArray(runtime.opencodeConfig?.plugin) ? runtime.opencodeConfig.plugin : [], hostPlugin.url] } : {}),
@@ -186,8 +198,9 @@ export class OpencodeAgentManager {
       const chat: ChatServer = { key, runtime, server, client, mcp, hostPlugin, instance: crypto.randomUUID(), controller, retiredMessages: new Set(), closed: false }
       if (this.disposed || generation !== (this.generations.get(args.chatId) ?? 0)) throw new Error('OpenCode start cancelled')
       this.chats.set(args.chatId, chat)
+      registered = chat
       server.child.once('exit', () => {
-        if (!chat.closed) { chat.turn?.fail('OpenCode server exited during the turn'); this.closeChat(args.chatId) }
+        if (!chat.closed) { chat.turn?.fail('OpenCode server exited during the turn'); this.retireServer(args.chatId, chat) }
       })
       // SDK streams are lazy: wait for the server.connected event before prompting.
       let readyResolve!: () => void, readyReject!: (error: Error) => void
@@ -201,7 +214,7 @@ export class OpencodeAgentManager {
         if (chat.closed) return
         readyReject(new Error('OpenCode event stream disconnected'))
         chat.turn?.fail('OpenCode event stream disconnected')
-        this.closeChat(args.chatId)
+        this.retireServer(args.chatId, chat)
       }
       let timer: ReturnType<typeof setTimeout> | undefined
       try {
@@ -221,9 +234,11 @@ export class OpencodeAgentManager {
       } finally { clearTimeout(timer); args.signal?.removeEventListener('abort', abortStartup) }
       return chat
     } catch (error) {
-      mcp?.close(); await server?.close()
-      await hostPlugin?.close()
-      this.chats.delete(args.chatId)
+      if (registered) await this.retireServer(args.chatId, registered)
+      else {
+        mcp?.close()
+        try { await server?.close() } finally { await hostPlugin?.close() }
+      }
       throw error
     }
   }
@@ -235,17 +250,23 @@ export class OpencodeAgentManager {
   }
 
   private async initializeSession(args: StartOpencodeTurnArgs, prepareOnly = false) {
+    const generation = this.generations.get(args.chatId) ?? 0
     args = { ...args, cwd: await realpath(args.cwd) }
     args.signal?.throwIfAborted()
     if (this.disposed) throw new Error('OpenCode manager disposed')
     const runtime = args.runtime ?? await resolveEngineRuntime({ engine: 'opencode', model: args.model })
     if (runtime.engine !== 'opencode') throw new Error('engine-runtime-mismatch')
-    await this.interruptions.get(args.chatId)
+    await Promise.all([this.interruptions.get(args.chatId), this.stopping.get(args.chatId)])
+    args.signal?.throwIfAborted()
+    if (this.disposed || generation !== (this.generations.get(args.chatId) ?? 0)) throw new Error('OpenCode start cancelled')
     if (this.pending.has(args.chatId)) throw new Error('OpenCode chat is starting')
-    const pending = this.ensureServer(args, runtime)
+    const controller = new AbortController()
+    const signalForStart = args.signal ? AbortSignal.any([args.signal, controller.signal]) : controller.signal
+    const pending = { controller, promise: this.ensureServer({ ...args, signal: signalForStart }, runtime) }
     this.pending.set(args.chatId, pending)
     let chat: ChatServer
-    try { chat = await pending } finally { this.pending.delete(args.chatId) }
+    try { chat = await pending.promise } finally { this.pending.delete(args.chatId) }
+    controller.signal.throwIfAborted()
     args.signal?.throwIfAborted()
     if (this.disposed || chat.closed) throw new Error('OpenCode start cancelled')
     if (chat.turn || chat.initializing) throw new Error('OpenCode chat is already running')
@@ -349,8 +370,7 @@ export class OpencodeAgentManager {
       interrupting = (async () => {
         try { await chat.client.session.abort({ sessionID }, { signal: AbortSignal.timeout(3000), throwOnError: true }) }
         catch { /* Process teardown is the fallback for a failed abort. */ }
-        this.closeChat(args.chatId)
-        await chat.server.close()
+        await this.retireServer(args.chatId, chat)
       })()
       this.interruptions.set(args.chatId, interrupting)
       void interrupting.finally(() => { if (this.interruptions.get(args.chatId) === interrupting) this.interruptions.delete(args.chatId) }).catch(() => {})

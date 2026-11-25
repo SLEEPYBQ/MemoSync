@@ -23,7 +23,6 @@ import type {
   ModelOptions,
   NormalizedToolCall,
   PendingToolSnapshot,
-  QueuedChatMessage,
   TranscriptEntry,
 } from "../shared/types"
 import { resolveClaudeApiModelId, resolveModelReasoningEffort } from "../shared/types"
@@ -31,6 +30,7 @@ import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
 import { EventStore } from "./event-store"
+import type { StoredQueuedMessage } from "./events"
 import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
 import type { HarnessEvent, HarnessToolRequest, HarnessTurn } from "./harness-types"
 import type { MemoryService } from "./memory"
@@ -1811,8 +1811,14 @@ interface PendingMemoryPreview {
     memoryIds?: string[],
     expectedUses?: ExpectedMemoryUse[],
     operationId?: string,
-  ) => void
+  ) => Promise<void>
   reopen?: (from: "proposals" | "checkup" | "transfer", stageId: string) => void
+}
+
+interface PreviewResponseClaim {
+  pending: PendingMemoryPreview
+  submitted?: boolean
+  dismissal?: Promise<void>
 }
 
 type TransferGateDecision = "handled" | "skipped" | "cancelled"
@@ -1828,7 +1834,7 @@ export class AgentCoordinator {
   private readonly harnessPolicies: HarnessPolicyService
   private readonly policyScopes = new Map<string, PolicyCallScope>()
   private readonly policyApprovals = new Map<string, PolicyCallScope>()
-  private readonly policyChanges = new Set<string>()
+  private readonly policyChanges = new Map<string, { wakeQueue: boolean }>()
   private readonly interactionQueues = new Map<string, Promise<unknown>>()
   private readonly respondingTools = new Set<string>()
   private readonly questionToolIds = new Map<string, string>()
@@ -1881,7 +1887,7 @@ export class AgentCoordinator {
   private reportBackgroundError: ((message: string) => void) | null = null
   /** A response owns the parked preview from before its first await until its
    * decision has finished. This closes concurrent Start/without-memory races. */
-  private readonly claimedPreviewResponses = new Map<string, string>()
+  private readonly claimedPreviewResponses = new Map<string, PreviewResponseClaim>()
   readonly activeTurns = new Map<string, ActiveTurn>()
   /**
    * Chats parked on a per-turn memory-preview decision (SPEC §4.10b).
@@ -1960,6 +1966,7 @@ export class AgentCoordinator {
   private readonly startupReservations = new Map<string, StartupReservation>()
   private readonly engineStartAbortControllers = new Map<string, AbortController>()
   private readonly closedChats = new Set<string>()
+  private readonly hidingProjects = new Set<string>()
   private runtimeStopping = false
   private readonly idleCloseTimers = new Map<string, ReturnType<typeof setTimeout>>()
   private readonly memoryWork = new Map<string, number>()
@@ -2058,8 +2065,16 @@ export class AgentCoordinator {
         this.auditBranches.get(args.chatId)?.delete(tracked)
         const cleanup = branch.dispose()
         if (!cleanup) return
-        this.branchCleanups.add(cleanup)
-        void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => this.branchCleanups.delete(cleanup))
+        let chatCleanups = this.branchCleanups.get(args.chatId)
+        if (!chatCleanups) {
+          chatCleanups = new Set()
+          this.branchCleanups.set(args.chatId, chatCleanups)
+        }
+        chatCleanups.add(cleanup)
+        void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => {
+          chatCleanups.delete(cleanup)
+          if (!chatCleanups.size) this.branchCleanups.delete(args.chatId)
+        })
         return cleanup
       },
     }
@@ -2087,7 +2102,7 @@ export class AgentCoordinator {
 
   private readonly runtimeSelections = new Map<string, string>()
   private readonly sessionRuntimes = new Map<string, EngineRuntime>()
-  private readonly branchCleanups = new Set<Promise<void>>()
+  private readonly branchCleanups = new Map<string, Set<Promise<void>>>()
   private readonly parentLaunches = new Map<string, ParentLaunch>()
   private readonly sessionLaunches = new Map<string, ParentLaunch>()
 
@@ -2271,23 +2286,30 @@ export class AgentCoordinator {
 
   /** Atomically transfer one exact parked preview to a response owner. */
   private claimPendingPreviewResponse(chatId: string, pending: PendingMemoryPreview) {
-    if (this.claimedPreviewResponses.has(chatId)) return false
-    if (this.pendingPreviews.get(chatId) !== pending) return false
+    if (this.claimedPreviewResponses.has(chatId)) return
+    if (this.pendingPreviews.get(chatId) !== pending) return
     this.pendingPreviews.delete(chatId)
-    this.claimedPreviewResponses.set(chatId, pending.previewId)
-    return true
+    const claim: PreviewResponseClaim = { pending }
+    this.claimedPreviewResponses.set(chatId, claim)
+    return claim
   }
 
-  private restorePendingPreviewResponse(chatId: string, pending: PendingMemoryPreview) {
-    if (this.claimedPreviewResponses.get(chatId) !== pending.previewId) return
+  private restorePendingPreviewResponse(chatId: string, claim: PreviewResponseClaim) {
+    if (this.claimedPreviewResponses.get(chatId) !== claim || claim.submitted) return
     this.claimedPreviewResponses.delete(chatId)
-    if (!this.pendingPreviews.has(chatId)) this.pendingPreviews.set(chatId, pending)
+    if (!this.pendingPreviews.has(chatId)) this.pendingPreviews.set(chatId, claim.pending)
   }
 
   private releasePendingPreviewResponse(chatId: string, previewId: string) {
-    if (this.claimedPreviewResponses.get(chatId) === previewId) {
+    if (this.claimedPreviewResponses.get(chatId)?.pending.previewId === previewId) {
       this.claimedPreviewResponses.delete(chatId)
     }
+  }
+
+  private dismissClaimedPreview(claim: PreviewResponseClaim, operationId?: string) {
+    claim.submitted = true
+    claim.pending.autoProceed = false
+    return claim.dismissal ??= claim.pending.respond("dismiss", undefined, undefined, operationId)
   }
 
   private deletePendingPreviewIfCurrent(chatId: string, pending: PendingMemoryPreview) {
@@ -2307,7 +2329,7 @@ export class AgentCoordinator {
   }
 
   private async respondToMemoryPreview(command: Parameters<AgentCoordinator["respondMemoryPreview"]>[0], auto = false) {
-    if (this.claimedPreviewResponses.get(command.chatId) === command.previewId) {
+    if (this.claimedPreviewResponses.get(command.chatId)?.pending.previewId === command.previewId) {
       throw new Error("This Working Memory preview is already being handled")
     }
     // Note: a respond is accepted even before `published` flips — the card a
@@ -2340,17 +2362,19 @@ export class AgentCoordinator {
     // Claim and remove this exact map entry before expected-use planning (or
     // any other await). A second response sees the claim and cannot emit its
     // own attempted event, expire the winner's card, or dispatch Claude.
-    if (!this.claimPendingPreviewResponse(command.chatId, pending)) {
+    const claim = this.claimPendingPreviewResponse(command.chatId, pending)
+    if (!claim) {
       throw new Error("This Working Memory preview is already being handled")
     }
     pending.autoProceed = auto
 
-    let handedOff = false
     try {
-
+      if (command.decision === "dismiss") return await this.dismissClaimedPreview(claim, command.operationId)
       const authoritativeExpectedUses = command.decision === "go_on"
         ? await this.ensurePendingPreviewExpectedUses(pending, effectiveIds)
         : []
+      // Stop/Hide may have dismissed this exact published card while planning.
+      if (claim.submitted || this.claimedPreviewResponses.get(command.chatId) !== claim) throw new Error("Working Memory preview cancelled")
       if (command.decision === 'go_on') pending.assertCurrentView?.()
       if (command.decision === 'go_on' && this.memory) {
         const chat = this.store.requireChat(command.chatId)
@@ -2364,8 +2388,8 @@ export class AgentCoordinator {
         ).length) throw new Error("Working memory needs confirmation.")
       }
 
-      handedOff = true
-      pending.respond(
+      claim.submitted = true
+      void pending.respond(
         command.decision,
         command.decision === "go_on"
           ? effectiveIds
@@ -2374,7 +2398,7 @@ export class AgentCoordinator {
         command.operationId,
       )
     } catch (error) {
-      if (!handedOff) this.restorePendingPreviewResponse(command.chatId, pending)
+      this.restorePendingPreviewResponse(command.chatId, claim)
       throw error
     }
   }
@@ -2881,7 +2905,12 @@ export class AgentCoordinator {
     return applied
   }
 
-  private readonly queueDispatches = new Set<string>()
+  private readonly queueDispatches = new Map<string, "fifo" | "steer">()
+  private readonly pendingEnqueues = new Map<string, Promise<StoredQueuedMessage>>()
+
+  private queuedHead(chatId: string) {
+    return this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
+  }
 
   private isConsumedQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
@@ -2896,9 +2925,9 @@ export class AgentCoordinator {
    * failed, recovery removes it without ever reinterpreting it as a prompt.
    * Failure is fail-closed: do not jump over the tombstoned head to q2.
    */
-  private async nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null> {
+  private async nextDispatchableQueuedMessage(chatId: string): Promise<StoredQueuedMessage | null> {
     while (true) {
-      const head = this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
+      const head = this.queuedHead(chatId)
       if (!head) return null
       if (!this.isConsumedQueueRow(chatId, head.id)) {
         if (!head.content.trimStart().startsWith("/")) return head
@@ -3701,9 +3730,11 @@ export class AgentCoordinator {
   private async retireCommandSession(chatId: string) {
     await this.codexManager.stopSession?.(chatId)
     this.piManager.closeChat?.(chatId)
-    this.opencodeManager.closeChat?.(chatId)
     const session = this.claudeSessions.get(chatId)
-    if (session && !session.retired) await this.retireClaudeSession(session, 'session_rebuild')
+    await Promise.all([
+      this.opencodeManager.closeChat?.(chatId),
+      session && !session.retired ? this.retireClaudeSession(session, 'session_rebuild') : undefined,
+    ])
   }
 
   private async initializeCommandSession(chatId: string, record: CommandPreparation) {
@@ -3982,9 +4013,11 @@ export class AgentCoordinator {
     this.commandPreparations.delete(chatId)
     this.codexManager.stopSession(chatId)
     this.piManager.closeChat(chatId)
-    this.opencodeManager.closeChat(chatId)
     const session = this.claudeSessions.get(chatId)
-    if (session && !session.retired) await this.retireClaudeSession(session, "idle_timeout")
+    await Promise.all([
+      this.opencodeManager.closeChat(chatId),
+      session && !session.retired ? this.retireClaudeSession(session, "idle_timeout") : undefined,
+    ])
     await this.retireHarnessPolicyIfAbsent(chatId)
     this.emitStateChange(chatId)
   }
@@ -4138,8 +4171,42 @@ export class AgentCoordinator {
     return reservation.cancellation
   }
 
-  private isEngineStartBlocked(chatId: string) {
+  private projectForChat(chatId: string) {
+    const chat = this.store.getChat(chatId)
+    return chat && this.store.getProject(chat.projectId)
+  }
+
+  // A reopened project has the same ID but a new record. Pin the old record
+  // across waits that precede a startup reservation (FIFO scans and steering).
+  private isEngineStartBlocked(chatId: string, project = this.projectForChat(chatId)) {
     return this.runtimeStopping || this.closedChats.has(chatId) || this.policyChanges.has(chatId)
+      || !project || Boolean(project.deletedAt) || this.hidingProjects.has(project.id)
+  }
+
+  private projectUnavailable(projectId: string) {
+    return this.hidingProjects.has(projectId) || !this.store.getProject(projectId)
+  }
+
+  async hideProject(projectId: string) {
+    if (this.projectUnavailable(projectId)) throw new Error("Project not found")
+    this.hidingProjects.add(projectId)
+    try {
+      const chats = [...this.store.state.chatsById.values()].filter(chat => chat.projectId === projectId && !chat.deletedAt)
+      // Cancel all admitted turns before waiting on any one provider. Archived
+      // chats and drafts can own native sessions even though the sidebar omits them.
+      const stopped = await Promise.allSettled(chats.map(async chat => {
+        if (chat.draft && await this.discardDraft(chat.id)) return
+        await this.cancel(chat.id)
+        await this.closeChatSession(chat.id)
+      }))
+      const failed = stopped.find(result => result.status === "rejected")
+      if (failed) throw failed.reason
+      await this.store.removeProject(projectId)
+      for (const chat of chats) this.queueDispatches.delete(chat.id)
+    } finally {
+      // A hidden project stays unavailable through the store, until actually reopened.
+      this.hidingProjects.delete(projectId)
+    }
   }
 
   async discardDraft(chatId: string) {
@@ -4147,17 +4214,28 @@ export class AgentCoordinator {
     // first makes this a no-op, so its real session cannot be cancelled here.
     const discarded = await this.store.discardDraft(chatId)
     if (discarded) await this.closeChat(chatId)
+    return discarded
   }
 
   async closeChat(chatId: string) {
+    this.closedChats.add(chatId)
+    await this.closeChatSession(chatId)
+  }
+
+  private async closeChatSession(chatId: string) {
     this.hostActions?.revokeChat(chatId, "Chat closed")
     this.commandRegistry.unbind(chatId)
     this.endPolicyTurn(chatId)
     this.cancelIdleClose(chatId)
-    this.closedChats.add(chatId)
     this.cancelAutomaticCapture(chatId)
     this.cancelAudits(chatId)
     this.disposeMemoryBranches(chatId)
+    // Branch disposal starts OpenCode cleanup asynchronously. Hide/close is
+    // the lifecycle boundary, so wait for those child processes too instead
+    // of letting them outlive the project removal acknowledgement.
+    // Only this chat owns its close boundary; slow teardown in another
+    // project must not hold this chat or its project hostage.
+    const memoryBranchCleanups = [...this.branchCleanups.get(chatId) ?? []]
     const commandPreparation = this.commandPreparations.get(chatId)?.promise
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
@@ -4172,7 +4250,8 @@ export class AgentCoordinator {
     await this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
-    this.opencodeManager.closeChat(chatId)
+    await this.opencodeManager.closeChat(chatId)
+    await Promise.allSettled(memoryBranchCleanups)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
     this.runtimeSelections.delete(chatId)
@@ -4214,7 +4293,7 @@ export class AgentCoordinator {
     const codexCleanup = this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     this.piManager.dispose()
-    await Promise.allSettled([...this.branchCleanups])
+    await Promise.allSettled([...this.branchCleanups.values()].flatMap(cleanups => [...cleanups]))
     await this.opencodeManager.dispose()
     await Promise.allSettled(commandPreparations)
     this.commandPreparations.clear()
@@ -4347,25 +4426,41 @@ export class AgentCoordinator {
     chatId: string,
     content: string,
     attachments: ChatAttachment[],
-    options?: SendMessageOptions,
-    channel: "chat.send" | "message.enqueue" = "chat.send",
+    options: SendMessageOptions & { hostClientId?: string; steer?: boolean },
   ) {
     if (content.trimStart().startsWith('/')) throw new Error('Native commands require an idle session and its current command catalog')
-    const queued = await this.store.enqueueMessage(chatId, {
+    const write = this.store.enqueueMessage(chatId, {
       content,
       attachments,
-      provider: options?.provider,
-      model: options?.model,
-      modelOptions: options?.modelOptions,
-      planMode: options?.planMode,
+      provider: options.provider,
+      model: options.model,
+      modelOptions: options.modelOptions,
+      planMode: options.planMode,
+    }, options.hostClientId)
+    // EventStore serializes inserts. Until the last write settles, a fresh send
+    // must join the queue even if its first row isn't visible yet.
+    this.pendingEnqueues.set(chatId, write)
+    try {
+      const queued = await write
+      this.emitStateChange(chatId)
+      // The previous turn may have finished before this insert. Send now owns
+      // its targeted dispatch; don't race it with an ordinary FIFO wake.
+      if (!options.steer) this.wakeQueue(chatId)
+      return queued
+    } finally {
+      if (this.pendingEnqueues.get(chatId) === write) this.pendingEnqueues.delete(chatId)
+    }
+  }
+
+  private wakeQueue(chatId: string) {
+    void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+      this.reportBackgroundError?.(`[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`)
     })
-    this.emitStateChange(chatId)
-    return queued
   }
 
   private async dequeueAndStartQueuedMessage(
     chatId: string,
-    queuedMessage: QueuedChatMessage,
+    queuedMessage: StoredQueuedMessage,
     options?: {
       steered?: boolean
       releaseDispatch?: () => void
@@ -4408,20 +4503,14 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       steered: options?.steered,
       queuedMessageId: queuedMessage.id,
+      // Never borrow the socket that woke the queue or clicked Send now.
+      hostClientId: queuedMessage.hostClientId,
       turnId: queuedMessage.id,
     })
     return this.isConsumedQueueRow(chatId, queuedMessage.id) ? "started" : "missing"
   }
 
-  /**
-   * After a restart, in-memory run state (activeTurns/pendingPreviews/
-   * startingChats) is empty, but queued messages persisted to disk are replayed
-   * back into the store. Nothing re-triggers them: send() only consults the
-   * in-memory maps, so a chat that was mid-run at restart leaves its queue stuck
-   * forever, and a fresh message jumps ahead of it, garbling turn order (BUG
-   * CORE-2). Re-prime the pipeline by starting the head of every non-running
-   * chat's queue; each turn's completion drains the next as usual.
-   */
+  /** Resume persisted queues after a restart without waiting for a fresh send. */
   async drainOrphanedQueues(): Promise<void> {
     for (const chatId of this.store.getChatIdsWithQueuedMessages()) {
       if (
@@ -4440,27 +4529,38 @@ export class AgentCoordinator {
   }
 
   private async maybeStartNextQueuedMessage(chatId: string) {
-    if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
+    const project = this.projectForChat(chatId)
+    if (!project && this.queuedHead(chatId)) throw new Error("Project not found")
+    const startBlocked = () => {
+      if (project?.deletedAt) return true
+      const change = this.policyChanges.get(chatId)
+      if (change) {
+        change.wakeQueue ||= Boolean(this.queuedHead(chatId))
+        return true
+      }
+      return this.isEngineStartBlocked(chatId, project)
+    }
+    if (startBlocked() || this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)
       || this.activeTurns.has(chatId) || this.startingChats.has(chatId)
-      || this.hasPendingPreviewActivity(chatId) || this.isEngineStartBlocked(chatId)) return false
+      || this.hasPendingPreviewActivity(chatId)) return false
 
-    this.queueDispatches.add(chatId)
+    this.queueDispatches.set(chatId, "fifo")
     let ownsDispatch = true
     const releaseDispatch = () => {
       if (!ownsDispatch) return
       ownsDispatch = false
-      this.queueDispatches.delete(chatId)
+      if (!project?.deletedAt) this.queueDispatches.delete(chatId)
     }
     try {
-      while (!this.isEngineStartBlocked(chatId)) {
+      while (!startBlocked()) {
         const nextQueuedMessage = await this.nextDispatchableQueuedMessage(chatId)
-        if (!nextQueuedMessage || this.isEngineStartBlocked(chatId)) return false
+        if (!nextQueuedMessage || startBlocked()) return false
         const outcome = await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage, { releaseDispatch })
         if (outcome === "started") return true
         if (this.activeTurns.has(chatId) || this.startingChats.has(chatId) || this.hasPendingPreviewActivity(chatId)) return false
         if (!ownsDispatch) {
-          if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)) return false
-          this.queueDispatches.add(chatId)
+          if (project?.deletedAt || this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)) return false
+          this.queueDispatches.set(chatId, "fifo")
           ownsDispatch = true
         }
       }
@@ -4492,6 +4592,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(args.chatId)
+    if (this.projectUnavailable(chat.projectId)) throw new Error("Project not found")
     args.memoryState ??= resolveTurnMemoryState(this.getMemorySettings(), chat.memoryDisabled)
     if (!args.memoryPreviewSettings) {
       const settings = this.getMemoryPreviewSettings()
@@ -6165,7 +6266,7 @@ export class AgentCoordinator {
       respond: (decision, selectedIds, expectedUses, operationId) => {
         finishWaiting(decision)
         this.deletePendingPreviewIfCurrent(args.chatId, pending)
-        void this.finishMemoryPreview({
+        return this.finishMemoryPreview({
           args,
           chat: ctx.chat,
           project: ctx.project,
@@ -6455,7 +6556,7 @@ export class AgentCoordinator {
               finishWaiting(decision)
               claimed = true
               this.deletePendingPreviewIfCurrent(args.chatId, pending)
-              void this.finishMemoryPreview({
+              return this.finishMemoryPreview({
                 args,
                 chat: ctx.chat,
                 project: ctx.project,
@@ -6665,11 +6766,15 @@ export class AgentCoordinator {
   }) {
     const { args, decision } = ctx
     try {
-      if (args.startupReservation) {
-        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
-      } else if (this.startupReservations.has(args.chatId) || this.activeTurns.has(args.chatId)
-        || this.isEngineStartBlocked(args.chatId)) return
-      this.reserveStartup(args)
+      if (decision === "dismiss") {
+        // A terminal decision needs ownership of the card, not permission to
+        // start an engine. Hide has already closed admission for the project.
+        if (this.claimedPreviewResponses.get(args.chatId)?.pending.previewId !== ctx.previewId) return
+      } else {
+        if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)
+          || (!args.startupReservation && this.activeTurns.has(args.chatId))) return
+        this.reserveStartup(args)
+      }
       const selected = new Set(ctx.selectedIds ?? ctx.memoryIds)
       if ((this.memoryBranches || ctx.confirmationMode === "on_change") && this.memory && decision === 'go_on') args.approvedMemoryViewRevision = planMemoryInjection({
         memory: this.memory, projectId: ctx.chat.projectId, chatId: args.chatId, restrictToIds: [...selected],
@@ -6682,7 +6787,7 @@ export class AgentCoordinator {
         timestamped({ kind: "memory_preview_decision", previewId: ctx.previewId, decision, selectedIds: ctx.selectedIds, expectedUses,
           ...(ctx.auto ? { auto: true, ...(ctx.selectedIds?.length ? { autoReason: "confirmed" as const } : {}) } : {}) })
       )
-      if (!this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
+      if (decision !== "dismiss" && !this.startupReservationIsCurrent(args.chatId, args.startupReservation)) return
       if (!ctx.auto && decision !== "dismiss" && this.memory) {
         recordMemoryConfirmation(this.memory.store, args.chatId, decision === "go_on" ? ctx.confirmedMemories ?? [] : [], ctx.removedIds ?? [], this.memory.fileDrift)
       }
@@ -6716,7 +6821,7 @@ export class AgentCoordinator {
         this.releasePendingPreviewResponse(args.chatId, ctx.previewId)
         this.releaseStartupStatus(args.chatId, args.startupReservation)
         this.emitStateChange(args.chatId, { immediate: true })
-        await this.maybeStartNextQueuedMessage(args.chatId)
+        if (!this.projectUnavailable(ctx.chat.projectId)) this.wakeQueue(args.chatId)
         return
       }
 
@@ -6728,6 +6833,7 @@ export class AgentCoordinator {
         memoryDisabledForTurn: decision === "without_memory",
       })
     } catch (error) {
+      if (decision === "dismiss") throw error // Hide must not acknowledge a failed cancellation write.
       if (args.startupReservation?.cancelled || args.startupReservation?.superseded
         || this.isEngineStartBlocked(args.chatId)) return
       this.restoreUndeliveredEnforcement(args.chatId)
@@ -7256,7 +7362,9 @@ export class AgentCoordinator {
     bootedActive = active
     admitTurn()
     } catch (error) {
-      const scope = this.policyScopes.get(args.chatId)
+      // A cancelled provider may reject after Hide/reopen admitted another
+      // turn. Only the failing launch's own policy scope can be rejected.
+      const scope = args.policyScope
       if (scope) {
         const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
         if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
@@ -7771,8 +7879,9 @@ export class AgentCoordinator {
     const selected = this.executionPolicyFor(command.chatId, command.policy.engine)
     this.harnessPolicies.snapshot(command.chatId, selected.policy, selected.revision, chat.executionPolicyStates?.[command.policy.engine], this.harnessRuntimeVersion(command.policy.engine, lastEngineExecutable(command.policy.engine)?.version))
     const running = this.harnessNativeRuntime(command.chatId, command.policy.engine) !== "absent"
-    const state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
-    this.policyChanges.add(command.chatId)
+    let state = this.harnessPolicies.request(command.chatId, command.policy, command.expectedRevision, running)
+    const change = { wakeQueue: false }
+    this.policyChanges.set(command.chatId, change)
     this.cancelAutomaticCapture(command.chatId, 'execution-policy-changed')
     this.cancelAudits(command.chatId)
     this.disposeMemoryBranches(command.chatId)
@@ -7789,11 +7898,10 @@ export class AgentCoordinator {
       await this.opencodeManager.closeChat(command.chatId)
       this.parentLaunches.delete(command.chatId)
       // Some adapters stop asynchronously. A remaining live handle is still pending retirement.
-      const retired = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
+      state = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
         ? this.harnessPolicies.state(command.chatId, command.policy.engine)
         : this.harnessPolicies.nativeRuntimeRetired(command.chatId, command.policy.engine)
-      await this.store.setExecutionPolicyState(command.chatId, retired)
-      return retired
+      await this.store.setExecutionPolicyState(command.chatId, state)
     } catch (error) {
       this.releasePolicyInteraction(command.chatId)
       throw error
@@ -7801,6 +7909,9 @@ export class AgentCoordinator {
       this.policyChanges.delete(command.chatId)
       this.emitStateChange(command.chatId)
     }
+    // Replay a missed wake, not an idle queue left parked by an explicit Stop.
+    if (change.wakeQueue) this.wakeQueue(command.chatId)
+    return state
   }
 
   private bindPolicyQuestion(scope: PolicyCallScope, tool: HarnessToolRequest["tool"]): HarnessToolRequest["tool"] {
@@ -7912,6 +8023,7 @@ export class AgentCoordinator {
     }
 
     const chat = this.store.requireChat(chatId)
+    if (this.projectUnavailable(chat.projectId)) throw new Error("Project not found")
     const provider = this.resolveProvider(command, chat.provider)
     if (this.commandRegistry.isRunning(chatId)) throw new Error('Native context control is running')
     if (chat.draft && command.memoryDisabled !== undefined) {
@@ -7941,28 +8053,23 @@ export class AgentCoordinator {
       // as well as chat/sidebar subscribers, including native slash submissions.
       this.emitStateChange()
     }
-    const dispatchingQueue = this.queueDispatches.has(chatId)
     if (
-      dispatchingQueue
+      this.queueDispatches.has(chatId)
       || this.activeTurns.has(chatId)
       || this.hasPendingPreviewActivity(chatId)
       || this.startingChats.has(chatId)
+      || this.pendingEnqueues.has(chatId)
+      || this.queuedHead(chatId)
     ) {
+      if (nativeCommandValidated) throw new Error('Native commands require an idle session and its current command catalog')
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
         modelOptions: command.modelOptions,
         effort: command.effort,
         planMode: command.planMode,
+        hostClientId,
       })
-      if (dispatchingQueue) {
-        // The dispatcher may have reached the end before this enqueue landed.
-        void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
-          this.reportBackgroundError?.(
-            `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        })
-      }
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
@@ -7999,13 +8106,15 @@ export class AgentCoordinator {
     return { chatId }
   }
 
-  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>, hostClientId?: string) {
     const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
       modelOptions: command.modelOptions,
       planMode: command.planMode,
-    }, "message.enqueue")
+      steer: command.steer,
+      hostClientId,
+    })
     return { queuedMessageId: queuedMessage.id }
   }
 
@@ -8026,7 +8135,8 @@ export class AgentCoordinator {
       await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
       return
     }
-    if (this.queueDispatches.has(command.chatId)) throw new Error("Queued messages are being recovered")
+    const dispatch = this.queueDispatches.get(command.chatId)
+    if (dispatch) throw new Error(dispatch === "steer" ? "Chat is still running" : "Queued messages are being recovered")
 
     logClaudeSteer("steer_requested", {
       chatId: command.chatId,
@@ -8044,7 +8154,18 @@ export class AgentCoordinator {
       || this.startingChats.has(command.chatId)
 
     if (isBusy()) {
-      await this.cancel(command.chatId, { hideInterrupted: true })
+      const project = this.projectForChat(command.chatId)
+      if (!project || this.hidingProjects.has(project.id)) throw new Error("Project not found")
+      // cancel releases the active turn before its native interrupt settles.
+      // Keep that gap owned by Send now rather than a concurrent FIFO wake.
+      this.queueDispatches.set(command.chatId, "steer")
+      try {
+        await this.cancel(command.chatId, { hideInterrupted: true })
+      } finally {
+        if (!project.deletedAt) this.queueDispatches.delete(command.chatId)
+        this.updateIdleClose(command.chatId)
+      }
+      if (this.isEngineStartBlocked(command.chatId, project)) return
     }
 
     logClaudeSteer("steer_after_cancel", {
@@ -8825,10 +8946,13 @@ export class AgentCoordinator {
     // once the card is published. Before that, a "dismiss" decision would
     // reference a preview entry that may never land; unwind through the
     // cancelled-during-preview path instead (the gate coroutine observes it).
-    const parked = this.pendingPreviews.get(chatId)
+    const claim = this.claimedPreviewResponses.get(chatId)
+    if (claim?.dismissal) return await claim.dismissal
+    const parked = this.pendingPreviews.get(chatId) ?? (claim?.submitted ? undefined : claim?.pending)
     if (parked) {
       if (parked.published) {
-        parked.respond("dismiss")
+        const owner = claim ?? this.claimPendingPreviewResponse(chatId, parked)
+        if (owner) await this.dismissClaimedPreview(owner)
         return
       }
       this.pendingPreviews.delete(chatId)

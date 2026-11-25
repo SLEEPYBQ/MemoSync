@@ -3254,15 +3254,6 @@ describe("AgentCoordinator claude integration", () => {
     const prompts: string[] = []
 
     const store = createFakeStore()
-    await store.enqueueMessage("chat-1", {
-      id: "queued-1",
-      content: "queued follow up",
-      attachments: [],
-      provider: "claude",
-      model: "claude-opus-4-1",
-      planMode: false,
-    })
-
     const coordinator = new AgentCoordinator({
       claudeSessionFileExists: () => true,
       store: store as never,
@@ -3294,10 +3285,11 @@ describe("AgentCoordinator claude integration", () => {
     })
 
     expect(prompts).toEqual(["first prompt"])
+    const queued = await coordinator.enqueue({ type: "message.enqueue", chatId: "chat-1", content: "queued follow up", model: "claude-opus-4-1" })
     await coordinator.steer({
       type: "message.steer",
       chatId: "chat-1",
-      queuedMessageId: "queued-1",
+      queuedMessageId: queued.queuedMessageId,
     })
 
     expect(prompts).toHaveLength(2)
@@ -3503,15 +3495,12 @@ describe("durable queued startup", () => {
     } finally { await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) }
   })
 
-  function harness(store = createFakeStore()) {
-    const directory = mkdtempSync(join(tmpdir(), "queued-recovery-"))
-    let projectAvailable = true
-    store.getProject = () => projectAvailable ? { id: "project-1", localPath: directory } : undefined as never
+  function queueAgent(store: EventStore) {
     const queues: Array<AsyncEventQueue<HarnessEvent>> = []
     const starts: unknown[] = []
     const runtimes: Array<EngineRuntime | undefined> = []
     const coordinator = new AgentCoordinator({
-      store: store as never,
+      store,
       onStateChange: () => {},
       getMemorySettings: () => ({ enabled: false, learn: false }),
       generateTitle: async () => ({ title: "fixture", usedFallback: true, failureMessage: null }),
@@ -3527,6 +3516,14 @@ describe("durable queued startup", () => {
         stopSession() {},
       } as never,
     })
+    return { coordinator, queues, starts, runtimes }
+  }
+
+  function harness(store = createFakeStore()) {
+    const directory = mkdtempSync(join(tmpdir(), "queued-recovery-"))
+    let projectAvailable = true
+    store.getProject = () => projectAvailable ? { id: "project-1", localPath: directory } : undefined as never
+    const { coordinator, queues, starts, runtimes } = queueAgent(store as never)
     const drain = () => (coordinator as unknown as { maybeStartNextQueuedMessage(chatId: string): Promise<boolean> }).maybeStartNextQueuedMessage("chat-1")
     return {
       store, coordinator, starts, runtimes, drain,
@@ -3535,6 +3532,169 @@ describe("durable queued startup", () => {
       async cleanup() { for (const queue of queues) queue.close(); await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) },
     }
   }
+
+  async function persistedQueue() {
+    const directory = mkdtempSync(join(tmpdir(), "queue-admission-"))
+    const store = new EventStore(join(directory, "events"))
+    await store.initialize()
+    const project = await store.openProject(directory, "fixture")
+    const { id: chatId } = await store.createChat(project.id)
+    const { coordinator, queues } = queueAgent(store)
+    return {
+      store, coordinator, queues, chatId,
+      send: (content: string) => coordinator.send({ type: "chat.send", chatId, content, provider: "codex" }),
+      enqueue: (content: string) => coordinator.enqueue({ type: "message.enqueue", chatId, content, provider: "codex" }),
+      prompts: () => store.getMessages(chatId).filter(entry => entry.kind === "user_prompt"),
+      result: () => queues.at(-1)!.push({ type: "transcript", entry: timestamped({ kind: "result", subtype: "success", isError: false, durationMs: 0, result: "done" }) }),
+      async cleanup() { await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) },
+    }
+  }
+
+  function queuedId(ack: { chatId: string } | { queuedMessageId: string }) {
+    if (!("queuedMessageId" in ack)) throw new Error("Expected a queued acknowledgement")
+    return ack.queuedMessageId
+  }
+
+  test.each(["message.enqueue", "chat.send"] as const)("%s wakes the queue when the turn ends before its insert is durable", async channel => {
+    const h = await persistedQueue()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const enqueue = h.store.enqueueMessage.bind(h.store)
+    h.store.enqueueMessage = async (...args) => { entered.resolve(); await release.promise; return enqueue(...args) }
+    try {
+      await h.send("first")
+      const pending = channel === "message.enqueue" ? h.enqueue("second") : h.send("second")
+      await entered.promise
+      h.result()
+      await waitFor(() => h.coordinator.getDrainingChatIds().has(h.chatId))
+      await h.coordinator.stopDraining(h.chatId)
+      expect(h.store.getQueuedMessages(h.chatId)).toEqual([])
+      release.resolve()
+      const ack = await pending
+      await waitFor(() => h.queues.length === 2)
+      expect(h.prompts().slice(1)).toEqual([expect.objectContaining({ _id: queuedId(ack), content: "second" })])
+      expect(h.store.getQueuedMessages(h.chatId)).toEqual([])
+    } finally { release.resolve(); await h.cleanup() }
+  })
+
+  test("a fresh send cannot overtake the durable head while the previous stream is draining", async () => {
+    const h = await persistedQueue()
+    try {
+      await h.send("first")
+      const older = await h.enqueue("older")
+      h.result() // A result makes this chat idle, but does not end its stream.
+      await waitFor(() => h.coordinator.getDrainingChatIds().has(h.chatId))
+      const fresh = await h.send("fresh")
+      expect(fresh).toMatchObject({ queued: true })
+      await waitFor(() => h.queues.length === 2)
+      expect(h.prompts().at(-1)?._id).toBe(older.queuedMessageId)
+      h.queues[1]!.close()
+      await waitFor(() => h.queues.length === 3)
+      expect(h.prompts().slice(1).map(entry => entry._id)).toEqual([older.queuedMessageId, queuedId(fresh)])
+    } finally { await h.cleanup() }
+  })
+
+  test("a fresh send cannot overtake an earlier enqueue writing to disk", async () => {
+    const h = await persistedQueue()
+    try {
+      const first = h.enqueue("older")
+      expect(h.store.getQueuedMessages(h.chatId)).toEqual([])
+      const [older, fresh] = await Promise.all([first, h.send("fresh")])
+      expect(fresh).toMatchObject({ queued: true })
+      await waitFor(() => h.queues.length === 1)
+      expect(h.prompts().map(entry => entry._id)).toEqual([older.queuedMessageId])
+      h.queues[0]!.close()
+      await waitFor(() => h.queues.length === 2)
+      expect(h.prompts().map(entry => entry._id)).toEqual([older.queuedMessageId, queuedId(fresh)])
+    } finally { await h.cleanup() }
+  })
+
+  test("a successful policy change wakes a queue whose normal completion was blocked by the change", async () => {
+    const h = await persistedQueue()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    const persist = h.store.setExecutionPolicyState.bind(h.store)
+    h.store.setExecutionPolicyState = async (...args) => {
+      if (args[2]) { entered.resolve(); await release.promise }
+      await persist(...args)
+    }
+    try {
+      await h.send("first")
+      const queued = await h.enqueue("second")
+      const changed = h.coordinator.setExecutionPolicy({
+        type: "chat.setExecutionPolicy", chatId: h.chatId, expectedRevision: 1,
+        policy: { engine: "codex", approvalPolicy: "never", approvalsReviewer: "user", sandbox: "read-only" },
+      })
+      await entered.promise
+      h.result()
+      h.queues[0]!.close()
+      await waitFor(() => !h.coordinator.getActiveStatuses().has(h.chatId))
+      expect(h.store.getQueuedMessage(h.chatId, queued.queuedMessageId)).not.toBeNull()
+      release.resolve()
+      expect((await changed).desiredRevision).toBe(2)
+      await waitFor(() => h.queues.length === 2)
+      expect(h.prompts().slice(1)).toEqual([expect.objectContaining({ _id: queued.queuedMessageId })])
+    } finally { release.resolve(); await h.cleanup() }
+  })
+
+  test("Stop leaves the queue parked and enqueue-and-steer sends the selected row ahead of it", async () => {
+    const h = await persistedQueue()
+    try {
+      await h.send("first")
+      const older = await h.enqueue("older")
+      await h.coordinator.cancel(h.chatId)
+      // Changing settings while idle is not a request to resume a stopped queue.
+      await h.coordinator.setExecutionPolicy({
+        type: "chat.setExecutionPolicy", chatId: h.chatId, expectedRevision: 1,
+        policy: { engine: "codex", approvalPolicy: "never", approvalsReviewer: "user", sandbox: "read-only" },
+      })
+      expect(h.queues).toHaveLength(1)
+      const selected = await enqueueAndMaybeSteer({
+        type: "message.enqueue", chatId: h.chatId, content: "selected", steer: true,
+      }, {
+        enqueue: command => h.coordinator.enqueue(command), steer: command => h.coordinator.steer(command),
+        isQueued: (id, row) => Boolean(h.store.getQueuedMessage(id, row)),
+        isRunning: id => h.coordinator.getActiveStatuses().has(id),
+        remove: (id, row) => h.store.removeQueuedMessage(id, row),
+      })
+      expect(h.prompts().slice(1)).toEqual([expect.objectContaining({ _id: selected.queuedMessageId, steered: true })])
+      expect(h.store.getQueuedMessages(h.chatId).map(row => row.id)).toEqual([older.queuedMessageId])
+    } finally { await h.cleanup() }
+  })
+
+  test("a failed dispatch leaves the acknowledged row queued without retrying its prompt write", async () => {
+    const h = await persistedQueue()
+    const errors: string[] = []
+    h.coordinator.setBackgroundErrorReporter(message => errors.push(message))
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (...args) => {
+      if (args[1].kind === "user_prompt") throw new Error("fixture write failed")
+      return append(...args)
+    }
+    try {
+      const queued = await h.enqueue("undelivered")
+      await waitFor(() => errors.length > 0)
+      expect(errors).toEqual([expect.stringContaining("fixture write failed")])
+      expect(h.queues).toHaveLength(0)
+      expect(h.store.getQueuedMessages(h.chatId).map(row => row.id)).toEqual([queued.queuedMessageId])
+    } finally { await h.cleanup() }
+  })
+
+  test("a plain enqueue does not take over while Send now is interrupting the old turn", async () => {
+    const h = await persistedQueue()
+    const entered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>()
+    try {
+      await h.send("first")
+      const older = await h.enqueue("older")
+      const selected = await h.enqueue("selected")
+      h.coordinator.activeTurns.get(h.chatId)!.turn.interrupt = async () => { entered.resolve(); await release.promise }
+      const steering = h.coordinator.steer({ type: "message.steer", chatId: h.chatId, queuedMessageId: selected.queuedMessageId })
+      await entered.promise
+      const fresh = await h.enqueue("fresh")
+      release.resolve()
+      await steering
+      expect(h.prompts().slice(1)).toEqual([expect.objectContaining({ _id: selected.queuedMessageId, steered: true })])
+      expect(h.store.getQueuedMessages(h.chatId).map(row => row.id)).toEqual([older.queuedMessageId, fresh.queuedMessageId])
+    } finally { release.resolve(); await h.cleanup() }
+  })
 
   test("keeps the head and following row intact until the prompt is durable", async () => {
     const h = harness()
@@ -3801,7 +3961,7 @@ describe("durable queued startup", () => {
       return append(chatId, entry, options)
     }
     const internals = h.coordinator as unknown as {
-      queueDispatches: Set<string>
+      queueDispatches: ReadonlyMap<string, unknown>
       nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null>
     }
     const scan = internals.nextDispatchableQueuedMessage.bind(h.coordinator)
@@ -3843,7 +4003,7 @@ describe("durable queued startup", () => {
       return append(chatId, entry, options)
     }
     const internals = h.coordinator as unknown as {
-      queueDispatches: Set<string>
+      queueDispatches: ReadonlyMap<string, unknown>
       nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null>
       dequeueAndStartQueuedMessage(chatId: string, row: QueuedChatMessage, options?: { releaseDispatch?: () => void }): Promise<"started" | "cancelled" | "missing">
     }

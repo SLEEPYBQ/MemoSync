@@ -894,8 +894,8 @@ describe("memory preview gate (coordinator)", () => {
 
       // The decision is durable, but bootEngineTurn has not installed the
       // active turn yet. The preview claim must still own both public gates.
-      expect((h.coordinator as unknown as { claimedPreviewResponses: Map<string, string> })
-        .claimedPreviewResponses.get("chat-1")).toBe(preview.previewId)
+      expect((h.coordinator as unknown as { claimedPreviewResponses: Map<string, unknown> })
+        .claimedPreviewResponses.get("chat-1")).toMatchObject({ pending: { previewId: preview.previewId } })
       await expect(h.coordinator.send({
         type: "chat.send",
         chatId: "chat-1",

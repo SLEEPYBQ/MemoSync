@@ -120,7 +120,7 @@ test('OpenCode command discovery and execution use the live server and existing 
   } finally { await manager.dispose(); rmSync(directory, { recursive: true, force: true }) }
 })
 
-async function preparationFixture(provider: AgentProvider, gate?: Promise<void>, draft = false) {
+async function preparationFixture(provider: AgentProvider, gate?: Promise<void>, draft = false, onOpenCodeClose?: () => Promise<void>) {
   const directory = mkdtempSync(join(tmpdir(), 'memosync-preparation-'))
   const store = new EventStore(join(directory, 'data'))
   await store.initialize()
@@ -166,7 +166,8 @@ async function preparationFixture(provider: AgentProvider, gate?: Promise<void>,
     opencodeManager: { prepareSession: prepare, getCommandRuntime: () => provider === 'opencode' ? native : undefined,
       hasSession: () => provider === 'opencode' && Boolean(native),
       startTurn: async (args: any) => { calls.starts.push(args); calls.prompts.push(args.content); install(args); return turn },
-      closeChat: () => { if (provider === 'opencode') close() }, dispose: async () => { if (provider === 'opencode') close(); stopped.resolve() } } as never,
+      closeChat: async () => { if (provider === 'opencode' && native) { close(); await onOpenCodeClose?.() } },
+      dispose: async () => { if (provider === 'opencode') close(); stopped.resolve() } } as never,
   })
   const selection: RuntimeCommandSelection = { provider, model: 'fixture-model', modelOptions: { connectionId: 'fixture-connection' }, planMode: false }
   const bindRuntime = (selected = selection) => {
@@ -380,6 +381,35 @@ test('changing only native launch options retires the previous prepared catalog'
     await expect(f.agent.executeCommand({ type: 'chat.executeCommand', chatId: f.chat.id, runtimeKey: previous.runtimeKey!, expectedRevision: previous.revision, commandId: 'native:fixture' })).rejects.toThrow('catalog changed')
     expect(f.calls.prompts).toEqual([])
   } finally { await f.cleanup() }
+})
+
+for (const outcome of ['success', 'failure'] as const) test(`a replacement catalog waits for OpenCode retirement ${outcome}`, async () => {
+  const closing = deferred(), release = deferred()
+  const f = await preparationFixture('opencode', undefined, false, async () => {
+    closing.resolve()
+    await release.promise
+    if (outcome === 'failure') throw new Error('Synthetic host plugin removal failed')
+  })
+  try {
+    await f.agent.readCommandCatalog(f.chat.id, false, f.selection)
+    expect((await f.settled()).preparation?.status).toBe('ready')
+    const changed = { ...f.selection, model: 'replacement-model' }
+    f.bindRuntime(changed)
+    await f.agent.readCommandCatalog(f.chat.id, false, changed)
+    await closing.promise
+    await flush()
+    expect(f.agent.getCommandCatalog(f.chat.id)).toMatchObject({ preparation: { status: 'preparing' }, runtime: null })
+    expect(f.calls.preparations).toHaveLength(1)
+    release.resolve()
+    const catalog = await f.settled()
+    if (outcome === 'failure') {
+      expect(catalog).toMatchObject({ preparation: { status: 'error', message: 'Native session initialization failed. Check the selected model connection and retry.' }, runtime: null })
+      expect(f.calls.preparations).toHaveLength(1)
+    } else {
+      expect(catalog.preparation?.status).toBe('ready')
+      expect(f.calls.preparations[1]?.model).toBe('replacement-model')
+    }
+  } finally { release.resolve(); await f.cleanup() }
 })
 
 test('a model selection replacement waits for cancelled startup and never publishes the old catalog', async () => {

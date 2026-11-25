@@ -197,6 +197,21 @@ describe("idle provider sessions", () => {
     expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(true)
   })
 
+  test("idle retirement claims the old Claude query before awaiting OpenCode cleanup", async () => {
+    const release = deferred()
+    const h = await harness("claude", false, {
+      opencodeManager: { closeChat: () => release.promise, dispose() {} } as never,
+    })
+    try {
+      await h.send(); await h.finish(); await advance(TIMEOUT)
+      expect(h.closes()).toBe(1)
+      await h.send()
+      release.resolve()
+      expect(h.tokens).toEqual([null, "saved-token"])
+      expect(h.coordinator.activeTurns.has(h.chat.id)).toBe(true)
+    } finally { release.resolve() }
+  })
+
   test("shutdown waits for Claude EOF policy persistence after registry removal", async () => {
     const h = await harness()
     await h.send()
@@ -229,13 +244,14 @@ describe("idle provider sessions", () => {
     }
   })
 
-  test("queued messages pin the session until removed and restart the full idle wait", async () => {
+  test("a parked queue row pins the session until removed and restarts the full idle wait", async () => {
     const h = await harness()
     await h.send(); await h.finish()
-    const queued = await h.coordinator.enqueue({ type: "message.enqueue", chatId: h.chat.id, content: "queued" })
+    // Start with a persisted, parked row. A new enqueue to an idle chat now starts a turn.
+    const queued = await h.store.enqueueMessage(h.chat.id, { content: "queued", attachments: [] })
     await advance(TIMEOUT * 2)
     expect(h.closes()).toBe(0)
-    await h.coordinator.dequeue({ type: "message.dequeue", chatId: h.chat.id, queuedMessageId: queued.queuedMessageId })
+    await h.coordinator.dequeue({ type: "message.dequeue", chatId: h.chat.id, queuedMessageId: queued.id })
     await advance(TIMEOUT - 1); expect(h.closes()).toBe(0)
     await advance(1); expect(h.closes()).toBe(1)
   })
@@ -274,6 +290,67 @@ describe("idle provider sessions", () => {
     second.resolve(); await Bun.sleep(10)
     await advance(TIMEOUT - 1); expect(h.closes()).toBe(0)
     await advance(1); expect(h.closes()).toBe(1)
+  })
+
+  test("closing a chat waits for asynchronous memory branch cleanup", async () => {
+    const cleanup = deferred()
+    let cleanupDone = false
+    cleanup.promise.then(() => { cleanupDone = true })
+    const branch = {
+      id: "branch", mode: "fork" as const, sessionToken: "branch-token",
+      dispose: () => cleanup.promise,
+      async ask() { return {} },
+    }
+    const h = await harness("claude", false, { createMemoryBranch: () => branch })
+    try {
+      await h.send(); await h.finish()
+      const tracked = (h.coordinator as any).newMemoryBranch({ chatId: h.chat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      ;(h.coordinator as any).workingBranches.set(h.chat.id, tracked)
+      const closing = h.coordinator.closeChat(h.chat.id)
+      await Bun.sleep(20)
+      expect(cleanupDone).toBe(false)
+      let closed = false
+      void closing.then(() => { closed = true })
+      await Bun.sleep(20)
+      expect(closed).toBe(false)
+      cleanup.resolve()
+      await closing
+      expect(closed).toBe(true)
+    } finally { cleanup.resolve() }
+  })
+
+  test("closing a chat does not wait for another chat's memory branch cleanup", async () => {
+    const gates: Array<ReturnType<typeof deferred>> = []
+    const h = await harness("claude", false, {
+      createMemoryBranch: () => {
+        const gate = deferred()
+        gates.push(gate)
+        return {
+          id: `branch-${gates.length}`, mode: "fork" as const, sessionToken: "branch-token",
+          dispose: () => gate.promise, async ask() { return {} },
+        }
+      },
+    })
+    try {
+      await h.send(); await h.finish()
+      const coordinator = h.coordinator as any
+      const mine = coordinator.newMemoryBranch({ chatId: h.chat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      const otherChat = await h.store.createChat((await h.store.listProjects())[0]!.id)
+      const other = coordinator.newMemoryBranch({ chatId: otherChat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      coordinator.workingBranches.set(h.chat.id, mine)
+      coordinator.workingBranches.set(otherChat.id, other)
+      // The other chat's cleanup is already running (and slow). It must not hold
+      // this chat's close — only this chat's own branch cleanup belongs here.
+      other.dispose()
+      const closing = h.coordinator.closeChat(h.chat.id)
+      let closed = false
+      void closing.then(() => { closed = true })
+      await Bun.sleep(20)
+      expect(closed).toBe(false) // still waiting on its own branch
+      gates[0]!.resolve()        // mine finishes; the other chat's gate stays open
+      await closing
+      expect(closed).toBe(true)
+    } finally { gates.forEach(gate => gate.resolve()) }
   })
 
   test("a disposed memory branch still pins its chat until its running ask settles", async () => {

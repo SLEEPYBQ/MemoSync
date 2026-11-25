@@ -1573,20 +1573,7 @@ export function createWsRouter({
           return
         }
         case "project.remove": {
-          // Cancel + close any running turns in this project's chats before
-          // hiding it — otherwise an agent keeps executing tools against the
-          // project directory with no UI left to see or stop it (BUG WS-3).
-          // Mirrors chat.delete's cancel + closeChat.
-          for (const chat of [...store.listChatsByProject(command.projectId),
-            ...[...store.state.chatsById.values()].filter(chat => chat.projectId === command.projectId && chat.draft && !chat.deletedAt)]) {
-            if (chat.draft) {
-              await agent.discardDraft(chat.id)
-              continue
-            }
-            await agent.cancel(chat.id)
-            await agent.closeChat(chat.id)
-          }
-          await store.removeProject(command.projectId)
+          await agent.hideProject(command.projectId)
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id })
           break
         }
@@ -1723,6 +1710,7 @@ export function createWsRouter({
             chatId: result.chatId ?? null,
             payloadBytes,
           })
+          if ("queuedMessageId" in result) await broadcastChatAndSidebar(result.chatId)
           return
         }
         case "chat.refreshDiffs": {
@@ -1998,11 +1986,11 @@ export function createWsRouter({
         }
         case "message.enqueue": {
           const result = await enqueueAndMaybeSteer(command, {
-            enqueue: (value) => agent.enqueue(value),
+            enqueue: (value) => agent.enqueue(value, hostActions?.originatingClient(ws)),
             steer: (value) => agent.steer(value),
             isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
             isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
-            remove: (chatId, messageId) => store.removeQueuedMessage(chatId, messageId),
+            remove: (chatId, queuedMessageId) => agent.dequeue({ type: "message.dequeue", chatId, queuedMessageId }),
           })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
           await broadcastChatAndSidebar(command.chatId)
