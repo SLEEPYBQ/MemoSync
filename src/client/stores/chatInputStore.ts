@@ -1,4 +1,4 @@
-import { create } from "zustand"
+import { create, type StoreApi } from "zustand"
 import { persist } from "zustand/middleware"
 import type { ChatAttachment } from "../../shared/types"
 
@@ -10,6 +10,7 @@ interface DraftRevision {
 }
 
 interface ChatInputState {
+  lastDeletedUploadId?: string
   drafts: Record<string, string>
   attachmentDrafts: Record<string, ChatAttachment[]>
   draftRevisions: Record<string, number>
@@ -19,6 +20,7 @@ interface ChatInputState {
   getDraft: (chatId: string) => string
   setAttachmentDrafts: (chatId: string, attachments: ChatAttachment[], edited?: boolean) => void
   clearAttachmentDrafts: (chatId: string) => void
+  retireSubmittedAttachments: (key: string, submitted: readonly ChatAttachment[]) => void
   getAttachmentDrafts: (chatId: string) => ChatAttachment[]
   getDraftRevision: (textKey: string | null, attachmentKey: string | null) => DraftRevision
   clearSubmittedDraft: (revision: DraftRevision) => boolean
@@ -30,11 +32,39 @@ function sameAttachments(left: ChatAttachment[], right: ChatAttachment[]) {
     return item.id === other.id && item.kind === other.kind && item.displayName === other.displayName
       && item.absolutePath === other.absolutePath && item.relativePath === other.relativePath
       && item.contentUrl === other.contentUrl && item.mimeType === other.mimeType && item.size === other.size
+      && item.uploadSha256 === other.uploadSha256
   })
 }
 
-export const useChatInputStore = create<ChatInputState>()(
-  persist(
+// One cross-tab notice, not a permanent tombstone per upload. Remove only that
+// ID from each in-memory bucket; the deleting tab already persisted its edit.
+export const DELETED_UPLOAD_NOTIFICATION = "memosync.last-deleted-upload"
+function listenForDeletedUploads(setLocal: StoreApi<ChatInputState>["setState"]) {
+  if (typeof window === "undefined") return
+  window.addEventListener?.("storage", event => {
+    if (event.key !== DELETED_UPLOAD_NOTIFICATION || !event.newValue) return
+    const id = event.newValue
+    setLocal(state => {
+      const changed = Object.entries(state.attachmentDrafts).filter(([, items]) => items.some(item => item.id === id))
+      if (!changed.length) return state
+      const attachmentDrafts = { ...state.attachmentDrafts }
+      const attachmentDraftRevisions = { ...state.attachmentDraftRevisions }
+      for (const [key, items] of changed) {
+        const remaining = items.filter(item => item.id !== id)
+        if (remaining.length) attachmentDrafts[key] = remaining
+        else delete attachmentDrafts[key]
+        attachmentDraftRevisions[key] = (attachmentDraftRevisions[key] ?? 0) + 1
+      }
+      return { attachmentDrafts, attachmentDraftRevisions, lastDeletedUploadId: id }
+    })
+  })
+}
+
+export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, api) => {
+  // Use the setter outside persist for notifications. Persisting here would
+  // replace unrelated drafts on disk with this tab's older snapshot.
+  listenForDeletedUploads(setLocal)
+  return persist<ChatInputState>(
     (set, get) => ({
       drafts: {},
       attachmentDrafts: {},
@@ -78,6 +108,14 @@ export const useChatInputStore = create<ChatInputState>()(
 
       clearAttachmentDrafts: (chatId) => get().setAttachmentDrafts(chatId, []),
 
+      retireSubmittedAttachments: (key, submitted) => {
+        // An upload rebound to a new project URL belongs to that newer draft.
+        const sent = new Map(submitted.map(item => [item.id, item.contentUrl]))
+        const current = get().getAttachmentDrafts(key)
+        const remaining = current.filter(item => sent.get(item.id) !== item.contentUrl)
+        if (remaining.length !== current.length) get().setAttachmentDrafts(key, remaining)
+      },
+
       getAttachmentDrafts: (chatId) => get().attachmentDrafts[chatId] ?? [],
 
       getDraftRevision: (textKey, attachmentKey) => ({
@@ -113,5 +151,5 @@ export const useChatInputStore = create<ChatInputState>()(
     {
       name: "chat-input-drafts",
     }
-  )
-)
+  )(setLocal, getLocal, api)
+})

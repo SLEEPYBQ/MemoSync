@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { constants } from "node:fs"
 import { lstat, mkdir, open, realpath, rm, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileTypeFromBuffer } from "file-type"
@@ -191,7 +192,40 @@ export async function persistProjectUpload(args: {
     contentUrl: `/api/projects/${args.projectId}/uploads/${encodeURIComponent(storedName)}/content`,
     mimeType,
     size: args.bytes.byteLength,
+    uploadSha256: createHash("sha256").update(args.bytes).digest("hex"),
   }
+}
+
+export function isManagedChatUpload(item: ChatAttachment): boolean {
+  return item.uploadSha256 !== undefined || /^\/api\/projects\/[^/]+\/uploads\//.test(item.contentUrl)
+}
+
+/** A stale tab may still send a deleted chip, even after its basename was
+ * reused. Check the managed upload, never open a path supplied by a client. */
+export async function matchesProjectUpload(project: { id: string; localPath: string }, item: ChatAttachment): Promise<boolean> {
+  try {
+    // An old saved chip cannot distinguish a same-size replacement. Ask to
+    // reattach it; never assign today's bytes to yesterday's upload ID.
+    if (!item.uploadSha256 || !/^[0-9a-f]{64}$/.test(item.uploadSha256)) return false
+    const match = /^\/api\/projects\/([^/]+)\/uploads\/([^/]+)\/content$/.exec(item.contentUrl)
+    if (!match || match[1] !== project.id) return false
+    const name = decodeURIComponent(match[2]!)
+    if (!name || name === "." || name === ".." || /[/\\\0]/.test(name)) return false
+    if (item.relativePath !== `./${PROJECT_DATA_DIR_NAME}/uploads/${name}`
+      || path.relative(path.join(getProjectUploadDir(project.localPath), name), item.absolutePath) !== "") return false
+    const file = await resolveExistingProjectUpload(project.localPath, name)
+    if (!file.ok) return false
+    const handle = await open(file.path, process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const info = await handle.stat()
+      if (!info.isFile() || info.size !== item.size) return false
+      const hash = createHash("sha256")
+      for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk)
+      return hash.digest("hex") === item.uploadSha256
+    } finally {
+      await handle.close()
+    }
+  } catch { return false }
 }
 
 export function inferAttachmentContentType(fileName: string, fallbackType?: string): string {

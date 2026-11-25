@@ -1,14 +1,28 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
+import type { ServerWebSocket } from "bun"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import type { Page, Route } from "playwright"
+import { AgentCoordinator } from "../../../server/agent"
+import { EventStore } from "../../../server/event-store"
+import { KeybindingsManager } from "../../../server/keybindings"
+import { getProjectUploadDir } from "../../../server/paths"
+import { handleProjectUpload, handleProjectUploadDelete } from "../../../server/server"
+import { TerminalManager } from "../../../server/terminal-manager"
+import { createWsRouter, type ClientState } from "../../../server/ws-router"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
 interface ChatInputFixtureApi {
-  setChatId: (chatId: string) => void
+  setChatId: (chatId: string | null) => void
+  setProjectId: (projectId: string) => void
+  setMounted: (mounted: boolean) => void
   submissions: () => Array<{ value: string; options: { attachments?: Array<{ id: string }> } }>
   resolveSubmit: (index: number) => void
   rejectSubmit: (index: number, reason: string) => void
   draft: (chatId: string) => string
   attachments: (chatId: string) => Array<{ id: string; displayName: string }>
+  connectDraft: (url: string, draftChatId: string) => void
 }
 
 let harness: Awaited<ReturnType<typeof startMountedRaceHarness>>
@@ -128,6 +142,180 @@ describe("mounted ChatInput submission races", () => {
       "uploaded-1.txt",
       "uploaded-2.txt",
     ])
+  })
+
+  test("removing a chip before its send ACK detaches it without deleting the in-flight upload", async () => {
+    const target = await openFixture()
+    const deletes: string[] = []
+    target.on("request", request => { if (request.method() === "DELETE") deletes.push(request.url()) })
+    await attach(target, "sent.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByRole("button", { name: "Remove uploaded-1.txt" }).click()
+    expect(await readAttachments(target, "chat-one")).toEqual([])
+    await attach(target, "unsent.txt")
+    await Promise.all([
+      target.waitForResponse(response => response.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-2.txt" }).click(),
+    ])
+    await settle(target, 0, true)
+    expect(deletes.map(url => new URL(url).pathname)).toEqual(["/api/projects/fixture/uploads/2"])
+  })
+
+  test.each(["direct", "disconnect", "second tab"])("removing a rejected landing slash upload (%s)", async scenario => {
+    const target = await openFixture()
+    const dir = await mkdtemp(join(tmpdir(), "memosync-upload-refusal-"))
+    const store = new EventStore(join(dir, "data"))
+    const agent = new AgentCoordinator({
+      store, onStateChange() {}, getMemorySettings: () => ({ enabled: false, learn: false }),
+      generateTitle: async () => ({ title: "Fixture", usedFallback: true, failureMessage: null }),
+      resolvePiConnection: async () => ({ provider: "custom", baseUrl: "http://127.0.0.1:1", apiKey: "" }),
+      piManager: { startTurn: async () => ({
+        provider: "pi", stream: (async function* () {})(), close() {}, interrupt: async () => {},
+      }), closeChat() {}, dispose() {} } as never,
+    })
+    let second: Page | undefined
+    const router = createWsRouter({
+      store, agent, terminals: new TerminalManager(), keybindings: new KeybindingsManager(join(dir, "keybindings.json")),
+      refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Fixture", updateManager: null,
+    })
+    try {
+      const workspace = join(dir, "workspace")
+      await mkdir(workspace)
+      await store.initialize()
+      const { projectId, chatId } = await store.ensureDraft({ localPath: workspace })
+      // Use the production handlers without starting discovery, reading user
+      // settings or exposing a command socket outside this browser fixture.
+      const deletes: string[] = []
+      await target.route("**/auth/status", route => route.fulfill({ json: { enabled: false } }))
+      const routeUploads = async (route: Route) => {
+        const req = route.request()
+        const url = new URL(req.url())
+        const request = new Request(url, { method: req.method(), headers: req.headers(), body: req.postDataBuffer() })
+        if (req.method() === "DELETE") deletes.push(url.pathname)
+        const result = await handleProjectUpload(request, url, store) ?? await handleProjectUploadDelete(request, url, store)
+        await route.fulfill({ status: result?.status ?? 404, json: await result?.json() })
+      }
+      await target.route("**/uploads**", routeUploads)
+      let dropReply = scenario === "disconnect"
+      await target.routeWebSocket("**/refusal-ws", peer => {
+        const socket = {
+          data: { subscriptions: new Map(), snapshotSignatures: new Map() },
+          send(raw: string) {
+            if (dropReply && JSON.parse(raw).type === "error") {
+              dropReply = false
+              void peer.close({ code: 1001 })
+            } else peer.send(raw)
+            return raw.length
+          },
+        } as unknown as ServerWebSocket<ClientState>
+        router.handleOpen(socket)
+        peer.onMessage(raw => { void router.handleMessage(socket, raw.toString()) })
+        peer.onClose(() => router.handleClose(socket))
+      })
+      await target.reload()
+      await target.getByTestId("fixture-ready").waitFor({ state: "attached" })
+      await target.evaluate(({ projectId, chatId }) => {
+        const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+        fixture.setChatId(null)
+        fixture.setProjectId(projectId)
+        fixture.connectDraft(`ws://${location.host}/refusal-ws`, chatId)
+      }, { projectId, chatId })
+      await attach(target, "notes.txt", `landing:${projectId}`)
+      const path = join(getProjectUploadDir(workspace), "notes.txt")
+      expect(await Bun.file(path).text()).toBe("notes.txt")
+      const input = target.locator("textarea")
+      const send = target.getByRole("button", { name: "Send", exact: true })
+      if (scenario === "second tab") {
+        ;[second] = await Promise.all([
+          target.waitForEvent("popup"),
+          target.evaluate(() => { window.open("about:blank", "_blank") }),
+        ])
+        second.setDefaultTimeout(5_000)
+        await second.route("**/uploads**", routeUploads)
+        await second.route("**/api/providers", route => route.fulfill({ json: { data: [] } }))
+        await second.goto(target.url())
+        await second.getByTestId("fixture-ready").waitFor({ state: "attached" })
+        await second.evaluate(projectId => {
+          const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+          fixture.setChatId(null)
+          fixture.setProjectId(projectId)
+        }, projectId)
+        await second.getByRole("button", { name: "Remove notes.txt" }).waitFor()
+      }
+      await input.fill("/not-a-command")
+      await send.click()
+      if (scenario === "disconnect") {
+        await target.getByText("Disconnected", { exact: true }).waitFor()
+        await send.click()
+      }
+      await target.getByText("Native commands do not accept attachments", { exact: true }).waitFor()
+      expect(store.getMessages(chatId)).toEqual([])
+      expect(store.getQueuedMessages(chatId)).toEqual([])
+      const deletingTab = second ?? target
+      const remove = deletingTab.getByRole("button", { name: "Remove notes.txt" })
+      if (scenario === "disconnect") {
+        await remove.click()
+        await remove.waitFor({ state: "detached" })
+        expect(deletes).toEqual([])
+        expect(await Bun.file(path).text()).toBe("notes.txt")
+      } else {
+        const [deleted] = await Promise.all([deletingTab.waitForResponse(r => r.request().method() === "DELETE"), remove.click()])
+        expect(await deleted.json()).toEqual({ ok: true })
+        expect(deletes).toEqual([`/api/projects/${projectId}/uploads/notes.txt`])
+        expect(await Bun.file(path).exists()).toBe(false)
+        if (second) {
+          await target.getByRole("button", { name: "Remove notes.txt" }).waitFor({ state: "detached" })
+          expect(await readAttachments(target, `landing:${projectId}`)).toEqual([])
+          expect(await input.inputValue()).toBe("/not-a-command")
+          await input.fill("Summarize this file")
+          await send.click()
+          await expectInputValue(target, "")
+          expect(store.getMessages(chatId).filter(row => row.kind === "user_prompt")).toMatchObject([
+            { content: "Summarize this file", attachments: [] },
+          ])
+        }
+      }
+    } finally {
+      await second?.close()
+      await target.close()
+      page = undefined
+      router.dispose()
+      await agent.shutdownRuntime()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("reloading an unacknowledged send leaves no upload hold or permission to delete", async () => {
+    const target = await openFixture()
+    const deletes: string[] = []
+    target.on("request", request => { if (request.method() === "DELETE") deletes.push(new URL(request.url()).pathname) })
+    await attach(target, "pending.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1)
+    await target.reload()
+    await target.getByRole("button", { name: "Remove uploaded-1.txt" }).click()
+    expect(await target.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("memosync.unsent-upload.")))).toEqual([])
+    await attach(target, "new.txt")
+    await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-2.txt" }).click(),
+    ])
+    expect(deletes).toEqual(["/api/projects/fixture/uploads/2"])
+  })
+
+  test("without Web Locks a slash refusal happens before the upload handoff", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => Object.defineProperty(navigator, "locks", { value: undefined }))
+    await attach(target, "notes.txt")
+    await target.locator("textarea").fill("/not-a-command")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByText(/Native commands do not accept these attachments/).waitFor()
+    expect(await submissions(target)).toEqual([])
+    const [deleted] = await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-1.txt" }).click(),
+    ])
+    expect(new URL(deleted.url()).pathname).toBe("/api/projects/fixture/uploads/1")
   })
 
   test("treats editing away and back as a newer draft revision", async () => {
@@ -336,6 +524,76 @@ describe("mounted ChatInput submission races", () => {
 
     await expectInputValue(target, "")
     expect(await readDraft(target, "chat-one")).toBe("")
+  })
+
+  test("keeps landing attachments by project across remounts and clears only the accepted project", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    await attach(target, "a.txt", "landing:project-a")
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-b"))
+    await attach(target, "b.txt", "landing:project-b")
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-a"))
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    expect(await target.getByText("uploaded-2.txt", { exact: true }).count()).toBe(0)
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setMounted(false))
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setMounted(true))
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    await target.reload()
+    await target.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    await target.getByText("uploaded-1.txt", { exact: true }).first().waitFor()
+    await target.locator("button:has(svg.lucide-arrow-up)").click()
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1)
+    await settle(target, 0, true)
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.attachments("landing:project-a").length === 0)
+    expect(await readAttachments(target, "landing:project-b")).toHaveLength(1)
+  })
+
+  test("an obsolete upload cannot free a slot or post new project files to the old project", async () => {
+    const target = await openFixture()
+    const held: Route[] = []
+    await target.route("**/uploads", async route => { held.push(route) })
+    const waitForRoutes = async (count: number) => {
+      const deadline = Date.now() + 5_000
+      while (held.length < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+      expect(held).toHaveLength(count)
+    }
+    await target.evaluate(() => {
+      const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+      fixture.setChatId(null)
+      fixture.setProjectId("project-a")
+    })
+    const file = (name: string) => ({ name, mimeType: "text/plain", buffer: Buffer.from(name) })
+    await target.locator('input[type="file"]').setInputFiles(file("a.txt"))
+    await waitForRoutes(1)
+    await target.evaluate(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.setProjectId("project-b"))
+    await target.locator('input[type="file"]').setInputFiles(["b1.txt", "b2.txt", "b3.txt", "b4.txt"].map(file))
+    await waitForRoutes(4)
+    const fulfill = (route: Route, id: string) => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ attachments: [{
+        id, kind: "file", displayName: `${id}.txt`, absolutePath: `/fixture/${id}`,
+        relativePath: id, contentUrl: `/api/projects/fixture/uploads/${id}/content`, mimeType: "text/plain", size: 1,
+      }] }),
+    })
+    expect(held[0].request().url()).toContain("/project-a/uploads")
+    expect(held[0].request().postData()).not.toContain("b1.txt")
+    expect(held.slice(1).every(route => route.request().url().includes("/project-b/uploads"))).toBe(true)
+    await fulfill(held[0], "stale-a")
+    await target.waitForTimeout(100)
+    expect(held).toHaveLength(4)
+    await fulfill(held[1], "b1")
+    await waitForRoutes(5)
+    expect(held[4].request().url()).toContain("/project-b/uploads")
+    await Promise.all(held.slice(2).map((route, index) => fulfill(route, `b${index + 2}`)))
   })
 })
 

@@ -29,8 +29,8 @@ import { runtimeCommandSelectionKey, type ChatCommandCatalog, type RuntimeComman
 import { SlashCommandMenu } from "./SlashCommandMenu"
 import { isSlashInput, resolveRuntimeSlash, runtimeCatalogSettling, runtimeCommandToken } from "../../lib/runtimeCommands"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
-import { useChatInputStore } from "../../stores/chatInputStore"
-import { runRetainedDraftSubmission } from "./chatDraftSubmission"
+import { DELETED_UPLOAD_NOTIFICATION, useChatInputStore } from "../../stores/chatInputStore"
+import { discardDraftUpload, recordUnsentUpload, runRetainedDraftSubmission, submitWithDraftUploads } from "./chatDraftSubmission"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
@@ -282,7 +282,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
-    clearAttachmentDrafts,
   } = useChatInputStore()
   const {
     providerDefaults,
@@ -297,6 +296,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // for the landing composer (which has no chatId yet) so typed text survives
   // navigation (BUG LAND-1).
   const textDraftKey = draftKey ?? chatId ?? null
+  const attachmentDraftKey = chatId ?? (draftKey && projectId ? `${draftKey}:${projectId}` : null)
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const draftRevisionRef = useRef(0)
@@ -318,40 +318,48 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const isStandalone = useIsStandalone()
   const draftMemoryDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftMemoryDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
-  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : []))
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []))
   const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
     draftRevisionRef.current += 1
     const updated = typeof next === "function" ? next(attachmentsRef.current) : next
     attachmentsRef.current = updated
     setAttachmentsState(updated)
-    if (chatId) {
+    if (attachmentDraftKey) {
       // Pending uploads are edits too, even before they have a persisted file.
-      setAttachmentDrafts(chatId, updated
+      setAttachmentDrafts(attachmentDraftKey, updated
         .filter((attachment) => attachment.status === "uploaded")
         .map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment), true)
     }
-  }, [chatId, setAttachmentDrafts])
+  }, [attachmentDraftKey, setAttachmentDrafts])
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const uploadQueueRef = useRef<File[]>([])
   const activeUploadsRef = useRef(0)
   const uploadGenerationRef = useRef(0)
   const removedAttachmentIdsRef = useRef<Set<string>>(new Set())
-  const previousProjectIdRef = useRef<string | null>(projectId ?? null)
+  const cleanupAttachmentPreview = useCallback((attachment: ComposerAttachment) => {
+    if (attachment.previewUrl) URL.revokeObjectURL(attachment.previewUrl)
+  }, [])
 
   useLayoutEffect(() => {
     valueRef.current = textDraftKey ? getDraft(textDraftKey) : ""
     setValueState(valueRef.current)
     submissionRef.current = null
+    removedAttachmentIdsRef.current.clear()
+    setSelectedAttachmentId(null)
+    setUploadError(null)
+    attachmentsRef.current = hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : [])
+    setAttachmentsState(attachmentsRef.current)
     return () => {
       draftRevisionRef.current += 1
       submissionRef.current = null
       uploadGenerationRef.current += 1
       uploadQueueRef.current = []
       activeUploadsRef.current = 0
+      attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, textDraftKey, getDraft])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, getDraft, getAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)
@@ -426,12 +434,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   })
   const selectedAttachment = attachments.find((attachment) => attachment.id === selectedAttachmentId) ?? null
 
-  const cleanupAttachmentPreview = useCallback((attachment: ComposerAttachment) => {
-    if (attachment.previewUrl) {
-      URL.revokeObjectURL(attachment.previewUrl)
-    }
-  }, [])
-
   const clearAttachments = useCallback((options?: { cleanupPreviews?: boolean }) => {
     const cleanupPreviews = options?.cleanupPreviews ?? true
     uploadGenerationRef.current += 1
@@ -453,14 +455,23 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       valueRef.current = state.drafts[textDraftKey] ?? ""
       setValueState(valueRef.current)
     }
-    if (chatId && previous.attachmentDrafts[chatId] && !state.attachmentDrafts[chatId]) {
-      const retained = attachmentsRef.current.filter((attachment) => attachment.status !== "uploaded")
-      attachmentsRef.current.filter((attachment) => attachment.status === "uploaded").forEach(cleanupAttachmentPreview)
+    if (attachmentDraftKey && previous.attachmentDrafts[attachmentDraftKey] !== state.attachmentDrafts[attachmentDraftKey]) {
+      const ids = new Set(state.attachmentDrafts[attachmentDraftKey]?.map(item => item.id))
+      const retained = attachmentsRef.current.filter(attachment => {
+        if (attachment.status !== "uploaded" || ids.has(attachment.id)) return true
+        cleanupAttachmentPreview(attachment)
+        if (state.lastDeletedUploadId === attachment.id) {
+          draftRevisionRef.current += 1
+          setUploadError(t("chat:attachmentRemovedElsewhere", { name: attachment.displayName }))
+        }
+        return false
+      })
+      if (retained.length === attachmentsRef.current.length) return
       attachmentsRef.current = retained
       setAttachmentsState(retained)
-      setSelectedAttachmentId(null)
+      setSelectedAttachmentId(id => retained.some(item => item.id === id) ? id : null)
     }
-  }), [chatId, textDraftKey, cleanupAttachmentPreview])
+  }), [attachmentDraftKey, textDraftKey, cleanupAttachmentPreview])
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
@@ -511,37 +522,6 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   useEffect(() => {
     initializeComposerForChat(composerChatId)
   }, [composerChatId, initializeComposerForChat])
-
-  useEffect(() => {
-    uploadGenerationRef.current += 1
-    uploadQueueRef.current = []
-    activeUploadsRef.current = 0
-    removedAttachmentIdsRef.current.clear()
-    setSelectedAttachmentId(null)
-    setUploadError(null)
-    attachmentsRef.current.forEach(cleanupAttachmentPreview)
-    const hydrated = hydrateComposerAttachments(chatId ? getAttachmentDrafts(chatId) : [])
-    attachmentsRef.current = hydrated
-    setAttachmentsState(hydrated)
-  }, [chatId, cleanupAttachmentPreview, getAttachmentDrafts])
-
-  useEffect(() => {
-    const previousProjectId = previousProjectIdRef.current
-    previousProjectIdRef.current = projectId ?? null
-
-    if (previousProjectId === null || projectId === previousProjectId) {
-      return
-    }
-
-    clearAttachments()
-    if (chatId) {
-      clearAttachmentDrafts(chatId)
-    }
-  }, [projectId, chatId, clearAttachments, clearAttachmentDrafts])
-
-  useEffect(() => () => {
-    attachmentsRef.current.forEach(cleanupAttachmentPreview)
-  }, [cleanupAttachmentPreview])
 
   function updateComposerState(transform: (state: ComposerState) => ComposerState) {
     useChatPreferencesStore.getState().setComposerState(composerChatId, transform(providerPrefs))
@@ -639,6 +619,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return
           }
 
+          recordUnsentUpload(uploaded.id)
           setAttachments((current) => current.map((attachment) => (
             attachment.id !== tempId
               ? attachment
@@ -660,8 +641,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           )))
           setUploadError(error instanceof Error ? error.message : String(error))
         } finally {
-          activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1)
-          processUploadQueue()
+          if (generation === uploadGenerationRef.current) {
+            activeUploadsRef.current = Math.max(0, activeUploadsRef.current - 1)
+            processUploadQueue()
+          }
         }
       })()
     }
@@ -713,7 +696,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     submissionRef.current = submission
     const revision = draftRevisionRef.current
     const ownsDraft = () => submissionRef.current === submission && draftRevisionRef.current === revision
-    const persistedRevision = useChatInputStore.getState().getDraftRevision(textDraftKey, chatId ?? null)
+    const persistedRevision = useChatInputStore.getState().getDraftRevision(textDraftKey, attachmentDraftKey)
     const nextValue = value
     const previousAttachments = attachmentsRef.current
     const attachmentsForSubmit = uploadedAttachments.map(({ previewUrl: _previewUrl, status: _status, ...attachment }) => attachment)
@@ -747,11 +730,20 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return
           }
         }
-        await onSubmit(nextValue, submitOptions)
+        // Plain HTTP has no Web Locks. Reject a known-invalid combination
+        // before handing off the file; never undo a possibly shared handoff.
+        if (attachmentsForSubmit.length && nextValue.trimStart().startsWith("/") && !navigator.locks) throw new Error(t("commands:noAttachments"))
+        await submitWithDraftUploads(attachmentsForSubmit, () => onSubmit(nextValue, submitOptions))
       },
       onAccepted: () => {
-        if (submissionRef.current === submission && !ownsDraft()) return
-        if (!useChatInputStore.getState().clearSubmittedDraft(persistedRevision)) return
+        const store = useChatInputStore.getState()
+        if ((submissionRef.current === submission && !ownsDraft()) || !store.clearSubmittedDraft(persistedRevision)) {
+          if (!chatId && attachmentDraftKey) {
+            // A landing ACK promotes these files into a chat, not the next draft.
+            store.retireSubmittedAttachments(attachmentDraftKey, attachmentsForSubmit)
+          }
+          return
+        }
         if (!ownsDraft()) return
         if (!chatId) setDraftMemoryDisabled(false)
         setValue("")
@@ -960,7 +952,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
     if (attachment.status === "uploaded") {
       removedAttachmentIdsRef.current.delete(attachment.id)
-      void deleteUploadedAttachment(attachment)
+      void discardDraftUpload(attachment, deleteUploadedAttachment)
     }
   }
 
@@ -1216,7 +1208,10 @@ export const ChatInput = memo(ChatInputInner)
 async function deleteUploadedAttachment(attachment: ChatAttachment) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
-  await fetch(deleteUrl, { method: "DELETE" }).catch(() => undefined)
+  try {
+    const response = await fetch(deleteUrl, { method: "DELETE" })
+    if (response.ok && (await response.json()).ok === true) localStorage.setItem(DELETED_UPLOAD_NOTIFICATION, attachment.id)
+  } catch { /* No confirmation: do not tell another tab its file was deleted. */ }
 }
 
 function hydrateComposerAttachments(attachments: ChatAttachment[]): ComposerAttachment[] {

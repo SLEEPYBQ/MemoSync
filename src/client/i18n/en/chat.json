@@ -77,6 +77,7 @@
   "ultracodeHint": "Runs parallel subagents and uses your limits quickly",
   "buildSomething": "Build something...",
   "uploadFailed": "Upload failed",
+  "attachmentRemovedElsewhere": "{{name}} was removed in another tab. Attach it again if you still need it.",
   "openAProjectBeforeUploadingFiles": "Open a project before uploading files.",
   "addAttachment": "Add attachment",
   "attachFilesOrDragThemIn": "Attach files (or drag them in)",

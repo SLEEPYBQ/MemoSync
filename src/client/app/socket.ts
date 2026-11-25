@@ -13,6 +13,7 @@ import type {
   TerminalTailResult,
 } from "../../shared/protocol"
 import { LOG_PREFIX } from "../../shared/branding"
+import { AttachmentsNotAdmittedError } from "../../shared/protocol"
 import { generateUUID } from "../lib/utils"
 
 type SnapshotListener<T> = (value: T) => void
@@ -404,7 +405,8 @@ export class AppSocket {
         const pending = this.pending.get(payload.id)
         if (pending) {
           this.pending.delete(payload.id)
-          pending.reject(new Error(translateServerUiText(payload.uiText, payload.message)))
+          const message = translateServerUiText(payload.uiText, payload.message)
+          pending.reject(payload.attachmentsNotAdmitted === true ? new AttachmentsNotAdmittedError(message) : new Error(message))
           return
         }
         // A scoped subscription error (the server could not derive this

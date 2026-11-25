@@ -1,6 +1,6 @@
 import { translateUiText } from "../../i18n/uiText"
 import { t, useI18n, getLocale } from "../../i18n"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type {
   BranchActionFailure,
   BranchActionSuccess,
@@ -40,7 +40,7 @@ export function useChatPageSidebarActions({
   showRightSidebar,
 }: UseChatPageSidebarActionsArgs) {
   useI18n()
-  const dialog = useAppDialog()
+  const appDialog = useAppDialog()
   const [diffRenderMode, setDiffRenderMode] = useState<"unified" | "split">("unified")
   const [wrapDiffLines, setWrapDiffLines] = useState(false)
   const terminalDiffRefreshTimeoutRef = useRef<number | null>(null)
@@ -48,10 +48,24 @@ export function useChatPageSidebarActions({
   const lastProjectGitRefreshProjectIdRef = useRef<string | null>(null)
   const activeChatIdRef = useRef<string | null>(state.activeChatId)
   const projectPathRef = useRef<string | null>(state.runtime?.localPath ?? state.navbarLocalPath ?? null)
+  // The dialog provider outlives the chat. A completed command still returns its
+  // result to its caller, but it cannot open an alert on a later visit.
+  const visit = useMemo(() => ({ current: false }), [state.activeChatId])
+  const dialog = useMemo(() => ({
+    ...appDialog,
+    alert: async (options: Parameters<typeof appDialog.alert>[0]) => {
+      if (visit.current) await appDialog.alert(options)
+    },
+  }), [appDialog, visit])
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     activeChatIdRef.current = state.activeChatId
-  }, [state.activeChatId])
+    visit.current = !!state.activeChatId
+    return () => {
+      activeChatIdRef.current = null
+      visit.current = false
+    }
+  }, [state.activeChatId, visit])
 
   useEffect(() => {
     projectPathRef.current = state.runtime?.localPath ?? state.navbarLocalPath ?? null
@@ -202,7 +216,7 @@ export function useChatPageSidebarActions({
   }, [state.handleOpenExternalPath])
 
   const handleCommitDiffs = useCallback(async (args: { paths: string[]; summary: string; description: string; mode: DiffCommitMode }) => {
-    const chatId = activeChatIdRef.current
+    const chatId = state.activeChatId
     if (!chatId) {
       return null
     }
@@ -215,7 +229,7 @@ export function useChatPageSidebarActions({
         description: args.description,
         mode: args.mode,
       })
-      if (result.snapshotChanged) {
+      if (result.snapshotChanged && activeChatIdRef.current === chatId) {
         refreshDiffs()
       }
       if (!result.ok) {
@@ -236,7 +250,7 @@ export function useChatPageSidebarActions({
       })
       return null
     }
-  }, [dialog, refreshDiffs, state.socket, getLocale()])
+  }, [dialog, refreshDiffs, state.socket, state.activeChatId, getLocale()])
 
   const handleSyncBranch = useCallback(async (action: "fetch" | "pull" | "push" | "publish") => {
     const chatId = activeChatIdRef.current
@@ -272,7 +286,7 @@ export function useChatPageSidebarActions({
   }, [dialog, refreshDiffs, state.socket, getLocale()])
 
   const handleGenerateCommitMessage = useCallback(async (args: { paths: string[] }) => {
-    const chatId = activeChatIdRef.current
+    const chatId = state.activeChatId
     if (!chatId) {
       return { subject: "", body: "" }
     }
@@ -299,7 +313,7 @@ export function useChatPageSidebarActions({
       })
       return { subject: "", body: "" }
     }
-  }, [dialog, state.socket, getLocale()])
+  }, [dialog, state.socket, state.activeChatId, getLocale()])
 
   const handleInitializeGit = useCallback(async () => {
     const chatId = activeChatIdRef.current

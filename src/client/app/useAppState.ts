@@ -2,10 +2,10 @@ import type { LandingDraft } from "./useLandingDraft"
 import { subscribeModelAccess, type AccessModelOptions } from "../model-access/modelAccess"
 import { t, useI18n, getLocale } from "../i18n"
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
-import { useNavigate } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { DISPLAY_NAME, SELF_UPDATE_ENABLED } from "../../shared/branding"
-import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
+import { AttachmentsNotAdmittedError, type EditorOpenSettings, type OpenExternalAction } from "../../shared/protocol"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type ReleaseNoticeSnapshot, type UserPromptEntry } from "../../shared/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
@@ -270,6 +270,7 @@ export interface OptimisticUserPrompt {
 interface OptimisticProcessingState {
   scopeId: string
   ackedAt: number | null
+  ownerId: string
 }
 
 function readPersistedZustandState(key: string): Record<string, unknown> | null {
@@ -798,7 +799,7 @@ export interface AppState {
   handleWriteLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<void>
   handleValidateLlmProvider: (value: Pick<LlmProviderSnapshot, "provider" | "apiKey" | "model" | "baseUrl">) => Promise<LlmProviderValidationResult>
   handleSignOut: () => Promise<void>
-  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }) => Promise<void>
+  handleSend: (content: string, options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }, isCurrentLandingVisit?: () => boolean) => Promise<void>
   handleSteerQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleRemoveQueuedMessage: (queuedMessageId: string) => Promise<void>
   handleCancel: () => Promise<void>
@@ -841,6 +842,15 @@ export interface AppState {
 export function useAppState(activeChatId: string | null): AppState {
   useI18n()
   const navigate = useNavigate()
+  const location = useLocation()
+  const viewOwnerRef = useRef<object | null>(null)
+  useLayoutEffect(() => {
+    const owner = {}
+    viewOwnerRef.current = owner
+    return () => {
+      if (viewOwnerRef.current === owner) viewOwnerRef.current = null
+    }
+  }, [location.key, activeChatId])
   const socket = useAppSocket()
   const dialog = useAppDialog()
   const { resolvedTheme } = useTheme()
@@ -1492,7 +1502,7 @@ export function useAppState(activeChatId: string | null): AppState {
       return
     }
     if (runtime?.status && runtime.status !== "idle") {
-      setOptimisticProcessing(null)
+      setOptimisticProcessing((current) => current?.ownerId === optimisticProcessing.ownerId ? null : current)
     }
   }, [optimisticProcessing, optimisticScopeId, runtime?.status])
 
@@ -1505,7 +1515,7 @@ export function useAppState(activeChatId: string | null): AppState {
     }
     const timeoutId = window.setTimeout(() => {
       setOptimisticProcessing((current) => (
-        current?.scopeId === optimisticScopeId && current.ackedAt === optimisticProcessing.ackedAt
+        current?.scopeId === optimisticScopeId && current.ownerId === optimisticProcessing.ownerId && current.ackedAt === optimisticProcessing.ackedAt
           ? null
           : current
       ))
@@ -1791,10 +1801,9 @@ export function useAppState(activeChatId: string | null): AppState {
     }
   }, [dialog, getLocale()])
 
-  const handleSend = useCallback(async (
-    content: string,
-    options?: { provider?: AgentProvider; model?: string; modelOptions?: ModelOptions; planMode?: boolean; memoryDisabled?: boolean; attachments?: import("../../shared/types").ChatAttachment[]; projectLocalPath?: string; steer?: boolean; draft?: LandingDraft }
-  ) => {
+  const handleSend = useCallback<AppState["handleSend"]>(async (content, options, isCurrentLandingVisit) => {
+    const origin = viewOwnerRef.current
+    const isOrigin = () => origin !== null && viewOwnerRef.current === origin && (isCurrentLandingVisit?.() ?? true)
     const attachments = options?.attachments ?? []
     if (activeChatId && (isProcessing || pendingMemoryPreview)) {
       try {
@@ -1825,6 +1834,7 @@ export function useAppState(activeChatId: string | null): AppState {
     setOptimisticProcessing({
       scopeId: optimisticScopeId,
       ackedAt: null,
+      ownerId: optimisticId,
     })
     const sendTrace: SendToStartingTrace = {
       traceId: clientTraceId,
@@ -1863,10 +1873,11 @@ export function useAppState(activeChatId: string | null): AppState {
       optimisticScopeId,
     })
 
+    let dispatched = false
     try {
       let projectId: string | null = null
       const draft = activeChatId ? undefined : options?.draft
-      if (draft) setSelectedProjectId(draft.projectId)
+      if (draft && isOrigin()) setSelectedProjectId(draft.projectId)
       if (!activeChatId && !draft) {
         const intent = resolveComposeIntent({
           explicitLocalPath: options?.projectLocalPath ?? null,
@@ -1883,12 +1894,13 @@ export function useAppState(activeChatId: string | null): AppState {
             localPath: intent.localPath,
           })
           projectId = project.projectId
-          setSelectedProjectId(projectId)
+          if (isOrigin()) setSelectedProjectId(projectId)
         } else if (intent.kind === "project_id") {
           projectId = intent.projectId
         }
       }
 
+      dispatched = true
       const sent = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? draft?.chatId,
@@ -1906,11 +1918,12 @@ export function useAppState(activeChatId: string | null): AppState {
       sendTrace.ackAt = performance.now()
       sendTrace.serverChatId = result.chatId ?? sendTrace.serverChatId
       setOptimisticProcessing((current) => {
-        if (!current) return current
+        if (!current || current.ownerId !== optimisticId) return current
         const nextScopeId = !activeChatId && result.chatId ? result.chatId : current.scopeId
         return {
           scopeId: nextScopeId,
           ackedAt: performance.now(),
+          ownerId: optimisticId,
         }
       })
       logSendToStartingTrace(sendTrace, "chat_send_ack_received", {
@@ -1926,20 +1939,25 @@ export function useAppState(activeChatId: string | null): AppState {
           result.chatId,
           composerStateFromSendOptions(options) ?? chatPreferences.getComposerState(NEW_CHAT_COMPOSER_ID)
         )
-        setPendingChatId(result.chatId)
-        navigate(`/chat/${result.chatId}`)
+        if (isOrigin()) {
+          setPendingChatId(result.chatId)
+          navigate(`/chat/${result.chatId}`)
+        }
       }
-      setCommandError(null)
+      if (isOrigin()) setCommandError(null)
     } catch (error) {
       setOptimisticUserPrompts((current) => current.filter((prompt) => prompt.id !== optimisticId))
-      setOptimisticProcessing(null)
+      setOptimisticProcessing((current) => current?.ownerId === optimisticId ? null : current)
       logSendToStartingTrace(sendTrace, "handle_send_failed", {
         error: error instanceof Error ? error.message : String(error),
       })
       sendToStartingProfilesRef.current.delete(clientTraceId)
       // The composer shows a rejected send beside the message box; a page-level copy would repeat it,
       // and an older page banner would sit beside it unrelated.
-      setCommandError(null)
+      if (isOrigin()) setCommandError(null)
+      if (!dispatched && attachments.length) {
+        throw new AttachmentsNotAdmittedError(error instanceof Error ? error.message : String(error), { cause: error })
+      }
       throw error
     }
   }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, pendingMemoryPreview, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket, getLocale()])
@@ -2277,8 +2295,8 @@ export function useAppState(activeChatId: string | null): AppState {
     questions: AskUserQuestionItem[],
     answers: AskUserQuestionAnswerMap
   ) => {
-    if (!activeChatId) return
     try {
+      if (!activeChatId) throw new Error("No active chat")
       await socket.command({
         type: "chat.respondTool",
         chatId: activeChatId,
@@ -2287,6 +2305,7 @@ export function useAppState(activeChatId: string | null): AppState {
       })
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
+      throw error
     }
   }, [activeChatId, socket])
 

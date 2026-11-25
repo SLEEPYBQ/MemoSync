@@ -16,7 +16,7 @@ import {
   Plus,
   Terminal,
 } from "lucide-react"
-import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { DISPLAY_NAME, getCliInvocation, SDK_CLIENT_APP } from "../../shared/branding"
 import type { LocalProjectsSnapshot } from "../../shared/types"
@@ -301,6 +301,13 @@ export function LocalDevContent({
 
   const [pickedPath, setPickedPath] = useState<string | null>(null)
   const selectedPath = resolveLandingProjectPath(projectPaths, pickedPath)
+  // Picking a folder remounts the composer without changing the router location.
+  // Give each visit its own lifetime, including A -> B -> A on the same route.
+  const landingVisit = useMemo(() => ({ current: false }), [selectedPath, isConnected])
+  useLayoutEffect(() => {
+    landingVisit.current = true
+    return () => { landingVisit.current = false }
+  }, [landingVisit])
   const selectedName = selectedPath ? getPathBasename(selectedPath) : null
   const { draft, runtime } = useLandingDraft(socket, selectedPath, isConnected)
   const draftChatId = draft?.chatId ?? null
@@ -408,10 +415,10 @@ export function LocalDevContent({
 
             <div className="w-full">
               <ChatInput
-                key="landing"
+                key={selectedPath ?? "landing"}
                 onSubmit={(value, options) => {
                   if (!selectedPath) return Promise.reject(new Error(t("chat:openAProjectFirst")))
-                  return onSend(value, { ...options, projectLocalPath: selectedPath, draft: draft ?? undefined })
+                  return onSend(value, { ...options, projectLocalPath: selectedPath, draft: draft ?? undefined }, () => landingVisit.current)
                 }}
                 disabled={!selectedPath}
                 chatId={null}
@@ -426,7 +433,7 @@ export function LocalDevContent({
                   await commands.execute(command, args)
                   const preferences = useChatPreferencesStore.getState()
                   preferences.initializeComposerForChat(draftChatId, { sourceState: preferences.getComposerState(NEW_CHAT_COMPOSER_ID) })
-                  navigate(`/chat/${draftChatId}`)
+                  if (landingVisit.current) navigate(`/chat/${draftChatId}`)
                 } : undefined}
                 onCancelCommand={commands.cancel}
                 harness={runtime?.harness}

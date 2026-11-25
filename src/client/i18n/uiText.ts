@@ -31,6 +31,8 @@ const serverKeys = {
   "uploadEmpty": "errors:serverUploadEmpty",
   "uploadMetadata": "errors:serverUploadMetadata",
   "uploadMismatch": "errors:serverUploadMismatch",
+  "staleChatUpload": "errors:serverStaleChatUpload",
+  "uploadSendStopped": "errors:serverUploadSendStopped",
   "uploadFailed": "errors:serverUploadFailed",
   "attachmentPath": "errors:serverAttachmentPath",
   "attachmentNotFound": "errors:serverAttachmentNotFound",
