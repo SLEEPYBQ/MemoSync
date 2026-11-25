@@ -30,6 +30,7 @@ export const SERVER_UI_COPY = {
   "uploadMetadata": "Invalid upload size metadata.",
   "uploadMismatch": "The uploaded file size does not match. Please try again.",
   "staleChatUpload": "An attached upload is missing or has changed. Remove it and attach the file again.",
+  "uploadSendStopped": "Send stopped before the attachments were submitted.",
   "uploadFailed": "Upload failed",
   "attachmentPath": "Invalid attachment path",
   "attachmentNotFound": "Attachment not found",

@@ -4052,7 +4052,7 @@ export class AgentCoordinator {
     this.startingChats.delete(chatId)
   }
 
-  private settleStartupReservation(chatId: string, reservation?: StartupReservation) {
+  private settleStartupReservation(chatId: string, reservation?: StartupReservation, admissionFailed = false) {
     if (!reservation) return
     reservation.startupSettled = true
     this.releaseStartupStatus(chatId, reservation)
@@ -4064,7 +4064,7 @@ export class AgentCoordinator {
     ) return
     this.startupReservations.delete(chatId)
     this.updateIdleClose(chatId)
-    if (reservation.cancelled && !this.isEngineStartBlocked(chatId)
+    if ((reservation.cancelled || admissionFailed) && !this.isEngineStartBlocked(chatId)
       && !this.activeTurns.has(chatId) && !this.startingChats.has(chatId)) {
       void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
         this.reportBackgroundError?.(
@@ -4469,7 +4469,7 @@ export class AgentCoordinator {
     }
   }
 
-  private async startTurnForChat(args: StartTurnArgs) {
+  private async startTurnForChat(args: StartTurnArgs, validateSubmittedUploads = false) {
     if (this.queueDispatches.has(args.chatId)) throw new Error("Queued messages are being recovered")
     if (this.commandRegistry.isRunning(args.chatId)) throw new Error('Native context control is running')
     if (/^\s*\/compact(?:\s|$)/.test(args.content)) throw new Error('Compact must use the native command control route')
@@ -4513,7 +4513,19 @@ export class AgentCoordinator {
     // starts from the index; interrupt recovery retains its existing context.
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
+    let admissionFailed = false
     try {
+    if (validateSubmittedUploads) {
+      try {
+        await this.requireCurrentUploads(args.chatId, args.attachments)
+      } catch (error) {
+        admissionFailed = true
+        throw error
+      }
+      // Stop can acknowledge immediately. Only after validation succeeds
+      // is it safe to return deletion authority for these exact uploads.
+      if (startupCancelled()) throw new AttachmentsNotAdmittedError("Send stopped before the attachments were submitted.")
+    }
     await this.settleCommandPreparation(args)
     if (startupCancelled()) return
     // Retire the previous window admission immediately. Resolve the executable
@@ -4693,7 +4705,8 @@ export class AgentCoordinator {
       // it was handed — the early-return above must not release it here.
       if (!reservationHandedOff) {
         if (!this.activeTurns.has(args.chatId)) this.endPolicyTurn(args.chatId, logicalTurnId)
-        this.settleStartupReservation(args.chatId, reservation)
+        this.settleStartupReservation(args.chatId, reservation, admissionFailed)
+        if (admissionFailed) this.emitStateChange(args.chatId)
       }
     }
   }
@@ -7880,20 +7893,20 @@ export class AgentCoordinator {
       return this.executeCommand({ type: 'chat.executeCommand', chatId, runtimeKey: catalog.runtimeKey, expectedRevision: catalog.revision,
         commandId: entry.id, arguments: match?.[2] ?? '' }, hostClientId)
     }
-    if (command.attachments?.length) await this.requireCurrentUploads(chatId, command.attachments)
+    const hasBusyOwner = () => this.queueDispatches.has(chat.id) || this.activeTurns.has(chat.id)
+      || this.hasPendingPreviewActivity(chat.id) || this.startingChats.has(chat.id)
+    // Drafts must validate before promotion, and busy chats before enqueue.
+    // An idle chat can validate inside the same Stop barrier as provider boot.
+    const checkOnStart = !!command.attachments?.length && !chat.draft && !hasBusyOwner()
+    if (command.attachments?.length && !checkOnStart) await this.requireCurrentUploads(chatId, command.attachments)
     if (chat.draft) {
       await this.store.promoteDraft(chatId)
       // Promotion can also open the project: refresh local-project subscribers
       // as well as chat/sidebar subscribers, including native slash submissions.
       this.emitStateChange()
     }
-    const dispatchingQueue = this.queueDispatches.has(chatId)
-    if (
-      dispatchingQueue
-      || this.activeTurns.has(chatId)
-      || this.hasPendingPreviewActivity(chatId)
-      || this.startingChats.has(chatId)
-    ) {
+    if (hasBusyOwner()) {
+      const dispatchingQueue = this.queueDispatches.has(chatId)
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
@@ -7932,7 +7945,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       hostClientId,
       profile,
-    })
+    }, checkOnStart)
 
     logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
       chatId,
