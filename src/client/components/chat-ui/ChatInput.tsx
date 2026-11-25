@@ -372,7 +372,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
         return unmoved.length === legacy.length ? null : { source: unmoved, target: merged }
       })
-      if (moved) stored = getAttachmentDrafts(workspaceDraftKey)
+      // Re-read after the migration attempt even when nothing moved: a no-op
+      // still reconciles memory with the completed move from another tab.
+      void moved
+      stored = getAttachmentDrafts(workspaceDraftKey)
       // Rebinding a URL for display/send isn't a user edit; don't invalidate a
       // pending send's revision. Keep it in memory only: writing the rebound
       // array back would persist this tab's entire stale draft snapshot over
@@ -486,7 +489,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setValueState(valueRef.current)
     }
     if (attachmentDraftKey && previous.attachmentDrafts[attachmentDraftKey] !== state.attachmentDrafts[attachmentDraftKey]) {
-      const ids = new Set(state.attachmentDrafts[attachmentDraftKey]?.map(item => item.id))
+      const storedItems = state.attachmentDrafts[attachmentDraftKey] ?? []
+      const ids = new Set(storedItems.map(item => item.id))
       const retained = attachmentsRef.current.filter(attachment => {
         if (attachment.status !== "uploaded" || ids.has(attachment.id)) return true
         cleanupAttachmentPreview(attachment)
@@ -496,10 +500,15 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
         return false
       })
-      if (retained.length === attachmentsRef.current.length) return
-      attachmentsRef.current = retained
-      setAttachmentsState(retained)
-      setSelectedAttachmentId(id => retained.some(item => item.id === id) ? id : null)
+      // Convergence is two-way: chips another tab added to the bucket join the
+      // composer too, so a removal here can never silently drop them.
+      const localIds = new Set(retained.map(attachment => attachment.id))
+      const adopted = hydrateComposerAttachments(storedItems.filter(item => !localIds.has(item.id)))
+      const next = adopted.length ? [...retained, ...adopted] : retained
+      if (next.length === attachmentsRef.current.length && adopted.length === 0) return
+      attachmentsRef.current = next
+      setAttachmentsState(next)
+      setSelectedAttachmentId(id => next.some(item => item.id === id) ? id : null)
     }
   }), [attachmentDraftKey, textDraftKey, cleanupAttachmentPreview])
 

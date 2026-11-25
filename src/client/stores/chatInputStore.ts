@@ -65,6 +65,21 @@ function listenForDeletedUploads(setLocal: StoreApi<ChatInputState>["setState"])
   })
 }
 
+// Revisions are tab-local counters, so a tab whose memory lags storage would
+// allocate losing revisions for fresh edits. Allocate above the latest
+// persisted revision instead — the merge write is synchronous, so this read
+// sees every write any tab has committed.
+const allocateRevision = (key: string, memoryRevision: number | undefined, field: "draftRevisions" | "attachmentDraftRevisions") => {
+  let persisted = 0
+  if (typeof localStorage !== "undefined") {
+    try {
+      const parsed = JSON.parse(localStorage.getItem("chat-input-drafts") ?? "null") as { state?: Record<string, Record<string, number>> } | null
+      persisted = parsed?.state?.[field]?.[key] ?? 0
+    } catch { /* unreadable storage allocates from memory alone */ }
+  }
+  return Math.max(memoryRevision ?? 0, persisted) + 1
+}
+
 interface DraftBucketState {
   drafts: Record<string, string>
   attachmentDrafts: Record<string, ChatAttachment[]>
@@ -167,7 +182,7 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
       setDraft: (chatId, value) =>
         set((state) => {
           if ((state.drafts[chatId] ?? "") === value) return state
-          const draftRevisions = { ...state.draftRevisions, [chatId]: (state.draftRevisions[chatId] ?? 0) + 1 }
+          const draftRevisions = { ...state.draftRevisions, [chatId]: allocateRevision(chatId, state.draftRevisions[chatId], "draftRevisions") }
           if (!value) {
             const { [chatId]: _, ...rest } = state.drafts
             return { drafts: rest, draftRevisions }
@@ -184,7 +199,7 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
           if (!edited && sameAttachments(state.attachmentDrafts[chatId] ?? [], attachments)) return state
           const attachmentDraftRevisions = {
             ...state.attachmentDraftRevisions,
-            [chatId]: (state.attachmentDraftRevisions[chatId] ?? 0) + 1,
+            [chatId]: allocateRevision(chatId, state.attachmentDraftRevisions[chatId], "attachmentDraftRevisions"),
           }
           if (attachments.length === 0) {
             const { [chatId]: _, ...rest } = state.attachmentDrafts
@@ -310,11 +325,11 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
           const attachmentDraftRevisions = { ...state.attachmentDraftRevisions }
           if (textKey) {
             delete drafts[textKey]
-            draftRevisions[textKey] = textRevision + 1
+            draftRevisions[textKey] = allocateRevision(textKey, textRevision, "draftRevisions")
           }
           if (attachmentKey) {
             delete attachmentDrafts[attachmentKey]
-            attachmentDraftRevisions[attachmentKey] = attachmentRevision + 1
+            attachmentDraftRevisions[attachmentKey] = allocateRevision(attachmentKey, attachmentRevision, "attachmentDraftRevisions")
           }
           cleared = true
           return { drafts, attachmentDrafts, draftRevisions, attachmentDraftRevisions }

@@ -269,4 +269,34 @@ describe("chatInputStore", () => {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     }
   })
+
+  test("a fresh edit in a lagging tab allocates above the persisted revision and survives the merge", () => {
+    const backing = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => void backing.set(key, String(value)),
+      removeItem: (key: string) => void backing.delete(key),
+    }
+    ;(globalThis as unknown as { localStorage: typeof storage }).localStorage = storage
+    try {
+      backing.set("chat-input-drafts", JSON.stringify({
+        state: {
+          drafts: { "landing:alpha": "ten edits from another tab" },
+          draftRevisions: { "landing:alpha": 10 },
+          attachmentDrafts: {}, attachmentDraftRevisions: {},
+        },
+        version: 0,
+      }))
+      // This tab never saw those edits: memory is empty, revision 0.
+      useChatInputStore.setState({ drafts: {}, attachmentDrafts: {}, draftRevisions: {}, attachmentDraftRevisions: {} })
+      useChatInputStore.getState().setDraft("landing:alpha", "fresh local text")
+      const persisted = JSON.parse(backing.get("chat-input-drafts")!) as {
+        state: { drafts: Record<string, string>; draftRevisions: Record<string, number> }
+      }
+      expect(persisted.state.drafts["landing:alpha"]).toBe("fresh local text")
+      expect(persisted.state.draftRevisions["landing:alpha"]).toBeGreaterThan(10)
+    } finally {
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    }
+  })
 })
