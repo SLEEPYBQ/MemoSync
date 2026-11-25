@@ -42,7 +42,7 @@ for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: st
   const handoff = []
   let manifestError
   let providerError
-  native.on("error", error => { providerError = error.code })
+  native.on("error", error => { providerError = error })
   native.httpExecutor = {
     async request({ protocol, hostname, path: pathname }) {
       // GenericProvider adds a noCache query to channel files, not to assets.
@@ -104,15 +104,20 @@ for (const platform of ["win32", "linux"]) test(`locked ${platform} provider: st
   assert.equal((await updater.downloadUpdate()).status, "downloaded")
   // The public lookup still sees the same tag. Exercise the locked provider's
   // real error propagation for the two different tagged-manifest outcomes.
-  manifestError = Object.assign(new Error("Synthetic connection reset"), { code: "ECONNRESET" })
-  const offline = await updater.checkForUpdates()
-  assert.equal(providerError, "ECONNRESET")
-  assert.equal(offline.status, "downloaded")
-  assert.equal(offline.latestVersion, "1.0.1")
-  assert.match(offline.error, /connection reset/i)
+  for (const transportError of [
+    Object.assign(new Error("Synthetic connection reset"), { code: "ECONNRESET" }),
+    new Error("net::ERR_CONNECTION_ABORTED"), // electron.net emits a message, not a Node code
+  ]) {
+    manifestError = transportError
+    const offline = await updater.checkForUpdates()
+    assert.equal(providerError, transportError)
+    assert.equal(offline.status, "downloaded", transportError.message)
+    assert.equal(offline.latestVersion, "1.0.1")
+    assert.equal(offline.error, transportError.message)
+  }
   manifestError = new HttpError(404)
   const missing = await updater.checkForUpdates()
-  assert.equal(providerError, "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND")
+  assert.equal(providerError.code, "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND")
   assert.equal(missing.status, "error", "404 is not a connectivity loss")
   assert.equal(missing.error, "The release is missing its update manifest.")
   assert.match((await updater.installUpdate()).error, /Download the update/)

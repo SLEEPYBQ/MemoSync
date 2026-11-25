@@ -12,18 +12,21 @@ const MAX_PACKAGE_SIZE = 4 * 1024 * 1024 * 1024
 // The public tag request uses Node fetch; the native manifest request uses
 // Chromium's network stack. Unknown failures (including TLS errors) fail closed.
 const TEMPORARY_NETWORK_CODES = new Set([
-  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH", "EPIPE",
+  "ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EAI_AGAIN", "ENOTFOUND", "ENETUNREACH", "EHOSTUNREACH", "ENETDOWN", "EHOSTDOWN", "EPIPE",
   "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT",
-  "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED", "ERR_NAME_NOT_RESOLVED", "ERR_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE",
-  "ERR_CONNECTION_RESET", "ERR_CONNECTION_CLOSED", "ERR_CONNECTION_REFUSED", "ERR_CONNECTION_TIMED_OUT",
+  "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED", "ERR_NETWORK_IO_SUSPENDED", "ERR_NAME_NOT_RESOLVED", "ERR_NAME_RESOLUTION_FAILED",
+  "ERR_TIMED_OUT", "ERR_DNS_TIMED_OUT", "ERR_ADDRESS_UNREACHABLE", "ERR_PROXY_CONNECTION_FAILED", "ERR_TUNNEL_CONNECTION_FAILED",
 ])
 
 function isTemporaryLookupFailure(error) {
   if (Number.isInteger(error?.statusCode)) {
     return error.rateLimited === true || [408, 429].includes(error.statusCode) || (error.statusCode >= 500 && error.statusCode < 600)
   }
-  return TEMPORARY_NETWORK_CODES.has(error?.cause?.code) || TEMPORARY_NETWORK_CODES.has(error?.code)
-    || TEMPORARY_NETWORK_CODES.has(error?.message?.match(/^net::(ERR_[A-Z_]+)$/)?.[1])
+  // Chromium has a family of ERR_CONNECTION_* socket failures (including
+  // ABORTED). Match the error token, never arbitrary text inside a feed error.
+  const chromiumCode = error?.message?.match(/^net::(ERR_[A-Z_]+)$/)?.[1]
+  return [error?.cause?.code, error?.code, chromiumCode].some(code =>
+    TEMPORARY_NETWORK_CODES.has(code) || (typeof code === "string" && /^ERR_CONNECTION_[A-Z_]+$/.test(code)))
     // builder-util-runtime uses plain errors for these two transport failures.
     || error?.message === "Request timed out" || error?.message === "Request has been aborted by the server"
 }

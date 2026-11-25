@@ -405,6 +405,7 @@ test("failed checks never revive a different tag or a download whose manifest is
     ["v0.47.0", "ERR_UPDATER_INVALID_RELEASE_FEED"],
     ["v0.47.0", "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND"],
     ["v0.47.0", "ERR_UPDATER_INVALID_UPDATE_INFO"],
+    ["v0.47.0", "net::ERR_CERT_AUTHORITY_INVALID"],
   ]) {
     const native = nativeFixture()
     let publicTag = "v0.47.0"
@@ -415,7 +416,8 @@ test("failed checks never revive a different tag or a download whose manifest is
     await updater.checkForUpdates()
     assert.equal((await updater.downloadUpdate()).status, "downloaded")
     publicTag = tag
-    native.checkForUpdates = async () => { throw Object.assign(new Error("Synthetic provider failure"), { code }) }
+    const error = code.startsWith("net::") ? new Error(code) : Object.assign(new Error("Synthetic provider failure"), { code })
+    native.checkForUpdates = async () => { throw error }
     assert.equal((await updater.checkForUpdates()).status, "error")
     assert.match((await updater.installUpdate()).error, /Download the update/)
   }
