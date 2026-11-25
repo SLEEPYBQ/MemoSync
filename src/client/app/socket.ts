@@ -36,6 +36,16 @@ const PING_TIMEOUT_MS = 4_000
 // Bound how long a caller waits for its own ACK. Connection health is
 // checked separately by the heartbeat and ping.
 const COMMAND_ACK_TIMEOUT_MS = 10_000
+// Lifecycle commands wait for provider and memory-branch teardown before their
+// ack. OpenCode branch disposal alone can chain an interrupt, a session delete
+// (which may restart a server inside its readiness budget), and server shutdown.
+// Give those commands a deadline that covers real teardown instead of reporting
+// a false timeout while the server is still succeeding.
+const TEARDOWN_ACK_TIMEOUT_MS = 60_000
+const TEARDOWN_COMMAND_TYPES: ReadonlySet<string> = new Set(["project.remove", "chat.delete"])
+export function ackTimeoutForCommand(type: string) {
+  return TEARDOWN_COMMAND_TYPES.has(type) ? TEARDOWN_ACK_TIMEOUT_MS : COMMAND_ACK_TIMEOUT_MS
+}
 const SEND_TO_STARTING_PROFILE_STORAGE_KEY = "memosync:profile-send-to-starting"
 
 interface SubscriptionEntry<TSnapshot, TEvent = never> {
@@ -247,7 +257,7 @@ export class AppSocket {
         if (!this.pending.has(id)) return
         this.pending.delete(id)
         reject(new Error(t("errors:value0TimedOutWaitingForTheServer", { v0: command.type })))
-      }, COMMAND_ACK_TIMEOUT_MS)
+      }, ackTimeoutForCommand(command.type))
       this.pending.set(id, {
         resolve: (value: unknown) => {
           window.clearTimeout(timer)

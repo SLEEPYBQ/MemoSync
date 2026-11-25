@@ -319,6 +319,40 @@ describe("idle provider sessions", () => {
     } finally { cleanup.resolve() }
   })
 
+  test("closing a chat does not wait for another chat's memory branch cleanup", async () => {
+    const gates: Array<ReturnType<typeof deferred>> = []
+    const h = await harness("claude", false, {
+      createMemoryBranch: () => {
+        const gate = deferred()
+        gates.push(gate)
+        return {
+          id: `branch-${gates.length}`, mode: "fork" as const, sessionToken: "branch-token",
+          dispose: () => gate.promise, async ask() { return {} },
+        }
+      },
+    })
+    try {
+      await h.send(); await h.finish()
+      const coordinator = h.coordinator as any
+      const mine = coordinator.newMemoryBranch({ chatId: h.chat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      const otherChat = await h.store.createChat((await h.store.listProjects())[0]!.id)
+      const other = coordinator.newMemoryBranch({ chatId: otherChat.id, provider: "claude", model: "deepseek-v4-pro" }, "working-memory")
+      coordinator.workingBranches.set(h.chat.id, mine)
+      coordinator.workingBranches.set(otherChat.id, other)
+      // The other chat's cleanup is already running (and slow). It must not hold
+      // this chat's close — only this chat's own branch cleanup belongs here.
+      other.dispose()
+      const closing = h.coordinator.closeChat(h.chat.id)
+      let closed = false
+      void closing.then(() => { closed = true })
+      await Bun.sleep(20)
+      expect(closed).toBe(false) // still waiting on its own branch
+      gates[0]!.resolve()        // mine finishes; the other chat's gate stays open
+      await closing
+      expect(closed).toBe(true)
+    } finally { gates.forEach(gate => gate.resolve()) }
+  })
+
   test("a disposed memory branch still pins its chat until its running ask settles", async () => {
     const h = await harness()
     await h.send(); await h.finish()

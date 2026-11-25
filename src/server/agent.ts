@@ -2065,8 +2065,16 @@ export class AgentCoordinator {
         this.auditBranches.get(args.chatId)?.delete(tracked)
         const cleanup = branch.dispose()
         if (!cleanup) return
-        this.branchCleanups.add(cleanup)
-        void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => this.branchCleanups.delete(cleanup))
+        let chatCleanups = this.branchCleanups.get(args.chatId)
+        if (!chatCleanups) {
+          chatCleanups = new Set()
+          this.branchCleanups.set(args.chatId, chatCleanups)
+        }
+        chatCleanups.add(cleanup)
+        void cleanup.catch(() => this.reportBackgroundError?.("OpenCode memory branch cleanup failed")).finally(() => {
+          chatCleanups.delete(cleanup)
+          if (!chatCleanups.size) this.branchCleanups.delete(args.chatId)
+        })
         return cleanup
       },
     }
@@ -2094,7 +2102,7 @@ export class AgentCoordinator {
 
   private readonly runtimeSelections = new Map<string, string>()
   private readonly sessionRuntimes = new Map<string, EngineRuntime>()
-  private readonly branchCleanups = new Set<Promise<void>>()
+  private readonly branchCleanups = new Map<string, Set<Promise<void>>>()
   private readonly parentLaunches = new Map<string, ParentLaunch>()
   private readonly sessionLaunches = new Map<string, ParentLaunch>()
 
@@ -4225,7 +4233,9 @@ export class AgentCoordinator {
     // Branch disposal starts OpenCode cleanup asynchronously. Hide/close is
     // the lifecycle boundary, so wait for those child processes too instead
     // of letting them outlive the project removal acknowledgement.
-    const memoryBranchCleanups = [...this.branchCleanups]
+    // Only this chat owns its close boundary; slow teardown in another
+    // project must not hold this chat or its project hostage.
+    const memoryBranchCleanups = [...this.branchCleanups.get(chatId) ?? []]
     const commandPreparation = this.commandPreparations.get(chatId)?.promise
     this.abortEngineStart(chatId)
     const reservation = this.startupReservations.get(chatId)
@@ -4283,7 +4293,7 @@ export class AgentCoordinator {
     const codexCleanup = this.codexManager.stopAll()
     for (const chatId of new Set([...this.branchPreparations.keys(), ...this.workingBranches.keys()])) this.disposeMemoryBranches(chatId)
     this.piManager.dispose()
-    await Promise.allSettled([...this.branchCleanups])
+    await Promise.allSettled([...this.branchCleanups.values()].flatMap(cleanups => [...cleanups]))
     await this.opencodeManager.dispose()
     await Promise.allSettled(commandPreparations)
     this.commandPreparations.clear()
