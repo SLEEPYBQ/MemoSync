@@ -542,6 +542,11 @@ test.each(["valid", "invalid"] as const)("the last landing window can leave duri
     const returning = (await command("return", { type: "chat.ensureDraft", localPath: f.project.localPath })).result
     expect(returning.projectId).toBe(projectId)
     expect(returning.chatId).not.toBe(chatId)
+    expect(f.store.getChat(returning.chatId)?.draft).toBe(true)
+    expect(f.store.getMessages(returning.chatId)).toEqual([])
+    expect(await command("new-send", { type: "chat.send", chatId: returning.chatId, ...f.selection, content: "New conversation" }))
+      .toMatchObject({ type: "ack", result: { chatId: returning.chatId } })
+    expect(f.store.getChat(chatId)?.draft).toBe(true)
     resume.resolve()
     if (outcome === "valid") {
       expect(await sending).toMatchObject({ type: "ack", result: { chatId } })
@@ -551,10 +556,6 @@ test.each(["valid", "invalid"] as const)("the last landing window can leave duri
       expect(await sending).toMatchObject({ type: "error", message: expect.stringContaining("upload is missing or has changed") })
       expect(f.store.getChat(chatId)).toBeNull()
     }
-    expect(f.store.getChat(returning.chatId)?.draft).toBe(true)
-    expect(f.store.getMessages(returning.chatId)).toEqual([])
-    expect(await command("new-send", { type: "chat.send", chatId: returning.chatId, ...f.selection, content: "New conversation" }))
-      .toMatchObject({ type: "ack", result: { chatId: returning.chatId } })
     expect(f.store.getMessages(returning.chatId).filter(row => row.kind === "user_prompt")).toMatchObject([{ content: "New conversation" }])
   } finally { resume.resolve(); router.dispose(); await f.cleanup() }
 })
