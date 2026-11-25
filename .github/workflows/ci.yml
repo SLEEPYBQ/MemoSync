@@ -30,7 +30,7 @@ jobs:
       - name: Native filesystem, CLI and terminal compatibility
         run: bun test desktop/platform.test.ts desktop/runtime-packages.test.ts src/server/host-actions.test.ts src/server/workspace-routes.test.ts src/server/workspace-dirs.test.ts src/server/data-directory-lock.test.ts src/server/model-access/executables.windows.test.ts src/server/terminal-manager.windows.test.ts src/server/local-http-servers.windows.test.ts src/server/memory/branch-project-access.test.ts --timeout 30000
       - name: Desktop host policies
-        run: node --test desktop/policy.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
+        run: node --test desktop/policy.test.cjs desktop/window-lifecycle.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
       - name: Release asset validation
         run: bun test desktop/release-assets.test.ts
       - name: Test the locked update provider without building or running installers
