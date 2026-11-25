@@ -67,6 +67,37 @@ test("a saved prompt without a response explains uncertainty, not a failure or a
   }
 })
 
+test("startup records before the first Codex reply do not hide an unanswered prompt after restart", () => {
+  const entries: TranscriptEntry[] = [
+    { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Fixture task" },
+    { _id: "init", createdAt: 2, kind: "system_init", provider: "codex", model: "fixture", tools: [], agents: [], slashCommands: [], mcpServers: [] },
+    { _id: "account", createdAt: 3, kind: "account_info", accountInfo: {} },
+    { _id: "status", createdAt: 4, kind: "status", status: "requesting" },
+    { _id: "usage", createdAt: 5, kind: "context_window_updated", usage: { usedTokens: 10, maxTokens: 100, compactsAutomatically: false } },
+  ]
+  const notice = "No response was recorded for this message."
+  expect(renderTranscript(processTranscriptMessages(entries))).toContain(notice)
+  expect(renderTranscript(processTranscriptMessages(entries), true)).not.toContain(notice)
+  expect(renderTranscript([...processTranscriptMessages(entries), createToolMessage("tool")])).not.toContain(notice)
+})
+
+test("a memory gate accounts for a parked or dismissed turn, not a response after approval", () => {
+  const entries: TranscriptEntry[] = [
+    { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Fixture task" },
+    { _id: "preview", createdAt: 2, kind: "memory_preview", previewId: "gate", memories: [] },
+  ]
+  const responseUnrecorded = (decision?: "go_on" | "dismiss") => {
+    const messages = processTranscriptMessages(decision ? [...entries, {
+      _id: "decision", createdAt: 3, kind: "memory_preview_decision", previewId: "gate", decision,
+    }] : entries)
+    const row = buildResolvedTranscriptRows(messages, { isLoading: false, latestToolIds: {} })[0]
+    return row?.kind === "single" && row.responseUnrecorded
+  }
+  expect(responseUnrecorded()).toBe(false)
+  expect(responseUnrecorded("dismiss")).toBe(false)
+  expect(responseUnrecorded("go_on")).toBe(true)
+})
+
 function countRowWrappers(html: string) {
   return html.split(ROW_WRAPPER_CLASS).length - 1
 }

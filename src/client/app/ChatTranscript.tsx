@@ -136,6 +136,28 @@ function isMemoryChangesReviewMessage(message: HydratedTranscriptMessage): messa
   return message.kind === "memory_proposals" || message.kind === "memory_transfer" || message.kind === "memory_checkup"
 }
 
+function accountsForPrompt(message: HydratedTranscriptMessage): boolean {
+  switch (message.kind) {
+    case "assistant_text": return Boolean(message.text.trim())
+    case "tool":
+    case "result":
+    case "interrupted":
+    case "memory_interrupt":
+      return true
+    // Parked and cancelled gates have their own explanation. A gate that let
+    // the turn proceed does not establish that the provider actually replied.
+    case "memory_preview":
+      return message.decision === undefined || message.decision === "dismiss" || message.decision === "expired"
+    case "memory_proposals":
+    case "memory_transfer":
+    case "memory_checkup":
+      return message.decision === undefined || message.decision === "cancelled" || message.decision === "expired"
+    default:
+      // SDK startup, status, usage and other bookkeeping can precede any reply.
+      return false
+  }
+}
+
 function getTranscriptMessageRenderState(
   message: HydratedTranscriptMessage,
   {
@@ -797,10 +819,7 @@ export function buildResolvedTranscriptRows(
       if (message.id.startsWith("optimistic:")) { pendingPrompt = undefined; continue }
       if (pendingPrompt) unanswered.add(pendingPrompt)
       pendingPrompt = message.id
-    } else if (message.kind !== "memory_expired" && message.kind !== "memory_team_updated"
-      && message.kind !== "memory_trace" && message.kind !== "memory_candidates") {
-      // Responses, stops (including hidden stops), failures and preparation
-      // cards all provide their own account of this turn. Bookkeeping doesn't.
+    } else if (pendingPrompt && accountsForPrompt(message)) {
       pendingPrompt = undefined
     }
   }
