@@ -1625,7 +1625,10 @@ export function createWsRouter({
             if (typeof command.localPath !== "string") throw new Error("Invalid project path")
             await ensureProjectDirectory(command.localPath)
           } else if (typeof command.projectId !== "string") throw new Error("Invalid projectId")
-          const result = await store.ensureDraft(command)
+          // Evaluate inside ensureDraft's serialized lookup. A fresh visit
+          // must not adopt a draft already backing another send.
+          const result = await store.ensureDraft(command, id =>
+            !Array.from(draftHolders.get(id) ?? []).some(holder => typeof holder === "symbol"))
           const holders = draftHolders.get(result.chatId) ?? new Set()
           holders.add(ws)
           draftHolders.set(result.chatId, holders)
