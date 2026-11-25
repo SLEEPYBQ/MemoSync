@@ -10,7 +10,7 @@ import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 interface Fixture {
   setProject(project: string): void
   setMounted(mounted: boolean): void
-  buffer(project: string): { original: string; current: string; revision: string | null; saving: boolean } | null
+  buffer(project: string, path?: string): { original: string; current: string; revision: string | null; saving: boolean } | null
 }
 
 let harness: Awaited<ReturnType<typeof startMountedRaceHarness>>
@@ -170,5 +170,75 @@ describe("FilesPanel draft ownership", () => {
     expect(await buffer(target, "project-a")).toMatchObject({
       original: "base a", current: "unsaved edit", revision: '"a-base"', saving: false,
     })
+  })
+})
+
+async function showFiles(target: Page, mounted: boolean) {
+  await target.evaluate(show => (window as unknown as { __filesEditorFixture: Fixture }).__filesEditorFixture.setMounted(show), mounted)
+  await target.getByPlaceholder("Filter files…").waitFor({ state: mounted ? "attached" : "detached" })
+}
+
+async function renameEntry(target: Page, from: string, to: string) {
+  await target.getByRole("button", { name: from, exact: true }).last().click({ button: "right" })
+  await target.getByRole("menuitem", { name: "Rename" }).click()
+  const input = target.locator("input:not([placeholder])")
+  await input.fill(to)
+  await input.press("Enter")
+}
+
+describe("FilesPanel tree edits", () => {
+  test("a rename acknowledged after Files closes restores the active dirty tab under its new name", async () => {
+    page = await harness.openPage("file-editor")
+    const target = page
+    await target.getByRole("button", { name: "note.txt" }).first().click()
+    await target.locator(".cm-content").fill("keep this edit")
+    await waitForCurrent(target, "project-a", "keep this edit")
+
+    const pending = Promise.withResolvers<Route>()
+    await target.route("**/files/op", route => pending.resolve(route))
+    await renameEntry(target, "note.txt", "renamed.txt")
+    const request = await pending.promise
+    expect(request.request().postDataJSON()).toEqual({ op: "rename", path: "note.txt", toPath: "renamed.txt" })
+    await showFiles(target, false)
+    await request.fulfill({ json: { data: { done: true } } })
+    await target.waitForFunction(() =>
+      (window as unknown as { __filesEditorFixture: Fixture }).__filesEditorFixture.buffer("project-a", "renamed.txt")?.current === "keep this edit")
+    await showFiles(target, true)
+    await target.getByTitle("renamed.txt", { exact: true }).waitFor()
+    expect(await target.locator(".cm-content").innerText()).toBe("keep this edit")
+  })
+
+  test("a missing file's restored draft blocks renaming into it until explicitly discarded", async () => {
+    page = await harness.openPage("file-editor")
+    const target = page
+    await target.getByRole("button", { name: "note.txt" }).first().click()
+    await target.locator(".cm-content").fill("keep missing file's draft")
+    await waitForCurrent(target, "project-a", "keep missing file's draft")
+    await showFiles(target, false)
+    // Another workspace edit removed note.txt while Files was closed.
+    await target.route("**/files?dir=*", route => route.fulfill({
+      json: { data: { dir: "", entries: [{ name: "scratch.txt", kind: "file", size: 6 }] } },
+    }))
+    let moves = 0
+    await target.route("**/files/op", route => {
+      moves++
+      return route.fulfill({ json: { data: { done: true } } })
+    })
+    await showFiles(target, true)
+    await target.getByRole("button", { name: "scratch.txt" }).click()
+    await target.locator(".cm-content").fill("keep source draft too")
+    await renameEntry(target, "scratch.txt", "note.txt")
+    await target.getByText(/Close “note\.txt” in Files before renaming/).waitFor()
+    expect(moves).toBe(0)
+    expect(await target.locator(".cm-content").innerText()).toBe("keep source draft too")
+    const dest = target.getByTitle("note.txt", { exact: true })
+    await dest.click()
+    expect(await target.locator(".cm-content").innerText()).toBe("keep missing file's draft")
+    target.once("dialog", dialog => void dialog.accept())
+    await dest.getByTitle("Unsaved changes — close").click()
+    await renameEntry(target, "scratch.txt", "note.txt")
+    await dest.waitFor()
+    expect(moves).toBe(1)
+    expect(await target.locator(".cm-content").innerText()).toBe("keep source draft too")
   })
 })

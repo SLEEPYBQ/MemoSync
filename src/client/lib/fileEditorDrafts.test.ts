@@ -79,6 +79,42 @@ describe("project file editor drafts", () => {
     expect(fileEditorDrafts("draft-test-clean-save").getSnapshot().buffers.size).toBe(0)
   })
 
+  test("a folder rename cannot claim an unmounted destination with an in-flight descendant", async () => {
+    const store = fileEditorDrafts("draft-rename-folder-destination")
+    const release = store.mount()
+    const saving = { ...buffer("base", "base"), saving: true }
+    open(store, "archive/deep/file.txt", saving)
+    release()
+    const unexpectedMove = () => { throw new Error("A collision must not reach the filesystem") }
+    expect(await store.rename("incoming", "archive", unexpectedMove)).toEqual({ status: "open", path: "archive/deep/file.txt" })
+    expect(await store.rename("archive", "elsewhere", unexpectedMove)).toEqual({ status: "busy" })
+    expect(store.getSnapshot().buffers.get("archive/deep/file.txt")).toEqual(saving)
+    store.clear()
+  })
+
+  test("the project owns a pending rename until it settles, including across a failed request", async () => {
+    const store = fileEditorDrafts("draft-rename-folder-source")
+    const release = store.mount()
+    const draft = buffer("base", "first")
+    open(store, "src/note.txt", draft)
+    const gate = Promise.withResolvers<boolean>()
+    const move = store.rename("src", "dest", () => gate.promise)
+    expect(store.isRenaming("dest/note.txt")).toBe(true)
+    expect(store.isRenaming("src/note.txt")).toBe(true)
+    expect(store.isRenaming("destination/note.txt")).toBe(false)
+    store.patch("src/note.txt", draft.incarnation, { current: "typed during rename" })
+    release()
+    gate.resolve(false)
+    expect(await move).toEqual({ status: "failed" })
+    expect(store.isRenaming("src/note.txt")).toBe(false)
+    expect(store.getSnapshot().active).toBe("src/note.txt")
+    expect(await store.rename("src", "dest", async () => true)).toEqual({ status: "renamed" })
+    expect(store.getSnapshot().tabs).toEqual(["dest/note.txt"])
+    expect(store.getSnapshot().active).toBe("dest/note.txt")
+    expect(store.getSnapshot().buffers.get("dest/note.txt")?.current).toBe("typed during rename")
+    store.clear()
+  })
+
   test("an empty unmount and remount keeps the same project owner", () => {
     const store = fileEditorDrafts("draft-test-strict")
     const first = store.mount()

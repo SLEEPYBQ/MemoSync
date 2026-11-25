@@ -26,7 +26,7 @@ import { cn } from "../../lib/utils"
 import { classifyFilePreview } from "../../lib/filePreview"
 import { detectLineEnding, fileEditorDrafts, type FileBuffer } from "../../lib/fileEditorDrafts"
 import {
-  ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename,
+  ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename, renameDestination,
 } from "../../lib/filesWorkbench"
 import { markdownComponentsWithLinks } from "../messages/shared"
 import { CodeEditor } from "./CodeEditor"
@@ -312,6 +312,10 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
 
   const openFile = useCallback(
     (path: string) => {
+      if (editorStore.isRenaming(path)) {
+        setOpError(t("files:waitForFileOperation"))
+        return
+      }
       workbench?.showEditableFiles()
       setTabs((prev) => (prev.includes(path) ? prev : [...prev, path]))
       setActive(path)
@@ -343,7 +347,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
         return next
       })
     },
-    [workbench, setTabs, setActive, setBuffers],
+    [workbench, editorStore, setTabs, setActive, setBuffers],
   )
 
   // Ensure ancestor dir listings exist for the active file (reveal-in-tree
@@ -412,6 +416,10 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       if (!buffer || buffer.status !== "ready" || buffer.saving) return
       if (buffer.current === buffer.original) return
       if (!buffer.revision) return
+      if (editorStore.isRenaming(path)) {
+        editorStore.patch(path, buffer.incarnation, { saveError: t("files:waitForFileOperation") })
+        return
+      }
       const content = buffer.current
       const incarnation = buffer.incarnation
       editorStore.patch(path, incarnation, { saving: true, saveError: null })
@@ -566,20 +574,12 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       if (treeEdit.mode === "rename") {
         const from = treeEdit.path
         const parent = dirName(from)
-        const to = clean.includes("/") ? clean : parent ? `${parent}/${clean}` : clean
+        const to = renameDestination(from, clean)
         if (to === from) return
-        const done = await runFileOp({ op: "rename", path: from, toPath: to })
-        if (!done) return
-        setTabs((prev) => prev.map((t) => remapPathAfterRename(t, from, to)))
-        setActive((prev) => (prev ? remapPathAfterRename(prev, from, to) : prev))
-        setBuffers((prev) => {
-          const next = new Map<string, FileBuffer>()
-          for (const [p, b] of prev) {
-            const renamed = remapPathAfterRename(p, from, to)
-            next.set(renamed, renamed !== p && b.saving ? { ...b, saving: false } : b)
-          }
-          return next
-        })
+        const result = await editorStore.rename(from, to, () => runFileOp({ op: "rename", path: from, toPath: to }))
+        if (result.status === "open") setOpError(t("files:closeRenameTarget", { path: result.path }))
+        if (result.status === "busy") setOpError(t("files:waitForFileOperation"))
+        if (result.status !== "renamed") return
         setExpanded((prev) => {
           const next = new Set<string>()
           for (const p of prev) next.add(remapPathAfterRename(p, from, to))
@@ -604,7 +604,7 @@ export function FilesPanel({ projectId, workbench, onClose }: FilesPanelProps) {
       if (treeEdit.mode === "create-file") openFile(rel)
       setIndex(null)
     },
-    [treeEdit, runFileOp, loadDir, openFile, setTabs, setActive, setBuffers],
+    [treeEdit, runFileOp, loadDir, openFile, editorStore],
   )
 
   const deleteEntry = useCallback(
