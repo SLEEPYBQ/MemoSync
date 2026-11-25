@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { ChatAttachment, ModelOptions, TranscriptEntry } from "../shared/types"
+import type { ChatAttachment, ModelOptions, QueuedChatMessage, TranscriptEntry } from "../shared/types"
 import {
   AgentCoordinator,
   ClaudeOutboundOriginTracker,
@@ -20,6 +20,8 @@ import {
   toMemoryCandidateReferences,
 } from "./agent"
 import type { HarnessEvent, HarnessTurn } from "./harness-types"
+import { EventStore } from "./event-store"
+import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
 import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { testKeyring, fakeExecutableResolver } from "./model-access/test-fixtures"
@@ -40,8 +42,9 @@ for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
       let bootRuntime: EngineRuntime | undefined
       let piBaseUrl: string | undefined
       const bootError = new Error("test-provider-boot")
+      const store = createFakeStore()
       const coordinator = new AgentCoordinator({
-        store: createFakeStore() as never,
+        store: store as never,
         onStateChange: () => {},
         startClaudeSession: async args => { bootModel = args.model; bootEffort = args.effort; bootRuntime = args.engineRuntime; throw bootError },
         codexManager: { startSession: async (args: { model: string; runtime: EngineRuntime }) => { bootModel = args.model; bootRuntime = args.runtime; throw bootError } } as never,
@@ -58,7 +61,9 @@ for (const engine of ["claude", "codex", "pi", "opencode"] as const) {
           ...(payload !== "top-level" ? { [engine]: { connectionId: payload === "both" ? a.id : b.id } } : {}),
         } as ModelOptions
         // Stop at the provider boot boundary: exercise send + runtime resolution without starting a real agent.
-        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model: "model-b", modelOptions, content: "hello" })).rejects.toThrow(bootError.message)
+        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model: "model-b", modelOptions, content: "hello" })).resolves.toEqual({ chatId: "chat-1" })
+        expect(store.messages.filter(entry => entry.kind === "result")).toEqual([expect.objectContaining({ isError: true, result: bootError.message })])
+        expect(store.turnFailures).toEqual([bootError.message])
         expect(bootModel?.replace(/\[1m\]$/, "")).toBe("model-b")
         if (engine === "claude") expect(bootEffort).toBeUndefined()
         if (engine === "pi") expect(piBaseUrl).toBe("http://127.0.0.1:5678/v1")
@@ -89,8 +94,9 @@ for (const engine of ["claude", "codex"] as const) {
       }).initialize()
       let launch: { model: string; effort?: string; runtime?: EngineRuntime; engineRuntime?: EngineRuntime } | undefined
       const bootError = new Error("synthetic-boot-boundary")
+      const store = createFakeStore()
       const coordinator = new AgentCoordinator({
-        store: createFakeStore() as never, onStateChange() {},
+        store: store as never, onStateChange() {},
         startClaudeSession: async args => { launch = args; throw bootError },
         codexManager: {
           startSession: async (args: NonNullable<typeof launch>) => { launch = args; return "synthetic-session" },
@@ -102,7 +108,9 @@ for (const engine of ["claude", "codex"] as const) {
         await waitFor(() => Boolean(service.accountModels(engine)))
         setModelAccessService(service)
         const model = selection === "alias" ? "resolved-wire-id" : selection === "no-effort" ? "without-effort" : id
-        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model, modelOptions: { [engine]: { reasoningEffort: "high" } }, content: "synthetic message" })).rejects.toThrow(bootError.message)
+        await expect(coordinator.send({ type: "chat.send", chatId: "chat-1", provider: engine, model, modelOptions: { [engine]: { reasoningEffort: "high" } }, content: "synthetic message" })).resolves.toEqual({ chatId: "chat-1" })
+        expect(store.messages.filter(entry => entry.kind === "result")).toEqual([expect.objectContaining({ isError: true, result: bootError.message })])
+        expect(store.turnFailures).toEqual([bootError.message])
         const expectedModel = selection === "no-effort" ? "without-effort" : id
         expect(launch?.model).toBe(expectedModel)
         expect((launch?.engineRuntime ?? launch?.runtime)?.model).toBe(expectedModel)
@@ -1751,7 +1759,7 @@ describe("AgentCoordinator codex integration", () => {
 
     expect(startTurnCalls).toEqual([
       { content: "plan this", planMode: true },
-      { content: "Proceed with the approved plan. Additional guidance: Use the fast path", planMode: false },
+      { content: "Proceed with the approved plan. Additional guidance: Use the fast path\n\n## Plan\n\n- [ ] Ship it", planMode: false },
     ])
     expect(sessionCalls).toEqual([
       { chatId: "chat-1", sessionToken: null },
@@ -2149,7 +2157,7 @@ describe("AgentCoordinator codex integration", () => {
     const appendMessage = store.appendMessage.bind(store)
     store.appendMessage = async (chatId, message) => {
       if (message.kind === "interrupted") throw new Error("fixture: cancellation write failed")
-      await appendMessage(chatId, message)
+      return await appendMessage(chatId, message)
     }
     const queues: Array<AsyncEventQueue<HarnessEvent>> = []
     let interrupts = 0
@@ -3465,6 +3473,437 @@ describe("AgentCoordinator Pi startup cancellation", () => {
   })
 })
 
+describe("durable queued startup", () => {
+  test.each([false, true])("restart never resends a persisted prompt with no provider outcome (queue row removed: %s)", async removed => {
+    const directory = mkdtempSync(join(tmpdir(), "queued-store-recovery-"))
+    const path = join(directory, "events")
+    const store = new EventStore(path)
+    await store.initialize()
+    const project = await store.openProject(directory, "fixture")
+    const chat = await store.createChat(project.id)
+    await store.enqueueMessage(chat.id, { id: "persisted-queue", content: "saved task", attachments: [], provider: "codex" })
+    await store.appendMessage(chat.id, {
+      _id: "persisted-queue", createdAt: Date.now(), kind: "user_prompt", content: "saved task", attachments: [],
+    })
+    if (removed) await store.removeQueuedMessage(chat.id, "persisted-queue")
+    const reloaded = new EventStore(path)
+    await reloaded.initialize()
+    let starts = 0
+    const coordinator = new AgentCoordinator({
+      store: reloaded, onStateChange() {},
+      codexManager: { async startSession() { starts += 1; throw new Error("must not boot") }, async stopAll() {} } as never,
+    })
+    try {
+      await coordinator.drainOrphanedQueues()
+      expect(starts).toBe(0)
+      expect(reloaded.getQueuedMessages(chat.id)).toEqual([])
+      expect(reloaded.getMessages(chat.id)).toEqual([
+        expect.objectContaining({ kind: "user_prompt", _id: "persisted-queue", content: "saved task" }),
+      ])
+    } finally { await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  function harness(store = createFakeStore()) {
+    const directory = mkdtempSync(join(tmpdir(), "queued-recovery-"))
+    let projectAvailable = true
+    store.getProject = () => projectAvailable ? { id: "project-1", localPath: directory } : undefined as never
+    const queues: Array<AsyncEventQueue<HarnessEvent>> = []
+    const starts: unknown[] = []
+    const runtimes: Array<EngineRuntime | undefined> = []
+    const coordinator = new AgentCoordinator({
+      store: store as never,
+      onStateChange: () => {},
+      getMemorySettings: () => ({ enabled: false, learn: false }),
+      generateTitle: async () => ({ title: "fixture", usedFallback: true, failureMessage: null }),
+      codexManager: {
+        async startSession(args: { runtime?: EngineRuntime }) { runtimes.push(args.runtime) },
+        async startTurn(args: unknown) {
+          starts.push(args)
+          const queue = new AsyncEventQueue<HarnessEvent>()
+          queues.push(queue)
+          return { provider: "codex", stream: queue, interrupt: async () => {}, close: () => queue.close() }
+        },
+        async stopAll() { for (const queue of queues) queue.close() },
+        stopSession() {},
+      } as never,
+    })
+    const drain = () => (coordinator as unknown as { maybeStartNextQueuedMessage(chatId: string): Promise<boolean> }).maybeStartNextQueuedMessage("chat-1")
+    return {
+      store, coordinator, starts, runtimes, drain,
+      finish() { queues.at(-1)?.close() },
+      setProjectAvailable(value: boolean) { projectAvailable = value },
+      async cleanup() { for (const queue of queues) queue.close(); await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) },
+    }
+  }
+
+  test("keeps the head and following row intact until the prompt is durable", async () => {
+    const h = harness()
+    const attachment: ChatAttachment = {
+      id: "fixture-file", kind: "file", displayName: "notes.txt", absolutePath: "/tmp/fixture/notes.txt",
+      relativePath: "notes.txt", contentUrl: "/fixture/notes.txt", mimeType: "text/plain", size: 5,
+    }
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first task", attachments: [attachment],
+      provider: "codex", model: "gpt-5.4", modelOptions: { codex: { reasoningEffort: "high", fastMode: true } }, planMode: true })
+    const second = await h.store.enqueueMessage("chat-1", { id: "second", content: "second task", provider: "codex" })
+    try {
+      h.setProjectAvailable(false)
+      await expect(h.drain()).rejects.toThrow("Project not found")
+      expect(h.store.getQueuedMessages()).toEqual([first, second])
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(0)
+      h.setProjectAvailable(true)
+      expect(await h.drain()).toBe(true)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toEqual([
+        expect.objectContaining({ _id: "first", content: "first task", attachments: [attachment] }),
+      ])
+      expect(h.store.getQueuedMessages()).toEqual([second])
+      expect(h.starts).toHaveLength(1)
+      expect(h.store.chat.planMode).toBe(true)
+    } finally { await h.cleanup() }
+  })
+
+  test("deleting a queued connection keeps FIFO until the user selects another row", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "queue-deleted-connection-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const endpoints = [{ protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" }]
+    const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
+    const b = await service.saveConnection({ name: "B", endpoints, models: [{ id: "model-b" }] })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: a.id } })
+    setModelAccessService(service)
+    const h = harness()
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "first task" })
+      const queue = (connectionId: string, model: string, content: string) => h.coordinator.enqueue({
+        type: "message.enqueue", chatId: "chat-1", provider: "codex", modelOptions: { connectionId }, model, content,
+      })
+      const blocked = await queue(b.id, "model-b", "Use B first")
+      const valid = await queue(a.id, "model-a", "Then use A")
+      await service.deleteConnection(b.id)
+      h.finish()
+      await waitFor(() => h.store.turnFailures.includes("connection-missing"))
+      expect(h.starts).toHaveLength(1)
+      expect(h.store.getQueuedMessages().map(row => row.id)).toEqual([blocked.queuedMessageId, valid.queuedMessageId])
+      await expect(h.drain()).rejects.toThrow("connection-missing")
+      expect(h.starts).toHaveLength(1)
+      await h.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: valid.queuedMessageId })
+      expect(h.runtimes.at(-1)).toMatchObject({ connectionId: a.id, model: "model-a" })
+      expect(h.store.messages.filter(m => m.kind === "user_prompt").map(m => m.participantContent)).toEqual(["first task", "Then use A"])
+      expect(h.store.getQueuedMessages()).toEqual([expect.objectContaining({
+        id: blocked.queuedMessageId, content: "Use B first", model: "model-b", modelOptions: { connectionId: b.id },
+      })])
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: blocked.queuedMessageId })
+      expect(h.store.getQueuedMessages()).toEqual([])
+    } finally {
+      await h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("a durable prompt with failed queue cleanup is never replayed, including direct steer", async () => {
+    const h = harness()
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first task", provider: "codex" })
+    const second = await h.store.enqueueMessage("chat-1", { id: "second", content: "second task", provider: "codex" })
+    const remove = h.store.removeQueuedMessage.bind(h.store)
+    let failCleanup = true
+    h.store.removeQueuedMessage = async (chatId, id) => {
+      if (id === first.id && failCleanup) throw new Error("fixture cleanup failure")
+      await remove(chatId, id)
+    }
+    const restarted = harness(h.store)
+    try {
+      expect(await h.drain()).toBe(true)
+      expect(h.starts).toHaveLength(1)
+      expect(h.store.getQueuedMessages()).toEqual([first, second])
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toEqual([
+        expect.objectContaining({ _id: first.id }),
+      ])
+      await restarted.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: first.id })
+      expect(restarted.starts).toHaveLength(0)
+      expect(await restarted.drain()).toBe(false)
+      expect(restarted.starts).toHaveLength(0)
+      failCleanup = false
+      expect(await restarted.drain()).toBe(true)
+      expect(restarted.starts).toHaveLength(1)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt").map(entry => entry._id)).toEqual(["first", "second"])
+    } finally { await h.cleanup(); await restarted.cleanup() }
+  })
+
+  test("Stop before the serialized append records a tombstone and never resurrects the row", async () => {
+    const h = harness()
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first task", provider: "codex" })
+    let release!: () => void
+    let markWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { markWaiting = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (chatId, entry, options) => {
+      if (entry.kind === "user_prompt") { markWaiting(); await gate }
+      return append(chatId, entry, options)
+    }
+    const remove = h.store.removeQueuedMessage.bind(h.store)
+    let allowRemoval = false
+    h.store.removeQueuedMessage = async (chatId, id) => {
+      if (id === first.id && !allowRemoval) throw new Error("fixture cleanup failure")
+      await remove(chatId, id)
+    }
+    const dispatch = h.drain()
+    try {
+      await waiting
+      await expect(h.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: first.id })).resolves.toBeUndefined()
+      expect(h.store.getQueuedMessage("chat-1", first.id)).toEqual(first)
+      expect(h.store.messages.filter(entry => entry.kind === "interrupted")).toHaveLength(0)
+      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
+      const stop = h.coordinator.cancel("chat-1")
+      release()
+      await Promise.all([dispatch, stop])
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(0)
+      expect(h.store.messages.filter(entry => entry.kind === "interrupted")).toEqual([
+        expect.objectContaining({ cancelledQueuedMessageId: first.id }),
+      ])
+      expect(h.starts).toHaveLength(0)
+      expect(h.store.getQueuedMessage("chat-1", first.id)).toEqual(first)
+      const restarted = harness(h.store)
+      try {
+        await restarted.coordinator.drainOrphanedQueues()
+        expect(restarted.starts).toHaveLength(0)
+        allowRemoval = true
+        await restarted.coordinator.drainOrphanedQueues()
+        expect(h.store.getQueuedMessage("chat-1", first.id)).toBeNull()
+        expect(restarted.starts).toHaveLength(0)
+      }
+      finally { await restarted.cleanup() }
+    } finally { release(); await h.cleanup() }
+  })
+
+  test("an explicit dequeue before the serialized append prevents delivery", async () => {
+    const h = harness()
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first task", provider: "codex" })
+    let release!: () => void
+    let markWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { markWaiting = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (chatId, entry, options) => {
+      if (entry.kind === "user_prompt") { markWaiting(); await gate }
+      return append(chatId, entry, options)
+    }
+    const dispatch = h.drain()
+    try {
+      await waiting
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: first.id })
+      release()
+      expect(await dispatch).toBe(false)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(0)
+      expect(h.starts).toHaveLength(0)
+    } finally { release(); await h.cleanup() }
+  })
+
+  test("a dequeued preflight cannot associate a new selection with an older cached runtime", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "queue-runtime-cache-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const endpoints = [{ protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" }]
+    const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
+    const b = await service.saveConnection({ name: "B", endpoints, models: [{ id: "model-b" }] })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: a.id, defaultModel: "model-a" } })
+    setModelAccessService(service)
+    const h = harness()
+    let release!: () => void
+    let markWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { markWaiting = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", model: "model-a", content: "first" })
+      expect(h.runtimes[0]).toMatchObject({ connectionId: a.id, model: "model-a" })
+      h.finish()
+      await waitFor(() => !h.coordinator.getActiveStatuses().has("chat-1"))
+      const row = await h.store.enqueueMessage("chat-1", {
+        id: "aborted-b", content: "aborted", provider: "codex", model: "model-b", modelOptions: { connectionId: b.id },
+      })
+      const append = h.store.appendMessage.bind(h.store)
+      h.store.appendMessage = async (chatId, entry, options) => {
+        if (entry._id === row.id) { markWaiting(); await gate }
+        return append(chatId, entry, options)
+      }
+      const dispatch = h.drain()
+      await waiting
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: row.id })
+      release()
+      expect(await dispatch).toBe(false)
+      await h.store.enqueueMessage("chat-1", {
+        id: "valid-b", content: "second", provider: "codex", model: "model-b", modelOptions: { connectionId: b.id },
+      })
+      expect(await h.drain()).toBe(true)
+      expect(h.runtimes.at(-1)).toMatchObject({ connectionId: b.id, model: "model-b" })
+    } finally {
+      release?.()
+      await h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  test("enqueue-and-steer leaves a row claimed by auto-dispatch in place", async () => {
+    const h = harness()
+    let release!: () => void
+    let markWaiting!: () => void
+    const waiting = new Promise<void>(resolve => { markWaiting = resolve })
+    const gate = new Promise<void>(resolve => { release = resolve })
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (chatId, entry, options) => {
+      if (entry.kind === "user_prompt") { markWaiting(); await gate }
+      return append(chatId, entry, options)
+    }
+    let dispatch: Promise<boolean> | undefined
+    try {
+      const result = await enqueueAndMaybeSteer({
+        type: "message.enqueue", chatId: "chat-1", content: "claimed task", provider: "codex", steer: true,
+      }, {
+        enqueue: async command => {
+          const queued = await h.coordinator.enqueue(command)
+          dispatch = h.drain()
+          await waiting
+          return queued
+        },
+        steer: command => h.coordinator.steer(command),
+        isQueued: (chatId, id) => Boolean(h.store.getQueuedMessage(chatId, id)),
+        isRunning: () => true,
+        remove: (chatId, id) => h.store.removeQueuedMessage(chatId, id),
+      })
+      expect(h.store.getQueuedMessage("chat-1", result.queuedMessageId)).toMatchObject({ content: "claimed task" })
+      expect(h.store.messages.filter(entry => entry.kind === "interrupted")).toHaveLength(0)
+      expect(h.coordinator.getActiveStatuses().get("chat-1")).toBe("starting")
+      release()
+      expect(await dispatch).toBe(true)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt")).toEqual([
+        expect.objectContaining({ _id: result.queuedMessageId, content: "claimed task" }),
+      ])
+      expect(h.starts).toHaveLength(1)
+    } finally { release(); await dispatch?.catch(() => false); await h.cleanup() }
+  })
+
+  test("reacquires the dispatch lease before scanning after a removed head", async () => {
+    const h = harness()
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first", provider: "codex" })
+    await h.store.enqueueMessage("chat-1", { id: "second", content: "second", provider: "codex" })
+    let releasePrompt!: () => void
+    let promptWaiting!: () => void
+    const promptEntered = new Promise<void>(resolve => { promptWaiting = resolve })
+    const promptGate = new Promise<void>(resolve => { releasePrompt = resolve })
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (chatId, entry, options) => {
+      if (entry.kind === "user_prompt" && entry._id === first.id) { promptWaiting(); await promptGate }
+      return append(chatId, entry, options)
+    }
+    const internals = h.coordinator as unknown as {
+      queueDispatches: Set<string>
+      nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null>
+    }
+    const scan = internals.nextDispatchableQueuedMessage.bind(h.coordinator)
+    let scans = 0
+    let releaseScan!: () => void
+    let scanWaiting!: () => void
+    const scanEntered = new Promise<void>(resolve => { scanWaiting = resolve })
+    const scanGate = new Promise<void>(resolve => { releaseScan = resolve })
+    internals.nextDispatchableQueuedMessage = async chatId => {
+      if (++scans === 2) { scanWaiting(); await scanGate }
+      return scan(chatId)
+    }
+    const dispatch = h.drain()
+    try {
+      await promptEntered
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: first.id })
+      releasePrompt()
+      await scanEntered
+      expect(internals.queueDispatches.has("chat-1")).toBe(true)
+      expect(await h.drain()).toBe(false)
+      releaseScan()
+      expect(await dispatch).toBe(true)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt").map(entry => entry._id)).toEqual(["second"])
+      expect(h.starts).toHaveLength(1)
+    } finally { releasePrompt(); releaseScan(); await dispatch.catch(() => false); await h.cleanup() }
+  })
+
+  test("does not take or release a competing dispatcher's lease after a removed head", async () => {
+    const h = harness()
+    const first = await h.store.enqueueMessage("chat-1", { id: "first", content: "first", provider: "codex" })
+    await h.store.enqueueMessage("chat-1", { id: "second", content: "second", provider: "codex" })
+    let releasePrompt!: () => void
+    let promptWaiting!: () => void
+    const promptEntered = new Promise<void>(resolve => { promptWaiting = resolve })
+    const promptGate = new Promise<void>(resolve => { releasePrompt = resolve })
+    const append = h.store.appendMessage.bind(h.store)
+    h.store.appendMessage = async (chatId, entry, options) => {
+      if (entry.kind === "user_prompt" && entry._id === first.id) { promptWaiting(); await promptGate }
+      return append(chatId, entry, options)
+    }
+    const internals = h.coordinator as unknown as {
+      queueDispatches: Set<string>
+      nextDispatchableQueuedMessage(chatId: string): Promise<QueuedChatMessage | null>
+      dequeueAndStartQueuedMessage(chatId: string, row: QueuedChatMessage, options?: { releaseDispatch?: () => void }): Promise<"started" | "cancelled" | "missing">
+    }
+    const scan = internals.nextDispatchableQueuedMessage.bind(h.coordinator)
+    const start = internals.dequeueAndStartQueuedMessage.bind(h.coordinator)
+    let scans = 0
+    let releaseScan!: () => void
+    let scanWaiting!: () => void
+    const scanEntered = new Promise<void>(resolve => { scanWaiting = resolve })
+    const scanGate = new Promise<void>(resolve => { releaseScan = resolve })
+    internals.nextDispatchableQueuedMessage = async chatId => {
+      if (++scans === 2) { scanWaiting(); await scanGate }
+      return scan(chatId)
+    }
+    let competing: Promise<boolean> | undefined
+    internals.dequeueAndStartQueuedMessage = async (chatId, row, options) => {
+      const outcome = await start(chatId, row, options)
+      if (outcome === "missing") {
+        competing = h.drain()
+        await scanEntered
+      }
+      return outcome
+    }
+    const dispatch = h.drain()
+    try {
+      await promptEntered
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: first.id })
+      releasePrompt()
+      expect(await dispatch).toBe(false)
+      expect(internals.queueDispatches.has("chat-1")).toBe(true)
+      expect(h.starts).toHaveLength(0)
+      releaseScan()
+      expect(await competing).toBe(true)
+      expect(h.store.messages.filter(entry => entry.kind === "user_prompt").map(entry => entry._id)).toEqual(["second"])
+      expect(h.starts).toHaveLength(1)
+    } finally {
+      releasePrompt(); releaseScan()
+      await dispatch.catch(() => false); await competing?.catch(() => false); await h.cleanup()
+    }
+  })
+})
+
+test("native command startup keeps its rejecting caller contract after prompt persistence", async () => {
+  const store = createFakeStore()
+  const coordinator = new AgentCoordinator({
+    store: store as never, onStateChange() {},
+    getMemorySettings: () => ({ enabled: false, learn: false }),
+    codexManager: { async startSession() { throw new Error("native fixture boot failed") }, async stopAll() {} } as never,
+  })
+  try {
+    await expect(coordinator.send(
+      { type: "chat.send", chatId: "chat-1", provider: "codex", content: "native command" },
+      undefined, true,
+    )).rejects.toThrow("native fixture boot failed")
+    expect(store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(1)
+    expect(store.messages.filter(entry => entry.kind === "result")).toHaveLength(0)
+    expect(store.turnFailures).toEqual([])
+  } finally { await coordinator.shutdownRuntime() }
+})
+
 function createFakeStore() {
   const chat = {
     id: "chat-1",
@@ -3482,6 +3921,7 @@ function createFakeStore() {
   return {
     chat,
     turnFinishedCount: 0,
+    turnFailures: [] as string[],
     messages: [] as TranscriptEntry[],
     queuedMessages: [] as any[],
     requireChat(chatId: string) {
@@ -3508,15 +3948,17 @@ function createFakeStore() {
     async renameChat(_chatId: string, title: string) {
       chat.title = title
     },
-    async appendMessage(_chatId: string, entry: TranscriptEntry) {
+    async appendMessage(_chatId: string, entry: TranscriptEntry, options?: { shouldAppend?: () => boolean }) {
+      if (options?.shouldAppend && !options.shouldAppend()) return false
       this.messages.push(entry)
+      return true
     },
     async recordTurnStarted() {},
     async recordTurnFinished() {
       this.turnFinishedCount += 1
     },
-    async recordTurnFailed() {
-      throw new Error("Did not expect turn failure")
+    async recordTurnFailed(_chatId: string, message: string) {
+      this.turnFailures.push(message)
     },
     async recordTurnCancelled() {},
     async setSessionToken(_chatId: string, sessionToken: string | null) {

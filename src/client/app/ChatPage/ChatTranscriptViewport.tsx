@@ -6,6 +6,7 @@ import { ArrowDown, Upload } from "lucide-react"
 import { AnimatedShinyText } from "../../components/ui/animated-shiny-text"
 import { DrainingIndicator } from "../../components/messages/DrainingIndicator"
 import { QueuedUserMessage } from "../../components/messages/QueuedUserMessage"
+import { useModelAccessStore } from "../../model-access/modelAccess"
 import { OpenLocalLinkProvider, type OpenLocalLinkTarget, useEnsureMemoriesLoaded } from "../../components/messages/shared"
 import { ToolMemoryUsesProvider, TranscriptChatContextProvider, ViolatedCitationsMapProvider } from "../../components/messages/render-context"
 import { buildToolMemoryUses, toolMemoryUsesSignature, type ToolMemoryUses } from "../../lib/toolMemoryUses"
@@ -119,6 +120,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
   headerOffsetPx = CHAT_NAVBAR_OFFSET_PX,
 }: ChatTranscriptViewportProps) {
   useI18n()
+  const connections = useModelAccessStore(s => s.snapshot?.connections)
   const previousRowCountRef = useRef(0)
   const localLinkMenuTriggerRef = useRef<HTMLSpanElement | null>(null)
   const [toolGroupExpanded, setToolGroupExpanded] = useState<Record<string, boolean>>({})
@@ -356,6 +358,7 @@ export const ChatTranscriptViewport = memo(function ChatTranscriptViewport({
         <QueuedUserMessage
           key={message.id}
           message={message}
+          connections={connections}
           onRemove={() => void onRemoveQueuedMessage(message.id)}
           onSendNow={() => void onSteerQueuedMessage(message.id)}
         />

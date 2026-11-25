@@ -294,6 +294,7 @@ interface ResumeInterruptedTurn {
   memoryId: string
   correction: string
   enforce?: boolean
+  expectedAccess?: { connectionId?: string }
   /** Server-owned interruption evidence; never trusted from the resume command. */
   quote?: string
   /** The recovery card's confirmed working set for this continuation only. */
@@ -322,6 +323,7 @@ interface StartTurnArgs {
   approvedMemoryViewRevision?: string
   connectionId?: string
   engineRuntime?: EngineRuntime
+  runtimeSelection?: string
   memoryState?: TurnMemoryState
   memoryPreviewSettings?: Readonly<Required<MemoryPreviewSettings>>
   chatId: string
@@ -336,6 +338,7 @@ interface StartTurnArgs {
   serviceTier?: "fast"
   planMode: boolean
   appendUserPrompt: boolean
+  codexPlanThread?: "continue" | "clear"
   steered?: boolean
   /** Resume of an interrupted turn (2026-08-19 C2): skip the pre-turn gates
    * and the working-memory confirmation — the recovery card confirmed the set. */
@@ -355,6 +358,8 @@ interface StartTurnArgs {
   policyScope?: PolicyCallScope
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
+  queuedMessageId?: string
+  nativeCommand?: boolean
   /**
    * Called only after Claude accepts the prompt, with the exact focused ids
    * used by the delivery receipt. Interrupt recovery uses this server-owned
@@ -366,6 +371,7 @@ interface StartTurnArgs {
 
 interface StartupReservation {
   cancelled: boolean
+  queuedMessageId?: string
   cancellation?: Promise<void>
   controller?: AbortController
   promptWrite?: Promise<unknown>
@@ -377,6 +383,7 @@ interface StartupReservation {
 
 interface ActiveTurn {
   engineRuntime?: EngineRuntime
+  connectionId?: string
   parentLaunch?: ParentLaunch
   analysisPolicyKey?: string
   projectId?: string
@@ -394,7 +401,7 @@ interface ActiveTurn {
   planMode: boolean
   status: ChatActivityStatus
   pendingTool: PendingToolRequest | null
-  postToolFollowUp: { content: string; planMode: boolean } | null
+  postToolFollowUp: { content: string; planMode: boolean; clearContext: boolean; memoryUserText: string } | null
   hasFinalResult: boolean
   cancelRequested: boolean
   startupReservation?: StartupReservation
@@ -2876,10 +2883,10 @@ export class AgentCoordinator {
 
   private readonly queueDispatches = new Set<string>()
 
-  private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
+  private isConsumedQueueRow(chatId: string, queuedMessageId: string): boolean {
     return this.store.getMessages(chatId).some((entry) => (
-      entry.kind === "interrupted"
-      && entry.cancelledQueuedMessageId === queuedMessageId
+      (entry.kind === "interrupted" && entry.cancelledQueuedMessageId === queuedMessageId)
+      || (entry.kind === "user_prompt" && entry._id === queuedMessageId)
     ))
   }
 
@@ -2893,7 +2900,7 @@ export class AgentCoordinator {
     while (true) {
       const head = this.store.getQueuedMessages(chatId).find((entry) => !entry.rejection)
       if (!head) return null
-      if (!this.isCancelledQueueRow(chatId, head.id)) {
+      if (!this.isConsumedQueueRow(chatId, head.id)) {
         if (!head.content.trimStart().startsWith("/")) return head
         await this.store.rejectQueuedNativeCommand(chatId, head.id)
         this.emitStateChange(chatId)
@@ -3661,6 +3668,13 @@ export class AgentCoordinator {
   private async settleCommandPreparation(args: StartTurnArgs) {
     const prepared = this.commandPreparations.get(args.chatId)
     if (!prepared) return
+    if (args.codexPlanThread && prepared.selection.provider === "codex" && prepared.status === "ready") {
+      // This thread has already run the plan. The composer's prewarm may
+      // describe the requested model/plan mode rather than the live launch.
+      // Let the manager compare the actual runtime, tools, policy and thread.
+      this.commandPreparations.delete(args.chatId)
+      return
+    }
     const desired = this.getProviderSettings(prepared.selection.provider, prepared.selection)
     const same = prepared.selection.provider === args.provider && desired.model === args.model && desired.connectionId === args.connectionId
       && desired.effort === args.effort && desired.serviceTier === args.serviceTier && desired.planMode === args.planMode
@@ -4036,6 +4050,7 @@ export class AgentCoordinator {
   private reserveStartup(args: StartTurnArgs, status: ChatActivityStatus = "starting") {
     this.cancelIdleClose(args.chatId)
     const reservation = args.startupReservation ?? { cancelled: false }
+    reservation.queuedMessageId = args.queuedMessageId
     const previous = this.startupReservations.get(args.chatId)
     if (previous && previous !== reservation) previous.superseded = true
     reservation.startupSettled = false
@@ -4108,7 +4123,10 @@ export class AgentCoordinator {
     reservation.cancellation = (async () => {
       try {
         await promptWrite?.catch(() => {})
-        await this.store.appendMessage(chatId, timestamped({ kind: "interrupted", hidden }))
+        await this.store.appendMessage(chatId, timestamped({
+          kind: "interrupted", hidden,
+          ...(reservation.queuedMessageId ? { cancelledQueuedMessageId: reservation.queuedMessageId } : {}),
+        }))
         await this.store.recordTurnCancelled(chatId)
         this.emitStateChange(chatId, { immediate: true })
       } finally {
@@ -4354,7 +4372,7 @@ export class AgentCoordinator {
     },
   ): Promise<"started" | "cancelled" | "missing"> {
     if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
-    if (this.isCancelledQueueRow(chatId, queuedMessage.id)) {
+    if (this.isConsumedQueueRow(chatId, queuedMessage.id)) {
       try {
         await this.store.removeQueuedMessage(chatId, queuedMessage.id)
       } catch (error) {
@@ -4368,16 +4386,6 @@ export class AgentCoordinator {
     }
     if (queuedMessage.rejection || queuedMessage.content.trimStart().startsWith('/')) {
       throw new Error('Queued native commands must be resubmitted through the current command catalog')
-    }
-    try {
-      await this.store.removeQueuedMessage(chatId, queuedMessage.id)
-    } catch (error) {
-      // An external queue action can remove the observed head between the
-      // scheduler's read and this durable dequeue. Re-read and let the caller
-      // continue with the new head instead of treating that race as a failed
-      // user send.
-      if (!this.store.getQueuedMessage(chatId, queuedMessage.id)) return "missing"
-      throw error
     }
     const chat = this.store.requireChat(chatId)
     const provider = this.resolveProvider(queuedMessage, chat.provider)
@@ -4399,8 +4407,10 @@ export class AgentCoordinator {
       planMode: settings.planMode,
       appendUserPrompt: true,
       steered: options?.steered,
+      queuedMessageId: queuedMessage.id,
+      turnId: queuedMessage.id,
     })
-    return "started"
+    return this.isConsumedQueueRow(chatId, queuedMessage.id) ? "started" : "missing"
   }
 
   /**
@@ -4447,6 +4457,12 @@ export class AgentCoordinator {
         if (!nextQueuedMessage || this.isEngineStartBlocked(chatId)) return false
         const outcome = await this.dequeueAndStartQueuedMessage(chatId, nextQueuedMessage, { releaseDispatch })
         if (outcome === "started") return true
+        if (this.activeTurns.has(chatId) || this.startingChats.has(chatId) || this.hasPendingPreviewActivity(chatId)) return false
+        if (!ownsDispatch) {
+          if (this.queueDispatches.has(chatId) || this.commandRegistry.isRunning(chatId)) return false
+          this.queueDispatches.add(chatId)
+          ownsDispatch = true
+        }
       }
       return false
     } finally {
@@ -4499,6 +4515,7 @@ export class AgentCoordinator {
     // starts from the index; interrupt recovery retains its existing context.
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
     let reservationHandedOff = false
+    let newlyAppendedPrompt = false
     try {
     await this.settleCommandPreparation(args)
     if (startupCancelled()) return
@@ -4507,12 +4524,14 @@ export class AgentCoordinator {
     // not invalidate the very first turn when its native process starts.
     this.hostActions?.revokeChat(args.chatId, "A new turn superseded this admission")
     if (!(args.provider === "pi" && this.hasCustomPiConnection)) {
-      const selection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
-      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === selection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
+      args.runtimeSelection = JSON.stringify([args.provider, args.model, args.connectionId, getModelAccessService()?.revision])
+      if (!args.engineRuntime && this.runtimeSelections.get(args.chatId) === args.runtimeSelection) args.engineRuntime = this.sessionRuntimes.get(args.chatId)
       args.engineRuntime ??= await resolveEngineRuntime({ engine: args.provider, model: args.model, connectionId: args.connectionId })
-      this.runtimeSelections.set(args.chatId, selection)
     }
     if (startupCancelled()) return
+    if (args.resume?.expectedAccess && (args.engineRuntime?.connectionId ?? args.connectionId) !== args.resume.expectedAccess.connectionId) {
+      throw new Error("Model connection changed since this turn was interrupted")
+    }
     // Freeze execution and host admission together, before native/memory startup awaits.
     if (this.policyChanges.has(args.chatId)) throw new Error("Execution policy change in progress")
     const selectedPolicy = this.executionPolicyFor(args.chatId, args.provider)
@@ -4589,12 +4608,29 @@ export class AgentCoordinator {
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
-      const promptWrite = this.store.appendMessage(args.chatId, userPromptEntry)
+      const eligible = () => !reservation.cancelled && !reservation.superseded
+        && Boolean(args.queuedMessageId && this.store.getQueuedMessage(args.chatId, args.queuedMessageId))
+        && !this.isConsumedQueueRow(args.chatId, args.queuedMessageId!)
+      if (args.queuedMessageId && !eligible()) return
+      const promptWrite = this.store.appendMessage(
+        args.chatId, userPromptEntry, args.queuedMessageId ? { shouldAppend: eligible } : undefined,
+      )
       reservation.promptWrite = promptWrite
       try {
-        await promptWrite
+        if (await promptWrite === false) return
+        newlyAppendedPrompt = true
       } finally {
         if (reservation.promptWrite === promptWrite) reservation.promptWrite = undefined
+      }
+      if (args.queuedMessageId) {
+        try {
+          await this.store.removeQueuedMessage(args.chatId, args.queuedMessageId)
+          this.emitStateChange(args.chatId)
+        } catch (error) {
+          if (this.store.getQueuedMessage(args.chatId, args.queuedMessageId)) {
+            this.reportBackgroundError?.(`[queue-dispatch] chat ${args.chatId}: consumed queue row could not be removed: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
       }
       if (startupCancelled()) return
       logSendToStartingProfile(args.profile, "start_turn.user_prompt_appended", {
@@ -4672,6 +4708,32 @@ export class AgentCoordinator {
     }
 
     await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
+    } catch (error) {
+      if (!newlyAppendedPrompt || args.resume || args.nativeCommand) throw error
+      if (!this.startupReservationIsCurrent(args.chatId, reservation)) throw error
+      const active = this.activeTurns.get(args.chatId)
+      if (active?.startupReservation === reservation && active.hasFinalResult) return
+      const hasTerminal = () => {
+        const messages = this.store.getMessages(args.chatId)
+        const index = messages.findIndex((entry) => entry.kind === "user_prompt" && entry._id === logicalTurnId)
+        return index >= 0 && messages.slice(index + 1).some((entry) => entry.kind === "result" || entry.kind === "interrupted")
+      }
+      if (hasTerminal()) return
+      if (active?.startupReservation === reservation) {
+        active.hasFinalResult = true
+        this.activeTurns.delete(args.chatId)
+        this.clearStreamingAssistantText(args.chatId, active)
+        active.turn.close()
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      const appended = await this.store.appendMessage(
+        args.chatId,
+        timestamped({ kind: "result", subtype: "error", isError: true, durationMs: 0, result: message }),
+        { shouldAppend: () => this.startupReservationIsCurrent(args.chatId, reservation) && !hasTerminal() },
+      )
+      if (appended === false) return
+      await this.store.recordTurnFailed(args.chatId, message)
+      this.emitStateChange(args.chatId)
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
       // either way those guard the chat, so releasing the reservation is safe.
@@ -6710,7 +6772,11 @@ export class AgentCoordinator {
     let turn: HarnessTurn
     try {
     this.disposeMemoryBranches(args.chatId)
-    if (args.engineRuntime) this.sessionRuntimes.set(args.chatId, args.engineRuntime)
+    if (args.engineRuntime) {
+      this.sessionRuntimes.set(args.chatId, args.engineRuntime)
+      if (args.runtimeSelection) this.runtimeSelections.set(args.chatId, args.runtimeSelection)
+      else this.runtimeSelections.delete(args.chatId)
+    }
 
     // The project dir can vanish under a recorded project (a container rebuild
     // wipes non-volume paths); spawning an engine with a missing cwd fails as
@@ -7073,8 +7139,10 @@ export class AgentCoordinator {
         cwd: project.localPath,
         model: args.model,
         serviceTier: args.serviceTier,
-        sessionToken: chat.sessionToken,
-        pendingForkSessionToken: chat.pendingForkSessionToken,
+        sessionToken: args.codexPlanThread === "clear" ? null : chat.sessionToken,
+        pendingForkSessionToken: args.codexPlanThread === "clear" ? null : chat.pendingForkSessionToken,
+        forceNewThread: args.codexPlanThread === "clear",
+        allowResumeFallback: args.codexPlanThread === "continue" ? false : undefined,
         dynamicTools: codexAllSpecs.length ? toCodexDynamicTools(codexAllSpecs) : undefined,
         executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
       }
@@ -7147,6 +7215,7 @@ export class AgentCoordinator {
     const parentLaunch = this.parentLaunches.get(args.chatId)
     const active: ActiveTurn = {
       engineRuntime: args.engineRuntime ? structuredClone(args.engineRuntime) : undefined,
+      connectionId: args.connectionId,
       parentLaunch: parentLaunch ? snapshotParentLaunch(parentLaunch) : undefined,
       analysisPolicyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider),
       projectId: chat.projectId,
@@ -7917,6 +7986,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       hostClientId,
       profile,
+      nativeCommand: Boolean(nativeCommandValidated),
     })
 
     logSendToStartingProfile(profile, "chat_send.ready_for_ack", {
@@ -7949,6 +8019,13 @@ export class AgentCoordinator {
       throw new Error('Queued native commands must be resubmitted through the current command catalog')
     }
 
+    if (this.startupReservations.get(command.chatId)?.queuedMessageId === queuedMessage.id) {
+      return
+    }
+    if (this.isConsumedQueueRow(command.chatId, queuedMessage.id)) {
+      await this.dequeueAndStartQueuedMessage(command.chatId, queuedMessage, { steered: true })
+      return
+    }
     if (this.queueDispatches.has(command.chatId)) throw new Error("Queued messages are being recovered")
 
     logClaudeSteer("steer_requested", {
@@ -7975,11 +8052,6 @@ export class AgentCoordinator {
       stillActive: this.activeTurns.has(command.chatId),
     })
 
-    // Throw BEFORE touching the queue: dequeueAndStartQueuedMessage removes the
-    // message first and only then starts the turn, so if the chat were still
-    // busy (e.g. the previewing-memory reservation cancel can't yet abort), the
-    // startTurnForChat guard would throw AFTER the message was already deleted —
-    // losing it entirely (BUG AGENT-1). Guarding here keeps it in the queue.
     if (isBusy() || this.queueDispatches.has(command.chatId)) {
       throw new Error("Chat is still running")
     }
@@ -8423,7 +8495,10 @@ export class AgentCoordinator {
             provider: active.provider,
             content: active.postToolFollowUp.content,
             attachments: [],
-            model: active.model,
+            model: active.engineRuntime?.model ?? active.model,
+            connectionId: active.engineRuntime?.connectionId ?? active.connectionId,
+            memoryUserText: active.postToolFollowUp.memoryUserText,
+            codexPlanThread: active.postToolFollowUp.clearContext ? "clear" : "continue",
             effort: active.effort,
             serviceTier: active.serviceTier,
             planMode: active.postToolFollowUp.planMode,
@@ -8508,13 +8583,23 @@ export class AgentCoordinator {
       if (id && !citedOrder.includes(id)) citedOrder.push(id)
     }
     const messages = this.store.getMessages(chatId)
-    let prompt = ""
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const entry = messages[i] as { kind: string; content?: string }
-      if (entry.kind === "user_prompt") {
-        prompt = entry.content ?? ""
-        break
-      }
+    const promptEntry = messages.find(
+      (entry): entry is Extract<TranscriptEntry, { kind: "user_prompt" }> =>
+        entry.kind === "user_prompt" && entry._id === active.turnId,
+    )
+    const prompt = promptEntry?.participantContent
+      ?? (promptEntry?.content?.startsWith(STEERED_MESSAGE_PREFIX) ? active.userText ?? promptEntry.content : promptEntry?.content)
+      ?? active.userText ?? ""
+    const attachments = promptEntry?.attachments?.map(({ id, kind, displayName, absolutePath, relativePath, contentUrl, mimeType, size }) => ({
+      id, kind, displayName, absolutePath, relativePath, contentUrl, mimeType, size,
+    }))
+    const turnSettings = {
+      provider: active.provider,
+      model: active.engineRuntime?.model ?? active.model,
+      connectionId: active.engineRuntime?.connectionId ?? active.connectionId,
+      effort: active.effort,
+      serviceTier: active.serviceTier,
+      planMode: active.planMode,
     }
     // Cited-first in first-mention order (the user tends to click the last
     // chip they saw; earlier citations may also be wrong — C2 lower layer).
@@ -8541,7 +8626,7 @@ export class AgentCoordinator {
     this.memory?.store.recordTraceLabel(memoryId, "violated", { actor: "user", sessionId: chatId, turn: turnNumber })
     await this.store.appendMessage(
       chatId,
-      timestamped({ kind: "memory_interrupt", interruptId, memoryId, quote, prompt, workingSet, turn: turnNumber }),
+      timestamped({ kind: "memory_interrupt", interruptId, memoryId, quote, prompt, workingSet, turn: turnNumber, turnSettings, attachments }),
     )
     this.emitStateChange(chatId, { immediate: true })
   }
@@ -8596,21 +8681,24 @@ export class AgentCoordinator {
       throw new Error("The enforced memory is no longer in the current chat's effective Working Memory")
     }
 
-    const provider = (chat.provider ?? "claude") as AgentProvider
+    const provider = entry.turnSettings?.provider ?? (chat.provider ?? "claude") as AgentProvider
     const lastModel = messages.filter(message => message.kind === "system_init").at(-1)?.model
-    const settings = this.getProviderSettings(provider, { model: lastModel })
+    const settings = entry.turnSettings ?? {
+      ...this.getProviderSettings(provider, { model: lastModel }),
+      planMode: chat.planMode ?? true,
+    }
     let deliveryAccepted = false
     let deliveredSelectedIds: string[] = []
     await this.startTurnForChat({
       chatId,
       provider,
       content: entry.prompt,
-      attachments: [],
+      attachments: entry.attachments ?? [],
       connectionId: settings.connectionId,
       model: settings.model,
       effort: settings.effort,
       serviceTier: settings.serviceTier,
-      planMode: false,
+      planMode: settings.planMode,
       appendUserPrompt: true,
       // Stable across retries: if provider boot fails after the prompt entry is
       // durable, startTurn reuses that entry and its turn number.
@@ -8625,6 +8713,7 @@ export class AgentCoordinator {
         memoryId: entry.memoryId,
         correction,
         selectedIds,
+        ...(entry.turnSettings ? { expectedAccess: { connectionId: entry.turnSettings.connectionId } } : {}),
         ...(enforce ? { enforce: true, quote: entry.quote } : {}),
       },
     })
@@ -8962,19 +9051,20 @@ export class AgentCoordinator {
         }
 
         if (active.provider === "codex") {
-          active.postToolFollowUp = result.confirmed
-            ? {
-                content: result.message
-                  ? `Proceed with the approved plan. Additional guidance: ${result.message}`
-                  : "Proceed with the approved plan.",
-                planMode: false,
-              }
-            : {
-                content: result.message
-                  ? `Revise the plan using this feedback: ${result.message}`
-                  : "Revise the plan using this feedback.",
-                planMode: true,
-              }
+          const feedback = typeof result.message === "string" ? result.message.trim() : ""
+          const clearContext = Boolean(result.confirmed && result.clearContext)
+          const instruction = result.confirmed
+            ? `Proceed with the approved plan.${feedback ? ` Additional guidance: ${feedback}` : ""}`
+            : `Revise the plan using this feedback${feedback ? `: ${feedback}` : "."}`
+          active.postToolFollowUp = {
+            // Only the explicit clear path starts without the native plan history.
+            content: clearContext ? `${instruction}\n\n${pending.tool.input.plan}` : instruction,
+            planMode: !result.confirmed,
+            clearContext,
+            // Capture and audit see the user's words across revisions, not the synthetic
+            // continuation. Interrupt recovery still owns the original prompt/attachment pair.
+            memoryUserText: [active.userText, feedback].filter(Boolean).join("\n\n"),
+          }
         }
       }
 

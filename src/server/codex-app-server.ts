@@ -166,13 +166,15 @@ export interface StartCodexSessionArgs {
   serviceTier?: ServiceTier
   sessionToken: string | null
   pendingForkSessionToken?: string | null
+  /** An explicit Clear & Approve must not reuse the live thread even with the same launch. */
+  forceNewThread?: boolean
   /** Client-declared dynamic tools (e.g. memory tools) to register on the thread. */
   dynamicTools?: DynamicToolFunctionSpec[]
   /** Memory branches inspect the shared workspace without changing it. */
   sandbox?: "read-only" | "workspace-write" | "danger-full-access"
   executionPolicy?: Extract<import("../shared/harness-capabilities").NativeExecutionPolicy, { engine: "codex" }>
   subprocessEnv?: Record<string, string | undefined>
-  /** Memory retries must fail if their child disappeared instead of losing its analysis. */
+  /** A memory retry or plan continuation must not lose its history if resume fails. */
   allowResumeFallback?: boolean
   /** Branch-only: disable configured MCP servers, native subagents, and web search. */
   disableExternalTools?: boolean
@@ -913,12 +915,12 @@ export class CodexAppServerManager {
     // includes credential/profile identity without exposing it in diagnostics.
     const launchKey = createHash('sha256').update(JSON.stringify({
       cwd: args.cwd, runtime: args.runtime, env: args.subprocessEnv,
-      model: args.model, serviceTier: args.serviceTier, dynamicTools: args.dynamicTools ?? [],
+      model: resolveCodexModel(args.model, args.subprocessEnv), serviceTier: args.serviceTier, dynamicTools: args.dynamicTools ?? [],
       sandbox: args.sandbox, policy: args.executionPolicy,
       externalToolsDisabled: Boolean(args.disableExternalTools), toolsDisabled: Boolean(args.disableTools),
     })).digest('hex')
     const existing = this.sessions.get(args.chatId)
-    if (existing && !existing.closed && !args.pendingForkSessionToken
+    if (existing && !existing.closed && !args.forceNewThread && !args.pendingForkSessionToken
       && (!args.sessionToken || args.sessionToken === existing.sessionToken)
       && existing.launchKey === launchKey) {
       return existing.sessionToken

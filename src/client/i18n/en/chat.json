@@ -4,6 +4,8 @@
   "unlock": "Unlock",
   "checkingSession": "Checking session…",
   "waitingForYourResponse": "Waiting for your response.",
+  "responseUnrecorded": "No response was recorded for this message. Check the workspace before deciding whether to send it again.",
+  "queuedConnectionMissing": "This message’s saved connection is unavailable. Remove and resubmit it with another connection, or choose Send now on a different message.",
   "chatHistoryChangedWhileLoadingReopenTheChatToReload": "Chat history changed while loading. Reopen the chat to reload it.",
   "failedToLoadInterveningChatHistory": "Failed to load intervening chat history",
   "openAProjectFirst": "Open a project first",
