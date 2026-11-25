@@ -10,7 +10,7 @@ import { CodexAppServerManager } from './codex-app-server'
 import { rememberRuntime, type EngineRuntime } from './model-access/runtime'
 import { discovery, type NativeCommandRuntime } from './command-registry'
 import { createWsRouter } from './ws-router'
-import { createEmptyState } from './events'
+import { createEmptyState, type StoreEvent } from './events'
 import { EventStore } from './event-store'
 import type { AgentProvider, ChatAttachment } from '../shared/types'
 import { AttachmentsNotAdmittedError } from '../shared/protocol'
@@ -593,23 +593,43 @@ test("Stop during idle-chat upload validation prevents prompt admission and prov
   } finally { resume.resolve(); await f.cleanup() }
 })
 
-test("a follow-up queued during idle-chat upload validation still runs if validation fails", async () => {
-  const f = await preparationFixture("pi")
-  const { entered, resume } = pauseUploadValidation(f.agent)
-  try {
-    const file = await persistProjectUpload({ projectId: f.project.id, localPath: f.project.localPath, fileName: "notes.txt", bytes: Buffer.from("fixture") })
-    const command = { type: "chat.send" as const, chatId: f.chat.id, ...f.selection }
-    const sending = f.agent.send({ ...command, content: "Stale upload", attachments: [{ ...file, uploadSha256: "0".repeat(64) }] })
-    await entered.promise
-    expect(await f.agent.send({ ...command, content: "Next prompt" })).toMatchObject({ queued: true })
-    resume.resolve()
-    await expect(sending).rejects.toThrow("upload is missing or has changed")
-    for (let i = 0; i < 100 && !f.calls.starts.length; i++) await Bun.sleep(10)
-    expect(f.calls.starts).toHaveLength(1)
-    expect(f.store.getMessages(f.chat.id).filter(row => row.kind === "user_prompt")).toMatchObject([{ content: "Next prompt" }])
-    expect(f.store.getQueuedMessages(f.chat.id)).toEqual([])
-  } finally { resume.resolve(); await f.cleanup() }
-})
+test.each([["chat.send", false], ["chat.send", true], ["message.enqueue", false], ["message.enqueue", true]] as const)(
+  "a %s follow-up queued during idle-chat upload validation runs after refusal (queue write pending: %s)",
+  async (channel, delayWrite) => {
+    const f = await preparationFixture("pi")
+    const { entered, resume } = pauseUploadValidation(f.agent)
+    const writing = deferred(), releaseWrite = deferred()
+    const disk = f.store as unknown as { writeEvent(path: string, event: StoreEvent): Promise<void> }
+    const write = disk.writeEvent.bind(f.store)
+    disk.writeEvent = async (path, event) => {
+      if (event.type === "queued_message_enqueued") { writing.resolve(); await releaseWrite.promise }
+      await write(path, event)
+    }
+    try {
+      const file = await persistProjectUpload({ projectId: f.project.id, localPath: f.project.localPath, fileName: "notes.txt", bytes: Buffer.from("fixture") })
+      const command = { type: "chat.send" as const, chatId: f.chat.id, ...f.selection }
+      const sending = f.agent.send({ ...command, content: "Stale upload", attachments: [{ ...file, uploadSha256: "0".repeat(64) }] })
+      await entered.promise
+      const followUp = channel === "chat.send"
+        ? f.agent.send({ ...command, content: "Next prompt" })
+        : f.agent.enqueue({ type: "message.enqueue", chatId: f.chat.id, content: "Next prompt", ...f.selection })
+      await writing.promise
+      if (!delayWrite) { releaseWrite.resolve(); await followUp }
+      resume.resolve()
+      await expect(sending).rejects.toThrow("upload is missing or has changed")
+      if (delayWrite) {
+        await flush() // The refusal's empty-queue check settles before publication.
+        expect(f.store.getQueuedMessages(f.chat.id)).toEqual([])
+        releaseWrite.resolve()
+      }
+      expect(await followUp).toMatchObject({ queuedMessageId: expect.any(String) })
+      for (let i = 0; i < 100 && !f.calls.starts.length; i++) await Bun.sleep(10)
+      expect(f.calls.starts).toHaveLength(1)
+      expect(f.store.getMessages(f.chat.id).filter(row => row.kind === "user_prompt")).toMatchObject([{ content: "Next prompt" }])
+      expect(f.store.getQueuedMessages(f.chat.id)).toEqual([])
+    } finally { resume.resolve(); releaseWrite.resolve(); await f.cleanup() }
+  },
+)
 
 test('sending a draft while preparation is pending waits and reuses that exact session', async () => {
   const gate = deferred(), f = await preparationFixture('pi', gate.promise, true)

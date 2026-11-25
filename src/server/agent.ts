@@ -669,6 +669,7 @@ interface SendMessageOptions {
   modelOptions?: ModelOptions
   effort?: string
   planMode?: boolean
+  steer?: boolean
 }
 
 function timestamped<T extends Omit<TranscriptEntry, "_id" | "createdAt">>(
@@ -4343,7 +4344,19 @@ export class AgentCoordinator {
       planMode: options?.planMode,
     })
     this.emitStateChange(chatId)
+    // The previous owner may have finished (or refused its upload) while this
+    // write was still invisible. Reconcile ownership only after the row is
+    // durable; an explicit steer owns its targeted dispatch instead.
+    if (!options?.steer) this.wakeQueue(chatId)
     return queued
+  }
+
+  private wakeQueue(chatId: string) {
+    void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
+      this.reportBackgroundError?.(
+        `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
+      )
+    })
   }
 
   private async requireCurrentUploads(chatId: string, attachments: ChatAttachment[]) {
@@ -7906,7 +7919,6 @@ export class AgentCoordinator {
       this.emitStateChange()
     }
     if (hasBusyOwner()) {
-      const dispatchingQueue = this.queueDispatches.has(chatId)
       const queuedMessage = await this.enqueueMessage(chatId, command.content, command.attachments ?? [], {
         provider: command.provider,
         model: command.model,
@@ -7914,14 +7926,6 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
       })
-      if (dispatchingQueue) {
-        // The dispatcher may have reached the end before this enqueue landed.
-        void this.maybeStartNextQueuedMessage(chatId).catch((error) => {
-          this.reportBackgroundError?.(
-            `[queue-dispatch] chat ${chatId}: ${error instanceof Error ? error.message : String(error)}`,
-          )
-        })
-      }
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
 
@@ -7966,6 +7970,7 @@ export class AgentCoordinator {
       model: command.model,
       modelOptions: command.modelOptions,
       planMode: command.planMode,
+      steer: command.steer,
     }, "message.enqueue")
     return { queuedMessageId: queuedMessage.id }
   }
