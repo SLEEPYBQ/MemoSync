@@ -19,8 +19,7 @@
     },
     "android": {
       "package": "com.memosync.mobile",
-      "edgeToEdgeEnabled": true,
-      "usesCleartextTraffic": true
+      "edgeToEdgeEnabled": true
     },
     "plugins": [
       [
@@ -33,6 +32,14 @@
         "expo-secure-store",
         {
           "faceIDPermission": "Allow MemoSync to unlock your paired device credentials."
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
         }
       ]
     ]
