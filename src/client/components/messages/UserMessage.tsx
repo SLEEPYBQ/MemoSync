@@ -13,6 +13,7 @@ interface Props {
   content: string
   attachments?: ChatAttachment[]
   steered?: boolean
+  responseUnrecorded?: boolean
 }
 
 function parseSystemMessage(content: string) {
@@ -27,7 +28,7 @@ function parseSystemMessage(content: string) {
   }
 }
 
-export function UserMessage({ content, attachments = [], steered = false }: Props) {
+export function UserMessage({ content, attachments = [], steered = false, responseUnrecorded }: Props) {
   useI18n()
   const [selectedAttachmentId, setSelectedAttachmentId] = useState<string | null>(null)
   const renderOptions = useTranscriptRenderOptions()
@@ -101,6 +102,9 @@ export function UserMessage({ content, attachments = [], steered = false }: Prop
               <CachedMarkdown>{escapeAngleBracketsOutsideCode(parsedContent.body)}</CachedMarkdown>
             </div>
           </div>
+        ) : null}
+        {responseUnrecorded && !renderOptions.readonly ? (
+          <p className="max-w-[85%] text-right text-xs text-muted-foreground">{t("chat:responseUnrecorded")}</p>
         ) : null}
       </div>
       <AttachmentPreviewModal attachment={selectedAttachment} onOpenChange={(open) => !open && setSelectedAttachmentId(null)} />

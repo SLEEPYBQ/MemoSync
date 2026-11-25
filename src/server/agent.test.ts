@@ -1759,7 +1759,7 @@ describe("AgentCoordinator codex integration", () => {
 
     expect(startTurnCalls).toEqual([
       { content: "plan this", planMode: true },
-      { content: "Proceed with the approved plan. Additional guidance: Use the fast path", planMode: false },
+      { content: "Proceed with the approved plan. Additional guidance: Use the fast path\n\n## Plan\n\n- [ ] Ship it", planMode: false },
     ])
     expect(sessionCalls).toEqual([
       { chatId: "chat-1", sessionToken: null },
@@ -3474,17 +3474,18 @@ describe("AgentCoordinator Pi startup cancellation", () => {
 })
 
 describe("durable queued startup", () => {
-  test("restart reconciles a persisted prompt and residual queue row without booting", async () => {
+  test.each([false, true])("restart never resends a persisted prompt with no provider outcome (queue row removed: %s)", async removed => {
     const directory = mkdtempSync(join(tmpdir(), "queued-store-recovery-"))
     const path = join(directory, "events")
     const store = new EventStore(path)
     await store.initialize()
     const project = await store.openProject(directory, "fixture")
     const chat = await store.createChat(project.id)
-    await store.enqueueMessage(chat.id, { id: "persisted-queue", content: "already delivered", attachments: [], provider: "codex" })
+    await store.enqueueMessage(chat.id, { id: "persisted-queue", content: "saved task", attachments: [], provider: "codex" })
     await store.appendMessage(chat.id, {
-      _id: "persisted-queue", createdAt: Date.now(), kind: "user_prompt", content: "already delivered", attachments: [],
+      _id: "persisted-queue", createdAt: Date.now(), kind: "user_prompt", content: "saved task", attachments: [],
     })
+    if (removed) await store.removeQueuedMessage(chat.id, "persisted-queue")
     const reloaded = new EventStore(path)
     await reloaded.initialize()
     let starts = 0
@@ -3496,8 +3497,8 @@ describe("durable queued startup", () => {
       await coordinator.drainOrphanedQueues()
       expect(starts).toBe(0)
       expect(reloaded.getQueuedMessages(chat.id)).toEqual([])
-      expect(reloaded.getMessages(chat.id).filter(entry => entry.kind === "user_prompt")).toEqual([
-        expect.objectContaining({ _id: "persisted-queue", content: "already delivered" }),
+      expect(reloaded.getMessages(chat.id)).toEqual([
+        expect.objectContaining({ kind: "user_prompt", _id: "persisted-queue", content: "saved task" }),
       ])
     } finally { await coordinator.shutdownRuntime(); rmSync(directory, { recursive: true, force: true }) }
   })
@@ -3558,6 +3559,47 @@ describe("durable queued startup", () => {
       expect(h.starts).toHaveLength(1)
       expect(h.store.chat.planMode).toBe(true)
     } finally { await h.cleanup() }
+  })
+
+  test("deleting a queued connection keeps FIFO until the user selects another row", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "queue-deleted-connection-"))
+    const service = await new ModelAccessService({
+      keyring: testKeyring, dataDir: directory, env: { HOME: directory },
+      readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+    }).initialize()
+    const endpoints = [{ protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" }]
+    const a = await service.saveConnection({ name: "A", endpoints, models: [{ id: "model-a" }] })
+    const b = await service.saveConnection({ name: "B", endpoints, models: [{ id: "model-b" }] })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: a.id } })
+    setModelAccessService(service)
+    const h = harness()
+    try {
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", content: "first task" })
+      const queue = (connectionId: string, model: string, content: string) => h.coordinator.enqueue({
+        type: "message.enqueue", chatId: "chat-1", provider: "codex", modelOptions: { connectionId }, model, content,
+      })
+      const blocked = await queue(b.id, "model-b", "Use B first")
+      const valid = await queue(a.id, "model-a", "Then use A")
+      await service.deleteConnection(b.id)
+      h.finish()
+      await waitFor(() => h.store.turnFailures.includes("connection-missing"))
+      expect(h.starts).toHaveLength(1)
+      expect(h.store.getQueuedMessages().map(row => row.id)).toEqual([blocked.queuedMessageId, valid.queuedMessageId])
+      await expect(h.drain()).rejects.toThrow("connection-missing")
+      expect(h.starts).toHaveLength(1)
+      await h.coordinator.steer({ type: "message.steer", chatId: "chat-1", queuedMessageId: valid.queuedMessageId })
+      expect(h.runtimes.at(-1)).toMatchObject({ connectionId: a.id, model: "model-a" })
+      expect(h.store.messages.filter(m => m.kind === "user_prompt").map(m => m.participantContent)).toEqual(["first task", "Then use A"])
+      expect(h.store.getQueuedMessages()).toEqual([expect.objectContaining({
+        id: blocked.queuedMessageId, content: "Use B first", model: "model-b", modelOptions: { connectionId: b.id },
+      })])
+      await h.coordinator.dequeue({ type: "message.dequeue", chatId: "chat-1", queuedMessageId: blocked.queuedMessageId })
+      expect(h.store.getQueuedMessages()).toEqual([])
+    } finally {
+      await h.cleanup()
+      setModelAccessService(undefined)
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   test("a durable prompt with failed queue cleanup is never replayed, including direct steer", async () => {

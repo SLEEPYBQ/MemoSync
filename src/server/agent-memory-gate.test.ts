@@ -1998,7 +1998,10 @@ describe("memory preview gate (coordinator)", () => {
         { content: "Use accessible controls", scope: "project", projectId: "project-1", type: "constraint" },
         { actor: "user" },
       )
-      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", model: "requested-plan-model", content: "Build the real task", planMode: true })
+      const attachment = { id: "spec", kind: "file" as const, displayName: "spec.txt", absolutePath: join(directory, "spec.txt"),
+        relativePath: "spec.txt", contentUrl: "/fixture/spec.txt", mimeType: "text/plain", size: 4 }
+      await Bun.write(attachment.absolutePath, "spec")
+      await h.coordinator.send({ type: "chat.send", chatId: "chat-1", provider: "codex", model: "requested-plan-model", content: "Build the real task", planMode: true, attachments: [attachment] })
       const first = h.coordinator.activeTurns.get("chat-1")!
       expect(first.model).toBe("requested-plan-model")
       expect(first.engineRuntime).toMatchObject({ connectionId: connection.id, model: "effective-plan-model" })
@@ -2010,22 +2013,22 @@ describe("memory preview gate (coordinator)", () => {
       await service.setEngine("codex", { access: { mode: "connection", connectionId: other.id, defaultModel: "requested-plan-model" } })
       await h.coordinator.respondTool({
         type: "chat.respondTool", chatId: "chat-1", toolUseId: h.coordinator.getPendingTool("chat-1")!.toolUseId,
-        result: { confirmed: true },
+        result: { confirmed: false, message: "Adjust the label" },
       })
       await tool
       queues[0].close()
       await waitFor(() => launches.length === 2 && h.coordinator.activeTurns.get("chat-1") !== first && !!h.coordinator.activeTurns.get("chat-1"))
       const followUp = h.coordinator.activeTurns.get("chat-1")!
       expect(followUp.turnId).toBe(first.turnId)
-      expect(followUp.userText).toBe("Build the real task")
+      expect(followUp.userText).toBe("Build the real task\n\nAdjust the label")
       expect(runtimes[1]).toMatchObject({ connectionId: connection.id, model: "effective-plan-model" })
       expect(launches[1].model).toBe("effective-plan-model")
-      expect(launches[1].content).toContain("Proceed with the approved plan.")
+      expect(launches[1].content).toContain("Revise the plan using this feedback: Adjust the label")
       await h.coordinator.interruptMemory({ chatId: "chat-1", memoryId: memory.id })
       const interruption = h.store.messages.find(entry => entry.kind === "memory_interrupt") as Extract<TranscriptEntry, { kind: "memory_interrupt" }>
-      expect(interruption.prompt).toBe("Build the real task")
+      expect(interruption).toMatchObject({ prompt: "Build the real task", attachments: [attachment] })
       await h.coordinator.resumeInterrupted({ chatId: "chat-1", interruptId: interruption.interruptId, correction: "Fix it", selectedIds: [memory.id] })
-      expect(h.store.messages.find(entry => entry.kind === "user_prompt" && entry._id === interruption.interruptId)).toMatchObject({ content: "Build the real task" })
+      expect(h.store.messages.find(entry => entry.kind === "user_prompt" && entry._id === interruption.interruptId)).toMatchObject({ content: "Build the real task", attachments: [attachment] })
     } finally {
       await h.coordinator.shutdownRuntime()
       h.cleanup()

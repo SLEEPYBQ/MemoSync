@@ -338,6 +338,7 @@ interface StartTurnArgs {
   serviceTier?: "fast"
   planMode: boolean
   appendUserPrompt: boolean
+  codexPlanThread?: "continue" | "clear"
   steered?: boolean
   /** Resume of an interrupted turn (2026-08-19 C2): skip the pre-turn gates
    * and the working-memory confirmation — the recovery card confirmed the set. */
@@ -400,7 +401,7 @@ interface ActiveTurn {
   planMode: boolean
   status: ChatActivityStatus
   pendingTool: PendingToolRequest | null
-  postToolFollowUp: { content: string; planMode: boolean } | null
+  postToolFollowUp: { content: string; planMode: boolean; clearContext: boolean; memoryUserText: string } | null
   hasFinalResult: boolean
   cancelRequested: boolean
   startupReservation?: StartupReservation
@@ -3667,6 +3668,13 @@ export class AgentCoordinator {
   private async settleCommandPreparation(args: StartTurnArgs) {
     const prepared = this.commandPreparations.get(args.chatId)
     if (!prepared) return
+    if (args.codexPlanThread && prepared.selection.provider === "codex" && prepared.status === "ready") {
+      // This thread has already run the plan. The composer's prewarm may
+      // describe the requested model/plan mode rather than the live launch.
+      // Let the manager compare the actual runtime, tools, policy and thread.
+      this.commandPreparations.delete(args.chatId)
+      return
+    }
     const desired = this.getProviderSettings(prepared.selection.provider, prepared.selection)
     const same = prepared.selection.provider === args.provider && desired.model === args.model && desired.connectionId === args.connectionId
       && desired.effort === args.effort && desired.serviceTier === args.serviceTier && desired.planMode === args.planMode
@@ -7131,8 +7139,10 @@ export class AgentCoordinator {
         cwd: project.localPath,
         model: args.model,
         serviceTier: args.serviceTier,
-        sessionToken: chat.sessionToken,
-        pendingForkSessionToken: chat.pendingForkSessionToken,
+        sessionToken: args.codexPlanThread === "clear" ? null : chat.sessionToken,
+        pendingForkSessionToken: args.codexPlanThread === "clear" ? null : chat.pendingForkSessionToken,
+        forceNewThread: args.codexPlanThread === "clear",
+        allowResumeFallback: args.codexPlanThread === "continue" ? false : undefined,
         dynamicTools: codexAllSpecs.length ? toCodexDynamicTools(codexAllSpecs) : undefined,
         executionPolicy: !legacyExecution && executionPolicy.engine === "codex" ? executionPolicy : undefined,
       }
@@ -8487,7 +8497,8 @@ export class AgentCoordinator {
             attachments: [],
             model: active.engineRuntime?.model ?? active.model,
             connectionId: active.engineRuntime?.connectionId ?? active.connectionId,
-            memoryUserText: active.userText,
+            memoryUserText: active.postToolFollowUp.memoryUserText,
+            codexPlanThread: active.postToolFollowUp.clearContext ? "clear" : "continue",
             effort: active.effort,
             serviceTier: active.serviceTier,
             planMode: active.postToolFollowUp.planMode,
@@ -9040,19 +9051,20 @@ export class AgentCoordinator {
         }
 
         if (active.provider === "codex") {
-          active.postToolFollowUp = result.confirmed
-            ? {
-                content: result.message
-                  ? `Proceed with the approved plan. Additional guidance: ${result.message}`
-                  : "Proceed with the approved plan.",
-                planMode: false,
-              }
-            : {
-                content: result.message
-                  ? `Revise the plan using this feedback: ${result.message}`
-                  : "Revise the plan using this feedback.",
-                planMode: true,
-              }
+          const feedback = typeof result.message === "string" ? result.message.trim() : ""
+          const clearContext = Boolean(result.confirmed && result.clearContext)
+          const instruction = result.confirmed
+            ? `Proceed with the approved plan.${feedback ? ` Additional guidance: ${feedback}` : ""}`
+            : `Revise the plan using this feedback${feedback ? `: ${feedback}` : "."}`
+          active.postToolFollowUp = {
+            // Only the explicit clear path starts without the native plan history.
+            content: clearContext ? `${instruction}\n\n${pending.tool.input.plan}` : instruction,
+            planMode: !result.confirmed,
+            clearContext,
+            // Capture and audit see the user's words across revisions, not the synthetic
+            // continuation. Interrupt recovery still owns the original prompt/attachment pair.
+            memoryUserText: [active.userText, feedback].filter(Boolean).join("\n\n"),
+          }
         }
       }
 
