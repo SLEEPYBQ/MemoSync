@@ -5,7 +5,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useLocation, useNavigate } from "react-router-dom"
 import { useShallow } from "zustand/react/shallow"
 import { DISPLAY_NAME, SELF_UPDATE_ENABLED } from "../../shared/branding"
-import type { EditorOpenSettings, OpenExternalAction } from "../../shared/protocol"
+import { AttachmentsNotAdmittedError, type EditorOpenSettings, type OpenExternalAction } from "../../shared/protocol"
 import type { ChatSnapshot, LocalProjectsSnapshot, SidebarChatRow, SidebarData } from "../../shared/types"
 import { isPiReasoningEffort, normalizeClaudeContextWindow, type AgentProvider, type AppSettingsPatch, type AppSettingsSnapshot, type AskUserQuestionAnswerMap, type ChatAttachment, type ChatDiffSnapshot, type ChatHistoryPage, type ExpectedMemoryUse, type KeybindingsSnapshot, type LlmProviderSnapshot, type LlmProviderValidationResult, type MemoryPreviewDecision, type ModelOptions, type ProviderCatalogEntry, type QueuedChatMessage, type StandaloneTranscriptExportCommandResult, type TranscriptEntry, type UpdateInstallResult, type UpdateSnapshot, type ReleaseNoticeSnapshot, type UserPromptEntry } from "../../shared/types"
 import type { OpenLocalLinkTarget } from "../components/messages/shared"
@@ -1857,6 +1857,7 @@ export function useAppState(activeChatId: string | null): AppState {
       optimisticScopeId,
     })
 
+    let dispatched = false
     try {
       let projectId: string | null = null
       const draft = activeChatId ? undefined : options?.draft
@@ -1883,6 +1884,7 @@ export function useAppState(activeChatId: string | null): AppState {
         }
       }
 
+      dispatched = true
       const sent = await socket.command<{ chatId?: string }>({
         type: "chat.send",
         chatId: activeChatId ?? draft?.chatId,
@@ -1937,6 +1939,9 @@ export function useAppState(activeChatId: string | null): AppState {
       // The composer shows a rejected send beside the message box; a page-level copy would repeat it,
       // and an older page banner would sit beside it unrelated.
       if (isOrigin()) setCommandError(null)
+      if (!dispatched && attachments.length) {
+        throw new AttachmentsNotAdmittedError(error instanceof Error ? error.message : String(error), { cause: error })
+      }
       throw error
     }
   }, [activeChatId, fallbackLocalProjectPath, isProcessing, navigate, optimisticUserPrompts, pendingMemoryPreview, selectedProjectId, serverTranscriptEntries, sidebarProjectGroups, socket, getLocale()])

@@ -11,7 +11,7 @@ import { lastEngineExecutable } from './model-access/executables'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
-import type { ClientCommand } from "../shared/protocol"
+import { AttachmentsNotAdmittedError, type ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
 import type {
   AgentProvider,
@@ -4332,7 +4332,7 @@ export class AgentCoordinator {
     options?: SendMessageOptions,
     channel: "chat.send" | "message.enqueue" = "chat.send",
   ) {
-    if (content.trimStart().startsWith('/')) throw new Error('Native commands require an idle session and its current command catalog')
+    if (content.trimStart().startsWith('/')) throw new AttachmentsNotAdmittedError('Native commands require an idle session and its current command catalog')
     const queued = await this.store.enqueueMessage(chatId, {
       content,
       attachments,
@@ -7849,7 +7849,7 @@ export class AgentCoordinator {
       await this.store.setMemoryDisabled(chatId, command.memoryDisabled)
     }
     if (!nativeCommandValidated && command.content.trimStart().startsWith('/')) {
-      if (command.attachments?.length) throw new Error('Native commands do not accept attachments')
+      if (command.attachments?.length) throw new AttachmentsNotAdmittedError('Native commands do not accept attachments')
       const match = command.content.trim().match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)
       const selection: RuntimeCommandSelection = { provider, model: command.model, modelOptions: command.modelOptions, planMode: command.planMode }
       if (!this.getCommandCatalog(chatId).runtime || command.model || command.modelOptions || command.planMode !== undefined) {

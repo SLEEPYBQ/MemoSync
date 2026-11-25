@@ -9,7 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import type { ModelAccessSnapshot } from "../shared/model-access"
-import { isClientEnvelope } from "../shared/protocol"
+import { AttachmentsNotAdmittedError, isClientEnvelope } from "../shared/protocol"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
@@ -2073,7 +2073,12 @@ export function createWsRouter({
         type: command.type,
         message: messageText,
       })
-      send(ws, { v: PROTOCOL_VERSION, type: "error", id, message: messageText })
+      send(ws, {
+        v: PROTOCOL_VERSION, type: "error", id, message: messageText,
+        attachmentsNotAdmitted: error instanceof AttachmentsNotAdmittedError
+          && (command.type === "chat.send" || command.type === "message.enqueue")
+          && command.attachments?.length ? true : undefined,
+      })
     }
   }
 
