@@ -12,7 +12,8 @@ import { discovery, type NativeCommandRuntime } from './command-registry'
 import { createWsRouter } from './ws-router'
 import { createEmptyState } from './events'
 import { EventStore } from './event-store'
-import type { AgentProvider } from '../shared/types'
+import type { AgentProvider, ChatAttachment } from '../shared/types'
+import { persistProjectUpload } from './uploads'
 import { isRuntimeCommandSelection, runtimeCommandSelectionKey, type RuntimeCommandSelection } from '../shared/runtime-commands'
 import { getModelAccessService } from './model-access/service'
 import { toCodexDynamicTools } from './memory/codex-adapter'
@@ -513,6 +514,42 @@ test('a draft shared by two windows survives until the last one leaves', async (
     for (let i = 0; i < 50 && f.store.getChat(next); i++) await new Promise(r => setTimeout(r, 10))
     expect(f.store.getChat(next)).toBeNull()
   } finally { router.dispose(); await f.cleanup() }
+})
+
+test.each(["valid", "invalid"] as const)("the last landing window can leave during %s upload validation without cancelling admission", async outcome => {
+  const f = await preparationFixture("pi", undefined, true)
+  const router = createWsRouter({ store: f.store, agent: f.agent, terminals: { onEvent: () => () => {} } as never,
+    keybindings: { onChange: () => () => {} } as never, refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Fixture", updateManager: null })
+  const replies = new Map<string, any>()
+  const ws = { data: { subscriptions: new Map() }, send(raw: string) { const reply = JSON.parse(raw); replies.set(reply.id, reply); return raw.length } }
+  const command = async (id: string, value: unknown) => {
+    await router.handleMessage(ws as never, JSON.stringify({ v: 1, type: "command", id, command: value }))
+    return replies.get(id)
+  }
+  const entered = deferred(), resume = deferred()
+  const validation = f.agent as unknown as { requireCurrentUploads: (id: string, files: ChatAttachment[]) => Promise<void> }
+  const verify = validation.requireCurrentUploads.bind(f.agent)
+  validation.requireCurrentUploads = async (id, files) => { entered.resolve(); await resume.promise; await verify(id, files) }
+  try {
+    router.handleOpen(ws as never)
+    const { chatId, projectId } = (await command("open", { type: "chat.ensureDraft", localPath: f.project.localPath })).result
+    const file = await persistProjectUpload({ projectId, localPath: f.project.localPath, fileName: "notes.txt", bytes: Buffer.from("fixture") })
+    const attachments = [outcome === "valid" ? file : { ...file, uploadSha256: "0".repeat(64) }]
+    const sending = command("send", { type: "chat.send", chatId, ...f.selection, content: "Read the fixture", attachments })
+    await entered.promise
+    expect(await command("leave", { type: "chat.discardDraft", chatId })).toMatchObject({ type: "ack" })
+    expect(f.store.getChat(chatId)?.draft).toBe(true)
+    resume.resolve()
+    if (outcome === "valid") {
+      expect(await sending).toMatchObject({ type: "ack", result: { chatId } })
+      expect(f.store.getChat(chatId)?.draft).toBeUndefined()
+      expect(f.store.getMessages(chatId).filter(row => row.kind === "user_prompt")).toMatchObject([{ content: "Read the fixture", attachments }])
+    } else {
+      expect(await sending).toMatchObject({ type: "error", message: expect.stringContaining("upload is missing or has changed") })
+      expect(f.store.getChat(chatId)).toBeNull()
+      expect(f.store.getProject(projectId)).toBeNull()
+    }
+  } finally { resume.resolve(); router.dispose(); await f.cleanup() }
 })
 
 test('sending a draft while preparation is pending waits and reuses that exact session', async () => {

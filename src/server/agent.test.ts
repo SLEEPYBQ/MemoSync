@@ -76,6 +76,9 @@ test("a stale client cannot admit a deleted or replaced managed upload to a prom
     expect(replacement.contentUrl).toBe(original.contentUrl)
     expect(replacement.size).toBe(original.size)
     await retry()
+    const { uploadSha256: _digest, ...legacy } = original
+    options.attachments = [legacy]
+    await retry()
     await coordinator.enqueue({ type: "message.enqueue", ...options, attachments: [replacement] })
     expect(store.queuedMessages).toMatchObject([{ attachments: [replacement] }])
   } finally {
