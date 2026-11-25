@@ -617,6 +617,7 @@ export function ChatScreen({ route, navigation }: Props) {
         // older-history cursor is deliberately left unchanged.
         const generation = historyGenerationRef.current
         const applyWindow = async () => {
+          if (historyGenerationRef.current !== generation) return
           const current = knownEntriesRef.current
           const anchorId = current[current.length - 1]?._id
           let incoming = value.messages
@@ -626,6 +627,7 @@ export function ChatScreen({ route, navigation }: Props) {
             let foundAnchor = false
             const visited = new Set<string>()
             while (cursor && !visited.has(cursor)) {
+              if (historyGenerationRef.current !== generation) return
               visited.add(cursor)
               const page = await socket.command<ChatHistoryPage>({
                 type: "chat.loadHistory",
