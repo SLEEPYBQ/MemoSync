@@ -25,6 +25,7 @@ import { MemoryService } from "./memory"
 import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { testKeyring, fakeExecutableResolver } from "./model-access/test-fixtures"
 import type { EngineRuntime } from "./model-access/runtime"
+import { deleteProjectUpload, persistProjectUpload } from "./uploads"
 
 test("slash validation refuses the upload; a failing prompt write does not prove refusal", async () => {
   const store = createFakeStore()
@@ -48,6 +49,38 @@ test("slash validation refuses the upload; a failing prompt write does not prove
     expect(store.messages.at(-1)).toMatchObject({ kind: "user_prompt", attachments })
   } finally {
     await coordinator.shutdownRuntime()
+  }
+})
+
+test("a stale client cannot admit a deleted or replaced managed upload to a prompt or queue", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "memosync-upload-admission-"))
+  const store = createFakeStore()
+  store.getProject("project-1").localPath = dir
+  const coordinator = new AgentCoordinator({
+    store: store as never, onStateChange() {},
+    resolvePiConnection: async () => { throw new Error("Unexpected provider boot") },
+  })
+  const upload = (text: string) => persistProjectUpload({ projectId: "project-1", localPath: dir, fileName: "notes.txt", bytes: Buffer.from(text) })
+  try {
+    const original = await upload("first")
+    const options = { chatId: "chat-1", provider: "pi" as const, content: "Summarize this file", attachments: [original] }
+    const retry = async () => {
+      await expect(coordinator.send({ type: "chat.send", ...options })).rejects.toThrow("upload is missing or has changed")
+      await expect(coordinator.enqueue({ type: "message.enqueue", ...options })).rejects.toThrow("upload is missing or has changed")
+      expect(store.messages).toEqual([])
+      expect(store.queuedMessages).toEqual([])
+    }
+    expect(await deleteProjectUpload({ localPath: dir, storedName: "notes.txt" })).toBe(true)
+    await retry()
+    const replacement = await upload("other")
+    expect(replacement.contentUrl).toBe(original.contentUrl)
+    expect(replacement.size).toBe(original.size)
+    await retry()
+    await coordinator.enqueue({ type: "message.enqueue", ...options, attachments: [replacement] })
+    expect(store.queuedMessages).toMatchObject([{ attachments: [replacement] }])
+  } finally {
+    await coordinator.shutdownRuntime()
+    rmSync(dir, { recursive: true, force: true })
   }
 })
 

@@ -29,8 +29,8 @@ import { runtimeCommandSelectionKey, type ChatCommandCatalog, type RuntimeComman
 import { SlashCommandMenu } from "./SlashCommandMenu"
 import { isSlashInput, resolveRuntimeSlash, runtimeCatalogSettling, runtimeCommandToken } from "../../lib/runtimeCommands"
 import { useIsStandalone } from "../../hooks/useIsStandalone"
-import { useChatInputStore } from "../../stores/chatInputStore"
-import { recordUnsentUpload, runRetainedDraftSubmission, submitWithDraftUploads, takeUnsentUpload } from "./chatDraftSubmission"
+import { DELETED_UPLOAD_NOTIFICATION, useChatInputStore } from "../../stores/chatInputStore"
+import { discardDraftUpload, recordUnsentUpload, runRetainedDraftSubmission, submitWithDraftUploads } from "./chatDraftSubmission"
 import { NEW_CHAT_COMPOSER_ID, type ComposerState, useChatPreferencesStore } from "../../stores/chatPreferencesStore"
 import { CHAT_INPUT_ATTRIBUTE, focusNextChatInput } from "../../app/chatFocusPolicy"
 import { MemoryToggle, useDraftMemoryDisabled } from "./MemoryToggle"
@@ -460,6 +460,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       const retained = attachmentsRef.current.filter(attachment => {
         if (attachment.status !== "uploaded" || ids.has(attachment.id)) return true
         cleanupAttachmentPreview(attachment)
+        if (state.lastDeletedUploadId === attachment.id) {
+          draftRevisionRef.current += 1
+          setUploadError(t("chat:attachmentRemovedElsewhere", { name: attachment.displayName }))
+        }
         return false
       })
       if (retained.length === attachmentsRef.current.length) return
@@ -726,7 +730,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             return
           }
         }
-        await submitWithDraftUploads(attachmentsForSubmit, () => onSubmit(nextValue, submitOptions), deleteUploadedAttachment)
+        // Plain HTTP has no Web Locks. Reject a known-invalid combination
+        // before handing off the file; never undo a possibly shared handoff.
+        if (attachmentsForSubmit.length && nextValue.trimStart().startsWith("/") && !navigator.locks) throw new Error(t("commands:noAttachments"))
+        await submitWithDraftUploads(attachmentsForSubmit, () => onSubmit(nextValue, submitOptions))
       },
       onAccepted: () => {
         const store = useChatInputStore.getState()
@@ -945,7 +952,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
     if (attachment.status === "uploaded") {
       removedAttachmentIdsRef.current.delete(attachment.id)
-      if (takeUnsentUpload(attachment.id)) void deleteUploadedAttachment(attachment)
+      void discardDraftUpload(attachment, deleteUploadedAttachment)
     }
   }
 
@@ -1201,7 +1208,10 @@ export const ChatInput = memo(ChatInputInner)
 async function deleteUploadedAttachment(attachment: ChatAttachment) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
-  await fetch(deleteUrl, { method: "DELETE" }).catch(() => undefined)
+  try {
+    const response = await fetch(deleteUrl, { method: "DELETE" })
+    if (response.ok && (await response.json()).ok === true) localStorage.setItem(DELETED_UPLOAD_NOTIFICATION, attachment.id)
+  } catch { /* No confirmation: do not tell another tab its file was deleted. */ }
 }
 
 function hydrateComposerAttachments(attachments: ChatAttachment[]): ComposerAttachment[] {

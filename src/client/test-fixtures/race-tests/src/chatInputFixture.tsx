@@ -57,7 +57,7 @@ export function mountChatInputFixture(root: HTMLElement) {
     fixtureApi.setMounted = setMounted
     const onSubmit: ComponentProps<typeof ChatInput>["onSubmit"] = async (value, options) => {
       if (connectedDraft) {
-        await connectedDraft.socket.command({ type: "chat.send", chatId: connectedDraft.chatId, content: value, ...options })
+        await connectedDraft.socket.command({ type: "chat.send", chatId: connectedDraft.chatId, content: value, ...options, provider: "pi" })
         return
       }
       return new Promise((resolve, reject) => {
