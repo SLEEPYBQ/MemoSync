@@ -19,6 +19,7 @@ interface ChatInputState {
   getDraft: (chatId: string) => string
   setAttachmentDrafts: (chatId: string, attachments: ChatAttachment[], edited?: boolean) => void
   clearAttachmentDrafts: (chatId: string) => void
+  retireSubmittedAttachments: (key: string, submitted: readonly ChatAttachment[]) => void
   getAttachmentDrafts: (chatId: string) => ChatAttachment[]
   getDraftRevision: (textKey: string | null, attachmentKey: string | null) => DraftRevision
   clearSubmittedDraft: (revision: DraftRevision) => boolean
@@ -77,6 +78,14 @@ export const useChatInputStore = create<ChatInputState>()(
         }),
 
       clearAttachmentDrafts: (chatId) => get().setAttachmentDrafts(chatId, []),
+
+      retireSubmittedAttachments: (key, submitted) => {
+        // An upload rebound to a new project URL belongs to that newer draft.
+        const sent = new Map(submitted.map(item => [item.id, item.contentUrl]))
+        const current = get().getAttachmentDrafts(key)
+        const remaining = current.filter(item => sent.get(item.id) !== item.contentUrl)
+        if (remaining.length !== current.length) get().setAttachmentDrafts(key, remaining)
+      },
 
       getAttachmentDrafts: (chatId) => get().attachmentDrafts[chatId] ?? [],
 

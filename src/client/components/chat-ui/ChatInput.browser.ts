@@ -132,6 +132,23 @@ describe("mounted ChatInput submission races", () => {
     ])
   })
 
+  test("removing a chip before its send ACK detaches it without deleting the in-flight upload", async () => {
+    const target = await openFixture()
+    const deletes: string[] = []
+    target.on("request", request => { if (request.method() === "DELETE") deletes.push(request.url()) })
+    await attach(target, "sent.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByRole("button", { name: "Remove uploaded-1.txt" }).click()
+    expect(await readAttachments(target, "chat-one")).toEqual([])
+    await attach(target, "unsent.txt")
+    await Promise.all([
+      target.waitForResponse(response => response.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-2.txt" }).click(),
+    ])
+    await settle(target, 0, true)
+    expect(deletes.map(url => new URL(url).pathname)).toEqual(["/api/projects/fixture/uploads/2"])
+  })
+
   test("treats editing away and back as a newer draft revision", async () => {
     const target = await openFixture()
     const input = target.getByPlaceholder("Build something...")

@@ -1,10 +1,13 @@
 import { useState } from "react"
 import { createRoot } from "react-dom/client"
-import { MemoryRouter, useLocation } from "react-router-dom"
+import { Link, MemoryRouter, Outlet, Route, Routes, useLocation } from "react-router-dom"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
+import { TooltipProvider } from "../../../components/ui/tooltip"
 import { ThemeProvider } from "../../../hooks/useTheme"
+import { LocalProjectsPage } from "../../../app/LocalProjectsPage"
 import { useAppState } from "../../../app/useAppState"
 import { AppSocket } from "../../../app/socket"
+import type { ChatAttachment } from "../../../../shared/types"
 
 interface ChatSubscription {
   topic: { type: string; chatId?: string }
@@ -32,6 +35,8 @@ interface AppStateFixtureApi {
   send: (content: string, draft?: { chatId: string; projectId: string }) => void
   sendFromPath: (content: string) => void
   sendCount: () => number
+  sentAttachments: (index: number) => ChatAttachment[]
+  acceptedSends: () => number
   resolveSend: (index: number, chatId: string) => void
   rejectSend: (index: number) => void
   location: () => string
@@ -44,8 +49,11 @@ interface AppStateFixtureApi {
 
 const subscriptions: ChatSubscription[] = []
 const historyRequests: HistoryRequest[] = []
-const sendRequests: Array<{ resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = []
+const sendRequests: Array<{ attachments: ChatAttachment[]; resolve: (value: unknown) => void; reject: (reason: unknown) => void }> = []
+let acceptedSends = 0
 const projectRequests: Array<{ resolve: (value: unknown) => void }> = []
+const landingFixture = new URLSearchParams(window.location.search).get("view") === "landing"
+const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta"] : []
 
 const fixtureApi: AppStateFixtureApi = {
   transcriptRevision: () => 0,
@@ -72,6 +80,8 @@ const fixtureApi: AppStateFixtureApi = {
   send: () => {},
   sendFromPath: () => {},
   sendCount: () => sendRequests.length,
+  sentAttachments: index => sendRequests[index].attachments,
+  acceptedSends: () => acceptedSends,
   resolveSend: (index, chatId) => sendRequests[index]?.resolve({ chatId }),
   rejectSend: (index) => sendRequests[index]?.reject(new Error("fixture send failed")),
   location: () => "",
@@ -92,18 +102,24 @@ Object.assign(AppSocket.prototype, {
   subscribe(topic: { type: string; chatId?: string }, listener: (snapshot: unknown) => void) {
     const subscription = { topic, listener, active: true }
     subscriptions.push(subscription)
-    if (topic.type === "sidebar") listener({ projectGroups: [] })
+    if (topic.type === "sidebar") listener({ projectGroups: projectPaths.map(localPath => ({
+      groupKey: localPath.split("/").at(-1), localPath, chats: [],
+    })) })
     if (topic.type === "local-projects") {
       listener({
         machine: { id: "local", displayName: "Fixture", platform: "linux" },
-        projects: [],
+        projects: projectPaths.map(localPath => ({ localPath, title: localPath, source: "saved", chatCount: 0 })),
       })
     }
     return () => {
       subscription.active = false
     }
   },
-  command(command: { type: string; chatId?: string; beforeCursor?: string }) {
+  command(command: { type: string; chatId?: string; beforeCursor?: string; localPath?: string; attachments?: ChatAttachment[] }) {
+    if (command.type === "chat.ensureDraft") {
+      const projectId = command.localPath!.split("/").at(-1)
+      return Promise.resolve({ chatId: `draft-${projectId}`, projectId })
+    }
     if (command.type === "settings.readAppSettings") {
       return Promise.resolve({
         browserSettingsMigrated: true,
@@ -131,7 +147,7 @@ Object.assign(AppSocket.prototype, {
       })
     }
     if (command.type === "chat.send") return new Promise((resolve, reject) => {
-      sendRequests.push({ resolve, reject })
+      sendRequests.push({ attachments: command.attachments ?? [], resolve, reject })
     })
     if (command.type === "project.open") return new Promise(resolve => {
       projectRequests.push({ resolve })
@@ -147,8 +163,9 @@ export function mountAppStateFixture(root: HTMLElement) {
   let lastMessages: unknown
   let transcriptRevision = 0
   function AppStateHost() {
-    const [activeChatId, setActiveChatId] = useState<string | null>("chat-a")
+    const [fixtureChatId, setActiveChatId] = useState<string | null>("chat-a")
     const location = useLocation()
+    const activeChatId = landingFixture ? location.pathname.split("/chat/")[1] ?? null : fixtureChatId
     const state = useAppState(activeChatId)
     if (lastMessages !== state.messages) {
       lastMessages = state.messages
@@ -181,6 +198,19 @@ export function mountAppStateFixture(root: HTMLElement) {
       hasOlderHistory: state.hasOlderHistory,
       commandError: state.commandError,
     }
+
+    if (landingFixture) return <TooltipProvider>
+      <div data-testid="fixture-ready" />
+      <Routes>
+        <Route element={<Outlet context={{ ...state, handleSend: async (...args: Parameters<typeof state.handleSend>) => {
+          await state.handleSend(...args)
+          acceptedSends++
+        } }} />}>
+          <Route index element={<LocalProjectsPage />} />
+          <Route path="/chat/:chatId" element={<Link to="/">Back to landing</Link>} />
+        </Route>
+      </Routes>
+    </TooltipProvider>
 
     return (
       <main>

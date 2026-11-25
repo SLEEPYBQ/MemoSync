@@ -74,4 +74,25 @@ describe("chatInputStore", () => {
     expect(store.clearSubmittedDraft(edited)).toBe(false)
     expect(store.getDraft("chat")).toBe("submitted")
   })
+
+  test("retires only references owned by the accepted landing send", () => {
+    const store = useChatInputStore.getState()
+    const upload = (id: string, project = "alpha") => ({
+      id, kind: "file" as const, displayName: "notes.txt", absolutePath: "/fixture/notes.txt",
+      relativePath: "notes.txt", contentUrl: `/api/projects/${project}/uploads/${id}/content`, mimeType: "text/plain", size: 1,
+    })
+    const sent = upload("sent")
+    const later = upload("later") // a new upload with the same display name
+    const rebound = upload("rebound", "new-alpha")
+    store.setDraft("landing", "new text")
+    store.setAttachmentDrafts("alpha", [sent, later, rebound])
+    store.setAttachmentDrafts("beta", [later])
+    store.retireSubmittedAttachments("alpha", [sent, upload("rebound")])
+    expect(store.getDraft("landing")).toBe("new text")
+    expect(store.getAttachmentDrafts("alpha")).toEqual([later, rebound])
+    expect(store.getAttachmentDrafts("beta")).toEqual([later])
+    const revision = store.getDraftRevision("landing", "alpha")
+    store.retireSubmittedAttachments("alpha", [sent])
+    expect(store.getDraftRevision("landing", "alpha")).toEqual(revision)
+  })
 })

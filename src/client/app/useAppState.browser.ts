@@ -1,6 +1,10 @@
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test"
 import type { Page } from "playwright"
-import type { ChatSnapshot, ProviderCatalogEntry, TranscriptEntry } from "../../shared/types"
+import type { ChatAttachment, ChatSnapshot, ProviderCatalogEntry, TranscriptEntry } from "../../shared/types"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { deleteProjectUpload, persistProjectUpload, resolveExistingProjectUpload } from "../../server/uploads"
 import { PROVIDERS } from "../../shared/types"
 import { startMountedRaceHarness } from "../test-utils/mountedRaceHarness"
 
@@ -18,6 +22,8 @@ interface AppStateFixtureApi {
   send: (content: string, draft?: { chatId: string; projectId: string }) => void
   sendFromPath: (content: string) => void
   sendCount: () => number
+  sentAttachments: (index: number) => ChatAttachment[]
+  acceptedSends: () => number
   resolveSend: (index: number, chatId: string) => void
   rejectSend: (index: number) => void
   location: () => string
@@ -188,6 +194,106 @@ async function rejectHistory(target: Page, index: number, reason: string) {
     { index, reason }
   )
 }
+
+async function openLanding() {
+  page = await harness.openPage("landing")
+  await page.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.chatSubscriptionCount("draft-alpha") > 0)
+  return page
+}
+
+async function pickProject(target: Page, from: string, to: string) {
+  await target.getByRole("button", { name: from, exact: true }).click()
+  await target.getByRole("button", { name: `${to} /fixture/${to}`, exact: true }).click()
+  await target.getByRole("button", { name: to, exact: true }).waitFor()
+}
+
+test.each([false, true])("an old landing send cannot redirect after picking another folder (return to A=%s)", async returnToA => {
+  const target = await openLanding()
+  const input = target.locator("textarea")
+  await input.fill("Alpha fixture send")
+  await target.getByRole("button", { name: "Send", exact: true }).click()
+  await pickProject(target, "alpha", "beta")
+  if (returnToA) await pickProject(target, "beta", "alpha")
+  const selected = returnToA ? "alpha" : "beta"
+  await input.fill("New selection's draft")
+  await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-alpha"))
+  await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.acceptedSends() === 1)
+  expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe("/")
+  expect(await input.inputValue()).toBe("New selection's draft")
+  await target.getByRole("button", { name: selected, exact: true }).waitFor()
+  await target.getByRole("button", { name: "Send", exact: true }).click()
+  await target.evaluate(id => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(1, id), `new-${selected}`)
+  await target.getByRole("link", { name: "Back to landing" }).waitFor()
+  expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe(`/chat/new-${selected}`)
+})
+
+test.each([false, true])("an edited landing draft retires the sent upload without losing its bytes (later file=%s)", async laterFile => {
+  const target = await openLanding()
+  const folder = await mkdtemp(join(tmpdir(), "memosync-landing-ack-"))
+  const deleted: string[] = []
+  try {
+    await target.route("**/api/projects/alpha/uploads**", async route => {
+      const request = route.request()
+      if (request.method() === "POST") {
+        const form = await new Response(request.postDataBuffer(), { headers: request.headers() }).formData()
+        const file = form.get("files") as File
+        const attachment = await persistProjectUpload({
+          localPath: folder, projectId: "alpha", fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
+        })
+        // The browser sees the synthetic workspace; its bytes live only in this test's temp directory.
+        return route.fulfill({ json: { attachments: [{ ...attachment, absolutePath: `/fixture/alpha/${attachment.relativePath.slice(2)}` }] } })
+      }
+      const storedName = decodeURIComponent(new URL(request.url()).pathname.split("/uploads/")[1].split("/")[0])
+      if (request.method() === "DELETE") {
+        deleted.push(storedName)
+        return route.fulfill({ json: { ok: await deleteProjectUpload({ localPath: folder, storedName }) } })
+      }
+      const file = await resolveExistingProjectUpload(folder, storedName)
+      return route.fulfill({ status: file.ok ? 200 : 404, body: file.ok ? await Bun.file(file.path).text() : "" })
+    })
+    const attach = async (name: string) => {
+      await target.locator('input[type="file"]').setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`fixture bytes: ${name}`) })
+      await target.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor()
+      await target.locator('button[aria-label="Send"]:enabled').waitFor()
+    }
+    const input = target.locator("textarea")
+    await input.fill("First synthetic send")
+    await attach("notes.txt")
+    const staleDraft = await target.evaluate(() => localStorage.getItem("chat-input-drafts")!)
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    const contentUrl = await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sentAttachments(0)[0].contentUrl)
+    await input.fill("Next synthetic draft")
+    if (laterFile) await attach("later.txt")
+    await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.resolveSend(0, "draft-alpha"))
+    await target.getByRole("link", { name: "Back to landing" }).click()
+    await target.getByRole("button", { name: "alpha", exact: true }).waitFor()
+    expect(await input.inputValue()).toBe("Next synthetic draft")
+    const sentChip = target.getByRole("button", { name: "Remove notes.txt" })
+    const restoredAfterAck = await sentChip.count()
+    if (restoredAfterAck) await sentChip.click()
+    if (laterFile) {
+      await Promise.all([
+        target.waitForResponse(r => r.request().method() === "DELETE" && new URL(r.url()).pathname.endsWith("/later.txt")),
+        target.getByRole("button", { name: "Remove later.txt" }).click(),
+      ])
+    }
+    // A stale window or an earlier client can still have the old draft. Removing
+    // its chip must not unlink the very URL captured from the accepted chat.send.
+    await target.evaluate(stale => localStorage.setItem("chat-input-drafts", stale), staleDraft)
+    await target.reload()
+    await sentChip.click()
+    await sentChip.waitFor({ state: "detached" })
+    const response = await target.evaluate(async url => {
+      const r = await fetch(url)
+      return [r.status, await r.text()]
+    }, contentUrl)
+    expect(response).toEqual([200, "fixture bytes: notes.txt"])
+    expect(restoredAfterAck).toBe(0)
+    expect(deleted).toEqual(laterFile ? ["later.txt"] : [])
+  } finally {
+    await rm(folder, { recursive: true, force: true })
+  }
+})
 
 describe("mounted useAppState history races", () => {
   test("a late landing ACK cannot redirect or replace a newer send", async () => {
