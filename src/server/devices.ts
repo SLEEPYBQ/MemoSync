@@ -141,6 +141,10 @@ export class DeviceStore {
   readonly filePath: string
   private readonly now: () => number
   private devices = new Map<string, StoredDevice>()
+  // The file-write throttle must compare against the last timestamp that
+  // actually reached devices.json, not the in-memory timestamp refreshed by
+  // every request; otherwise steady traffic can starve persistence forever.
+  private readonly lastSeenPersistedAt = new Map<string, number>()
   private readonly pairingRequests = new Map<string, PairingRequest>()
   private readonly pairingRequestIps = new Map<string, number[]>()
   private readonly revokeListeners = new Set<(deviceId: string) => void>()
@@ -321,6 +325,7 @@ export class DeviceStore {
       nextDevices.set(device.id, device)
       await this.writeDevicesFile(nextDevices)
       this.devices = nextDevices
+      this.lastSeenPersistedAt.set(device.id, now)
 
       request.status = "approved"
       request.approvedAt = now
@@ -410,9 +415,13 @@ export class DeviceStore {
       const nextDevices = new Map(this.devices)
       nextDevices.set(updated.id, updated)
       // Every API request re-authenticates; persisting each one would rewrite
-      // the file constantly. A minute-old lastSeenAt is granular enough.
-      if (updated.lastSeenAt - device.lastSeenAt >= 60_000) {
+      // the file constantly. A minute-old persisted lastSeenAt is granular
+      // enough, but the comparison must use the persisted watermark: the
+      // in-memory device timestamp advances on every request.
+      const persistedLastSeenAt = this.lastSeenPersistedAt.get(device.id) ?? device.lastSeenAt
+      if (updated.lastSeenAt - persistedLastSeenAt >= 60_000) {
         await this.writeDevicesFile(nextDevices)
+        this.lastSeenPersistedAt.set(device.id, updated.lastSeenAt)
       }
       this.devices = nextDevices
       return redactDevice(updated)

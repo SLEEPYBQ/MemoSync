@@ -260,6 +260,29 @@ describe("DeviceStore limits and redaction", () => {
     expect(second?.lastSeenAt).toBe(clock.value)
     expect(second?.lastSeenAt).toBeGreaterThan(first?.lastSeenAt ?? 0)
   })
+
+  test("persists lastSeenAt once a minute even when steady requests keep refreshing memory", async () => {
+    const { store, dataDir, clock } = await createStore()
+    const request = await store.createRequest("Phone", "198.51.100.91")
+    const approved = await store.approveRequest(request.id)
+    const pairedAt = clock.value
+
+    // Requests every thirty seconds keep the in-memory delta below the
+    // throttle interval. Persistence must still use the watermark of the last
+    // successful devices.json write, or the file would never advance again.
+    clock.advance(30_000)
+    await store.authenticateToken(approved.token)
+    clock.advance(30_000)
+    await store.authenticateToken(approved.token)
+    clock.advance(30_000)
+    await store.authenticateToken(approved.token)
+    clock.advance(30_000)
+    await store.authenticateToken(approved.token)
+
+    const reloaded = new DeviceStore(dataDir, { now: () => clock.value })
+    await reloaded.initialize()
+    expect(reloaded.listDevices()[0]?.lastSeenAt).toBe(pairedAt + 120_000)
+  })
 })
 
 describe("DeviceStore corrupt persistence recovery", () => {

@@ -571,6 +571,11 @@ describe("remote access HTTP integration", () => {
       })
       expect(settingsWrite.type).toBe("error")
       expect(settingsWrite.message).toContain("requires host access")
+      // Prove the rejected write was inert before the host write below: the
+      // initial persisted value is true, so a final true assertion alone
+      // could be satisfied merely by the host overwriting a bad mutation.
+      const afterRejectedWrite = await fetch(`${baseUrl}/api/remote-access/status`, { headers: authHeaders })
+      expect(await afterRejectedWrite.json()).toMatchObject({ enabled: true })
 
       const chatCreate = await sendWsCommand(deviceWs, "device-chat-create", {
         type: "chat.create",
@@ -589,7 +594,7 @@ describe("remote access HTTP integration", () => {
     try {
       const hostWrite = await sendWsCommand(hostWs, "host-settings-write", {
         type: "settings.writeAppSettingsPatch",
-        patch: { remoteAccess: { enabled: true } },
+        patch: { remoteAccess: { enabled: false } },
       })
       expect(hostWrite.type).toBe("ack")
     } finally {
@@ -597,7 +602,7 @@ describe("remote access HTTP integration", () => {
     }
 
     const status = await fetch(`${baseUrl}/api/remote-access/status`, { headers: authHeaders })
-    expect(await status.json()).toMatchObject({ enabled: true })
+    expect(await status.json()).toMatchObject({ enabled: false })
   })
 
   test("lets a loopback websocket write app settings while no password exists", async () => {
