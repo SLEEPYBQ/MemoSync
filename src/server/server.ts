@@ -7,7 +7,8 @@ import { uiJson } from "../shared/ui-copy"
 import { open, stat, type FileHandle } from "node:fs/promises"
 import { isUtf8 } from "node:buffer"
 import { createHash } from "node:crypto"
-import { homedir } from "node:os"
+import { homedir, networkInterfaces } from "node:os"
+import type { ServerWebSocket } from "bun"
 import path from "node:path"
 import { APP_NAME, APP_VERSION, LOG_PREFIX, getDataDir, getRuntimeProfile, SELF_UPDATE_ENABLED } from "../shared/branding"
 import {
@@ -27,6 +28,7 @@ import { AppSettingsManager } from "./app-settings"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import type { UpdateInstallAttemptResult } from "./cli-runtime"
 import { acquireDataDirectoryLock, acquireDataRootBootstrapLock } from "./data-directory-lock"
+import { DeviceStore, DeviceStoreError, type Device } from "./devices"
 import { DiffStore } from "./diff-store"
 import { discoverProjects, type DiscoveredProject } from "./discovery"
 import { EventStore } from "./event-store"
@@ -204,9 +206,237 @@ export function createAuditAdmission(args: {
   }
 }
 
+function ipv4Octets(address: string) {
+  const parts = address.split(".")
+  if (parts.length !== 4) return null
+  const octets = parts.map((part) => Number(part))
+  if (parts.some((part) => !/^\d+$/.test(part)) || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) {
+    return null
+  }
+  return octets
+}
+
+/** True for IPv4/IPv6 loopback addresses reported by server.requestIP(). */
+export function isLoopbackClientAddress(address: string | null | undefined) {
+  if (!address) return false
+  const normalized = address.trim().toLowerCase().replace(/^\[|\]$/g, "").split("%", 1)[0]
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1" || normalized === "0000:0000:0000:0000:0000:0000:0000:0001") {
+    return true
+  }
+  const ipv4 = normalized.startsWith("::ffff:") ? normalized.slice("::ffff:".length) : normalized
+  const octets = ipv4Octets(ipv4)
+  return octets?.[0] === 127
+}
+
+/**
+ * The single /api and /ws authorization rule. Loopback is trusted only when
+ * no password exists; every non-loopback client needs a session or device token.
+ */
+export function authorizeMemoSyncRequest(args: {
+  isLoopbackClient: boolean
+  passwordAuthEnabled: boolean
+  sessionAuthenticated: boolean
+  deviceAuthenticated: boolean
+}) {
+  return args.deviceAuthenticated
+    || (args.passwordAuthEnabled && args.sessionAuthenticated)
+    || (!args.passwordAuthEnabled && args.isLoopbackClient)
+}
+
+// Device bearer tokens are replayable by an attacker on the network path;
+// LAN pairing is intentionally limited to trusted networks until token-bound
+// transport hardening lands.
+function readDeviceBearerToken(req: Request) {
+  const header = req.headers.get("authorization")
+  const match = header?.match(/^Bearer\s+(\S+)\s*$/i)
+  return match?.[1] ?? null
+}
+
+export function isLoopbackBindHost(host: string) {
+  const normalized = host.trim().toLowerCase().replace(/^\[|\]$/g, "")
+  return normalized === "localhost" || isLoopbackClientAddress(normalized)
+}
+
+function usableLanIpv4(address: string) {
+  const octets = ipv4Octets(address)
+  if (!octets || octets.every((part) => part === 0)) return false
+  // Automatic link-local addresses are not useful pairing targets in the UI.
+  return !(octets[0] === 169 && octets[1] === 254)
+}
+
+/** First usable non-internal IPv4 URL per interface, resolved on every read. */
+export function listRemoteAccessLanUrls(port: number) {
+  const urls: string[] = []
+  for (const entries of Object.values(networkInterfaces())) {
+    const address = entries?.find((entry) => entry.family === "IPv4" && !entry.internal && usableLanIpv4(entry.address))?.address
+    if (address) urls.push(`http://${address}:${port}`)
+  }
+  return urls
+}
+
+function deviceStoreErrorResponse(error: unknown) {
+  if (!(error instanceof DeviceStoreError)) return null
+  if (error.code === "invalid_device_name") {
+    return uiJson({ error: error.message }, { status: 400 })
+  }
+  if (error.code === "rate_limited") {
+    return uiJson({ error: error.message }, { status: 429, headers: { "Retry-After": "60" } })
+  }
+  if (error.code === "request_not_found") {
+    return uiJson({ error: error.message }, { status: 404 })
+  }
+  return uiJson({ error: error.message }, { status: 409 })
+}
+
+async function readJsonObject(req: Request) {
+  try {
+    const payload = await req.json() as unknown
+    return payload && typeof payload === "object" && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : null
+  } catch {
+    return null
+  }
+}
+
+function decodedPathSegment(value: string) {
+  try {
+    return decodeURIComponent(value)
+  } catch {
+    return value
+  }
+}
+
+async function handlePublicPairingEndpoint(args: {
+  req: Request
+  url: URL
+  deviceStore: DeviceStore
+  clientIp: string
+  remoteAccessEnabled: () => boolean
+}) {
+  const { req, url, deviceStore } = args
+  if (url.pathname === "/api/pairing/requests") {
+    if (req.method !== "POST") {
+      return new Response(null, { status: 405, headers: { Allow: "POST" } })
+    }
+    if (!args.remoteAccessEnabled()) {
+      return uiJson({ error: "Remote access is disabled" }, { status: 403 })
+    }
+    const payload = await readJsonObject(req)
+    const deviceName = typeof payload?.deviceName === "string" ? payload.deviceName : ""
+    try {
+      const request = await deviceStore.createRequest(deviceName, args.clientIp)
+      return uiJson({ requestId: request.id, code: request.code }, { status: 201 })
+    } catch (error) {
+      const response = deviceStoreErrorResponse(error)
+      if (response) return response
+      throw error
+    }
+  }
+
+  const statusMatch = url.pathname.match(/^\/api\/pairing\/requests\/([^/]+)\/status$/)
+  if (statusMatch) {
+    if (req.method !== "GET") {
+      return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    const code = url.searchParams.get("code")
+    if (!code) {
+      return uiJson({ error: "Pairing code is required" }, { status: 400 })
+    }
+    const status = deviceStore.getRequestStatus(decodedPathSegment(statusMatch[1]), code)
+    if (!status) {
+      return uiJson({ error: "Pairing request not found" }, { status: 404 })
+    }
+    return uiJson(status)
+  }
+
+  return null
+}
+
+async function handleAuthenticatedRemoteAccessEndpoint(args: {
+  req: Request
+  url: URL
+  deviceStore: DeviceStore
+  port: number
+  bindHost: string
+  remoteAccessEnabled: () => boolean
+}) {
+  const { req, url, deviceStore } = args
+  if (url.pathname === "/api/pairing/pending") {
+    if (req.method !== "GET") {
+      return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    return uiJson({ requests: deviceStore.listPendingRequests() })
+  }
+
+  const decisionMatch = url.pathname.match(/^\/api\/pairing\/requests\/([^/]+)\/(approve|deny)$/)
+  if (decisionMatch) {
+    if (req.method !== "POST") {
+      return new Response(null, { status: 405, headers: { Allow: "POST" } })
+    }
+    const id = decodedPathSegment(decisionMatch[1])
+    try {
+      if (decisionMatch[2] === "approve") {
+        // The host never needs the bearer secret; the paired device reads it
+        // once it presents its pairing code at the status endpoint.
+        const { device } = await deviceStore.approveRequest(id)
+        return uiJson({ device })
+      }
+      await deviceStore.denyRequest(id)
+      return uiJson({ ok: true })
+    } catch (error) {
+      const response = deviceStoreErrorResponse(error)
+      if (response) return response
+      throw error
+    }
+  }
+
+  if (url.pathname === "/api/devices") {
+    if (req.method !== "GET") {
+      return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    return uiJson({ devices: deviceStore.listDevices() })
+  }
+
+  const revokeMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/revoke$/)
+  if (revokeMatch) {
+    if (req.method !== "POST") {
+      return new Response(null, { status: 405, headers: { Allow: "POST" } })
+    }
+    const revoked = await deviceStore.revokeDevice(decodedPathSegment(revokeMatch[1]))
+    if (!revoked) {
+      return uiJson({ error: "Device not found" }, { status: 404 })
+    }
+    return uiJson({ ok: true })
+  }
+
+  if (url.pathname === "/api/remote-access/status") {
+    if (req.method !== "GET") {
+      return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    const enabled = args.remoteAccessEnabled()
+    return uiJson({
+      enabled,
+      // active is the immutable bind state for this process, not the desired
+      // setting. The UI compares the two to explain restart-pending changes.
+      active: !isLoopbackBindHost(args.bindHost),
+      bindHost: args.bindHost,
+      port: args.port,
+      lanUrls: listRemoteAccessLanUrls(args.port),
+    })
+  }
+
+  return null
+}
+
 export interface StartMemoSyncServerOptions {
   port?: number
   host?: string
+  /**
+   * Overrides the persisted remote-access setting when present. Enabled remote
+   * access binds 0.0.0.0 at startup unless host was explicitly configured.
+   */
+  remoteAccess?: boolean
   openBrowser?: boolean
   share?: ShareMode
   dataDir?: string
@@ -320,7 +550,6 @@ async function startLockedMemoSyncServer(
   onStartupCleanup: (cleanup: () => void | Promise<void>) => void,
 ) {
   const port = options.port ?? 3210
-  const hostname = options.host ?? "127.0.0.1"
   const strictPort = options.strictPort ?? false
   const runtimeProfile = getRuntimeProfile()
   // Resolve the login environment alongside store setup, before any agent can resume.
@@ -358,6 +587,8 @@ async function startLockedMemoSyncServer(
   const machineDisplayName = getMachineDisplayName()
   await store.initialize()
   await diffStore.initialize()
+  const deviceStore = new DeviceStore(store.dataDir)
+  await deviceStore.initialize()
   await store.migrateLegacyTranscripts(options.onMigrationProgress)
   // Memory layer (MemoSync): SQLite store + Markdown projection, rooted in the
   // same data dir as the event store. Engine-agnostic; consumed by the memory
@@ -391,6 +622,12 @@ async function startLockedMemoSyncServer(
   const appSettings = new AppSettingsManager(path.join(store.dataDir, "settings.json"))
   onStartupCleanup(() => appSettings.dispose())
   await appSettings.initialize()
+  // The setting is read live by the routes, but the bind host itself is fixed
+  // for the lifetime of this Bun server and changes only on the next start.
+  const remoteAccessEnabled = () => options.remoteAccess ?? appSettings.getSnapshot().remoteAccess.enabled
+  // Callers turn their host env vars into this explicit option (scripts/serve
+  // uses HOST); an explicit value always wins over the remote-access default.
+  const hostname = options.host ?? (remoteAccessEnabled() ? "0.0.0.0" : "127.0.0.1")
   let prevMemoryPreviewSettings = JSON.stringify(appSettings.getSnapshot().memoryPreview)
   appSettings.onChange((snapshot) => {
     const next = JSON.stringify(snapshot.memoryPreview)
@@ -596,10 +833,43 @@ async function startLockedMemoSyncServer(
   onStartupCleanup(() => router.dispose())
   const traceCorrection = createTraceCorrectionTransport(store, chatId => router.broadcastChatStateImmediately(chatId))
 
+  const deviceSockets = new Map<string, Set<ServerWebSocket<ClientState>>>()
+  const trackDeviceSocket = (ws: ServerWebSocket<ClientState>) => {
+    const deviceId = ws.data.deviceId
+    if (!deviceId) return
+    const sockets = deviceSockets.get(deviceId) ?? new Set<ServerWebSocket<ClientState>>()
+    sockets.add(ws)
+    deviceSockets.set(deviceId, sockets)
+  }
+  const untrackDeviceSocket = (ws: ServerWebSocket<ClientState>) => {
+    const deviceId = ws.data.deviceId
+    if (!deviceId) return
+    const sockets = deviceSockets.get(deviceId)
+    if (!sockets) return
+    sockets.delete(ws)
+    if (!sockets.size) deviceSockets.delete(deviceId)
+  }
+  let serverInitiatedWsClose = false
+  const closeRevokedDeviceSocket = (socket: ServerWebSocket<ClientState>) => {
+    try {
+      serverInitiatedWsClose = true
+      socket.close(4001, "Device revoked")
+    } catch {
+      // Already-closing sockets do not need another close frame.
+    }
+  }
+  const removeDeviceRevokeListener = deviceStore.onRevoke((deviceId) => {
+    for (const socket of [...(deviceSockets.get(deviceId) ?? [])]) {
+      closeRevokedDeviceSocket(socket)
+    }
+  })
+  onStartupCleanup(removeDeviceRevokeListener)
+
   const distDir = path.join(import.meta.dir, "..", "..", "dist", "client")
 
   const MAX_PORT_ATTEMPTS = 20
   let actualPort = port
+  let actualBindHost = hostname
 
   for (let attempt = 0; attempt < MAX_PORT_ATTEMPTS; attempt++) {
     try {
@@ -614,6 +884,7 @@ async function startLockedMemoSyncServer(
         maxRequestBodySize: MAX_REQUEST_BODY_SIZE_BYTES,
         async fetch(req, serverInstance) {
           const url = new URL(req.url)
+          const clientAddress = serverInstance.requestIP(req)?.address ?? null
 
           // Dev-server preview requests encode the target port in either a
           // localhost subdomain or /__memosync/preview/<port> path, then proxy
@@ -692,6 +963,28 @@ async function startLockedMemoSyncServer(
             return new Response("Forbidden", { status: 403 })
           }
 
+          let authenticatedDevice: Device | null = null
+          if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
+            const bearerToken = readDeviceBearerToken(req)
+            if (bearerToken) {
+              authenticatedDevice = await deviceStore.authenticateToken(bearerToken)
+            }
+          }
+
+          // Pairing creation and status polling are the only unauthenticated
+          // /api routes. The code is the proof of possession for status reads;
+          // creation is rate-limited and exists only while remote access is on.
+          const publicPairingResponse = await handlePublicPairingEndpoint({
+            req,
+            url,
+            deviceStore,
+            clientIp: clientAddress ?? "unknown",
+            remoteAccessEnabled,
+          })
+          if (publicPairingResponse) {
+            return publicPairingResponse
+          }
+
           if (auth) {
             if (url.pathname === PREVIEW_GRANT_PATH) {
               if (req.method !== "GET") {
@@ -716,12 +1009,31 @@ async function startLockedMemoSyncServer(
               }
               return new Response(null, { status: 405, headers: { Allow: "GET, POST" } })
             }
-            if (url.pathname === "/ws") {
-              if (!auth.isAuthenticated(req)) {
-                return new Response("Unauthorized", { status: 401 })
-              }
-            } else if (url.pathname.startsWith("/api/") && !auth.isAuthenticated(req)) {
-              return uiJson({ error: "Unauthorized" }, { status: 401 })
+          }
+
+          if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
+            const authorized = authorizeMemoSyncRequest({
+              isLoopbackClient: isLoopbackClientAddress(clientAddress),
+              passwordAuthEnabled: auth !== null,
+              sessionAuthenticated: auth?.isAuthenticated(req) ?? false,
+              deviceAuthenticated: authenticatedDevice !== null,
+            })
+            if (!authorized) {
+              return url.pathname === "/ws"
+                ? new Response("Unauthorized", { status: 401 })
+                : uiJson({ error: "Unauthorized" }, { status: 401 })
+            }
+
+            const remoteAccessResponse = await handleAuthenticatedRemoteAccessEndpoint({
+              req,
+              url,
+              deviceStore,
+              port: actualPort,
+              bindHost: actualBindHost,
+              remoteAccessEnabled,
+            })
+            if (remoteAccessResponse) {
+              return remoteAccessResponse
             }
           }
 
@@ -730,6 +1042,7 @@ async function startLockedMemoSyncServer(
               data: {
                 subscriptions: new Map(),
                 snapshotSignatures: new Map(),
+                ...(authenticatedDevice ? { deviceId: authenticatedDevice.id } : {}),
               },
             })
             return upgraded ? undefined : new Response("WebSocket upgrade failed", { status: 400 })
@@ -816,6 +1129,14 @@ async function startLockedMemoSyncServer(
         },
         websocket: {
           open(ws) {
+            const deviceId = ws.data.deviceId
+            if (deviceId && !deviceStore.isDeviceActive(deviceId)) {
+              // The token can be revoked after upgrade authentication but before
+              // this open callback; do not register or send snapshots to it.
+              closeRevokedDeviceSocket(ws)
+              return
+            }
+            trackDeviceSocket(ws)
             router.handleOpen(ws)
           },
           message(ws, raw) {
@@ -825,12 +1146,14 @@ async function startLockedMemoSyncServer(
             void router.handleDrain(ws)
           },
           close(ws) {
+            untrackDeviceSocket(ws)
             router.handleClose(ws)
           },
         },
       })
       // port 0 = ephemeral: adopt whatever the OS actually bound.
       actualPort = server.port ?? actualPort
+      actualBindHost = server.hostname ?? hostname
       break
     } catch (err: unknown) {
       const isAddrInUse =
@@ -871,7 +1194,29 @@ async function startLockedMemoSyncServer(
         shutdownErrors.push(error)
       }
     }
-    await attempt(() => server.stop(true))
+    // Bun's stop promise can remain pending after a server-initiated WebSocket
+    // close even though the socket is gone (observed with device revocation).
+    // Only that case gets a bounded wait; stop(true) has already initiated
+    // teardown synchronously, so the rest of shutdown need not block on it.
+    const stopHttpServer = async () => {
+      const stopped = server.stop(true).then(() => "stopped" as const)
+      if (!serverInitiatedWsClose) {
+        await stopped
+        return
+      }
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const timedOut = new Promise<"timed-out">((resolve) => {
+        timeout = setTimeout(() => resolve("timed-out"), 250)
+      })
+      try {
+        if (await Promise.race([stopped, timedOut]) === "timed-out") {
+          void stopped.catch((error: unknown) => console.warn(`${LOG_PREFIX} http server stop failed after shutdown continued:`, error))
+        }
+      } finally {
+        if (timeout) clearTimeout(timeout)
+      }
+    }
+    await attempt(stopHttpServer)
     await attempt(stopTraceCorrectionDelivery)
     for (const chatId of [...activeAgent.activeTurns.keys()]) {
       await attempt(() => activeAgent.cancel(chatId))
@@ -880,6 +1225,7 @@ async function startLockedMemoSyncServer(
     await attempt(() => activeAgent.forceStopAllTurns())
     await attempt(() => stopGateway())
     await attempt(() => router.dispose())
+    await attempt(() => removeDeviceRevokeListener())
     await attempt(() => hostActions.close())
     await attempt(() => appSettings.dispose())
     await attempt(() => keybindings.dispose())
@@ -895,6 +1241,7 @@ async function startLockedMemoSyncServer(
 
   return {
     port: actualPort,
+    host: actualBindHost,
     store,
     diffStore,
     updateManager,

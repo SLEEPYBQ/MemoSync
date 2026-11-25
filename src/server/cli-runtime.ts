@@ -11,7 +11,8 @@ import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareT
 
 export interface CliOptions {
   port: number
-  host: string
+  /** Undefined means the server chooses its default bind host. */
+  host?: string
   openBrowser: boolean
   share: ShareMode
   password: string | null
@@ -50,7 +51,7 @@ export interface CliRuntimeDeps {
     update?: CliUpdateOptions
     onMigrationProgress?: (message: string) => void
     trustProxy?: boolean
-  }) => Promise<{ port: number; stop: () => Promise<void> }>
+  }) => Promise<{ port: number; host?: string; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   openUrl: (url: string) => void
@@ -101,7 +102,7 @@ Options:
 export function parseArgs(argv: string[]): ParsedArgs {
   // .env's PORT is the documented override for `bun run start`; --port wins.
   let port = Number(process.env.PORT) || PROD_SERVER_PORT
-  let host = "127.0.0.1"
+  let host: string | undefined
   let openBrowser = true
   let share: ShareMode = false
   let password: string | null = null
@@ -178,7 +179,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     kind: "run",
     options: {
       port,
-      host,
+      ...(host === undefined ? {} : { host }),
       openBrowser,
       share,
       password,
@@ -273,7 +274,7 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "restarting", reason: shouldRestart }
   }
 
-  const { port, stop } = await deps.startServer({
+  const startedServer = await deps.startServer({
     ...parsedArgs.options,
     trustProxy: isShareEnabled(parsedArgs.options.share),
     onMigrationProgress: deps.log,
@@ -287,7 +288,8 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
       : undefined,
   })
-  const bindHost = parsedArgs.options.host
+  const { port, stop } = startedServer
+  const bindHost = startedServer.host ?? parsedArgs.options.host ?? "127.0.0.1"
   const displayHost = isShareEnabled(parsedArgs.options.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
   let shareTunnelStop: (() => void) | null = null

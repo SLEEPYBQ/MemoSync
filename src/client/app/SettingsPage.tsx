@@ -15,6 +15,7 @@ import { DesktopUpdateSection } from "./settings/DesktopUpdateSection"
 import { MemorySection } from "./settings/MemorySection"
 import { ProvidersSection } from "./settings/ProvidersSection"
 import { KeybindingsSection } from "./settings/KeybindingsSection"
+import { SharingAccessSection } from "./settings/SharingAccessSection"
 import { SkillsSection } from "./settings/SkillsSection"
 import {
   ChangelogSection,
@@ -393,6 +394,8 @@ export function SettingsPage() {
                   <ProvidersSection state={state} hash={location.hash} />
                 ) : selectedPage === "keybindings" ? (
                   <KeybindingsSection state={state} />
+                ) : selectedPage === "sharing" ? (
+                  <SharingAccessSection state={state} />
                 ) : selectedPage === "skills" ? (
                   <SkillsSection state={state} />
                 ) : (

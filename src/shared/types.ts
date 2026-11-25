@@ -594,6 +594,11 @@ export interface MemoryPreviewSettings {
   confirmationMode?: MemoryConfirmationMode
 }
 
+export interface RemoteAccessSettings {
+  /** Opt-in LAN exposure and device pairing. Binding changes apply at server startup. */
+  enabled: boolean
+}
+
 export interface AppSettingsSnapshot {
   browserSettingsMigrated: boolean
   theme: AppThemePreference
@@ -614,6 +619,7 @@ export interface AppSettingsSnapshot {
   providerDefaults: ChatProviderPreferences
   memory: MemorySettings
   memoryPreview: MemoryPreviewSettings
+  remoteAccess: RemoteAccessSettings
   warning: string | null
   filePathDisplay: string
 }
@@ -637,6 +643,7 @@ export interface AppSettingsPatch {
   }
   memory?: Partial<MemorySettings>
   memoryPreview?: Partial<MemoryPreviewSettings>
+  remoteAccess?: Partial<RemoteAccessSettings>
 }
 
 export interface LlmProviderFile {

@@ -22,7 +22,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
     startServer: [] as Array<{
       port: number
-      host: string
+      host?: string
       openBrowser: boolean
       share: false | "quick" | { kind: "token"; token: string }
       password: string | null
@@ -101,7 +101,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 4000,
-        host: "127.0.0.1",
         openBrowser: false,
         share: false,
         password: null,
@@ -115,7 +114,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: false,
         password: null,
@@ -143,7 +141,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: "quick",
         password: null,
@@ -157,7 +154,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: { kind: "token", token: "secret-token" },
         password: null,
@@ -171,7 +167,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: false,
         password: "secret",
@@ -309,7 +304,6 @@ describe("runCli", () => {
     expect(calls.startServer).toHaveLength(1)
     expect(calls.startServer[0]).toMatchObject({
       port: 4000,
-      host: "127.0.0.1",
       openBrowser: false,
       share: false,
       password: null,
@@ -317,8 +311,23 @@ describe("runCli", () => {
       trustProxy: false,
       update: undefined,
     })
+    expect(calls.startServer[0]?.host).toBeUndefined()
     expect(calls.openUrl).toEqual([])
     expect(calls.log).toContain("[memosync] data dir: ~/.memosync/data")
+  })
+
+  test("logs the actual bind host chosen by the server", async () => {
+    const { calls, deps } = createDeps({
+      startServer: async (options) => ({
+        port: options.port,
+        host: "0.0.0.0",
+        stop: async () => {},
+      }),
+    })
+
+    await runCli(["--port", "4000", "--no-open"], deps)
+
+    expect(calls.log).toContain("[memosync] listening on http://0.0.0.0:4000")
   })
 
   test("logs the dev data dir when the dev runtime profile is active", async () => {

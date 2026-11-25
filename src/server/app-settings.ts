@@ -32,6 +32,7 @@ import {
   type PiModelOptions,
   type OpencodeModelOptions,
   type ProviderPreference,
+  type RemoteAccessSettings,
   type SubmitWhileRunning,
 } from "../shared/types"
 
@@ -68,6 +69,9 @@ interface AppSettingsFile {
     autoProceedWhenEmpty?: unknown
     confirmationMode?: unknown
   }
+  remoteAccess?: {
+    enabled?: unknown
+  }
 }
 
 function normalizeMemory(value: AppSettingsFile["memory"] | undefined): MemorySettings {
@@ -83,6 +87,12 @@ function normalizeMemoryPreview(value: AppSettingsFile["memoryPreview"] | undefi
     enabled: typeof value?.enabled === "boolean" ? value.enabled : true,
     autoProceedWhenEmpty: typeof value?.autoProceedWhenEmpty === "boolean" ? value.autoProceedWhenEmpty : true,
     confirmationMode: value?.confirmationMode === "every_turn" ? "every_turn" : "on_change",
+  }
+}
+
+function normalizeRemoteAccess(value: AppSettingsFile["remoteAccess"] | undefined): RemoteAccessSettings {
+  return {
+    enabled: typeof value?.enabled === "boolean" ? value.enabled : false,
   }
 }
 
@@ -303,6 +313,7 @@ function toFilePayload(state: AppSettingsState) {
     providerDefaults: state.providerDefaults,
     memory: state.memory,
     memoryPreview: state.memoryPreview,
+    remoteAccess: state.remoteAccess,
   }
 }
 
@@ -321,6 +332,7 @@ function toSnapshot(state: AppSettingsState): AppSettingsSnapshot {
     providerDefaults: state.providerDefaults,
     memory: state.memory,
     memoryPreview: state.memoryPreview,
+    remoteAccess: state.remoteAccess,
     warning: state.warning,
     filePathDisplay: state.filePathDisplay,
   }
@@ -360,6 +372,7 @@ function normalizeAppSettings(
     providerDefaults: normalizeProviderDefaults(source?.providerDefaults),
     memory: normalizeMemory(source?.memory),
     memoryPreview: normalizeMemoryPreview(source?.memoryPreview),
+    remoteAccess: normalizeRemoteAccess(source?.remoteAccess),
     warning: null,
     filePathDisplay: formatDisplayPath(filePath),
   }
@@ -391,6 +404,7 @@ function toComparablePayload(source: AppSettingsFile) {
     providerDefaults: source.providerDefaults,
     memory: source.memory,
     memoryPreview: source.memoryPreview,
+    remoteAccess: source.remoteAccess,
   }
 }
 
@@ -440,6 +454,10 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
     memoryPreview: {
       ...state.memoryPreview,
       ...patch.memoryPreview,
+    },
+    remoteAccess: {
+      ...state.remoteAccess,
+      ...patch.remoteAccess,
     },
   }, state.filePathDisplay).payload
 }

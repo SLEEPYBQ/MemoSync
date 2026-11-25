@@ -1,5 +1,5 @@
 import { t } from "../../i18n"
-import { Bell, BookText, Boxes, Brain, Command, Info, Palette, ScrollText, Settings2 } from "lucide-react"
+import { Bell, BookText, Boxes, Brain, Command, Info, Palette, ScrollText, Settings2, Share2 } from "lucide-react"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { KEYBINDING_ACTION_LABELS } from "../../lib/keybindings"
 import type { KeybindingAction } from "../../../shared/types"
@@ -55,6 +55,13 @@ export const SETTINGS_SECTIONS = [
     get label() { return t("settings:skills") },
     icon: BookText,
     get subtitle() { return t("settings:manageGloballyInstalledAgentSkillsFromTheActiveSkillLock") },
+  },
+  {
+    id: "sharing",
+    group: "other",
+    get label() { return t("settings:sharing") },
+    icon: Share2,
+    get subtitle() { return t("settings:sharingSubtitle") },
   },
   {
     id: "keybindings",
@@ -237,6 +244,12 @@ export const SETTINGS_ROWS = defineRows({
   },
   installedSkills: { sectionId: "skills", get title() { return t("settings:installed") }, get description() { return t("settings:globallyInstalledAgentSkills") } },
   discoverSkills: { sectionId: "skills", get title() { return t("settings:discover") }, get description() { return t("settings:searchSkillsToInstallGlobally") } },
+  remoteAccess: {
+    sectionId: "sharing",
+    get title() { return t("settings:remoteAccess") },
+    get description() { return t("settings:remoteAccessDescription") },
+    get keywords() { return t("settings:sharingSearchKeywords").split(",") },
+  },
 })
 
 export const KEYBINDING_ROWS: Record<Exclude<KeybindingAction, "openInEditor">, SettingsRowDef> = Object.fromEntries(

@@ -123,6 +123,8 @@ export interface ClientState {
   snapshotSignatures: Map<string, string>
   sidebarRevisions?: Map<string, number>
   protectedDraftChatIds?: Set<string>
+  /** Present when this socket authenticated with a paired-device bearer token. */
+  deviceId?: string
 }
 
 /** Model access service (src/server/model-access/). Optional so tests can omit it. */
@@ -586,6 +588,9 @@ export function createWsRouter({
       enabled: true,
       autoProceedWhenEmpty: true,
     },
+    remoteAccess: {
+      enabled: false,
+    },
     warning: null,
     filePathDisplay: "~/.memosync/data/settings.json",
   }
@@ -634,6 +639,10 @@ export function createWsRouter({
     memoryPreview: {
       ...snapshot.memoryPreview,
       ...patch.memoryPreview,
+    },
+    remoteAccess: {
+      ...snapshot.remoteAccess,
+      ...patch.remoteAccess,
     },
   })
   const resolvedAppSettings = {
