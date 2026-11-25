@@ -63,9 +63,11 @@ export function DesktopUpdateSection({ bridge, platform }: { bridge: DesktopUpda
   const error = requestError || snapshot?.error
   const progress = snapshot?.progress == null ? null : Math.round(Math.max(0, Math.min(100, snapshot.progress)))
   const version = snapshot?.latestVersion ?? ""
-  const action: UpdateAction = error ? "checkForUpdates" : status === "downloaded" ? "installUpdate" : status === "available" ? "downloadUpdate" : "checkForUpdates"
+  const action: UpdateAction = status === "downloaded" ? "installUpdate" : !error && status === "available" ? "downloadUpdate" : "checkForUpdates"
+  const installLabel = snapshot?.installMode === "appimage" ? t("settings:desktopUpdateShowAppImage")
+    : snapshot?.installMode === "automatic" ? t("settings:desktopUpdateRestart") : t("settings:desktopUpdateOpenInstaller")
   const actionLabel = requestError
-    ? t("settings:desktopUpdateRetry")
+    ? status === "downloaded" ? installLabel : t("settings:desktopUpdateRetry")
     : status === "checking" || pending === "checkForUpdates"
     ? t("settings:checking")
     : status === "downloading" || pending === "downloadUpdate"
@@ -73,7 +75,7 @@ export function DesktopUpdateSection({ bridge, platform }: { bridge: DesktopUpda
       : status === "installing" || pending === "installUpdate"
         ? t("settings:desktopUpdateInstalling")
         : status === "downloaded"
-          ? snapshot?.installMode === "automatic" ? t("settings:desktopUpdateRestart") : t("settings:desktopUpdateOpenInstaller")
+          ? installLabel
           : status === "available"
             ? t("settings:desktopUpdateDownload")
             : error ? t("settings:desktopUpdateRetry") : t("settings:checkForUpdates")
@@ -94,7 +96,7 @@ export function DesktopUpdateSection({ bridge, platform }: { bridge: DesktopUpda
                 : status === "unsupported"
                   ? t("settings:desktopUpdateUnsupported")
                   : t("settings:desktopUpdateIdle")
-  const installHint = snapshot?.installMode === "installer"
+  const installHint = snapshot?.installMode === "appimage" ? t("settings:desktopUpdateAppImageHint") : snapshot?.installMode === "installer"
     ? platform === "darwin" ? t("settings:desktopUpdateMacHint") : t("settings:desktopUpdateInstallerHint")
     : status === "downloaded" ? t("settings:desktopUpdateRestartHint") : null
 
@@ -105,7 +107,7 @@ export function DesktopUpdateSection({ bridge, platform }: { bridge: DesktopUpda
         wideControl
         description={(
           <div className="space-y-1.5">
-            <p role="status" aria-live="polite">{error && status !== "unsupported" ? t("settings:desktopUpdateFailed") : statusText}</p>
+            <p role="status" aria-live="polite">{error && status !== "unsupported" && status !== "downloaded" ? t("settings:desktopUpdateFailed") : statusText}</p>
             {installHint ? <p>{installHint}</p> : null}
             {status === "downloading" ? (
               <div
@@ -123,6 +125,11 @@ export function DesktopUpdateSection({ bridge, platform }: { bridge: DesktopUpda
           </div>
         )}
       >
+        {status === "downloaded" ? (
+          <SettingsActionButton className="mr-1.5" disabled={busy} onClick={() => { void run("checkForUpdates") }}>
+            {t("settings:checkForUpdates")}
+          </SettingsActionButton>
+        ) : null}
         {status !== "unsupported" ? (
           <SettingsActionButton
             disabled={busy || (!snapshot && !requestError)}

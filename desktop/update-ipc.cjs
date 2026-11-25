@@ -13,7 +13,12 @@ function installUpdateHandlers({ ipcMain, updater, getMainWindow, getOrigin, con
         installation = (async () => {
           const snapshot = updater.getSnapshot()
           if (snapshot.status !== "downloaded") return snapshot
-          if (snapshot.installMode === "automatic" && !await confirmInstall()) return updater.getSnapshot()
+          if (snapshot.installMode === "automatic") {
+            const confirmed = await confirmInstall()
+            const current = updater.getSnapshot()
+            // A periodic check can supersede the download while the dialog is open.
+            if (!confirmed || current.status !== "downloaded" || current.latestVersion !== snapshot.latestVersion) return current
+          }
           return updater.installUpdate()
         })().finally(() => { installation = undefined })
       }

@@ -7,7 +7,7 @@ export interface DesktopUpdateSnapshot {
   progress: number | null
   error: string | null
   lastCheckedAt: number | null
-  installMode: "automatic" | "installer" | "unsupported"
+  installMode: "automatic" | "installer" | "appimage" | "unsupported"
 }
 
 export interface DesktopUpdatesBridge {

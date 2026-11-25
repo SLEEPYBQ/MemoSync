@@ -1,6 +1,6 @@
 const { createHash } = require("node:crypto")
-const { constants, createReadStream, existsSync } = require("node:fs")
-const { access, mkdir, open, rename, rm, stat } = require("node:fs/promises")
+const { createReadStream, existsSync } = require("node:fs")
+const { mkdir, mkdtemp, open, rename, rm, rmdir } = require("node:fs/promises")
 const path = require("node:path")
 
 const REPOSITORY = "SLEEPYBQ/MemoSync"
@@ -28,7 +28,7 @@ function getInstallMode({ isPackaged, platform, arch, env, execPath, exists = ex
   if (!isPackaged || !(platform === "darwin" ? ["arm64", "x64"].includes(arch) : ["win32", "linux"].includes(platform) && arch === "x64")) {
     return "unsupported"
   }
-  if (platform === "linux" && env.APPIMAGE) return "automatic"
+  if (platform === "linux" && env.APPIMAGE) return "appimage"
   if (platform === "win32" && exists(path.win32.join(path.win32.dirname(execPath), "Uninstall MemoSync.exe"))) return "automatic"
   return "installer"
 }
@@ -36,7 +36,7 @@ function getInstallMode({ isPackaged, platform, arch, env, execPath, exists = ex
 function installerName(version, platform, arch, mode) {
   if (platform === "darwin") return `MemoSync-${version}-macos-${arch}.dmg`
   if (platform === "win32") return `MemoSync-${version}-windows-${arch}-Setup.exe`
-  return `MemoSync-${version}-linux-${arch}.${mode === "automatic" ? "AppImage" : "deb"}`
+  return `MemoSync-${version}-linux-${arch}.${mode === "appimage" ? "AppImage" : "deb"}`
 }
 
 function parseRelease(body, { platform, arch, mode }) {
@@ -64,22 +64,10 @@ function parseChecksum(text, filename) {
   return matching[0][1].toLowerCase()
 }
 
-async function hashFile(filename) {
-  const hash = createHash("sha256")
+async function hashFile(filename, algorithm, encoding) {
+  const hash = createHash(algorithm)
   for await (const chunk of createReadStream(filename)) hash.update(chunk)
-  return hash.digest("hex")
-}
-
-async function verifyAppImageDestination(filename) {
-  if (typeof filename !== "string" || !path.isAbsolute(filename)) throw new Error("The current AppImage path is invalid. Reopen MemoSync from its AppImage.")
-  try {
-    if (!(await stat(filename)).isFile()) throw new Error("Not a file")
-    // AppImageUpdater replaces the file in its current directory. Check before
-    // shutting down the backend, so a read-only mount leaves the app usable.
-    await access(path.dirname(filename), constants.W_OK)
-  } catch {
-    throw new Error("The AppImage cannot be replaced in this folder. Move it to a writable folder and reopen MemoSync before updating.")
-  }
+  return hash.digest(encoding)
 }
 
 async function readText(response, limit) {
@@ -94,21 +82,27 @@ async function readText(response, limit) {
   return Buffer.concat(chunks).toString("utf8")
 }
 
-function validateNativeInfo(info, platform, arch) {
+function parseNativeRelease(info, platform, arch, mode) {
   const version = stableVersion(info?.version)
   if (!version || (info.tag != null && stableVersion(info.tag) !== version)) throw new Error("The release has an invalid stable version.")
-  const expected = installerName(version, platform, arch, "automatic")
+  const expected = installerName(version, platform, arch, mode)
+  const tag = info.tag ?? `v${version}`
   const names = platform === "win32"
     ? [expected, `MemoSync-${version}-windows-${arch}.zip`]
     : [expected, `MemoSync-${version}-linux-${arch}.deb`]
-  // The provider owns URL resolution. Its metadata must still name only our
-  // published files, never an absolute URL supplied by an update manifest.
-  if (!Array.isArray(info.files) || !info.files.some(file => file.url === expected)
-    || info.files.some(file => !names.includes(file.url))
+  // Only the checked platform asset from this repository's release is usable.
+  const matches = Array.isArray(info.files) ? info.files.filter(file => file?.url === expected) : []
+  const file = matches[0]
+  if (matches.length !== 1 || info.files.some(file => !names.includes(file?.url))
+    || typeof file.sha512 !== "string" || !/^[A-Za-z0-9+/]{86}==$/.test(file.sha512)
+    || !Number.isSafeInteger(file.size) || file.size <= 0 || file.size > MAX_PACKAGE_SIZE
     || (info.path != null && !names.includes(info.path))) {
     throw new Error("The release contains unexpected desktop update files.")
   }
-  return version
+  return {
+    version, releaseUrl: `${RELEASES_URL}/tag/${tag}`, sha512: file.sha512,
+    asset: { name: expected, url: `${RELEASES_URL}/download/${tag}/${expected}`, size: file.size },
+  }
 }
 
 /** Desktop-only updater. No renderer-provided paths, feeds, versions or commands. */
@@ -117,9 +111,9 @@ function createDesktopUpdater({
   platform = process.platform, arch = process.arch, env = process.env, execPath = process.execPath,
   exists = existsSync, fetch: fetchImpl = globalThis.fetch,
   getAutoUpdater = () => require("electron-updater").autoUpdater,
-  checkAppImage = verifyAppImageDestination,
 }) {
   const mode = getInstallMode({ isPackaged: app.isPackaged, platform, arch, env, execPath, exists })
+  const usesManifest = mode === "automatic" || mode === "appimage"
   const listeners = new Set()
   let snapshot = Object.freeze({
     status: mode === "unsupported" ? "unsupported" : "idle",
@@ -143,8 +137,18 @@ function createDesktopUpdater({
     return snapshot
   }
 
+  function errorMessage(error) {
+    // GitHubProvider embeds the Atom feed and a stack trace in this error.
+    if (error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED") return "Could not refresh the GitHub release feed. Please try again."
+    return error instanceof Error ? error.message : String(error)
+  }
+
   function fail(error) {
-    return publish({ status: "error", error: error instanceof Error ? error.message : String(error) })
+    return publish({ status: "error", error: errorMessage(error) })
+  }
+
+  function keepVerifiedDownload(error) {
+    return publish({ status: "downloaded", progress: 100, error: errorMessage(error) })
   }
 
   function getNativeUpdater() {
@@ -161,7 +165,9 @@ function createDesktopUpdater({
     const progress = ({ percent }) => {
       if (snapshot.status === "downloading" && Number.isFinite(percent)) publish({ progress: Math.max(0, Math.min(100, percent)) })
     }
-    const error = value => { fail(value) }
+    // check/download also reject their promises; only quitAndInstall reports
+    // failures solely via the error event.
+    const error = value => { if (snapshot.status === "installing") fail(value) }
     for (const pair of [["download-progress", progress], ["error", error]]) {
       nativeUpdater.on(...pair)
       nativeListeners.push(pair)
@@ -217,36 +223,65 @@ function createDesktopUpdater({
 
   function checkForUpdates() {
     if (snapshot.status === "installing") return Promise.resolve(snapshot)
-    if (downloaded) return Promise.resolve(publish({ status: "downloaded", error: null }))
     return run(async () => {
       publish({ status: "checking", error: null, progress: null })
+      let body
+      try {
+        body = await withSignal(20_000, async signal => {
+          // Same public tag lookup as electron-updater's GitHubProvider. A
+          // native check needn't spend/share an api.github.com REST request.
+          const response = usesManifest
+            ? await request(`${RELEASES_URL}/latest`, signal, "application/json")
+            : await request(LATEST_RELEASE_URL, signal, "application/vnd.github+json")
+          return JSON.parse(await readText(response, 2 * 1024 * 1024))
+        })
+      } catch (error) {
+        // A scheduled check while offline shouldn't strand a verified download.
+        if (downloaded) return keepVerifiedDownload(error)
+        release = null
+        throw error
+      }
+      const previous = release
+      const cached = downloaded
       release = null
-      const body = await withSignal(20_000, async signal => {
-        const response = await request(LATEST_RELEASE_URL, signal, "application/vnd.github+json")
-        return JSON.parse(await readText(response, 2 * 1024 * 1024))
-      })
+      downloaded = null
       let version = stableVersion(body?.tag_name)
       if (!version || body.draft || body.prerelease) throw new Error("No stable desktop release is available.")
       let releaseUrl = `${RELEASES_URL}/tag/${body.tag_name}`
       const newer = isNewerVersion(snapshot.currentVersion, version)
       // Releases published before in-app updates have no updater manifests.
       // Current/older versions must not report a spurious missing-manifest error.
-      if (newer && mode === "automatic") {
-        const result = await getNativeUpdater().checkForUpdates()
-        version = stableVersion(result?.updateInfo?.version)
-        if (!version) throw new Error("No stable desktop release is available.")
-        if (isNewerVersion(snapshot.currentVersion, version)) {
-          validateNativeInfo(result.updateInfo, platform, arch)
-          if (result.isUpdateAvailable === false) throw new Error("This update is not available for this system yet.")
-          nativeCancellation = result.cancellationToken
-          release = { version }
+      if (newer && usesManifest) {
+        let result
+        try { result = await getNativeUpdater().checkForUpdates() }
+        catch (error) {
+          // 6.8.11 wraps its own /latest transport errors as INVALID_RELEASE_FEED
+          // before it reads the manifest. Keep only the previously verified
+          // same-tag download, not a new target or a missing/invalid manifest.
+          const lookupFailed = error?.code === "ERR_UPDATER_INVALID_RELEASE_FEED" || !String(error?.code).startsWith("ERR_UPDATER_")
+          if (cached && previous.releaseUrl === releaseUrl && lookupFailed) {
+            release = previous
+            downloaded = cached
+            return keepVerifiedDownload(error)
+          }
+          throw error
         }
-        releaseUrl = `${RELEASES_URL}/tag/${result.updateInfo.tag || `v${version}`}`
+        const checked = parseNativeRelease(result?.updateInfo, platform, arch, mode)
+        version = checked.version
+        releaseUrl = checked.releaseUrl
+        if (isNewerVersion(snapshot.currentVersion, version)) {
+          if (result.isUpdateAvailable !== true) throw new Error("This update is not available for this system yet.")
+          release = checked
+          nativeCancellation = result.cancellationToken
+        }
       } else if (newer) {
         release = parseRelease(body, { platform, arch, mode })
       }
+      if (cached && release && previous.version === release.version && previous.asset.url === release.asset.url
+        && previous.asset.size === release.asset.size && previous.sha512 === release.sha512) downloaded = cached
       return publish({
-        status: release ? "available" : "up_to_date", latestVersion: version,
+        status: downloaded ? "downloaded" : release ? "available" : "up_to_date",
+        progress: downloaded ? 100 : null, latestVersion: version,
         releaseUrl, lastCheckedAt: Date.now(), error: null,
       })
     })
@@ -254,8 +289,8 @@ function createDesktopUpdater({
 
   function downloadUpdate() {
     if (snapshot.status === "installing") return Promise.resolve(snapshot)
-    if (downloaded) return Promise.resolve(publish({ status: "downloaded", error: null }))
     return run(async () => {
+      if (downloaded) return publish({ status: "downloaded", error: null })
       if (!release) throw new Error("Check for a newer version before downloading an update.")
       publish({ status: "downloading", progress: 0, error: null })
       if (mode === "automatic") {
@@ -264,18 +299,32 @@ function createDesktopUpdater({
       } else {
         downloaded = await withSignal(30 * 60_000, async signal => {
           const { asset, checksums } = release
-          const checksumResponse = await request(checksums.url, signal)
-          const checksum = parseChecksum(await readText(checksumResponse, 64 * 1024), asset.name)
-          await rm(directory, { recursive: true, force: true })
-          await mkdir(directory, { recursive: true, mode: 0o700 })
-          const filename = path.join(directory, asset.name)
+          const appImage = mode === "appimage"
+          const algorithm = appImage ? "sha512" : "sha256"
+          const encoding = appImage ? "base64" : "hex"
+          let checksum = release.sha512
+          let folder = directory
+          if (appImage) {
+            // 6.8.11's AppImageUpdater unlinks APPIMAGE before moving the
+            // replacement and launches it before the old instance quits. Never
+            // modify that path or run from a disposable updater cache.
+            const downloads = app.getPath("downloads")
+            await mkdir(downloads, { recursive: true })
+            folder = await mkdtemp(path.join(downloads, `MemoSync-${release.version}-`))
+          } else {
+            const checksumResponse = await request(checksums.url, signal)
+            checksum = parseChecksum(await readText(checksumResponse, 64 * 1024), asset.name)
+            await rm(directory, { recursive: true, force: true })
+            await mkdir(directory, { recursive: true, mode: 0o700 })
+          }
+          const filename = path.join(folder, asset.name)
           const partial = `${filename}.partial`
           let file
           try {
             const response = await request(asset.url, signal)
             if (!response.body) throw new Error("The update server returned an empty installer.")
             file = await open(partial, "wx", 0o600)
-            const hash = createHash("sha256")
+            const hash = createHash(algorithm)
             let received = 0
             let lastProgress = -1
             for await (const chunk of response.body) {
@@ -287,14 +336,16 @@ function createDesktopUpdater({
               const progress = Math.floor(received * 100 / asset.size)
               if (progress !== lastProgress) { lastProgress = progress; publish({ progress }) }
             }
+            if (received !== asset.size || hash.digest(encoding) !== checksum) throw new Error("The installer checksum did not match. Please download the update again.")
+            if (appImage) await file.chmod(0o755)
             await file.close()
             file = null
-            if (received !== asset.size || hash.digest("hex") !== checksum) throw new Error("The installer checksum did not match. Please download the update again.")
             await rename(partial, filename)
-            return { filename, checksum }
+            return { filename, checksum, algorithm, encoding }
           } catch (error) {
             await file?.close().catch(() => {})
             await rm(partial, { force: true }).catch(() => {})
+            if (appImage) await rmdir(folder).catch(() => {}) // only if still empty
             throw error
           }
         })
@@ -309,23 +360,24 @@ function createDesktopUpdater({
       if (!downloaded) throw new Error("Download the update before installing it.")
       publish({ status: "installing", error: null })
       if (downloaded.native) {
-        if (platform === "linux") await checkAppImage(env.APPIMAGE)
         // The host must stop the Bun backend before the installer replaces files.
         await prepareInstall()
         if (!disposed) getNativeUpdater().quitAndInstall(false, true)
         return snapshot
       }
       let checksum
-      try { checksum = await hashFile(downloaded.filename) }
+      try { checksum = await hashFile(downloaded.filename, downloaded.algorithm, downloaded.encoding) }
       catch { checksum = null }
       if (checksum !== downloaded.checksum) {
         downloaded = null
         publish({ progress: null })
         throw new Error("The installer checksum did not match. Please download the update again.")
       }
-      const error = await shell.openPath(downloaded.filename)
-      if (error) throw new Error(`Could not open the installer: ${error}`)
-      // The system installer now owns the next step; keep it available to reopen.
+      // Opening only the folder avoids launching a second AppImage while the
+      // current instance owns the lock. The old launcher remains usable.
+      const error = await shell.openPath(mode === "appimage" ? path.dirname(downloaded.filename) : downloaded.filename)
+      if (error) throw new Error(`Could not open the ${mode === "appimage" ? "download folder" : "installer"}: ${error}`)
+      // The user owns the next step; keep the verified download available to reopen.
       return publish({ status: "downloaded", error: null })
     })
   }
@@ -344,4 +396,4 @@ function createDesktopUpdater({
   }
 }
 
-module.exports = { createDesktopUpdater, getInstallMode, installerName, isNewerVersion, parseChecksum, parseRelease, verifyAppImageDestination }
+module.exports = { createDesktopUpdater, getInstallMode, installerName, isNewerVersion, parseChecksum, parseRelease }
