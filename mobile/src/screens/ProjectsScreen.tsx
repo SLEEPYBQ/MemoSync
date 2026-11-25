@@ -146,7 +146,7 @@ export function ProjectsScreen({ navigation }: Props) {
 
   const sections = useMemo<ProjectSection[]>(() => {
     if (!sidebar) return []
-    return sidebar.projectGroups.map((group) => {
+    const result = sidebar.projectGroups.map((group) => {
       const chats: SidebarChatRow[] = [...group.chats, ...(group.previewChats ?? []), ...(group.olderChats ?? [])]
       // De-duplicate: a chat may appear in both `chats` and the preview/older windows.
       const seen = new Set<string>()
@@ -170,7 +170,21 @@ export function ProjectsScreen({ navigation }: Props) {
         data: rows,
       }
     })
-  }, [sidebar])
+    // Local discovery can know about a project before it has any chats; the
+    // sidebar only carries projects with chat rows. Keep those discovered or
+    // saved projects visible instead of silently dropping them.
+    const representedPaths = new Set(result.map((section) => section.localPath))
+    for (const project of localProjects?.projects ?? []) {
+      if (representedPaths.has(project.localPath)) continue
+      result.push({
+        key: `local:${project.localPath}`,
+        title: project.title,
+        localPath: project.localPath,
+        data: [],
+      })
+    }
+    return result
+  }, [sidebar, localProjects])
 
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
@@ -215,6 +229,13 @@ export function ProjectsScreen({ navigation }: Props) {
             <SectionPath path={section.localPath} colors={colors} />
           </View>
         )}
+        renderSectionFooter={({ section }) =>
+          section.data.length === 0 ? (
+            <View style={styles.rowOuter}>
+              <Text style={[styles.emptySectionText, { color: colors.mutedForeground }]}>No chats yet — start one in MemoSync on the host.</Text>
+            </View>
+          ) : null
+        }
         renderItem={({ item, index, section }) => {
           const first = index === 0
           const last = index === section.data.length - 1
@@ -304,6 +325,10 @@ const styles = StyleSheet.create({
   },
   rowOuter: {
     marginHorizontal: spacing.lg,
+  },
+  emptySectionText: {
+    ...MOBILE_TYPOGRAPHY.footnote,
+    paddingVertical: spacing.sm,
   },
   groupedRow: {
     borderWidth: StyleSheet.hairlineWidth,

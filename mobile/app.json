@@ -9,11 +9,18 @@
     "backgroundColor": "#fbfbfa",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.memosync.mobile"
+      "bundleIdentifier": "com.memosync.mobile",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "MemoSync connects to a MemoSync host on your local network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsLocalNetworking": true
+        }
+      }
     },
     "android": {
       "package": "com.memosync.mobile",
-      "edgeToEdgeEnabled": true
+      "edgeToEdgeEnabled": true,
+      "usesCleartextTraffic": true
     },
     "plugins": [
       [

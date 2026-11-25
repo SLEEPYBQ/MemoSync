@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   KeyboardAvoidingView,
   Platform,
@@ -23,8 +24,11 @@ import type {
   AskUserQuestionItem,
   AssistantTextEntry,
   ChatActivityStatus,
+  ChatHistoryPage,
   ChatSnapshot,
+  MemoryPreviewEntry,
   ResultEntry,
+  SidebarData,
   ToolCallEntry,
   ToolResultEntry,
   TranscriptEntry,
@@ -57,12 +61,39 @@ function isRenderable(entry: TranscriptEntry): boolean {
     (entry.kind === "user_prompt" ||
       entry.kind === "assistant_text" ||
       entry.kind === "tool_call" ||
+      entry.kind === "memory_preview" ||
       entry.kind === "result")
   )
 }
 
 function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEntry {
   return entry.kind === "assistant_text" && "text" in entry
+}
+
+function isMemoryPreviewEntry(entry: TranscriptEntry): entry is MemoryPreviewEntry {
+  return entry.kind === "memory_preview" && "previewId" in entry
+}
+
+function isMemoryPreviewDecisionEntry(entry: TranscriptEntry): entry is Extract<TranscriptEntry, { kind: "memory_preview_decision" }> {
+  return entry.kind === "memory_preview_decision" && "previewId" in entry
+}
+
+/** Append live entries without dropping rows that fall out of the host's
+ * 200-message sliding subscription window. Existing rows are replaced so hidden
+ * corrections/redactions still propagate. */
+function mergeTranscriptEntries(first: TranscriptEntry[], second: TranscriptEntry[]): TranscriptEntry[] {
+  const merged = [...first]
+  const positions = new Map(merged.map((entry, index) => [entry._id, index]))
+  for (const entry of second) {
+    const existing = positions.get(entry._id)
+    if (existing == null) {
+      positions.set(entry._id, merged.length)
+      merged.push(entry)
+    } else {
+      merged[existing] = entry
+    }
+  }
+  return merged
 }
 
 /** Some providers persist one reply as adjacent assistant fragments. Joining
@@ -195,6 +226,14 @@ function questionKey(question: AskUserQuestionItem): string {
   return question.id || question.question
 }
 
+function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
+  for (const group of data.projectGroups) {
+    const rows = [...group.chats, ...(group.previewChats ?? []), ...(group.olderChats ?? []), ...(group.archivedChats ?? [])]
+    if (rows.some((chat) => chat.chatId === chatId && chat.unread)) return true
+  }
+  return false
+}
+
 // -- transcript rows ------------------------------------------------------------
 
 function UserBubble({ entry }: { entry: UserPromptEntry }) {
@@ -287,6 +326,21 @@ function ResultRow({ entry }: { entry: ResultEntry }) {
   )
 }
 
+function MemoryReviewCard({ entry }: { entry: MemoryPreviewEntry }) {
+  const count = entry.memories?.length ?? 0
+  return (
+    <PendingApprovalCard
+      eyebrow="Memory review"
+      title="Memory review required"
+      detail={`MemoSync paused this message while preparing ${count === 1 ? "one memory item" : `${count} memory items`}.`}
+      unavailableReason="Review the proposed memory use in MemoSync on the host to continue this turn."
+      disabled
+      onRespond={() => {}}
+      options={[]}
+    />
+  )
+}
+
 function InteractiveToolCard(props: {
   entry: ToolCallEntry
   disabled: boolean
@@ -301,7 +355,7 @@ function InteractiveToolCard(props: {
 
   if (kind === "exit_plan_mode") {
     const input = (entry.tool.input ?? {}) as { summary?: string; plan?: string }
-    const planText = input.summary?.trim() || input.plan?.trim() || "The agent is ready to leave plan mode."
+    const planText = input.plan?.trim() || input.summary?.trim() || "The agent is ready to leave plan mode."
     return (
       <PendingApprovalCard
         eyebrow="Plan approval"
@@ -337,24 +391,43 @@ function InteractiveToolCard(props: {
 
     if (question && !question.multiSelect && simpleOptions.length > 0 && simpleOptions.length <= 4) {
       const key = questionKey(question)
-      // The buttons already carry the answer choices. Keeping the body to the
-      // question itself preserves the compact approval-card rhythm from the
-      // reference design instead of repeating every option as a bullet.
-      const bodyMarkdown = question.question
+      const customAnswer = freeformAnswer.trim()
       return (
         <PendingApprovalCard
           eyebrow="Question"
           title={question.header?.trim() || "The agent needs an answer"}
-          body={<MarkdownLight text={bodyMarkdown} colors={colors} />}
+          body={
+            <View style={styles.answerBody}>
+              <MarkdownLight text={question.question} colors={colors} />
+              <TextInput
+                value={freeformAnswer}
+                onChangeText={setFreeformAnswer}
+                placeholder="Or type another answer"
+                placeholderTextColor={colors.mutedIcon}
+                multiline
+                selectionColor={colors.focus}
+                style={[styles.answerInput, { borderColor: colors.input, color: colors.foreground, backgroundColor: colors.background }]}
+              />
+            </View>
+          }
           disabled={props.disabled}
           respondingKey={props.respondingKey}
           onRespond={(option) => props.onRespond(toolUseId, option)}
-          options={simpleOptions.map((option, index) => ({
-            key: `answer-${index}`,
-            label: option.label,
-            tone: index === 0 ? "primary" : "secondary",
-            result: { questions, answers: { [key]: [option.label] } },
-          }))}
+          options={[
+            ...simpleOptions.map((option, index) => ({
+              key: `answer-${index}`,
+              label: option.label,
+              tone: (index === 0 ? "primary" : "secondary") as "primary" | "secondary",
+              result: { questions, answers: { [key]: [option.label] } },
+            })),
+            {
+              key: "custom-answer",
+              label: "Send custom answer",
+              tone: "secondary" as const,
+              disabled: !customAnswer,
+              result: { questions, answers: { [key]: [customAnswer] } },
+            },
+          ]}
         />
       )
     }
@@ -414,6 +487,7 @@ function InteractiveToolCard(props: {
 function TranscriptRow(props: {
   entry: TranscriptEntry
   pendingToolId: string | null
+  pendingMemoryPreviewId: string | null
   interactionDisabled: boolean
   respondingKey: string | null
   onRespond: (toolUseId: string, option: PendingApprovalOption) => Promise<void>
@@ -421,6 +495,9 @@ function TranscriptRow(props: {
   const { entry } = props
   if (entry.kind === "user_prompt") return <UserBubble entry={entry as UserPromptEntry} />
   if (entry.kind === "assistant_text") return <AssistantBlock text={(entry as AssistantTextEntry).text} />
+  if (isMemoryPreviewEntry(entry)) {
+    return entry.previewId === props.pendingMemoryPreviewId ? <MemoryReviewCard entry={entry} /> : null
+  }
   if (entry.kind === "tool_call") {
     const toolEntry = entry as ToolCallEntry
     const toolId = toolEntry.tool.toolId ?? toolEntry._id
@@ -461,12 +538,27 @@ export function ChatScreen({ route, navigation }: Props) {
   const [sendError, setSendError] = useState<string | null>(null)
   const [followUpBehavior, setFollowUpBehavior] = useState<FollowUpBehavior>("queue")
   const [respondingKey, setRespondingKey] = useState<string | null>(null)
+  const [sidebarUnread, setSidebarUnread] = useState(false)
+  const [foregrounded, setForegrounded] = useState(AppState.currentState === "active")
+  const [knownEntries, setKnownEntries] = useState<TranscriptEntry[]>([])
+  const [olderEntries, setOlderEntries] = useState<TranscriptEntry[]>([])
+  const [historyCursor, setHistoryCursor] = useState<string | null>(null)
+  const [hasOlderHistory, setHasOlderHistory] = useState(false)
+  const [historyLoading, setHistoryLoading] = useState(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const historyInitializedRef = useRef(false)
+  const historyGenerationRef = useRef(0)
+  const historyLoadingRef = useRef(false)
   const listRef = useRef<FlatList<TranscriptEntry>>(null)
   const atEndRef = useRef(true)
 
+  const transcriptEntries = useMemo(
+    () => mergeTranscriptEntries(olderEntries, knownEntries),
+    [olderEntries, knownEntries],
+  )
   const entries = useMemo(
-    () => coalesceAssistantFragments((snapshot?.messages ?? []).filter(isRenderable)),
-    [snapshot?.messages],
+    () => coalesceAssistantFragments(transcriptEntries.filter(isRenderable)),
+    [transcriptEntries],
   )
   const status = snapshot?.runtime.status
   const streamingText = snapshot?.runtime.streamingText ?? null
@@ -487,10 +579,26 @@ export function ChatScreen({ route, navigation }: Props) {
     const socket = getSocket()
     if (!socket) return
     const offStatus = socket.onStatus(setSocketStatus)
+    historyInitializedRef.current = false
+    historyGenerationRef.current += 1
+    historyLoadingRef.current = false
+    setKnownEntries([])
+    setOlderEntries([])
+    setHistoryCursor(null)
+    setHasOlderHistory(false)
+    setHistoryError(null)
     const unsubscribe = socket.subscribe<ChatSnapshot | null>(
       { type: "chat", chatId, recentLimit: 200 },
       (value) => {
         if (value) {
+          if (!historyInitializedRef.current) {
+            historyInitializedRef.current = true
+            setKnownEntries(value.messages)
+            setHistoryCursor(value.history.olderCursor)
+            setHasOlderHistory(value.history.hasOlder)
+          } else {
+            setKnownEntries((current) => mergeTranscriptEntries(current, value.messages))
+          }
           setSnapshot(value)
           setMissing(false)
         } else {
@@ -498,21 +606,32 @@ export function ChatScreen({ route, navigation }: Props) {
         }
       },
     )
+    const unsubscribeSidebar = socket.subscribe<SidebarData>({ type: "sidebar" }, (value) => {
+      setSidebarUnread(value ? sidebarChatIsUnread(value, chatId) : false)
+    })
     return () => {
       offStatus()
       unsubscribe()
+      unsubscribeSidebar()
     }
   }, [chatId])
 
-  // Quietly mark the chat read while its transcript is in view.
-  const messageCount = snapshot?.messages.length ?? 0
   useEffect(() => {
-    if (!snapshot) return
+    const subscription = AppState.addEventListener("change", (state) => {
+      setForegrounded(state === "active")
+    })
+    return () => subscription.remove()
+  }, [])
+
+  // Clear the authoritative sidebar unread flag only while this transcript is
+  // visible in the foreground. Unlike transcript length, that flag still changes
+  // after the 200-entry live window fills.
+  useEffect(() => {
+    if (!snapshot || !sidebarUnread || !foregrounded) return
     getSocket()
       ?.command({ type: "chat.markRead", chatId })
       .catch(() => {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- fire on mount and as the transcript grows
-  }, [chatId, messageCount])
+  }, [chatId, snapshot, sidebarUnread, foregrounded])
 
   const pendingToolId = useMemo(() => {
     const messages = snapshot?.messages ?? []
@@ -532,6 +651,49 @@ export function ChatScreen({ route, navigation }: Props) {
     return null
   }, [snapshot?.messages])
 
+  const pendingMemoryPreviewId = useMemo(() => {
+    const messages = snapshot?.messages ?? []
+    const decided = new Set<string>()
+    for (const entry of messages) {
+      if (isMemoryPreviewDecisionEntry(entry)) decided.add(entry.previewId)
+    }
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const entry = messages[index]
+      if (entry && isMemoryPreviewEntry(entry) && !decided.has(entry.previewId)) return entry.previewId
+    }
+    return null
+  }, [snapshot?.messages])
+
+  const loadOlderHistory = useCallback(async () => {
+    const socket = getSocket()
+    if (!socket || !historyCursor || historyLoadingRef.current || !hasOlderHistory) return
+    const generation = historyGenerationRef.current
+    historyLoadingRef.current = true
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      const page = await socket.command<ChatHistoryPage>({
+        type: "chat.loadHistory",
+        chatId,
+        beforeCursor: historyCursor,
+        limit: 100,
+      })
+      if (historyGenerationRef.current !== generation) return
+      setOlderEntries((current) => mergeTranscriptEntries(page.messages, current))
+      setHistoryCursor(page.olderCursor)
+      setHasOlderHistory(page.hasOlder)
+    } catch (error) {
+      if (historyGenerationRef.current === generation) {
+        setHistoryError(error instanceof Error ? error.message : "Older messages could not be loaded")
+      }
+    } finally {
+      if (historyGenerationRef.current === generation) {
+        historyLoadingRef.current = false
+        setHistoryLoading(false)
+      }
+    }
+  }, [chatId, hasOlderHistory, historyCursor, historyLoading])
+
   const sendPresentation = resolveComposerSendPresentation({
     editingQueuedMessage: false,
     running: active,
@@ -543,7 +705,8 @@ export function ChatScreen({ route, navigation }: Props) {
   const send = useCallback(async () => {
     const content = draft.trim()
     const socket = getSocket()
-    if (!content || !socket || sending || socketStatus !== "connected") return
+    const planMode = snapshot?.runtime.planMode
+    if (!content || !socket || sending || socketStatus !== "connected" || planMode === undefined) return
     setSending(true)
     setSendError(null)
     setDraft("")
@@ -555,10 +718,11 @@ export function ChatScreen({ route, navigation }: Props) {
           type: "message.enqueue",
           chatId,
           content,
+          planMode,
           steer: sendPresentation.action === "steer",
         })
       } else {
-        await socket.command({ type: "chat.send", chatId, content })
+        await socket.command({ type: "chat.send", chatId, content, planMode })
       }
     } catch (error) {
       // Restore the draft so the user can retry — a message must never vanish —
@@ -569,7 +733,7 @@ export function ChatScreen({ route, navigation }: Props) {
     } finally {
       setSending(false)
     }
-  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action])
+  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode])
 
   const interrupt = useCallback(() => {
     getSocket()
@@ -665,12 +829,38 @@ export function ChatScreen({ route, navigation }: Props) {
           <TranscriptRow
             entry={item}
             pendingToolId={pendingToolId}
+            pendingMemoryPreviewId={pendingMemoryPreviewId}
             interactionDisabled={socketStatus !== "connected"}
             respondingKey={respondingKey}
             onRespond={respondTool}
           />
         )}
         contentContainerStyle={styles.transcriptContent}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+        ListHeaderComponent={
+          hasOlderHistory || historyError ? (
+            <View style={styles.historyHeader}>
+              {hasOlderHistory ? (
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Load older messages"
+                  disabled={historyLoading || socketStatus !== "connected"}
+                  onPress={() => void loadOlderHistory()}
+                  style={({ pressed }) => [
+                    styles.historyButton,
+                    { backgroundColor: colors.secondary, borderColor: colors.border, opacity: historyLoading || socketStatus !== "connected" ? 0.55 : pressed ? 0.82 : 1 },
+                  ]}
+                >
+                  {historyLoading ? <ActivityIndicator size="small" color={colors.mutedForeground} /> : null}
+                  <Text style={[styles.historyButtonText, { color: colors.foreground }]}>
+                    {historyLoading ? "Loading older messages" : "Load older messages"}
+                  </Text>
+                </Pressable>
+              ) : null}
+              {historyError ? <Text style={[styles.historyError, { color: colors.destructive }]}>{historyError}</Text> : null}
+            </View>
+          ) : null
+        }
         onContentSizeChange={scrollToEndIfPinned}
         onScroll={handleScroll}
         scrollEventThrottle={16}
@@ -763,7 +953,7 @@ export function ChatScreen({ route, navigation }: Props) {
               accessibilityLabel={sendPresentation.label}
               icon={composerIcon}
               onPress={send}
-              disabled={!draft.trim() || socketStatus !== "connected"}
+              disabled={!draft.trim() || !snapshot || socketStatus !== "connected"}
               loading={sending}
               size={38}
             />
@@ -831,6 +1021,28 @@ const styles = StyleSheet.create({
   emptyBody: {
     ...MOBILE_TYPOGRAPHY.bodySmall,
     maxWidth: 280,
+    textAlign: "center",
+  },
+  historyHeader: {
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingBottom: spacing.xs,
+  },
+  historyButton: {
+    minHeight: 34,
+    borderRadius: radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  historyButtonText: {
+    ...MOBILE_TYPOGRAPHY.label,
+  },
+  historyError: {
+    ...MOBILE_TYPOGRAPHY.caption,
     textAlign: "center",
   },
   userRow: {

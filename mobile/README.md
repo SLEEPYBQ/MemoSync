@@ -25,10 +25,9 @@ Then:
 - **iOS simulator** — press `i` in the Expo CLI (requires Xcode).
 - **Android emulator** — press `a` (requires Android Studio + a booted emulator).
 - **Physical device** — scan the Expo CLI QR code with Expo Go. Because the app
-  talks to a LAN host over plain HTTP/WebSocket, a **development build**
-  (`expo run:ios` / `expo run:android`) is the reliable path; Expo Go works on
-  most networks but stricter cleartext-HTTP policies on Android can require the
-  dev build.
+  talks to a LAN host over plain HTTP/WebSocket, the app declares Android
+  cleartext-LAN access and iOS local-network access in `app.json`; use a
+  trusted network or tunnel/password deployment as documented for the host.
 
 No native code is required beyond what the Expo modules ship — there is no
 `ios/`/`android/` directory until you prebuild.
@@ -81,10 +80,11 @@ src/
                            large grouped code display, 2 s status polling
     ProjectsScreen.tsx     sidebar + local-projects subscriptions, live
                            busy/idle status dots per chat
-    ChatScreen.tsx         chat subscription, markdown-light transcript,
-                           collapsed tool calls, replacement-style streaming
-                           text, composer (chat.send when idle, message.enqueue
-                           while a turn runs), Stop button, queue management
+    ChatScreen.tsx         chat subscription with load-older pagination,
+                           markdown-light transcript, collapsed tool calls,
+                           replacement-style streaming text, plan-mode-preserving
+                           composer (chat.send when idle, message.enqueue while
+                           a turn runs), Stop button, queue management
     SettingsScreen.tsx     paired host info, forget device (keychain delete)
   components/
     MarkdownLight.tsx      minimal markdown renderer — fenced code, headings,

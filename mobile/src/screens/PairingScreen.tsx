@@ -109,14 +109,24 @@ export function PairingScreen() {
         if (cancelled) return
         if (status.status === "approved" && status.token) {
           clearInterval(timer)
-          await pair({
-            host: phase.host,
-            port: phase.port,
-            token: status.token,
-            deviceName: deviceName.trim() || defaultDeviceName(),
-          })
-          // Navigation switches automatically: the root navigator renders
-          // the project screens once credentials exist.
+          try {
+            await pair({
+              host: phase.host,
+              port: phase.port,
+              token: status.token,
+              deviceName: deviceName.trim() || defaultDeviceName(),
+            })
+            // Navigation switches automatically: the root navigator renders
+            // the project screens once credentials exist.
+          } catch (error) {
+            if (!cancelled) {
+              const detail = error instanceof Error && error.message ? ` ${error.message}` : ""
+              setPhase({
+                kind: "failed",
+                message: `The host approved pairing, but this device could not save the credential.${detail} Start pairing again.`,
+              })
+            }
+          }
         } else if (status.status === "denied") {
           clearInterval(timer)
           setPhase({ kind: "failed", message: "The host denied this pairing request." })

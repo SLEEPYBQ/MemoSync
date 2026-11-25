@@ -12,6 +12,7 @@ export interface PendingApprovalOption {
   readonly label: string
   readonly tone?: "primary" | "secondary" | "danger"
   readonly result: unknown
+  readonly disabled?: boolean
 }
 
 export interface PendingApprovalCardProps {
@@ -68,7 +69,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
               tone={option.tone ?? (option.key === "accept" ? "primary" : "secondary")}
               size="compact"
               fullWidth
-              disabled={props.disabled || props.respondingKey != null}
+              disabled={props.disabled || option.disabled || props.respondingKey != null}
               loading={props.respondingKey === option.key}
               onPress={() => void props.onRespond(option)}
               style={styles.actionButton}

@@ -56,10 +56,14 @@ function parseInline(line: string): InlineSegment[] {
     } else if (match[4]) {
       segments.push({ text: match[4].slice(1, -1), italic: true })
     } else if (match[5]) {
-      const close = match[5].lastIndexOf("](")
+      // Use the first label/destination delimiter. A crafted destination can
+      // contain a second `](` sequence; using the last one would re-parse text
+      // after it as an unvalidated URL scheme.
+      const close = match[5].indexOf("](")
+      const url = match[5].slice(close + 2, -1)
       segments.push({
         text: match[5].slice(1, close),
-        url: match[5].slice(close + 2, -1),
+        url: /^https?:\/\//i.test(url) ? url : undefined,
       })
     }
     lastIndex = match.index + match[0].length

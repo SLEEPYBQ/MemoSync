@@ -31,6 +31,7 @@ export type ClientCommand =
   | { type: "chat.cancel"; chatId: string }
   | { type: "chat.markRead"; chatId: string }
   | { type: "chat.create"; projectId: string }
+  | { type: "chat.loadHistory"; chatId: string; beforeCursor: string; limit: number }
   | {
       type: "message.enqueue"
       /** Interrupt via the existing message.steer path after enqueue. */
@@ -165,6 +166,12 @@ export interface ChatSnapshot {
   history: ChatHistorySnapshot
 }
 
+export interface ChatHistoryPage {
+  messages: TranscriptEntry[]
+  hasOlder: boolean
+  olderCursor: string | null
+}
+
 // ---------------------------------------------------------------------------
 // Transcript entries — the subset the mobile transcript renders, typed
 // loosely where the host has a large union (memory gates etc. are ignored).
@@ -225,6 +232,19 @@ export interface ToolResultEntry extends TranscriptEntryBase {
   isError?: boolean
 }
 
+export interface MemoryPreviewEntry extends TranscriptEntryBase {
+  kind: "memory_preview"
+  previewId: string
+  task?: string
+  memories?: Array<{ id: string; content: string; scope: string }>
+}
+
+export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
+  kind: "memory_preview_decision"
+  previewId: string
+  decision: string
+}
+
 export interface ResultEntry extends TranscriptEntryBase {
   kind: "result"
   subtype: "success" | "error" | "cancelled"
@@ -249,6 +269,8 @@ export type TranscriptEntry =
   | AssistantTextEntry
   | ToolCallEntry
   | ToolResultEntry
+  | MemoryPreviewEntry
+  | MemoryPreviewDecisionEntry
   | ResultEntry
   | StatusEntry
   | IgnoredEntry
