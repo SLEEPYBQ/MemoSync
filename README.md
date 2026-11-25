@@ -229,7 +229,7 @@ Binding beyond loopback never leaves a passwordless server open to the LAN: pair
 
 Deliberate v1 tradeoffs to know about:
 
-- Pairing and device traffic use plain HTTP on the LAN. On networks you do not control, use `--share` instead — the cloudflared tunnel encrypts end to end, and MemoSync protects the shared app with a password (generated and printed for you unless `--password` is supplied). A device bearer token is reusable until revoked, so revoke a lost device promptly in **Settings → Sharing & access**.
+- Pairing and device traffic use plain HTTP on the LAN. On networks you do not control, use `--share` instead — traffic is encrypted on each leg of the tunnel (device to Cloudflare's edge over HTTPS, then edge to your machine inside the cloudflared tunnel), though TLS terminates at Cloudflare's edge, so it is not end-to-end. MemoSync protects the shared app with a password (generated and printed for you unless `--password` is supplied). A device bearer token is reusable until revoked, so revoke a lost device promptly in **Settings → Sharing & access**.
 - Opening the app in a LAN browser requires a configured password: browsers cannot pair, because the pairing flow exists for the mobile app.
 - Device last-seen timestamps persist at most once a minute; losing sub-minute precision after a restart is intentional and keeps the devices file from being rewritten on every request.
 
