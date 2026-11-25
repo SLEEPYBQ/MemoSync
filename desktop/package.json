@@ -1,6 +1,6 @@
 {
   "name": "memosync-desktop",
-  "version": "0.46.0",
+  "version": "0.47.0",
   "private": true,
   "description": "MemoSync desktop shell",
   "homepage": "https://github.com/SLEEPYBQ/MemoSync",
@@ -77,7 +77,10 @@
     },
     "win": {
       "artifactName": "${productName}-${version}-windows-${arch}.${ext}",
-      "target": ["nsis", "zip"],
+      "target": [
+        "nsis",
+        "zip"
+      ],
       "icon": "icon-light.png"
     },
     "nsis": {
@@ -90,7 +93,10 @@
     },
     "linux": {
       "artifactName": "${productName}-${version}-linux-x64.${ext}",
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "icon": "icon-light.png",
       "category": "Development",
       "executableName": "memosync",
