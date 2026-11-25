@@ -27,6 +27,17 @@ describe("QueuedUserMessage", () => {
   })
 })
 
+test("a missing saved connection is actionable without rejecting or skipping the row", () => {
+  const message: QueuedChatMessage = { id: "blocked", provider: "codex", content: "Fixture task", createdAt: 1, attachments: [], modelOptions: { connectionId: "B" } }
+  const render = (connections?: { id: string }[]) => renderToStaticMarkup(
+    <QueuedUserMessage message={message} connections={connections} onRemove={() => {}} onSendNow={() => {}} />,
+  )
+  expect(render([{ id: "A" }])).toContain(t("chat:queuedConnectionMissing"))
+  expect(render([{ id: "A" }]).match(/<button/g)).toHaveLength(2)
+  expect(render([{ id: "B" }])).not.toContain(t("chat:queuedConnectionMissing"))
+  expect(render()).not.toContain(t("chat:queuedConnectionMissing")) // Snapshot hasn't arrived.
+})
+
 
 for (const kind of ["text-only", "attachment-only", "mixed"] as const) {
   test(`${kind} queued message exposes exactly one send and remove control`, () => {

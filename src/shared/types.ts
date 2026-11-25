@@ -1298,6 +1298,15 @@ export interface MemoryInterruptEntry extends TranscriptEntryBase {
   quote?: string
   /** The interrupted turn's original user prompt; resume re-dispatches it. */
   prompt: string
+  turnSettings?: {
+    provider: AgentProvider
+    model: string
+    connectionId?: string
+    effort?: string
+    serviceTier?: "fast"
+    planMode: boolean
+  }
+  attachments?: ChatAttachment[]
   /** The interrupted turn's working memory, with per-item cited-so-far state in first-mention order. */
   workingSet: Array<{ id: string; cited: boolean }>
   turn?: number

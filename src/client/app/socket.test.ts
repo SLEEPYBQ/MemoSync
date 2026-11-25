@@ -31,14 +31,18 @@ class FakeTimers {
   readonly timeouts = new Map<number, () => void>()
   readonly intervals = new Map<number, () => void>()
 
-  setTimeout = (callback: () => void) => {
+  readonly delays = new Map<number, number | undefined>()
+
+  setTimeout = (callback: () => void, delay?: number) => {
     const id = this.nextId++
     this.timeouts.set(id, callback)
+    this.delays.set(id, delay)
     return id
   }
 
   clearTimeout = (id: number) => {
     this.timeouts.delete(id)
+    this.delays.delete(id)
   }
 
   setInterval = (callback: () => void) => {
@@ -320,6 +324,46 @@ describe("AppSocket", () => {
 
     expect(snapshots).toEqual([{ projectGroups: [] }])
     await expect(unrelated).resolves.toEqual({ ok: true })
+    socket.dispose()
+  })
+
+  test("teardown commands use the extended deadline and still accept a late ack", async () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    socket.start()
+    const ws = FakeWebSocket.instances[0]!
+    ws.open()
+
+    const hide = socket.command({ type: "project.remove", projectId: "slow-project" })
+    const hideCommand = ws.sent.at(-1)!
+    const hideTimer = [...timers.timeouts.keys()].at(-1)!
+    expect(timers.delays.get(hideTimer)).toBe(60_000)
+
+    const interactive = socket.command({ type: "chat.stopDraining", chatId: "unrelated" })
+    const interactiveCommand = ws.sent.at(-1)!
+    const interactiveTimer = [...timers.timeouts.keys()].at(-1)!
+    expect(timers.delays.get(interactiveTimer)).toBe(10_000)
+
+    // The interactive command expires on its own deadline without disturbing the hide.
+    timers.runTimeout(interactiveTimer)
+    await expect(interactive).rejects.toThrow(/timed out/)
+    expect(timers.timeouts.has(hideTimer)).toBe(true)
+
+    // A hide ack landing after the interactive deadline is still honored: the
+    // desktop then clears the project's layout instead of reporting a false timeout.
+    ws.receive({ v: 1, type: "ack", id: hideCommand.id, result: { ok: true } })
+    await expect(hide).resolves.toEqual({ ok: true })
+    expect(timers.timeouts.has(hideTimer)).toBe(false)
+    expect(interactiveCommand.id).not.toBe(hideCommand.id)
+    socket.dispose()
+  })
+
+  test("chat deletion shares the teardown deadline", async () => {
+    const socket = new AppSocket("ws://localhost/ws")
+    socket.start()
+    FakeWebSocket.instances[0]!.open()
+    void socket.command({ type: "chat.delete", chatId: "slow-chat" }).catch(() => {})
+    const timer = [...timers.timeouts.keys()].at(-1)!
+    expect(timers.delays.get(timer)).toBe(60_000)
     socket.dispose()
   })
 

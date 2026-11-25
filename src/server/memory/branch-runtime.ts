@@ -217,7 +217,10 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
         try {
           await activeTurn?.interrupt().catch(() => {})
           if (sessionToken) await opencode.deleteSession(id, sessionToken, { cwd: input.localPath, model: input.model, runtime, agent: "memosync-branch" })
-        } finally { opencode.closeChat(id); closeTransport(); await ownedOpencode?.dispose() }
+        } finally {
+          closeTransport()
+          try { await opencode.closeChat(id) } finally { await ownedOpencode?.dispose() }
+        }
       })()
       void opencodeCleanup.catch(() => {})
       return opencodeCleanup

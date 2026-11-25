@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
+import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import type { TranscriptEntry } from "../shared/types"
 import { TEXT_PREVIEW_LIMIT_BYTES } from "../shared/attachment-preview"
-import { writeStandaloneTranscriptExport } from "./standalone-export"
+import { writeStandaloneTranscriptExport, type StandaloneExportDeps } from "./standalone-export"
 
 const tempDirs: string[] = []
 
@@ -70,6 +70,33 @@ function createMessages(attachmentAbsolutePath: string): TranscriptEntry[] {
 }
 
 describe("writeStandaloneTranscriptExport", () => {
+  test("keeps concurrent exports with the same sanitized title and timestamp separate", async () => {
+    const localPath = await createTempDir("memosync-export-collision-")
+    const viewerDistDir = await createViewerDist()
+    const now = new Date("2026-04-23T12:34:56Z")
+    const exportChat = (chatId: string, title: string, copyDirectory?: StandaloneExportDeps["copyDirectory"]) =>
+      writeStandaloneTranscriptExport({
+        chatId, title, localPath, theme: "light", attachmentMode: "metadata",
+        messages: [{ _id: "entry", createdAt: 1, kind: "assistant_text", messageId: "message", text: `Transcript for ${chatId}` }],
+      }, { viewerDistDir, now, copyDirectory })
+
+    // Let the second chat finish exporting after the first picks a path but before it copies the viewer.
+    const beforeCopy = Promise.withResolvers<void>()
+    const secondExport = beforeCopy.promise.then(() => exportChat("second", "Shared:Title"))
+    const firstExport = exportChat("first", "Shared/Title", async (source, target) => {
+      beforeCopy.resolve()
+      await secondExport
+      await cp(source, target, { recursive: true })
+    })
+    const [first, second] = await Promise.all([firstExport, secondExport])
+    for (const [result, chatId] of [[first, "first"], [second, "second"]] as const) {
+      expect((await Bun.file(result.transcriptJsonPath).json()).messages[0].text).toBe(`Transcript for ${chatId}`)
+      expect(await Bun.file(result.indexHtmlPath).text()).toContain(`Transcript for ${chatId}`)
+    }
+    expect(path.basename(first.outputDir)).toBe("Shared-Title-2026-04-23T12-34-56Z")
+    expect(second.outputDir).toBe(`${first.outputDir}-2`)
+  })
+
   test("embeds escaped, path-scrubbed text previews only for bundled attachments", async () => {
     const viewerDistDir = await createViewerDist()
     const projectDir = await createTempDir("memosync-export-text-")

@@ -6,10 +6,13 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { CodexAppServerManager } from "./codex-app-server"
-import { ModelAccessService } from "./model-access/service"
+import { AgentCoordinator } from "./agent"
+import { EventStore } from "./event-store"
+import { MemoryService } from "./memory"
+import { ModelAccessService, setModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime } from "./model-access/runtime"
 import type { EngineRuntime } from "./model-access/runtime"
-import { fakeExecutableResolver } from "./model-access/test-fixtures"
+import { fakeExecutableResolver, testKeyring } from "./model-access/test-fixtures"
 
 class FakeCodexProcess extends EventEmitter {
   pid?: number
@@ -74,6 +77,109 @@ async function collectStream(stream: AsyncIterable<any>) {
   }
   return items
 }
+
+test.each(["approve", "clear", "missing-history"] as const)("plan edits and approval after a model fallback use the intended native history: %s", async decision => {
+  const clearContext = decision === "clear"
+  const root = mkdtempSync(join(tmpdir(), "codex-plan-history-"))
+  const store = new EventStore(join(root, "events"))
+  await store.initialize()
+  const project = await store.openProject(root, "fixture")
+  const { id: chatId } = await store.createChat(project.id)
+  const service = await new ModelAccessService({
+    keyring: testKeyring, dataDir: join(root, "access"), env: { HOME: root },
+    readLegacyPi: async () => null, resolveExecutable: fakeExecutableResolver,
+  }).initialize()
+  const endpoints = [{ protocol: "openai-responses" as const, baseUrl: "http://127.0.0.1:1234/v1" }]
+  const effective = await service.saveConnection({ name: "Plan fixture", endpoints, models: [{ id: "actual-model" }] })
+  const other = await service.saveConnection({ name: "Other fixture", endpoints, models: [{ id: "requested-model" }] })
+  await service.setEngine("codex", { access: { mode: "connection", connectionId: effective.id, defaultModel: "actual-model" } })
+  setModelAccessService(service)
+  const children: FakeCodexProcess[] = []
+  const nativeTurns: any[] = []
+  const manager = new CodexAppServerManager({ spawnProcess: () => {
+    const thread = `fixture-thread-${children.length + 1}`
+    const child = new FakeCodexProcess((message, proc) => {
+      if (message.id == null) return
+      const reply = (result: unknown) => proc.writeServerMessage({ id: message.id, result })
+      if (message.method === "thread/start") return reply({ thread: { id: thread } })
+      if (message.method === "thread/resume") {
+        // The active native thread has not been written to the resume store.
+        return proc.writeServerMessage({ id: message.id, error: { message: "thread not found" } })
+      }
+      if (message.method === "turn/start") {
+        nativeTurns.push(message.params)
+        return reply({ turn: { id: `turn-${nativeTurns.length}`, status: "inProgress", error: null } })
+      }
+      reply({})
+    })
+    children.push(child)
+    return child as never
+  } })
+  const memory = new MemoryService({ dbPath: ":memory:", dataDir: join(root, "memory") })
+  const captured: string[] = []
+  const agent = new AgentCoordinator({ store, codexManager: manager, memory, memoryPreview: false,
+    getMemorySettings: () => ({ enabled: true, learn: true }), onStateChange() {},
+    capture: { async capture(input: { userText: string }) { captured.push(input.userText); return { created: [] } } } as never,
+    generateTitle: async () => ({ title: "Fixture", usedFallback: true, failureMessage: null }),
+  })
+  async function waitFor(condition: () => boolean) {
+    const until = Date.now() + 3000
+    while (!condition()) { if (Date.now() >= until) throw new Error("Timed out waiting for fixture turn"); await Bun.sleep(5) }
+  }
+  function complete(plan?: string) {
+    const child = children.at(-1)!
+    const threadId = nativeTurns.at(-1).threadId, turnId = `turn-${nativeTurns.length}`
+    if (plan) child.writeServerMessage({ method: "item/completed", params: { threadId, turnId, item: { id: `plan-${turnId}`, type: "plan", text: plan } } })
+    child.writeServerMessage({ method: "turn/completed", params: { threadId, turn: { id: turnId, status: "completed", error: null } } })
+  }
+  async function answer(plan: string, result: { confirmed: boolean; message?: string; clearContext?: boolean }) {
+    complete(plan)
+    await waitFor(() => agent.getPendingTool(chatId)?.toolKind === "exit_plan_mode")
+    await agent.respondTool({ type: "chat.respondTool", chatId, toolUseId: agent.getPendingTool(chatId)!.toolUseId, result })
+  }
+  try {
+    // Opening the composer's command catalog may already have prepared the
+    // requested (not the effective) model before the user presses Send.
+    await agent.readCommandCatalog(chatId, false, { provider: "codex", model: "requested-model", planMode: true })
+    await waitFor(() => agent.getCommandCatalog(chatId).preparation?.status === "ready")
+    await agent.send({ type: "chat.send", chatId, provider: "codex", model: "requested-model", content: "Build a fixture", planMode: true })
+    await service.setEngine("codex", { access: { mode: "connection", connectionId: other.id, defaultModel: "requested-model" } })
+    await answer("Create a fixture.", { confirmed: false, message: "Use a blue label." })
+    await waitFor(() => nativeTurns.length === 2)
+    expect(nativeTurns[1].input[0].text).toContain("Revise the plan using this feedback: Use a blue label.")
+    if (decision === "missing-history") {
+      // This time replacement really is necessary. A vanished resume token
+      // must not turn approval into an instruction to run on a blank thread.
+      await service.saveConnection({ ...effective, endpoints: [{ protocol: "openai-responses", baseUrl: "http://127.0.0.1:2345/v1" }] })
+    }
+    await answer("Create a fixture with a blue label.", { confirmed: true, clearContext })
+    if (decision === "missing-history") {
+      await waitFor(() => store.getMessages(chatId).some(m => m.kind === "result" && m.isError && m.result.includes("thread not found")))
+      expect(nativeTurns.map(t => t.threadId)).toEqual(["fixture-thread-1", "fixture-thread-1"])
+      expect(children).toHaveLength(2)
+      expect(children[1]!.messages.map((m: any) => m.method)).toContain("thread/resume")
+      expect(children[1]!.messages.map((m: any) => m.method)).not.toContain("thread/start")
+      return
+    }
+    await waitFor(() => nativeTurns.length === 3)
+    complete()
+    await waitFor(() => captured.length > 0)
+    expect(nativeTurns.map(t => [t.model, t.collaborationMode.mode])).toEqual([
+      ["actual-model", "plan"], ["actual-model", "plan"], ["actual-model", "default"],
+    ])
+    expect(nativeTurns.map(t => t.threadId)).toEqual(["fixture-thread-1", "fixture-thread-1", clearContext ? "fixture-thread-2" : "fixture-thread-1"])
+    expect(children.flatMap(c => c.messages).filter((m: any) => m.method === "thread/resume")).toHaveLength(0)
+    expect(children).toHaveLength(clearContext ? 2 : 1)
+    if (clearContext) expect(nativeTurns[2].input[0].text).toContain("Create a fixture with a blue label.")
+    expect(captured).toEqual(["Build a fixture\n\nUse a blue label."])
+    expect(store.getMessages(chatId).filter(m => m.kind === "user_prompt").map(m => m.content)).toEqual(["Build a fixture"])
+  } finally {
+    await agent.shutdownRuntime()
+    memory.close()
+    setModelAccessService(undefined)
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 describe('Codex branch runtime isolation', () => {
   test.each(['credentials', 'native-args', 'tools', 'sandbox', 'external-tools', 'no-tools', 'policy'] as const)('reuses only an identical launch and isolates %s changes', async change => {

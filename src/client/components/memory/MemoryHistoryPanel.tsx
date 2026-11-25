@@ -10,7 +10,7 @@ import { MemoryBadge } from "./MemoryBadge"
 import { useCallback, useEffect, useState } from "react"
 import { Activity, ChevronDown, ChevronRight, Clock3, Eye, Flag, FileWarning, Pencil, Plus, RotateCcw, Sparkles, TrendingUp, ArrowLeftRight, CalendarPlus, UserRoundPen } from "lucide-react"
 import type { LucideIcon } from "lucide-react"
-import { memoriesApi, type MemoryControlSurface, type MemoryEvent, type MemoryItem } from "../../lib/memoriesApi"
+import { memoriesApi, type MemoryControlSurface, type MemoryEvent, type MemoryHistory, type MemoryItem } from "../../lib/memoriesApi"
 import { Button } from "../ui/button"
 import { cn } from "../../lib/utils"
 
@@ -181,12 +181,12 @@ function UseGroupRow({ events }: { events: MemoryEvent[] }) {
 
 function VersionEventRow({
   event,
-  isLatest,
+  canRollback,
   busy,
   onRollback,
 }: {
   event: MemoryEvent
-  isLatest: boolean
+  canRollback: boolean
   busy: boolean
   onRollback: (seq: number) => void
 }) {
@@ -223,7 +223,7 @@ function VersionEventRow({
           ))}
         </div>
       ) : null}
-      {event.snapshot && !isLatest ? (
+      {canRollback ? (
         armed ? (
           <div className="mt-1.5 flex items-center gap-1.5">
             <Button
@@ -252,17 +252,18 @@ function VersionEventRow({
 }
 
 interface MemoryHistoryPanelProps {
-  itemId: string
+  item: MemoryItem
   readOnly?: boolean
   /** Called with the memory returned by a successful rollback, so the caller can refresh the item + store. */
   onReverted: (item: MemoryItem) => void
   surface?: MemoryControlSurface
 }
 
-export function MemoryHistoryPanel({ itemId, onReverted, surface, readOnly }: MemoryHistoryPanelProps) {
+export function MemoryHistoryPanel({ item, onReverted, surface, readOnly }: MemoryHistoryPanelProps) {
   useI18n()
+  const { id: itemId } = item
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading")
-  const [events, setEvents] = useState<MemoryEvent[]>([])
+  const [history, setHistory] = useState<MemoryHistory | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busySeq, setBusySeq] = useState<number | null>(null)
 
@@ -270,8 +271,7 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface, readOnly }: Me
     setStatus("loading")
     setError(null)
     try {
-      const history = await memoriesApi.history(itemId)
-      setEvents(history.events)
+      setHistory(await memoriesApi.history(itemId))
       setStatus("ready")
     } catch (err) {
       setError(err instanceof Error ? err.message : t("memory:failedToLoadHistory"))
@@ -302,10 +302,13 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface, readOnly }: Me
   if (status === "error") {
     return <p className="py-4 text-xs text-destructive">{t("memory:failedToLoadHistory2")}{translateUiText(error)}</p>
   }
-  if (events.length === 0) {
+  if (!history?.events.length) {
     return <p className="py-4 text-xs text-muted-foreground">{t("memory:noHistoryYet")}</p>
   }
 
+  const { events } = history
+  // The Board list and the History response can observe an audit correction at different times.
+  const withdrawn = item.invalidatedRevision || history.memory.invalidatedRevision
   const versionSeqs = events.filter((e) => e.snapshot).map((e) => e.seq)
   const latestVersionSeq = versionSeqs.length > 0 ? Math.max(...versionSeqs) : -1
   const rows = buildTimeline(events)
@@ -320,7 +323,8 @@ export function MemoryHistoryPanel({ itemId, onReverted, surface, readOnly }: Me
           <VersionEventRow
             key={row.event.seq}
             event={row.event}
-            isLatest={Boolean(readOnly) || row.event.seq === latestVersionSeq}
+            canRollback={Boolean(!readOnly && row.event.seq !== latestVersionSeq && row.event.snapshot
+              && (!withdrawn || row.event.snapshot.status === "archived"))}
             busy={busySeq === row.event.seq}
             onRollback={handleRollback}
           />

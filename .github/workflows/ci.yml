@@ -25,10 +25,18 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      - name: Concurrent Files editor saves through hard links
+        run: bun test src/server/project-file-content.test.ts -t "two hard links" --timeout 30000
       - name: Native filesystem, CLI and terminal compatibility
         run: bun test desktop/platform.test.ts desktop/runtime-packages.test.ts src/server/host-actions.test.ts src/server/workspace-routes.test.ts src/server/workspace-dirs.test.ts src/server/data-directory-lock.test.ts src/server/model-access/executables.windows.test.ts src/server/terminal-manager.windows.test.ts src/server/local-http-servers.windows.test.ts src/server/memory/branch-project-access.test.ts --timeout 30000
       - name: Desktop host policies
-        run: node --test desktop/policy.test.cjs desktop/ui-preferences.test.cjs
+        run: node --test desktop/policy.test.cjs desktop/window-lifecycle.test.cjs desktop/ui-preferences.test.cjs desktop/updater.test.cjs desktop/update-ipc.test.cjs
+      - name: Release asset validation
+        run: bun test desktop/release-assets.test.ts
+      - name: Test the locked update provider without building or running installers
+        run: |
+          bun install --cwd desktop --production --frozen-lockfile --ignore-scripts
+          node --test desktop/updater-provider.test.cjs
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

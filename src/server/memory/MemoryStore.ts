@@ -145,6 +145,7 @@ const SCOPE_REACH: Record<MemoryScope, number> = { session: 0, project: 1, perso
 const CONTENT_VERSION_FIELDS = ['content', 'detail', 'scope', 'projectId', 'sessionId', 'type', 'topic', 'abstractionLevel', 'expiresAt'] as const;
 
 type CandidateDecisionTransition = 'ordinary' | 'dismiss' | 'restore';
+type NonRevokingArchiveReason = 'expire' | 'trace_correction';
 
 /**
  * A Candidate dismissal is a domain decision, not another editable status.
@@ -162,8 +163,8 @@ export class CandidateDismissalTransitionError extends Error {
 export class RevisionConflictError extends Error {
   readonly code = 'CONFLICT';
 
-  constructor() {
-    super('Revision targets changed or their reviewed snapshot is unavailable; review the revision again');
+  constructor(message = 'Revision targets changed or their reviewed snapshot is unavailable; review the revision again') {
+    super(message);
     this.name = 'RevisionConflictError';
   }
 }
@@ -353,6 +354,9 @@ export class MemoryStore {
     transition: CandidateDecisionTransition,
   ): void {
     const nextStatus = patch.status;
+    if (nextStatus && nextStatus !== existing.status && this.nonRevokingArchiveReason(existing) === 'trace_correction') {
+      throw new RevisionConflictError('Revision withdrawn after an audit correction. Draft a new revision instead.');
+    }
     const dismissalEvidence = this.candidateDismissalEvidence(existing.id);
     if (transition === 'dismiss') {
       if (existing.status !== 'candidate' || nextStatus !== 'discarded') {
@@ -391,6 +395,7 @@ export class MemoryStore {
   /** Called inside the same transaction as the status write, including History rollback. */
   private syncMemoryRevocation(existing: MemoryItem, nextStatus: MemoryStatus | undefined): void {
     if (nextStatus === 'archived') {
+      if (this.nonRevokingArchiveReason(existing) === 'trace_correction') return;
       this.db.query(`INSERT OR IGNORE INTO memory_revocations
         (memory_id, fingerprint, scope, owner_id, revoked_at) VALUES (?, ?, ?, ?, ?)`)
         .run(existing.id, this.candidateFingerprint(existing.content), existing.scope,
@@ -401,12 +406,24 @@ export class MemoryStore {
     }
   }
 
-  private isExpiredArchive(id: string): boolean {
-    if (this.getById(id)?.status !== 'archived') return false;
-    const event = this.db.query(`SELECT kind FROM memory_events
+  /** An expiry or a withdrawn draft is history, not a decision to suppress its text. */
+  nonRevokingArchiveReason(item: MemoryItem | null): NonRevokingArchiveReason | undefined {
+    if (item?.status !== 'archived') return;
+    const systemRetirement = `kind = 'status' AND actor = 'system'
+      AND json_extract(changes, '$.status.before') IS 'candidate' AND json_extract(changes, '$.status.after') IS 'archived'`;
+    const event = this.db.query(`SELECT seq, kind, (${systemRetirement}) AS retired, json_extract(meta, '$.via') AS via FROM memory_events
       WHERE memory_id = ? AND json_type(changes, '$.status') IS NOT NULL
-      ORDER BY seq DESC LIMIT 1`).get(id) as { kind: MemoryEventKind } | null;
-    return event?.kind === 'expire';
+      ORDER BY seq DESC LIMIT 1`).get(item.id) as { seq: number; kind: MemoryEventKind; retired: number; via: string | null } | null;
+    if (event?.kind === 'expire') return 'expire';
+    if (!event?.retired) return;
+    if (event.via === 'trace_correction') return 'trace_correction';
+    // Older corrections wrote an unmarked candidate → archived event (and a
+    // revocation). The target's correction immediately preceded the batch of
+    // retirements in the same transaction. Other system archives still count.
+    if (!event.via && this.db.query(`SELECT 1 FROM memory_relations r JOIN memory_events c ON c.memory_id = r.target_id
+      WHERE r.source_id = ? AND r.relation_type = 'revises' AND c.kind = 'trace_correction' AND c.seq = (
+        SELECT seq FROM memory_events WHERE seq < ? AND NOT (meta IS NULL AND ${systemRetirement})
+        ORDER BY seq DESC LIMIT 1)`).get(item.id, event.seq)) return 'trace_correction';
   }
 
   private updateWithCandidateDecision(
@@ -414,7 +431,7 @@ export class MemoryStore {
     patch: Partial<MemoryItem>,
     meta: ActorMeta,
     transition: CandidateDecisionTransition,
-    eventKind?: MemoryEventKind,
+    nonRevokingArchive?: NonRevokingArchiveReason,
   ): MemoryItem {
     return this.db.transaction(() => {
       const existing = this.getById(id);
@@ -447,11 +464,11 @@ export class MemoryStore {
       changes[key] = { before, after };
     }
 
-      const reaffirmArchive = eventKind !== 'expire' && patch.status === 'archived'
-        && existing.status === 'archived' && this.isExpiredArchive(id);
+      const reaffirmArchive = !nonRevokingArchive && patch.status === 'archived'
+        && this.nonRevokingArchiveReason(existing) === 'expire';
       if (sets.length === 0 && !reaffirmArchive) return existing;
       if (reaffirmArchive) changes.status = { before: 'archived', after: 'archived' };
-      if (eventKind !== 'expire') this.syncMemoryRevocation(existing, patch.status);
+      if (!nonRevokingArchive) this.syncMemoryRevocation(existing, patch.status);
 
     sets.push('updated_at = $updated_at');
     params.$updated_at = new Date().toISOString();
@@ -468,10 +485,11 @@ export class MemoryStore {
     if (updated.scope !== existing.scope || updated.projectId !== existing.projectId) {
       this.db.query('DELETE FROM memory_file_refs WHERE memory_id = ?').run(id);
     }
-    this.appendEvent(id, eventKind ?? this.classifyChange(existing, changes), meta, {
+    const via = nonRevokingArchive === 'trace_correction' ? nonRevokingArchive : meta.via;
+    this.appendEvent(id, nonRevokingArchive === 'expire' ? 'expire' : this.classifyChange(existing, changes), meta, {
       changes,
       snapshot: this.snapshotOf(updated),
-      ...(meta.via ? { meta: { via: meta.via } } : {}),
+      ...(via ? { meta: { via } } : {}),
     });
       return updated;
     })();
@@ -715,10 +733,10 @@ export class MemoryStore {
     const revocations = this.db.query(`SELECT memory_id FROM memory_revocations
       WHERE fingerprint = ? AND scope = ? AND owner_id IS ?`)
       .all(fingerprint, owner.scope, ownerId) as Array<{ memory_id: string }>;
-    if (revocations.some(row => !this.isExpiredArchive(row.memory_id))) return true;
+    if (revocations.some(row => !this.nonRevokingArchiveReason(this.getById(row.memory_id)))) return true;
     // Read compatibility for archived rows written before revocation receipts.
     return this.list({ scope: owner.scope, projectId: owner.projectId, sessionId: owner.sessionId, status: 'archived' })
-      .some(item => this.candidateFingerprint(item.content) === fingerprint && !this.isExpiredArchive(item.id));
+      .some(item => this.candidateFingerprint(item.content) === fingerprint && !this.nonRevokingArchiveReason(item));
   }
 
   getCaptureOperation(key: string): { memoryId?: string } | null {
@@ -942,7 +960,7 @@ export class MemoryStore {
         traceSeqs = traces.map(row => row.seq);
       }
       if (traceSeqs.some(seq => bySeq.get(seq) !== 'violated')) {
-        this.archive(id, { actor: 'system' });
+        this.updateWithCandidateDecision(id, { status: 'archived' }, { actor: 'system' }, 'ordinary', 'trace_correction');
         invalidated.push(id);
       }
     }

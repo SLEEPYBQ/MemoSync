@@ -28,6 +28,7 @@ test("expiry picker, board restoration and receipt", async () => {
     { ...base, id: "M-02", status: "active", content: "Keep synthetic tests isolated.", expiresAt: new Date(Date.now() + 6 * 86400000 - 1000).toISOString() },
     { ...base, id: "M-03", status: "archived", content: "Use the temporary synthetic service.", expiresAt: "2020-01-01T00:00:00.000Z" },
     { ...base, id: "M-04", status: "archived", content: "Keep the temporary synthetic queue.", expiresAt: "2020-01-01T00:00:00.000Z" },
+    { ...base, id: "M-05", status: "archived", content: "Withdrawn synthetic draft.", invalidatedRevision: true },
   ]
   const patches: Array<Record<string, any>> = []
   await page.route("**/api/**", async route => {
@@ -50,6 +51,9 @@ test("expiry picker, board restoration and receipt", async () => {
   })
   await page.goto(url)
   await page.locator("#board").getByRole("button", { name: "Restore for 7 days" }).first().waitFor()
+  const withdrawn = page.locator('#board [data-memory-board-id="M-05"]')
+  expect(await withdrawn.getByRole("button", { name: /Restore/ }).count()).toBe(0)
+  expect(await withdrawn.textContent()).toContain("withdrawn after an audit correction")
   await page.locator("#candidate").getByRole("button", { name: /Keep:/ }).click()
   await page.getByRole("button", { name: "Custom date" }).click()
   for (const theme of ["light", "dark"]) {
@@ -61,9 +65,12 @@ test("expiry picker, board restoration and receipt", async () => {
     for (const section of ["card", "receipt", "board"]) await page.locator(`#${section}`).screenshot({ path: join(artifacts, `${section}-${theme}.png`) })
     await page.locator("#candidate").getByRole("button", { name: /Keep:/ }).click()
   }
-  const tomorrow = new Date()
-  tomorrow.setDate(tomorrow.getDate() + 1)
-  const localDate = `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`
+  // The date picker uses the browser's calendar, which can be a day ahead of Bun's.
+  const localDate = await page.evaluate(() => {
+    const tomorrow = new Date()
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    return `${tomorrow.getFullYear()}-${String(tomorrow.getMonth() + 1).padStart(2, "0")}-${String(tomorrow.getDate()).padStart(2, "0")}`
+  })
   await page.locator('input[type="date"]').fill(localDate)
   await page.getByRole("button", { name: "Apply", exact: true }).click()
   await page.locator("#candidate").getByText("Temporary memory").waitFor()

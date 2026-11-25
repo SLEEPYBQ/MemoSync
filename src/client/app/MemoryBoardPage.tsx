@@ -362,8 +362,8 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     () => candidateReviewCohortItems(items, candidateReviewCohortIds),
     [candidateReviewCohortIds, items],
   )
-  // The archived shelf: archiving must not be a one-way door — the items stay
-  // visible (collapsed) and restorable, or "archive" is delete with extra steps.
+  // Saved memories can be restored. A draft withdrawn by an audit correction
+  // also stays visible here, but was never a saved replacement.
   const archivedItems = useMemo(
     () => items.filter((m) => m.status === "archived" && matchesQuery(m, query)),
     [items, query],
@@ -397,7 +397,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
     try {
       const updated = await memoriesApi.update(id, { status: "active", ...(isPastExpiry(item.expiresAt) ? { expiresAt: new Date(Date.now() + 7 * 86400000).toISOString() } : {}) }, { surface: "board" })
       upsertLocal(updated)
-    } catch {
+      setActionError(null)
+    } catch (err) {
+      setActionError(err instanceof Error ? translateUiText(err.message) : t("memory:failed"))
       void loadAll() // raced elsewhere — refetch rather than lie
     } finally {
       setRestoringId(null)
@@ -925,7 +927,9 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                       {originLabelFor(item) ? (
                         <span className="hidden shrink-0 text-[11px] text-muted-foreground/70 sm:inline">{originLabelFor(item)}</span>
                       ) : null}
-                      <Button
+                      {item.invalidatedRevision ? (
+                        <span className="text-xs text-muted-foreground">{t("memory:revisionWithdrawn")}</span>
+                      ) : <Button
                         variant="ghost"
                         size="sm"
                         className="shrink-0"
@@ -937,7 +941,7 @@ export function MemoryBoardPage({ overlay }: { overlay?: MemoryBoardOverlayMode 
                         ) : (
                           <ArchiveRestore className="h-3.5 w-3.5" />
                         )}
-                        {isPastExpiry(item.expiresAt) ? t("memory:restoreForSevenDays") : t("common:restore")}</Button>
+                        {isPastExpiry(item.expiresAt) ? t("memory:restoreForSevenDays") : t("common:restore")}</Button>}
                     </div>
                   ))}
                 </div>

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   linkSync,
   mkdirSync,
@@ -91,6 +92,26 @@ function unit() {
 }
 function plan(id = "plan") {
   return service.plan({ operationId: id, unitIds: [unit().unitId] });
+}
+const deadline = "2099-01-01T00:00:00.000Z";
+function temporaryRule(content: string) {
+  return memory.store.create(
+    { content, scope: "project", projectId: "p", type: "fact", expiresAt: deadline },
+    { actor: "user" },
+  );
+}
+function auditRevision(content: string) {
+  const input = { scope: "project", projectId: "p", type: "fact" } as const;
+  const target = memory.store.create({ ...input, content: "Synthetic audit target." }, { actor: "user" });
+  for (let turn = 1; turn <= 3; turn++)
+    memory.store.recordTraceLabel(target.id, "violated", { actor: "agent", sessionId: "synthetic-chat", turn });
+  const draft = memory.store.createRevisionProposal({ ...input, content }, target.id, { actor: "system" }, {
+    traceEvidence: memory.store.recentTraceEvidence(target.id).map(row => row.seq),
+  })!;
+  const withdraw = () => expect(memory.store.recordTraceCorrection(target.id, {
+    sessionId: "synthetic-chat", turn: 2, label: "operational",
+  }).invalidatedIds).toEqual([draft.id]);
+  return { draft, withdraw };
 }
 function accept(op: NativeImportOperation) {
   return service.commit(op.plan.operationId, {
@@ -498,6 +519,47 @@ describe("reviewed writes, lineage and rollback", () => {
     expect(service.rollback("plan", true).archived).toHaveLength(1);
     expect(plan("reimport").plan.items[0]!.disposition).toBe("suppressed");
   });
+  it.each(["marked", "legacy"])("imports text from a %s withdrawn revision as a new memory, not a restore", async (format) => {
+    const content = plan("before-withdrawal").plan.items[0]!.content;
+    const { draft, withdraw } = auditRevision(content);
+    withdraw();
+    if (format === "legacy") {
+      // Earlier versions wrote the same correction + relation, but no archive marker
+      // and a scoped negative receipt for the draft.
+      memory.db.query("UPDATE memory_events SET meta=NULL WHERE memory_id=? AND kind='status'").run(draft.id);
+      const fingerprint = createHash("sha256").update(content.trim().replace(/\s+/g, " ").toLowerCase()).digest("hex");
+      memory.db.query("INSERT INTO memory_revocations(memory_id,fingerprint,scope,owner_id,revoked_at) VALUES(?,?,'project','p',?)")
+        .run(draft.id, fingerprint, draft.updatedAt);
+    }
+    const reviewed = plan("after-withdrawal");
+    expect(reviewed.plan.items[0]!.disposition).toBe("new");
+    const imported = (await accept(reviewed)).accepted[0]!;
+    expect(imported.created).toBe(true);
+    expect(imported.memoryId).not.toBe(draft.id);
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
+    expect(memory.store.getById(imported.memoryId)).toMatchObject({ content, status: "active" });
+
+    memory.store.archive(imported.memoryId, { actor: "user" });
+    expect(plan("after-user-archive").plan.items[0]!.disposition).toBe("suppressed");
+  });
+  it("requires a fresh review to import a claim after its exact match expires", async () => {
+    const content = plan("source").plan.items[0]!.content;
+    const old = temporaryRule(content);
+    const stale = plan("before-expiry");
+    expect(stale.plan.items[0]).toMatchObject({ disposition: "exact-match", target: { memoryId: old.id } });
+    const [expired] = memory.expireDue(deadline);
+    expect(expired).toMatchObject({ id: old.id, status: "archived", expiresAt: deadline });
+    await expect(accept(stale)).rejects.toMatchObject({ code: "IMPORT_CONFLICT" });
+
+    const fresh = plan("after-expiry");
+    expect(fresh.plan.items[0]!.disposition).toBe("new");
+    expect(memory.injectedFor("p")).toEqual([]);
+    const imported = (await accept(fresh)).accepted[0]!;
+    expect(imported.created).toBe(true);
+    expect(imported.memoryId).not.toBe(old.id);
+    expect(memory.injectedFor("p").map(m => [m.id, m.content])).toEqual([[imported.memoryId, content]]);
+    expect(memory.store.getById(old.id)).toEqual(expired);
+  });
   it("honors scoped rejections and shared suppression, including transaction-time rechecks", async () => {
     const op = plan();
     await service.commit("plan", {
@@ -851,6 +913,13 @@ describe("scope proposals and reviewed project homes", () => {
     expect(service.rollback("move", true).restored).toEqual([id]);
     expect(memory.store.getById(id)!.projectId).toBe("p");
     expect(plan("after").plan.items[0]!.disposition).toBe("unchanged");
+    const again = await service.restoreRemoved({
+      mode: "import", removalIds: service.listRemoved().items.map((r) => r.removalId),
+    });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    expect(memory.store.getById(id)!.scope).toBe("personal");
+    expect(service.rollback(again.receipt.operationId, true).restored).toEqual([id]);
+    expect(memory.store.getById(id)!.projectId).toBe("p");
   });
   it("allows a reviewed model scope change on existing lineage and lets review correct it", async () => {
     const first = await accept(plan("first"));
@@ -1782,6 +1851,170 @@ describe("removed native claims", () => {
       again.receipt.operationId,
     ]);
   });
+  it.each(["exact match", "creation"])("imports an undone %s under a fresh ID after automatic expiry", async kind => {
+    const content = plan("source").plan.items[0]!.content;
+    const existing = kind === "exact match" ? temporaryRule(content) : undefined;
+    const first = (await accept(plan("first"))).accepted[0]!;
+    expect(first.created).toBe(!existing);
+    const id = first.memoryId;
+    expect(service.rollback("first", true).archived).toEqual(existing ? [] : [id]);
+    if (existing) expect(id).toBe(existing.id);
+    else {
+      // Undo archived this ID, but the user later restored it with a deadline.
+      memory.store.update(id, { status: "active", expiresAt: deadline }, { actor: "user" });
+    }
+    const [expired] = memory.expireDue(deadline);
+    expect(expired).toMatchObject({ id, status: "archived", expiresAt: deadline });
+    expect(plan("still-removed").plan.items[0]!.disposition).toBe("suppressed");
+    expect(memory.injectedFor("p")).toEqual([]);
+
+    const again = await service.restoreRemoved({ mode: "import", removalIds: removedIds() });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    const imported = again.receipt.accepted[0]!;
+    expect(imported).toMatchObject({ created: true, updated: false });
+    expect(imported.memoryId).not.toBe(id);
+    expect(memory.injectedFor("p").map(m => [m.id, m.content])).toEqual([[imported.memoryId, content]]);
+    expect(memory.store.getById(id)).toEqual(expired);
+    expect(service.rollback(again.receipt.operationId, true).archived).toEqual([imported.memoryId]);
+  });
+  it.each(["reaffirmed archive", "past deadline"])("does not reactivate an undone creation with a %s", async state => {
+    const id = (await accept(plan("first"))).accepted[0]!.memoryId;
+    expect(service.rollback("first", true).archived).toEqual([id]);
+    if (state === "reaffirmed archive") {
+      memory.store.update(id, { status: "active", expiresAt: deadline }, { actor: "user" });
+      memory.expireDue(deadline);
+      memory.store.archive(id, { actor: "user" });
+    } else {
+      // Only active items auto-expire. This deadline elapsed while archived.
+      memory.store.update(id, { expiresAt: "2020-01-01T00:00:00.000Z" }, { actor: "user" });
+    }
+    const archived = memory.store.getById(id)!;
+    const removalIds = removedIds();
+    await expect(service.restoreRemoved({ mode: "import", removalIds })).rejects.toThrow("suppression");
+    expect(removedIds()).toEqual(removalIds);
+    expect(memory.store.list()).toEqual([archived]);
+  });
+  async function undoUpdate() {
+    const first = plan("first");
+    const original = first.plan.items[0]!;
+    const id = (await accept(first)).accepted[0]!.memoryId;
+    put(topic, "Keep the synthetic parser in /Src/RevisedParser.ts for all new builds.\n");
+    const next = plan("update");
+    const changed = next.plan.items[0]!;
+    expect(changed).toMatchObject({
+      disposition: "changed", itemKey: original.itemKey, target: { memoryId: id },
+    });
+    expect((await accept(next)).accepted[0]).toMatchObject({ memoryId: id, updated: true });
+    expect(memory.store.getById(id)!.content).toBe(changed.content);
+    expect(service.rollback("update", true).restored).toEqual([id]);
+    expect(memory.store.getById(id)!.content).toBe(original.content);
+    expect(service.listRemoved().items).toMatchObject([
+      { operationId: "update", content: changed.content, undone: true },
+    ]);
+    return { id, original, changed, removalIds: removedIds() };
+  }
+  it("reapplies an undone update to the original memory and can undo the update again", async () => {
+    const { id, original, changed, removalIds } = await undoUpdate();
+    await service.close();
+    open();
+    const again = await service.restoreRemoved({ mode: "import", removalIds });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    expect(memory.store.list({ status: "active" }).map((m) => [m.id, m.content])).toEqual([
+      [id, changed.content],
+    ]);
+    expect(again.receipt.accepted[0]).toMatchObject({ memoryId: id, created: false, updated: true });
+    expect(removedIds()).toEqual([]);
+    expect(service.rollback(again.receipt.operationId, true)).toMatchObject({
+      restored: [id], archived: [], conflicts: [],
+    });
+    expect(memory.store.getById(id)).toMatchObject({ content: original.content, status: "active" });
+    expect(service.listRemoved().items).toMatchObject([{ operationId: again.receipt.operationId }]);
+    expect(service.rollback("first", true).archived).toEqual([id]);
+  });
+  it("does not count a withdrawn revision as a competing target for an undone update", async () => {
+    const { id, changed, removalIds } = await undoUpdate();
+    const { draft, withdraw } = auditRevision(changed.content);
+    withdraw();
+    const again = await service.restoreRemoved({ mode: "import", removalIds });
+    expect(again).toMatchObject({ receipt: { accepted: [{ memoryId: id, updated: true }] } });
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
+  });
+  it("reapplies an undone update to its predecessor despite an expired match", async () => {
+    const { id, changed, removalIds } = await undoUpdate();
+    const other = temporaryRule(changed.content);
+    const [expired] = memory.expireDue(deadline);
+    const again = await service.restoreRemoved({ mode: "import", removalIds });
+    if (again.mode !== "import") throw new Error("Expected import receipt");
+    expect(again.receipt.accepted).toMatchObject([{ itemKey: changed.itemKey, memoryId: id, created: false, updated: true }]);
+    expect(service.rollback(again.receipt.operationId, true)).toMatchObject({ restored: [id], archived: [], conflicts: [] });
+    expect(memory.store.getById(other.id)).toEqual(expired);
+  });
+  it.each(["withdrawn", "user-archived"])("does not reactivate an undone exact match that was later %s", async state => {
+    const { draft, withdraw } = auditRevision(plan("source").plan.items[0]!.content);
+    memory.store.acceptRevision(draft.id, { actor: "user" });
+    const exact = plan("exact");
+    expect(exact.plan.items[0]!.disposition).toBe("exact-match");
+    expect((await accept(exact)).accepted[0]).toMatchObject({ memoryId: draft.id, created: false });
+    expect(service.rollback("exact", true).archived).toEqual([]);
+    const removalIds = removedIds();
+    if (state === "withdrawn") {
+      memory.store.revertAutoAccept(draft.id, { actor: "user" });
+      withdraw();
+      const again = await service.restoreRemoved({ mode: "import", removalIds });
+      expect(again).toMatchObject({ receipt: { accepted: [{ created: true, updated: false }] } });
+    } else {
+      memory.store.archive(draft.id, { actor: "user" });
+      await expect(service.restoreRemoved({ mode: "import", removalIds })).rejects.toThrow("suppression");
+      expect(removedIds()).toEqual(removalIds);
+    }
+    expect(memory.store.getById(draft.id)?.status).toBe("archived");
+  });
+  it.each(["edit", "rescope", "event only", "team rule", "expired predecessor", "unrelated exact match", "newer rollback", "legacy undo"])(
+    "leaves the removal and all memories alone when the undone update is stale or ambiguous: %s",
+    async (change) => {
+      const { id, changed, removalIds } = await undoUpdate();
+      const user = { actor: "user" as const };
+      switch (change) {
+        case "edit":
+          memory.store.update(id, { content: "Independently edited synthetic rule." }, user);
+          break;
+        case "rescope":
+          memory.store.update(id, { scope: "personal" }, user);
+          break;
+        case "event only":
+          memory.store.recordReinforce(id, user);
+          break;
+        case "team rule":
+          memory.team.publish(id, project, user);
+          break;
+        case "expired predecessor":
+          memory.store.update(id, { expiresAt: deadline }, user);
+          memory.expireDue(deadline);
+          break;
+        case "unrelated exact match":
+          memory.store.create({
+            content: changed.content, scope: "project", projectId: "p", type: "fact", status: "active",
+          }, user);
+          break;
+        case "newer rollback":
+          put(topic, "A later synthetic revision keeps all parser fixtures in /Src/FixtureParser.ts.\n");
+          expect((await accept(plan("later"))).accepted[0]).toMatchObject({ memoryId: id, updated: true });
+          expect(service.rollback("later", true).restored).toEqual([id]);
+          break;
+        case "legacy undo":
+          memory.db.exec("UPDATE native_v2_operations SET undo=json_remove(undo, '$[0].restoredLink') WHERE operation_id='update'");
+          break;
+      }
+      const before = memory.store.list(), removed = removedIds(), history = service.listOperations();
+      const result = await request("POST", "/restore", { mode: "import", removalIds });
+      expect(result.status).toBe(409);
+      expect(await result.json()).toMatchObject({ error: { code: "IMPORT_CONFLICT" } });
+      expect(memory.store.list()).toEqual(before);
+      expect(removedIds()).toEqual(removed);
+      expect(service.listOperations()).toEqual(history);
+      expect(memory.db.query("SELECT * FROM native_v2_restores").all()).toEqual([]);
+    },
+  );
   it("restores a project-scoped claim to its reviewed project", async () => {
     await reject();
     const result = await service.restoreRemoved({

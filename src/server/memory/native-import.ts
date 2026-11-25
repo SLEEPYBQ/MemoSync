@@ -52,6 +52,8 @@ interface Undo {
   itemKey: string;
   memory?: MemoryItem;
   link?: Link;
+  /** The predecessor mapping and its revision immediately after a successful rollback. */
+  restoredLink?: Link;
 }
 interface Tombstone {
   owner_key: string;
@@ -65,14 +67,16 @@ interface Removal {
   item: NativeImportItem;
   unit: NativeMemoryUnit;
   tombstones: Tombstone[];
+  updatedMemoryId?: string;
 }
 interface RestoreCommit {
   plan: NativeImportPlan;
   removals: Removal[];
   requestHash: string;
   removalIds: string[];
-  /** Plan item key -> the memory an earlier rollback archived; importing again reactivates it. */
-  revive: Map<string, string>;
+  /** New item key -> rollback whose archive may still be ours to reactivate. */
+  reviveFrom: Map<string, Removal>;
+  updates: Map<string, Link>;
 }
 export interface NativeImportOptions {
   memory: MemoryService;
@@ -188,6 +192,11 @@ export class NativeMemoryImportService {
       .list({ scope: owner.scope })
       .filter((m) => sameOwner(m, owner) && !this.memory.store.isTeamLinked(m.id));
   }
+  private matchesImportClaim(memory: MemoryItem, claimHash: string): boolean {
+    // Neither expiry nor a withdrawn draft rejects the text or supplies a live target.
+    return hashClaim(memory.content) === claimHash &&
+      !this.memory.store.nonRevokingArchiveReason(memory);
+  }
   private suppressed(
     content: string,
     quoteHash: string,
@@ -207,6 +216,7 @@ export class NativeMemoryImportService {
       ["archived", "discarded"].includes(m.status),
     );
     for (const fragment of fragments) {
+      const fragmentHash = hashClaim(fragment);
       if (
         this.db
           .query(
@@ -217,7 +227,7 @@ export class NativeMemoryImportService {
             owner.scope === "project"
               ? ownerKey({ scope: "project" }, projectPath)
               : ownerKey(owner),
-            hashClaim(fragment),
+            fragmentHash,
             quoteHash,
           ) ||
         (owner.scope === "project" && !owner.projectId
@@ -226,7 +236,7 @@ export class NativeMemoryImportService {
               fragment,
               owner as NativeMemoryOwner,
             )) ||
-        discarded.some((m) => hashClaim(m.content) === hashClaim(fragment))
+        discarded.some((m) => this.matchesImportClaim(m, fragmentHash))
       )
         return true;
     }
@@ -327,15 +337,16 @@ export class NativeMemoryImportService {
         ? JSON.parse(row.receipt)
         : undefined;
       const rejected = new Set(receipt?.rejected ?? []);
-      const accepted = new Set(receipt?.accepted.map((a) => a.itemKey) ?? []);
+      const accepted = new Map(receipt?.accepted.map((a) => [a.itemKey, a]));
       const units = new Map(plan.units.map((u) => [u.unitId, u]));
       const aliases = new Map(
         group.map((t) => [JSON.stringify([t.owner_key, t.claim_hash]), t]),
       );
       for (const item of plan.items) {
+        const entry = accepted.get(item.itemKey);
         const decision = rejected.has(item.itemKey)
           ? "rejected"
-          : accepted.has(item.itemKey)
+          : entry
             ? "revoked"
             : null;
         if (!decision) continue;
@@ -360,6 +371,7 @@ export class NativeMemoryImportService {
           item,
           unit,
           tombstones,
+          updatedMemoryId: entry?.updated ? entry.memoryId : undefined,
           summary: {
             removalId: nativeHash(JSON.stringify([operationId, item.itemKey])),
             content: item.content,
@@ -449,7 +461,9 @@ export class NativeMemoryImportService {
             .immediate();
         }
         const operationId = randomUUID();
-        const revive = new Map<string, string>();
+        const reviveFrom = new Map<string, Removal>();
+        const updates = new Map<string, Link>();
+        const rollbackLinks = new Map<string, Map<string, Link | undefined>>();
         const plan: NativeImportPlan = {
           operationId,
           units: [
@@ -457,9 +471,30 @@ export class NativeMemoryImportService {
           ],
           items: removals.map((removal) => {
             const restored = structuredClone(removal.item);
+            if (removal.updatedMemoryId) {
+              // Undo reinstated the predecessor mapping; a new item key would fork that memory.
+              const prior = removal.summary.operationId;
+              let links = rollbackLinks.get(prior);
+              if (!links) {
+                links = new Map(this.readUndo(prior).map((u) => [u.itemKey, u.restoredLink]));
+                rollbackLinks.set(prior, links);
+              }
+              const link = links.get(restored.itemKey);
+              if (
+                !link || link.unit_id !== restored.unitId || link.item_key !== restored.itemKey ||
+                link.decision !== "accepted" || link.memory_id !== removal.updatedMemoryId ||
+                restored.target?.memoryId !== removal.updatedMemoryId || link.version === null ||
+                !link.digest || link.event_seq === null || updates.has(restored.itemKey)
+              )
+                return conflict("Cannot verify a unique rollback target for this update");
+              updates.set(restored.itemKey, link);
+              restored.disposition = "changed";
+              restored.target.version = link.version;
+              restored.target.digest = link.digest;
+              return restored;
+            }
             restored.itemKey = randomUUID();
-            const archived = this.archivedByRollback(removal);
-            if (archived) revive.set(restored.itemKey, archived);
+            if (removal.summary.undone) reviveFrom.set(restored.itemKey, removal);
             delete restored.target;
             delete restored.reason;
             restored.disposition = "new";
@@ -497,7 +532,7 @@ export class NativeMemoryImportService {
             approved: true,
             approvedItemKeys: plan.items.map((i) => i.itemKey),
           },
-          { plan, removals, requestHash, removalIds, revive },
+          { plan, removals, requestHash, removalIds, reviveFrom, updates },
         );
         return { mode, removalIds, receipt };
       },
@@ -506,10 +541,15 @@ export class NativeMemoryImportService {
     return run;
   }
   private archivedByRollback({ item, summary }: Removal): string | undefined {
-    if (!summary.undone) return undefined;
+    // Rollback verified the link's event_seq immediately before archiving its
+    // creation. A link-only undo or a subsequent restore/expiry/archive does
+    // not give this import ownership of the memory's current archive.
     const row = this.db
       .query(
-        "SELECT memory_id FROM native_v2_links WHERE unit_id=? AND item_key=? AND operation_id=?",
+        `SELECT memory_id FROM native_v2_links l
+         WHERE unit_id=? AND item_key=? AND operation_id=? AND decision='revoked' AND created=1
+           AND (SELECT COUNT(*) FROM memory_events e WHERE e.memory_id=l.memory_id AND e.seq>l.event_seq
+                AND json_type(e.changes, '$.status') IS NOT NULL) = 1`,
       )
       .get(item.unitId, item.itemKey, summary.operationId) as {
       memory_id: string | null;
@@ -518,6 +558,7 @@ export class NativeMemoryImportService {
       ? this.memory.store.getById(row.memory_id)
       : null;
     return memory?.status === "archived" &&
+      (!memory.expiresAt || Date.parse(memory.expiresAt) > Date.now()) &&
       sameOwner(memory, item.owner) &&
       hashClaim(memory.content) === item.claimHash
       ? memory.id
@@ -959,9 +1000,9 @@ export class NativeMemoryImportService {
       result = this.db
         .transaction(() => {
           if (restore) {
-            this.liftRemovals(restore.removals);
             for (const item of plan.items) {
-              const memoryId = restore.revive.get(item.itemKey);
+              const removal = restore.reviveFrom.get(item.itemKey);
+              const memoryId = removal && this.archivedByRollback(removal);
               if (!memoryId) continue;
               const memory = this.memory.store.update(
                 memoryId,
@@ -976,6 +1017,7 @@ export class NativeMemoryImportService {
                 digest: digest(memory),
               };
             }
+            this.liftRemovals(restore.removals);
             this.db
               .query(
                 `INSERT INTO native_v2_operations(operation_id,request_hash,plan,restore_hash) VALUES(?,?,?,?)`,
@@ -1070,6 +1112,21 @@ export class NativeMemoryImportService {
             const link = this.links(item.unitId).find(
               (l) => l.item_key === item.itemKey && l.decision === "accepted",
             );
+            const expected = restore?.updates.get(item.itemKey);
+            if (expected) {
+              if (moved || !link || link.operation_id !== expected.operation_id ||
+                link.claim_hash !== expected.claim_hash || link.quote_hash !== expected.quote_hash ||
+                link.version !== expected.version || link.digest !== expected.digest ||
+                link.event_seq !== expected.event_seq)
+                conflict("The mapping changed after the update was undone");
+              if (this.pool(item.owner).some((m) =>
+                m.id !== expected.memory_id && this.matchesImportClaim(m, item.claimHash),
+              ) || plan.items.some((other) => other !== item && (
+                other.target?.memoryId === expected.memory_id ||
+                (ownerKey(other.owner) === ownerKey(item.owner) && other.claimHash === item.claimHash)
+              )))
+                conflict("Another memory or selected claim matches this undone update");
+            }
             if ((item.target && this.memory.store.isTeamLinked(item.target.memoryId))
               || (reviewed.target && this.memory.store.isTeamLinked(reviewed.target.memoryId))
               || (link?.memory_id && this.memory.store.isTeamLinked(link.memory_id))) {
@@ -1111,7 +1168,7 @@ export class NativeMemoryImportService {
             } else if (
               link ||
               this.pool(item.owner).some(
-                (m) => hashClaim(m.content) === item.claimHash,
+                (m) => this.matchesImportClaim(m, item.claimHash),
               )
             )
               conflict("A memory or mapping appeared after review");
@@ -1294,6 +1351,12 @@ export class NativeMemoryImportService {
         created ? 1 : 0,
       );
   }
+  private readUndo(id: string): Undo[] {
+    const row = this.db
+      .query("SELECT undo FROM native_v2_operations WHERE operation_id=?")
+      .get(id) as { undo: string | null } | null;
+    return JSON.parse(row?.undo ?? "[]");
+  }
   rollback(id: string, approved: boolean): NativeImportRollback {
     if (approved !== true) bad("Explicit review approval is required");
     const result = this.db
@@ -1306,10 +1369,7 @@ export class NativeMemoryImportService {
             "Committed import not found",
           );
         if (operation.rollback) return operation.rollback;
-        const row = this.db
-          .query("SELECT undo FROM native_v2_operations WHERE operation_id=?")
-          .get(id) as { undo: string };
-        const undo: Undo[] = JSON.parse(row.undo ?? "[]");
+        const undo = this.readUndo(id);
         const result: NativeImportRollback = {
           operationId: id,
           state: "rolled-back",
@@ -1366,7 +1426,13 @@ export class NativeMemoryImportService {
             );
             result.restored.push(memory.id);
             if (before.link) {
-              const old = before.link;
+              const old = {
+                ...before.link,
+                version: restored.version,
+                digest: digest(restored),
+                event_seq: this.eventSeq(restored.id),
+              };
+              before.restoredLink = old;
               this.db
                 .query(
                   "INSERT OR REPLACE INTO native_v2_links VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -1377,9 +1443,9 @@ export class NativeMemoryImportService {
                   old.quote_hash,
                   old.claim_hash,
                   old.memory_id,
-                  restored.version,
-                  digest(restored),
-                  this.eventSeq(restored.id),
+                  old.version,
+                  old.digest,
+                  old.event_seq,
                   old.operation_id,
                   old.decision,
                   old.created,
@@ -1401,9 +1467,9 @@ export class NativeMemoryImportService {
         }
         this.db
           .query(
-            "UPDATE native_v2_operations SET rollback=? WHERE operation_id=?",
+            "UPDATE native_v2_operations SET rollback=?,undo=? WHERE operation_id=?",
           )
-          .run(JSON.stringify(result), id);
+          .run(JSON.stringify(result), JSON.stringify(undo), id);
         return result;
       })
       .immediate();

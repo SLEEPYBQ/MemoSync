@@ -35,11 +35,16 @@ export interface ChatRecord {
   lastTurnOutcome: "success" | "failed" | "cancelled" | null
 }
 
+/** Private transport attribution, not a capability or part of a chat snapshot. */
+export interface StoredQueuedMessage extends QueuedChatMessage {
+  hostClientId?: string
+}
+
 export interface StoreState {
   projectsById: Map<string, ProjectRecord>
   projectIdsByPath: Map<string, string>
   chatsById: Map<string, ChatRecord>
-  queuedMessagesByChatId: Map<string, QueuedChatMessage[]>
+  queuedMessagesByChatId: Map<string, StoredQueuedMessage[]>
 }
 
 export interface SnapshotFile {
@@ -48,7 +53,7 @@ export interface SnapshotFile {
   projects: ProjectRecord[]
   chats: ChatRecord[]
   sidebarProjectOrder?: string[]
-  queuedMessages?: Array<{ chatId: string; entries: QueuedChatMessage[] }>
+  queuedMessages?: Array<{ chatId: string; entries: StoredQueuedMessage[] }>
   messages?: Array<{ chatId: string; entries: TranscriptEntry[] }>
 }
 
@@ -164,7 +169,7 @@ export type QueuedMessageEvent =
       type: "queued_message_enqueued"
       timestamp: number
       chatId: string
-      message: QueuedChatMessage
+      message: StoredQueuedMessage
     }
   | {
       v: 2

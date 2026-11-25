@@ -54,9 +54,11 @@ export function ArchiveIconButton({ onClick, disabled, className }: { onClick: (
 
 export function ArchivedInline({ id, onUndo, busy, note }: { id: string; onUndo: (id: string) => void; busy?: boolean; note?: string }) {
   useI18n()
-  const expired = useMemoryStore(state => isPastExpiry(state.items.find(item => item.id === id)?.expiresAt))
+  const item = useMemoryStore(state => state.items.find(item => item.id === id))
   const launcher = useMemoryBoardLauncher()
   const { chatId } = useTranscriptChatContext()
+  if (item?.invalidatedRevision) return <span role="status" className="text-xs text-muted-foreground">{t("memory:revisionWithdrawn")}</span>
+  const expired = isPastExpiry(item?.expiresAt)
   return <div role="status" className="flex min-w-0 flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
     <Archive className="h-3 w-3 shrink-0" />
     <span>{note ?? t("memory:archivedWontBeUsed")}</span>

@@ -70,6 +70,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
   const [dialogState, setDialogState] = useState<DialogState | null>(null)
   const [inputValue, setInputValue] = useState("")
   const inputRef = useRef<HTMLInputElement>(null)
+  const confirmButtonRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
     if (dialogState?.kind !== "prompt") return
@@ -142,10 +143,10 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
       >
         <DialogContent
           size="sm"
-          onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.shiftKey || !dialogState || dialogState.kind !== "confirm") return
+          onOpenAutoFocus={event => {
+            if (dialogState?.kind !== "confirm" || dialogState.options.confirmVariant === "destructive" || !confirmButtonRef.current) return
             event.preventDefault()
-            resolveConfirm()
+            confirmButtonRef.current.focus()
           }}
         >
           {dialogState ? (
@@ -191,6 +192,7 @@ export function AppDialogProvider({ children }: { children: ReactNode }) {
                   {"cancelLabel" in dialogState.options ? translateUiText(dialogState.options.cancelLabel ?? t("common:cancel")) : t("common:cancel")}
                 </Button>
                 <Button
+                  ref={confirmButtonRef}
                   variant={dialogState.kind === "confirm" ? (dialogState.options.confirmVariant ?? "default") : "secondary"}
                   size="sm"
                   onClick={resolveConfirm}

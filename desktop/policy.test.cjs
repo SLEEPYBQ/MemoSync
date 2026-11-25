@@ -1,7 +1,7 @@
 const { describe, it } = require("node:test")
 const assert = require("node:assert/strict")
 const { EventEmitter } = require("node:events")
-const { trackBackendProcess } = require("./backend-lifecycle.cjs")
+const { trackBackendProcess, stopBackendForUpdate } = require("./backend-lifecycle.cjs")
 const { isAppUrl, isExternalUrl, parseReadyLine } = require("./policy.cjs")
 const { canGrantDesktopPermission, classifyNavigation, contentWindowOptions, installNavigationHandlers } = require("./navigation.cjs")
 
@@ -32,6 +32,33 @@ describe("desktop permissions", () => {
 })
 
 describe("desktop backend process lifecycle", () => {
+  it("waits for a clean backend exit before allowing an update", async () => {
+    const child = new EventEmitter()
+    const input = []
+    child.stdin = { end: value => input.push(JSON.parse(value)) }
+    const lifecycle = trackBackendProcess(child)
+    let ready = false
+    const stop = stopBackendForUpdate(child, lifecycle).then(() => { ready = true })
+    await Promise.resolve()
+    assert.deepEqual(input, [{ type: "stop" }])
+    assert.equal(ready, false)
+    child.emit("exit", 0)
+    await stop
+    assert.equal(ready, true)
+  })
+
+  it("refuses installation after an unsuccessful or stalled shutdown", async () => {
+    for (const code of [1, null]) {
+      const child = new EventEmitter()
+      child.stdin = { end: () => child.emit("exit", code) }
+      await assert.rejects(stopBackendForUpdate(child, trackBackendProcess(child)), /shut down cleanly/)
+    }
+    const child = new EventEmitter()
+    child.stdin = { end: () => {} }
+    child.kill = () => { throw new Error("An update must not force-kill the backend") }
+    await assert.rejects(stopBackendForUpdate(child, trackBackendProcess(child), 10), /did not stop/)
+  })
+
   it("releases shutdown wait when the runtime cannot be spawned", async () => {
     const child = new EventEmitter()
     const lifecycle = trackBackendProcess(child)

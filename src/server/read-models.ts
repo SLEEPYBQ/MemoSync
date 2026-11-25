@@ -279,7 +279,7 @@ export function deriveChatSnapshot(
 
   return {
     runtime,
-    queuedMessages: (state.queuedMessagesByChatId.get(chat.id) ?? []).map((entry) => ({
+    queuedMessages: (state.queuedMessagesByChatId.get(chat.id) ?? []).map(({ hostClientId: _origin, ...entry }) => ({
       ...entry,
       attachments: [...entry.attachments],
     })),

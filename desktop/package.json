@@ -13,6 +13,9 @@
   "trustedDependencies": [
     "electron"
   ],
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
   "devDependencies": {
     "electron": "45.2.1",
     "electron-builder": "26.18.0"
@@ -24,10 +27,13 @@
     "files": [
       "main.cjs",
       "backend-lifecycle.cjs",
+      "window-lifecycle.cjs",
       "policy.cjs",
       "navigation.cjs",
       "preload.cjs",
       "ui-preferences.cjs",
+      "updater.cjs",
+      "update-ipc.cjs",
       "icon-dark.png",
       "icon-light.png",
       "package.json"
@@ -59,6 +65,13 @@
       }
     ],
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "publish": {
+      "provider": "github",
+      "owner": "SLEEPYBQ",
+      "repo": "MemoSync",
+      "channel": "latest",
+      "releaseType": "release"
+    },
     "directories": {
       "output": "release"
     },
