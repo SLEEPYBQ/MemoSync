@@ -14,7 +14,7 @@ import {
   type PairingRequestEntry,
   type RemoteAccessStatus,
 } from "../../lib/remoteAccessApi"
-import { SharingAccessGroups, SharingAccessSection } from "./SharingAccessSection"
+import { SharingAccessGroups, SharingAccessSection, sharingLoadErrorAfterPoll } from "./SharingAccessSection"
 import { SETTINGS_SECTIONS, resolveSettingsSectionId } from "./registry"
 
 const ACTIVE_STATUS: RemoteAccessStatus = {
@@ -114,6 +114,40 @@ describe("restart notice", () => {
     const html = renderGroups({ enabled: true, status: ACTIVE_STATUS })
     expect(html).not.toContain("will turn on after MemoSync restarts")
     expect(html).not.toContain("until MemoSync restarts")
+  })
+
+  test("explains an explicit launch bind instead of promising that restart applies the toggle", () => {
+    const html = renderGroups({
+      enabled: true,
+      status: {
+        enabled: true,
+        active: false,
+        bindHost: "127.0.0.1",
+        bindControlledExternally: true,
+        lanUrls: [],
+      },
+    })
+    expect(html).toContain("explicit host bind")
+    expect(html).toContain("127.0.0.1")
+    expect(html).toContain("without --host or HOST")
+    expect(html).toContain("cannot turn on")
+    expect(html).not.toContain("Remote access will turn on after MemoSync restarts.")
+  })
+
+  test("warns that an explicit non-loopback launch bind stays exposed when the toggle is off", () => {
+    const html = renderGroups({
+      enabled: false,
+      status: {
+        enabled: false,
+        active: true,
+        bindHost: "0.0.0.0",
+        bindControlledExternally: true,
+        lanUrls: ["http://192.168.1.5:5175"],
+      },
+    })
+    expect(html).toContain("stays exposed")
+    expect(html).toContain("0.0.0.0")
+    expect(html).not.toContain("Remote access stays on until MemoSync restarts.")
   })
 })
 
@@ -328,6 +362,18 @@ describe("remoteAccessApi", () => {
   test("non-ok responses throw", async () => {
     stubFetch(() => new Response("nope", { status: 403 }))
     await expect(remoteAccessApi.pendingRequests()).rejects.toThrow("Request failed (403)")
+  })
+})
+
+describe("sharing overview poll error lifecycle", () => {
+  test("clears the initial load error after a successful poll", () => {
+    expect(sharingLoadErrorAfterPoll("Request failed (500)", { kind: "success" })).toBeNull()
+  })
+
+  test("shows only initial failures and preserves that error through transient later failures", () => {
+    expect(sharingLoadErrorAfterPoll(null, { kind: "failure", initialLoad: true, message: "Request failed (500)" })).toBe("Request failed (500)")
+    expect(sharingLoadErrorAfterPoll("Request failed (500)", { kind: "failure", initialLoad: false, message: "Request failed (502)" })).toBe("Request failed (500)")
+    expect(sharingLoadErrorAfterPoll(null, { kind: "failure", initialLoad: false, message: "Request failed (502)" })).toBeNull()
   })
 })
 

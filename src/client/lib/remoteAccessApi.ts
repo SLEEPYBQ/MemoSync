@@ -11,6 +11,10 @@ export interface RemoteAccessStatus {
   enabled: boolean
   /** False while the server still needs a restart to (un)bind the LAN socket. */
   active: boolean
+  /** Actual process bind, included so launch-override copy can name it. */
+  bindHost?: string
+  /** True when startup supplied --host/HOST, which keeps overriding the toggle after restarts. */
+  bindControlledExternally?: boolean
   lanUrls: string[]
 }
 

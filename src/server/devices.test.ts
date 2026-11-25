@@ -5,6 +5,7 @@ import path from "node:path"
 import {
   DEVICE_TOKEN_PREFIX,
   DeviceStore,
+  PAIRING_APPROVED_TOKEN_GRACE_MS,
   PAIRING_CODE_ALPHABET,
   PAIRING_REQUEST_TTL_MS,
   formatPairingCode,
@@ -141,20 +142,40 @@ describe("DeviceStore pairing lifecycle", () => {
     expect(await errorOf(store.denyRequest(request.id))).toMatchObject({ code: "request_not_pending" })
   })
 
-  test("reports terminal approval or denial even when the ttl elapses afterwards", async () => {
+  test("keeps a near-expiry approval redeemable only for the short token grace period", async () => {
     const { store, clock } = await createStore()
     const approvedRequest = await store.createRequest("Phone", "198.51.100.31")
+    clock.advance(PAIRING_REQUEST_TTL_MS - 1_000)
     const approved = await store.approveRequest(approvedRequest.id)
-    clock.advance(PAIRING_REQUEST_TTL_MS)
+
+    // Approval one second before the original TTL does not strand a device
+    // that polls one second later, but the secret does not stay redeemable
+    // for the rest of request retention.
+    clock.advance(1_000)
     expect(store.getRequestStatus(approvedRequest.id, approvedRequest.code)).toEqual({
       status: "approved",
       token: approved.token,
     })
+    clock.advance(PAIRING_APPROVED_TOKEN_GRACE_MS - 1_000)
+    expect(store.getRequestStatus(approvedRequest.id, approvedRequest.code)).toEqual({ status: "expired" })
+    expect(store.getRequestStatus(approvedRequest.id, approvedRequest.code)).toEqual({ status: "expired" })
 
     const deniedRequest = await store.createRequest("Tablet", "198.51.100.32")
     await store.denyRequest(deniedRequest.id)
     clock.advance(PAIRING_REQUEST_TTL_MS)
     expect(store.getRequestStatus(deniedRequest.id, deniedRequest.code)).toEqual({ status: "denied" })
+  })
+
+  test("ages out an approved pairing token at the retained-request boundary", async () => {
+    const { store, clock } = await createStore()
+    const request = await store.createRequest("Phone", "198.51.100.33")
+    await store.approveRequest(request.id)
+
+    // Terminal-state retention is bounded too: expiry plus retention is
+    // currently two TTLs from creation, after which the request id itself
+    // disappears instead of waiting for another pairing creation.
+    clock.advance(PAIRING_REQUEST_TTL_MS * 2)
+    expect(store.getRequestStatus(request.id, request.code)).toBeNull()
   })
 
   test("makes approval and denial single-use", async () => {

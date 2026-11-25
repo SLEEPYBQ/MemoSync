@@ -355,6 +355,13 @@ export async function proxyPreviewRequest(
     .join(";").trim()
   if (projectCookies) headers.set("cookie", projectCookies)
   else headers.delete("cookie")
+  // A paired-device bearer authenticates the browser to MemoSync; it is never
+  // a project-server credential. Strip only that MemoSync-shaped credential so
+  // an upstream dev server cannot replay it, while project-owned Authorization
+  // headers continue to behave normally inside the preview.
+  if (/^Bearer\s+memosync_device_[0-9a-f]{48}\s*$/.test(headers.get("authorization") ?? "")) {
+    headers.delete("authorization")
+  }
   headers.set("host", `localhost:${targetPort}`)
   // fetch decodes the body; forwarding the original encoding headers would lie.
   headers.delete("accept-encoding")

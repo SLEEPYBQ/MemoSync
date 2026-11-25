@@ -318,11 +318,13 @@ describe("remote access HTTP integration", () => {
       enabled: boolean
       active: boolean
       bindHost: string
+      bindControlledExternally: boolean
       lanUrls: string[]
     }
     expect(statusPayload.enabled).toBe(true)
     expect(statusPayload.active).toBe(true)
     expect(statusPayload.bindHost).toBe("0.0.0.0")
+    expect(statusPayload.bindControlledExternally).toBe(false)
     expect(Array.isArray(statusPayload.lanUrls)).toBe(true)
 
     const lanAddress = firstLanIpv4()
@@ -413,6 +415,7 @@ describe("remote access HTTP integration", () => {
       enabled: true,
       active: false,
       bindHost: "127.0.0.1",
+      bindControlledExternally: true,
     })
   })
 
@@ -461,6 +464,7 @@ describe("remote access HTTP integration", () => {
       enabled: false,
       active: true,
       bindHost: "0.0.0.0",
+      bindControlledExternally: true,
     })
   })
 

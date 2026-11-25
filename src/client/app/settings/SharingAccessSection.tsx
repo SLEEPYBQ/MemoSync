@@ -93,6 +93,17 @@ function formatDeviceDate(value: string | number | null | undefined): string {
   return new Intl.DateTimeFormat(getLocale(), { month: "short", day: "numeric", year: "numeric" }).format(new Date(ms))
 }
 
+/** Load-error lifecycle for the background overview poll: recovery clears the
+ * banner; after the first load, transient failures stay silent and preserve
+ * whatever initial-load state is already visible. */
+export function sharingLoadErrorAfterPoll(
+  current: string | null,
+  outcome: { kind: "success" } | { kind: "failure"; initialLoad: boolean; message: string },
+) {
+  if (outcome.kind === "success") return null
+  return outcome.initialLoad ? outcome.message : current
+}
+
 /**
  * Pure view: every state and callback arrives as a prop, so the policy
  * combinations (off, restart-pending, active with requests and devices) are
@@ -129,8 +140,11 @@ export function SharingAccessGroups({
   const alternateLanUrls = status?.lanUrls.slice(1) ?? []
   // The bind cannot change on a running server, so a mismatch between the
   // persisted setting and the live bind means a restart is pending — in
-  // either direction.
-  const restartNotice = status !== null && enabled !== status.active
+  // either direction. An explicit launch bind is different: it will win again
+  // after that restart, so promising a state change would be false.
+  const bindMismatch = status !== null && enabled !== status.active
+  const restartNotice = bindMismatch && status?.bindControlledExternally !== true
+  const bindOverrideNotice = bindMismatch && status?.bindControlledExternally === true
 
   return (
     <SettingsGroups>
@@ -143,7 +157,11 @@ export function SharingAccessGroups({
           />
         </SettingsRow>
       </SettingsGroup>
-      {restartNotice ? (
+      {bindOverrideNotice ? (
+        <SettingsNotice tone="warning">
+          {t(enabled ? "settings:sharingBindOverrideBlocksEnable" : "settings:sharingBindOverrideKeepsActive", { host: status?.bindHost ?? "unknown" })}
+        </SettingsNotice>
+      ) : restartNotice ? (
         <SettingsNotice tone="warning">
           {enabled ? t("settings:sharingTakesEffectAfterRestart") : t("settings:sharingStaysOnUntilRestart")}
         </SettingsNotice>
@@ -266,7 +284,11 @@ export function SharingAccessSection({ state }: { state: SharingState }) {
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null)
   const [devices, setDevices] = useState<PairedDevice[]>([])
   const [pendingRequests, setPendingRequests] = useState<PairingRequestEntry[]>([])
-  const [error, setError] = useState<string | null>(null)
+  // Load and action failures have different lifetimes: a recovered poll must
+  // clear the initial-load banner, while a user-triggered action error must
+  // not be silently erased by the next background poll.
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const [nowMs, setNowMs] = useState(() => Date.now())
   const enabled = readRemoteAccessEnabled(state.appSettings)
@@ -294,17 +316,18 @@ export function SharingAccessSection({ state }: { state: SharingState }) {
     async function poll() {
       if (inFlight) return
       inFlight = true
+      const wasInitialLoad = initialLoad
       try {
         const overview = await fetchRemoteAccessOverview()
         if (cancelled) return
         setStatus(overview.status)
         setDevices(overview.devices)
         setPendingRequests(overview.pendingRequests)
+        setLoadError((current) => sharingLoadErrorAfterPoll(current, { kind: "success" }))
       } catch (error) {
-        // Transient after the first load — the next tick retries; only the
-        // initial load surfaces errors.
-        if (!cancelled && initialLoad) {
-          setError(error instanceof Error ? error.message : t("settings:sharingUnableToLoad"))
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : t("settings:sharingUnableToLoad")
+          setLoadError((current) => sharingLoadErrorAfterPoll(current, { kind: "failure", initialLoad: wasInitialLoad, message }))
         }
       } finally {
         initialLoad = false
@@ -346,31 +369,31 @@ export function SharingAccessSection({ state }: { state: SharingState }) {
 
   async function save(patch: AppSettingsPatch) {
     try {
-      setError(null)
+      setActionError(null)
       await state.handleWriteAppSettings(patch)
     } catch (error) {
-      setError(actionErrorMessage(error, t("settings:unableToSaveSettings")))
+      setActionError(actionErrorMessage(error, t("settings:unableToSaveSettings")))
     }
   }
 
   async function handleApprove(id: string) {
     try {
-      setError(null)
+      setActionError(null)
       await runBusy(id, () => remoteAccessApi.approveRequest(id))
       // Approval both clears the request and creates the device.
       await Promise.all([reloadPending(), reloadDevices()])
     } catch (error) {
-      setError(actionErrorMessage(error, t("settings:sharingActionFailed")))
+      setActionError(actionErrorMessage(error, t("settings:sharingActionFailed")))
     }
   }
 
   async function handleDeny(id: string) {
     try {
-      setError(null)
+      setActionError(null)
       await runBusy(id, () => remoteAccessApi.denyRequest(id))
       await reloadPending()
     } catch (error) {
-      setError(actionErrorMessage(error, t("settings:sharingActionFailed")))
+      setActionError(actionErrorMessage(error, t("settings:sharingActionFailed")))
     }
   }
 
@@ -383,17 +406,19 @@ export function SharingAccessSection({ state }: { state: SharingState }) {
     })
     if (!confirmed) return
     try {
-      setError(null)
+      setActionError(null)
       await runBusy(device.id, () => remoteAccessApi.revokeDevice(device.id))
       await reloadDevices()
     } catch (error) {
-      setError(actionErrorMessage(error, t("settings:sharingActionFailed")))
+      setActionError(actionErrorMessage(error, t("settings:sharingActionFailed")))
     }
   }
 
+  const visibleError = actionError ?? loadError
+
   return (
     <>
-      {error ? <SettingsErrorBanner message={translateUiText(error)} /> : null}
+      {visibleError ? <SettingsErrorBanner message={translateUiText(visibleError)} /> : null}
       <SharingAccessGroups
         enabled={enabled}
         status={status}

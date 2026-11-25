@@ -6,6 +6,7 @@ export const DEVICE_TOKEN_PREFIX = "memosync_device_"
 export const PAIRING_CODE_ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 export const PAIRING_CODE_LENGTH = 12
 export const PAIRING_REQUEST_TTL_MS = 10 * 60 * 1000
+export const PAIRING_APPROVED_TOKEN_GRACE_MS = 60 * 1000
 
 const MAX_PENDING_PAIRING_REQUESTS = 10
 const MAX_PENDING_PAIRING_REQUESTS_PER_IP = 2
@@ -49,6 +50,7 @@ export interface PairingRequestStatusResult {
 interface PairingRequest extends PairingRequestInfo {
   status: "pending" | "approved" | "denied"
   clientIp: string
+  approvedAt?: number
   token?: string
   deviceId?: string
 }
@@ -284,6 +286,7 @@ export class DeviceStore {
 
   listPendingRequests(): PairingRequestInfo[] {
     const now = this.now()
+    this.prunePairingRequests(now)
     return [...this.pairingRequests.values()]
       .filter((request) => request.status === "pending" && !this.isExpired(request, now))
       .map((request) => ({
@@ -320,6 +323,7 @@ export class DeviceStore {
       this.devices = nextDevices
 
       request.status = "approved"
+      request.approvedAt = now
       request.token = token
       request.deviceId = device.id
       return { token, device: redactDevice(device) }
@@ -338,14 +342,27 @@ export class DeviceStore {
   }
 
   getRequestStatus(id: string, code: string): PairingRequestStatusResult | null {
+    const now = this.now()
+    // Status polling is the only unauthenticated read path, so it must age out
+    // retained requests itself rather than waiting for another pairing creation.
+    // Otherwise an approved request's token would remain redeemable indefinitely.
+    this.prunePairingRequests(now)
     const request = this.pairingRequests.get(id)
     if (!request || !safeCompare(request.code, normalizePairingCode(code))) return null
-    // Approval/denial is a terminal decision made while the request was live.
-    // In particular, a device that polls after the TTL must still receive the
-    // token it was approved for instead of losing it to an "expired" answer.
-    if (request.status === "approved") return { status: "approved", token: request.token }
+    // Approval is terminal, but token redemption is not: the device gets a
+    // short post-approval grace period (covering approval near the original
+    // TTL and a few transient poll failures), after which the secret is
+    // dropped from memory and the pairing attempt reports expired.
+    if (request.status === "approved") {
+      const approvedAt = request.approvedAt ?? request.createdAt
+      if (approvedAt + PAIRING_APPROVED_TOKEN_GRACE_MS <= now) {
+        delete request.token
+        return { status: "expired" }
+      }
+      return { status: "approved", token: request.token }
+    }
     if (request.status === "denied") return { status: "denied" }
-    if (this.isExpired(request)) return { status: "expired" }
+    if (this.isExpired(request, now)) return { status: "expired" }
     return { status: request.status }
   }
 

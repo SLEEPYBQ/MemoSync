@@ -515,6 +515,7 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
   deviceStore: DeviceStore
   port: number
   bindHost: string
+  bindControlledExternally: boolean
   remoteAccessEnabled: () => boolean
   /**
    * True only for host-level credentials: a password session, or a loopback
@@ -540,6 +541,9 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
       // setting. The UI compares the two to explain restart-pending changes.
       active: !isLoopbackBindHost(args.bindHost),
       bindHost: args.bindHost,
+      // An explicit --host/HOST value wins over the setting again after every
+      // restart, so that mismatch needs different copy from restart-pending.
+      bindControlledExternally: args.bindControlledExternally,
       port: args.port,
       lanUrls: listRemoteAccessLanUrls(args.port),
     })
@@ -1241,6 +1245,7 @@ async function startLockedMemoSyncServer(
               deviceStore,
               port: actualPort,
               bindHost: actualBindHost,
+              bindControlledExternally: options.host !== undefined,
               remoteAccessEnabled,
               hostAuthenticated,
             })

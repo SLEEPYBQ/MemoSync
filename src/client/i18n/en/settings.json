@@ -255,6 +255,8 @@
   "sharingSearchKeywords": "sharing,remote access,pair,device,lan,共享,远程访问,配对,设备",
   "sharingTakesEffectAfterRestart": "Remote access will turn on after MemoSync restarts.",
   "sharingStaysOnUntilRestart": "Remote access stays on until MemoSync restarts.",
+  "sharingBindOverrideBlocksEnable": "This launch uses an explicit host bind ({{host}}), so remote access cannot turn on. Restart MemoSync without --host or HOST for the saved setting to take effect.",
+  "sharingBindOverrideKeepsActive": "This launch uses an explicit host bind ({{host}}), so remote access stays exposed. Restart MemoSync without --host or HOST for the saved setting to take effect.",
   "sharingPairing": "Pairing",
   "sharingPairNewDevice": "Pair a new device",
   "sharingPairInstructions": "Scan with the MemoSync app on the new device, then approve its request here.",

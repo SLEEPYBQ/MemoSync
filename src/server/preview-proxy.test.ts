@@ -46,6 +46,32 @@ describe("preview proxy", () => {
     expect(cookie).toBeNull()
   })
 
+  it("never forwards a MemoSync bearer credential to the project server", async () => {
+    const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", {
+      headers: { Authorization: "Bearer memosync_device_0123456789abcdef0123456789abcdef0123456789abcdef" },
+    })
+    let authorization: string | null | undefined
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get("authorization")
+      return new Response("ok")
+    }) as typeof fetch
+    await proxyPreviewRequest(req, new URL(req.url), 8901, fetchImpl)
+    expect(authorization).toBeNull()
+  })
+
+  it("preserves project-owned authorization headers inside the preview", async () => {
+    const req = reqWithHost("8901.localhost:3210", "http://8901.localhost:3210/", {
+      headers: { Authorization: "Bearer project-api-token" },
+    })
+    let authorization: string | null | undefined
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      authorization = new Headers(init?.headers).get("authorization")
+      return new Response("ok")
+    }) as typeof fetch
+    await proxyPreviewRequest(req, new URL(req.url), 8901, fetchImpl)
+    expect(authorization).toBe("Bearer project-api-token")
+  })
+
   it("recognizes <port>.localhost hosts and nothing else", () => {
     expect(previewProxyTarget(reqWithHost("8901.localhost:3210"), 3210)).toBe(8901)
     expect(previewProxyTarget(reqWithHost("5173.localhost"), 3210)).toBe(5173)

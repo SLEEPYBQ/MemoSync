@@ -1,4 +1,5 @@
 import process from "node:process"
+import { randomBytes } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME, SELF_UPDATE_ENABLED } from "../shared/branding"
@@ -90,6 +91,7 @@ Options:
   --host <host>        Bind to a specific host or IP
   --remote             Shortcut for --host 0.0.0.0
   --share              Create a public Cloudflare quick tunnel with terminal QR
+                       (sharing generates a temporary password unless --password is supplied)
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
   --password <secret>  Require a password before loading the app
@@ -274,8 +276,20 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "restarting", reason: shouldRestart }
   }
 
+  // Cloudflared reaches the local listener as a loopback client, so a
+  // passwordless server would otherwise treat every public tunnel visitor as
+  // trusted local traffic. Keep one-command sharing convenient, but never
+  // publish an unauthenticated app: generate a process-local password and
+  // print it next to the URL unless the user supplied one explicitly.
+  const generatedSharePassword = isShareEnabled(parsedArgs.options.share) && parsedArgs.options.password === null
+    ? randomBytes(12).toString("base64url")
+    : null
+  const serverOptions = generatedSharePassword
+    ? { ...parsedArgs.options, password: generatedSharePassword }
+    : parsedArgs.options
+
   const startedServer = await deps.startServer({
-    ...parsedArgs.options,
+    ...serverOptions,
     trustProxy: isShareEnabled(parsedArgs.options.share),
     onMigrationProgress: deps.log,
     update: SELF_UPDATE_ENABLED
@@ -313,6 +327,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
         deps.log("Local URL:")
         deps.log(launchUrl)
+      }
+      if (generatedSharePassword) {
+        deps.log("")
+        deps.log("Share password:")
+        deps.log(generatedSharePassword)
       }
     } catch (error) {
       await stop()

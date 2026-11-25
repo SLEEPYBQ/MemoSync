@@ -1103,11 +1103,13 @@ describe("preview proxy network authorization", () => {
     }
 
     let upstreamHits = 0
+    let upstreamAuthorization: string | null = null
     const target = Bun.serve({
       port: 0,
       hostname: "127.0.0.1",
-      fetch: () => {
+      fetch: (req) => {
         upstreamHits += 1
+        upstreamAuthorization = req.headers.get("authorization")
         return new Response("loopback-only preview target")
       },
     })
@@ -1135,6 +1137,9 @@ describe("preview proxy network authorization", () => {
       expect(authenticated.status).toBe(200)
       expect(await authenticated.text()).toBe("loopback-only preview target")
       expect(upstreamHits).toBe(1)
+      // The bearer proves access to MemoSync's proxy; it must not become a
+      // credential handed to the proxied project server.
+      expect(upstreamAuthorization).toBeNull()
     } finally {
       target.stop(true)
       await server.stop()

@@ -222,14 +222,14 @@ bun run start --port 4000        # another port
 bun run start --no-open          # don't open a browser
 bun run start --remote           # listen on 0.0.0.0 (LAN, Tailscale)
 bun run start --password <pw>    # ask for a password before the app loads
-bun run start --share            # temporary public URL with a QR code
+bun run start --share            # temporary public URL with a QR code and password
 ```
 
 Binding beyond loopback never leaves a passwordless server open to the LAN: pair a device from **Settings → Sharing & access** first, or start with `--password` and sign in. Pairing endpoints are available whenever remote access is enabled or the running server is bound to a non-loopback interface (for example through `--remote` or a LAN `--host`). The bind itself is fixed for the lifetime of the process, so changes to the remote-access toggle apply fully after a restart.
 
 Deliberate v1 tradeoffs to know about:
 
-- Pairing and device traffic use plain HTTP on the LAN. On networks you do not control, use `--share` instead — the cloudflared tunnel encrypts end to end. A device bearer token is reusable until revoked, so revoke a lost device promptly in **Settings → Sharing & access**.
+- Pairing and device traffic use plain HTTP on the LAN. On networks you do not control, use `--share` instead — the cloudflared tunnel encrypts end to end, and MemoSync protects the shared app with a password (generated and printed for you unless `--password` is supplied). A device bearer token is reusable until revoked, so revoke a lost device promptly in **Settings → Sharing & access**.
 - Opening the app in a LAN browser requires a configured password: browsers cannot pair, because the pairing flow exists for the mobile app.
 - Device last-seen timestamps persist at most once a minute; losing sub-minute precision after a restart is intentional and keeps the devices file from being rewritten on every request.
 
