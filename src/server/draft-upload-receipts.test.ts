@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { getProjectUploadDir } from "./paths"
-import { DraftUploadReceipts, persistProjectUpload, type DraftUploadWrite } from "./uploads"
+import { DraftUploadReceipts, deleteProjectUpload, persistProjectUpload, type DraftUploadWrite } from "./uploads"
 
 const dirs: string[] = []
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => fs.rm(dir, { recursive: true, force: true }))) })
@@ -16,7 +16,7 @@ async function fixture() {
   const bytes = Buffer.alloc(256 * 1024 + 3, 0x61)
   bytes[bytes.length - 1] = 0xfe
   return {
-    physicalPath, bytes, draftWrites,
+    dir, physicalPath, bytes, draftWrites,
     persist: () => persistProjectUpload({
       projectId: "draft", localPath: dir, fileName, bytes, tracking: { receipts, draftWrites },
     }),
@@ -117,4 +117,19 @@ test("a workspace reached through a symlinked alias keeps receipt authority over
   const ticket = receipts.publish(draftWrites[0]!)
   expect(await receipts.discard(receipts.take("draft", "sample.bin", ticket)!)).toBe(true)
   expect(await Bun.file(realFile).exists()).toBe(false)
+})
+
+test("digest-verified deletion unlinks matching bytes and spares a replacement on the native filesystem", async () => {
+  const f = await fixture()
+  const attachment = await f.persist()
+  const remove = () => deleteProjectUpload({ localPath: f.dir, storedName: "sample.bin", expectedSha256: attachment.uploadSha256 })
+  expect(attachment.uploadSha256).toMatch(/^[0-9a-f]{64}$/)
+  // A replacement occupying the stored name fails the digest check and survives.
+  await fs.writeFile(f.physicalPath, "someone else's replacement")
+  expect(await remove()).toBe(false)
+  expect((await fs.readFile(f.physicalPath)).toString()).toBe("someone else's replacement")
+  // Restoring the original bytes lets the same digest unlink the file.
+  await fs.writeFile(f.physicalPath, f.bytes)
+  expect(await remove()).toBe(true)
+  expect(await Bun.file(f.physicalPath).exists()).toBe(false)
 })

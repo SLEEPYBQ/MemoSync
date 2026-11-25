@@ -1,5 +1,5 @@
 import { create, type StoreApi } from "zustand"
-import { persist } from "zustand/middleware"
+import { createJSONStorage, persist } from "zustand/middleware"
 import type { ChatAttachment } from "../../shared/types"
 
 interface DraftRevision {
@@ -65,10 +65,98 @@ function listenForDeletedUploads(setLocal: StoreApi<ChatInputState>["setState"])
   })
 }
 
+interface DraftBucketState {
+  drafts: Record<string, string>
+  attachmentDrafts: Record<string, ChatAttachment[]>
+  draftRevisions: Record<string, number>
+  attachmentDraftRevisions: Record<string, number>
+}
+
+// Every edit bumps its key's revision, so the newer side of any divergence is
+// the one with the higher revision — per key, never wholesale. A missing
+// content key with the winning revision is a deletion and stays deleted.
+function mergeBucketMaps<T>(memory: Record<string, T>, stored: Record<string, T>, memoryRevisions: Record<string, number>, storedRevisions: Record<string, number>) {
+  const merged: Record<string, T> = {}
+  const keys = new Set([...Object.keys(memory), ...Object.keys(stored)])
+  for (const key of keys) {
+    const keepMemory = (memoryRevisions[key] ?? 0) >= (storedRevisions[key] ?? 0)
+    const winner = keepMemory ? memory : stored
+    if (winner[key] !== undefined) merged[key] = winner[key]
+  }
+  return merged
+}
+
+function mergeRevisionMaps(memory: Record<string, number>, stored: Record<string, number>) {
+  const merged: Record<string, number> = { ...stored }
+  for (const [key, revision] of Object.entries(memory)) merged[key] = Math.max(revision, merged[key] ?? 0)
+  return merged
+}
+
+function mergeDraftBuckets(memory: DraftBucketState, stored: DraftBucketState): DraftBucketState {
+  return {
+    drafts: mergeBucketMaps(memory.drafts, stored.drafts, memory.draftRevisions, stored.draftRevisions),
+    attachmentDrafts: mergeBucketMaps(memory.attachmentDrafts, stored.attachmentDrafts, memory.attachmentDraftRevisions, stored.attachmentDraftRevisions),
+    draftRevisions: mergeRevisionMaps(memory.draftRevisions, stored.draftRevisions),
+    attachmentDraftRevisions: mergeRevisionMaps(memory.attachmentDraftRevisions, stored.attachmentDraftRevisions),
+  }
+}
+
+function parsePersistedBuckets(raw: string | null): DraftBucketState | null {
+  if (!raw) return null
+  try {
+    const state = (JSON.parse(raw) as { state?: Partial<DraftBucketState> }).state
+    if (!state || typeof state !== "object") return null
+    return {
+      drafts: state.drafts ?? {},
+      attachmentDrafts: state.attachmentDrafts ?? {},
+      draftRevisions: state.draftRevisions ?? {},
+      attachmentDraftRevisions: state.attachmentDraftRevisions ?? {},
+    }
+  } catch { return null }
+}
+
+// A write that only ever advances its own keys. Whole-snapshot persistence
+// would otherwise resurrect buckets another tab has since edited or removed.
+const mergingStorage = {
+  getItem: (name: string) => typeof localStorage === "undefined" ? null : localStorage.getItem(name),
+  setItem: (name: string, value: string) => {
+    if (typeof localStorage === "undefined") return
+    const incoming = parsePersistedBuckets(value)
+    if (!incoming) return localStorage.setItem(name, value)
+    const stored = parsePersistedBuckets(localStorage.getItem(name))
+    if (!stored) return localStorage.setItem(name, value)
+    const merged = mergeDraftBuckets(incoming, stored)
+    let rest: Record<string, unknown> = {}
+    try {
+      const parsed = JSON.parse(value) as { state?: Record<string, unknown>; version?: number }
+      const { drafts: _d, attachmentDrafts: _a, draftRevisions: _r, attachmentDraftRevisions: _ar, ...stateRest } = parsed.state ?? {}
+      rest = { ...parsed, state: stateRest }
+    } catch { /* fall through to the canonical shape */ }
+    localStorage.setItem(name, JSON.stringify({
+      ...(rest as object),
+      state: { ...(rest as { state?: object }).state, ...merged },
+    }))
+  },
+  removeItem: (name: string) => { if (typeof localStorage !== "undefined") localStorage.removeItem(name) },
+}
+
+// Another tab's write never reaches this one through zustand. Adopt its keys
+// revision by revision; this tab's own newer keys always survive the merge.
+function listenForDraftWrites(setLocal: StoreApi<ChatInputState>["setState"]) {
+  if (typeof window === "undefined") return
+  window.addEventListener?.("storage", event => {
+    if (event.key !== "chat-input-drafts" || !event.newValue) return
+    const stored = parsePersistedBuckets(event.newValue)
+    if (!stored) return
+    setLocal(state => mergeDraftBuckets(state, stored))
+  })
+}
+
 export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, api) => {
   // Use the setter outside persist for notifications. Persisting here would
   // replace unrelated drafts on disk with this tab's older snapshot.
   listenForDeletedUploads(setLocal)
+  listenForDraftWrites(setLocal)
   return persist<ChatInputState>(
     (set, get) => ({
       drafts: {},
@@ -139,6 +227,21 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
         } catch { persisted = null }
         const storedDrafts = persisted?.state?.attachmentDrafts
         if (!storedDrafts) return false
+        // Even with nothing left to move — another tab already migrated — the
+        // composer must render the reconciled buckets, not this tab's stale
+        // memory. Reconcile first, persist only when there is work to do.
+        const reconcileMemory = () => setLocal(state => {
+          const storedRevisionsNow = { ...(persisted?.state?.attachmentDraftRevisions ?? {}) }
+          const attachmentDrafts = { ...state.attachmentDrafts }
+          const attachmentDraftRevisions = { ...state.attachmentDraftRevisions }
+          for (const key of [sourceKey, targetKey]) {
+            const items = (storedDrafts[key] ?? []).filter(item => item.id !== state.lastDeletedUploadId)
+            if (items.length) attachmentDrafts[key] = items
+            else delete attachmentDrafts[key]
+            if (storedRevisionsNow[key] !== undefined) attachmentDraftRevisions[key] = Math.max(attachmentDraftRevisions[key] ?? 0, storedRevisionsNow[key]!)
+          }
+          return { attachmentDrafts, attachmentDraftRevisions }
+        })
         const applyMove = (
           drafts: Record<string, ChatAttachment[]>, revisions: Record<string, number>,
           source: ChatAttachment[], target: ChatAttachment[],
@@ -157,7 +260,10 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
         }
         const storedRevisions = { ...(persisted?.state?.attachmentDraftRevisions ?? {}) }
         const storedMove = applyMove({ ...storedDrafts }, storedRevisions, storedDrafts[sourceKey] ?? [], storedDrafts[targetKey] ?? [])
-        if (!storedMove) return false
+        if (!storedMove) {
+          reconcileMemory()
+          return false
+        }
         try {
           const state = { ...(persisted?.state ?? {}), attachmentDrafts: storedMove.attachmentDrafts, attachmentDraftRevisions: storedMove.attachmentDraftRevisions }
           localStorage.setItem("chat-input-drafts", JSON.stringify({ ...(persisted ?? {}), state }))
@@ -218,6 +324,7 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
     }),
     {
       name: "chat-input-drafts",
+      storage: createJSONStorage(() => mergingStorage),
     }
   )(setLocal, getLocal, api)
 })

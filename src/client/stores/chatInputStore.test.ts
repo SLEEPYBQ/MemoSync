@@ -191,4 +191,82 @@ describe("chatInputStore", () => {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     }
   })
+
+  test("a stale tab's text edit cannot revive replaced attachment buckets", () => {
+    const backing = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => void backing.set(key, String(value)),
+      removeItem: (key: string) => void backing.delete(key),
+    }
+    ;(globalThis as unknown as { localStorage: typeof storage }).localStorage = storage
+    try {
+      const upload = (id: string) => ({
+        id, kind: "file" as const, displayName: `${id}.txt`, absolutePath: `/fixture/alpha/.memosync/uploads/${id}.txt`,
+        relativePath: `./.memosync/uploads/${id}.txt`, contentUrl: `/api/projects/alpha/uploads/${id}.txt/content`,
+        mimeType: "text/plain", size: 1,
+      })
+      // Disk is ahead: the migration already ran and another tab added a newer upload.
+      backing.set("chat-input-drafts", JSON.stringify({
+        state: {
+          drafts: {},
+          draftRevisions: {},
+          attachmentDrafts: { "landing:path:/fixture/alpha": [upload("migrated"), upload("newer")] },
+          attachmentDraftRevisions: { "landing:path:/fixture/alpha": 3, "landing:alpha": 2 },
+        },
+        version: 0,
+      }))
+      // This tab's memory is stale: it still holds the pre-migration legacy bucket.
+      useChatInputStore.setState({
+        drafts: {}, draftRevisions: {},
+        attachmentDrafts: { "landing:alpha": [upload("migrated")] },
+        attachmentDraftRevisions: { "landing:alpha": 1 },
+      })
+      // An ordinary text edit persists through the merge; the stale buckets lose.
+      useChatInputStore.getState().setDraft("landing:path:/fixture/beta", "stale tab's text")
+      const persisted = JSON.parse(backing.get("chat-input-drafts")!) as {
+        state: { drafts: Record<string, string>; attachmentDrafts: Record<string, Array<{ id: string }>> }
+      }
+      expect(persisted.state.drafts["landing:path:/fixture/beta"]).toBe("stale tab's text")
+      expect(persisted.state.attachmentDrafts["landing:path:/fixture/alpha"]?.map(item => item.id)).toEqual(["migrated", "newer"])
+      expect(persisted.state.attachmentDrafts["landing:alpha"]).toBeUndefined()
+    } finally {
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    }
+  })
+
+  test("a migration with nothing left to do still reconciles memory with the completed move", () => {
+    const backing = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => void backing.set(key, String(value)),
+      removeItem: (key: string) => void backing.delete(key),
+    }
+    ;(globalThis as unknown as { localStorage: typeof storage }).localStorage = storage
+    try {
+      const upload = {
+        id: "migrated", kind: "file" as const, displayName: "notes.txt",
+        absolutePath: "/fixture/alpha/.memosync/uploads/notes.txt",
+        relativePath: "./.memosync/uploads/notes.txt",
+        contentUrl: "/api/projects/alpha/uploads/notes.txt/content", mimeType: "text/plain", size: 1,
+      }
+      backing.set("chat-input-drafts", JSON.stringify({
+        state: {
+          drafts: {}, draftRevisions: {},
+          attachmentDrafts: { "landing:path:/fixture/alpha": [upload] },
+          attachmentDraftRevisions: { "landing:path:/fixture/alpha": 2 },
+        },
+        version: 0,
+      }))
+      useChatInputStore.setState({ drafts: {}, attachmentDrafts: {}, draftRevisions: {}, attachmentDraftRevisions: {} })
+      const moved = useChatInputStore.getState().migrateAttachmentDrafts("landing:alpha", "landing:path:/fixture/alpha", (legacy, target) => {
+        if (!legacy.length) return null
+        return { source: [], target: [...target, ...legacy] }
+      })
+      expect(moved).toBe(false)
+      expect(useChatInputStore.getState().getAttachmentDrafts("landing:path:/fixture/alpha").map(item => item.id)).toEqual(["migrated"])
+    } finally {
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    }
+  })
 })

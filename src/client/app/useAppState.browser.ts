@@ -481,6 +481,70 @@ test("migrating legacy landing attachments in one tab keeps another tab's newer 
   }
 })
 
+test("a completed migration reaches the second tab and a later edit cannot clobber it", async () => {
+  const first = await openLanding()
+  await pickProject(first, "alpha", "beta")
+  let second: Page | undefined
+  try {
+    ;[second] = await Promise.all([
+      first.waitForEvent("popup"),
+      first.evaluate(() => { window.open("about:blank", "_blank") }),
+    ])
+    second.setDefaultTimeout(5_000)
+    await second.route("**/api/providers", route => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ data: PROVIDERS }),
+    }))
+    await second.goto(first.url())
+    await second.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await second.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })?.__appStateFixture?.chatSubscriptionCount("draft-alpha") > 0)
+    await pickProject(second, "alpha", "beta")
+
+    // Seed the pre-upgrade legacy bucket, then migrate it by visiting alpha in the first tab.
+    await first.evaluate(() => {
+      const key = "chat-input-drafts"
+      const persisted = JSON.parse(localStorage.getItem(key) ?? '{"state":{},"version":0}')
+      persisted.state.attachmentDrafts = {
+        ...(persisted.state.attachmentDrafts ?? {}),
+        "landing:alpha": [{
+          id: "legacy-chip", kind: "file", displayName: "legacy.txt",
+          absolutePath: "/fixture/alpha/.memosync/uploads/legacy.txt",
+          relativePath: "./.memosync/uploads/legacy.txt",
+          contentUrl: "/api/projects/alpha/uploads/legacy.txt/content",
+          mimeType: "text/plain", size: 1,
+        }],
+      }
+      localStorage.setItem(key, JSON.stringify(persisted))
+    })
+    await pickProject(first, "beta", "alpha")
+    await first.waitForFunction(() => {
+      const persisted = JSON.parse(localStorage.getItem("chat-input-drafts") ?? "{}")
+      return persisted.state?.attachmentDrafts?.["landing:path:/fixture/alpha"]?.some((item: { id: string }) => item.id === "legacy-chip")
+    })
+
+    // The second tab never performed the move, yet navigating to alpha shows the chip.
+    await pickProject(second, "beta", "alpha")
+    await second.getByRole("button", { name: "Remove legacy.txt", exact: true }).waitFor()
+
+    // A text edit in the second tab persists through the merge; the migrated bucket survives.
+    await pickProject(second, "alpha", "beta")
+    await second.locator("textarea").fill("second tab text")
+    await second.waitForFunction(() => localStorage.getItem("chat-input-drafts")?.includes("second tab text"))
+    const persisted = await first.evaluate(() => JSON.parse(localStorage.getItem("chat-input-drafts")!) as {
+      state: { attachmentDrafts: Record<string, Array<{ id: string }>> }
+    })
+    expect(persisted.state.attachmentDrafts["landing:path:/fixture/alpha"]?.map(item => item.id)).toEqual(["legacy-chip"])
+    expect(persisted.state.attachmentDrafts["landing:alpha"] ?? []).toEqual([])
+
+    // Re-entering alpha in the first tab still renders the migrated attachment.
+    await pickProject(first, "alpha", "beta")
+    await pickProject(first, "beta", "alpha")
+    await first.getByRole("button", { name: "Remove legacy.txt", exact: true }).waitFor()
+  } finally {
+    await second?.close()
+  }
+})
+
 describe("mounted useAppState history races", () => {
   test("a late landing ACK cannot redirect or replace a newer send", async () => {
     const target = await openFixture()
