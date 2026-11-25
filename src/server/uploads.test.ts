@@ -591,7 +591,12 @@ describe("uploads", () => {
       })
 
       const deleteUrl = `http://localhost:${server.port}${attachment.contentUrl.replace(/\/content$/, "")}`
-      const response = await fetch(deleteUrl, { method: "DELETE" })
+      // Without the byte-identity header the server detaches but never unlinks.
+      const anonymous = await fetch(deleteUrl, { method: "DELETE" })
+      expect(anonymous.status).toBe(200)
+      expect(await anonymous.json()).toEqual({ ok: false })
+      expect(await Bun.file(attachment.absolutePath).exists()).toBe(true)
+      const response = await fetch(deleteUrl, { method: "DELETE", headers: { "X-MemoSync-Upload-Sha256": attachment.uploadSha256! } })
       expect(response.status).toBe(200)
       expect(await response.json()).toEqual({ ok: true })
       expect(await Bun.file(attachment.absolutePath).exists()).toBe(false)
