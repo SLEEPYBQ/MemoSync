@@ -102,6 +102,29 @@ describe("DeviceStore pairing lifecycle", () => {
     stopListening()
   })
 
+  test("keeps a revoked device rejected after the store reloads from devices.json", async () => {
+    const { store, dataDir, clock } = await createStore()
+    const request = await store.createRequest("Phone", "198.51.100.95")
+    const approved = await store.approveRequest(request.id)
+    expect(await store.authenticateToken(approved.token)).not.toBeNull()
+    expect(await store.revokeDevice(approved.device.id)).toBe(true)
+
+    // The revocation must live in the file, not in process memory: a fresh
+    // store instance on the same devices.json (the post-restart shape) never
+    // authenticates the old token again.
+    const reloaded = new DeviceStore(dataDir, { now: () => clock.value })
+    await reloaded.initialize()
+    expect(await reloaded.authenticateToken(approved.token)).toBeNull()
+    expect(reloaded.isDeviceActive(approved.device.id)).toBe(false)
+    const persistedDevice = reloaded.listDevices().find((device) => device.id === approved.device.id)
+    expect(persistedDevice?.revokedAt).toEqual(expect.any(Number))
+    const onDisk = JSON.parse(await readFile(path.join(dataDir, "devices.json"), "utf8"))
+    expect(onDisk.devices[0].revokedAt).toBe(persistedDevice?.revokedAt)
+    expect(onDisk.devices[0]).not.toHaveProperty("token")
+    expect(JSON.stringify(onDisk)).not.toContain(approved.token)
+    expect(await reloaded.revokeDevice(approved.device.id)).toBe(false)
+  })
+
   test("rejects a wrong status code without revealing the request", async () => {
     const { store } = await createStore()
     const request = await store.createRequest("Tablet", "198.51.100.20")

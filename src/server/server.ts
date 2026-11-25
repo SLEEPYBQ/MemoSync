@@ -314,14 +314,76 @@ function deviceStoreErrorResponse(error: unknown) {
   return uiJson({ error: error.message }, { status: 409 })
 }
 
-async function readJsonObject(req: Request) {
+// The public pairing endpoints are unauthenticated, so their bodies stay
+// tiny: a device name and nothing else. Anything beyond a few KB is abuse.
+const PAIRING_BODY_LIMIT_BYTES = 4 * 1024
+
+class RequestBodyTooLargeError extends Error {
+  constructor() {
+    super("Request body is too large")
+    this.name = "RequestBodyTooLargeError"
+  }
+}
+
+/** Early rejection from the declared length alone, before any byte is read. */
+function declaredBodySizeExceeds(req: Request, maxBytes: number) {
+  const declaredSize = Number(req.headers.get("content-length"))
+  return Number.isFinite(declaredSize) && declaredSize > maxBytes
+}
+
+/** Reads the body stream with a hard cap: a missing or lying content-length
+ * (chunked encoding, garbage header) cannot smuggle an unbounded body into
+ * memory, because the running total is enforced chunk by chunk. */
+async function readCappedBodyText(req: Request, maxBytes: number) {
+  if (!req.body) return ""
+  const reader = req.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
   try {
-    const payload = await req.json() as unknown
-    return payload && typeof payload === "object" && !Array.isArray(payload)
-      ? payload as Record<string, unknown>
-      : null
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) throw new RequestBodyTooLargeError()
+      chunks.push(value)
+    }
+  } catch (error) {
+    void reader.cancel().catch(() => {})
+    throw error
+  }
+  const bytes = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(bytes)
+}
+
+async function readCappedJsonObject(req: Request, maxBytes: number): Promise<{
+  payload: Record<string, unknown> | null
+  tooLarge: boolean
+}> {
+  if (declaredBodySizeExceeds(req, maxBytes)) {
+    return { payload: null, tooLarge: true }
+  }
+  let text: string
+  try {
+    text = await readCappedBodyText(req, maxBytes)
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) return { payload: null, tooLarge: true }
+    return { payload: null, tooLarge: false }
+  }
+  try {
+    const payload = JSON.parse(text) as unknown
+    return {
+      payload: payload && typeof payload === "object" && !Array.isArray(payload)
+        ? payload as Record<string, unknown>
+        : null,
+      tooLarge: false,
+    }
   } catch {
-    return null
+    return { payload: null, tooLarge: false }
   }
 }
 
@@ -348,8 +410,11 @@ async function handlePublicPairingEndpoint(args: {
     if (!args.remoteAccessEnabled()) {
       return uiJson({ error: "Remote access is disabled" }, { status: 403 })
     }
-    const payload = await readJsonObject(req)
-    const deviceName = typeof payload?.deviceName === "string" ? payload.deviceName : ""
+    const body = await readCappedJsonObject(req, PAIRING_BODY_LIMIT_BYTES)
+    if (body.tooLarge) {
+      return uiJson({ error: "Pairing request body is too large" }, { status: 413 })
+    }
+    const deviceName = typeof body.payload?.deviceName === "string" ? body.payload.deviceName : ""
     try {
       const request = await deviceStore.createRequest(deviceName, args.clientIp)
       return uiJson({ requestId: request.id, code: request.code }, { status: 201 })
@@ -367,6 +432,11 @@ async function handlePublicPairingEndpoint(args: {
     }
     if (!args.remoteAccessEnabled()) {
       return uiJson({ error: "Remote access is disabled" }, { status: 403 })
+    }
+    // Status polling never reads a body; refuse a declared oversized one
+    // instead of letting an unauthenticated client stream it pointlessly.
+    if (declaredBodySizeExceeds(req, PAIRING_BODY_LIMIT_BYTES)) {
+      return uiJson({ error: "Pairing request body is too large" }, { status: 413 })
     }
     const code = url.searchParams.get("code")
     if (!code) {
@@ -389,8 +459,49 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
   port: number
   bindHost: string
   remoteAccessEnabled: () => boolean
+  /**
+   * True only for host-level credentials: a password session, or a loopback
+   * client while no password is configured. A device bearer token never
+   * qualifies — otherwise one compromised device could approve more devices
+   * or revoke the others and escalate to permanent host control.
+   */
+  hostAuthenticated: boolean
 }) {
   const { req, url, deviceStore } = args
+
+  // The status read stays device-accessible: the mobile app needs it to
+  // reach and understand its host, and it reveals nothing a paired device
+  // does not already know.
+  if (url.pathname === "/api/remote-access/status") {
+    if (req.method !== "GET") {
+      return new Response(null, { status: 405, headers: { Allow: "GET" } })
+    }
+    const enabled = args.remoteAccessEnabled()
+    return uiJson({
+      enabled,
+      // active is the immutable bind state for this process, not the desired
+      // setting. The UI compares the two to explain restart-pending changes.
+      active: !isLoopbackBindHost(args.bindHost),
+      bindHost: args.bindHost,
+      port: args.port,
+      lanUrls: listRemoteAccessLanUrls(args.port),
+    })
+  }
+
+  const decisionMatch = url.pathname.match(/^\/api\/pairing\/requests\/([^/]+)\/(approve|deny)$/)
+  const revokeMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/revoke$/)
+  const adminRoute = url.pathname === "/api/pairing/pending"
+    || decisionMatch !== null
+    || url.pathname === "/api/devices"
+    || revokeMatch !== null
+  if (!adminRoute) return null
+  // Pairing administration and device management are host-only. The check
+  // runs before any method or existence handling so a device token cannot
+  // even probe the shape of these endpoints.
+  if (!args.hostAuthenticated) {
+    return uiJson({ error: "Pairing and device management require host access" }, { status: 403 })
+  }
+
   if (url.pathname === "/api/pairing/pending") {
     if (req.method !== "GET") {
       return new Response(null, { status: 405, headers: { Allow: "GET" } })
@@ -398,7 +509,6 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
     return uiJson({ requests: deviceStore.listPendingRequests() })
   }
 
-  const decisionMatch = url.pathname.match(/^\/api\/pairing\/requests\/([^/]+)\/(approve|deny)$/)
   if (decisionMatch) {
     if (req.method !== "POST") {
       return new Response(null, { status: 405, headers: { Allow: "POST" } })
@@ -427,7 +537,6 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
     return uiJson({ devices: deviceStore.listDevices() })
   }
 
-  const revokeMatch = url.pathname.match(/^\/api\/devices\/([^/]+)\/revoke$/)
   if (revokeMatch) {
     if (req.method !== "POST") {
       return new Response(null, { status: 405, headers: { Allow: "POST" } })
@@ -437,22 +546,6 @@ async function handleAuthenticatedRemoteAccessEndpoint(args: {
       return uiJson({ error: "Device not found" }, { status: 404 })
     }
     return uiJson({ ok: true })
-  }
-
-  if (url.pathname === "/api/remote-access/status") {
-    if (req.method !== "GET") {
-      return new Response(null, { status: 405, headers: { Allow: "GET" } })
-    }
-    const enabled = args.remoteAccessEnabled()
-    return uiJson({
-      enabled,
-      // active is the immutable bind state for this process, not the desired
-      // setting. The UI compares the two to explain restart-pending changes.
-      active: !isLoopbackBindHost(args.bindHost),
-      bindHost: args.bindHost,
-      port: args.port,
-      lanUrls: listRemoteAccessLanUrls(args.port),
-    })
   }
 
   return null
@@ -1067,10 +1160,12 @@ async function startLockedMemoSyncServer(
           }
 
           if (url.pathname === "/ws" || url.pathname.startsWith("/api/")) {
+            const isLoopbackClient = isLoopbackClientAddress(clientAddress)
+            const sessionAuthenticated = auth?.isAuthenticated(req) ?? false
             const authorized = authorizeMemoSyncRequest({
-              isLoopbackClient: isLoopbackClientAddress(clientAddress),
+              isLoopbackClient,
               passwordAuthEnabled: auth !== null,
-              sessionAuthenticated: auth?.isAuthenticated(req) ?? false,
+              sessionAuthenticated,
               deviceAuthenticated: authenticatedDevice !== null,
             })
             if (!authorized) {
@@ -1086,6 +1181,9 @@ async function startLockedMemoSyncServer(
               port: actualPort,
               bindHost: actualBindHost,
               remoteAccessEnabled,
+              // Host-level evidence is a password session or the
+              // loopback-no-password exemption — never a device bearer token.
+              hostAuthenticated: sessionAuthenticated || (auth === null && isLoopbackClient),
             })
             if (remoteAccessResponse) {
               return remoteAccessResponse

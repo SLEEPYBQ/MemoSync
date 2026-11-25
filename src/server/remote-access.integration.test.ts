@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test"
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises"
+import { connect } from "node:net"
 import { networkInterfaces, tmpdir } from "node:os"
 import path from "node:path"
 import { startMemoSyncServer, authorizeMemoSyncRequest, isLoopbackBindHost, isLoopbackClientAddress, listRemoteAccessLanUrls, remoteAccessLanAddressRank } from "./server"
@@ -137,6 +138,30 @@ function waitForWebSocketClose(ws: WebSocket) {
       clearTimeout(timer)
       resolve(event)
     }, { once: true })
+  })
+}
+
+/** Speaks one raw HTTP/1.1 exchange over TCP so tests control framing exactly
+ * (chunked bodies, declared content-length) instead of what fetch normalizes. */
+function rawHttpExchange(port: number, requestText: string) {
+  return new Promise<string>((resolve, reject) => {
+    const socket = connect({ port, host: "127.0.0.1" })
+    let received = ""
+    socket.setEncoding("utf8")
+    const timer = setTimeout(() => {
+      socket.destroy()
+      reject(new Error("raw http exchange timed out"))
+    }, 5_000)
+    socket.on("connect", () => socket.write(requestText))
+    socket.on("data", (chunk) => { received += chunk })
+    socket.on("close", () => {
+      clearTimeout(timer)
+      resolve(received)
+    })
+    socket.on("error", (error) => {
+      clearTimeout(timer)
+      reject(error)
+    })
   })
 }
 
@@ -379,11 +404,11 @@ describe("remote access HTTP integration", () => {
     const deviceHeaders = { Authorization: `Bearer ${paired.token}` }
     // Password auth closes the loopback exemption, so this 200 can only come
     // from the device bearer token rather than from the loopback client address.
-    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/remote-access/status`, { headers: deviceHeaders })).status).toBe(200)
 
     await writeRemoteAccessSetting(baseUrl, false, authHeaders)
 
-    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(401)
+    expect((await fetch(`${baseUrl}/api/remote-access/status`, { headers: deviceHeaders })).status).toBe(401)
     const pairing = await fetch(`${baseUrl}/api/pairing/requests`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -403,7 +428,7 @@ describe("remote access HTTP integration", () => {
 
     await writeRemoteAccessSetting(baseUrl, false, authHeaders)
 
-    expect((await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/remote-access/status`, { headers: deviceHeaders })).status).toBe(200)
     const pairing = await fetch(`${baseUrl}/api/pairing/requests`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -431,10 +456,11 @@ describe("remote access HTTP integration", () => {
     expect(noCredentialDevices.status).toBe(401)
 
     const deviceHeaders = { Authorization: `Bearer ${paired.token}` }
+    // Device management is host-only: the token authenticates (ordinary
+    // authenticated routes accept it) yet is forbidden from listing devices.
+    expect((await fetch(`${baseUrl}/api/remote-access/status`, { headers: deviceHeaders })).status).toBe(200)
     const deviceDevices = await fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders })
-    expect(deviceDevices.status).toBe(200)
-    const devicePayload = await deviceDevices.json() as { devices: Array<{ id: string }> }
-    expect(devicePayload.devices.map((device) => device.id)).toContain(paired.device.id)
+    expect(deviceDevices.status).toBe(403)
 
     const ws = createWebSocketWithHeaders(`ws://127.0.0.1:${server.port}/ws`, {
       Authorization: `Bearer ${paired.token}`,
@@ -453,5 +479,149 @@ describe("remote access HTTP integration", () => {
     expect(afterRevoke.status).toBe(401)
     const wsAfterRevoke = await fetch(`${baseUrl}/ws`, { headers: deviceHeaders })
     expect(wsAfterRevoke.status).toBe(401)
+  })
+
+  test("forbids device tokens on all pairing-admin and device-management endpoints without mutating state", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ password: "secret", persistedRemoteAccess: true })
+    const cookie = await login(baseUrl)
+    const authHeaders = { Cookie: cookie }
+    const paired = await pairDevice(baseUrl, authHeaders)
+    const deviceHeaders = { Authorization: `Bearer ${paired.token}` }
+
+    const createRequest = async (deviceName: string) => {
+      const created = await fetch(`${baseUrl}/api/pairing/requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceName }),
+      })
+      expect(created.status).toBe(201)
+      return (await created.json() as { requestId: string }).requestId
+    }
+    const approveProbeId = await createRequest("Approve Probe")
+    const denyProbeId = await createRequest("Deny Probe")
+
+    // Every admin endpoint rejects the device token with 403 even though the
+    // token itself is valid: authentication succeeds, authorization does not.
+    const deviceProbes = [
+      () => fetch(`${baseUrl}/api/pairing/pending`, { headers: deviceHeaders }),
+      () => fetch(`${baseUrl}/api/pairing/requests/${approveProbeId}/approve`, { method: "POST", headers: deviceHeaders }),
+      () => fetch(`${baseUrl}/api/pairing/requests/${denyProbeId}/deny`, { method: "POST", headers: deviceHeaders }),
+      () => fetch(`${baseUrl}/api/devices`, { headers: deviceHeaders }),
+      () => fetch(`${baseUrl}/api/devices/${paired.device.id}/revoke`, { method: "POST", headers: deviceHeaders }),
+    ]
+    for (const probe of deviceProbes) {
+      expect((await probe()).status).toBe(403)
+    }
+
+    // The forbidden probes must have been inert: both pairing requests are
+    // still pending and the paired device is neither approved-escalated nor revoked.
+    const pendingAfter = await fetch(`${baseUrl}/api/pairing/pending`, { headers: authHeaders })
+    const pendingPayload = await pendingAfter.json() as { requests: Array<{ id: string }> }
+    expect(pendingPayload.requests.map((request) => request.id)).toEqual(expect.arrayContaining([approveProbeId, denyProbeId]))
+    const devicesAfter = await fetch(`${baseUrl}/api/devices`, { headers: authHeaders })
+    const devicesPayload = await devicesAfter.json() as { devices: Array<{ id: string; revokedAt?: number }> }
+    expect(devicesPayload.devices).toHaveLength(1)
+    expect(devicesPayload.devices[0]).toMatchObject({ id: paired.device.id })
+    expect(devicesPayload.devices[0]).not.toHaveProperty("revokedAt")
+
+    // The same token still works on ordinary authenticated routes: the mobile
+    // app reads the remote-access status as a device, so that one stays open.
+    expect((await fetch(`${baseUrl}/api/remote-access/status`, { headers: deviceHeaders })).status).toBe(200)
+
+    // A password session passes all five admin endpoints.
+    expect((await fetch(`${baseUrl}/api/pairing/pending`, { headers: authHeaders })).status).toBe(200)
+    const approved = await fetch(`${baseUrl}/api/pairing/requests/${approveProbeId}/approve`, { method: "POST", headers: authHeaders })
+    expect(approved.status).toBe(200)
+    const approvedPayload = await approved.json() as { device: { id: string } }
+    expect((await fetch(`${baseUrl}/api/pairing/requests/${denyProbeId}/deny`, { method: "POST", headers: authHeaders })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/devices`, { headers: authHeaders })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/devices/${approvedPayload.device.id}/revoke`, { method: "POST", headers: authHeaders })).status).toBe(200)
+  })
+
+  test("lets the loopback-no-password host use every pairing-admin endpoint", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ persistedRemoteAccess: true })
+
+    const createRequest = async (deviceName: string) => {
+      const created = await fetch(`${baseUrl}/api/pairing/requests`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ deviceName }),
+      })
+      expect(created.status).toBe(201)
+      return (await created.json() as { requestId: string }).requestId
+    }
+    const approveId = await createRequest("Loopback Phone")
+    const denyId = await createRequest("Loopback Tablet")
+
+    // No credential headers at all: with no password configured, loopback
+    // itself is the host-level evidence.
+    expect((await fetch(`${baseUrl}/api/pairing/pending`)).status).toBe(200)
+    const approved = await fetch(`${baseUrl}/api/pairing/requests/${approveId}/approve`, { method: "POST" })
+    expect(approved.status).toBe(200)
+    const approvedPayload = await approved.json() as { device: { id: string } }
+    expect((await fetch(`${baseUrl}/api/pairing/requests/${denyId}/deny`, { method: "POST" })).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/devices`)).status).toBe(200)
+    expect((await fetch(`${baseUrl}/api/devices/${approvedPayload.device.id}/revoke`, { method: "POST" })).status).toBe(200)
+  })
+
+  test("rejects an oversized declared pairing body with 413 before creating a queue entry", async () => {
+    const { baseUrl } = await startRemoteAccessServer({ persistedRemoteAccess: true })
+    // Well-formed JSON whose honest content-length crosses the 4KB cap: the
+    // early header check must reject before the body is even read.
+    const padded = JSON.stringify({ deviceName: "Padded Phone", padding: "x".repeat(8192) })
+    const response = await fetch(`${baseUrl}/api/pairing/requests`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: padded,
+    })
+    expect(response.status).toBe(413)
+
+    const pending = await fetch(`${baseUrl}/api/pairing/pending`)
+    expect((await pending.json() as { requests: unknown[] }).requests).toHaveLength(0)
+  })
+
+  test("rejects an oversized chunked pairing body that has no content-length to trust", async () => {
+    const { baseUrl, server } = await startRemoteAccessServer({ persistedRemoteAccess: true })
+    // Chunked framing carries no content-length, so the early header check is
+    // blind here; only the hard cap enforced while streaming the body can
+    // reject it. ASCII-only payload keeps length == byte length.
+    const payload = JSON.stringify({ deviceName: "Chunked Phone", padding: "x".repeat(8192) })
+    const raw = [
+      "POST /api/pairing/requests HTTP/1.1",
+      `Host: 127.0.0.1:${server.port}`,
+      "Content-Type: application/json",
+      "Transfer-Encoding: chunked",
+      "Connection: close",
+      "",
+      payload.length.toString(16),
+      payload,
+      "0",
+      "",
+      "",
+    ].join("\r\n")
+    const response = await rawHttpExchange(server.port, raw)
+    expect(response.startsWith("HTTP/1.1 413")).toBe(true)
+
+    const pending = await fetch(`${baseUrl}/api/pairing/pending`)
+    expect((await pending.json() as { requests: unknown[] }).requests).toHaveLength(0)
+  })
+
+  test("rejects a declared oversized body on the pairing status endpoint", async () => {
+    const { baseUrl, server } = await startRemoteAccessServer({ persistedRemoteAccess: true })
+    const body = "x".repeat(5000)
+    const raw = [
+      "GET /api/pairing/requests/some-request/status?code=ABCDEFGHJKLM HTTP/1.1",
+      `Host: 127.0.0.1:${server.port}`,
+      `Content-Length: ${body.length}`,
+      "Connection: close",
+      "",
+      body,
+    ].join("\r\n")
+    const response = await rawHttpExchange(server.port, raw)
+    expect(response.startsWith("HTTP/1.1 413")).toBe(true)
+    // The cap fires before the pairing-code lookup, so a well-formed small
+    // poll on a missing request still answers 404 rather than 413.
+    const small = await fetch(`${baseUrl}/api/pairing/requests/some-request/status?code=ABCDEFGHJKLM`)
+    expect(small.status).toBe(404)
   })
 })
