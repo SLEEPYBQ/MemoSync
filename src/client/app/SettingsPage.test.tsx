@@ -136,6 +136,7 @@ describe("resolveSettingsSectionId", () => {
     expect(resolveSettingsSectionId("providers")).toBe("providers")
     expect(resolveSettingsSectionId("changelog")).toBeNull()
     expect(resolveSettingsSectionId("keybindings")).toBe("keybindings")
+    expect(resolveSettingsSectionId("sharing")).toBe("sharing")
     expect(resolveSettingsSectionId("skills")).toBe("skills")
   })
 

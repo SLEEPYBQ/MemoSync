@@ -158,6 +158,9 @@ const DEFAULT_APP_SETTINGS_SNAPSHOT: AppSettingsSnapshot = {
     enabled: true,
     autoProceedWhenEmpty: true,
   },
+  remoteAccess: {
+    enabled: false,
+  },
   warning: null,
   filePathDisplay: "~/.kanna/data/settings.json",
 }

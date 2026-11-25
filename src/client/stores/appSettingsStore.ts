@@ -62,6 +62,10 @@ export function mergeAppSettingsPatch(
       ...settings.memoryPreview,
       ...patch.memoryPreview,
     },
+    remoteAccess: {
+      ...settings.remoteAccess,
+      ...patch.remoteAccess,
+    },
   }
 }
 

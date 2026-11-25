@@ -36,3 +36,14 @@ test("optimistic updates and server rollback both update the resolved language",
   useAppSettingsStore.getState().setFromServer({ ...settings, language: "en" })
   expect(i18n.resolvedLanguage).toBe("en")
 })
+
+test("remote access survives nested optimistic patches", async () => {
+  const settings = await readAppSettingsSnapshot(`/tmp/remote-access-settings-absent-${crypto.randomUUID()}`)
+  useAppSettingsStore.getState().setFromServer(settings)
+  useAppSettingsStore.getState().applyOptimisticPatch({ remoteAccess: { enabled: true } })
+  expect(useAppSettingsStore.getState().settings?.remoteAccess.enabled).toBe(true)
+  useAppSettingsStore.getState().applyOptimisticPatch({ terminal: { scrollbackLines: 2000 } })
+  expect(useAppSettingsStore.getState().settings?.remoteAccess.enabled).toBe(true)
+  useAppSettingsStore.getState().setFromServer(settings)
+  expect(useAppSettingsStore.getState().settings?.remoteAccess.enabled).toBe(false)
+})

@@ -33,7 +33,6 @@ input.on("line", (line) => {
     }
     starting = true
     runtime = await startMemoSyncServer({
-      host: "127.0.0.1",
       port: 0,
       strictPort: true,
       openBrowser: false,

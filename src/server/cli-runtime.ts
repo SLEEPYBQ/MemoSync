@@ -1,4 +1,5 @@
 import process from "node:process"
+import { randomBytes } from "node:crypto"
 import { spawnSync } from "node:child_process"
 import { hasCommand, spawnDetached } from "./process-utils"
 import { APP_NAME, CLI_COMMAND, getDataDirDisplay, LOG_PREFIX, PACKAGE_NAME, SELF_UPDATE_ENABLED } from "../shared/branding"
@@ -11,7 +12,8 @@ import { logShareDetails, renderTerminalQr, startShareTunnel, type StartedShareT
 
 export interface CliOptions {
   port: number
-  host: string
+  /** Undefined means the server chooses its default bind host. */
+  host?: string
   openBrowser: boolean
   share: ShareMode
   password: string | null
@@ -50,7 +52,7 @@ export interface CliRuntimeDeps {
     update?: CliUpdateOptions
     onMigrationProgress?: (message: string) => void
     trustProxy?: boolean
-  }) => Promise<{ port: number; stop: () => Promise<void> }>
+  }) => Promise<{ port: number; host?: string; stop: () => Promise<void> }>
   fetchLatestVersion: (packageName: string) => Promise<string>
   installVersion: (packageName: string, version: string) => UpdateInstallAttemptResult
   openUrl: (url: string) => void
@@ -89,6 +91,7 @@ Options:
   --host <host>        Bind to a specific host or IP
   --remote             Shortcut for --host 0.0.0.0
   --share              Create a public Cloudflare quick tunnel with terminal QR
+                       (sharing generates a temporary password unless --password is supplied)
   --cloudflared <token>
                        Run a named Cloudflare tunnel from a token
   --password <secret>  Require a password before loading the app
@@ -101,7 +104,7 @@ Options:
 export function parseArgs(argv: string[]): ParsedArgs {
   // .env's PORT is the documented override for `bun run start`; --port wins.
   let port = Number(process.env.PORT) || PROD_SERVER_PORT
-  let host = "127.0.0.1"
+  let host: string | undefined
   let openBrowser = true
   let share: ShareMode = false
   let password: string | null = null
@@ -178,7 +181,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     kind: "run",
     options: {
       port,
-      host,
+      ...(host === undefined ? {} : { host }),
       openBrowser,
       share,
       password,
@@ -273,8 +276,20 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
     return { kind: "restarting", reason: shouldRestart }
   }
 
-  const { port, stop } = await deps.startServer({
-    ...parsedArgs.options,
+  // Cloudflared reaches the local listener as a loopback client, so a
+  // passwordless server would otherwise treat every public tunnel visitor as
+  // trusted local traffic. Keep one-command sharing convenient, but never
+  // publish an unauthenticated app: generate a process-local password and
+  // print it next to the URL unless the user supplied one explicitly.
+  const generatedSharePassword = isShareEnabled(parsedArgs.options.share) && parsedArgs.options.password === null
+    ? randomBytes(12).toString("base64url")
+    : null
+  const serverOptions = generatedSharePassword
+    ? { ...parsedArgs.options, password: generatedSharePassword }
+    : parsedArgs.options
+
+  const startedServer = await deps.startServer({
+    ...serverOptions,
     trustProxy: isShareEnabled(parsedArgs.options.share),
     onMigrationProgress: deps.log,
     update: SELF_UPDATE_ENABLED
@@ -287,7 +302,8 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
       : undefined,
   })
-  const bindHost = parsedArgs.options.host
+  const { port, stop } = startedServer
+  const bindHost = startedServer.host ?? parsedArgs.options.host ?? "127.0.0.1"
   const displayHost = isShareEnabled(parsedArgs.options.share) || bindHost === "127.0.0.1" || bindHost === "0.0.0.0" ? "localhost" : bindHost
   const launchUrl = `http://${displayHost}:${port}`
   let shareTunnelStop: (() => void) | null = null
@@ -311,6 +327,11 @@ export async function runCli(argv: string[], deps: CliRuntimeDeps): Promise<CliR
         }
         deps.log("Local URL:")
         deps.log(launchUrl)
+      }
+      if (generatedSharePassword) {
+        deps.log("")
+        deps.log("Share password:")
+        deps.log(generatedSharePassword)
       }
     } catch (error) {
       await stop()

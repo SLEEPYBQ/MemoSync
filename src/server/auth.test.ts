@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { networkInterfaces, tmpdir } from "node:os"
 import path from "node:path"
 import { createAuthManager, validateRequestOrigin } from "./auth"
 import { persistProjectUpload } from "./uploads"
@@ -81,7 +81,7 @@ async function startPasswordServer(options: { trustProxy?: boolean; port?: numbe
   return { server, projectDir, project }
 }
 
-async function startNoPasswordServer() {
+async function startNoPasswordServer(options: { remoteAccess?: boolean } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), "memosync-origin-data-"))
   tempDirs.push(dataDir)
   const server = await startMemoSyncServer({
@@ -89,9 +89,36 @@ async function startNoPasswordServer() {
     port: 0,
     strictPort: true,
     discoverProjects: () => [],
+    ...(options.remoteAccess !== undefined ? { remoteAccess: options.remoteAccess } : {}),
   })
   liveServers.push(server)
   return server
+}
+
+function firstLanIpv4() {
+  for (const entries of Object.values(networkInterfaces())) {
+    const address = entries?.find((entry) => entry.family === "IPv4" && !entry.internal && !entry.address.startsWith("169.254."))?.address
+    if (address) return address
+  }
+  return null
+}
+
+async function pairTestDeviceToken(baseUrl: string) {
+  const created = await fetch(`${baseUrl}/api/pairing/requests`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceName: "Preview Probe Phone" }),
+  })
+  expect(created.status).toBe(201)
+  const { requestId, code } = await created.json() as { requestId: string; code: string }
+  const approved = await fetch(`${baseUrl}/api/pairing/requests/${requestId}/approve`, { method: "POST" })
+  expect(approved.status).toBe(200)
+  const status = await fetch(`${baseUrl}/api/pairing/requests/${requestId}/status?code=${encodeURIComponent(code)}`)
+  expect(status.status).toBe(200)
+  const payload = await status.json() as { status: string; token?: string }
+  expect(payload.status).toBe("approved")
+  expect(payload.token).toBeTruthy()
+  return payload.token!
 }
 
 function extractCookie(response: Response) {
@@ -1038,6 +1065,83 @@ describe("password auth", () => {
       })
       expect(healthResponse.status).toBe(200)
     } finally {
+      await server.stop()
+    }
+  })
+})
+
+describe("preview proxy network authorization", () => {
+  test("keeps loopback host-form preview proxying open without a password", async () => {
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: () => new Response("loopback preview target"),
+    })
+    const server = await startNoPasswordServer()
+    const appBase = `http://127.0.0.1:${server.port}`
+    const previewHost = `${target.port}.localhost:${server.port}`
+    try {
+      const response = await fetch(`${appBase}/`, {
+        headers: { Host: previewHost },
+        redirect: "manual",
+      })
+      expect(response.status).toBe(200)
+      expect(await response.text()).toBe("loopback preview target")
+    } finally {
+      target.stop(true)
+      await server.stop()
+    }
+  })
+
+  test("rejects unauthenticated non-loopback host-form proxying and accepts a device token", async () => {
+    const lanAddress = firstLanIpv4()
+    if (!lanAddress) {
+      // Some minimal CI containers have only loopback. The authoritative
+      // non-loopback decision matrix is covered in remote-access.integration;
+      // this end-to-end Host-header regression runs wherever a LAN interface exists.
+      return
+    }
+
+    let upstreamHits = 0
+    let upstreamAuthorization: string | null = null
+    const target = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: (req) => {
+        upstreamHits += 1
+        upstreamAuthorization = req.headers.get("authorization")
+        return new Response("loopback-only preview target")
+      },
+    })
+    const server = await startNoPasswordServer({ remoteAccess: true })
+    const loopbackBase = `http://127.0.0.1:${server.port}`
+    const lanBase = `http://${lanAddress}:${server.port}`
+    const previewHost = `${target.port}.localhost:${server.port}`
+    try {
+      const token = await pairTestDeviceToken(loopbackBase)
+
+      const unauthenticated = await fetch(`${lanBase}/`, {
+        headers: { Host: previewHost },
+        redirect: "manual",
+      })
+      expect(unauthenticated.status).toBe(401)
+      expect(upstreamHits).toBe(0)
+
+      const authenticated = await fetch(`${lanBase}/`, {
+        headers: {
+          Host: previewHost,
+          Authorization: `Bearer ${token}`,
+        },
+        redirect: "manual",
+      })
+      expect(authenticated.status).toBe(200)
+      expect(await authenticated.text()).toBe("loopback-only preview target")
+      expect(upstreamHits).toBe(1)
+      // The bearer proves access to MemoSync's proxy; it must not become a
+      // credential handed to the proxied project server.
+      expect(upstreamAuthorization).toBeNull()
+    } finally {
+      target.stop(true)
       await server.stop()
     }
   })

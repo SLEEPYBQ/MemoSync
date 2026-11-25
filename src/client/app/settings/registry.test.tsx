@@ -9,6 +9,7 @@ import { GeneralSection } from "./GeneralSection"
 import { KeybindingsSection } from "./KeybindingsSection"
 import { MemorySettingsGroups } from "./MemorySection"
 import { ProvidersSection } from "./ProvidersSection"
+import { SharingAccessGroups } from "./SharingAccessSection"
 import { SkillsSection } from "./SkillsSection"
 import { ALL_SETTINGS_ROWS, SETTINGS_ROWS, SETTINGS_SECTIONS, getSettingsRowHref, resolveSettingsSectionId } from "./registry"
 
@@ -17,8 +18,8 @@ const memoryHtml = (overrides: Partial<AppSettingsSnapshot["memory"]> = {}) => r
 
 describe("settings registry and section rendering", () => {
   test("stable unique ids, section order and deep links", () => {
-    expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "notifications", "providers", "memory", "skills", "keybindings", "about", ...(SELF_UPDATE_ENABLED ? ["changelog" as const] : [])])
-    expect(SETTINGS_SECTIONS.map((section) => section.group)).toEqual(["preferences", "preferences", "preferences", "agents", "agents", "agents", "other", "other", ...(SELF_UPDATE_ENABLED ? ["other" as const] : [])])
+    expect(SETTINGS_SECTIONS.map((section) => section.id)).toEqual(["general", "appearance", "notifications", "providers", "memory", "skills", "sharing", "keybindings", "about", ...(SELF_UPDATE_ENABLED ? ["changelog" as const] : [])])
+    expect(SETTINGS_SECTIONS.map((section) => section.group)).toEqual(["preferences", "preferences", "preferences", "agents", "agents", "agents", "other", "other", "other", ...(SELF_UPDATE_ENABLED ? ["other" as const] : [])])
     expect(new Set(ALL_SETTINGS_ROWS.map((row) => row.id)).size).toBe(ALL_SETTINGS_ROWS.length)
     expect(resolveSettingsSectionId("memory")).toBe("memory")
     for (const row of ALL_SETTINGS_ROWS) {
@@ -41,6 +42,19 @@ describe("settings registry and section rendering", () => {
       providers: renderToStaticMarkup(<ProvidersSection state={{ handleWriteAppSettings: async () => {}, availableProviders: PROVIDERS }} defaultExpanded={["claude", "codex", "pi", "opencode"]} />),
       skills: renderToStaticMarkup(<SkillsSection state={{ connectionStatus: "connected", socket: { command: async () => ({ skills: [] }) } as never }} />),
       keybindings: renderToStaticMarkup(<KeybindingsSection state={{ keybindings: null, socket: { command: async () => ({}) } as never }} />),
+      sharing: renderToStaticMarkup(
+        <SharingAccessGroups
+          enabled={false}
+          status={null}
+          pendingRequests={[]}
+          devices={[]}
+          nowMs={0}
+          onToggleEnabled={() => {}}
+          onApproveRequest={() => {}}
+          onDenyRequest={() => {}}
+          onRevokeDevice={() => {}}
+        />,
+      ),
       changelog: "",
     }
     initial.editorPreset = previousPreset

@@ -22,7 +22,7 @@ function createDeps(overrides: Partial<Parameters<typeof runCli>[1]> = {}) {
   const calls = {
     startServer: [] as Array<{
       port: number
-      host: string
+      host?: string
       openBrowser: boolean
       share: false | "quick" | { kind: "token"; token: string }
       password: string | null
@@ -101,7 +101,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 4000,
-        host: "127.0.0.1",
         openBrowser: false,
         share: false,
         password: null,
@@ -115,7 +114,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: false,
         password: null,
@@ -143,7 +141,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: "quick",
         password: null,
@@ -157,7 +154,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: { kind: "token", token: "secret-token" },
         password: null,
@@ -171,7 +167,6 @@ describe("parseArgs", () => {
       kind: "run",
       options: {
         port: 3210,
-        host: "127.0.0.1",
         openBrowser: true,
         share: false,
         password: "secret",
@@ -309,7 +304,6 @@ describe("runCli", () => {
     expect(calls.startServer).toHaveLength(1)
     expect(calls.startServer[0]).toMatchObject({
       port: 4000,
-      host: "127.0.0.1",
       openBrowser: false,
       share: false,
       password: null,
@@ -317,8 +311,23 @@ describe("runCli", () => {
       trustProxy: false,
       update: undefined,
     })
+    expect(calls.startServer[0]?.host).toBeUndefined()
     expect(calls.openUrl).toEqual([])
     expect(calls.log).toContain("[memosync] data dir: ~/.memosync/data")
+  })
+
+  test("logs the actual bind host chosen by the server", async () => {
+    const { calls, deps } = createDeps({
+      startServer: async (options) => ({
+        port: options.port,
+        host: "0.0.0.0",
+        stop: async () => {},
+      }),
+    })
+
+    await runCli(["--port", "4000", "--no-open"], deps)
+
+    expect(calls.log).toContain("[memosync] listening on http://0.0.0.0:4000")
   })
 
   test("logs the dev data dir when the dev runtime profile is active", async () => {
@@ -378,6 +387,9 @@ describe("runCli", () => {
     expect(result.kind).toBe("started")
     expect(calls.openUrl).toEqual([])
     expect(calls.startServer[0]?.trustProxy).toBe(true)
+    const generatedPassword = calls.startServer[0]?.password
+    if (typeof generatedPassword !== "string") throw new Error("share did not generate a password")
+    expect(generatedPassword).toMatch(/^[A-Za-z0-9_-]{16}$/)
     expect(calls.shareTunnel).toEqual([{ localUrl: "http://localhost:4000", shareMode: "quick" }])
     expect(calls.renderShareQr).toEqual(["https://kanna.trycloudflare.com"])
     expect(calls.log).toContain("QR Code:")
@@ -386,12 +398,24 @@ describe("runCli", () => {
     expect(calls.log).toContain("https://kanna.trycloudflare.com")
     expect(calls.log).toContain("Local URL:")
     expect(calls.log).toContain("http://localhost:4000")
+    expect(calls.log).toContain("Share password:")
+    expect(calls.log).toContain(generatedPassword)
 
     if (result.kind !== "started") {
       throw new Error(`expected started result, got ${result.kind}`)
     }
     await result.stop()
     expect(calls.shareTunnelStops).toBe(1)
+  })
+
+  test("uses the supplied share password instead of generating or printing one", async () => {
+    const { calls, deps } = createDeps()
+
+    const result = await runCli(["--share", "--password", "secret"], deps)
+
+    expect(result.kind).toBe("started")
+    expect(calls.startServer[0]?.password).toBe("secret")
+    expect(calls.log).not.toContain("Share password:")
   })
 
   test("logs share setup progress from the default tunnel helper", async () => {
@@ -475,6 +499,7 @@ describe("runCli", () => {
 
     expect(result.kind).toBe("started")
     expect(calls.startServer[0]?.trustProxy).toBe(true)
+    expect(typeof calls.startServer[0]?.password).toBe("string")
     expect(calls.shareTunnel).toEqual([{
       localUrl: "http://localhost:3210",
       shareMode: { kind: "token", token: "secret-token" },

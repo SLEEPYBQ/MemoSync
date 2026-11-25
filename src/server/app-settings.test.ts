@@ -72,6 +72,9 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
       autoProceedWhenEmpty: true,
       confirmationMode: "on_change",
     },
+    remoteAccess: {
+      enabled: false,
+    },
     warning: null,
     filePathDisplay: filePath,
     ...overrides,
@@ -138,6 +141,27 @@ describe("memoryPreview settings", () => {
     const filePath = await createTempFilePath()
     await writeFile(filePath, JSON.stringify({ memoryPreview: { enabled: false, autoProceedWhenEmpty: false } }))
     expect((await readAppSettingsSnapshot(filePath)).memoryPreview).toEqual({ enabled: false, autoProceedWhenEmpty: false, confirmationMode: "on_change" })
+  })
+})
+
+describe("remoteAccess settings", () => {
+  test("defaults off, persists patches, and normalizes invalid values off", async () => {
+    const filePath = await createTempFilePath()
+    expect((await readAppSettingsSnapshot(filePath)).remoteAccess).toEqual({ enabled: false })
+
+    const manager = new AppSettingsManager(filePath)
+    try {
+      await manager.initialize()
+      const snapshot = await manager.writePatch({ remoteAccess: { enabled: true } })
+      expect(snapshot.remoteAccess).toEqual({ enabled: true })
+      expect(JSON.parse(await readFile(filePath, "utf8")).remoteAccess).toEqual({ enabled: true })
+    } finally {
+      manager.dispose()
+    }
+    expect((await readAppSettingsSnapshot(filePath)).remoteAccess).toEqual({ enabled: true })
+
+    await writeFile(filePath, JSON.stringify({ remoteAccess: { enabled: "yes" } }))
+    expect((await readAppSettingsSnapshot(filePath)).remoteAccess).toEqual({ enabled: false })
   })
 })
 
