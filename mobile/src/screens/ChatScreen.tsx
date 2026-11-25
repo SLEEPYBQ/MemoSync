@@ -256,15 +256,15 @@ function UserBubble({ entry }: { entry: UserPromptEntry }) {
   const credentials = useHostStore((state) => state.credentials)
   const text = entry.participantContent ?? entry.content
   const attachments = entry.attachments ?? []
-  const images = attachments.filter((attachment) => attachment.kind === "image" && attachment.contentUrl)
-  const files = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.contentUrl)
+  const images = attachments.filter((attachment) => attachment.kind === "image" && attachment.contentUrl.startsWith("/"))
+  const files = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.contentUrl.startsWith("/"))
   return (
     <View style={styles.userRow}>
       <View style={styles.userContent}>
         {images.length > 0 ? (
           <View style={styles.attachmentImageGrid}>
             {images.map((attachment) => (
-              <View key={attachment.id} style={[styles.attachmentImageFrame, { backgroundColor: colors.muted, borderColor: colors.border }]}> 
+              <View key={attachment.id} style={[styles.attachmentImageFrame, { backgroundColor: colors.muted, borderColor: colors.border }]}>
                 {credentials ? (
                   <Image
                     source={attachmentSource(attachment, credentials.host, credentials.port, credentials.token)}
@@ -283,7 +283,7 @@ function UserBubble({ entry }: { entry: UserPromptEntry }) {
         {files.length > 0 ? (
           <View style={styles.attachmentFileList}>
             {files.map((attachment) => (
-              <View key={attachment.id} style={[styles.attachmentFileRow, { backgroundColor: colors.card, borderColor: colors.border }]}> 
+              <View key={attachment.id} style={[styles.attachmentFileRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <Ionicons name="document-outline" size={15} color={colors.mutedIcon} />
                 <View style={styles.attachmentFileText}>
                   <Text style={[styles.attachmentFileName, { color: colors.foreground }]} numberOfLines={1}>{attachment.displayName}</Text>
@@ -296,7 +296,7 @@ function UserBubble({ entry }: { entry: UserPromptEntry }) {
           </View>
         ) : null}
         {text ? (
-          <View style={[styles.userBubble, { backgroundColor: colors.secondary, borderColor: colors.border }]}> 
+          <View style={[styles.userBubble, { backgroundColor: colors.secondary, borderColor: colors.border }]}>
             <Text style={[styles.userText, { color: colors.secondaryForeground }]} selectable>
               {text}
             </Text>
@@ -358,7 +358,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         </View>
       </RowPressable>
       {expanded && detail ? (
-        <View style={[styles.toolDetailFrame, { backgroundColor: colors.sidebar, borderColor: colors.border }]}> 
+        <View style={[styles.toolDetailFrame, { backgroundColor: colors.sidebar, borderColor: colors.border }]}>
           <ScrollView style={styles.toolDetailScroll} nestedScrollEnabled>
             <Text style={[styles.toolDetail, { color: colors.mutedForeground }]} selectable>
               {detail}
@@ -374,7 +374,7 @@ function ResultRow({ entry }: { entry: ResultEntry }) {
   const { colors } = useTheme()
   if (!entry.isError && entry.subtype !== "error") return null
   return (
-    <View style={[styles.resultErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}> 
+    <View style={[styles.resultErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}>
       <Ionicons name="warning-outline" size={15} color={colors.destructive} />
       <Text style={[styles.resultError, { color: colors.destructive }]} numberOfLines={4}>
         {entry.result || "The turn ended with an error."}
@@ -1009,7 +1009,7 @@ export function ChatScreen({ route, navigation }: Props) {
           ) : active ? (
             <View style={styles.thinkingRow}>
               <ActivityIndicator size="small" color={colors.mutedIcon} />
-              <Text style={[styles.thinkingText, { color: colors.mutedForeground }]}> 
+              <Text style={[styles.thinkingText, { color: colors.mutedForeground }]}>
                 {status === "starting" ? "Starting…" : status === "previewing_memory" ? "Preparing…" : status === "waiting_for_user" ? "Waiting for input…" : "Working…"}
               </Text>
             </View>
@@ -1017,11 +1017,11 @@ export function ChatScreen({ route, navigation }: Props) {
         }
         ListEmptyComponent={
           <View style={styles.emptyTranscript}>
-            <View style={[styles.emptyIconWell, { backgroundColor: colors.secondary }]}> 
+            <View style={[styles.emptyIconWell, { backgroundColor: colors.secondary }]}>
               <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors.mutedIcon} />
             </View>
             <Text style={[styles.emptyTitle, { color: colors.foreground }]}>{snapshot ? "No messages yet" : "Loading transcript"}</Text>
-            <Text style={[styles.emptyBody, { color: colors.mutedForeground }]}> 
+            <Text style={[styles.emptyBody, { color: colors.mutedForeground }]}>
               {snapshot ? "Ask a question or give the agent its first task." : "Reading the conversation from your MemoSync host."}
             </Text>
           </View>
@@ -1032,7 +1032,7 @@ export function ChatScreen({ route, navigation }: Props) {
         {queuedMessages.length > 0 ? (
           <View style={styles.queueList}>
             {queuedMessages.map((message) => (
-              <View key={message.id} style={[styles.queueRow, { backgroundColor: colors.card, borderColor: colors.border }]}> 
+              <View key={message.id} style={[styles.queueRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
                 <Ionicons name="time-outline" size={15} color={colors.mutedIcon} />
                 <Text style={[styles.queueText, { color: colors.mutedForeground }]} numberOfLines={1}>
                   {message.content}
@@ -1046,13 +1046,13 @@ export function ChatScreen({ route, navigation }: Props) {
         ) : null}
 
         {sendError ? (
-          <View style={[styles.sendErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}> 
+          <View style={[styles.sendErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}>
             <Ionicons name="warning-outline" size={15} color={colors.destructive} />
             <Text style={[styles.sendErrorText, { color: colors.destructive }]}>Message not sent: {sendError}</Text>
           </View>
         ) : null}
 
-        <View style={[styles.composerCard, { backgroundColor: colors.card, borderColor: colors.border }]}> 
+        <View style={[styles.composerCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
           <TextInput
             value={draft}
             onChangeText={(value) => {
@@ -1229,7 +1229,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.sm,
   },
   attachmentFileText: {
-    flex: 1,
+    flexShrink: 1,
     minWidth: 0,
   },
   attachmentFileName: {
