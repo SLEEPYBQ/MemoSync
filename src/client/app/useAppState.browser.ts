@@ -304,6 +304,7 @@ test.each([false, true])("an edited landing draft retires the sent upload withou
     await attach("notes.txt")
     const staleDraft = await target.evaluate(() => localStorage.getItem("chat-input-drafts")!)
     await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount() === 1)
     const contentUrl = await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sentAttachments(0)[0].contentUrl)
     await input.fill("Next synthetic draft")
     if (laterFile) await attach("later.txt")

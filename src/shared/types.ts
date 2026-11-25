@@ -80,6 +80,8 @@ export interface ChatAttachment {
   contentUrl: string
   mimeType: string
   size: number
+  /** Byte identity of a managed upload. Older saved drafts do not have it. */
+  uploadSha256?: string
 }
 
 export interface StandaloneTranscriptBundle {

@@ -75,6 +75,7 @@
   "ultracodeHint": "自动编排多个子代理，额度消耗很快",
   "buildSomething": "开始开发…",
   "uploadFailed": "上传失败",
+  "attachmentRemovedElsewhere": "{{name}} 已在另一个标签页中移除。如仍需使用，请重新添加附件。",
   "openAProjectBeforeUploadingFiles": "请先打开项目再上传文件。",
   "addAttachment": "添加附件",
   "attachFilesOrDragThemIn": "附加文件（或拖入文件）",

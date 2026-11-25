@@ -162,12 +162,20 @@ describe("mounted ChatInput submission races", () => {
     expect(deletes.map(url => new URL(url).pathname)).toEqual(["/api/projects/fixture/uploads/2"])
   })
 
-  test.each([false, true])("removing a rejected landing slash upload deletes it only if no earlier reply was lost (lost reply=%s)", async loseFirstReply => {
+  test.each(["direct", "disconnect", "second tab"])("removing a rejected landing slash upload (%s)", async scenario => {
     const target = await openFixture()
     const dir = await mkdtemp(join(tmpdir(), "memosync-upload-refusal-"))
     const store = new EventStore(join(dir, "data"))
     const receipts = new DraftUploadReceipts()
-    const agent = new AgentCoordinator({ store, onStateChange() {} })
+    const agent = new AgentCoordinator({
+      store, onStateChange() {}, getMemorySettings: () => ({ enabled: false, learn: false }),
+      generateTitle: async () => ({ title: "Fixture", usedFallback: true, failureMessage: null }),
+      resolvePiConnection: async () => ({ provider: "custom", baseUrl: "http://127.0.0.1:1", apiKey: "" }),
+      piManager: { startTurn: async () => ({
+        provider: "pi", stream: (async function* () {})(), close() {}, interrupt: async () => {},
+      }), closeChat() {}, dispose() {} } as never,
+    })
+    let second: Page | undefined
     const router = createWsRouter({
       store, agent, terminals: new TerminalManager(), keybindings: new KeybindingsManager(join(dir, "keybindings.json")),
       refreshDiscovery: async () => [], getDiscoveredProjects: () => [], machineDisplayName: "Fixture", updateManager: null,
@@ -181,15 +189,16 @@ describe("mounted ChatInput submission races", () => {
       // settings or exposing a command socket outside this browser fixture.
       const deletes: string[] = []
       await target.route("**/auth/status", route => route.fulfill({ json: { enabled: false } }))
-      await target.route("**/uploads**", async route => {
+      const routeUploads = async (route: Route) => {
         const req = route.request()
         const url = new URL(req.url())
         const request = new Request(url, { method: req.method(), headers: req.headers(), body: req.postDataBuffer() })
         if (req.method() === "DELETE") deletes.push(url.pathname)
         const result = await handleProjectUpload(request, url, store, receipts) ?? await handleProjectUploadDelete(request, url, store, receipts)
         await route.fulfill({ status: result?.status ?? 404, json: await result?.json() })
-      })
-      let dropReply = loseFirstReply
+      }
+      await target.route("**/uploads**", routeUploads)
+      let dropReply = scenario === "disconnect"
       await target.routeWebSocket("**/refusal-ws", peer => {
         const socket = {
           data: { subscriptions: new Map(), snapshotSignatures: new Map() },
@@ -218,34 +227,97 @@ describe("mounted ChatInput submission races", () => {
       expect(await Bun.file(path).text()).toBe("notes.txt")
       const input = target.locator("textarea")
       const send = target.getByRole("button", { name: "Send", exact: true })
+      if (scenario === "second tab") {
+        ;[second] = await Promise.all([
+          target.waitForEvent("popup"),
+          target.evaluate(() => { window.open("about:blank", "_blank") }),
+        ])
+        second.setDefaultTimeout(5_000)
+        await second.route("**/uploads**", routeUploads)
+        await second.route("**/api/providers", route => route.fulfill({ json: { data: [] } }))
+        await second.goto(target.url())
+        await second.getByTestId("fixture-ready").waitFor({ state: "attached" })
+        await second.evaluate(projectId => {
+          const fixture = (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture
+          fixture.setChatId(null)
+          fixture.setProjectId(projectId)
+        }, projectId)
+        await second.getByRole("button", { name: "Remove notes.txt" }).waitFor()
+      }
       await input.fill("/not-a-command")
       await send.click()
-      if (loseFirstReply) {
+      if (scenario === "disconnect") {
         await target.getByText("Disconnected", { exact: true }).waitFor()
         await send.click()
       }
       await target.getByText("Native commands do not accept attachments", { exact: true }).waitFor()
       expect(store.getMessages(chatId)).toEqual([])
       expect(store.getQueuedMessages(chatId)).toEqual([])
-      const remove = target.getByRole("button", { name: "Remove notes.txt" })
-      if (loseFirstReply) {
+      const deletingTab = second ?? target
+      const remove = deletingTab.getByRole("button", { name: "Remove notes.txt" })
+      if (scenario === "disconnect") {
         await remove.click()
         await remove.waitFor({ state: "detached" })
         expect(deletes).toEqual([])
         expect(await Bun.file(path).text()).toBe("notes.txt")
       } else {
-        const [deleted] = await Promise.all([target.waitForResponse(r => r.request().method() === "DELETE"), remove.click()])
+        const [deleted] = await Promise.all([deletingTab.waitForResponse(r => r.request().method() === "DELETE"), remove.click()])
         expect(await deleted.json()).toEqual({ ok: true })
         expect(deletes).toEqual([`/api/projects/${projectId}/uploads/notes.txt`])
         expect(await Bun.file(path).exists()).toBe(false)
+        if (second) {
+          await target.getByRole("button", { name: "Remove notes.txt" }).waitFor({ state: "detached" })
+          expect(await readAttachments(target, `landing:${projectId}`)).toEqual([])
+          expect(await input.inputValue()).toBe("/not-a-command")
+          await input.fill("Summarize this file")
+          await send.click()
+          await expectInputValue(target, "")
+          expect(store.getMessages(chatId).filter(row => row.kind === "user_prompt")).toMatchObject([
+            { content: "Summarize this file", attachments: [] },
+          ])
+        }
       }
     } finally {
+      await second?.close()
       await target.close()
       page = undefined
       router.dispose()
       await agent.shutdownRuntime()
       await rm(dir, { recursive: true, force: true })
     }
+  })
+
+  test("reloading an unacknowledged send leaves no upload hold or permission to delete", async () => {
+    const target = await openFixture()
+    const deletes: string[] = []
+    target.on("request", request => { if (request.method() === "DELETE") deletes.push(new URL(request.url()).pathname) })
+    await attach(target, "pending.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.waitForFunction(() => (window as unknown as { __chatInputFixture: ChatInputFixtureApi }).__chatInputFixture.submissions().length === 1)
+    await target.reload()
+    await target.getByRole("button", { name: "Remove uploaded-1.txt" }).click()
+    expect(await target.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith("memosync.unsent-upload.")))).toEqual([])
+    await attach(target, "new.txt")
+    await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-2.txt" }).click(),
+    ])
+    expect(deletes).toEqual(["/api/projects/fixture/uploads/2"])
+  })
+
+  test("without Web Locks a slash refusal happens before the upload handoff", async () => {
+    const target = await openFixture()
+    await target.evaluate(() => Object.defineProperty(navigator, "locks", { value: undefined }))
+    await attach(target, "notes.txt")
+    await target.locator("textarea").fill("/not-a-command")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByText(/Native commands do not accept these attachments/).waitFor()
+    expect(await submissions(target)).toEqual([])
+    const [deleted] = await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE"),
+      target.getByRole("button", { name: "Remove uploaded-1.txt" }).click(),
+    ])
+    expect(new URL(deleted.url()).pathname).toBe("/api/projects/fixture/uploads/1")
   })
 
   test("treats editing away and back as a newer draft revision", async () => {

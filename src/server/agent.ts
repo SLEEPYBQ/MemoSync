@@ -76,6 +76,7 @@ import type {
 import type { MemoryItem } from "./memory/types"
 import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
 import { ensureProjectDirectory } from "./paths"
+import { isManagedChatUpload, matchesProjectUpload } from "./uploads"
 import { OpencodeAgentManager } from "./opencode-agent"
 import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import {
@@ -4345,6 +4346,19 @@ export class AgentCoordinator {
     return queued
   }
 
+  private async requireCurrentUploads(chatId: string, attachments: ChatAttachment[]) {
+    const uploads = attachments.filter(isManagedChatUpload)
+    if (!uploads.length) return
+    const project = this.store.getProject(this.store.requireChat(chatId).projectId)
+    for (const upload of uploads) {
+      if (!project || !await matchesProjectUpload(project, upload)) {
+        // The path may now name someone else's file. Refuse admission, but
+        // do not return the draft's permission to unlink that path.
+        throw new Error("An attached upload is missing or has changed. Remove it and attach the file again.")
+      }
+    }
+  }
+
   private async dequeueAndStartQueuedMessage(
     chatId: string,
     queuedMessage: QueuedChatMessage,
@@ -7866,6 +7880,7 @@ export class AgentCoordinator {
       return this.executeCommand({ type: 'chat.executeCommand', chatId, runtimeKey: catalog.runtimeKey, expectedRevision: catalog.revision,
         commandId: entry.id, arguments: match?.[2] ?? '' }, hostClientId)
     }
+    if (command.attachments?.length) await this.requireCurrentUploads(chatId, command.attachments)
     if (chat.draft) {
       await this.store.promoteDraft(chatId)
       // Promotion can also open the project: refresh local-project subscribers
@@ -7930,6 +7945,9 @@ export class AgentCoordinator {
   }
 
   async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>) {
+    if (command.attachments?.length && !command.content.trimStart().startsWith("/")) {
+      await this.requireCurrentUploads(command.chatId, command.attachments)
+    }
     const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,

@@ -32,6 +32,7 @@
   "serverUploadEmpty": "没有上传文件",
   "serverUploadMetadata": "上传大小元数据无效。",
   "serverUploadMismatch": "上传文件大小不匹配，请重试。",
+  "serverStaleChatUpload": "附件已不存在或已更改。请移除附件并重新添加文件。",
   "serverUploadFailed": "上传失败",
   "serverAttachmentPath": "附件路径无效",
   "serverAttachmentNotFound": "找不到附件",

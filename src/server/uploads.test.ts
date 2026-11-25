@@ -13,7 +13,7 @@ import {
   startMemoSyncServer,
   validateUploadFiles
 } from "./server"
-import { deleteProjectUpload, DraftUploadReceipts, inferAttachmentContentType, persistProjectUpload } from "./uploads"
+import { deleteProjectUpload, DraftUploadReceipts, inferAttachmentContentType, matchesProjectUpload, persistProjectUpload } from "./uploads"
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9sAAAAASUVORK5CYII="
@@ -114,7 +114,7 @@ describe("uploads", () => {
     const oldPath = path.join(getProjectUploadDir(dir), "late.txt")
     expect(await Bun.file(oldPath).text()).toBe("abandoned")
     if (reused) await remove(next.projectId, "late.txt")
-    const current = await post(next.projectId, new File(["current draft"], "late.txt"))
+    const current = await post(next.projectId, new File(["new draft"], "late.txt"))
     const { attachments: [live] } = await current!.json() as { attachments: ChatAttachment[] }
     expect(live!.absolutePath === oldPath).toBe(reused)
 
@@ -123,10 +123,18 @@ describe("uploads", () => {
     }
     const receipt = cleanupReceipts?.[abandoned!.id]
     expect(receipt).toEqual(expect.any(String))
+    // A returning tab can rebind the old project's URL, but not its byte
+    // identity. Nor can that old POST's cleanup grant unlink the replacement.
+    const project = store.getProject(next.projectId)!
+    const rebound = { ...abandoned!, contentUrl: `/api/projects/${project.id}/uploads/late.txt/content` }
+    expect(live!.size).toBe(rebound.size)
+    expect(await matchesProjectUpload(project, rebound)).toBe(!reused)
     expect((await remove(first.projectId, "late.txt"))?.status).toBe(404)
     expect(await (await remove(first.projectId, "late.txt", receipt))!.json()).toEqual({ ok: !reused })
     if (!reused) expect(await Bun.file(oldPath).exists()).toBe(false)
-    expect(await Bun.file(live!.absolutePath).text()).toBe("current draft")
+    expect(await matchesProjectUpload(project, rebound)).toBe(false)
+    expect(await matchesProjectUpload(project, live!)).toBe(true)
+    expect(await Bun.file(live!.absolutePath).text()).toBe("new draft")
     expect(await Bun.file(path.join(getProjectUploadDir(dir), "kept.txt")).text()).toBe("keep this attachment")
   })
 

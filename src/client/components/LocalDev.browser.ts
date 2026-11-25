@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { chromium, type Browser, type Page, type Route } from "playwright"
 import { createServer, type ViteDevServer } from "vite"
 import type { ChatAttachment } from "../../shared/types"
+import { DELETED_UPLOAD_NOTIFICATION } from "../stores/chatInputStore"
 import type {} from "../test-fixtures/landing-draft/fixture"
 
 let cacheDir: string, vite: ViteDevServer, browser: Browser, page: Page, origin: string
@@ -90,11 +91,19 @@ async function attach(name = "upload.txt") {
   await page.locator('button[aria-label="Send"]:enabled').or(page.getByText("Open a project before uploading files.")).first().waitFor()
 }
 
+async function sendAndWaitForDispatch() {
+  const previous = await page.evaluate(() => window.landingFixture.sends.length)
+  await page.getByRole("button", { name: "Send", exact: true }).click()
+  // Acquiring the shared upload locks is asynchronous. The click isn't proof
+  // that onSend has run, and dispatch isn't the ACK in the delayed-send cases.
+  await page.waitForFunction(count => window.landingFixture.sends.length === count + 1, previous)
+}
+
 test("first attachment in a discovered folder uploads and sends with its hidden draft, without a sidebar entry", async () => {
   await resolveActive(0, "alpha")
   await attach()
   expect(uploads).toEqual(["/api/projects/project-alpha/uploads"])
-  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await sendAndWaitForDispatch()
   expect(await page.evaluate(() => window.landingFixture.sends[0]?.[1])).toMatchObject({
     projectLocalPath: "/fixture/alpha", draft: { chatId: "chat-alpha", projectId: "project-alpha" },
     attachments: [{ id: "fixture-file-1" }],
@@ -162,7 +171,7 @@ test("the known sidebar ID works without waiting, and a failed ensure does not b
   await page.evaluate(() => window.landingFixture.reject(2))
   const input = page.getByRole("textbox")
   await input.fill("synthetic text")
-  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await sendAndWaitForDispatch()
   const [, options] = await page.evaluate(() => window.landingFixture.sends[0]!)
   expect(options?.projectLocalPath).toBe("/fixture/beta")
   expect(options?.draft).toBeUndefined()
@@ -192,7 +201,7 @@ test("a discarded discovered project keeps its workspace upload for the next dra
   expect((await preview).status()).toBe(200)
   await page.getByRole("dialog").getByText(`synthetic contents of ${fileName}`, { exact: true }).waitFor()
   await page.keyboard.press("Escape")
-  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await sendAndWaitForDispatch()
   expect(await page.evaluate(() => window.landingFixture.sends[0]?.[1])).toMatchObject({
     draft: { chatId: "chat-alpha-2", projectId: "project-alpha-2" },
     attachments: [{ id: "fixture-file-1", displayName: fileName, contentUrl }],
@@ -222,7 +231,7 @@ test("saved projects import their legacy ID-keyed drafts once, without duplicati
   expect(await page.getByText("saved.txt", { exact: true }).count()).toBe(1)
   expect(await page.getByText("legacy.txt", { exact: true }).count()).toBe(1)
   await resolveActive(1, "saved")
-  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await sendAndWaitForDispatch()
   expect(await page.evaluate(() => window.landingFixture.sends[0]?.[1]?.attachments?.map(item => item.id).sort()))
     .toEqual(["fixture-file-1", "legacy-only"])
   await pick("saved", "alpha")
@@ -234,7 +243,7 @@ test.each([false, true])("an older send ACK clears only unchanged workspace uplo
   await resolveActive(0, "alpha-1")
   await attach("submitted.txt")
   await page.evaluate(() => window.landingFixture.holdSend())
-  await page.getByRole("button", { name: "Send", exact: true }).click()
+  await sendAndWaitForDispatch()
   await pick("alpha", "beta")
   await pick("beta", "alpha")
   await resolveActive(2, "alpha-2")
@@ -259,17 +268,23 @@ test("an upload resolving after discard cannot write into the reacquired folder'
   await resolveActive(2, "alpha-2")
   await attach("current.txt")
   const staleUrl = "/api/projects/project-alpha-1/uploads/abandoned.txt"
-  const cleanup = page.waitForRequest(request => request.method() === "DELETE")
+  // The receipt endpoint can return HTTP 200 without unlinking anything
+  // (for example, the workspace file was edited while the POST was in flight).
+  await page.route(`**${staleUrl}`, route => route.fulfill({ json: { ok: false } }))
+  const cleanup = page.waitForResponse(response => response.request().method() === "DELETE")
   await obsolete.fulfill({ json: { attachments: [{
     id: "late", displayName: "abandoned.txt", kind: "file", absolutePath: "/fixture/alpha/.memosync/uploads/abandoned.txt",
     relativePath: "./.memosync/uploads/abandoned.txt", contentUrl: `${staleUrl}/content`, mimeType: "text/plain", size: 1,
   }], cleanupReceipts: { late: "fixture-receipt" } } })
-  const request = await cleanup
+  const response = await cleanup
+  const request = response.request()
   expect(new URL(request.url()).pathname).toBe(staleUrl)
   expect(await request.headerValue("X-MemoSync-Upload-Receipt")).toBe("fixture-receipt")
+  expect(await response.json()).toEqual({ ok: false })
   await pick("alpha", "saved")
   await pick("saved", "alpha")
   await resolveActive(4, "alpha-3")
   expect(await page.getByText("current.txt", { exact: true }).count()).toBe(1)
   expect(await page.getByText("abandoned.txt", { exact: true }).count()).toBe(0)
+  expect(await page.evaluate(key => localStorage.getItem(key), DELETED_UPLOAD_NOTIFICATION)).toBeNull()
 })
