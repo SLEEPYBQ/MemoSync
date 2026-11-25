@@ -299,4 +299,29 @@ describe("chatInputStore", () => {
       delete (globalThis as unknown as { localStorage?: unknown }).localStorage
     }
   })
+
+  test("a send acknowledgment never erases newer edits it has not seen", () => {
+    const backing = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => backing.get(key) ?? null,
+      setItem: (key: string, value: string) => void backing.set(key, String(value)),
+      removeItem: (key: string) => void backing.delete(key),
+    }
+    ;(globalThis as unknown as { localStorage: typeof storage }).localStorage = storage
+    try {
+      useChatInputStore.setState({ drafts: {}, attachmentDrafts: {}, draftRevisions: {}, attachmentDraftRevisions: {} })
+      // This tab typed and submitted at revision 1.
+      useChatInputStore.getState().setDraft("landing:alpha", "submitted text")
+      const captured = useChatInputStore.getState().getDraftRevision("landing:alpha", null)
+      // Before the acknowledgment, another tab's newer edit reached storage but not memory.
+      const persisted = JSON.parse(backing.get("chat-input-drafts")!)
+      persisted.state.drafts["landing:alpha"] = "submitted text plus newer edits"
+      persisted.state.draftRevisions["landing:alpha"] = 2
+      backing.set("chat-input-drafts", JSON.stringify(persisted))
+      expect(useChatInputStore.getState().clearSubmittedDraft(captured)).toBe(false)
+      expect((JSON.parse(backing.get("chat-input-drafts")!) as { state: { drafts: Record<string, string> } }).state.drafts["landing:alpha"]).toBe("submitted text plus newer edits")
+    } finally {
+      delete (globalThis as unknown as { localStorage?: unknown }).localStorage
+    }
+  })
 })

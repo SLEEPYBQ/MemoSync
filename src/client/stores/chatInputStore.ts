@@ -315,6 +315,21 @@ export const useChatInputStore = create<ChatInputState>()((setLocal, getLocal, a
       }),
 
       clearSubmittedDraft: ({ textKey, textRevision, attachmentKey, attachmentRevision }) => {
+        // Memory can lag storage: another tab's newer edits may not have
+        // arrived when the acknowledgment lands. The captured revision must
+        // match the persisted truth, not just this tab's mirror, or the
+        // deletion would erase edits the submitting tab never saw.
+        let persistedState: { draftRevisions?: Record<string, number>; attachmentDraftRevisions?: Record<string, number> } | null = null
+        if (typeof localStorage !== "undefined") {
+          try {
+            const parsed = JSON.parse(localStorage.getItem("chat-input-drafts") ?? "null") as { state?: { draftRevisions?: Record<string, number>; attachmentDraftRevisions?: Record<string, number> } } | null
+            persistedState = parsed?.state ?? null
+          } catch { /* fall through to memory-only check */ }
+        }
+        if (persistedState) {
+          if ((textKey && (persistedState.draftRevisions?.[textKey] ?? 0) !== textRevision)
+            || (attachmentKey && (persistedState.attachmentDraftRevisions?.[attachmentKey] ?? 0) !== attachmentRevision)) return false
+        }
         let cleared = false
         set((state) => {
           if ((textKey && (state.draftRevisions[textKey] ?? 0) !== textRevision)

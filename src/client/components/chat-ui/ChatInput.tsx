@@ -503,14 +503,19 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       // Convergence is two-way: chips another tab added to the bucket join the
       // composer too, so a removal here can never silently drop them.
       const localIds = new Set(retained.map(attachment => attachment.id))
-      const adopted = hydrateComposerAttachments(storedItems.filter(item => !localIds.has(item.id)))
+      // Same workspace binding as mount-time hydration: a stored URL can
+      // outlive the temporary project it was uploaded through.
+      const adoptable = workspaceDraftKey && landingProjectPath && projectId
+        ? storedItems.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+        : storedItems
+      const adopted = hydrateComposerAttachments(adoptable.filter(item => !localIds.has(item.id)))
       const next = adopted.length ? [...retained, ...adopted] : retained
       if (next.length === attachmentsRef.current.length && adopted.length === 0) return
       attachmentsRef.current = next
       setAttachmentsState(next)
       setSelectedAttachmentId(id => next.some(item => item.id === id) ? id : null)
     }
-  }), [attachmentDraftKey, textDraftKey, cleanupAttachmentPreview])
+  }), [attachmentDraftKey, textDraftKey, workspaceDraftKey, landingProjectPath, projectId, cleanupAttachmentPreview])
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
