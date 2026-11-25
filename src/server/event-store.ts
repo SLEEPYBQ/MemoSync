@@ -1162,7 +1162,7 @@ export class EventStore {
     project.updatedAt = timestamp
   }
 
-  async ensureDraft(target: { projectId: string } | { localPath: string }) {
+  async ensureDraft(target: { projectId: string } | { localPath: string }, canReuse: (chatId: string) => boolean = () => true) {
     // Check and creation share the write chain: simultaneous composers get one id.
     return this.enqueueWrite(async () => {
       let project
@@ -1183,7 +1183,7 @@ export class EventStore {
         }
       }
       const existing = [...this.state.chatsById.values()]
-        .find(chat => chat.projectId === project.id && chat.draft && !chat.deletedAt)
+        .find(chat => chat.projectId === project.id && chat.draft && !chat.deletedAt && canReuse(chat.id))
       if (existing) return { chatId: existing.id, projectId: project.id }
       const chatId = crypto.randomUUID()
       await this.writeEvent(this.chatsLogPath, {

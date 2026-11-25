@@ -304,6 +304,9 @@ export function isManagedChatUpload(item: ChatAttachment): boolean {
  * reused. Check the managed upload, never open a path supplied by a client. */
 export async function matchesProjectUpload(project: { id: string; localPath: string }, item: ChatAttachment): Promise<boolean> {
   try {
+    // An old saved chip cannot distinguish a same-size replacement. Ask to
+    // reattach it; never assign today's bytes to yesterday's upload ID.
+    if (!item.uploadSha256 || !/^[0-9a-f]{64}$/.test(item.uploadSha256)) return false
     const match = /^\/api\/projects\/([^/]+)\/uploads\/([^/]+)\/content$/.exec(item.contentUrl)
     if (!match || match[1] !== project.id) return false
     const name = decodeURIComponent(match[2]!)
@@ -316,7 +319,6 @@ export async function matchesProjectUpload(project: { id: string; localPath: str
     try {
       const info = await handle.stat()
       if (!info.isFile() || info.size !== item.size) return false
-      if (item.uploadSha256 === undefined) return true
       const hash = createHash("sha256")
       for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk)
       return hash.digest("hex") === item.uploadSha256

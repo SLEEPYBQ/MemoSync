@@ -462,8 +462,8 @@ export function createWsRouter({
   listLocalHttpServersFn = listLocalHttpServers,
   killLocalHttpServerFn = killLocalHttpServer,
 }: CreateWsRouterArgs) {
-  /** Sockets whose landing composer holds each hidden draft chat. */
-  const draftHolders = new Map<string, Set<ServerWebSocket<ClientState>>>()
+  /** Landing composers and sends already received for their hidden draft. */
+  const draftHolders = new Map<string, Set<ServerWebSocket<ClientState> | symbol>>()
   const sockets = new Set<ServerWebSocket<ClientState>>()
   const dirtySnapshotSockets = new Set<ServerWebSocket<ClientState>>()
   const pendingSnapshotRetryTimers = new Map<ServerWebSocket<ClientState>, ReturnType<typeof setTimeout>>()
@@ -1625,7 +1625,10 @@ export function createWsRouter({
             if (typeof command.localPath !== "string") throw new Error("Invalid project path")
             await ensureProjectDirectory(command.localPath)
           } else if (typeof command.projectId !== "string") throw new Error("Invalid projectId")
-          const result = await store.ensureDraft(command)
+          // Evaluate inside ensureDraft's serialized lookup. A fresh visit
+          // must not adopt a draft already backing another send.
+          const result = await store.ensureDraft(command, id =>
+            !Array.from(draftHolders.get(id) ?? []).some(holder => typeof holder === "symbol"))
           const holders = draftHolders.get(result.chatId) ?? new Set()
           holders.add(ws)
           draftHolders.set(result.chatId, holders)
@@ -1711,7 +1714,23 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
-          const result = await agent.send(command, hostActions?.originatingClient(ws))
+          // Navigation or disconnect releases the window's hold, not this
+          // request's. Reserve before the coordinator's first validation await.
+          const draftId = command.chatId
+          const holders = draftId ? draftHolders.get(draftId) : undefined
+          const attempt = Symbol()
+          holders?.add(attempt)
+          let result
+          try {
+            result = await agent.send(command, hostActions?.originatingClient(ws))
+          } finally {
+            if (draftId && holders?.delete(attempt) && !holders.size) {
+              draftHolders.delete(draftId)
+              // No-op after successful promotion; clean a refused hidden
+              // draft only if its last window actually left.
+              await agent.discardDraft(draftId)
+            }
+          }
           const profile = command.clientTraceId && result.chatId
             ? agent.getActiveTurnProfile(result.chatId)
             : null
