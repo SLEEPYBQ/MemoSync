@@ -855,7 +855,7 @@ export function ChatScreen({ route, navigation }: Props) {
     } catch (error) {
       // Restore the draft so the user can retry — a message must never vanish —
       // and make the failure visible instead of only logging it to Metro.
-      setDraft(content)
+      setDraft((current) => current || content)
       setSendError(describeSendError(error))
       console.warn("send failed", error)
     } finally {
