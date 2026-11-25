@@ -235,21 +235,24 @@ test.each([false, true])("an old landing send cannot redirect after picking anot
   expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe(`/chat/new-${selected}`)
 })
 
-test.each([false, true])("an edited landing draft retires the sent upload without losing its bytes (later file=%s)", async laterFile => {
-  const target = await openLanding()
-  const folder = await mkdtemp(join(tmpdir(), "memosync-landing-ack-"))
+async function withLandingUploads(
+  target: Page,
+  projectId: string,
+  run: (uploads: { attach: (name: string) => Promise<void>; deleted: string[]; folder: string }) => Promise<void>,
+) {
+  const folder = await mkdtemp(join(tmpdir(), "memosync-landing-upload-"))
   const deleted: string[] = []
   try {
-    await target.route("**/api/projects/alpha/uploads**", async route => {
+    await target.route(`**/api/projects/${projectId}/uploads**`, async route => {
       const request = route.request()
       if (request.method() === "POST") {
         const form = await new Response(request.postDataBuffer(), { headers: request.headers() }).formData()
         const file = form.get("files") as File
         const attachment = await persistProjectUpload({
-          localPath: folder, projectId: "alpha", fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
+          localPath: folder, projectId, fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
         })
         // The browser sees the synthetic workspace; its bytes live only in this test's temp directory.
-        return route.fulfill({ json: { attachments: [{ ...attachment, absolutePath: `/fixture/alpha/${attachment.relativePath.slice(2)}` }] } })
+        return route.fulfill({ json: { attachments: [{ ...attachment, absolutePath: `/fixture/${projectId}/${attachment.relativePath.slice(2)}` }] } })
       }
       const storedName = decodeURIComponent(new URL(request.url()).pathname.split("/uploads/")[1].split("/")[0])
       if (request.method() === "DELETE") {
@@ -264,6 +267,38 @@ test.each([false, true])("an edited landing draft retires the sent upload withou
       await target.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor()
       await target.locator('button[aria-label="Send"]:enabled').waitFor()
     }
+    await run({ attach, deleted, folder })
+  } finally {
+    await rm(folder, { recursive: true, force: true })
+  }
+}
+
+test("a landing upload remains removable when project.open fails before chat.send", async () => {
+  const target = await openLanding()
+  await pickProject(target, "alpha", "unavailable")
+  await withLandingUploads(target, "unavailable", async ({ attach, deleted, folder }) => {
+    await attach("unsent.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByText("Fixture project open failed", { exact: true }).waitFor()
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount())).toBe(0)
+    const stored = await resolveExistingProjectUpload(folder, "unsent.txt")
+    expect(stored.ok && await Bun.file(stored.path).text()).toBe("fixture bytes: unsent.txt")
+
+    const remove = target.getByRole("button", { name: "Remove unsent.txt", exact: true })
+    const [response] = await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE" && new URL(r.url()).pathname === "/api/projects/unavailable/uploads/unsent.txt"),
+      remove.click(),
+    ])
+    await remove.waitFor({ state: "detached" })
+    expect(await response.json()).toEqual({ ok: true })
+    expect(deleted).toEqual(["unsent.txt"])
+    expect((await resolveExistingProjectUpload(folder, "unsent.txt")).ok).toBe(false)
+  })
+})
+
+test.each([false, true])("an edited landing draft retires the sent upload without losing its bytes (later file=%s)", async laterFile => {
+  const target = await openLanding()
+  await withLandingUploads(target, "alpha", async ({ attach, deleted }) => {
     const input = target.locator("textarea")
     await input.fill("First synthetic send")
     await attach("notes.txt")
@@ -298,9 +333,7 @@ test.each([false, true])("an edited landing draft retires the sent upload withou
     expect(response).toEqual([200, "fixture bytes: notes.txt"])
     expect(restoredAfterAck).toBe(0)
     expect(deleted).toEqual(laterFile ? ["later.txt"] : [])
-  } finally {
-    await rm(folder, { recursive: true, force: true })
-  }
+  })
 })
 
 describe("mounted useAppState history races", () => {

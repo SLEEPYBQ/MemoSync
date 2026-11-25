@@ -54,7 +54,8 @@ const sendRequests: Array<{ attachments: ChatAttachment[]; resolve: (value: unkn
 let acceptedSends = 0
 const projectRequests: Array<{ resolve: (value: unknown) => void }> = []
 const landingFixture = new URLSearchParams(window.location.search).get("view") === "landing"
-const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta"] : []
+const unavailableProject = "/fixture/unavailable"
+const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta", unavailableProject] : []
 
 const fixtureApi: AppStateFixtureApi = {
   transcriptRevision: () => 0,
@@ -119,6 +120,11 @@ Object.assign(AppSocket.prototype, {
     }
   },
   command(command: { type: string; chatId?: string; beforeCursor?: string; localPath?: string; attachments?: ChatAttachment[] }) {
+    if (command.localPath === unavailableProject) {
+      // The saved sidebar ID is known, but there is no draft yet when the user sends.
+      if (command.type === "chat.ensureDraft") return new Promise(() => {})
+      if (command.type === "project.open") return Promise.reject(new Error("Fixture project open failed"))
+    }
     if (command.type === "chat.ensureDraft") {
       const projectId = command.localPath!.split("/").at(-1)
       return Promise.resolve({ chatId: `draft-${projectId}`, projectId })
