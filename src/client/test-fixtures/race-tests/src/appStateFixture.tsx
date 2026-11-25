@@ -2,6 +2,8 @@ import { useState } from "react"
 import { createRoot } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
+import { TooltipProvider } from "../../../components/ui/tooltip"
+import { FilesPanel } from "../../../components/chat-ui/FilesPanel"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { useAppState } from "../../../app/useAppState"
 import { AppSocket } from "../../../app/socket"
@@ -118,6 +120,7 @@ export function mountAppStateFixture(root: HTMLElement) {
   let transcriptRevision = 0
   function AppStateHost() {
     const [activeChatId, setActiveChatId] = useState<string | null>("chat-a")
+    const [showFiles, setShowFiles] = useState(false)
     const state = useAppState(activeChatId)
     if (lastMessages !== state.messages) {
       lastMessages = state.messages
@@ -141,6 +144,9 @@ export function mountAppStateFixture(root: HTMLElement) {
     return (
       <main>
         <div data-testid="fixture-ready" />
+        <button onClick={() => setShowFiles(!showFiles)}>Toggle Files</button>
+        <button onClick={() => void state.handleSignOut()}>Sign out</button>
+        {showFiles && <TooltipProvider><FilesPanel projectId="project-a" /></TooltipProvider>}
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
         <button

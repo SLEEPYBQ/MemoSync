@@ -66,6 +66,19 @@ export function remapPathAfterRename(p: string, from: string, to: string): strin
   return p
 }
 
+/** Tree keys use the same normalized, slash-separated spelling as the directory listing. */
+export function renameDestination(from: string, name: string): string {
+  const parent = dirName(from)
+  const to = name.includes("/") || !parent ? name : `${parent}/${name}`
+  const parts: string[] = []
+  for (const part of to.split("/")) {
+    if (!part || part === ".") continue
+    if (part === ".." && parts.length && parts.at(-1) !== "..") parts.pop()
+    else parts.push(part)
+  }
+  return parts.join("/") || "."
+}
+
 /** Whether `p` is `target` or lives under it (used when a directory is deleted). */
 export function isSameOrUnder(p: string, target: string): boolean {
   return p === target || p.startsWith(`${target}/`)

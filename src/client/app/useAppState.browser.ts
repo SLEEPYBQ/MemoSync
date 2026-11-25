@@ -113,6 +113,60 @@ async function expectHistoryCount(target: Page, count: number) {
   ).__appStateFixture.historyRequestCount() === expected, count)
 }
 
+test("a retained Files draft is confirmed before logout; cancel and a failed request preserve it", async () => {
+  const target = await openFixture()
+  await target.route("**/files?dir=*", route => route.fulfill({
+    json: { data: { dir: "", entries: [{ name: "note.txt", kind: "file", size: 4 }] } },
+  }))
+  await target.route("**/files/note.txt/content?editor=1", route => route.fulfill({
+    body: "base", headers: { etag: '"base"' },
+  }))
+  let requests = 0
+  const release = Promise.withResolvers<void>()
+  await target.route("**/auth/logout", async route => {
+    requests++
+    if (requests === 1) await release.promise
+    return route.fulfill({ status: requests === 1 ? 503 : 200, json: {} })
+  })
+  const toggle = target.getByRole("button", { name: "Toggle Files" })
+  const signOut = target.getByRole("button", { name: "Sign out", exact: true })
+  await toggle.click()
+  await target.getByRole("button", { name: "note.txt" }).click()
+  await target.locator(".cm-content").fill("edit before sign-out")
+  await target.getByTitle("Unsaved changes — close").waitFor()
+  await toggle.click()
+  await signOut.click()
+  const dialog = target.getByRole("dialog")
+  await dialog.waitFor()
+  expect(requests).toBe(0)
+  await dialog.getByRole("button", { name: "Cancel" }).click()
+  await toggle.click()
+  expect(await target.locator(".cm-content").innerText()).toBe("edit before sign-out")
+  await toggle.click()
+  expect(requests).toBe(0)
+  await signOut.click()
+  await dialog.getByRole("button", { name: "Discard edits and sign out" }).click()
+  await target.waitForFunction(() => document.body.inert)
+  expect(await target.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true)
+  release.resolve()
+  await target.waitForFunction(() => document.querySelector('[data-testid="app-state"]')?.textContent?.includes("503"))
+  expect(requests).toBe(1)
+  expect(await target.evaluate(() => document.body.inert)).toBe(false)
+  expect(await target.evaluate(() => !window.dispatchEvent(new Event("beforeunload", { cancelable: true })))).toBe(true)
+  await toggle.click()
+  expect(await target.locator(".cm-content").innerText()).toBe("edit before sign-out")
+  await toggle.click()
+  let unloadPrompts = 0
+  target.on("dialog", native => { unloadPrompts++; void native.accept() })
+  await signOut.click()
+  await Promise.all([
+    target.waitForEvent("framenavigated", frame => frame === target.mainFrame()),
+    dialog.getByRole("button", { name: "Discard edits and sign out" }).click(),
+  ])
+  expect(requests).toBe(2)
+  expect(unloadPrompts).toBe(0)
+})
+
 async function emitChat(target: Page, chatId: string, subscriptionIndex: number, value: ChatSnapshot) {
   await target.evaluate(
     ({ chatId, subscriptionIndex, value }) => {

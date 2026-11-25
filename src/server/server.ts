@@ -67,7 +67,7 @@ import { handleWorkspaceRequest } from "./workspace-routes"
 import { createWsRouter, type ClientState } from "./ws-router"
 import { HostActionService, hostActionToolSpecs } from "./host-actions"
 import { toCodexDynamicTools } from "./memory/codex-adapter"
-import { realpathSync } from "node:fs"
+import { realpathSync, type BigIntStats } from "node:fs"
 
 const MAX_UPLOAD_FILES = 50
 const MAX_UPLOAD_SIZE_BYTES = 100 * 1024 * 1024
@@ -99,18 +99,20 @@ function editorEtag(bytes: Uint8Array): string {
   return `"${createHash("sha256").update(bytes).digest("hex")}"`
 }
 
-async function serializeEditorWrite<T>(filePath: string, write: () => Promise<T>): Promise<T> {
-  const previous = editorWrites.get(filePath)
+async function serializeEditorWrite<T>(identity: BigIntStats, write: () => Promise<T>): Promise<T> {
+  // Separate directory entries (including hard links) can name the same bytes.
+  const key = `${identity.dev}:${identity.ino}`
+  const previous = editorWrites.get(key)
   let release!: () => void
   const current = new Promise<void>(resolve => { release = resolve })
   const tail = previous ? previous.then(() => current) : current
-  editorWrites.set(filePath, tail)
+  editorWrites.set(key, tail)
   if (previous) await previous
   try {
     return await write()
   } finally {
     release()
-    if (editorWrites.get(filePath) === tail) editorWrites.delete(filePath)
+    if (editorWrites.get(key) === tail) editorWrites.delete(key)
   }
 }
 
@@ -1047,9 +1049,9 @@ export async function handleProjectFileContent(
     const filePath = resolved.path
 
     const file = Bun.file(filePath)
-    let initialInfo: Awaited<ReturnType<typeof stat>>
+    let initialInfo: BigIntStats
     try {
-      initialInfo = await stat(filePath)
+      initialInfo = await stat(filePath, { bigint: true })
       if (!initialInfo.isFile()) {
         return uiJson({ error: "File not found" }, { status: 404 })
       }
@@ -1072,11 +1074,11 @@ export async function handleProjectFileContent(
         return uiJson({ error: "File too large to save" }, { status: 413 })
       }
       if (editor) {
-        return await serializeEditorWrite(filePath, async () => {
+        return await serializeEditorWrite(initialInfo, async () => {
           try {
             const handle = await open(filePath, "r+")
             try {
-              const handleInfo = await handle.stat()
+              const handleInfo = await handle.stat({ bigint: true })
               if (!handleInfo.isFile()) return uiJson({ error: "File not found" }, { status: 404 })
               if (handleInfo.dev !== initialInfo.dev || handleInfo.ino !== initialInfo.ino) {
                 return uiJson({ error: "File changed" }, { status: 412 })
@@ -1086,7 +1088,7 @@ export async function handleProjectFileContent(
               const currentPath = await resolveExistingPathWithinRoot(project.localPath, relativePath)
               if (!currentPath.ok) return uiJson({ error: "File not found" }, { status: 404 })
               if (currentPath.path !== filePath) return uiJson({ error: "File changed" }, { status: 412 })
-              const currentInfo = await stat(currentPath.path)
+              const currentInfo = await stat(currentPath.path, { bigint: true })
               if (!currentInfo.isFile()) return uiJson({ error: "File not found" }, { status: 404 })
               if (currentInfo.dev !== handleInfo.dev || currentInfo.ino !== handleInfo.ino) {
                 return uiJson({ error: "File changed" }, { status: 412 })

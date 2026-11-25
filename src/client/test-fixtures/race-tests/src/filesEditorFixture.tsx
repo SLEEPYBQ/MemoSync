@@ -13,7 +13,7 @@ export function mountFilesEditorFixture(root: HTMLElement) {
     Object.assign(window, { __filesEditorFixture: {
       setProject,
       setMounted,
-      buffer: (projectId: string) => fileEditorDrafts(projectId).getSnapshot().buffers.get("note.txt") ?? null,
+      buffer: (projectId: string, path = "note.txt") => fileEditorDrafts(projectId).getSnapshot().buffers.get(path) ?? null,
     } })
     return <main style={{ width: 900, height: 600 }}>
       <div data-testid="fixture-ready" />

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -121,6 +121,20 @@ describe("project file content route", () => {
     expect(saved!.status).toBe(200)
     expect(readFileSync(join(dir, "hello.ts"), "utf8")).toBe("x")
     expect(saved!.headers.get("etag")).toBe(`"${createHash("sha256").update("x").digest("hex")}"`)
+  })
+
+  it("serializes concurrent editor saves through two hard links to the same file", async () => {
+    const names = ["hello.ts", "alias.ts"]
+    writeFileSync(join(dir, names[0]), "synthetic line\n".repeat(65_536))
+    linkSync(join(dir, names[0]), join(dir, names[1]))
+    const reads = await Promise.all(names.map(name => call(name, undefined, true)))
+    const tags = reads.map(res => res!.headers.get("etag")!)
+    expect(tags[0]).toBe(tags[1])
+    const writes = await Promise.all(names.map((name, i) =>
+      call(name, { method: "PUT", headers: { "If-Match": tags[i] }, body: `edit via ${name}` }, true)))
+    expect(writes.map(res => res!.status).sort()).toEqual([200, 412])
+    const winner = names[writes.findIndex(res => res!.status === 200)]
+    for (const name of names) expect(readFileSync(join(dir, name), "utf8")).toBe(`edit via ${winner}`)
   })
 
   it("reports an oversized external edit as a conflict", async () => {

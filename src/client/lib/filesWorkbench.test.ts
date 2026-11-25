@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import {
-  ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename,
+  ancestorDirs, baseName, dirName, filterIndexPaths, isSameOrUnder, nextActiveTab, remapPathAfterRename, renameDestination,
 } from "./filesWorkbench"
 
 describe("baseName / dirName", () => {
@@ -73,6 +73,12 @@ describe("nextActiveTab", () => {
 })
 
 describe("remapPathAfterRename", () => {
+  it("uses listing keys for sibling names and project-relative destinations", () => {
+    expect(renameDestination("src/a.ts", "b.ts")).toBe("src/b.ts")
+    expect(renameDestination("src/a.ts", "notes//./b.ts")).toBe("notes/b.ts")
+    expect(renameDestination("src/a.ts", "notes/temp/../b.ts")).toBe("notes/b.ts")
+  })
+
   it("remaps the renamed path and children of a renamed directory", () => {
     expect(remapPathAfterRename("a/b.ts", "a/b.ts", "a/c.ts")).toBe("a/c.ts")
     expect(remapPathAfterRename("src/app/x.ts", "src", "lib")).toBe("lib/app/x.ts")

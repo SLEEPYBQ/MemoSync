@@ -13,6 +13,7 @@ import type { AskUserQuestionItem } from "../components/messages/types"
 import { useAppDialog } from "../components/ui/app-dialog"
 import { useTheme, useThemeSettingsWriter } from "../hooks/useTheme"
 import { copyTextToClipboard } from "../lib/clipboard"
+import { discardFileDraftsAfterSignOut, hasUnsavedFileDrafts } from "../lib/fileEditorDrafts"
 import { processTranscriptMessages } from "../lib/parseTranscript"
 import { useServerProviders } from "../lib/providerApi"
 import { generateUUID } from "../lib/utils"
@@ -1756,9 +1757,21 @@ export function useAppState(activeChatId: string | null): AppState {
   }, [dialog, socket, getLocale()])
 
   const handleSignOut = useCallback(async () => {
+    if (hasUnsavedFileDrafts() && !await dialog.confirm({
+      title: t("settings:signOut"),
+      description: t("files:discardDraftsOnSignOut"),
+      confirmLabel: t("files:discardAndSignOut"),
+      confirmVariant: "destructive",
+    })) return
+
+    // Do not allow new edits after consent while the session is being revoked.
+    // Keep both the drafts and their normal unload guard until the request succeeds.
+    const wasInert = document.body.inert
+    document.body.inert = true
     try {
       const response = await fetch("/auth/logout", {
         method: "POST",
+        signal: AbortSignal.timeout(15_000),
         headers: {
           Accept: "application/json",
         },
@@ -1769,11 +1782,14 @@ export function useAppState(activeChatId: string | null): AppState {
       }
 
       setCommandError(null)
+      discardFileDraftsAfterSignOut()
       window.location.reload()
     } catch (error) {
       setCommandError(error instanceof Error ? error.message : String(error))
+    } finally {
+      document.body.inert = wasInert
     }
-  }, [getLocale()])
+  }, [dialog, getLocale()])
 
   const handleSend = useCallback(async (
     content: string,
