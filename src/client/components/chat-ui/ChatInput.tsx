@@ -153,6 +153,8 @@ interface Props {
    * navigation (BUG LAND-1). Defaults to chatId.
    */
   draftKey?: string | null
+  /** Uploads live under this folder even if leaving discards its temporary project ID. */
+  landingProjectPath?: string | null
   projectId?: string | null
   inputElementRef?: React.Ref<HTMLTextAreaElement>
   activeProvider: AgentProvider | null
@@ -257,6 +259,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   chatId,
   nativeChatId,
   draftKey,
+  landingProjectPath,
   projectId,
   inputElementRef,
   activeProvider,
@@ -282,6 +285,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     setDraft,
     getAttachmentDrafts,
     setAttachmentDrafts,
+    migrateAttachmentDrafts,
   } = useChatInputStore()
   const {
     providerDefaults,
@@ -296,7 +300,9 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // for the landing composer (which has no chatId yet) so typed text survives
   // navigation (BUG LAND-1).
   const textDraftKey = draftKey ?? chatId ?? null
-  const attachmentDraftKey = chatId ?? (draftKey && projectId ? `${draftKey}:${projectId}` : null)
+  const projectDraftKey = !chatId && draftKey && projectId ? `${draftKey}:${projectId}` : null
+  const workspaceDraftKey = projectDraftKey && landingProjectPath ? `${draftKey}:path:${landingProjectPath}` : null
+  const attachmentDraftKey = chatId ?? workspaceDraftKey ?? projectDraftKey
   const storedComposerState = useChatPreferencesStore((state) => state.chatStates[composerChatId])
   const composerState = storedComposerState ?? getComposerState(composerChatId)
   const draftRevisionRef = useRef(0)
@@ -318,7 +324,10 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const isStandalone = useIsStandalone()
   const draftMemoryDisabled = useDraftMemoryDisabled((s) => s.disabled)
   const setDraftMemoryDisabled = useDraftMemoryDisabled((s) => s.setDisabled)
-  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []))
+  const [attachments, setAttachmentsState] = useState<ComposerAttachment[]>(() => {
+    // A workspace draft may contain retired image URLs. Bind it before showing any cards.
+    return attachmentDraftKey && !workspaceDraftKey ? hydrateComposerAttachments(getAttachmentDrafts(attachmentDraftKey)) : []
+  })
   const attachmentsRef = useRef(attachments)
   const setAttachments = useCallback((next: React.SetStateAction<ComposerAttachment[]>) => {
     draftRevisionRef.current += 1
@@ -349,7 +358,31 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
     removedAttachmentIdsRef.current.clear()
     setSelectedAttachmentId(null)
     setUploadError(null)
-    attachmentsRef.current = hydrateComposerAttachments(attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : [])
+    let stored = attachmentDraftKey ? getAttachmentDrafts(attachmentDraftKey) : []
+    if (workspaceDraftKey && projectDraftKey && landingProjectPath && projectId) {
+      // Migrate only the current project's old landing bucket. Don't look up drafts by filename.
+      const moved = migrateAttachmentDrafts(projectDraftKey, workspaceDraftKey, (legacy, target) => {
+        if (!legacy.length) return null
+        const merged = [...target]
+        const unmoved: ChatAttachment[] = []
+        for (const item of legacy) {
+          const bound = bindLandingUpload(item, landingProjectPath, projectId)
+          if (!bound || bound.contentUrl !== item.contentUrl) unmoved.push(item)
+          else if (!merged.some(other => other.id === item.id || other.relativePath === item.relativePath)) merged.push(item)
+        }
+        return unmoved.length === legacy.length ? null : { source: unmoved, target: merged }
+      })
+      // Re-read after the migration attempt even when nothing moved: a no-op
+      // still reconciles memory with the completed move from another tab.
+      void moved
+      stored = getAttachmentDrafts(workspaceDraftKey)
+      // Rebinding a URL for display/send isn't a user edit; don't invalidate a
+      // pending send's revision. Keep it in memory only: writing the rebound
+      // array back would persist this tab's entire stale draft snapshot over
+      // other tabs' edits. Retirement matches physical upload identity instead.
+      stored = stored.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+    }
+    attachmentsRef.current = hydrateComposerAttachments(stored)
     setAttachmentsState(attachmentsRef.current)
     return () => {
       draftRevisionRef.current += 1
@@ -359,7 +392,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       activeUploadsRef.current = 0
       attachmentsRef.current.forEach(cleanupAttachmentPreview)
     }
-  }, [chatId, projectId, textDraftKey, attachmentDraftKey, getDraft, getAttachmentDrafts, cleanupAttachmentPreview])
+  }, [chatId, projectId, textDraftKey, attachmentDraftKey, workspaceDraftKey, projectDraftKey, landingProjectPath, getDraft, getAttachmentDrafts, setAttachmentDrafts, migrateAttachmentDrafts, cleanupAttachmentPreview])
 
   const providerLocked = activeProvider !== null
   const modelAccess = useModelAccessStore(s => s.snapshot)
@@ -456,7 +489,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
       setValueState(valueRef.current)
     }
     if (attachmentDraftKey && previous.attachmentDrafts[attachmentDraftKey] !== state.attachmentDrafts[attachmentDraftKey]) {
-      const ids = new Set(state.attachmentDrafts[attachmentDraftKey]?.map(item => item.id))
+      const storedItems = state.attachmentDrafts[attachmentDraftKey] ?? []
+      const ids = new Set(storedItems.map(item => item.id))
       const retained = attachmentsRef.current.filter(attachment => {
         if (attachment.status !== "uploaded" || ids.has(attachment.id)) return true
         cleanupAttachmentPreview(attachment)
@@ -466,12 +500,22 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
         }
         return false
       })
-      if (retained.length === attachmentsRef.current.length) return
-      attachmentsRef.current = retained
-      setAttachmentsState(retained)
-      setSelectedAttachmentId(id => retained.some(item => item.id === id) ? id : null)
+      // Convergence is two-way: chips another tab added to the bucket join the
+      // composer too, so a removal here can never silently drop them.
+      const localIds = new Set(retained.map(attachment => attachment.id))
+      // Same workspace binding as mount-time hydration: a stored URL can
+      // outlive the temporary project it was uploaded through.
+      const adoptable = workspaceDraftKey && landingProjectPath && projectId
+        ? storedItems.flatMap(item => bindLandingUpload(item, landingProjectPath, projectId) ?? [])
+        : storedItems
+      const adopted = hydrateComposerAttachments(adoptable.filter(item => !localIds.has(item.id)))
+      const next = adopted.length ? [...retained, ...adopted] : retained
+      if (next.length === attachmentsRef.current.length && adopted.length === 0) return
+      attachmentsRef.current = next
+      setAttachmentsState(next)
+      setSelectedAttachmentId(id => next.some(item => item.id === id) ? id : null)
     }
-  }), [attachmentDraftKey, textDraftKey, cleanupAttachmentPreview])
+  }), [attachmentDraftKey, textDraftKey, workspaceDraftKey, landingProjectPath, projectId, cleanupAttachmentPreview])
 
   const autoResize = useCallback(() => {
     const element = textareaRef.current
@@ -600,14 +644,14 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             throw new Error(httpUiError(payload, t("chat:uploadFailed")))
           }
 
-          const payload = await response.json() as { attachments: ChatAttachment[] }
+          const payload = await response.json() as { attachments: ChatAttachment[]; cleanupReceipts?: Record<string, string> }
           const uploaded = payload.attachments[0]
           if (!uploaded) {
             throw new Error(t("chat:uploadFailed"))
           }
 
           if (generation !== uploadGenerationRef.current) {
-            void deleteUploadedAttachment(uploaded)
+            void deleteUploadedAttachment(uploaded, payload.cleanupReceipts?.[uploaded.id])
             if (previewUrl) URL.revokeObjectURL(previewUrl)
             return
           }
@@ -615,7 +659,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
           if (removedAttachmentIdsRef.current.has(tempId)) {
             removedAttachmentIdsRef.current.delete(tempId)
             if (previewUrl) URL.revokeObjectURL(previewUrl)
-            void deleteUploadedAttachment(uploaded)
+            void deleteUploadedAttachment(uploaded, payload.cleanupReceipts?.[uploaded.id])
             return
           }
 
@@ -1205,13 +1249,35 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
 
 export const ChatInput = memo(ChatInputInner)
 
-async function deleteUploadedAttachment(attachment: ChatAttachment) {
+async function deleteUploadedAttachment(attachment: ChatAttachment, receipt?: string) {
   if (!attachment.contentUrl) return
   const deleteUrl = attachment.contentUrl.replace(/\/content$/, "")
+  const headers: Record<string, string> = {}
+  if (receipt !== undefined) headers["X-MemoSync-Upload-Receipt"] = receipt
+  // The server unlinks only when the bytes still match the upload this chip
+  // refers to; a name reused or replaced since then detaches without deletion.
+  if (attachment.uploadSha256) headers["X-MemoSync-Upload-Sha256"] = attachment.uploadSha256
   try {
-    const response = await fetch(deleteUrl, { method: "DELETE" })
+    const response = await fetch(deleteUrl, {
+      method: "DELETE", headers,
+    })
     if (response.ok && (await response.json()).ok === true) localStorage.setItem(DELETED_UPLOAD_NOTIFICATION, attachment.id)
   } catch { /* No confirmation: do not tell another tab its file was deleted. */ }
+}
+
+/** Only retarget a first-party upload whose actual stored file belongs to this exact workspace. */
+export function bindLandingUpload(attachment: ChatAttachment, localPath: string, projectId: string): ChatAttachment | null {
+  const url = /^\/api\/projects\/[\w-]+\/uploads\/([^/\\?#]+)\/content$/.exec(attachment.contentUrl)
+  if (!url) return null
+  let name: string
+  try { name = decodeURIComponent(url[1]!) } catch { return null }
+  if (name === "." || name === ".." || /[/\\\0]/.test(name)) return null
+  if (attachment.relativePath !== `./.memosync/uploads/${name}` && attachment.relativePath !== `./.kanna/uploads/${name}`) return null
+  const windows = /^(?:[a-z]:[\\/]|\\\\)/i.test(localPath)
+  const root = (windows ? localPath.replaceAll("\\", "/") : localPath).replace(/\/+$/, "")
+  const absolutePath = windows ? attachment.absolutePath?.replaceAll("\\", "/") : attachment.absolutePath
+  if (absolutePath !== `${root}/${attachment.relativePath.slice(2)}`) return null
+  return { ...attachment, contentUrl: `/api/projects/${encodeURIComponent(projectId)}/uploads/${url[1]}/content` }
 }
 
 function hydrateComposerAttachments(attachments: ChatAttachment[]): ComposerAttachment[] {

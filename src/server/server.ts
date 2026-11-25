@@ -61,7 +61,7 @@ import { loadRegistryModels } from "./registry-models"
 import { TerminalManager } from "./terminal-manager"
 import { UpdateManager } from "./update-manager"
 import { ReleaseNotice } from "./release-notice"
-import { deleteProjectUpload, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload, resolveExistingProjectUpload } from "./uploads"
+import { deleteProjectUpload, DraftUploadReceipts, inferAttachmentContentType, inferProjectFileContentType, persistProjectUpload, resolveExistingProjectUpload, type UploadTracking } from "./uploads"
 import { UsageLogger } from "./usage/logger"
 import { listWorkspaceDirectories } from "./workspace-dirs"
 import { handleWorkspaceRequest } from "./workspace-routes"
@@ -132,6 +132,7 @@ export async function persistUploadedFiles(args: {
   localPath: string
   files: File[]
   persistUpload?: typeof persistProjectUpload
+  tracking?: UploadTracking
 }): Promise<ChatAttachment[]> {
   const persistUpload = args.persistUpload ?? persistProjectUpload
   const attachments: ChatAttachment[] = []
@@ -145,12 +146,15 @@ export async function persistUploadedFiles(args: {
         fileName: file.name || "upload",
         bytes,
         fallbackMimeType: file.type || undefined,
+        tracking: args.tracking,
       })
       attachments.push(attachment)
     }
   } catch (error) {
-    await Promise.allSettled(
-      attachments.map((attachment) => deleteProjectUpload({
+    const tracking = args.tracking
+    await Promise.allSettled(tracking?.draftWrites
+      ? tracking.draftWrites.map(write => tracking.receipts.discard(write))
+      : attachments.map((attachment) => deleteProjectUpload({
         localPath: args.localPath,
         storedName: path.basename(attachment.absolutePath),
       }))
@@ -342,6 +346,7 @@ async function startLockedMemoSyncServer(
     .map((origin) => origin.trim())
     .filter(Boolean)
   const store = new EventStore(options.dataDir)
+  const uploadReceipts = new DraftUploadReceipts()
   // initialize() resolves executables and creates the first Settings snapshot.
   // Gate both that work and the HTTP/WebSocket server on the imported PATH.
   await shellPathReady
@@ -734,12 +739,12 @@ async function startLockedMemoSyncServer(
             return uiJson({ ok: true, port: actualPort })
           }
 
-          const uploadResponse = await handleProjectUpload(req, url, store)
+          const uploadResponse = await handleProjectUpload(req, url, store, uploadReceipts)
           if (uploadResponse) {
             return uploadResponse
           }
 
-          const deleteUploadResponse = await handleProjectUploadDelete(req, url, store)
+          const deleteUploadResponse = await handleProjectUploadDelete(req, url, store, uploadReceipts)
           if (deleteUploadResponse) {
             return deleteUploadResponse
           }
@@ -901,6 +906,7 @@ export async function handleProjectUpload(
   req: Request,
   url: URL,
   store: EventStore,
+  receipts: DraftUploadReceipts,
 ) {
   if (req.method !== "POST") {
     return null
@@ -915,6 +921,7 @@ export async function handleProjectUpload(
   if (!project) {
     return uiJson({ error: "Project not found" }, { status: 404 })
   }
+  const tracking: UploadTracking = { receipts, draftWrites: project.draftOnly ? [] : undefined }
 
   const declaredSize = Number(req.headers.get("content-length"))
   if (Number.isFinite(declaredSize) && declaredSize > MAX_REQUEST_BODY_SIZE_BYTES) {
@@ -957,7 +964,18 @@ export async function handleProjectUpload(
       projectId: project.id,
       localPath: project.localPath,
       files,
+      tracking,
     })
+    if (tracking.draftWrites) {
+      if (!store.getProject(project.id)) {
+        // No response has left this handler; these writes were never delivered.
+        await Promise.all(tracking.draftWrites.map(write => receipts.discard(write)))
+        return uiJson({ error: "Project not found" }, { status: 404 })
+      }
+      // Sideband only: don't persist delete authority in attachment drafts or sent messages.
+      const cleanupReceipts = Object.fromEntries(tracking.draftWrites.map((write, i) => [attachments[i]!.id, receipts.publish(write)]))
+      return uiJson({ attachments, cleanupReceipts })
+    }
     return uiJson({ attachments })
   } catch (error) {
     console.error("[uploads] Upload failed:", error)
@@ -1176,6 +1194,7 @@ export async function handleProjectUploadDelete(
   req: Request,
   url: URL,
   store: EventStore,
+  receipts: DraftUploadReceipts,
 ) {
   if (req.method !== "DELETE") {
     return null
@@ -1186,19 +1205,29 @@ export async function handleProjectUploadDelete(
     return null
   }
 
-  const project = store.getProject(match[1])
-  if (!project) {
-    return uiJson({ error: "Project not found" }, { status: 404 })
-  }
-
   const storedName = decodeURIComponent(match[2])
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
     return uiJson({ error: "Invalid attachment path" }, { status: 400 })
   }
 
+  const receipt = req.headers.get("X-MemoSync-Upload-Receipt")
+  if (receipt !== null) {
+    const write = receipts.take(match[1], storedName, receipt)
+    return uiJson({ ok: !!write && await receipts.discard(write) })
+  }
+  const project = store.getProject(match[1])
+  if (!project) {
+    return uiJson({ error: "Project not found" }, { status: 404 })
+  }
+  // Without a receipt the caller proves which bytes it means to remove. A
+  // rebound or restored chip can name a file that has since been replaced;
+  // deleting by stored name alone could unlink somebody else's content.
+  const sha256 = req.headers.get("X-MemoSync-Upload-Sha256")
+  if (!sha256) return uiJson({ ok: false })
   const deleted = await deleteProjectUpload({
     localPath: project.localPath,
     storedName,
+    expectedSha256: sha256,
   })
 
   return uiJson({ ok: deleted })

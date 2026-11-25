@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto"
-import { constants } from "node:fs"
-import { lstat, mkdir, open, realpath, rm, stat } from "node:fs/promises"
+import { constants, lstatSync, rmSync, type BigIntStats } from "node:fs"
+import { lstat, mkdir, open, realpath, stat } from "node:fs/promises"
 import path from "node:path"
 import { fileTypeFromBuffer } from "file-type"
 import type { ChatAttachment } from "../shared/types"
@@ -16,6 +16,8 @@ import {
 const DEFAULT_BINARY_MIME_TYPE = "application/octet-stream"
 const IMAGE_MIME_PREFIX = "image/"
 const TEXT_PLAIN_CONTENT_TYPE = "text/plain; charset=utf-8"
+const MAX_RECENT_DRAFT_UPLOAD_RECEIPTS = 1024
+const DRAFT_VERIFY_CHUNK_BYTES = 256 * 1024
 
 const TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
   [".csv", "text/csv; charset=utf-8"],
@@ -134,21 +136,112 @@ function getUploadCandidateNames(originalName: string) {
   }
 }
 
+export interface DraftUploadWrite {
+  projectId: string
+  localPath: string
+  physicalPath: string
+  storedName: string
+  receipt: string
+  version?: string
+}
+
+function fileIdentity(s: BigIntStats) {
+  return `${s.dev}:${s.ino}:${s.birthtimeNs}`
+}
+
+function fileVersion(s: BigIntStats) {
+  return s.isFile() && s.ino !== 0n ? `${fileIdentity(s)}:${s.size}:${s.mtimeNs}:${s.ctimeNs}` : undefined
+}
+
+// The writer has closed (Windows can publish its last-write time on close).
+// A workspace edit can keep the same inode and length, so neither alone
+// proves this is still our upload. Compare the bytes using one bounded buffer.
+async function verifiedDraftVersion(physicalPath: string, identity: string, expected: Uint8Array) {
+  const before = await lstat(physicalPath, { bigint: true })
+  const version = fileVersion(before)
+  if (!version || fileIdentity(before) !== identity || before.size !== BigInt(expected.byteLength)) return
+
+  const reader = await open(physicalPath, process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+  try {
+    if (fileVersion(await reader.stat({ bigint: true })) !== version) return
+    const chunk = Buffer.allocUnsafe(Math.min(expected.byteLength, DRAFT_VERIFY_CHUNK_BYTES))
+    for (let pos = 0; pos < expected.byteLength;) {
+      const { bytesRead } = await reader.read(chunk, 0, Math.min(chunk.length, expected.byteLength - pos), pos)
+      if (!bytesRead || !chunk.subarray(0, bytesRead).equals(expected.subarray(pos, pos + bytesRead))) return
+      pos += bytesRead
+    }
+    // Keep the checked stamp, never a newer version observed after the read.
+    if (fileVersion(await lstat(physicalPath, { bigint: true })) === version) return version
+  } finally { await reader.close() }
+}
+
+/** Only unadopted POST results use these receipts. Eviction forgets authority, never files. */
+export class DraftUploadReceipts {
+  private readonly byPath = new Map<string, DraftUploadWrite>()
+  private readonly published = new Map<string, DraftUploadWrite>()
+
+  private forget(write: DraftUploadWrite) {
+    this.published.delete(write.receipt)
+    if (this.byPath.get(write.physicalPath) === write) this.byPath.delete(write.physicalPath)
+  }
+
+  opened(physicalPath: string, localPath: string, projectId: string, batch?: DraftUploadWrite[]) {
+    const previous = this.byPath.get(physicalPath)
+    if (previous) this.forget(previous) // A new exclusive create supersedes any old receipt.
+    if (!batch) return
+    const write: DraftUploadWrite = { projectId, localPath, physicalPath, storedName: path.basename(physicalPath), receipt: randomUUID() }
+    this.byPath.set(physicalPath, write)
+    batch.push(write)
+    return write
+  }
+
+  publish(write: DraftUploadWrite) {
+    if (this.byPath.get(write.physicalPath) === write) {
+      // Bound completed responses, not writes still owned by a running POST.
+      if (this.published.size >= MAX_RECENT_DRAFT_UPLOAD_RECEIPTS) this.forget(this.published.values().next().value!)
+      this.published.set(write.receipt, write)
+    }
+    return write.receipt
+  }
+
+  take(projectId: string, storedName: string, receipt: string) {
+    const write = this.published.get(receipt)
+    if (write?.projectId !== projectId || write.storedName !== storedName) return
+    this.published.delete(receipt)
+    return write
+  }
+
+  async discard(write: DraftUploadWrite) {
+    try {
+      return await deleteProjectUpload({
+        localPath: write.localPath, storedName: write.storedName,
+        beforeDelete: physicalPath => this.byPath.get(write.physicalPath) === write
+          && path.relative(path.dirname(write.physicalPath), path.dirname(physicalPath)) === ""
+          && !!write.version && fileVersion(lstatSync(physicalPath, { bigint: true })) === write.version,
+      })
+    } finally { this.forget(write) }
+  }
+}
+
+export interface UploadTracking {
+  receipts: DraftUploadReceipts
+  draftWrites?: DraftUploadWrite[]
+}
+
 export async function persistProjectUpload(args: {
   projectId: string
   localPath: string
   fileName: string
   bytes: Uint8Array
   fallbackMimeType?: string
+  tracking?: UploadTracking
 }): Promise<ChatAttachment> {
   const resolvedUploadDir = await resolveProjectUploadDirectory(args.localPath, true)
   if (!resolvedUploadDir.ok) {
     throw new Error("Project upload directory is missing or escapes the project root")
   }
-  // Keep the attachment path in the same lexical form the caller supplied;
-  // the directory tree above has already been verified as real, contained
-  // directories, so writing through this path is safe without changing the
-  // public absolutePath shape (for example /var vs /private/var on macOS).
+  // Write in the verified directory, but keep the public attachment path in
+  // the lexical form the caller supplied (e.g. /var vs /private/var on macOS).
   const uploadDir = getProjectUploadDir(args.localPath)
 
   const detectedType = await fileTypeFromBuffer(args.bytes)
@@ -164,11 +257,18 @@ export async function persistProjectUpload(args: {
 
   while (true) {
     try {
-      const handle = await open(absolutePath, "wx")
+      const physicalPath = path.join(resolvedUploadDir.path, storedName)
+      const handle = await open(physicalPath, "wx")
+      const write = args.tracking?.receipts.opened(physicalPath, resolvedUploadDir.root, args.projectId, args.tracking.draftWrites)
+      let identity: string | undefined
       try {
         await handle.writeFile(args.bytes)
+        if (write) identity = await handle.stat({ bigint: true }).then(fileIdentity, () => undefined)
       } finally {
         await handle.close()
+      }
+      if (write && identity) {
+        write.version = await verifiedDraftVersion(physicalPath, identity, args.bytes).catch(() => undefined)
       }
       break
     } catch (error) {
@@ -246,9 +346,31 @@ export function inferProjectFileContentType(fileName: string, fallbackType?: str
   return inferAttachmentContentType(fileName, fallbackType)
 }
 
+// Hash the bytes through one bounded stream and keep the stamp they were read
+// under. An in-place write during the read changes ctime/mtime; substituting
+// the file afterwards changes the version the unlink guard compares.
+async function verifiedUploadVersion(physicalPath: string, sha256: string): Promise<string | undefined> {
+  try {
+    const handle = await open(physicalPath, process.platform === "win32" ? "r" : constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
+    try {
+      const version = fileVersion(await handle.stat({ bigint: true }))
+      if (!version) return
+      const hash = createHash("sha256")
+      for await (const chunk of handle.createReadStream({ autoClose: false })) hash.update(chunk)
+      if (hash.digest("hex") !== sha256) return
+      if (fileVersion(await handle.stat({ bigint: true })) !== version) return
+      return version
+    } finally {
+      await handle.close()
+    }
+  } catch { return }
+}
+
 export async function deleteProjectUpload(args: {
   localPath: string
   storedName: string
+  beforeDelete?: (physicalPath: string) => boolean
+  expectedSha256?: string
 }): Promise<boolean> {
   const storedName = args.storedName
   if (!storedName || storedName.includes("/") || storedName.includes("\\") || storedName === "." || storedName === "..") {
@@ -257,8 +379,18 @@ export async function deleteProjectUpload(args: {
 
   const resolved = await resolveExistingProjectUpload(args.localPath, storedName)
   if (!resolved.ok) return false
+  let beforeDelete = args.beforeDelete
+  if (args.expectedSha256 !== undefined) {
+    if (!/^[0-9a-f]{64}$/.test(args.expectedSha256)) return false
+    const version = await verifiedUploadVersion(resolved.path, args.expectedSha256)
+    if (!version) return false
+    beforeDelete = physicalPath => fileVersion(lstatSync(physicalPath, { bigint: true })) === version
+      && (!args.beforeDelete || args.beforeDelete(physicalPath))
+  }
   try {
-    await rm(resolved.path, { force: true })
+    // No intervening MemoSync delete/recreate between the ownership check and unlink.
+    if (beforeDelete && !beforeDelete(resolved.path)) return false
+    rmSync(resolved.path, { force: true })
     return true
   } catch {
     return false

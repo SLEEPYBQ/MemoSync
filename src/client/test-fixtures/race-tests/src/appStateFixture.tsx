@@ -48,6 +48,7 @@ interface AppStateFixtureApi {
   projectCount: () => number
   resolveProject: (index: number, projectId: string) => void
   ask: () => Promise<string>
+  ackQueuedSend: () => void
 }
 
 const subscriptions: ChatSubscription[] = []
@@ -56,7 +57,8 @@ const sendRequests: Array<{ attachments: ChatAttachment[]; resolve: (value: unkn
 let acceptedSends = 0
 const projectRequests: Array<{ resolve: (value: unknown) => void }> = []
 const landingFixture = new URLSearchParams(window.location.search).get("view") === "landing"
-const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta"] : []
+const unavailableProject = "/fixture/unavailable"
+const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta", unavailableProject] : []
 const createdBranchBases: string[] = []
 
 const fixtureApi: AppStateFixtureApi = {
@@ -95,6 +97,7 @@ const fixtureApi: AppStateFixtureApi = {
   projectCount: () => projectRequests.length,
   resolveProject: (index, projectId) => projectRequests[index]?.resolve({ projectId }),
   ask: async () => "",
+  ackQueuedSend: () => sendRequests[0]?.resolve({ chatId: "chat-a", queued: true, queuedMessageId: "queued-row" }),
 }
 
 Object.assign(AppSocket.prototype, {
@@ -104,12 +107,13 @@ Object.assign(AppSocket.prototype, {
     listener("connected")
     return () => {}
   },
-  subscribe(topic: { type: string; chatId?: string }, listener: (snapshot: unknown) => void) {
+  subscribe(topic: { type: string; chatId?: string; projectId?: string }, listener: (snapshot: unknown) => void) {
     const subscription = { topic, listener, active: true }
     subscriptions.push(subscription)
     if (topic.type === "sidebar") listener({ projectGroups: projectPaths.map(localPath => ({
       groupKey: localPath.split("/").at(-1), localPath, chats: [],
     })) })
+    if (topic.type === "project-git") listener({ status: "ready", branchName: `branch-${topic.projectId}`, files: [] })
     if (topic.type === "local-projects") {
       listener({
         machine: { id: "local", displayName: "Fixture", platform: "linux" },
@@ -121,6 +125,11 @@ Object.assign(AppSocket.prototype, {
     }
   },
   command(command: { type: string; chatId?: string; beforeCursor?: string; localPath?: string; attachments?: ChatAttachment[]; baseBranchName?: string }) {
+    if (command.localPath === unavailableProject) {
+      // The saved sidebar ID is known, but there is no draft yet when the user sends.
+      if (command.type === "chat.ensureDraft") return new Promise(() => {})
+      if (command.type === "project.open") return Promise.reject(new Error("Fixture project open failed"))
+    }
     if (command.type === "chat.ensureDraft") {
       const projectId = command.localPath!.split("/").at(-1)
       return Promise.resolve({ chatId: `draft-${projectId}`, projectId })
@@ -206,6 +215,8 @@ export function mountAppStateFixture(root: HTMLElement) {
       activeChatId: state.activeChatId,
       snapshotChatId: state.chatSnapshot?.runtime.chatId ?? null,
       transcriptIds: state.messages.map((message) => message.id),
+      queuedIds: state.queuedMessages.map(row => row.id),
+      isProcessing: state.isProcessing,
       isHistoryLoading: state.isHistoryLoading,
       hasOlderHistory: state.hasOlderHistory,
       commandError: state.commandError,
@@ -227,12 +238,14 @@ export function mountAppStateFixture(root: HTMLElement) {
     return (
       <main>
         <div data-testid="fixture-ready" />
+        <output data-testid="diff-branch">{state.chatDiffSnapshot?.branchName ?? ""}</output>
         <button onClick={() => setShowFiles(!showFiles)}>Toggle Files</button>
         <button onClick={() => void state.handleSignOut()}>Sign out</button>
         <button onClick={() => void handleCreateBranch()}>Create branch</button>
         {showFiles && <TooltipProvider><FilesPanel projectId="project-a" /></TooltipProvider>}
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
+        <button type="button" data-testid="send-prompt" onClick={() => void state.handleSend("content-existing")}>Send</button>
         <button
           type="button"
           data-testid="load-history"

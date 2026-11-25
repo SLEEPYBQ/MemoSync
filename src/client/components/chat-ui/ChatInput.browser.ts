@@ -10,6 +10,7 @@ import { KeybindingsManager } from "../../../server/keybindings"
 import { getProjectUploadDir } from "../../../server/paths"
 import { handleProjectUpload, handleProjectUploadDelete } from "../../../server/server"
 import { TerminalManager } from "../../../server/terminal-manager"
+import { DraftUploadReceipts } from "../../../server/uploads"
 import { createWsRouter, type ClientState } from "../../../server/ws-router"
 import { startMountedRaceHarness } from "../../test-utils/mountedRaceHarness"
 
@@ -165,6 +166,7 @@ describe("mounted ChatInput submission races", () => {
     const target = await openFixture()
     const dir = await mkdtemp(join(tmpdir(), "memosync-upload-refusal-"))
     const store = new EventStore(join(dir, "data"))
+    const receipts = new DraftUploadReceipts()
     const agent = new AgentCoordinator({
       store, onStateChange() {}, getMemorySettings: () => ({ enabled: false, learn: false }),
       generateTitle: async () => ({ title: "Fixture", usedFallback: true, failureMessage: null }),
@@ -192,7 +194,7 @@ describe("mounted ChatInput submission races", () => {
         const url = new URL(req.url())
         const request = new Request(url, { method: req.method(), headers: req.headers(), body: req.postDataBuffer() })
         if (req.method() === "DELETE") deletes.push(url.pathname)
-        const result = await handleProjectUpload(request, url, store) ?? await handleProjectUploadDelete(request, url, store)
+        const result = await handleProjectUpload(request, url, store, receipts) ?? await handleProjectUploadDelete(request, url, store, receipts)
         await route.fulfill({ status: result?.status ?? 404, json: await result?.json() })
       }
       await target.route("**/uploads**", routeUploads)

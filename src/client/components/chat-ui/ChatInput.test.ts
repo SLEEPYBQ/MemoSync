@@ -3,8 +3,8 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { TooltipProvider } from "../ui/tooltip"
-import { PROVIDERS } from "../../../shared/types"
-import { ChatInput, composerModelOptions, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
+import { PROVIDERS, type ChatAttachment } from "../../../shared/types"
+import { bindLandingUpload, ChatInput, composerModelOptions, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
 import { isRuntimeCommandSelection } from "../../../shared/runtime-commands"
 
 function createClipboardItem(args: {
@@ -43,6 +43,29 @@ describe("createUploadFormData", () => {
       const uploaded = form.get("files") as File
       expect(uploaded.name).toBe("notes.txt")
       expect(await uploaded.text()).toBe(content)
+    }
+  })
+})
+
+describe("landing upload ownership", () => {
+  const upload: ChatAttachment = {
+    id: "fixture-upload", kind: "file", displayName: "notes.txt", mimeType: "text/plain", size: 1,
+    absolutePath: "/fixture/alpha/.memosync/uploads/notes-1.txt", relativePath: "./.memosync/uploads/notes-1.txt",
+    contentUrl: "/api/projects/retired/uploads/notes-1.txt/content",
+  }
+  test.each(["C:\\fixture\\alpha", "\\\\fixture-host\\share\\alpha"])("retargets the stored filename under the exact Windows workspace %s", root => {
+    const item = { ...upload, absolutePath: `${root}\\.memosync\\uploads\\notes-1.txt` }
+    expect(bindLandingUpload(item, root, "current")).toEqual({ ...item, contentUrl: "/api/projects/current/uploads/notes-1.txt/content" })
+  })
+  test("rejects foreign workspaces and URLs outside the first-party upload route", () => {
+    for (const overrides of [
+      { absolutePath: "/fixture/beta/.memosync/uploads/notes-1.txt" },
+      { relativePath: "./.memosync/uploads/other.txt" },
+      { contentUrl: "https://example.invalid/api/projects/retired/uploads/notes-1.txt/content" },
+      { contentUrl: "/api/projects/retired/uploads/bad%2Fname/content" },
+      { contentUrl: "/api/projects/retired/uploads/notes-1.txt/content?other=workspace" },
+    ]) {
+      expect(bindLandingUpload({ ...upload, ...overrides }, "/fixture/alpha", "current")).toBeNull()
     }
   })
 })

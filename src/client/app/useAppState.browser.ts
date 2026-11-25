@@ -33,12 +33,15 @@ interface AppStateFixtureApi {
   projectCount: () => number
   resolveProject: (index: number, projectId: string) => void
   ask: () => Promise<string>
+  ackQueuedSend: () => void
 }
 
 interface RenderedAppState {
   activeChatId: string | null
   snapshotChatId: string | null
   transcriptIds: string[]
+  queuedIds: string[]
+  isProcessing: boolean
   isHistoryLoading: boolean
   hasOlderHistory: boolean
   commandError: string | null
@@ -60,8 +63,13 @@ afterAll(async () => {
   await harness?.close()
 })
 
-async function openFixture() {
+async function openFixture(withClock = false) {
   page = await harness.openPage("app-state")
+  if (withClock) {
+    // Start the tested document with controlled timers, before its React code runs.
+    await page.clock.install({ time: "2026-01-01T00:00:00Z" })
+    await page.reload()
+  }
   await page.waitForFunction(() => {
     const text = document.querySelector('[data-testid="app-state"]')?.textContent
     return Boolean(text && JSON.parse(text).activeChatId === "chat-a")
@@ -304,21 +312,24 @@ test.each([false, true])("an old landing send cannot redirect after picking anot
   expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location())).toBe(`/chat/new-${selected}`)
 })
 
-test.each([false, true])("an edited landing draft retires the sent upload without losing its bytes (later file=%s)", async laterFile => {
-  const target = await openLanding()
-  const folder = await mkdtemp(join(tmpdir(), "memosync-landing-ack-"))
+async function withLandingUploads(
+  target: Page,
+  projectId: string,
+  run: (uploads: { attach: (name: string) => Promise<void>; deleted: string[]; folder: string }) => Promise<void>,
+) {
+  const folder = await mkdtemp(join(tmpdir(), "memosync-landing-upload-"))
   const deleted: string[] = []
   try {
-    await target.route("**/api/projects/alpha/uploads**", async route => {
+    await target.route(`**/api/projects/${projectId}/uploads**`, async route => {
       const request = route.request()
       if (request.method() === "POST") {
         const form = await new Response(request.postDataBuffer(), { headers: request.headers() }).formData()
         const file = form.get("files") as File
         const attachment = await persistProjectUpload({
-          localPath: folder, projectId: "alpha", fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
+          localPath: folder, projectId, fileName: file.name, bytes: new Uint8Array(await file.arrayBuffer()),
         })
         // The browser sees the synthetic workspace; its bytes live only in this test's temp directory.
-        return route.fulfill({ json: { attachments: [{ ...attachment, absolutePath: `/fixture/alpha/${attachment.relativePath.slice(2)}` }] } })
+        return route.fulfill({ json: { attachments: [{ ...attachment, absolutePath: `/fixture/${projectId}/${attachment.relativePath.slice(2)}` }] } })
       }
       const storedName = decodeURIComponent(new URL(request.url()).pathname.split("/uploads/")[1].split("/")[0])
       if (request.method() === "DELETE") {
@@ -333,6 +344,38 @@ test.each([false, true])("an edited landing draft retires the sent upload withou
       await target.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor()
       await target.locator('button[aria-label="Send"]:enabled').waitFor()
     }
+    await run({ attach, deleted, folder })
+  } finally {
+    await rm(folder, { recursive: true, force: true })
+  }
+}
+
+test("a landing upload remains removable when project.open fails before chat.send", async () => {
+  const target = await openLanding()
+  await pickProject(target, "alpha", "unavailable")
+  await withLandingUploads(target, "unavailable", async ({ attach, deleted, folder }) => {
+    await attach("unsent.txt")
+    await target.getByRole("button", { name: "Send", exact: true }).click()
+    await target.getByText("Fixture project open failed", { exact: true }).waitFor()
+    expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.sendCount())).toBe(0)
+    const stored = await resolveExistingProjectUpload(folder, "unsent.txt")
+    expect(stored.ok && await Bun.file(stored.path).text()).toBe("fixture bytes: unsent.txt")
+
+    const remove = target.getByRole("button", { name: "Remove unsent.txt", exact: true })
+    const [response] = await Promise.all([
+      target.waitForResponse(r => r.request().method() === "DELETE" && new URL(r.url()).pathname === "/api/projects/unavailable/uploads/unsent.txt"),
+      remove.click(),
+    ])
+    await remove.waitFor({ state: "detached" })
+    expect(await response.json()).toEqual({ ok: true })
+    expect(deleted).toEqual(["unsent.txt"])
+    expect((await resolveExistingProjectUpload(folder, "unsent.txt")).ok).toBe(false)
+  })
+})
+
+test.each([false, true])("an edited landing draft retires the sent upload without losing its bytes (later file=%s)", async laterFile => {
+  const target = await openLanding()
+  await withLandingUploads(target, "alpha", async ({ attach, deleted }) => {
     const input = target.locator("textarea")
     await input.fill("First synthetic send")
     await attach("notes.txt")
@@ -368,8 +411,137 @@ test.each([false, true])("an edited landing draft retires the sent upload withou
     expect(response).toEqual([200, "fixture bytes: notes.txt"])
     expect(restoredAfterAck).toBe(0)
     expect(deleted).toEqual(laterFile ? ["later.txt"] : [])
+  })
+})
+
+test("migrating legacy landing attachments in one tab keeps another tab's newer draft", async () => {
+  const first = await openLanding()
+  await pickProject(first, "alpha", "beta")
+  // Both tabs sit on project beta before either edits anything.
+  let second: Page | undefined
+  try {
+    ;[second] = await Promise.all([
+      first.waitForEvent("popup"),
+      first.evaluate(() => { window.open("about:blank", "_blank") }),
+    ])
+    second.setDefaultTimeout(5_000)
+    // Popups share the opener's storage but not its network routes.
+    await second.route("**/api/providers", route => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ data: PROVIDERS }),
+    }))
+    await second.goto(first.url())
+    await second.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await second.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })?.__appStateFixture?.chatSubscriptionCount("draft-alpha") > 0)
+    await pickProject(second, "alpha", "beta")
+
+    // The first tab now writes a newer draft the second tab's memory never sees.
+    await first.locator("textarea").fill("fresh text only the first tab has")
+    await first.waitForFunction(() => localStorage.getItem("chat-input-drafts")?.includes("fresh text only the first tab has"))
+
+    // A pre-upgrade snapshot kept its landing attachments under the project id.
+    await first.evaluate(() => {
+      const key = "chat-input-drafts"
+      const persisted = JSON.parse(localStorage.getItem(key) ?? '{"state":{},"version":0}')
+      persisted.state.attachmentDrafts = {
+        ...(persisted.state.attachmentDrafts ?? {}),
+        "landing:alpha": [{
+          id: "legacy-chip", kind: "file", displayName: "legacy.txt",
+          absolutePath: "/fixture/alpha/.memosync/uploads/legacy.txt",
+          relativePath: "./.memosync/uploads/legacy.txt",
+          contentUrl: "/api/projects/alpha/uploads/legacy.txt/content",
+          mimeType: "text/plain", size: 1,
+        }],
+      }
+      localStorage.setItem(key, JSON.stringify(persisted))
+    })
+
+    // Navigating the second tab to the legacy project migrates that bucket.
+    await pickProject(second, "beta", "alpha")
+    await second.waitForFunction(() => {
+      const persisted = JSON.parse(localStorage.getItem("chat-input-drafts") ?? "{}")
+      return persisted.state?.attachmentDrafts?.["landing:path:/fixture/alpha"]?.some((item: { id: string }) => item.id === "legacy-chip")
+    })
+
+    const persisted = await second.evaluate(() => JSON.parse(localStorage.getItem("chat-input-drafts")!) as {
+      state: { drafts: Record<string, string>; attachmentDrafts: Record<string, Array<{ id: string }>> }
+    })
+    // The migration merged only its own keys; the first tab's newer text survived.
+    expect(Object.values(persisted.state.drafts)).toContain("fresh text only the first tab has")
+    expect(persisted.state.attachmentDrafts["landing:alpha"] ?? []).toEqual([])
+
+    // Reloading the first tab restores its own edit, not an empty composer.
+    await first.reload()
+    await first.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await first.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })?.__appStateFixture?.chatSubscriptionCount("draft-alpha") > 0)
+    await pickProject(first, "alpha", "beta")
+    expect(await first.locator("textarea").inputValue()).toBe("fresh text only the first tab has")
   } finally {
-    await rm(folder, { recursive: true, force: true })
+    await second?.close()
+  }
+})
+
+test("a completed migration reaches the second tab and a later edit cannot clobber it", async () => {
+  const first = await openLanding()
+  await pickProject(first, "alpha", "beta")
+  let second: Page | undefined
+  try {
+    ;[second] = await Promise.all([
+      first.waitForEvent("popup"),
+      first.evaluate(() => { window.open("about:blank", "_blank") }),
+    ])
+    second.setDefaultTimeout(5_000)
+    await second.route("**/api/providers", route => route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ data: PROVIDERS }),
+    }))
+    await second.goto(first.url())
+    await second.getByTestId("fixture-ready").waitFor({ state: "attached" })
+    await second.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })?.__appStateFixture?.chatSubscriptionCount("draft-alpha") > 0)
+    await pickProject(second, "alpha", "beta")
+
+    // Seed the pre-upgrade legacy bucket, then migrate it by visiting alpha in the first tab.
+    await first.evaluate(() => {
+      const key = "chat-input-drafts"
+      const persisted = JSON.parse(localStorage.getItem(key) ?? '{"state":{},"version":0}')
+      persisted.state.attachmentDrafts = {
+        ...(persisted.state.attachmentDrafts ?? {}),
+        "landing:alpha": [{
+          id: "legacy-chip", kind: "file", displayName: "legacy.txt",
+          absolutePath: "/fixture/alpha/.memosync/uploads/legacy.txt",
+          relativePath: "./.memosync/uploads/legacy.txt",
+          contentUrl: "/api/projects/alpha/uploads/legacy.txt/content",
+          mimeType: "text/plain", size: 1,
+        }],
+      }
+      localStorage.setItem(key, JSON.stringify(persisted))
+    })
+    await pickProject(first, "beta", "alpha")
+    await first.waitForFunction(() => {
+      const persisted = JSON.parse(localStorage.getItem("chat-input-drafts") ?? "{}")
+      return persisted.state?.attachmentDrafts?.["landing:path:/fixture/alpha"]?.some((item: { id: string }) => item.id === "legacy-chip")
+    })
+
+    // The second tab never performed the move, yet navigating to alpha shows the chip.
+    await pickProject(second, "beta", "alpha")
+    await second.getByRole("button", { name: "Remove legacy.txt", exact: true }).waitFor()
+
+    // A text edit in the second tab persists through the merge; the migrated bucket survives.
+    await pickProject(second, "alpha", "beta")
+    await second.locator("textarea").fill("second tab text")
+    await second.waitForFunction(() => localStorage.getItem("chat-input-drafts")?.includes("second tab text"))
+    const persisted = await first.evaluate(() => JSON.parse(localStorage.getItem("chat-input-drafts")!) as {
+      state: { attachmentDrafts: Record<string, Array<{ id: string }>> }
+    })
+    expect(persisted.state.attachmentDrafts["landing:path:/fixture/alpha"]?.map(item => item.id)).toEqual(["legacy-chip"])
+    expect(persisted.state.attachmentDrafts["landing:alpha"] ?? []).toEqual([])
+
+    // Re-entering alpha in the first tab still renders the migrated attachment.
+    await pickProject(first, "alpha", "beta")
+    await pickProject(first, "beta", "alpha")
+    await first.getByRole("button", { name: "Remove legacy.txt", exact: true }).waitFor()
+  } finally {
+    await second?.close()
   }
 })
 
@@ -421,6 +593,18 @@ describe("mounted useAppState history races", () => {
     await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.location() === "/chat/draft-b")
   })
 
+  test("an unresolved chat never displays Git from the previously selected project", async () => {
+    const target = await openFixture()
+    await emitChat(target, "chat-a", 0, snapshot("chat-a", null, false, []))
+    const branch = target.getByTestId("diff-branch")
+    await branch.filter({ hasText: "branch-project-chat-a" }).waitFor()
+
+    await activateChat(target, "chat-b", 0)
+    expect(await branch.textContent()).toBe("")
+    await emitChat(target, "chat-b", 0, snapshot("chat-b", null, false, []))
+    await branch.filter({ hasText: "branch-project-chat-b" }).waitFor()
+  })
+
   test("late project.open cannot replace the new chat's selected project", async () => {
     const target = await openFixture()
     await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
@@ -445,6 +629,45 @@ describe("mounted useAppState history races", () => {
     await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.setChatId(null))
     await target.waitForFunction(() => JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).activeChatId === null)
     expect(await target.evaluate(() => (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ask())).toBe("No active chat")
+  })
+
+  test.each(["ack first", "removed before ack", "dispatched before ack"])("queued send: %s", async timing => {
+    const target = await openFixture(true)
+    const baseline = snapshot("chat-a", null, false, ["existing"])
+    await emitChat(target, "chat-a", 0, baseline)
+    // React may commit asynchronously; application timers must not advance.
+    // In particular the ordinary send ACK's 300 ms idle fallback cannot help.
+    await target.clock.pauseAt("2026-01-01T01:00:00Z")
+    await target.getByTestId("send-prompt").click()
+    await target.waitForFunction(() => (window as unknown as { __appStateFixture: AppStateFixtureApi })
+      .__appStateFixture.promptContents().length === 2)
+    const ack = async () => {
+      expect((await readState(target)).isProcessing).toBe(true)
+      const atAck = await target.evaluate(() => {
+        (window as unknown as { __appStateFixture: AppStateFixtureApi }).__appStateFixture.ackQueuedSend()
+        return performance.now()
+      })
+      await target.waitForFunction(() => !JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!).isProcessing)
+      expect(await target.evaluate(() => performance.now())).toBe(atAck)
+    }
+    const waitForQueue = (ids: string[]) => target.waitForFunction(expected => {
+      const state: RenderedAppState = JSON.parse(document.querySelector('[data-testid="app-state"]')!.textContent!)
+      return JSON.stringify(state.queuedIds) === JSON.stringify(expected)
+    }, ids)
+    if (timing === "ack first") { await ack(); await expectTranscript(target, ["existing"]) }
+    const row = { id: "queued-row", content: "content-existing", attachments: [], createdAt: 2 }
+    await emitChat(target, "chat-a", 0, { ...baseline, queuedMessages: [row] })
+    await waitForQueue([row.id])
+    // This snapshot could be a deletion or FIFO dispatch from another window.
+    const dispatched = timing === "dispatched before ack"
+    const messages = dispatched
+      ? [...baseline.messages, { ...baseline.messages[0]!, _id: row.id }]
+      : baseline.messages
+    await emitChat(target, "chat-a", 0, { ...baseline, messages })
+    await waitForQueue([])
+    if (timing !== "ack first") await ack()
+    await expectTranscript(target, dispatched ? ["existing", row.id] : ["existing"])
+    expect((await readState(target)).queuedIds).toEqual([])
   })
 
   test("keeps paged transcript identity during streaming while retaining same-ID content changes", async () => {
@@ -578,6 +801,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-b",
       snapshotChatId: "chat-b",
       transcriptIds: ["b-recent"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,
@@ -611,6 +836,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-b",
       snapshotChatId: "chat-b",
       transcriptIds: ["b-recent"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,
@@ -644,6 +871,8 @@ describe("mounted useAppState history races", () => {
       activeChatId: "chat-a",
       snapshotChatId: "chat-a",
       transcriptIds: ["a-current"],
+      queuedIds: [],
+      isProcessing: false,
       isHistoryLoading: true,
       hasOlderHistory: true,
       commandError: null,

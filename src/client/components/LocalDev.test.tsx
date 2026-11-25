@@ -3,8 +3,11 @@ import { createElement } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { MemoryRouter } from "react-router-dom"
 import { PROVIDERS, type LocalProjectsSnapshot } from "../../shared/types"
+import { runMountedRaceSuite } from "../test-utils/runMountedRaceSuite"
 import { LandingProjectMenu, LocalDevContent } from "./LocalDev"
 import { TooltipProvider } from "./ui/tooltip"
+
+runMountedRaceSuite("mounted LocalDev landing attachments", new URL("./LocalDev.browser.ts", import.meta.url))
 
 const emptySnapshot: LocalProjectsSnapshot = {
   machine: {
