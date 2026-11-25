@@ -452,7 +452,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
                   )
                 })}
               </div>
-              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:restoreBeforeMoving")}</p> : null}
+              {item.status === "archived" ? <p className="mt-1 text-[11px] text-muted-foreground">{t(item.invalidatedRevision ? "memory:revisionWithdrawn" : "memory:restoreBeforeMoving")}</p> : null}
               {expiryDirty ? <p className="mt-1 text-[11px] text-muted-foreground">{t("memory:saveExpiryBeforeScopeOrSensitivity")}</p> : null}
             </div> : null}
 
@@ -538,7 +538,7 @@ export function MemoryDetailPanel({ item, allItems, chatId, onClose, onUpdated, 
             {error ? <p className="text-xs text-destructive">{translateUiText(error)}</p> : null}
           </div>
         ) : (
-          <MemoryHistoryPanel itemId={item.id} onReverted={onUpdated} surface={surface} readOnly={Boolean(item.team || readonly || previewDemo)} />
+          <MemoryHistoryPanel key={item.id} item={item} onReverted={onUpdated} surface={surface} readOnly={Boolean(item.team || readonly || previewDemo)} />
         )}
       </div>
     </div>

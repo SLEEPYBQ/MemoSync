@@ -22,9 +22,9 @@ const ROW_WRAPPER_CLASS = "mx-auto w-full max-w-[800px] pb-5"
 // Renders the same pipeline the app uses: buildResolvedTranscriptRows feeding
 // ChatTranscriptRow inside the per-row wrapper — keep in sync with
 // ChatTranscriptViewport's renderItem.
-function renderTranscript(messages: HydratedTranscriptMessage[]) {
+function renderTranscript(messages: HydratedTranscriptMessage[], isLoading = false) {
   const rows = buildResolvedTranscriptRows(messages, {
-    isLoading: false,
+    isLoading,
     latestToolIds: { AskUserQuestion: null, ExitPlanMode: null, TodoWrite: null },
   })
   return renderToStaticMarkup(
@@ -47,6 +47,56 @@ function renderTranscript(messages: HydratedTranscriptMessage[]) {
     </MemoryBoardLauncherProvider>
   )
 }
+
+test("a saved prompt without a response explains uncertainty, not a failure or an automatic retry", () => {
+  const saved: TranscriptEntry = { kind: "user_prompt", _id: "queued-prompt", createdAt: 1, content: "Fixture task" }
+  const next: TranscriptEntry = { ...saved, _id: "next", createdAt: 2 }
+  const notice = "No response was recorded for this message."
+  const render = (entries: TranscriptEntry[], busy = false) => renderTranscript(processTranscriptMessages(entries), busy)
+  expect(render([saved])).toContain(notice)
+  expect(render([saved, next], true)).toContain(notice) // Starting the next turn does not explain the previous one.
+  expect(render([saved], true)).not.toContain(notice)
+  expect(render([{ ...saved, _id: "optimistic:pending" }])).not.toContain(notice)
+  expect(render([saved, { ...next, _id: "optimistic:pending" }], true)).not.toContain(notice)
+  for (const outcome of [
+    { kind: "result", isError: true, subtype: "error", durationMs: 0, result: "Known boot failure" },
+    { kind: "assistant_text", text: "Known reply" },
+    { kind: "interrupted", hidden: true },
+  ] as const) {
+    expect(render([saved, { _id: "outcome", createdAt: 2, ...outcome }])).not.toContain(notice)
+  }
+})
+
+test("startup records before the first Codex reply do not hide an unanswered prompt after restart", () => {
+  const entries: TranscriptEntry[] = [
+    { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Fixture task" },
+    { _id: "init", createdAt: 2, kind: "system_init", provider: "codex", model: "fixture", tools: [], agents: [], slashCommands: [], mcpServers: [] },
+    { _id: "account", createdAt: 3, kind: "account_info", accountInfo: {} },
+    { _id: "status", createdAt: 4, kind: "status", status: "requesting" },
+    { _id: "usage", createdAt: 5, kind: "context_window_updated", usage: { usedTokens: 10, maxTokens: 100, compactsAutomatically: false } },
+  ]
+  const notice = "No response was recorded for this message."
+  expect(renderTranscript(processTranscriptMessages(entries))).toContain(notice)
+  expect(renderTranscript(processTranscriptMessages(entries), true)).not.toContain(notice)
+  expect(renderTranscript([...processTranscriptMessages(entries), createToolMessage("tool")])).not.toContain(notice)
+})
+
+test("a memory gate accounts for a parked or dismissed turn, not a response after approval", () => {
+  const entries: TranscriptEntry[] = [
+    { _id: "prompt", createdAt: 1, kind: "user_prompt", content: "Fixture task" },
+    { _id: "preview", createdAt: 2, kind: "memory_preview", previewId: "gate", memories: [] },
+  ]
+  const responseUnrecorded = (decision?: "go_on" | "dismiss") => {
+    const messages = processTranscriptMessages(decision ? [...entries, {
+      _id: "decision", createdAt: 3, kind: "memory_preview_decision", previewId: "gate", decision,
+    }] : entries)
+    const row = buildResolvedTranscriptRows(messages, { isLoading: false, latestToolIds: {} })[0]
+    return row?.kind === "single" && row.responseUnrecorded
+  }
+  expect(responseUnrecorded()).toBe(false)
+  expect(responseUnrecorded("dismiss")).toBe(false)
+  expect(responseUnrecorded("go_on")).toBe(true)
+})
 
 function countRowWrappers(html: string) {
   return html.split(ROW_WRAPPER_CLASS).length - 1

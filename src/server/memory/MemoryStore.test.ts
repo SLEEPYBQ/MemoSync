@@ -127,6 +127,29 @@ describe('MemoryStore', () => {
     expect(store.wasMemorySuppressed(content, { scope: 'personal' })).toBe(true);
   });
 
+  it('recognizes the unmarked archive and stray receipt written by older audit corrections', () => {
+    const db = new Database(':memory:');
+    applySchema(db);
+    const local = new MemoryStore(db);
+    const input = { scope: 'personal' as const, type: 'fact' as const };
+    const target = local.create({ ...input, content: 'Synthetic original' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) local.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'chat', turn });
+    const draft = local.createRevisionProposal({ ...input, content: 'Synthetic legacy revision' }, target.id, { actor: 'system' }, {
+      traceEvidence: local.recentTraceEvidence(target.id).map(row => row.seq),
+    })!;
+    expect(local.recordTraceCorrection(target.id, { sessionId: 'chat', turn: 2, label: 'operational' }).invalidatedIds).toEqual([draft.id]);
+    // Recreate only the old on-disk archive representation. Keep the original
+    // target, correction, relation and status history from the real store.
+    db.query("UPDATE memory_events SET meta = NULL WHERE memory_id = ? AND kind = 'status'").run(draft.id);
+    db.query(`INSERT OR IGNORE INTO memory_revocations (memory_id, fingerprint, scope, owner_id, revoked_at)
+      VALUES (?, ?, 'personal', NULL, ?)`).run(draft.id, createHash('sha256').update(draft.content.toLowerCase()).digest('hex'), draft.createdAt);
+    local.recordTraceCorrection(target.id, { sessionId: 'chat', turn: 2, label: null });
+    local.update(draft.id, { topic: 'Synthetic edit' }, { actor: 'user' });
+    expect(local.wasMemorySuppressed(draft.content, input)).toBe(false);
+    expect(() => local.update(draft.id, { status: 'active' }, { actor: 'user' })).toThrow(RevisionConflictError);
+    db.close();
+  });
+
   it('honors explicit archived status alongside metadata after expiration', () => {
     const content = 'Synthetic archived intent';
     const item = store.create({ content, scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
@@ -1324,15 +1347,15 @@ describe('reinforce + revision plumbing (self-evolution)', () => {
     });
   }
 
-  it('rejects invalid captured evidence even if a revision is pending again', () => {
+  it('rejects stale evidence when a soft-dismissed revision is restored for review', () => {
     const store = freshStore();
     const target = store.create({ content: 'Synthetic original rule', scope: 'personal', type: 'constraint' }, { actor: 'user' });
     for (let turn = 1; turn <= 3; turn++) store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'evidence-chat', turn });
     const traceEvidence = store.recentTraceEvidence(target.id, 3).map(row => row.seq);
     const proposal = store.createRevisionProposal({ content: 'Synthetic replacement', scope: 'personal', type: 'constraint' }, target.id, { actor: 'system' }, { traceEvidence })!;
+    store.dismissCandidate(proposal.id, { actor: 'user' });
     store.recordTraceCorrection(target.id, { sessionId: 'evidence-chat', turn: 2, label: 'not_applicable' });
-    expect(store.getById(proposal.id)?.status).toBe('archived');
-    store.update(proposal.id, { status: 'candidate' }, { actor: 'user' });
+    expect(store.restoreDismissedCandidate(proposal.id, { actor: 'user' }).status).toBe('candidate');
     const state = () => [target.id, proposal.id].map(id => ({ item: store.getById(id), events: store.getEvents(id) }));
     const before = state();
     expect(() => store.acceptRevision(proposal.id, { actor: 'user' }, { content: 'Must not save' })).toThrow(RevisionConflictError);

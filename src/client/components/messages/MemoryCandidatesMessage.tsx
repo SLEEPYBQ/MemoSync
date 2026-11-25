@@ -370,9 +370,7 @@ export function MemoryCandidateCard({
 
   // Reconcile against the live store: if this item was already resolved
   // elsewhere (Board, or a reload of a prior session), prefer that truth.
-  // 'archived' means it WAS accepted and later archived (a candidate can only
-  // reach archived through active) — rendering that as "dismissed" rewrote
-  // the review's history.
+  // A withdrawn revision is handled separately below: it was not accepted.
   const resolved: ResolvedState =
     storeStatus === "active" || storeStatus === "archived"
       ? "accepted"
@@ -525,6 +523,9 @@ export function MemoryCandidateCard({
     }
   }
 
+  if (candidate.invalidatedRevision) {
+    return <div className={MEMORY_CARD}>{t("memory:revisionWithdrawn")}</div>
+  }
   if (resolved !== "pending") {
     // Auto mode applied this proposal without asking — monitoring stays on:
     // the card says so and offers the one-click inverse. A revert puts the

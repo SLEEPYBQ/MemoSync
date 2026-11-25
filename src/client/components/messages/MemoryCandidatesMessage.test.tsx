@@ -32,6 +32,17 @@ test("accepted and auto-applied candidates retain their expiry date", () => {
   }
 })
 
+test("a revision withdrawn after an audit correction is neither accepted nor dismissed", () => {
+  const candidate = {
+    id: "M-02", content: "Synthetic revision.", scope: "personal", type: "constraint", status: "archived",
+    abstractionLevel: "concrete", sensitive: false, invalidatedRevision: true,
+  } as MemoryItem
+  const html = renderToStaticMarkup(<MemoryCandidateCard candidate={candidate} allowRestore />)
+  expect(html).toContain("withdrawn after an audit correction")
+  expect(html).not.toContain("saved as")
+  expect(html).not.toContain("Restore for review")
+})
+
 test("manual candidate edits explicitly clear a removed sensitive detail", () => {
   expect(buildCandidateDraftPatch(" sanitized ", "   ")).toEqual({
     content: "sanitized",

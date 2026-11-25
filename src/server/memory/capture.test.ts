@@ -86,6 +86,33 @@ describe('createCaptureService (routing gate, REDESIGN D4)', () => {
     expect(memory.store.getById(archived.id)?.status).toBe('archived');
   });
 
+  it('can capture text from a revision withdrawn after an audit correction', async () => {
+    memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
+    const input = { scope: 'personal' as const, type: 'constraint' as const };
+    const target = memory.store.create({ ...input, content: 'Synthetic audit target' }, { actor: 'user' });
+    for (let turn = 1; turn <= 3; turn++) memory.store.recordTraceLabel(target.id, 'violated', { actor: 'agent', sessionId: 'chat', turn });
+    const content = 'Use the synthetic test adapter.';
+    const draft = memory.store.createRevisionProposal({ ...input, content }, target.id, { actor: 'system' }, {
+      traceEvidence: memory.store.recentTraceEvidence(target.id).map(row => row.seq),
+    })!;
+    expect(memory.store.recordTraceCorrection(target.id, { sessionId: 'chat', turn: 2, label: 'operational' }).invalidatedIds).toEqual([draft.id]);
+
+    const { call } = stubCaller([{ decisions: [{ index: 0, route: 'new', targetId: null }] }]);
+    const capture = createCaptureService({ memory, callJson: call });
+    const result = await capture.routeProposal({ ...input, content }, { sessionId: 'later-chat', turn: 1 });
+    expect(result?.created).toMatchObject([{ content, status: 'candidate' }]);
+    expect(memory.db.query('SELECT 1 FROM memory_revocations WHERE memory_id = ?').get(draft.id)).toBeNull();
+    expect(memory.store.getById(draft.id)?.status).toBe('archived');
+
+    // A different, accepted copy of the same text is then deliberately
+    // superseded by Auto mode. Its system archive must still suppress repeats.
+    const accepted = memory.store.acceptRevision(result!.created[0]!.id, { actor: 'user' }).updated;
+    const replacement = memory.store.createRevisionProposal({ ...input, content: 'Use a different synthetic adapter.' }, accepted.id, { actor: 'agent' })!;
+    memory.store.acceptRevision(replacement.id, { actor: 'system' });
+    expect(memory.store.wasMemorySuppressed(content, input)).toBe(true);
+    expect(await capture.routeProposal({ ...input, content }, { sessionId: 'later-chat', turn: 2 })).toMatchObject({ surfaced: 0, dropped: 1 });
+  });
+
   it('preserves a temporary deadline through hook and branch extraction and same-turn retry', async () => {
     memory = new MemoryService({ dbPath: ':memory:', dataDir: dir });
     const { call } = stubCaller([

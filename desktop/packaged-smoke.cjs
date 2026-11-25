@@ -30,6 +30,44 @@ async function command(page, value) {
   }), value)
 }
 
+async function checkDirtyQuit(app, page, workspace) {
+  await page.getByRole("button", { name: "Files", exact: true }).click()
+  await page.getByRole("button", { name: "README.md", exact: true }).click()
+  await page.getByTitle("Edit source").click()
+  const editor = page.locator(".cm-content[contenteditable=true]")
+  const draft = "Synthetic unsaved desktop draft"
+  await editor.fill(draft)
+  const save = page.getByRole("button", { name: /^Save \(/ })
+  await save.waitFor()
+
+  // Drive Electron's actual quit and Files' beforeunload. Only answer the
+  // blocking OS dialog in-process; no accessibility permissions on CI runners.
+  page.once("dialog", () => {}) // Don't let Playwright auto-accept beforeunload over CDP.
+  const options = await app.evaluate(async ({ app, Menu, dialog }) => {
+    const original = dialog.showMessageBoxSync
+    let timer
+    try {
+      return await new Promise((resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("Dirty Quit did not ask to discard")), 10_000)
+        dialog.showMessageBoxSync = (_owner, options) => { resolve(options); return options.cancelId }
+        if (process.platform === "darwin") Menu.sendActionToFirstResponder("terminate:")
+        else app.quit()
+      })
+    } finally { clearTimeout(timer); dialog.showMessageBoxSync = original }
+  })
+  assert.match(options.message, /unsaved file changes|未保存的文件更改/)
+  assert.match(options.buttons[options.cancelId], /^(Cancel|取消)$/)
+  assert.equal(options.defaultId, options.cancelId)
+  const win = await app.browserWindow(page)
+  assert.equal(await win.evaluate(w => w.isVisible() && w.isEnabled()), true)
+  assert.equal(await editor.innerText(), draft)
+  const resumed = `${draft} after Cancel`
+  await editor.fill(resumed)
+  await save.click()
+  await save.waitFor({ state: "hidden" })
+  assert.equal(await readFile(path.join(workspace, "README.md"), "utf8"), resumed)
+}
+
 async function main() {
   const root = await mkdtemp(path.join(os.tmpdir(), "memosync packaged smoke-"))
   const home = path.join(root, "home-测试")
@@ -44,7 +82,7 @@ async function main() {
     latest: { version: "999.0.0", url: "https://github.com/SLEEPYBQ/MemoSync/releases/tag/v999.0.0" },
   }))
   const env = {
-    ...process.env, HOME: home, USERPROFILE: home,
+    ...process.env, HOME: home, CFFIXED_USER_HOME: home, USERPROFILE: home,
     APPDATA: path.join(home, "AppData", "Roaming"), LOCALAPPDATA: path.join(home, "AppData", "Local"),
     XDG_CONFIG_HOME: path.join(home, "config"), XDG_DATA_HOME: path.join(home, "local", "share"),
     XDG_STATE_HOME: path.join(home, "state"), XDG_CACHE_HOME: path.join(home, "cache"),
@@ -55,7 +93,10 @@ async function main() {
   for (const key of Object.keys(env)) if (/API_KEY|TOKEN|SECRET|PASSWORD/.test(key)) delete env[key]
   let app
   const launch = async () => {
-    app = await _electron.launch({ executablePath: executable, env, timeout: 60_000 })
+    app = await _electron.launch({
+      executablePath: executable, env, timeout: 60_000,
+      args: ["--use-mock-keychain", "--password-store=basic", `--user-data-dir=${env.MEMOSYNC_DESKTOP_USER_DATA_DIR}`],
+    })
     const page = await app.firstWindow({ timeout: 60_000 })
     await page.waitForURL(/^http:\/\/127\.0\.0\.1:\d+\//, { timeout: 60_000 })
     await page.waitForFunction(() => window.memosyncDesktop && document.getElementById("root")?.children.length > 0 && document.documentElement.lang === "en")
@@ -63,6 +104,11 @@ async function main() {
     assert.equal(status.authenticated, true)
     assert.equal(status.canSignOut, false)
     assert.equal(await page.evaluate(() => window.memosyncDesktop.platform), process.platform)
+    const update = await page.evaluate(() => window.memosyncDesktop.updates.getSnapshot())
+    assert.equal(update.currentVersion, require("./package.json").version)
+    assert.ok(["automatic", "installer", "appimage"].includes(update.installMode))
+    assert.notEqual(update.status, "unsupported")
+    assert.equal(await page.evaluate(() => typeof window.memosyncDesktop.updates.onChange), "function")
     const preferences = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getLastWebPreferences())
     assert.equal(preferences.sandbox, true)
     assert.equal(preferences.contextIsolation, true)
@@ -101,6 +147,9 @@ async function main() {
     assert.equal(await sidebarWidth(page), "520px")
     await page.getByRole("button", { name: "Skip this version" }).click()
     await page.locator("[data-release-notice]").waitFor({ state: "hidden" })
+    const { chatId } = await command(page, { type: "chat.create", projectId })
+    await page.goto(`${origin}/chat/${chatId}`)
+    await checkDirtyQuit(app, page, workspace)
     await page.goto(`${origin}/memory`)
     await page.getByRole("button", { name: "Board", exact: true }).click()
     await page.getByRole("button", { name: "Board", exact: true, pressed: true }).waitFor()
@@ -119,9 +168,13 @@ async function main() {
     await page.getByRole("button", { name: "Board", exact: true, pressed: true }).waitFor()
     await app.close()
     app = undefined
-    console.log(`Packaged ${process.platform}/${process.arch}: authenticated launch, file window, sandbox, persistence and clean restart passed`)
+    console.log(`Packaged ${process.platform}/${process.arch}: authenticated launch, file window, sandbox, dirty Quit/Cancel/save, persistence and clean restart passed`)
   } finally {
-    if (app) await app.close().catch(() => {})
+    if (app) {
+      // A failed assertion can leave the synthetic editor dirty; don't hang cleanup on a dialog.
+      await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(w => w.destroy())).catch(() => {})
+      await app.close().catch(() => {})
+    }
     await rm(root, { recursive: true, force: true })
   }
 }

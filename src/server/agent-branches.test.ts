@@ -882,7 +882,10 @@ describe('AgentCoordinator persistent Codex memory branches', () => {
     };
     try {
       const due = h.memory.store.create({ content: 'Temporary synthetic rule', scope: 'personal', type: 'fact', expiresAt: '2020-01-01T00:00:00.000Z' }, { actor: 'user' });
-      await expect(h.send()).rejects.toThrow('Synthetic receipt failure');
+      await expect(h.send()).resolves.toEqual({ chatId: h.chat.id });
+      expect(h.store.getMessages(h.chat.id).filter(message => message.kind === 'result')).toEqual([
+        expect.objectContaining({ subtype: 'error', isError: true, result: 'Synthetic receipt failure' }),
+      ]);
       expect(h.memory.store.getKv<number>(`expiry_seen:${h.chat.id}`)).toBeLessThan(h.memory.store.latestEventSeq());
       await h.send();
       await finish(h);

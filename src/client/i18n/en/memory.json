@@ -16,6 +16,7 @@
   "expiry": "Expiry",
   "expiredDate": "Expired {{date}}",
   "restoreForSevenDays": "Restore for 7 days",
+  "revisionWithdrawn": "Revision withdrawn after an audit correction. Draft a new revision instead.",
   "extendOnBoard": "Extend on Memory Board",
   "expiredSinceTurn_one": "{{count}} memory expired since your last turn",
   "expiredSinceTurn_other": "{{count}} memories expired since your last turn",

@@ -3,9 +3,11 @@ import { createRoot } from "react-dom/client"
 import { Link, MemoryRouter, Outlet, Route, Routes, useLocation } from "react-router-dom"
 import { AppDialogProvider } from "../../../components/ui/app-dialog"
 import { TooltipProvider } from "../../../components/ui/tooltip"
+import { FilesPanel } from "../../../components/chat-ui/FilesPanel"
 import { ThemeProvider } from "../../../hooks/useTheme"
 import { LocalProjectsPage } from "../../../app/LocalProjectsPage"
 import { useAppState } from "../../../app/useAppState"
+import { useChatPageSidebarActions } from "../../../app/ChatPage/useChatPageSidebarActions"
 import { AppSocket } from "../../../app/socket"
 import type { ChatAttachment } from "../../../../shared/types"
 
@@ -22,6 +24,7 @@ interface HistoryRequest {
 }
 
 interface AppStateFixtureApi {
+  createdBranchBases: () => string[]
   transcriptRevision: () => number
   streamingText: () => string | null
   promptContents: () => string[]
@@ -56,8 +59,10 @@ const projectRequests: Array<{ resolve: (value: unknown) => void }> = []
 const landingFixture = new URLSearchParams(window.location.search).get("view") === "landing"
 const unavailableProject = "/fixture/unavailable"
 const projectPaths = landingFixture ? ["/fixture/alpha", "/fixture/beta", unavailableProject] : []
+const createdBranchBases: string[] = []
 
 const fixtureApi: AppStateFixtureApi = {
+  createdBranchBases: () => [...createdBranchBases],
   transcriptRevision: () => 0,
   streamingText: () => null,
   promptContents: () => [],
@@ -119,7 +124,7 @@ Object.assign(AppSocket.prototype, {
       subscription.active = false
     }
   },
-  command(command: { type: string; chatId?: string; beforeCursor?: string; localPath?: string; attachments?: ChatAttachment[] }) {
+  command(command: { type: string; chatId?: string; beforeCursor?: string; localPath?: string; attachments?: ChatAttachment[]; baseBranchName?: string }) {
     if (command.localPath === unavailableProject) {
       // The saved sidebar ID is known, but there is no draft yet when the user sends.
       if (command.type === "chat.ensureDraft") return new Promise(() => {})
@@ -128,6 +133,11 @@ Object.assign(AppSocket.prototype, {
     if (command.type === "chat.ensureDraft") {
       const projectId = command.localPath!.split("/").at(-1)
       return Promise.resolve({ chatId: `draft-${projectId}`, projectId })
+    }
+    if (command.type === "chat.listBranches") return Promise.resolve({ currentBranchName: "feature/current", defaultBranchName: "main" })
+    if (command.type === "chat.createBranch") {
+      createdBranchBases.push(command.baseBranchName!)
+      return Promise.resolve({ ok: true })
     }
     if (command.type === "settings.readAppSettings") {
       return Promise.resolve({
@@ -173,9 +183,11 @@ export function mountAppStateFixture(root: HTMLElement) {
   let transcriptRevision = 0
   function AppStateHost() {
     const [fixtureChatId, setActiveChatId] = useState<string | null>("chat-a")
+    const [showFiles, setShowFiles] = useState(false)
     const location = useLocation()
     const activeChatId = landingFixture ? location.pathname.split("/chat/")[1] ?? null : fixtureChatId
     const state = useAppState(activeChatId)
+    const { handleCreateBranch } = useChatPageSidebarActions({ state, projectId: null, showRightSidebar: false })
     if (lastMessages !== state.messages) {
       lastMessages = state.messages
       transcriptRevision += 1
@@ -227,6 +239,10 @@ export function mountAppStateFixture(root: HTMLElement) {
       <main>
         <div data-testid="fixture-ready" />
         <output data-testid="diff-branch">{state.chatDiffSnapshot?.branchName ?? ""}</output>
+        <button onClick={() => setShowFiles(!showFiles)}>Toggle Files</button>
+        <button onClick={() => void state.handleSignOut()}>Sign out</button>
+        <button onClick={() => void handleCreateBranch()}>Create branch</button>
+        {showFiles && <TooltipProvider><FilesPanel projectId="project-a" /></TooltipProvider>}
         <button type="button" data-testid="activate-chat-a" onClick={() => setActiveChatId("chat-a")}>Chat A</button>
         <button type="button" data-testid="activate-chat-b" onClick={() => setActiveChatId("chat-b")}>Chat B</button>
         <button type="button" data-testid="send-prompt" onClick={() => void state.handleSend("content-existing")}>Send</button>

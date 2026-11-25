@@ -49,6 +49,7 @@ export interface ResolvedSingleTranscriptRow {
   isLatestTodoWrite: boolean
   hideResult: boolean
   isFinalStatus: boolean
+  responseUnrecorded?: boolean
   /** Undecided memory_preview that newer turn entries have passed by (orphan). */
   isStaleMemoryPreview: boolean
 }
@@ -133,6 +134,28 @@ function isCollapsibleToolCall(message: HydratedTranscriptMessage) {
 
 function isMemoryChangesReviewMessage(message: HydratedTranscriptMessage): message is MemoryChangesReviewMessage {
   return message.kind === "memory_proposals" || message.kind === "memory_transfer" || message.kind === "memory_checkup"
+}
+
+function accountsForPrompt(message: HydratedTranscriptMessage): boolean {
+  switch (message.kind) {
+    case "assistant_text": return Boolean(message.text.trim())
+    case "tool":
+    case "result":
+    case "interrupted":
+    case "memory_interrupt":
+      return true
+    // Parked and cancelled gates have their own explanation. A gate that let
+    // the turn proceed does not establish that the provider actually replied.
+    case "memory_preview":
+      return message.decision === undefined || message.decision === "dismiss" || message.decision === "expired"
+    case "memory_proposals":
+    case "memory_transfer":
+    case "memory_checkup":
+      return message.decision === undefined || message.decision === "cancelled" || message.decision === "expired"
+    default:
+      // SDK startup, status, usage and other bookkeeping can precede any reply.
+      return false
+  }
 }
 
 function getTranscriptMessageRenderState(
@@ -426,6 +449,7 @@ function isResolvedTranscriptRowUnchanged(left: ResolvedTranscriptRow, right: Re
       && left.isLatestTodoWrite === right.isLatestTodoWrite
       && left.hideResult === right.hideResult
       && left.isFinalStatus === right.isFinalStatus
+      && left.responseUnrecorded === right.responseUnrecorded
       && left.isStaleMemoryPreview === right.isStaleMemoryPreview
       && sameMessage(left.message, right.message)
   }
@@ -497,6 +521,7 @@ interface TranscriptSingleRowProps {
   hideResult: boolean
   isFinalStatus: boolean
   isStaleMemoryPreview?: boolean
+  responseUnrecorded?: boolean
   isCurrentTurnAssistant?: boolean
   onAskUserQuestionSubmit: (
     toolUseId: string,
@@ -524,6 +549,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   hideResult,
   isFinalStatus,
   isStaleMemoryPreview,
+  responseUnrecorded,
   isCurrentTurnAssistant,
   onAskUserQuestionSubmit,
   onExitPlanModeConfirm,
@@ -536,7 +562,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   let rendered: React.ReactNode = null
 
   if (message.kind === "user_prompt") {
-    rendered = <UserMessage key={message.id} content={message.content} attachments={message.attachments} steered={message.steered} />
+    rendered = <UserMessage key={message.id} content={message.content} attachments={message.attachments} steered={message.steered} responseUnrecorded={responseUnrecorded} />
   } else {
     switch (message.kind) {
       case "unknown":
@@ -667,6 +693,7 @@ const TranscriptSingleRow = memo(function TranscriptSingleRow({
   && prev.hideResult === next.hideResult
   && prev.isFinalStatus === next.isFinalStatus
   && prev.isStaleMemoryPreview === next.isStaleMemoryPreview
+  && prev.responseUnrecorded === next.responseUnrecorded
   && prev.isCurrentTurnAssistant === next.isCurrentTurnAssistant
   && prev.onAskUserQuestionSubmit === next.onAskUserQuestionSubmit
   && prev.onExitPlanModeConfirm === next.onExitPlanModeConfirm
@@ -783,6 +810,20 @@ export function buildResolvedTranscriptRows(
   const renderStates = buildTranscriptMessageRenderStates(messages, latestToolIds, { suppressTrailingStatus })
   const renderItems = buildTranscriptRenderItems(messages, renderStates)
   const rows: ResolvedTranscriptRow[] = []
+  // A crash can leave only a saved prompt, whether or not its queue row was
+  // already removed. Describe the missing evidence; do not infer non-delivery.
+  const unanswered = new Set<string>()
+  let pendingPrompt: string | undefined
+  for (const message of messages) {
+    if (message.kind === "user_prompt") {
+      if (message.id.startsWith("optimistic:")) { pendingPrompt = undefined; continue }
+      if (pendingPrompt) unanswered.add(pendingPrompt)
+      pendingPrompt = message.id
+    } else if (pendingPrompt && accountsForPrompt(message)) {
+      pendingPrompt = undefined
+    }
+  }
+  if (!isLoading && pendingPrompt) unanswered.add(pendingPrompt)
   const previewReopenableTurns = new Set(
     messages
       .filter(
@@ -872,6 +913,7 @@ export function buildResolvedTranscriptRows(
       isLatestTodoWrite: renderState.isLatestTodoWrite,
       hideResult: renderState.hideResult,
       isFinalStatus: renderState.isFinalStatus,
+      responseUnrecorded: item.message.kind === "user_prompt" && unanswered.has(item.message.id),
       isStaleMemoryPreview:
         (item.message.kind === "memory_preview" || item.message.kind === "memory_proposals" || item.message.kind === "memory_transfer" || item.message.kind === "memory_checkup")
         && item.message.decision === undefined
@@ -957,6 +999,7 @@ export const ChatTranscriptRow = memo(function ChatTranscriptRow({
       hideResult={row.hideResult}
       isFinalStatus={row.isFinalStatus}
       isStaleMemoryPreview={row.isStaleMemoryPreview}
+      responseUnrecorded={row.responseUnrecorded}
       isCurrentTurnAssistant={isCurrentTurnAssistant}
       onAskUserQuestionSubmit={onAskUserQuestionSubmit}
       onExitPlanModeConfirm={onExitPlanModeConfirm}
@@ -1012,6 +1055,7 @@ export function areChatTranscriptRowPropsEqual(prev: ChatTranscriptRowProps, nex
       && prev.row.isLatestTodoWrite === next.row.isLatestTodoWrite
       && prev.row.hideResult === next.row.hideResult
       && prev.row.isFinalStatus === next.row.isFinalStatus
+      && prev.row.responseUnrecorded === next.row.responseUnrecorded
       // A preview card goes stale the moment a later turn starts; the row is
       // otherwise byte-identical, so dropping this field froze the card in
       // its live/actionable look.
