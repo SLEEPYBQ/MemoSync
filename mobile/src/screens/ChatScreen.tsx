@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   AppState,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -20,10 +21,12 @@ import { Ionicons } from "@expo/vector-icons"
 import { colorWithAlpha, radius, spacing, useTheme } from "../theme"
 import { MOBILE_TYPOGRAPHY } from "../lib/typography"
 import { getSocket, type SocketStatus } from "../lib/socket"
+import { useHostStore } from "../lib/hostStore"
 import type {
   AskUserQuestionItem,
   AssistantTextEntry,
   ChatActivityStatus,
+  ChatAttachment,
   ChatHistoryPage,
   ChatSnapshot,
   MemoryPreviewEntry,
@@ -236,15 +239,69 @@ function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
 
 // -- transcript rows ------------------------------------------------------------
 
+function formatAttachmentSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function attachmentSource(attachment: ChatAttachment, host: string, port: number, token: string) {
+  const path = attachment.contentUrl.startsWith("/") ? attachment.contentUrl : `/${attachment.contentUrl}`
+  const uri = /^https?:\/\//i.test(attachment.contentUrl) ? attachment.contentUrl : `http://${host}:${port}${path}`
+  return { uri, headers: { Authorization: `Bearer ${token}` } }
+}
+
 function UserBubble({ entry }: { entry: UserPromptEntry }) {
   const { colors } = useTheme()
+  const credentials = useHostStore((state) => state.credentials)
   const text = entry.participantContent ?? entry.content
+  const attachments = entry.attachments ?? []
+  const images = attachments.filter((attachment) => attachment.kind === "image" && attachment.contentUrl)
+  const files = attachments.filter((attachment) => attachment.kind !== "image" || !attachment.contentUrl)
   return (
     <View style={styles.userRow}>
-      <View style={[styles.userBubble, { backgroundColor: colors.secondary, borderColor: colors.border }]}> 
-        <Text style={[styles.userText, { color: colors.secondaryForeground }]} selectable>
-          {text}
-        </Text>
+      <View style={styles.userContent}>
+        {images.length > 0 ? (
+          <View style={styles.attachmentImageGrid}>
+            {images.map((attachment) => (
+              <View key={attachment.id} style={[styles.attachmentImageFrame, { backgroundColor: colors.muted, borderColor: colors.border }]}> 
+                {credentials ? (
+                  <Image
+                    source={attachmentSource(attachment, credentials.host, credentials.port, credentials.token)}
+                    style={styles.attachmentImage}
+                    resizeMode="cover"
+                    accessibilityLabel={attachment.displayName}
+                  />
+                ) : null}
+                <Text style={[styles.attachmentCaption, { color: colors.foreground }]} numberOfLines={1}>
+                  {attachment.displayName}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {files.length > 0 ? (
+          <View style={styles.attachmentFileList}>
+            {files.map((attachment) => (
+              <View key={attachment.id} style={[styles.attachmentFileRow, { backgroundColor: colors.card, borderColor: colors.border }]}> 
+                <Ionicons name="document-outline" size={15} color={colors.mutedIcon} />
+                <View style={styles.attachmentFileText}>
+                  <Text style={[styles.attachmentFileName, { color: colors.foreground }]} numberOfLines={1}>{attachment.displayName}</Text>
+                  <Text style={[styles.attachmentFileMeta, { color: colors.mutedForeground }]} numberOfLines={1}>
+                    {attachment.mimeType} · {formatAttachmentSize(attachment.size)}
+                  </Text>
+                </View>
+              </View>
+            ))}
+          </View>
+        ) : null}
+        {text ? (
+          <View style={[styles.userBubble, { backgroundColor: colors.secondary, borderColor: colors.border }]}> 
+            <Text style={[styles.userText, { color: colors.secondaryForeground }]} selectable>
+              {text}
+            </Text>
+          </View>
+        ) : null}
       </View>
     </View>
   )
@@ -1132,8 +1189,58 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
     paddingLeft: spacing.xxl,
   },
-  userBubble: {
+  userContent: {
     maxWidth: "88%",
+    alignItems: "flex-end",
+    gap: spacing.xs,
+  },
+  attachmentImageGrid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    justifyContent: "flex-end",
+    gap: spacing.xs,
+  },
+  attachmentImageFrame: {
+    width: 150,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    overflow: "hidden",
+  },
+  attachmentImage: {
+    width: 150,
+    height: 110,
+  },
+  attachmentCaption: {
+    ...MOBILE_TYPOGRAPHY.caption,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+  },
+  attachmentFileList: {
+    alignSelf: "stretch",
+    gap: spacing.xs,
+  },
+  attachmentFileRow: {
+    minHeight: 44,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingHorizontal: spacing.sm,
+  },
+  attachmentFileText: {
+    flex: 1,
+    minWidth: 0,
+  },
+  attachmentFileName: {
+    ...MOBILE_TYPOGRAPHY.footnote,
+    fontWeight: "600",
+  },
+  attachmentFileMeta: {
+    ...MOBILE_TYPOGRAPHY.caption,
+  },
+  userBubble: {
+    maxWidth: "100%",
     borderRadius: radius.xl,
     borderBottomRightRadius: radius.sm,
     borderWidth: StyleSheet.hairlineWidth,

@@ -185,11 +185,24 @@ interface TranscriptEntryBase {
   hidden?: boolean
 }
 
+export interface ChatAttachment {
+  id: string
+  kind: "image" | "file"
+  displayName: string
+  absolutePath: string
+  relativePath: string
+  contentUrl: string
+  mimeType: string
+  size: number
+  uploadSha256?: string
+}
+
 export interface UserPromptEntry extends TranscriptEntryBase {
   kind: "user_prompt"
   content: string
   /** Exact user-authored text when `content` carries a provider wrapper. */
   participantContent?: string
+  attachments?: ChatAttachment[]
   steered?: boolean
 }
 
