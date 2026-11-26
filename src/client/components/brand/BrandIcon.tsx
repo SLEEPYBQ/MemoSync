@@ -60,7 +60,7 @@ export function BrandTile({
   )
 }
 
-export const ENGINE_BRANDS: Record<EngineId, BrandId | "pi"> = { claude: "claude", codex: "openai", pi: "pi", opencode: "opencode" }
+export const ENGINE_BRANDS: Record<EngineId, BrandId | "pi"> = { claude: "claude", codex: "openai", pi: "pi", opencode: "opencode", antigravity: "gemini" }
 
 /** Best-effort vendor mark for a connection, from its preset id or name. */
 export function brandForConnection(connection: { presetId?: string; name: string; id?: string }): BrandId | null {

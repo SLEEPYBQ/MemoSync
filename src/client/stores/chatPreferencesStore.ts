@@ -235,6 +235,7 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     opencode: normalizeOpencodePreference(),
+    antigravity: normalizeOpencodePreference(),
   }
 }
 
@@ -258,12 +259,14 @@ export function normalizeProviderDefaults(value?: {
     planMode?: boolean
   }
   opencode?: { model?: string }
+  antigravity?: { model?: string }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
     pi: normalizePiPreference(value?.pi),
     opencode: normalizeOpencodePreference(value?.opencode),
+    antigravity: normalizeOpencodePreference(value?.antigravity),
   }
 }
 

@@ -10,7 +10,7 @@ import { NativeUiInfo } from "./NativeUiInfo"
 
 export const groupName = (group: MemoryTreeGroup) => group.units[0]?.unresolvedProject ? t("nativeMemory:unresolvedProject") : projectName(group.label)
 
-const ENGINE_NAMES: Record<NativeMemoryEngine, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" }
+const ENGINE_NAMES: Record<NativeMemoryEngine, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode", antigravity: "Antigravity" }
 
 function checkState(units: readonly NativeMemoryUnit[], selected: ReadonlySet<string>) {
   const selectable = units.filter(isSelectable)

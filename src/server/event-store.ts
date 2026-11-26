@@ -235,7 +235,7 @@ function isValidQueuedChatMessage(value: unknown): value is StoredQueuedMessage 
     && (value.hostClientId === undefined || isString(value.hostClientId))
     && Array.isArray(value.attachments)
     && isFiniteNumber(value.createdAt)
-    && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi" || value.provider === "opencode")
+    && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi" || value.provider === "opencode" || value.provider === "antigravity")
     && (value.model === undefined || isString(value.model))
     && (value.planMode === undefined || typeof value.planMode === "boolean")
 }
@@ -273,7 +273,7 @@ function isValidStoreEvent(event: unknown): event is StoreEvent {
     case "turn_cancelled":
       return hasChatId()
     case "chat_provider_set":
-      return hasChatId() && (event.provider === "claude" || event.provider === "codex" || event.provider === "pi" || event.provider === "opencode")
+      return hasChatId() && (event.provider === "claude" || event.provider === "codex" || event.provider === "pi" || event.provider === "opencode" || event.provider === "antigravity")
     case "chat_execution_policy_set":
       return hasChatId() && isNativeExecutionPolicy(event.policy) && Number.isSafeInteger(event.revision) && Number(event.revision) > 0
     case "chat_execution_policy_state_set":

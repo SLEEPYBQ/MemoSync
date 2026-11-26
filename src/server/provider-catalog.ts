@@ -72,6 +72,7 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
       else if (provider.id === "claude") models.unshift(...[["sonnet", "Sonnet"], ["opus", "Opus"], ["haiku", "Haiku"]].map(([id, label]) => ({ id: id!, label: label!, supportsEffort: true })))
       else if (provider.id === "codex") models.unshift(...HARD_CODED_CODEX_MODELS)
       else if (provider.id === "opencode") models.unshift(...(access.getSnapshot().engines.opencode?.accountModels ?? []).map(m => ({ id: m.id, label: m.label || m.id, supportsEffort: false })))
+      else if (provider.id === "antigravity") models.unshift(...(access.getSnapshot().engines.antigravity?.accountModels ?? []).map(m => ({ id: m.id, label: m.label || m.id, supportsEffort: false })))
     }
     const connectionId = setup.access.mode === "connection" ? setup.access.connectionId : undefined
     const selected = connections.find(c => c.id === connectionId)
@@ -164,7 +165,7 @@ export function normalizeServerModel(provider: AgentProvider, model?: string): s
   const catalog = deployedProviders().find((entry) => entry.id === provider) ?? getServerProviderCatalog(provider)
   // Any non-empty registry id is a valid pi model — only missing values fall
   // back to the catalog default.
-  if (provider === "opencode") return model?.trim() || catalog.defaultModel
+  if (provider === "opencode" || provider === "antigravity") return model?.trim() || catalog.defaultModel
   if (provider === "pi") return normalizePiModelId(model, catalog.defaultModel)
   // A user who chose their account runs its own models. A connection's ids stay in the catalog for
   // its picker, but launching one on the account fails, so a remembered one falls back. Without an

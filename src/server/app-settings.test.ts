@@ -38,6 +38,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     defaultProvider: "last_used",
     providerDefaults: {
       opencode: { model: "", modelOptions: {}, planMode: false },
+    antigravity: { model: "", modelOptions: {}, planMode: false },
       claude: {
         model: "deepseek-v4-flash",
         modelOptions: {

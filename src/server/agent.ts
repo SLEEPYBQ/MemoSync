@@ -78,6 +78,7 @@ import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
 import { ensureProjectDirectory } from "./paths"
 import { isManagedChatUpload, matchesProjectUpload } from "./uploads"
 import { OpencodeAgentManager } from "./opencode-agent"
+import { AntigravityAgentManager } from "./antigravity-agent"
 import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import {
   applyClaudeSdkModels,
@@ -531,6 +532,7 @@ interface AgentCoordinatorArgs {
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
   opencodeManager?: OpencodeAgentManager
+  antigravityManager?: AntigravityAgentManager
   piManager?: PiAgentManager
   /** Injectable for tests; defaults to the Model Registry/env resolution. */
   resolvePiConnection?: () => Promise<PiConnection | null>
@@ -1842,6 +1844,7 @@ export class AgentCoordinator {
   private readonly questionToolIds = new Map<string, string>()
   private readonly codexManager: CodexAppServerManager
   private readonly opencodeManager: OpencodeAgentManager
+  private readonly antigravityManager: AntigravityAgentManager
   private readonly piManager: PiAgentManager
   private readonly hasCustomPiConnection: boolean
   private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
@@ -1996,6 +1999,7 @@ export class AgentCoordinator {
     this.codexManager.setCommandContextRestorer?.((chatId, text, signal) => this.codexManager.appendDeveloperContext(chatId, text, signal))
     this.stableToolSchemas = args.stableToolSchemas ?? (() => [])
     this.opencodeManager = args.opencodeManager ?? new OpencodeAgentManager()
+    this.antigravityManager = args.antigravityManager ?? new AntigravityAgentManager()
     this.piManager = args.piManager ?? new PiAgentManager()
     this.hasCustomPiConnection = Boolean(args.resolvePiConnection)
     this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
@@ -3602,6 +3606,7 @@ export class AgentCoordinator {
     const native = provider === 'claude' ? (!claude?.retired ? claude?.session.commandRuntime : undefined)
       : provider === 'pi' ? this.piManager.getCommandRuntime?.(chatId)
       : provider === 'opencode' ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : provider === 'antigravity' ? this.antigravityManager.getCommandRuntime?.(chatId)
       : provider === 'codex' ? this.codexManager.getCommandRuntime?.(chatId) : undefined
     const project = chat ? this.store.getProject(chat.projectId) : undefined
     if (!chat || !provider || !project || !native || !native.alive() || (preparation && preparation.status !== 'ready')) {
@@ -3735,6 +3740,7 @@ export class AgentCoordinator {
     const session = this.claudeSessions.get(chatId)
     await Promise.all([
       this.opencodeManager.closeChat?.(chatId),
+      this.antigravityManager.closeChat?.(chatId),
       session && !session.retired ? this.retireClaudeSession(session, 'session_rebuild') : undefined,
     ])
   }
@@ -3805,10 +3811,15 @@ export class AgentCoordinator {
         effort: normalizePiModelOptions(undefined, settings.effort).reasoningEffort, connection, signal, sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
         beforeToolCall: async () => ({ block: true, reason: 'No active model turn' }), isPolicyCurrent: isCurrent })
-    } else {
+    } else if (selection.provider === 'opencode') {
       preparedToken = await this.opencodeManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
         runtime, signal, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
         executionPolicy: chat.executionPolicyVersion && policy.engine === 'opencode' ? policy : undefined,
+        isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
+    } else {
+      preparedToken = await this.antigravityManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
+        runtime, signal, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken),
+        executionPolicy: chat.executionPolicyVersion && policy.engine === 'antigravity' ? policy : undefined,
         isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
     }
     signal.throwIfAborted()
@@ -3970,7 +3981,7 @@ export class AgentCoordinator {
 
   private hasIdleSession(chatId: string) {
     const claude = this.claudeSessions.get(chatId)
-    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId) || this.piManager.getCommandRuntime?.(chatId)?.alive())
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId) || this.antigravityManager.hasSession?.(chatId) || this.piManager.getCommandRuntime?.(chatId)?.alive())
   }
 
   private idleCloseBlocked(chatId: string) {
@@ -3986,7 +3997,7 @@ export class AgentCoordinator {
       || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
         !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
       || Boolean(this.codexManager.hasPendingWork?.(chatId))
-      || Boolean(this.opencodeManager.hasPendingWork?.(chatId))
+      || Boolean(this.opencodeManager.hasPendingWork?.(chatId) || this.antigravityManager.hasPendingWork?.(chatId))
   }
 
   /** All work must be settled for a full 30 minutes, including detached memory passes. */
@@ -4018,6 +4029,7 @@ export class AgentCoordinator {
     const session = this.claudeSessions.get(chatId)
     await Promise.all([
       this.opencodeManager.closeChat(chatId),
+      this.antigravityManager.closeChat(chatId),
       session && !session.retired ? this.retireClaudeSession(session, "idle_timeout") : undefined,
     ])
     await this.retireHarnessPolicyIfAbsent(chatId)
@@ -4253,6 +4265,7 @@ export class AgentCoordinator {
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
     await this.opencodeManager.closeChat(chatId)
+    await this.antigravityManager.closeChat(chatId)
     await Promise.allSettled(memoryBranchCleanups)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
@@ -4297,6 +4310,7 @@ export class AgentCoordinator {
     this.piManager.dispose()
     await Promise.allSettled([...this.branchCleanups.values()].flatMap(cleanups => [...cleanups]))
     await this.opencodeManager.dispose()
+    await this.antigravityManager.dispose()
     await Promise.allSettled(commandPreparations)
     this.commandPreparations.clear()
     this.commandSelections.clear()
@@ -4338,6 +4352,7 @@ export class AgentCoordinator {
     }
     await attempt(() => this.codexManager.stopAll())
     await attempt(() => this.opencodeManager.dispose())
+    await attempt(() => this.antigravityManager.dispose())
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
       throw new AggregateError(errors, "Failed to stop remaining agent turns")
@@ -4400,6 +4415,9 @@ export class AgentCoordinator {
 
     if (provider === "opencode") {
       return { connectionId, model: options.model?.trim() || normalizeServerModel(provider), effort: undefined, serviceTier: undefined, planMode: false }
+    }
+    if (provider === "antigravity") {
+      return { connectionId, model: options.model?.trim() || normalizeServerModel(provider), effort: undefined, serviceTier: undefined, planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false }
     }
     if (provider === "pi") {
       const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
@@ -7044,7 +7062,7 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-    } else if (args.provider === "pi" || args.provider === "opencode") {
+    } else if (args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
         provider: args.provider,
@@ -7137,6 +7155,18 @@ export class AgentCoordinator {
           onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         }
         turn = await this.opencodeManager.startTurn(opencodeLaunch)
+      } else if (args.provider === "antigravity") {
+        turn = await this.antigravityManager.startTurn({
+          signal: startController.signal, chatId: args.chatId, cwd: project.localPath,
+          content: buildPromptText(args.content, providerAttachments),
+          model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
+          memoryContext: piMemoryBlock || undefined,
+          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
+          forkSession: Boolean(chat.pendingForkSessionToken), planMode: args.planMode,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "antigravity" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied, onToolRequest,
+          onPermissionRequest: (request, tool) => requestNativeApproval(tool?.name ?? "permission", tool?.input ?? request, typeof request === "object" && request && "id" in request ? String(request.id) : undefined),
+        })
       } else {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
@@ -7383,7 +7413,7 @@ export class AgentCoordinator {
       memoryDisabled: memoryDisabledForTurn,
       // Pi accepts its memory block inside the user prompt (there is no
       // developer_instructions channel) — delivery counts like Codex's.
-      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode",
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
@@ -7397,7 +7427,7 @@ export class AgentCoordinator {
         const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
         if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
       }
-      if ((args.provider === "pi" || args.provider === "opencode") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
+      if ((args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
       throw error
     } finally {
       admitTurn()
@@ -7857,7 +7887,7 @@ export class AgentCoordinator {
   getHarnessSnapshot(chatId: string, engine?: AgentProvider) {
     const chat = this.store.getChat(chatId)
     if (!chat || chat.deletedAt) return undefined
-    if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (engine && !["claude", "codex", "pi", "opencode", "antigravity"].includes(engine)) throw new Error("Invalid harness engine")
     if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
     // Before the first turn, the pushed snapshot follows the engine the composer is preparing.
     const prepared = this.commandPreparations.get(chatId)?.selection.provider ?? this.commandSelections.get(chatId)?.provider
@@ -7870,12 +7900,13 @@ export class AgentCoordinator {
     const native = engine === "claude" ? claude?.session.commandRuntime
       : engine === "codex" ? this.codexManager.getCommandRuntime?.(chatId)
       : engine === "opencode" ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : engine === "antigravity" ? this.antigravityManager.getCommandRuntime?.(chatId)
       : this.piManager.getCommandRuntime?.(chatId)
     // A retiring Claude pump remains a native handle until it has drained.
     const present = engine === "claude" ? Boolean(claude?.pump || native?.alive())
       : native ? native.alive()
       : engine === "codex" && !this.codexManager.getCommandRuntime ? Boolean(this.codexManager.hasSession?.(chatId))
-      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId)) : false
+      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId) || this.antigravityManager.hasSession?.(chatId)) : false
     if (present) return "present"
     return this.engineStartAbortControllers.has(chatId) ? "starting" : "absent"
   }
@@ -7894,7 +7925,7 @@ export class AgentCoordinator {
   }
 
   getEngineCapabilities(engine: AgentProvider) {
-    if (!["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (!["claude", "codex", "pi", "opencode", "antigravity"].includes(engine)) throw new Error("Invalid harness engine")
     return this.harnessPolicies.registry.snapshot(engine, this.harnessRuntimeVersion(engine, lastEngineExecutable(engine)?.version))
   }
 
@@ -7924,6 +7955,7 @@ export class AgentCoordinator {
       await this.codexManager.stopSession(command.chatId)
       this.piManager.closeChat(command.chatId)
       await this.opencodeManager.closeChat(command.chatId)
+      await this.antigravityManager.closeChat(command.chatId)
       this.parentLaunches.delete(command.chatId)
       // Some adapters stop asynchronously. A remaining live handle is still pending retirement.
       state = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"

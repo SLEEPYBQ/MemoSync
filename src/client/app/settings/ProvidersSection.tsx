@@ -30,6 +30,7 @@ const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
   codex: SETTINGS_ROWS.codexDefaults,
   pi: SETTINGS_ROWS.piDefaults,
   opencode: SETTINGS_ROWS.opencodeDefaults,
+  antigravity: SETTINGS_ROWS.antigravityDefaults,
 }
 
 /** The option a picker change sets on that provider's saved defaults, if it is one this provider has. */
@@ -194,7 +195,7 @@ export function ProvidersSection({
         </SettingsGroup>
         <section id={SETTINGS_ROWS.modelEngines.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <SettingsGroup title={t("modelAccess:engines")}>
-            {(["claude", "codex", "pi", "opencode"] as const).map((engine) => (
+            {(["claude", "codex", "pi", "opencode", "antigravity"] as const).map((engine) => (
               <EngineCard
                 key={engine}
                 engine={engine}

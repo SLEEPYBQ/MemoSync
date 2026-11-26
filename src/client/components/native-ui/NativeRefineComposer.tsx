@@ -1,6 +1,6 @@
 import { useRef } from "react"
 import { ArrowUp, FlaskConical } from "lucide-react"
-import { DEFAULT_CLAUDE_MODEL_OPTIONS, DEFAULT_CODEX_MODEL_OPTIONS, DEFAULT_PI_MODEL_OPTIONS, type AgentProvider, type ProviderCatalogEntry } from "../../../shared/types"
+import { DEFAULT_CLAUDE_MODEL_OPTIONS, DEFAULT_CODEX_MODEL_OPTIONS, DEFAULT_PI_MODEL_OPTIONS, type ProviderCatalogEntry } from "../../../shared/types"
 import type { NativeModelSelection } from "../../../shared/native-memory"
 import { getLocale, t } from "../../i18n"
 import { formatTokens } from "../../lib/nativeMemoryPlan"
@@ -53,7 +53,7 @@ export function NativeRefineComposer({ providers, mode, onModeChange, model, onM
         </button>)}
       </div>
       <NativeUiInfo label={t("nativeMemory:mode")} className="-ml-0.5">{t("nativeMemory:modeInfo")}</NativeUiInfo>
-      {refine && model ? <ChatPreferenceControls availableProviders={providers} selectedProvider={model.provider as AgentProvider} model={model.model} connectionId={model.connectionId} modelOptions={modelOptions(model)} includePlanMode={false} showSpeedControl={false}
+      {refine && model ? <ChatPreferenceControls availableProviders={providers} selectedProvider={model.provider} model={model.model} connectionId={model.connectionId} modelOptions={modelOptions(model)} includePlanMode={false} showSpeedControl={false}
         onProviderChange={provider => { const entry = providers.find(item => item.id === provider); if (entry) onModelChange({ provider, model: entry.defaultModel }) }}
         onModelChange={(provider, next, connectionId) => onModelChange({ provider, model: next, ...(connectionId ? { connectionId } : {}) })}
         onModelOptionChange={change => { if ("effort" in change) onModelChange({ ...model, effort: change.effort }) }}

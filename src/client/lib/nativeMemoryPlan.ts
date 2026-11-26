@@ -116,7 +116,7 @@ export function defaultRefineModel(providers: readonly ProviderCatalogEntry[]): 
   if (luna) return { provider: "codex", model: luna.id }
   const haiku = account("claude").find(model => /haiku/i.test(model.id))
   if (haiku) return { provider: "claude", model: haiku.id }
-  const first = providers.find(provider => provider.models.length || provider.defaultModel)
+  const first = providers.find(provider => provider.id !== "antigravity" && (provider.models.length || provider.defaultModel))
   return first ? { provider: first.id, model: first.defaultModel || first.models[0]!.id } : null
 }
 

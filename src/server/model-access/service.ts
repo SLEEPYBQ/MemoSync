@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs"
 import { probeOpencodeAccount, type OpencodeAccountResult } from "./opencode-account"
+import { probeAntigravityAccount, type AntigravityAccountResult } from "./antigravity-account"
 import { createHash, randomUUID } from "node:crypto"
 import { homedir } from "node:os"
 import { join, resolve } from "node:path"
@@ -130,7 +131,7 @@ function claudeAccountSignature(file: string): unknown[] | undefined {
   }
 }
 
-const engines: EngineId[] = ["claude", "codex", "pi", "opencode"]
+const engines: EngineId[] = ["claude", "codex", "pi", "opencode", "antigravity"]
 export function validateConnection(input: ApiConnectionInput): Omit<ApiConnection, "id" | "keySource"> {
   if (!input || typeof input.name !== "string" || !input.name.trim() || input.name.length > 200 || !Array.isArray(input.endpoints) || !input.endpoints.length || !Array.isArray(input.models)) throw new Error("connection-invalid")
   const endpoints = input.endpoints.map(e => {
@@ -317,7 +318,7 @@ export class ModelAccessService {
     await this.refreshExecutables()
   }) }
   setEngine(engine: EngineId, setup: EngineSetup) { return this.serialize(async () => {
-    if (!engines.includes(engine) || !setup?.access || !["account", "connection"].includes(setup.access.mode) || (engine === "pi" && setup.access.mode === "account")) throw new Error("engine-setup-invalid")
+    if (!engines.includes(engine) || !setup?.access || !["account", "connection"].includes(setup.access.mode) || (engine === "pi" && setup.access.mode === "account") || (engine === "antigravity" && setup.access.mode === "connection")) throw new Error("engine-setup-invalid")
     if (setup.executablePath != null && typeof setup.executablePath !== "string") throw new Error("engine-setup-invalid")
     const access = setup.access.mode === "account" ? { mode: "account" as const } : { mode: "connection" as const, connectionId: setup.access.connectionId, ...(setup.access.defaultModel ? { defaultModel: setup.access.defaultModel } : {}) }
     if (access.mode === "connection") {
@@ -400,10 +401,11 @@ export class ModelAccessService {
         }
       } else if (engine === "pi") problem = "connection-missing"
       const accountIsolated = setup.access.mode === "account" && engine !== "pi" && Boolean(this.env.MEMOSYNC_ISOLATE_CLI === "1" || this.env.MEMOSYNC_CLI_PROFILE_DIR)
-      let account: OpencodeAccountResult | undefined
+      let account: OpencodeAccountResult | AntigravityAccountResult | undefined
       if (!problem && setup.access.mode === "account" && engine !== "pi") {
         if (accountIsolated) problem = "account-signed-out"
         else if (engine === "opencode") { account = await probeOpencodeAccount(executable.path!, this.env); problem = account.problem }
+        else if (engine === "antigravity") { account = await probeAntigravityAccount(executable.path!, this.env); problem = account.problem }
         else if (!accountSignedIn(engine, this.env)) problem = "account-signed-out"
       }
       return [engine, { engine, setup, executable, ready: !problem, ...account, ...(translated ? { translated: true } : {}), ...(problem ? { problem } : {}), ...(accountIsolated && problem === "account-signed-out" ? { accountIsolated: true } : {}), ...(upgrade ? { upgrade } : {}) }] as const

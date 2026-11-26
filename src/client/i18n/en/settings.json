@@ -138,6 +138,8 @@
   "savedModelAndReasoningSettingsForNewCodexChats": "Saved model and reasoning settings for new Codex chats.",
   "piDefaults": "Pi Defaults",
   "opencodeDefaults": "OpenCode Defaults",
+  "antigravityDefaults": "Antigravity Defaults",
+  "savedModelForNewAntigravityChats": "Saved model for new Antigravity chats",
   "savedModelAndReasoningSettingsForNewPiChats": "Saved model and reasoning settings for new Pi chats.",
   "savedModelForNewOpencodeChats": "Saved model for new OpenCode chats.",
   "globallyInstalledAgentSkills": "Globally installed agent skills.",

@@ -38,7 +38,7 @@ import { BrandTile, ENGINE_BRANDS } from "../../components/brand/BrandIcon"
 import { cn } from "../../lib/utils"
 import { CONNECTION_FIELD_CLASS, Hint, MODEL_ACCESS_FOCUS_CLASS } from "./modelAccessUi"
 
-const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" }
+const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode", antigravity: "Antigravity" }
 export function EngineCard({
   engine,
   status,

@@ -138,6 +138,8 @@
   "savedModelAndReasoningSettingsForNewCodexChats": "新建 Codex 对话时使用的模型和推理设置。",
   "piDefaults": "Pi 默认设置",
   "opencodeDefaults": "OpenCode 默认设置",
+  "antigravityDefaults": "Antigravity 默认设置",
+  "savedModelForNewAntigravityChats": "用于新 Antigravity 会话的已保存模型",
   "savedModelAndReasoningSettingsForNewPiChats": "新建 Pi 对话时使用的模型和推理设置。",
   "savedModelForNewOpencodeChats": "新建 OpenCode 对话时使用的模型。",
   "globallyInstalledAgentSkills": "全局安装的智能体技能。",

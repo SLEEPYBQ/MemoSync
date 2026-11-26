@@ -31,6 +31,7 @@ import {
   type MemorySettings,
   type PiModelOptions,
   type OpencodeModelOptions,
+  type AntigravityModelOptions,
   type ProviderPreference,
   type RemoteAccessSettings,
   type SubmitWhileRunning,
@@ -58,6 +59,7 @@ interface AppSettingsFile {
     codex?: Partial<ProviderPreference<Partial<CodexModelOptions>>> & { effort?: unknown }
     pi?: Partial<ProviderPreference<Partial<PiModelOptions>>> & { effort?: unknown }
     opencode?: Partial<ProviderPreference<OpencodeModelOptions>>
+    antigravity?: Partial<ProviderPreference<AntigravityModelOptions>>
   }
   memory?: {
     control?: unknown
@@ -154,6 +156,7 @@ function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     opencode: { model: "", modelOptions: {}, planMode: false },
+      antigravity: { model: "", modelOptions: {}, planMode: false },
     pi: {
       model: DEFAULT_PI_MODEL,
       modelOptions: { ...DEFAULT_PI_MODEL_OPTIONS },
@@ -295,6 +298,7 @@ function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | 
     codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
     pi: normalizePiPreference(value?.pi ?? defaults.pi),
     opencode: { model: typeof value?.opencode?.model === "string" ? value.opencode.model.trim() : "", modelOptions: {}, planMode: false },
+    antigravity: { model: typeof value?.antigravity?.model === "string" ? value.antigravity.model.trim() : "", modelOptions: {}, planMode: false },
   }
 }
 
