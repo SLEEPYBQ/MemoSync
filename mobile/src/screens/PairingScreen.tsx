@@ -12,6 +12,7 @@ import {
   View,
 } from "react-native"
 import { CameraView, useCameraPermissions } from "expo-camera"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons"
 import { cardShadow, colorWithAlpha, radius, spacing, typeScale, useTheme } from "../theme"
 import { MOBILE_TYPOGRAPHY } from "../lib/typography"
@@ -26,10 +27,18 @@ import {
 } from "../lib/pairing"
 import { useHostStore } from "../lib/hostStore"
 
+interface PendingPairingAttempt {
+  requestId: string
+  code: string
+  host: string
+  port: number
+  deviceName: string
+}
+
 type Phase =
   | { kind: "entry" }
   | { kind: "connecting" }
-  | { kind: "awaiting"; requestId: string; code: string; host: string; port: number }
+  | ({ kind: "awaiting" } & PendingPairingAttempt)
   | { kind: "failed"; message: string }
 
 const POLL_INTERVAL_MS = 2_000
@@ -42,20 +51,33 @@ function defaultDeviceName(): string {
 /**
  * Pairing flow: enter host:port (or scan the host settings QR) → POST a
  * pairing request → show the returned code large so it can be compared with
- * the host screen → poll every 2s → on approval persist the device token in
- * the keychain and let the root navigator switch to the project list.
+ * the host screen → poll sequentially every 2s → on approval persist the device
+ * token in the keychain and let the root navigator switch to the project list.
  */
 export function PairingScreen() {
   const { colors, dark } = useTheme()
+  const insets = useSafeAreaInsets()
   const pair = useHostStore((s) => s.pair)
 
   const [hostInput, setHostInput] = useState("")
   const [portInput, setPortInput] = useState("")
   const [deviceName, setDeviceName] = useState(defaultDeviceName())
   const [phase, setPhase] = useState<Phase>({ kind: "entry" })
+  const [resumableAttempt, setResumableAttempt] = useState<PendingPairingAttempt | null>(null)
   const [scanning, setScanning] = useState(false)
   const [cameraPermission, requestCameraPermission] = useCameraPermissions()
   const scanLock = useRef(false)
+  const lastPendingAttemptRef = useRef<PendingPairingAttempt | null>(null)
+
+  const handleHostChange = useCallback((value: string) => {
+    const parsedUri = parsePairingUri(value)
+    if (parsedUri) {
+      setHostInput(parsedUri.host)
+      setPortInput(String(parsedUri.port))
+      return
+    }
+    setHostInput(value)
+  }, [])
 
   // -- QR scanning ------------------------------------------------------------
 
@@ -91,31 +113,102 @@ export function PairingScreen() {
       setPhase({ kind: "failed", message: "Enter a valid host and port, for example 192.168.1.20 and 4040." })
       return
     }
+    const resolvedName = deviceName.trim() || defaultDeviceName()
+    setHostInput(target.host)
+    setPortInput(String(target.port))
     setPhase({ kind: "connecting" })
+
+    // The host enforces a 2-pending-requests-per-IP cap over a 10-minute TTL
+    // with no unauthenticated cancel endpoint. Reusing an already-pending
+    // request for the same host/port/name avoids burning slots after Cancel.
+    const previous = lastPendingAttemptRef.current
+    if (
+      previous &&
+      previous.host === target.host &&
+      previous.port === target.port &&
+      previous.deviceName === resolvedName
+    ) {
+      try {
+        const existing = await fetchPairingStatus(previous.host, previous.port, previous.requestId, previous.code)
+        if (existing.status === "pending") {
+          setResumableAttempt(previous)
+          setPhase({ kind: "awaiting", ...previous })
+          return
+        }
+        if (existing.status === "approved" && existing.token?.trim()) {
+          lastPendingAttemptRef.current = null
+          setResumableAttempt(null)
+          await pair({
+            host: previous.host,
+            port: previous.port,
+            token: existing.token,
+            deviceName: previous.deviceName,
+          })
+          return
+        }
+        lastPendingAttemptRef.current = null
+        setResumableAttempt(null)
+      } catch {
+        // Stale or unreachable — fall through and request a fresh pairing code.
+      }
+    }
+
     try {
-      const { requestId, code } = await createPairingRequest(target.host, target.port, deviceName.trim() || defaultDeviceName())
-      setPhase({ kind: "awaiting", requestId, code, host: target.host, port: target.port })
+      const { requestId, code } = await createPairingRequest(target.host, target.port, resolvedName)
+      const attempt: PendingPairingAttempt = {
+        requestId,
+        code,
+        host: target.host,
+        port: target.port,
+        deviceName: resolvedName,
+      }
+      lastPendingAttemptRef.current = attempt
+      setResumableAttempt(attempt)
+      setPhase({ kind: "awaiting", ...attempt })
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not reach the MemoSync host."
       setPhase({ kind: "failed", message })
     }
-  }, [hostInput, portInput, deviceName])
+  }, [hostInput, portInput, deviceName, pair])
 
   useEffect(() => {
     if (phase.kind !== "awaiting") return
     let cancelled = false
-    const timer = setInterval(async () => {
+    let timer: ReturnType<typeof setTimeout> | null = null
+
+    const clearStoredAttemptIfSame = () => {
+      if (lastPendingAttemptRef.current?.requestId === phase.requestId) {
+        lastPendingAttemptRef.current = null
+        setResumableAttempt(null)
+      }
+    }
+
+    const scheduleNext = () => {
+      if (cancelled) return
+      timer = setTimeout(() => {
+        void pollOnce()
+      }, POLL_INTERVAL_MS)
+    }
+
+    const pollOnce = async () => {
       try {
         const status = await fetchPairingStatus(phase.host, phase.port, phase.requestId, phase.code)
         if (cancelled) return
-        if (status.status === "approved" && status.token) {
-          clearInterval(timer)
+        if (status.status === "approved") {
+          clearStoredAttemptIfSame()
+          if (!status.token?.trim()) {
+            setPhase({
+              kind: "failed",
+              message: "The host approved pairing without returning a device credential. Start pairing again.",
+            })
+            return
+          }
           try {
             await pair({
               host: phase.host,
               port: phase.port,
               token: status.token,
-              deviceName: deviceName.trim() || defaultDeviceName(),
+              deviceName: phase.deviceName,
             })
             // Navigation switches automatically: the root navigator renders
             // the project screens once credentials exist.
@@ -128,35 +221,68 @@ export function PairingScreen() {
               })
             }
           }
-        } else if (status.status === "denied") {
-          clearInterval(timer)
-          setPhase({ kind: "failed", message: "The host denied this pairing request." })
-        } else if (status.status === "expired") {
-          clearInterval(timer)
-          setPhase({ kind: "failed", message: "The pairing request expired. Start a new one." })
+          return
         }
+        if (status.status === "denied") {
+          clearStoredAttemptIfSame()
+          setPhase({ kind: "failed", message: "The host denied this pairing request." })
+          return
+        }
+        if (status.status === "expired") {
+          clearStoredAttemptIfSame()
+          setPhase({ kind: "failed", message: "The pairing request expired. Start a new one." })
+          return
+        }
+        scheduleNext()
       } catch (error) {
         if (cancelled) return
-        // Pairing requests are host-memory state. After a host restart the old
-        // request id is permanently gone (404), not a transient network failure,
-        // so waiting here forever would never surface a recoverable approval.
-        if (error instanceof PairingStatusRequestError && error.status === 404) {
-          clearInterval(timer)
-          setPhase({
-            kind: "failed",
-            message: "The host no longer recognizes this pairing request, usually because it restarted. Start pairing again.",
-          })
+        if (error instanceof PairingStatusRequestError) {
+          if (error.status === 404) {
+            clearStoredAttemptIfSame()
+            setPhase({
+              kind: "failed",
+              message: "The host no longer recognizes this pairing request, usually because it restarted. Start pairing again.",
+            })
+            return
+          }
+          if (error.status === 403) {
+            clearStoredAttemptIfSame()
+            setPhase({
+              kind: "failed",
+              message: "Remote access was turned off on the MemoSync host. Enable it in MemoSync settings and try again.",
+            })
+            return
+          }
+          if (error.status >= 400 && error.status < 500 && error.status !== 408 && error.status !== 429) {
+            clearStoredAttemptIfSame()
+            setPhase({
+              kind: "failed",
+              message: error.serverMessage || `This pairing request is no longer valid (HTTP ${error.status}). Start pairing again.`,
+            })
+            return
+          }
         }
-        // Other network errors while polling are fine — the next tick retries.
+        // Transient network errors retry on the next sequential tick.
+        scheduleNext()
       }
-    }, POLL_INTERVAL_MS)
+    }
+
+    scheduleNext()
     return () => {
       cancelled = true
-      clearInterval(timer)
+      if (timer !== null) clearTimeout(timer)
     }
-  }, [phase, pair, deviceName])
+  }, [phase, pair])
 
   const reset = useCallback(() => setPhase({ kind: "entry" }), [])
+  const resumePendingCode = useCallback(() => {
+    const attempt = lastPendingAttemptRef.current
+    if (!attempt) return
+    setDeviceName(attempt.deviceName)
+    setHostInput(attempt.host)
+    setPortInput(String(attempt.port))
+    setPhase({ kind: "awaiting", ...attempt })
+  }, [])
 
   // -- Render -------------------------------------------------------------------
 
@@ -169,7 +295,7 @@ export function PairingScreen() {
           onBarcodeScanned={handleScanned}
         />
         <View style={styles.scannerReticle} pointerEvents="none" />
-        <View style={styles.scannerOverlay}>
+        <View style={[styles.scannerOverlay, { bottom: Math.max(insets.bottom, spacing.lg) + spacing.xl }]}>
           <Text style={styles.scannerHint}>Point at the QR code in MemoSync settings</Text>
           <Pressable onPress={() => setScanning(false)} style={({ pressed }) => [styles.scannerButton, pressed && styles.pressed]}>
             <Text style={styles.scannerButtonText}>Enter manually</Text>
@@ -180,11 +306,18 @@ export function PairingScreen() {
   }
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === "ios" ? "padding" : "height"}>
       <ScrollView
         style={[styles.flex, { backgroundColor: colors.background }]}
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[
+          styles.content,
+          {
+            paddingTop: Math.max(insets.top + spacing.lg, spacing.xxl),
+            paddingBottom: Math.max(insets.bottom + spacing.lg, spacing.xxl),
+          },
+        ]}
         keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
       >
         <View style={styles.inner}>
           <View style={styles.header}>
@@ -221,7 +354,7 @@ export function PairingScreen() {
                   <FieldLabel label="Host" colors={colors} />
                   <PairingInput
                     value={hostInput}
-                    onChangeText={setHostInput}
+                    onChangeText={handleHostChange}
                     placeholder="192.168.1.20"
                     keyboardType="url"
                     colors={colors}
@@ -266,6 +399,15 @@ export function PairingScreen() {
                   loading={phase.kind === "connecting"}
                   onPress={connect}
                 />
+                {resumableAttempt ? (
+                  <Button
+                    label={`Resume code ${formatPairingCode(resumableAttempt.code)}`}
+                    icon="key-outline"
+                    tone="secondary"
+                    fullWidth
+                    onPress={resumePendingCode}
+                  />
+                ) : null}
                 <Button label="Scan QR code" icon="scan-outline" tone="secondary" fullWidth onPress={() => void startScanning()} />
               </View>
             </View>
@@ -303,6 +445,7 @@ function PairingInput(props: {
       autoCapitalize={props.autoCapitalize ?? "none"}
       autoCorrect={false}
       keyboardType={props.keyboardType ?? "default"}
+      returnKeyType="done"
       selectionColor={props.colors.focus}
       style={[
         styles.input,

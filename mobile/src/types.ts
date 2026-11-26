@@ -35,6 +35,8 @@ export type ModelOptions = {
   opencode?: Record<string, unknown>
 }
 
+export type MemoryPreviewDecision = "go_on" | "dismiss" | "without_memory"
+
 export type ClientCommand =
   | { type: "system.ping" }
   | {
@@ -68,6 +70,17 @@ export type ClientCommand =
   | { type: "message.steer"; chatId: string; queuedMessageId: string }
   | { type: "message.dequeue"; chatId: string; queuedMessageId: string }
   | { type: "chat.respondTool"; chatId: string; toolUseId: string; result: unknown }
+  | {
+      type: "chat.respondMemoryPreview"
+      chatId: string
+      previewId: string
+      decision: MemoryPreviewDecision
+      memoryIds?: string[]
+      operationId?: string
+    }
+  | { type: "chat.respondMemoryProposals"; chatId: string; proposalsId: string; decision: "reviewed" | "skipped" }
+  | { type: "chat.respondMemoryCheckup"; chatId: string; checkupId: string; decision: "handled" | "skipped" }
+  | { type: "chat.respondMemoryTransfer"; chatId: string; transferId: string; decision: "handled" | "skipped" }
 
 export type ClientEnvelope =
   | { v: 1; type: "subscribe"; id: string; topic: SubscriptionTopic }
@@ -77,6 +90,7 @@ export type ClientEnvelope =
 export type ServerSnapshot =
   | { type: "sidebar"; data: SidebarData }
   | { type: "local-projects"; data: LocalProjectsSnapshot }
+  | { type: "model-access"; data: ModelAccessSnapshot }
   | { type: "chat"; data: ChatSnapshot | null }
 
 export type ServerEnvelope =
@@ -150,7 +164,9 @@ export interface LocalProjectsSnapshot {
 
 export interface QueuedChatMessage {
   id: string
+  rejection?: "stale_native_command"
   content: string
+  attachments?: ChatAttachment[]
   createdAt: number
   provider?: string
   model?: string
@@ -298,14 +314,111 @@ export interface ToolResultEntry extends TranscriptEntryBase {
 export interface MemoryPreviewEntry extends TranscriptEntryBase {
   kind: "memory_preview"
   previewId: string
+  turn?: number
   task?: string
+  relevancePending?: boolean
   memories?: Array<{ id: string; content: string; scope: string }>
+}
+
+export interface MemoryPreviewUpdateEntry extends TranscriptEntryBase {
+  kind: "memory_preview_update"
+  previewId: string
+  revision: number
+  memories: Array<{ id: string; content: string; scope: string }>
+  relevancePending?: boolean
 }
 
 export interface MemoryPreviewDecisionEntry extends TranscriptEntryBase {
   kind: "memory_preview_decision"
   previewId: string
   decision: string
+}
+
+export interface MemoryProposalsEntry extends TranscriptEntryBase {
+  kind: "memory_proposals"
+  proposalsId: string
+  openingReviewId?: string
+  turn?: number
+  pending?: boolean
+  candidates: Array<{ id: string }>
+}
+
+export interface MemoryProposalsResultEntry extends TranscriptEntryBase {
+  kind: "memory_proposals_result"
+  proposalsId: string
+  candidates: Array<{ id: string }>
+}
+
+export interface MemoryProposalsDecisionEntry extends TranscriptEntryBase {
+  kind: "memory_proposals_decision"
+  proposalsId: string
+  decision: "reviewed" | "skipped" | "cancelled" | "expired" | "empty"
+}
+
+export interface MemoryTransferSuggestionSummary {
+  sourceId: string
+  sourceContent?: string
+  content?: string
+  sourceLabel?: string
+}
+
+export interface MemoryTransferEntry extends TranscriptEntryBase {
+  kind: "memory_transfer"
+  transferId: string
+  openingReviewId?: string
+  turn?: number
+  pending?: boolean
+  suggestions: MemoryTransferSuggestionSummary[]
+}
+
+export interface MemoryTransferResultEntry extends TranscriptEntryBase {
+  kind: "memory_transfer_result"
+  transferId: string
+  suggestions: MemoryTransferSuggestionSummary[]
+  done?: boolean
+}
+
+export interface MemoryTransferDecisionEntry extends TranscriptEntryBase {
+  kind: "memory_transfer_decision"
+  transferId: string
+  decision: "handled" | "skipped" | "cancelled" | "expired" | "empty"
+}
+
+export interface MemoryCheckupSuggestionSummary {
+  kind: string
+  memoryId: string
+  reason: string
+}
+
+export interface MemoryCheckupEntry extends TranscriptEntryBase {
+  kind: "memory_checkup"
+  checkupId: string
+  openingReviewId?: string
+  turn?: number
+  pending?: boolean
+}
+
+export interface MemoryCheckupResultEntry extends TranscriptEntryBase {
+  kind: "memory_checkup_result"
+  checkupId: string
+  suggestions: MemoryCheckupSuggestionSummary[]
+}
+
+export interface MemoryCheckupDecisionEntry extends TranscriptEntryBase {
+  kind: "memory_checkup_decision"
+  checkupId: string
+  decision: "handled" | "skipped" | "cancelled" | "expired" | "empty" | "failed"
+}
+
+export interface MemoryPreparationResetEntry extends TranscriptEntryBase {
+  kind: "memory_preparation_reset"
+  openingReviewId?: string
+  previewId?: string
+  revision: number
+  from: "proposals" | "checkup" | "transfer"
+  proposalsId?: string
+  transferId?: string
+  checkupId?: string
 }
 
 export interface ResultEntry extends TranscriptEntryBase {
@@ -329,7 +442,7 @@ export interface StatusEntry extends TranscriptEntryBase {
   status: string
 }
 
-/** Catch-all for entries the mobile UI does not render (memory gates, system_init, …). */
+/** Catch-all for entries the mobile UI does not render (system_init, traces, …). */
 export interface IgnoredEntry extends TranscriptEntryBase {
   kind: string
 }
@@ -340,7 +453,18 @@ export type TranscriptEntry =
   | ToolCallEntry
   | ToolResultEntry
   | MemoryPreviewEntry
+  | MemoryPreviewUpdateEntry
   | MemoryPreviewDecisionEntry
+  | MemoryProposalsEntry
+  | MemoryProposalsResultEntry
+  | MemoryProposalsDecisionEntry
+  | MemoryTransferEntry
+  | MemoryTransferResultEntry
+  | MemoryTransferDecisionEntry
+  | MemoryCheckupEntry
+  | MemoryCheckupResultEntry
+  | MemoryCheckupDecisionEntry
+  | MemoryPreparationResetEntry
   | ResultEntry
   | InterruptedEntry
   | StatusEntry

@@ -1,3 +1,4 @@
+import { AppState, type AppStateStatus, type NativeEventSubscription } from "react-native"
 import type {
   ClientCommand,
   ClientEnvelope,
@@ -12,12 +13,13 @@ type StatusListener = (status: SocketStatus) => void
 
 const INITIAL_RECONNECT_MS = 750
 const MAX_RECONNECT_MS = 5_000
+const CONNECT_TIMEOUT_MS = 8_000
 const COMMAND_ACK_TIMEOUT_MS = 10_000
 // Sending is not a read-only probe: the host can durably commit the prompt
 // and still be cold-starting a provider when a short client deadline fires.
 // Give admission-style commands a startup-sized grace period instead.
 const SEND_COMMAND_ACK_TIMEOUT_MS = 90_000
-const STALE_CONNECTION_MS = 25_000
+const STALE_CONNECTION_MS = 15_000
 const HEARTBEAT_INTERVAL_MS = 15_000
 const PING_TIMEOUT_MS = 4_000
 
@@ -72,12 +74,15 @@ export class MemoSyncSocket {
   private started = false
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectDelayMs = INITIAL_RECONNECT_MS
+  private connectTimeoutTimer: ReturnType<typeof setTimeout> | null = null
+  private connectStartedAt = 0
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null
   private pingTimeoutTimer: ReturnType<typeof setTimeout> | null = null
   private pingPromise: Promise<void> | null = null
+  private appStateSubscription: NativeEventSubscription | null = null
+  private backgroundedAt: number | null = null
   private lastOpenAt = 0
   private lastMessageAt = 0
-  private reconnectImmediatelyOnClose = false
   private readonly subscriptions = new Map<string, SubscriptionEntry>()
   private readonly pending = new Map<string, PendingCommand>()
   private readonly statusListeners = new Set<StatusListener>()
@@ -95,26 +100,21 @@ export class MemoSyncSocket {
   start() {
     if (this.started) return
     this.started = true
+    this.appStateSubscription?.remove()
+    this.appStateSubscription = AppState.addEventListener("change", this.handleAppStateChange)
     this.connect()
   }
 
   dispose() {
     this.started = false
+    this.appStateSubscription?.remove()
+    this.appStateSubscription = null
+    this.backgroundedAt = null
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.stopHeartbeat()
-    this.clearPingState()
-    const ws = this.ws
-    this.ws = null
-    if (ws) {
-      ws.onopen = null
-      ws.onclose = null
-      ws.onmessage = null
-      ws.onerror = null
-      ws.close()
-    }
+    this.detachSocket()
     this.failAllPending(new Error("Socket disposed"))
     this.subscriptions.clear()
     this.statusListeners.clear()
@@ -184,20 +184,32 @@ export class MemoSyncSocket {
 
   private connect() {
     if (!this.started) return
+    this.detachSocket()
+    this.connectStartedAt = Date.now()
     this.emitStatus("connecting")
     const ws = new RNWebSocket(this.url, null, {
       headers: { Authorization: `Bearer ${this.token}` },
     })
     this.ws = ws
+    this.connectTimeoutTimer = setTimeout(() => {
+      if (!this.started || this.ws !== ws || ws.readyState !== WebSocket.CONNECTING) return
+      this.detachSocket()
+      this.emitStatus("disconnected")
+      this.failAllPending(new Error("Timed out connecting to the MemoSync host"))
+      void this.probeUnauthorized()
+      this.scheduleReconnect()
+    }, CONNECT_TIMEOUT_MS)
 
     ws.onopen = () => {
       if (!this.started || this.ws !== ws) return
+      this.clearConnectTimeout()
       this.reconnectDelayMs = INITIAL_RECONNECT_MS
-      this.reconnectImmediatelyOnClose = false
       this.lastOpenAt = Date.now()
       this.lastMessageAt = this.lastOpenAt
       this.emitStatus("connected")
-      this.startHeartbeat()
+      if (AppState.currentState !== "background") {
+        this.startHeartbeat()
+      }
       // Re-subscribe every live topic on the fresh connection. Commands that
       // were in flight when the last socket died already rejected — the user
       // re-sends deliberately — so nothing else is replayed.
@@ -220,8 +232,8 @@ export class MemoSyncSocket {
 
     ws.onclose = (event) => {
       if (!this.started || this.ws !== ws) return
-      const reconnectImmediately = this.reconnectImmediatelyOnClose
-      this.reconnectImmediatelyOnClose = false
+      this.ws = null
+      this.clearConnectTimeout()
       this.stopHeartbeat()
       this.clearPingState()
       this.emitStatus("disconnected")
@@ -236,15 +248,12 @@ export class MemoSyncSocket {
       // loop; otherwise a revoked token reconnects forever instead of sending
       // the app back through pairing.
       void this.probeUnauthorized()
-      if (reconnectImmediately) {
-        this.connect()
-        return
-      }
       this.scheduleReconnect()
     }
 
     ws.onerror = () => {
-      // onclose always follows; nothing to do here.
+      // onclose always follows on normal failures; blackholed connects/pings
+      // are separately bounded by connectTimeoutTimer and pingTimeoutTimer.
     }
   }
 
@@ -326,25 +335,64 @@ export class MemoSyncSocket {
   private handleUnauthorized() {
     if (!this.started) return
     this.started = false
+    this.appStateSubscription?.remove()
+    this.appStateSubscription = null
+    this.backgroundedAt = null
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.stopHeartbeat()
-    this.clearPingState()
+    this.detachSocket()
+    this.emitStatus("disconnected")
     this.failAllPending(new Error("This device is no longer paired with the MemoSync host"))
     this.onUnauthorized?.()
   }
 
+  private readonly handleAppStateChange = (nextState: AppStateStatus) => {
+    if (!this.started) return
+    if (nextState === "background") {
+      this.backgroundedAt = Date.now()
+      this.stopHeartbeat()
+      this.clearPingState()
+      return
+    }
+    if (nextState !== "active") return
+
+    const wasBackgrounded = this.backgroundedAt !== null
+    this.backgroundedAt = null
+    this.reconnectDelayMs = INITIAL_RECONNECT_MS
+
+    if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
+      this.reconnectNow(true)
+      return
+    }
+    if (this.ws.readyState === WebSocket.CONNECTING) {
+      if (wasBackgrounded || Date.now() - this.connectStartedAt >= CONNECT_TIMEOUT_MS) {
+        this.reconnectNow(true)
+      }
+      return
+    }
+    this.startHeartbeat()
+    const idleMs = Date.now() - Math.max(this.lastMessageAt, this.lastOpenAt)
+    if (wasBackgrounded || idleMs >= 2_000) {
+      void this.sendPing()
+    }
+  }
+
   /** React Native can keep a TCP/WebSocket connection nominally open after a
    * network path silently drops. The host answers system.ping immediately, so
-   * an idle-open socket that cannot produce a pong is closed and reconnected. */
+   * an idle-open socket that cannot produce a pong is detached and replaced. */
   ensureHealthyConnection(): Promise<void> {
     if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
-      this.reconnectNow()
+      this.reconnectNow(true)
       return Promise.resolve()
     }
-    if (this.ws.readyState === WebSocket.CONNECTING) return Promise.resolve()
+    if (this.ws.readyState === WebSocket.CONNECTING) {
+      if (Date.now() - this.connectStartedAt >= CONNECT_TIMEOUT_MS) {
+        this.reconnectNow(true)
+      }
+      return Promise.resolve()
+    }
     if (!this.isConnectionStale()) return Promise.resolve()
     return this.sendPing()
   }
@@ -356,23 +404,29 @@ export class MemoSyncSocket {
 
   private sendPing(): Promise<void> {
     if (this.pingPromise) return this.pingPromise
-    const pingPromise = this.command({ type: "system.ping" })
-      .then(() => {
-        this.clearPingState()
-      })
-      .catch(() => {
-        this.clearPingState()
-        this.reconnectNow()
-      })
-    this.pingTimeoutTimer = setTimeout(() => {
+    const targetWs = this.ws
+    if (!targetWs || targetWs.readyState !== WebSocket.OPEN) {
+      this.reconnectNow(true)
+      return Promise.resolve()
+    }
+    let settled = false
+    const finish = (healthy: boolean) => {
+      if (settled) return
+      settled = true
       this.clearPingState()
-      this.reconnectNow()
-    }, PING_TIMEOUT_MS)
+      if (!healthy && this.ws === targetWs) {
+        this.reconnectNow(true)
+      }
+    }
+    const pingPromise = this.command({ type: "system.ping" })
+      .then(() => finish(true))
+      .catch(() => finish(false))
+    this.pingTimeoutTimer = setTimeout(() => finish(false), PING_TIMEOUT_MS)
     this.pingPromise = pingPromise
     return pingPromise
   }
 
-  private reconnectNow() {
+  private reconnectNow(force = false) {
     if (!this.started) return
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
@@ -382,9 +436,46 @@ export class MemoSyncSocket {
       this.connect()
       return
     }
-    if (this.ws.readyState === WebSocket.CONNECTING) return
-    this.reconnectImmediatelyOnClose = true
-    this.ws.close()
+    if (
+      this.ws.readyState === WebSocket.CONNECTING &&
+      !force &&
+      Date.now() - this.connectStartedAt < CONNECT_TIMEOUT_MS
+    ) {
+      return
+    }
+    // Detach handlers and abandon the wedged socket immediately instead of
+    // waiting 60-120s for OS TCP FIN/SYN retransmission on a dead route.
+    this.detachSocket()
+    this.emitStatus("disconnected")
+    this.failAllPending(new Error("Disconnected from the MemoSync host"))
+    this.connect()
+  }
+
+  private detachSocket(): WebSocket | null {
+    this.clearConnectTimeout()
+    this.stopHeartbeat()
+    this.clearPingState()
+    const ws = this.ws
+    this.ws = null
+    if (ws) {
+      ws.onopen = null
+      ws.onmessage = null
+      ws.onclose = null
+      ws.onerror = null
+      try {
+        ws.close()
+      } catch {
+        // Ignore close errors on already-broken native sockets.
+      }
+    }
+    return ws
+  }
+
+  private clearConnectTimeout() {
+    if (this.connectTimeoutTimer !== null) {
+      clearTimeout(this.connectTimeoutTimer)
+      this.connectTimeoutTimer = null
+    }
   }
 
   private startHeartbeat() {

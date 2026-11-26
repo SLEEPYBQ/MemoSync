@@ -50,6 +50,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
           style={styles.bodyScroll}
           contentContainerStyle={styles.bodyContent}
           nestedScrollEnabled
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator
         >
           {props.body}

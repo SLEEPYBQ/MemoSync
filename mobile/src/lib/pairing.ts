@@ -20,16 +20,41 @@ export function hostBaseUrl(host: string, port: number): string {
   return `http://${host}:${port}`
 }
 
+/** Strict hostname / IPv4 allowlist so no path, query, authority, or port
+ * delimiter can ever smuggle into constructed `http://` or `ws://` URLs. */
+export function isValidHost(host: string): boolean {
+  if (!host || host.length > 253) return false
+  if (host.startsWith(".") || host.endsWith(".") || host.includes("..")) return false
+  if (!/^[a-zA-Z0-9._-]+$/.test(host)) return false
+  if (/^\d+(?:\.\d+)*$/.test(host)) {
+    const parts = host.split(".")
+    if (parts.length !== 4) return false
+    return parts.every((part) => {
+      if (!/^\d{1,3}$/.test(part)) return false
+      const value = Number.parseInt(part, 10)
+      return value >= 0 && value <= 255
+    })
+  }
+  return true
+}
+
+function parsePortString(raw: string | undefined): number {
+  const trimmed = raw?.trim() ?? ""
+  if (!/^\d+$/.test(trimmed)) return NaN
+  const port = Number.parseInt(trimmed, 10)
+  return port >= 1 && port <= 65535 ? port : NaN
+}
+
 /** Parse `memosync://pair?host=<lan-ip>&port=<port>` (what the host QR encodes).
  * Query parsing is manual on purpose: Hermes' URL/URLSearchParams coverage has
  * historically lagged, and the contract is exactly two params. */
 export function parsePairingUri(uri: string): { host: string; port: number } | null {
-  const trimmed = uri.trim()
-  if (!trimmed.toLowerCase().startsWith("memosync://pair")) return null
-  const queryIndex = trimmed.indexOf("?")
-  if (queryIndex === -1) return null
+  const withoutFragment = uri.trim().split("#")[0] ?? ""
+  const match = withoutFragment.match(/^memosync:\/\/pair\/?\?(.+)$/i)
+  if (!match) return null
+  const query = match[1] ?? ""
   const params: Record<string, string> = {}
-  for (const pair of trimmed.slice(queryIndex + 1).split("&")) {
+  for (const pair of query.split("&")) {
     const eq = pair.indexOf("=")
     if (eq <= 0) continue
     try {
@@ -39,28 +64,39 @@ export function parsePairingUri(uri: string): { host: string; port: number } | n
     }
   }
   const host = params.host?.trim()
-  const port = params.port ? Number.parseInt(params.port.trim(), 10) : NaN
-  if (!host || !Number.isFinite(port) || port <= 0 || port > 65535) return null
+  const port = parsePortString(params.port)
+  if (!host || !isValidHost(host) || !Number.isFinite(port)) return null
   return { host, port }
 }
 
-/** Accept `host`, `host:port`, or a full pairing URI; returns null when invalid. */
+/** Accept `host`, `host:port`, `http(s)://host(:port)` (copied from desktop
+ * "Other addresses"), or a full pairing URI; returns null when invalid. */
 export function normalizeHostInput(hostInput: string, portInput: string): { host: string; port: number } | null {
   const fromUri = parsePairingUri(hostInput)
   if (fromUri) return fromUri
   let host = hostInput.trim()
-  let port = Number.parseInt(portInput.trim(), 10)
-  // Support pasting `192.168.1.20:4040` into the host field.
+  let defaultSchemePort = NaN
+  const schemeMatch = host.match(/^(https?):\/\//i)
+  if (schemeMatch) {
+    defaultSchemePort = schemeMatch[1]?.toLowerCase() === "https" ? 443 : 80
+    host = host.slice(schemeMatch[0].length)
+    // Allow a trailing root slash on copied origin URLs (`http://192.168.1.20:4040/`),
+    // while keeping non-root paths/queries invalid via `isValidHost`.
+    if (host.endsWith("/")) host = host.slice(0, -1)
+  }
+  let port = parsePortString(portInput)
+  // Support pasting `192.168.1.20:4040` or `http://192.168.1.20:4040` into the
+  // host field — an embedded port always wins over whatever remained in Port.
   const colonIndex = host.lastIndexOf(":")
   if (colonIndex > 0 && host.indexOf(":") === colonIndex) {
-    const embeddedPort = Number.parseInt(host.slice(colonIndex + 1), 10)
-    if (Number.isFinite(embeddedPort) && (!portInput.trim() || Number.isNaN(port))) {
-      port = embeddedPort
-      host = host.slice(0, colonIndex)
-    }
+    const embeddedPort = parsePortString(host.slice(colonIndex + 1))
+    if (!Number.isFinite(embeddedPort)) return null
+    port = embeddedPort
+    host = host.slice(0, colonIndex)
+  } else if (!Number.isFinite(port) && Number.isFinite(defaultSchemePort)) {
+    port = defaultSchemePort
   }
-  if (!host || !/^[a-zA-Z0-9._-]+$/.test(host)) return null
-  if (!Number.isFinite(port) || port <= 0 || port > 65535) return null
+  if (!isValidHost(host) || !Number.isFinite(port)) return null
   return { host, port }
 }
 
@@ -105,6 +141,15 @@ export async function validateDeviceToken(
   }
 }
 
+async function readServerErrorMessage(response: Response): Promise<string | null> {
+  try {
+    const payload = (await response.json()) as { error?: unknown }
+    return typeof payload?.error === "string" && payload.error.trim() ? payload.error.trim() : null
+  } catch {
+    return null
+  }
+}
+
 export async function createPairingRequest(
   host: string,
   port: number,
@@ -116,11 +161,18 @@ export async function createPairingRequest(
     body: JSON.stringify({ deviceName }),
   })
   if (response.status !== 201) {
-    throw new Error(
-      response.status === 404 || response.status === 403
-        ? "This MemoSync host is not accepting pairing requests. Enable remote access in its settings."
-        : `Pairing request failed (HTTP ${response.status})`,
-    )
+    const serverMessage = await readServerErrorMessage(response)
+    if (response.status === 404 || response.status === 403) {
+      throw new Error("This MemoSync host is not accepting pairing requests. Enable remote access in its settings.")
+    }
+    if (response.status === 429) {
+      throw new Error(
+        serverMessage?.toLowerCase().includes("pending")
+          ? `${serverMessage}. Approve or deny the open request in MemoSync settings on your computer before starting another.`
+          : `${serverMessage ?? "Too many pairing requests"}. Approve or deny pending requests on your computer, or wait a moment and try again.`,
+      )
+    }
+    throw new Error(serverMessage ?? `Pairing request failed (HTTP ${response.status})`)
   }
   return (await response.json()) as PairingRequestResponse
 }
@@ -129,6 +181,7 @@ export class PairingStatusRequestError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly serverMessage?: string | null,
   ) {
     super(message)
     this.name = "PairingStatusRequestError"
@@ -146,7 +199,12 @@ export async function fetchPairingStatus(
     headers: { Accept: "application/json" },
   })
   if (!response.ok) {
-    throw new PairingStatusRequestError(response.status, `Could not read pairing status (HTTP ${response.status})`)
+    const serverMessage = await readServerErrorMessage(response)
+    throw new PairingStatusRequestError(
+      response.status,
+      serverMessage ?? `Could not read pairing status (HTTP ${response.status})`,
+      serverMessage,
+    )
   }
   return (await response.json()) as PairingStatusResponse
 }

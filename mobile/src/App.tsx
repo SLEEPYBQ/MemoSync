@@ -5,8 +5,8 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack"
 import { SafeAreaProvider } from "react-native-safe-area-context"
 import { StatusBar } from "expo-status-bar"
 import { darkColors, lightColors, themeForScheme } from "./theme"
-import { useHostStore } from "./lib/hostStore"
-import { ensureSocket, teardownSocket } from "./lib/socket"
+import { ensurePairedSocket, useHostStore } from "./lib/hostStore"
+import { teardownSocket } from "./lib/socket"
 import { PairingScreen } from "./screens/PairingScreen"
 import { ProjectsScreen } from "./screens/ProjectsScreen"
 import { ChatScreen } from "./screens/ChatScreen"
@@ -47,7 +47,7 @@ export default function App() {
   // the pairing does, and reconnects itself through network hiccups.
   useEffect(() => {
     if (!credentials) return
-    ensureSocket(credentials.host, credentials.port, credentials.token)
+    ensurePairedSocket(credentials)
     return () => {
       // Only tear down when the pairing is gone or replaced, not on every
       // render — ensureSocket is idempotent for unchanged credentials.

@@ -16,12 +16,34 @@ import {
   type NativeSyntheticEvent,
 } from "react-native"
 import type { NativeStackScreenProps } from "@react-navigation/native-stack"
+import { useHeaderHeight } from "@react-navigation/elements"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Ionicons } from "@expo/vector-icons"
-import { colorWithAlpha, radius, spacing, useTheme } from "../theme"
+import { cardShadow, colorWithAlpha, radius, spacing, useTheme } from "../theme"
 import { MOBILE_TYPOGRAPHY } from "../lib/typography"
 import { getSocket, type SocketStatus } from "../lib/socket"
 import { useHostStore } from "../lib/hostStore"
+import {
+  capturePreSendBaseline,
+  commandCatalogModelSelection,
+  deriveEffectiveChatStatus,
+  deriveMemoryGateState,
+  findPendingInteractiveToolId,
+  hasUnconsumedPlanApproval,
+  isActiveStatus,
+  isAmbiguousSendTransportError,
+  isToolResultEntry,
+  latestSystemInitModelSelection,
+  modelCommandFields,
+  normalizedToolKind,
+  recoverConnectionModelSelection,
+  wasSendCommittedInSnapshot,
+  type MemoryGateState,
+  type OpenCheckupGate,
+  type OpenProposalsGate,
+  type OpenTransferGate,
+  type PreSendBaseline,
+} from "../lib/chatState"
 import type {
   AskUserQuestionItem,
   AssistantTextEntry,
@@ -30,13 +52,16 @@ import type {
   ChatHistoryPage,
   ChatSnapshot,
   InterruptedEntry,
+  MemoryCheckupEntry,
+  MemoryPreviewDecision,
   MemoryPreviewEntry,
+  MemoryProposalsEntry,
+  MemoryTransferEntry,
   ModelAccessSnapshot,
-  ModelOptions,
+  QueuedChatMessage,
   ResultEntry,
   SidebarData,
   ToolCallEntry,
-  ToolResultEntry,
   TranscriptEntry,
   UserPromptEntry,
 } from "../types"
@@ -57,100 +82,40 @@ import {
 type Props = NativeStackScreenProps<RootStackParamList, "Chat">
 type Colors = ReturnType<typeof useTheme>["colors"]
 
-function isActiveStatus(status: ChatActivityStatus | undefined): boolean {
-  return status === "running" || status === "starting" || status === "previewing_memory" || status === "waiting_for_user"
+const SEND_RECONCILE_TIMEOUT_MS = 8_000
+
+function generateTraceId(): string {
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0
+    const v = c === "x" ? r : (r & 0x3) | 0x8
+    return v.toString(16)
+  })
 }
 
-function isRenderable(entry: TranscriptEntry): boolean {
-  return (
-    !entry.hidden &&
-    (entry.kind === "user_prompt" ||
-      entry.kind === "assistant_text" ||
-      entry.kind === "tool_call" ||
-      entry.kind === "memory_preview" ||
-      entry.kind === "interrupted" ||
-      entry.kind === "result")
-  )
+function isEntryRenderable(entry: TranscriptEntry, gateState: MemoryGateState): boolean {
+  if (entry.hidden) return false
+  switch (entry.kind) {
+    case "user_prompt":
+    case "assistant_text":
+    case "tool_call":
+    case "interrupted":
+    case "result":
+      return true
+    case "memory_preview":
+      return (entry as MemoryPreviewEntry).previewId === gateState.pendingPreviewId
+    case "memory_proposals":
+      return gateState.openProposalsById.has((entry as MemoryProposalsEntry).proposalsId)
+    case "memory_transfer":
+      return gateState.openTransfersById.has((entry as MemoryTransferEntry).transferId)
+    case "memory_checkup":
+      return gateState.openCheckupsById.has((entry as MemoryCheckupEntry).checkupId)
+    default:
+      return false
+  }
 }
 
 function isInterruptedEntry(entry: TranscriptEntry): entry is InterruptedEntry {
   return entry.kind === "interrupted"
-}
-
-interface ComposerModelSelection {
-  provider?: string
-  model?: string
-  modelOptions?: ModelOptions
-}
-
-function modelCommandFields(selection: ComposerModelSelection | null): {
-  provider?: string
-  model?: string
-  modelOptions?: ModelOptions
-} {
-  return {
-    ...(selection?.provider ? { provider: selection.provider } : {}),
-    ...(selection?.model ? { model: selection.model } : {}),
-    ...(selection?.modelOptions ? { modelOptions: selection.modelOptions } : {}),
-  }
-}
-
-function commandCatalogModelSelection(snapshot: ChatSnapshot | null): ComposerModelSelection | null {
-  const selection = snapshot?.runtime.commandCatalog?.selection
-  const provider = snapshot?.runtime.provider ?? null
-  if (!selection?.provider || !selection.model?.trim()) return null
-  if (provider && selection.provider !== provider) return null
-  return {
-    provider: selection.provider,
-    model: selection.model,
-    ...(selection.modelOptions ? { modelOptions: selection.modelOptions } : {}),
-  }
-}
-
-function latestSystemInitModelSelection(entries: TranscriptEntry[], provider: string | null): ComposerModelSelection | null {
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index] as TranscriptEntry & { provider?: unknown; model?: unknown }
-    if (entry.kind !== "system_init" || typeof entry.model !== "string" || !entry.model.trim()) continue
-    if (typeof entry.provider !== "string" || (provider && entry.provider !== provider)) continue
-    return { provider: entry.provider, model: entry.model }
-  }
-  return null
-}
-
-function selectionConnectionId(selection: ComposerModelSelection): string | undefined {
-  const options = selection.modelOptions
-  if (!selection.provider || !options) return undefined
-  if (options.connectionId) return options.connectionId
-  if (selection.provider === "claude") return options.claude?.connectionId
-  if (selection.provider === "codex") return options.codex?.connectionId
-  if (selection.provider === "pi") return options.pi?.connectionId
-  return undefined
-}
-
-/** A remembered connection/model pair becomes a hard startup failure when the
- * host edits that connection's model list. Mobile has no replacement picker,
- * but it can safely choose a model that is still offered by the same
- * connection; never switch connections implicitly. */
-function recoverConnectionModelSelection(
-  selection: ComposerModelSelection | null,
-  modelAccess: ModelAccessSnapshot | null,
-): ComposerModelSelection | null {
-  if (!selection?.model || !selection.provider || !modelAccess) return selection
-  const connectionId = selectionConnectionId(selection)
-  if (!connectionId) return selection
-  const connection = modelAccess.connections.find((candidate) => candidate.id === connectionId)
-  if (!connection || connection.models.length === 0) return selection
-  if (selection.provider === "pi" && connection.readOnly) return selection
-  const requested = selection.model.replace(/\[1m\]$/, "")
-  if (connection.models.some((model) => model.id === requested)) return selection
-  const engineAccess = modelAccess.engines[selection.provider]?.setup?.access
-  const configuredDefault = engineAccess?.mode === "connection" && engineAccess.connectionId === connectionId
-    ? engineAccess.defaultModel
-    : undefined
-  const replacement = [configuredDefault, connection.models[0]?.id].find(
-    (candidate): candidate is string => Boolean(candidate && connection.models.some((model) => model.id === candidate)),
-  )
-  return replacement ? { ...selection, model: replacement } : { ...selection, model: undefined }
 }
 
 function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEntry {
@@ -159,10 +124,6 @@ function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEnt
 
 function isMemoryPreviewEntry(entry: TranscriptEntry): entry is MemoryPreviewEntry {
   return entry.kind === "memory_preview" && "previewId" in entry
-}
-
-function isMemoryPreviewDecisionEntry(entry: TranscriptEntry): entry is Extract<TranscriptEntry, { kind: "memory_preview_decision" }> {
-  return entry.kind === "memory_preview_decision" && "previewId" in entry
 }
 
 /** Append live entries without dropping rows that fall out of the host's
@@ -206,18 +167,6 @@ function coalesceAssistantFragments(entries: TranscriptEntry[]): TranscriptEntry
     coalesced.push(candidate)
   }
   return coalesced
-}
-
-function isToolResultEntry(entry: TranscriptEntry): entry is ToolResultEntry {
-  return entry.kind === "tool_result" && "toolId" in entry
-}
-
-function normalizedToolKind(entry: ToolCallEntry): string {
-  if (entry.tool.toolKind) return entry.tool.toolKind
-  const name = (entry.tool.toolName ?? "").toLowerCase()
-  if (name === "askuserquestion") return "ask_user_question"
-  if (name === "exitplanmode") return "exit_plan_mode"
-  return name.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`).replace(/^_/, "")
 }
 
 function toolInputSummary(input: unknown): string {
@@ -346,9 +295,12 @@ function formatAttachmentSize(bytes: number): string {
 }
 
 function attachmentSource(attachment: ChatAttachment, host: string, port: number, token: string) {
+  if (/^https?:\/\//i.test(attachment.contentUrl)) {
+    // Never forward the host bearer credential to an arbitrary external URL.
+    return { uri: attachment.contentUrl }
+  }
   const path = attachment.contentUrl.startsWith("/") ? attachment.contentUrl : `/${attachment.contentUrl}`
-  const uri = /^https?:\/\//i.test(attachment.contentUrl) ? attachment.contentUrl : `http://${host}:${port}${path}`
-  return { uri, headers: { Authorization: `Bearer ${token}` } }
+  return { uri: `http://${host}:${port}${path}`, headers: { Authorization: `Bearer ${token}` } }
 }
 
 function UserBubble({ entry }: { entry: UserPromptEntry }) {
@@ -449,6 +401,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
         accessibilityLabel={`${name}${summary ? `, ${summary}` : ""}`}
         accessibilityState={{ expanded }}
         onPress={() => setExpanded((value) => !value)}
+        hitSlop={6}
         interactionColor={colorWithAlpha(colors.foreground, 0.045)}
         interactionOpacity={1}
         style={styles.workLogPressable}
@@ -471,7 +424,7 @@ function ToolCallRow({ entry }: { entry: ToolCallEntry }) {
       </RowPressable>
       {expanded && detail ? (
         <View style={[styles.toolDetailFrame, { backgroundColor: colors.sidebar, borderColor: colors.border }]}>
-          <ScrollView style={styles.toolDetailScroll} nestedScrollEnabled>
+          <ScrollView style={styles.toolDetailScroll} nestedScrollEnabled keyboardShouldPersistTaps="handled">
             <Text style={[styles.toolDetail, { color: colors.mutedForeground }]} selectable>
               {detail}
             </Text>
@@ -495,17 +448,176 @@ function ResultRow({ entry }: { entry: ResultEntry }) {
   )
 }
 
-function MemoryReviewCard({ entry }: { entry: MemoryPreviewEntry }) {
-  const count = entry.memories?.length ?? 0
+function MemoryReviewCard(props: {
+  entry: MemoryPreviewEntry
+  memories: Array<{ id: string; content: string; scope: string }>
+  disabled: boolean
+  respondingKey: string | null
+  onRespond: (previewId: string, option: PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] }) => Promise<void>
+}) {
+  const { colors } = useTheme()
+  const { entry, memories } = props
+  const count = memories.length
+  const memoryIds = useMemo(() => memories.map((item) => item.id), [memories])
+
   return (
     <PendingApprovalCard
-      eyebrow="Memory review"
-      title="Memory review required"
-      detail={`MemoSync paused this message while preparing ${count === 1 ? "one memory item" : `${count} memory items`}.`}
-      unavailableReason="Review the proposed memory use in MemoSync on the host to continue this turn."
-      disabled
-      onRespond={() => {}}
-      options={[]}
+      eyebrow="Working memory"
+      title="Review memory for this message"
+      detail={
+        count === 0
+          ? "MemoSync paused before starting so you can confirm working memory."
+          : `MemoSync prepared ${count === 1 ? "1 memory item" : `${count} memory items`} for this turn.`
+      }
+      body={
+        memories.length > 0 ? (
+          <View style={styles.memoryItemList}>
+            {memories.map((item) => (
+              <View
+                key={item.id}
+                style={[styles.memoryItemRow, { backgroundColor: colors.sidebar, borderColor: colors.border }]}
+              >
+                <Text style={[styles.memoryScopeBadge, { color: colors.mutedForeground }]}>
+                  {item.scope.toUpperCase()}
+                </Text>
+                <Text style={[styles.memoryItemContent, { color: colors.foreground }]} selectable>
+                  {item.content}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : undefined
+      }
+      disabled={props.disabled}
+      respondingKey={props.respondingKey}
+      onRespond={(option) =>
+        props.onRespond(entry.previewId, option as PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] })
+      }
+      options={[
+        {
+          key: `preview-go-on:${entry.previewId}`,
+          label: count > 0 ? "Continue with memory" : "Continue",
+          tone: "primary",
+          result: "go_on",
+          decision: "go_on",
+          memoryIds,
+        } as PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] },
+        ...(count > 0
+          ? [
+              {
+                key: `preview-without:${entry.previewId}`,
+                label: "Continue without memory",
+                tone: "secondary" as const,
+                result: "without_memory",
+                decision: "without_memory" as const,
+              },
+            ]
+          : []),
+        {
+          key: `preview-dismiss:${entry.previewId}`,
+          label: "Cancel message",
+          tone: "danger",
+          result: "dismiss",
+          decision: "dismiss",
+        } as PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] },
+      ]}
+    />
+  )
+}
+
+function MemoryPreparationCard(props: {
+  stage:
+    | ({ kind: "proposals" } & OpenProposalsGate)
+    | ({ kind: "transfer" } & OpenTransferGate)
+    | ({ kind: "checkup" } & OpenCheckupGate)
+  disabled: boolean
+  respondingKey: string | null
+  onSkip: (kind: "proposals" | "transfer" | "checkup", stageId: string, key: string) => Promise<void>
+}) {
+  const { colors } = useTheme()
+  const { stage } = props
+  const waitingOrScanning = stage.scanning || (stage.kind === "checkup" && stage.waiting)
+
+  if (waitingOrScanning) {
+    const statusCopy =
+      stage.kind === "proposals"
+        ? "Scanning proposed memory changes…"
+        : stage.kind === "transfer"
+          ? "Checking cross-project memory…"
+          : stage.waiting
+            ? "Waiting for earlier memory review…"
+            : "Checking memory library…"
+    return (
+      <View style={[styles.memoryScanningCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <ActivityIndicator size="small" color={colors.mutedIcon} />
+        <Text style={[styles.memoryScanningText, { color: colors.mutedForeground }]}>{statusCopy}</Text>
+      </View>
+    )
+  }
+
+  const stageId =
+    stage.kind === "proposals"
+      ? stage.proposalsId
+      : stage.kind === "transfer"
+        ? stage.transferId
+        : stage.checkupId
+  const optionKey = `skip-${stage.kind}:${stageId}`
+
+  const title =
+    stage.kind === "proposals"
+      ? "Memory candidates waiting"
+      : stage.kind === "transfer"
+        ? "Memory transfer review"
+        : "Memory checkup waiting"
+
+  const detail =
+    stage.kind === "proposals"
+      ? `MemoSync found ${stage.count === 1 ? "1 proposed memory change" : `${stage.count} proposed memory changes`}. Review details on the host, or skip for this message.`
+      : stage.kind === "transfer"
+        ? `MemoSync found ${stage.count === 1 ? "1 cross-project memory" : `${stage.count} cross-project memories`} that may help here. Review on the host, or skip for this message.`
+        : `MemoSync found ${stage.count === 1 ? "1 memory library checkup item" : `${stage.count} memory library checkup items`}. Review on the host, or skip for this message.`
+
+  const previewLines =
+    stage.kind === "transfer"
+      ? stage.suggestions
+          .map((item) => item.content?.trim() || item.sourceContent?.trim())
+          .filter((line): line is string => Boolean(line))
+      : stage.kind === "checkup"
+        ? stage.suggestions.map((item) => `${item.kind}: ${item.reason}`).filter(Boolean)
+        : []
+
+  return (
+    <PendingApprovalCard
+      eyebrow="Memory preparation"
+      title={title}
+      detail={detail}
+      body={
+        previewLines.length > 0 ? (
+          <View style={styles.memoryItemList}>
+            {previewLines.map((line, index) => (
+              <View
+                key={`${stageId}:${index}`}
+                style={[styles.memoryItemRow, { backgroundColor: colors.sidebar, borderColor: colors.border }]}
+              >
+                <Text style={[styles.memoryItemContent, { color: colors.foreground }]} selectable>
+                  {line}
+                </Text>
+              </View>
+            ))}
+          </View>
+        ) : undefined
+      }
+      disabled={props.disabled}
+      respondingKey={props.respondingKey}
+      onRespond={() => props.onSkip(stage.kind, stageId, optionKey)}
+      options={[
+        {
+          key: optionKey,
+          label: "Skip for this message",
+          tone: "primary",
+          result: "skipped",
+        },
+      ]}
     />
   )
 }
@@ -514,23 +626,41 @@ function InteractiveToolCard(props: {
   entry: ToolCallEntry
   disabled: boolean
   respondingKey: string | null
+  onInlineInputFocusChange: (focused: boolean) => void
   onRespond: (toolUseId: string, option: PendingApprovalOption) => Promise<void>
 }) {
   const { entry } = props
   const { colors } = useTheme()
   const [freeformAnswer, setFreeformAnswer] = useState("")
+  const [planFeedback, setPlanFeedback] = useState("")
   const kind = normalizedToolKind(entry)
   const toolUseId = entry.tool.toolId ?? entry._id
 
   if (kind === "exit_plan_mode") {
     const input = (entry.tool.input ?? {}) as { summary?: string; plan?: string }
     const planText = input.plan?.trim() || input.summary?.trim() || "The agent is ready to leave plan mode."
+    const trimmedFeedback = planFeedback.trim()
     return (
       <PendingApprovalCard
         eyebrow="Plan approval"
         title="Plan ready for review"
         detail="The agent is waiting for permission to start implementation."
-        body={<MarkdownLight text={planText} colors={colors} />}
+        body={
+          <View style={styles.answerBody}>
+            <MarkdownLight text={planText} colors={colors} />
+            <TextInput
+              value={planFeedback}
+              onChangeText={setPlanFeedback}
+              onFocus={() => props.onInlineInputFocusChange(true)}
+              onBlur={() => props.onInlineInputFocusChange(false)}
+              placeholder="Optional feedback if keeping plan mode"
+              placeholderTextColor={colors.mutedIcon}
+              multiline
+              selectionColor={colors.focus}
+              style={[styles.answerInput, { borderColor: colors.input, color: colors.foreground, backgroundColor: colors.background }]}
+            />
+          </View>
+        }
         disabled={props.disabled}
         respondingKey={props.respondingKey}
         onRespond={(option) => props.onRespond(toolUseId, option)}
@@ -539,13 +669,13 @@ function InteractiveToolCard(props: {
             key: "decline",
             label: "Keep planning",
             tone: "secondary",
-            result: { confirmed: false },
+            result: trimmedFeedback ? { confirmed: false, message: trimmedFeedback } : { confirmed: false },
           },
           {
             key: "accept",
             label: "Approve plan",
             tone: "primary",
-            result: { confirmed: true },
+            result: trimmedFeedback ? { confirmed: true, message: trimmedFeedback } : { confirmed: true },
           },
         ]}
       />
@@ -578,6 +708,7 @@ function InteractiveToolCard(props: {
                     <ScrollView
                       style={[styles.executionArgsScroll, { backgroundColor: colors.sidebar, borderColor: colors.border }]}
                       nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
                     >
                       <Text style={[styles.executionArgsText, { color: colors.mutedForeground }]} selectable>
                         {executionParts.args}
@@ -591,6 +722,8 @@ function InteractiveToolCard(props: {
               <TextInput
                 value={freeformAnswer}
                 onChangeText={setFreeformAnswer}
+                onFocus={() => props.onInlineInputFocusChange(true)}
+                onBlur={() => props.onInlineInputFocusChange(false)}
                 placeholder="Or type another answer"
                 placeholderTextColor={colors.mutedIcon}
                 multiline
@@ -635,6 +768,8 @@ function InteractiveToolCard(props: {
               <TextInput
                 value={freeformAnswer}
                 onChangeText={setFreeformAnswer}
+                onFocus={() => props.onInlineInputFocusChange(true)}
+                onBlur={() => props.onInlineInputFocusChange(false)}
                 placeholder="Type your answer"
                 placeholderTextColor={colors.mutedIcon}
                 multiline
@@ -677,12 +812,18 @@ function InteractiveToolCard(props: {
 function TranscriptRow(props: {
   entry: TranscriptEntry
   pendingToolId: string | null
-  pendingMemoryPreviewId: string | null
+  memoryGateState: MemoryGateState
   interactionDisabled: boolean
   respondingKey: string | null
-  onRespond: (toolUseId: string, option: PendingApprovalOption) => Promise<void>
+  onInlineInputFocusChange: (focused: boolean) => void
+  onRespondTool: (toolUseId: string, option: PendingApprovalOption) => Promise<void>
+  onRespondMemoryPreview: (
+    previewId: string,
+    option: PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] },
+  ) => Promise<void>
+  onSkipMemoryStage: (kind: "proposals" | "transfer" | "checkup", stageId: string, key: string) => Promise<void>
 }) {
-  const { entry } = props
+  const { entry, memoryGateState } = props
   if (entry.kind === "user_prompt") return <UserBubble entry={entry as UserPromptEntry} />
   if (entry.kind === "assistant_text") return <AssistantBlock text={(entry as AssistantTextEntry).text} />
   if (isInterruptedEntry(entry)) {
@@ -694,7 +835,53 @@ function TranscriptRow(props: {
     )
   }
   if (isMemoryPreviewEntry(entry)) {
-    return entry.previewId === props.pendingMemoryPreviewId ? <MemoryReviewCard entry={entry} /> : null
+    if (entry.previewId !== memoryGateState.pendingPreviewId) return null
+    const memories = memoryGateState.previewMemoriesById.get(entry.previewId) ?? entry.memories ?? []
+    return (
+      <MemoryReviewCard
+        entry={entry}
+        memories={memories}
+        disabled={props.interactionDisabled}
+        respondingKey={props.respondingKey}
+        onRespond={props.onRespondMemoryPreview}
+      />
+    )
+  }
+  if (entry.kind === "memory_proposals") {
+    const stage = memoryGateState.openProposalsById.get((entry as MemoryProposalsEntry).proposalsId)
+    if (!stage) return null
+    return (
+      <MemoryPreparationCard
+        stage={{ kind: "proposals", ...stage }}
+        disabled={props.interactionDisabled}
+        respondingKey={props.respondingKey}
+        onSkip={props.onSkipMemoryStage}
+      />
+    )
+  }
+  if (entry.kind === "memory_transfer") {
+    const stage = memoryGateState.openTransfersById.get((entry as MemoryTransferEntry).transferId)
+    if (!stage) return null
+    return (
+      <MemoryPreparationCard
+        stage={{ kind: "transfer", ...stage }}
+        disabled={props.interactionDisabled}
+        respondingKey={props.respondingKey}
+        onSkip={props.onSkipMemoryStage}
+      />
+    )
+  }
+  if (entry.kind === "memory_checkup") {
+    const stage = memoryGateState.openCheckupsById.get((entry as MemoryCheckupEntry).checkupId)
+    if (!stage) return null
+    return (
+      <MemoryPreparationCard
+        stage={{ kind: "checkup", ...stage }}
+        disabled={props.interactionDisabled}
+        respondingKey={props.respondingKey}
+        onSkip={props.onSkipMemoryStage}
+      />
+    )
   }
   if (entry.kind === "tool_call") {
     const toolEntry = entry as ToolCallEntry
@@ -706,7 +893,8 @@ function TranscriptRow(props: {
           entry={toolEntry}
           disabled={props.interactionDisabled}
           respondingKey={props.respondingKey}
-          onRespond={props.onRespond}
+          onInlineInputFocusChange={props.onInlineInputFocusChange}
+          onRespond={props.onRespondTool}
         />
       )
     }
@@ -724,16 +912,39 @@ function TranscriptRow(props: {
  * snapshot carries the whole in-progress reply, so it is rendered as-is and
  * never appended to.
  */
+interface PendingSendReconciliation {
+  content: string
+  baseline: PreSendBaseline
+  errorMessage: string
+  timer: ReturnType<typeof setTimeout>
+}
+
+function formatQueuedMessageSummary(message: QueuedChatMessage): string {
+  const text = message.content.trim()
+  const attachmentCount = message.attachments?.length ?? 0
+  const attachmentLabel =
+    attachmentCount === 0
+      ? ""
+      : attachmentCount === 1
+        ? "1 attachment"
+        : `${attachmentCount} attachments`
+  if (text && attachmentLabel) return `${text} (${attachmentLabel})`
+  if (text) return text
+  return attachmentLabel || "Queued message"
+}
+
 export function ChatScreen({ route, navigation }: Props) {
   const { chatId, title } = route.params
-  const { colors } = useTheme()
+  const { colors, dark } = useTheme()
   const insets = useSafeAreaInsets()
+  const headerHeight = useHeaderHeight()
   const [snapshot, setSnapshot] = useState<ChatSnapshot | null>(null)
   const [missing, setMissing] = useState(false)
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("disconnected")
   const [modelAccess, setModelAccess] = useState<ModelAccessSnapshot | null>(null)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
+  const [reconcilingSend, setReconcilingSend] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
   const [followUpBehavior, setFollowUpBehavior] = useState<FollowUpBehavior>("queue")
   const [respondingKey, setRespondingKey] = useState<string | null>(null)
@@ -745,29 +956,53 @@ export function ChatScreen({ route, navigation }: Props) {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
+  const [atEnd, setAtEnd] = useState(true)
+  const [inlineInputFocused, setInlineInputFocused] = useState(false)
   const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => (planModeOverridesByChat.has(chatId) ? false : null))
   const setPlanModeOverride = useCallback((value: boolean | null, approval?: { toolUseId: string; respondedAt: number; queuedContents: string[] }) => {
     if (value == null) planModeOverridesByChat.delete(chatId)
     else if (value === false && approval) planModeOverridesByChat.set(chatId, approval)
     setPlanModeOverrideState(value)
   }, [chatId])
+  const snapshotRef = useRef<ChatSnapshot | null>(null)
   const knownEntriesRef = useRef<TranscriptEntry[]>([])
   const windowUpdatesRef = useRef<Promise<void>>(Promise.resolve())
   const historyInitializedRef = useRef(false)
   const historyGenerationRef = useRef(0)
   const historyLoadingRef = useRef(false)
+  const pendingSendReconciliationRef = useRef<PendingSendReconciliation | null>(null)
   const listRef = useRef<FlatList<TranscriptEntry>>(null)
   const atEndRef = useRef(true)
+  const userScrolledRef = useRef(false)
+
+  const clearPendingSendReconciliation = useCallback(() => {
+    const pending = pendingSendReconciliationRef.current
+    if (!pending) return null
+    clearTimeout(pending.timer)
+    pendingSendReconciliationRef.current = null
+    setReconcilingSend(false)
+    return pending
+  }, [])
+
+  const restoreFailedSendDraft = useCallback((content: string, errorMessage: string) => {
+    setDraft((current) => (current ? `${content}\n\n${current}` : content))
+    setSendError(errorMessage)
+  }, [])
 
   const transcriptEntries = useMemo(
     () => mergeTranscriptEntries(olderEntries, knownEntries),
     [olderEntries, knownEntries],
   )
-  const entries = useMemo(
-    () => coalesceAssistantFragments(transcriptEntries.filter(isRenderable)),
+  const memoryGateState = useMemo(
+    () => deriveMemoryGateState(transcriptEntries),
     [transcriptEntries],
   )
-  const status = snapshot?.runtime.status
+  const entries = useMemo(
+    () => coalesceAssistantFragments(transcriptEntries.filter((entry) => isEntryRenderable(entry, memoryGateState))),
+    [transcriptEntries, memoryGateState],
+  )
+  const wireStatus = snapshot?.runtime.status
+  const status = deriveEffectiveChatStatus(wireStatus, memoryGateState)
   const streamingText = snapshot?.runtime.streamingText ?? null
   const active = isActiveStatus(status)
 
@@ -789,12 +1024,19 @@ export function ChatScreen({ route, navigation }: Props) {
     historyInitializedRef.current = false
     historyGenerationRef.current += 1
     historyLoadingRef.current = false
+    snapshotRef.current = null
     knownEntriesRef.current = []
     windowUpdatesRef.current = Promise.resolve()
+    atEndRef.current = true
+    userScrolledRef.current = false
+    setAtEnd(true)
+    setInlineInputFocused(false)
     // Navigation away must not forget a plan-approval override. Reload the
     // per-chat value instead of clearing it; it is removed only when the host
     // snapshot proves a normal-mode turn caught up.
     setPlanModeOverrideState(planModeOverridesByChat.has(chatId) ? false : null)
+    setSnapshot(null)
+    setMissing(false)
     setKnownEntries([])
     setOlderEntries([])
     setHistoryCursor(null)
@@ -804,11 +1046,27 @@ export function ChatScreen({ route, navigation }: Props) {
       { type: "chat", chatId, recentLimit: 200 },
       (value) => {
         if (!value) {
+          const pendingSend = clearPendingSendReconciliation()
+          if (pendingSend) {
+            restoreFailedSendDraft(pendingSend.content, pendingSend.errorMessage)
+          }
+          snapshotRef.current = null
+          setSnapshot(null)
           setMissing(true)
           return
         }
+        snapshotRef.current = value
         setSnapshot(value)
         setMissing(false)
+
+        const pendingSend = pendingSendReconciliationRef.current
+        if (pendingSend) {
+          clearPendingSendReconciliation()
+          if (!wasSendCommittedInSnapshot(pendingSend.content, pendingSend.baseline, value.messages, value.queuedMessages)) {
+            restoreFailedSendDraft(pendingSend.content, pendingSend.errorMessage)
+          }
+        }
+
         if (!historyInitializedRef.current) {
           historyInitializedRef.current = true
           knownEntriesRef.current = value.messages
@@ -884,11 +1142,12 @@ export function ChatScreen({ route, navigation }: Props) {
       // subscription; the next page response must not continue paging or write
       // state for a closed chat.
       historyGenerationRef.current += 1
+      clearPendingSendReconciliation()
       offStatus()
       unsubscribe()
       unsubscribeSidebar()
     }
-  }, [chatId])
+  }, [chatId, clearPendingSendReconciliation, restoreFailedSendDraft])
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -910,22 +1169,10 @@ export function ChatScreen({ route, navigation }: Props) {
   useEffect(() => {
     const override = planModeOverridesByChat.get(chatId)
     if (!override) return
-    // A normal-mode turn may have started on another client while this screen
-    // was closed. The approval is scoped to exactly one following user prompt;
-    // once any later prompt exists, never let that stale approval override a
-    // newer plan-mode turn.
-    // Prefer the host-created tool-result time. The local response time is
-    // only a fallback for very large windows where that result has already
-    // scrolled out of the subscribed transcript.
     const result = [...transcriptEntries].reverse().find(
       (entry) => isToolResultEntry(entry) && entry.toolId === override.toolUseId,
     )
     const approvedAt = result?.createdAt ?? override.respondedAt
-    // Rows already waiting in the host queue when approval happened still
-    // carry their old plan-mode flag. Their later dispatch timestamp must not
-    // consume the new composer override. Match them by content because the
-    // transcript entry does not expose its queue id; this is conservative for
-    // ordinary follow-ups and never hides a different new user decision.
     const preApprovedQueue = [...override.queuedContents]
     for (const entry of transcriptEntries) {
       if (entry.kind !== "user_prompt" || entry.createdAt <= approvedAt) continue
@@ -949,36 +1196,37 @@ export function ChatScreen({ route, navigation }: Props) {
       .catch(() => {})
   }, [chatId, snapshot, sidebarUnread, foregrounded])
 
-  const pendingToolId = useMemo(() => {
-    const messages = snapshot?.messages ?? []
-    const answered = new Set<string>()
-    for (const entry of messages) {
-      if (isToolResultEntry(entry)) answered.add(entry.toolId)
-    }
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const entry = messages[index]
-      if (!entry || entry.kind !== "tool_call") continue
-      const toolEntry = entry as ToolCallEntry
-      const kind = normalizedToolKind(toolEntry)
-      if (kind !== "ask_user_question" && kind !== "exit_plan_mode") continue
-      const toolId = toolEntry.tool.toolId ?? toolEntry._id
-      if (!answered.has(toolId)) return toolId
-    }
-    return null
-  }, [snapshot?.messages])
+  const pendingToolId = useMemo(
+    () => findPendingInteractiveToolId(transcriptEntries, wireStatus),
+    [transcriptEntries, wireStatus],
+  )
 
-  const pendingMemoryPreviewId = useMemo(() => {
-    const messages = snapshot?.messages ?? []
-    const decided = new Set<string>()
-    for (const entry of messages) {
-      if (isMemoryPreviewDecisionEntry(entry)) decided.add(entry.previewId)
+  useEffect(() => {
+    if (!pendingToolId) {
+      setInlineInputFocused(false)
     }
-    for (let index = messages.length - 1; index >= 0; index -= 1) {
-      const entry = messages[index]
-      if (entry && isMemoryPreviewEntry(entry) && !decided.has(entry.previewId)) return entry.previewId
+  }, [pendingToolId])
+
+  const handleInlineInputFocusChange = useCallback((focused: boolean) => {
+    setInlineInputFocused(focused)
+    if (focused) {
+      atEndRef.current = true
+      setAtEnd(true)
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 80)
+      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 280)
     }
-    return null
-  }, [snapshot?.messages])
+  }, [])
+
+  const transcriptPlanApproved = useMemo(
+    () => hasUnconsumedPlanApproval(transcriptEntries, planModeOverridesByChat.get(chatId)?.queuedContents),
+    [chatId, transcriptEntries],
+  )
+
+  const effectivePlanMode = useMemo(() => {
+    if (snapshot?.runtime.planMode === false) return false
+    if (planModeOverride === false || transcriptPlanApproved) return false
+    return snapshot?.runtime.planMode
+  }, [snapshot?.runtime.planMode, planModeOverride, transcriptPlanApproved])
 
   const loadOlderHistory = useCallback(async () => {
     const socket = getSocket()
@@ -1008,7 +1256,7 @@ export function ChatScreen({ route, navigation }: Props) {
         setHistoryLoading(false)
       }
     }
-  }, [chatId, hasOlderHistory, historyCursor, historyLoading])
+  }, [chatId, hasOlderHistory, historyCursor])
 
   const composerModelSelection = useMemo(() => {
     // Prefer the host-published command selection: unlike transcript
@@ -1031,54 +1279,133 @@ export function ChatScreen({ route, navigation }: Props) {
   const send = useCallback(async () => {
     const content = draft.trim()
     const socket = getSocket()
-    const planMode = planModeOverride ?? snapshot?.runtime.planMode
-    if (!content || !socket || sending || socketStatus !== "connected" || planMode === undefined) return
+    if (
+      !content ||
+      !socket ||
+      sending ||
+      reconcilingSend ||
+      socketStatus !== "connected" ||
+      effectivePlanMode === undefined
+    ) {
+      return
+    }
+    const baseline = capturePreSendBaseline(
+      mergeTranscriptEntries(transcriptEntries, snapshotRef.current?.messages ?? []),
+      snapshot?.queuedMessages ?? [],
+    )
     setSending(true)
     setSendError(null)
     setDraft("")
     try {
       if (active) {
-        // A turn is in flight: queue by default, or steer when the composer
-        // follow-up control is in steer mode.
+        // A turn is in flight (or parked on a memory gate): queue by default,
+        // or steer when the composer follow-up control is in steer mode.
         await socket.command({
           type: "message.enqueue",
           chatId,
           content,
           ...modelCommandFields(composerModelSelection),
-          planMode,
+          planMode: effectivePlanMode,
           steer: sendPresentation.action === "steer",
         })
       } else {
         await socket.command({
           type: "chat.send",
           chatId,
+          clientTraceId: generateTraceId(),
           content,
           ...modelCommandFields(composerModelSelection),
-          planMode,
+          planMode: effectivePlanMode,
         })
       }
     } catch (error) {
-      // Restore the draft so the user can retry — a message must never vanish —
-      // and make the failure visible instead of only logging it to Metro.
-      setDraft((current) => (current ? `${content}\n\n${current}` : content))
-      setSendError(describeSendError(error))
+      const errorMessage = describeSendError(error)
+      if (isAmbiguousSendTransportError(error)) {
+        // The host durably commits user_prompt / queuedMessages before booting
+        // the provider and sending the ack. Reconcile against the latest or
+        // next post-reconnect ChatSnapshot before splicing a committed prompt
+        // back into draft.
+        const latestEntries = mergeTranscriptEntries(
+          knownEntriesRef.current,
+          snapshotRef.current?.messages ?? [],
+        )
+        if (
+          wasSendCommittedInSnapshot(
+            content,
+            baseline,
+            latestEntries,
+            snapshotRef.current?.queuedMessages ?? [],
+          )
+        ) {
+          return
+        }
+        clearPendingSendReconciliation()
+        setReconcilingSend(true)
+        const timer = setTimeout(() => {
+          if (pendingSendReconciliationRef.current?.timer !== timer) return
+          pendingSendReconciliationRef.current = null
+          setReconcilingSend(false)
+          const settledEntries = mergeTranscriptEntries(
+            knownEntriesRef.current,
+            snapshotRef.current?.messages ?? [],
+          )
+          if (
+            !wasSendCommittedInSnapshot(
+              content,
+              baseline,
+              settledEntries,
+              snapshotRef.current?.queuedMessages ?? [],
+            )
+          ) {
+            restoreFailedSendDraft(content, errorMessage)
+          }
+        }, SEND_RECONCILE_TIMEOUT_MS)
+        pendingSendReconciliationRef.current = {
+          content,
+          baseline,
+          errorMessage,
+          timer,
+        }
+        console.warn("send interrupted; awaiting snapshot reconciliation", error)
+        return
+      }
+      restoreFailedSendDraft(content, errorMessage)
       console.warn("send failed", error)
     } finally {
       setSending(false)
     }
-  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode, planModeOverride, composerModelSelection])
+  }, [
+    draft,
+    active,
+    chatId,
+    sending,
+    reconcilingSend,
+    socketStatus,
+    sendPresentation.action,
+    effectivePlanMode,
+    composerModelSelection,
+    transcriptEntries,
+    snapshot?.queuedMessages,
+    clearPendingSendReconciliation,
+    restoreFailedSendDraft,
+  ])
 
   const interrupt = useCallback(() => {
     getSocket()
       ?.command({ type: "chat.cancel", chatId })
-      .catch(() => {})
+      .catch((error) => setSendError(describeSendError(error)))
   }, [chatId])
 
   const dequeue = useCallback(
-    (queuedMessageId: string) => {
+    (message: QueuedChatMessage) => {
       getSocket()
-        ?.command({ type: "message.dequeue", chatId, queuedMessageId })
-        .catch(() => {})
+        ?.command({ type: "message.dequeue", chatId, queuedMessageId: message.id })
+        .then(() => {
+          if (message.rejection === "stale_native_command" && message.content.trim()) {
+            setDraft((current) => (current ? `${message.content}\n\n${current}` : message.content))
+          }
+        })
+        .catch((error) => setSendError(describeSendError(error)))
     },
     [chatId],
   )
@@ -1091,7 +1418,7 @@ export function ChatScreen({ route, navigation }: Props) {
       setSendError(null)
       try {
         await socket.command({ type: "chat.respondTool", chatId, toolUseId, result: option.result })
-        const toolEntry = (snapshot?.messages ?? []).find((entry): entry is ToolCallEntry => {
+        const toolEntry = transcriptEntries.find((entry): entry is ToolCallEntry => {
           if (entry.kind !== "tool_call") return false
           const candidate = entry as ToolCallEntry
           return (candidate.tool.toolId ?? candidate._id) === toolUseId
@@ -1112,16 +1439,100 @@ export function ChatScreen({ route, navigation }: Props) {
         setRespondingKey(null)
       }
     },
-    [chatId, snapshot?.messages, snapshot?.queuedMessages, setPlanModeOverride],
+    [chatId, transcriptEntries, snapshot?.queuedMessages, setPlanModeOverride],
   )
+
+  const respondMemoryPreview = useCallback(
+    async (
+      previewId: string,
+      option: PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] },
+    ) => {
+      const socket = getSocket()
+      if (!socket) return
+      setRespondingKey(option.key)
+      setSendError(null)
+      try {
+        await socket.command({
+          type: "chat.respondMemoryPreview",
+          chatId,
+          previewId,
+          decision: option.decision,
+          ...(option.decision === "go_on" && option.memoryIds ? { memoryIds: option.memoryIds } : {}),
+          operationId: `control:working-memory-${option.decision}:${previewId}:${generateTraceId()}`,
+        })
+      } catch (error) {
+        setSendError(describeSendError(error))
+      } finally {
+        setRespondingKey(null)
+      }
+    },
+    [chatId],
+  )
+
+  const skipMemoryStage = useCallback(
+    async (kind: "proposals" | "transfer" | "checkup", stageId: string, key: string) => {
+      const socket = getSocket()
+      if (!socket) return
+      setRespondingKey(key)
+      setSendError(null)
+      try {
+        if (kind === "proposals") {
+          await socket.command({
+            type: "chat.respondMemoryProposals",
+            chatId,
+            proposalsId: stageId,
+            decision: "skipped",
+          })
+        } else if (kind === "transfer") {
+          await socket.command({
+            type: "chat.respondMemoryTransfer",
+            chatId,
+            transferId: stageId,
+            decision: "skipped",
+          })
+        } else {
+          await socket.command({
+            type: "chat.respondMemoryCheckup",
+            chatId,
+            checkupId: stageId,
+            decision: "skipped",
+          })
+        }
+      } catch (error) {
+        setSendError(describeSendError(error))
+      } finally {
+        setRespondingKey(null)
+      }
+    },
+    [chatId],
+  )
+
+  const handleScrollBeginDrag = useCallback(() => {
+    userScrolledRef.current = true
+  }, [])
 
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent
-    atEndRef.current = contentOffset.y + layoutMeasurement.height >= contentSize.height - 96
+    const nearBottom = contentOffset.y + layoutMeasurement.height >= contentSize.height - 96
+    // Ignore non-user layout scroll events before the user has interacted so
+    // initial VirtualizedList batch mounting cannot unpin bottom auto-scroll.
+    if (!nearBottom && !userScrolledRef.current) return
+    if (nearBottom) userScrolledRef.current = false
+    if (atEndRef.current !== nearBottom) {
+      atEndRef.current = nearBottom
+      setAtEnd(nearBottom)
+    }
   }, [])
 
   const scrollToEndIfPinned = useCallback(() => {
     if (atEndRef.current) listRef.current?.scrollToEnd({ animated: false })
+  }, [])
+
+  const jumpToBottom = useCallback(() => {
+    userScrolledRef.current = false
+    atEndRef.current = true
+    setAtEnd(true)
+    listRef.current?.scrollToEnd({ animated: true })
   }, [])
 
   const queuedMessages = snapshot?.queuedMessages ?? []
@@ -1155,8 +1566,8 @@ export function ChatScreen({ route, navigation }: Props) {
   return (
     <KeyboardAvoidingView
       style={[styles.container, { backgroundColor: colors.background }]}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-      keyboardVerticalOffset={Platform.OS === "ios" ? 88 : 0}
+      behavior="padding"
+      keyboardVerticalOffset={headerHeight}
     >
       {socketStatus !== "connected" ? (
         <View style={styles.connectionRow}>
@@ -1168,152 +1579,219 @@ export function ChatScreen({ route, navigation }: Props) {
         </View>
       ) : null}
 
-      <FlatList
-        ref={listRef}
-        style={styles.transcriptList}
-        data={entries}
-        keyExtractor={(item) => item._id}
-        renderItem={({ item }) => (
-          <TranscriptRow
-            entry={item}
-            pendingToolId={pendingToolId}
-            pendingMemoryPreviewId={pendingMemoryPreviewId}
-            interactionDisabled={socketStatus !== "connected"}
-            respondingKey={respondingKey}
-            onRespond={respondTool}
-          />
-        )}
-        contentContainerStyle={styles.transcriptContent}
-        maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
-        ListHeaderComponent={
-          hasOlderHistory || historyError ? (
-            <View style={styles.historyHeader}>
-              {hasOlderHistory ? (
-                <Pressable
-                  accessibilityRole="button"
-                  accessibilityLabel="Load older messages"
-                  disabled={historyLoading || socketStatus !== "connected"}
-                  onPress={() => void loadOlderHistory()}
-                  style={({ pressed }) => [
-                    styles.historyButton,
-                    { backgroundColor: colors.secondary, borderColor: colors.border, opacity: historyLoading || socketStatus !== "connected" ? 0.55 : pressed ? 0.82 : 1 },
-                  ]}
-                >
-                  {historyLoading ? <ActivityIndicator size="small" color={colors.mutedForeground} /> : null}
-                  <Text style={[styles.historyButtonText, { color: colors.foreground }]}>
-                    {historyLoading ? "Loading older messages" : "Load older messages"}
-                  </Text>
-                </Pressable>
-              ) : null}
-              {historyError ? <Text style={[styles.historyError, { color: colors.destructive }]}>{historyError}</Text> : null}
-            </View>
-          ) : null
-        }
-        onContentSizeChange={scrollToEndIfPinned}
-        onScroll={handleScroll}
-        scrollEventThrottle={16}
-        ListFooterComponent={
-          streamingText != null && streamingText.length > 0 ? (
-            <AssistantBlock text={streamingText} streaming />
-          ) : active ? (
-            <View style={styles.thinkingRow}>
-              <ActivityIndicator size="small" color={colors.mutedIcon} />
-              <Text style={[styles.thinkingText, { color: colors.mutedForeground }]}>
-                {status === "starting" ? "Starting…" : status === "previewing_memory" ? "Preparing…" : status === "waiting_for_user" ? "Waiting for input…" : "Working…"}
+      <View style={styles.transcriptViewport}>
+        <FlatList
+          ref={listRef}
+          style={styles.transcriptList}
+          data={entries}
+          keyExtractor={(item) => item._id}
+          renderItem={({ item }) => (
+            <TranscriptRow
+              entry={item}
+              pendingToolId={pendingToolId}
+              memoryGateState={memoryGateState}
+              interactionDisabled={socketStatus !== "connected"}
+              respondingKey={respondingKey}
+              onInlineInputFocusChange={handleInlineInputFocusChange}
+              onRespondTool={respondTool}
+              onRespondMemoryPreview={respondMemoryPreview}
+              onSkipMemoryStage={skipMemoryStage}
+            />
+          )}
+          contentContainerStyle={styles.transcriptContent}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode={Platform.OS === "ios" ? "interactive" : "on-drag"}
+          maintainVisibleContentPosition={!atEnd || historyLoading ? { minIndexForVisible: 0 } : undefined}
+          ListHeaderComponent={
+            hasOlderHistory || historyError ? (
+              <View style={styles.historyHeader}>
+                {hasOlderHistory ? (
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityLabel="Load older messages"
+                    disabled={historyLoading || socketStatus !== "connected"}
+                    hitSlop={6}
+                    onPress={() => void loadOlderHistory()}
+                    style={({ pressed }) => [
+                      styles.historyButton,
+                      { backgroundColor: colors.secondary, borderColor: colors.border, opacity: historyLoading || socketStatus !== "connected" ? 0.55 : pressed ? 0.82 : 1 },
+                    ]}
+                  >
+                    {historyLoading ? <ActivityIndicator size="small" color={colors.mutedForeground} /> : null}
+                    <Text style={[styles.historyButtonText, { color: colors.foreground }]}>
+                      {historyLoading ? "Loading older messages" : "Load older messages"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+                {historyError ? <Text style={[styles.historyError, { color: colors.destructive }]}>{historyError}</Text> : null}
+              </View>
+            ) : null
+          }
+          onContentSizeChange={scrollToEndIfPinned}
+          onScrollBeginDrag={handleScrollBeginDrag}
+          onScroll={handleScroll}
+          scrollEventThrottle={16}
+          ListFooterComponent={
+            streamingText != null && streamingText.length > 0 ? (
+              <AssistantBlock text={streamingText} streaming />
+            ) : active && !memoryGateState.hasOpenGate && pendingToolId === null ? (
+              <View style={styles.thinkingRow}>
+                <ActivityIndicator size="small" color={colors.mutedIcon} />
+                <Text style={[styles.thinkingText, { color: colors.mutedForeground }]}>
+                  {status === "starting" ? "Starting…" : status === "previewing_memory" ? "Preparing…" : status === "waiting_for_user" ? "Waiting for input…" : "Working…"}
+                </Text>
+              </View>
+            ) : null
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyTranscript}>
+              <View style={[styles.emptyIconWell, { backgroundColor: colors.secondary }]}>
+                <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors.mutedIcon} />
+              </View>
+              <Text style={[styles.emptyTitle, { color: colors.foreground }]}>{snapshot ? "No messages yet" : "Loading transcript"}</Text>
+              <Text style={[styles.emptyBody, { color: colors.mutedForeground }]}>
+                {snapshot ? "Ask a question or give the agent its first task." : "Reading the conversation from your MemoSync host."}
               </Text>
             </View>
-          ) : null
-        }
-        ListEmptyComponent={
-          <View style={styles.emptyTranscript}>
-            <View style={[styles.emptyIconWell, { backgroundColor: colors.secondary }]}>
-              <Ionicons name="chatbubble-ellipses-outline" size={22} color={colors.mutedIcon} />
-            </View>
-            <Text style={[styles.emptyTitle, { color: colors.foreground }]}>{snapshot ? "No messages yet" : "Loading transcript"}</Text>
-            <Text style={[styles.emptyBody, { color: colors.mutedForeground }]}>
-              {snapshot ? "Ask a question or give the agent its first task." : "Reading the conversation from your MemoSync host."}
-            </Text>
-          </View>
-        }
-      />
+          }
+        />
 
-      <View style={[styles.composerRegion, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
-        {queuedMessages.length > 0 ? (
-          <ScrollView
-            style={styles.queueScroll}
-            nestedScrollEnabled
-            keyboardShouldPersistTaps="handled"
+        {!atEnd && entries.length > 0 ? (
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Jump to bottom"
+            hitSlop={8}
+            onPress={jumpToBottom}
+            style={({ pressed }) => [
+              styles.jumpToBottomButton,
+              cardShadow(dark),
+              {
+                backgroundColor: colors.card,
+                borderColor: colors.border,
+                opacity: pressed ? 0.8 : 1,
+              },
+            ]}
           >
-            <View style={styles.queueList}>
-              {queuedMessages.map((message) => (
-                <View key={message.id} style={[styles.queueRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                  <Ionicons name="time-outline" size={15} color={colors.mutedIcon} />
-                  <Text style={[styles.queueText, { color: colors.mutedForeground }]} numberOfLines={1}>
-                    {message.content}
-                  </Text>
-                  <Pressable onPress={() => dequeue(message.id)} hitSlop={8}>
-                    <Text style={[styles.queueRemove, { color: colors.focus }]}>Remove</Text>
-                  </Pressable>
-                </View>
-              ))}
+            <Ionicons name="arrow-down" size={18} color={colors.foreground} />
+          </Pressable>
+        ) : null}
+      </View>
+
+      {!inlineInputFocused ? (
+        <View style={[styles.composerRegion, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
+          {queuedMessages.length > 0 ? (
+            <ScrollView
+              style={styles.queueScroll}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.queueList}>
+                {queuedMessages.map((message) => {
+                  const rejected = message.rejection === "stale_native_command"
+                  return (
+                    <View
+                      key={message.id}
+                      style={[
+                        styles.queueRow,
+                        {
+                          backgroundColor: rejected ? colorWithAlpha(colors.destructive, 0.06) : colors.card,
+                          borderColor: rejected ? colorWithAlpha(colors.destructive, 0.24) : colors.border,
+                        },
+                      ]}
+                    >
+                      <Ionicons
+                        name={rejected ? "alert-circle-outline" : "time-outline"}
+                        size={15}
+                        color={rejected ? colors.destructive : colors.mutedIcon}
+                      />
+                      <Text
+                        style={[styles.queueText, { color: rejected ? colors.destructive : colors.mutedForeground }]}
+                        numberOfLines={1}
+                      >
+                        {rejected ? `Command expired: ${formatQueuedMessageSummary(message)}` : formatQueuedMessageSummary(message)}
+                      </Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={rejected ? "Restore to draft" : "Remove queued message"}
+                        disabled={socketStatus !== "connected"}
+                        onPress={() => dequeue(message)}
+                        hitSlop={10}
+                      >
+                        <Text style={[styles.queueRemove, { color: colors.focus, opacity: socketStatus !== "connected" ? 0.45 : 1 }]}>
+                          {rejected ? "Restore" : "Remove"}
+                        </Text>
+                      </Pressable>
+                    </View>
+                  )
+                })}
+              </View>
+            </ScrollView>
+          ) : null}
+
+          {reconcilingSend ? (
+            <View style={[styles.reconcileBox, { backgroundColor: colors.sidebar, borderColor: colors.border }]}>
+              <ActivityIndicator size="small" color={colors.mutedIcon} />
+              <Text style={[styles.reconcileText, { color: colors.mutedForeground }]}>
+                Reconnecting — checking whether your message was delivered…
+              </Text>
             </View>
-          </ScrollView>
-        ) : null}
+          ) : null}
 
-        {sendError ? (
-          <View style={[styles.sendErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}>
-            <Ionicons name="warning-outline" size={15} color={colors.destructive} />
-            <Text style={[styles.sendErrorText, { color: colors.destructive }]}>Message not sent: {sendError}</Text>
-          </View>
-        ) : null}
+          {sendError ? (
+            <View style={[styles.sendErrorBox, { backgroundColor: colorWithAlpha(colors.destructive, 0.07), borderColor: colorWithAlpha(colors.destructive, 0.2) }]}>
+              <Ionicons name="warning-outline" size={15} color={colors.destructive} />
+              <Text style={[styles.sendErrorText, { color: colors.destructive }]}>Message not sent: {sendError}</Text>
+            </View>
+          ) : null}
 
-        <View style={[styles.composerCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
-          <TextInput
-            value={draft}
-            onChangeText={(value) => {
-              setDraft(value)
-              if (sendError) setSendError(null)
-            }}
-            placeholder={active ? "Follow up…" : "Message…"}
-            placeholderTextColor={colors.mutedIcon}
-            multiline
-            textAlignVertical="top"
-            selectionColor={colors.focus}
-            style={[styles.composerInput, { color: colors.foreground }]}
-          />
-          <View style={styles.composerToolbar}>
-            <ToolbarLabelButton
-              label={composerModeLabel}
-              icon={active ? composerIcon : snapshot?.runtime.memoryDisabled ? "sparkles-outline" : "chatbubble-outline"}
-              selected={active && sendPresentation.action === "steer"}
-              onPress={
-                active && sendPresentation.offersFollowUpChoice
-                  ? () => setFollowUpBehavior((mode) => (mode === "queue" ? "steer" : "queue"))
-                  : undefined
-              }
+          <View style={[styles.composerCard, { backgroundColor: colors.card, borderColor: colors.border }]}>
+            <TextInput
+              value={draft}
+              onChangeText={(value) => {
+                setDraft(value)
+                if (sendError) setSendError(null)
+              }}
+              placeholder={active ? "Follow up…" : "Message…"}
+              placeholderTextColor={colors.mutedIcon}
+              multiline
+              textAlignVertical="top"
+              selectionColor={colors.focus}
+              style={[styles.composerInput, { color: colors.foreground }]}
             />
-            <View style={styles.composerSpacer} />
-            {active ? (
-              <CircleActionButton
-                accessibilityLabel="Stop the running turn"
-                icon="stop"
-                variant="secondary"
-                size={34}
-                onPress={interrupt}
-                style={styles.stopButton}
+            <View style={styles.composerToolbar}>
+              <ToolbarLabelButton
+                label={composerModeLabel}
+                icon={active ? composerIcon : snapshot?.runtime.memoryDisabled ? "sparkles-outline" : "chatbubble-outline"}
+                selected={active && sendPresentation.action === "steer"}
+                onPress={
+                  active && sendPresentation.offersFollowUpChoice
+                    ? () => setFollowUpBehavior((mode) => (mode === "queue" ? "steer" : "queue"))
+                    : undefined
+                }
               />
-            ) : null}
-            <CircleActionButton
-              accessibilityLabel={sendPresentation.label}
-              icon={composerIcon}
-              onPress={send}
-              disabled={!draft.trim() || !snapshot || socketStatus !== "connected"}
-              loading={sending}
-              size={38}
-            />
+              <View style={styles.composerSpacer} />
+              {active ? (
+                <CircleActionButton
+                  accessibilityLabel="Stop the running turn"
+                  icon="stop"
+                  variant="secondary"
+                  size={34}
+                  onPress={interrupt}
+                  style={styles.stopButton}
+                />
+              ) : null}
+              <CircleActionButton
+                accessibilityLabel={sendPresentation.label}
+                icon={composerIcon}
+                onPress={send}
+                disabled={!draft.trim() || !snapshot || socketStatus !== "connected" || reconcilingSend}
+                loading={sending || reconcilingSend}
+                size={38}
+              />
+            </View>
           </View>
         </View>
-      </View>
+      ) : null}
     </KeyboardAvoidingView>
   )
 }
@@ -1341,11 +1819,26 @@ const styles = StyleSheet.create({
     paddingTop: spacing.sm,
     paddingBottom: spacing.xs,
   },
+  transcriptViewport: {
+    flex: 1,
+    position: "relative",
+  },
   transcriptList: {
     // Constrain the scroll viewport to the space above the composer. Without
     // this, tall interactive cards can extend underneath the composer instead
     // of remaining scrollable into view.
     flex: 1,
+  },
+  jumpToBottomButton: {
+    position: "absolute",
+    right: spacing.lg,
+    bottom: spacing.md,
+    width: 40,
+    height: 40,
+    borderRadius: radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    alignItems: "center",
+    justifyContent: "center",
   },
   transcriptContent: {
     flexGrow: 1,
@@ -1563,6 +2056,37 @@ const styles = StyleSheet.create({
     ...MOBILE_TYPOGRAPHY.footnote,
     flex: 1,
   },
+  memoryItemList: {
+    gap: spacing.xs,
+  },
+  memoryItemRow: {
+    borderRadius: radius.base,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    gap: 2,
+  },
+  memoryScopeBadge: {
+    ...MOBILE_TYPOGRAPHY.caption,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+  },
+  memoryItemContent: {
+    ...MOBILE_TYPOGRAPHY.footnote,
+  },
+  memoryScanningCard: {
+    borderRadius: radius.xl,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  memoryScanningText: {
+    ...MOBILE_TYPOGRAPHY.footnote,
+    flex: 1,
+  },
   answerBody: {
     gap: spacing.md,
   },
@@ -1632,6 +2156,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: spacing.sm,
   },
+  reconcileBox: {
+    borderRadius: radius.base,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+  },
+  reconcileText: {
+    ...MOBILE_TYPOGRAPHY.label,
+    flex: 1,
+  },
   sendErrorText: {
     ...MOBILE_TYPOGRAPHY.label,
     flex: 1,
@@ -1668,6 +2205,6 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   stopButton: {
-    marginRight: -spacing.xs,
+    marginRight: spacing.xs,
   },
 })

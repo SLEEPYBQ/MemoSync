@@ -19,7 +19,7 @@
     },
     "android": {
       "package": "com.memosync.mobile",
-      "edgeToEdgeEnabled": true
+      "softwareKeyboardLayoutMode": "resize"
     },
     "plugins": [
       [
