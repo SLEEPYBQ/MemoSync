@@ -59,7 +59,7 @@ export function NativeMemoryImportDialog({ open, onOpenChange, projectId, onChan
   const lease = useRef(0)
   const dialogRef = useRef<HTMLDivElement>(null)
 
-  const available = chosenModel && providers.some(provider => provider.id === chosenModel.provider) ? chosenModel : null
+  const available = chosenModel && chosenModel.provider !== "antigravity" && providers.some(provider => provider.id === chosenModel.provider) ? chosenModel : null
   const model = available ?? defaultRefineModel(providers)
   const sections = useMemo(() => inventory ? buildMemoryTree(inventory) : [], [inventory])
   const summary = useMemo(() => summarizeSelection(inventory?.units ?? [], selected), [inventory, selected])

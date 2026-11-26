@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test"
 import react from "@vitejs/plugin-react"
+import net from "node:net"
 import { join } from "node:path"
 import { mkdir } from "node:fs/promises"
 import { chromium, type Browser, type Page } from "playwright"
@@ -8,6 +9,17 @@ import type { ExecutableState } from "../../shared/model-access"
 import { PROVIDERS } from "../../shared/types"
 import { CONNECTION_PRESETS } from "../../server/model-access/presets"
 import type {} from "../test-fixtures/model-access-ui/fixture"
+
+async function freePort() {
+  const probe = net.createServer()
+  await new Promise<void>((resolve, reject) => {
+    probe.once("error", reject)
+    probe.listen(0, "127.0.0.1", resolve)
+  })
+  const { port } = probe.address() as net.AddressInfo
+  await new Promise<void>((resolve) => probe.close(() => resolve()))
+  return port
+}
 
 let vite: ViteDevServer
 let browser: Browser
@@ -22,7 +34,7 @@ beforeAll(async () => {
     publicDir: join(import.meta.dir, "../../../public"),
     plugins: [react()],
     css: { postcss: join(import.meta.dir, "../../..") },
-    server: { host: "127.0.0.1", port: 0, hmr: false },
+    server: { host: "127.0.0.1", port: await freePort(), hmr: false },
     logLevel: "error",
   })
   await vite.listen()
@@ -739,3 +751,18 @@ test("Chat fallback is selectable for Claude and Codex and translation status is
   })
   expect(await page.locator('[data-engine="claude"]').getByText("经协议转换", { exact: true }).count()).toBe(0)
 }, 15000)
+
+test("Antigravity stays account-only and shows the agy install command when missing", async () => {
+  await open()
+  const card = page.locator('[data-engine="antigravity"]')
+  await card.getByText("Ready", { exact: true }).waitFor()
+  await card.locator('button[aria-controls="engine-details-antigravity"]').click()
+  expect(await card.getByRole("radio", { name: "API connection", exact: true }).count()).toBe(0)
+  expect(await card.getByLabel("API connection", { exact: true }).count()).toBe(0)
+  expect(await card.textContent()).toContain("Use your existing CLI sign-in.")
+
+  await page.evaluate(() => window.modelAccessFixture.engineState("missing", "account"))
+  await card.getByText("Install Antigravity or choose a path.", { exact: false }).waitFor()
+  expect(await card.textContent()).toContain("antigravity.google/cli/install")
+  expect(await card.textContent()).not.toContain("@openai/codex")
+})

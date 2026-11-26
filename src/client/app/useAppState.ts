@@ -343,7 +343,13 @@ function readLegacyBrowserSettingsPatch(): AppSettingsPatch | null {
   }
 
   const chatPreferencesState = readPersistedZustandState(LEGACY_CHAT_PREFERENCES_STORAGE_KEY)
-  if (chatPreferencesState?.defaultProvider === "last_used" || chatPreferencesState?.defaultProvider === "claude" || chatPreferencesState?.defaultProvider === "codex" || chatPreferencesState?.defaultProvider === "opencode") {
+  if (
+    chatPreferencesState?.defaultProvider === "last_used"
+    || chatPreferencesState?.defaultProvider === "claude"
+    || chatPreferencesState?.defaultProvider === "codex"
+    || chatPreferencesState?.defaultProvider === "opencode"
+    || chatPreferencesState?.defaultProvider === "antigravity"
+  ) {
     patch.defaultProvider = chatPreferencesState.defaultProvider
   }
   if (chatPreferencesState?.providerDefaults && typeof chatPreferencesState.providerDefaults === "object") {
@@ -551,7 +557,7 @@ export function composerStateFromSendOptions(options?: {
   modelOptions?: AccessModelOptions
   planMode?: boolean
 }): ComposerState | null {
-  const connectionId = options?.modelOptions?.connectionId ?? (options?.provider ? options.modelOptions?.[options.provider]?.connectionId : undefined)
+  const connectionId = options?.modelOptions?.connectionId ?? (options?.provider && options.provider !== "opencode" && options.provider !== "antigravity" ? options.modelOptions?.[options.provider]?.connectionId : undefined)
   if (options?.provider === "claude" && options.model && (options.modelOptions?.claude || connectionId)) {
     return {
       provider: "claude",
@@ -594,6 +600,10 @@ export function composerStateFromSendOptions(options?: {
 
   if (options?.provider === "opencode" && options.model) {
     return { provider: "opencode", model: options.model, ...(connectionId ? { connectionId } : {}), modelOptions: {}, planMode: false }
+  }
+
+  if (options?.provider === "antigravity" && typeof options.model === "string") {
+    return { provider: "antigravity", model: options.model, modelOptions: {}, planMode: Boolean(options.planMode) }
   }
 
   return null

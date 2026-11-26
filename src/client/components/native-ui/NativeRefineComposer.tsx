@@ -36,8 +36,10 @@ function modelOptions(model: NativeModelSelection) {
 /** Same shape as the chat composer: say what you want, set the model, send. */
 export function NativeRefineComposer({ providers, mode, onModeChange, model, onModelChange, instruction, onInstructionChange, count, tokens, busy, onStart }: Props) {
   const area = useRef<HTMLTextAreaElement>(null)
+  const refineProviders = providers.filter(provider => provider.id !== "antigravity")
   const refine = mode === "refine"
-  const ready = count > 0 && !busy && (!refine || Boolean(model))
+  const validModel = model && model.provider !== "antigravity" ? model : null
+  const ready = count > 0 && !busy && (!refine || Boolean(validModel))
   const label = refine ? t("nativeMemory:startRefine", { count }) : t("nativeMemory:startVerbatim", { count })
   return <div className="rounded-2xl bg-card shadow-composer transition-shadow focus-within:shadow-[0_0_0_1px_hsl(var(--foreground)/0.22),0_1px_2px_hsl(var(--foreground)/0.04),0_14px_30px_-14px_hsl(var(--foreground)/0.18)]">
     {refine ? <textarea ref={area} value={instruction} rows={2} disabled={busy} onChange={event => onInstructionChange(event.target.value)}
@@ -53,10 +55,10 @@ export function NativeRefineComposer({ providers, mode, onModeChange, model, onM
         </button>)}
       </div>
       <NativeUiInfo label={t("nativeMemory:mode")} className="-ml-0.5">{t("nativeMemory:modeInfo")}</NativeUiInfo>
-      {refine && model ? <ChatPreferenceControls availableProviders={providers} selectedProvider={model.provider} model={model.model} connectionId={model.connectionId} modelOptions={modelOptions(model)} includePlanMode={false} showSpeedControl={false}
-        onProviderChange={provider => { const entry = providers.find(item => item.id === provider); if (entry) onModelChange({ provider, model: entry.defaultModel }) }}
+      {refine && validModel ? <ChatPreferenceControls availableProviders={refineProviders} selectedProvider={validModel.provider} model={validModel.model} connectionId={validModel.connectionId} modelOptions={modelOptions(validModel)} includePlanMode={false} showSpeedControl={false}
+        onProviderChange={provider => { const entry = refineProviders.find(item => item.id === provider); if (entry) onModelChange({ provider, model: entry.defaultModel }) }}
         onModelChange={(provider, next, connectionId) => onModelChange({ provider, model: next, ...(connectionId ? { connectionId } : {}) })}
-        onModelOptionChange={change => { if ("effort" in change) onModelChange({ ...model, effort: change.effort }) }}
+        onModelOptionChange={change => { if ("effort" in change) onModelChange({ ...validModel, effort: change.effort }) }}
         className="min-w-0" /> : null}
       <div className="ml-auto flex shrink-0 items-center gap-1 pl-2">
         {refine && tokens ? <span className="px-1.5 text-xs tabular-nums text-muted-foreground" title={t("nativeMemory:tokensHint")}>{t("nativeMemory:tokenEstimate", { value: formatTokens(tokens, getLocale()) })}</span> : null}

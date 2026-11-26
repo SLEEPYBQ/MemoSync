@@ -80,7 +80,7 @@ function policyDescription(policy: NativeExecutionPolicy): string {
       if (policy.sandbox === "read-only") return t("harness:desc_codex_readOnly")
       return t("harness:desc_codex_ask")
     case "pi": return t(`harness:desc_pi_${policy.toolGate}`)
-    case "opencode":
+    case "opencode": return t(`harness:desc_opencode_${policy.permission}`)
     case "antigravity": return t(`harness:desc_antigravity_${policy.permission}`)
   }
 }

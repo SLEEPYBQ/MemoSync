@@ -104,8 +104,9 @@ export function ProvidersSection({
 
   function renderDefaults(provider: AgentProvider) {
     const defaults = preferences.providerDefaults[provider]
-    const setup = snapshot?.engines[provider].setup
+    const setup = snapshot?.engines[provider]?.setup
     const access = setup?.access
+    const connectionMode = provider !== "antigravity" && access?.mode === "connection"
     return (
       <SettingsRow
         key={provider}
@@ -120,12 +121,12 @@ export function ProvidersSection({
             availableProviders={providers}
             selectedProvider={provider}
             showProviderPicker={false}
-            useModelAccess={access?.mode === "connection"}
+            useModelAccess={connectionMode}
             selectedConnectionOnly
-            connectionId={access?.mode === "connection" ? access.connectionId : undefined}
+            connectionId={connectionMode ? access.connectionId : undefined}
             providerLocked
             model={
-              access?.mode === "connection"
+              connectionMode
                 ? (access.defaultModel ??
                   snapshot?.connections.find((connection) => connection.id === access.connectionId)?.models[0]?.id ??
                   t("modelAccess:chooseModel"))
@@ -133,7 +134,7 @@ export function ProvidersSection({
             }
             modelOptions={defaults.modelOptions}
             onModelChange={(_, model) => {
-              if (setup && access?.mode === "connection" && state.socket) {
+              if (setup && connectionMode && state.socket) {
                 setError(null)
                 void state.socket
                   .command({

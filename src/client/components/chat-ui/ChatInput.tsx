@@ -217,6 +217,12 @@ function getEffectiveComposerState(
     modelOptions: {},
     planMode: false,
   }
+  if (activeProvider === "antigravity") return {
+    provider: "antigravity",
+    model: providerDefaults.antigravity.model,
+    modelOptions: {},
+    planMode: composerState.planMode,
+  }
   if (activeProvider === "pi") return {
     provider: "pi",
     model: providerDefaults.pi.model,
