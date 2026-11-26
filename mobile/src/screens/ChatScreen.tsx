@@ -31,6 +31,7 @@ import type {
   ChatSnapshot,
   InterruptedEntry,
   MemoryPreviewEntry,
+  ModelAccessSnapshot,
   ModelOptions,
   ResultEntry,
   SidebarData,
@@ -114,6 +115,42 @@ function latestSystemInitModelSelection(entries: TranscriptEntry[], provider: st
     return { provider: entry.provider, model: entry.model }
   }
   return null
+}
+
+function selectionConnectionId(selection: ComposerModelSelection): string | undefined {
+  const options = selection.modelOptions
+  if (!selection.provider || !options) return undefined
+  if (options.connectionId) return options.connectionId
+  if (selection.provider === "claude") return options.claude?.connectionId
+  if (selection.provider === "codex") return options.codex?.connectionId
+  if (selection.provider === "pi") return options.pi?.connectionId
+  return undefined
+}
+
+/** A remembered connection/model pair becomes a hard startup failure when the
+ * host edits that connection's model list. Mobile has no replacement picker,
+ * but it can safely choose a model that is still offered by the same
+ * connection; never switch connections implicitly. */
+function recoverConnectionModelSelection(
+  selection: ComposerModelSelection | null,
+  modelAccess: ModelAccessSnapshot | null,
+): ComposerModelSelection | null {
+  if (!selection?.model || !selection.provider || !modelAccess) return selection
+  const connectionId = selectionConnectionId(selection)
+  if (!connectionId) return selection
+  const connection = modelAccess.connections.find((candidate) => candidate.id === connectionId)
+  if (!connection || connection.models.length === 0) return selection
+  if (selection.provider === "pi" && connection.readOnly) return selection
+  const requested = selection.model.replace(/\[1m\]$/, "")
+  if (connection.models.some((model) => model.id === requested)) return selection
+  const engineAccess = modelAccess.engines[selection.provider]?.setup?.access
+  const configuredDefault = engineAccess?.mode === "connection" && engineAccess.connectionId === connectionId
+    ? engineAccess.defaultModel
+    : undefined
+  const replacement = [configuredDefault, connection.models[0]?.id].find(
+    (candidate): candidate is string => Boolean(candidate && connection.models.some((model) => model.id === candidate)),
+  )
+  return replacement ? { ...selection, model: replacement } : { ...selection, model: undefined }
 }
 
 function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEntry {
@@ -288,8 +325,9 @@ function splitExecutionApprovalQuestion(question: string): { prompt: string; arg
 
 /** Plan approval changes the next composer mode, but the host only persists
  * that transition when the next turn starts. Keep the mobile override per chat
- * across screen navigation until the authoritative snapshot catches up. */
-const planModeOverridesByChat = new Map<string, boolean>()
+ * across screen navigation until the authoritative transcript proves a later
+ * user turn consumed it. */
+const planModeOverridesByChat = new Map<string, { approvedAt: number }>()
 
 function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
   for (const group of data.projectGroups) {
@@ -520,7 +558,7 @@ function InteractiveToolCard(props: {
     const question = questions.length === 1 ? questions[0] : undefined
     const simpleOptions = question?.options?.filter((option) => option.label?.trim()) ?? []
 
-    if (question && !question.multiSelect && simpleOptions.length > 0 && simpleOptions.length <= 4) {
+    if (question && !question.multiSelect && simpleOptions.length > 0) {
       const key = questionKey(question)
       const customAnswer = freeformAnswer.trim()
       const executionApproval = isExecutionApprovalQuestion(question)
@@ -692,6 +730,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const [snapshot, setSnapshot] = useState<ChatSnapshot | null>(null)
   const [missing, setMissing] = useState(false)
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("disconnected")
+  const [modelAccess, setModelAccess] = useState<ModelAccessSnapshot | null>(null)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState<string | null>(null)
@@ -705,10 +744,10 @@ export function ChatScreen({ route, navigation }: Props) {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
-  const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => planModeOverridesByChat.get(chatId) ?? null)
-  const setPlanModeOverride = useCallback((value: boolean | null) => {
+  const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => (planModeOverridesByChat.has(chatId) ? false : null))
+  const setPlanModeOverride = useCallback((value: boolean | null, approvedAt = 0) => {
     if (value == null) planModeOverridesByChat.delete(chatId)
-    else planModeOverridesByChat.set(chatId, value)
+    else if (value === false) planModeOverridesByChat.set(chatId, { approvedAt })
     setPlanModeOverrideState(value)
   }, [chatId])
   const knownEntriesRef = useRef<TranscriptEntry[]>([])
@@ -754,7 +793,7 @@ export function ChatScreen({ route, navigation }: Props) {
     // Navigation away must not forget a plan-approval override. Reload the
     // per-chat value instead of clearing it; it is removed only when the host
     // snapshot proves a normal-mode turn caught up.
-    setPlanModeOverrideState(planModeOverridesByChat.get(chatId) ?? null)
+    setPlanModeOverrideState(planModeOverridesByChat.has(chatId) ? false : null)
     setKnownEntries([])
     setOlderEntries([])
     setHistoryCursor(null)
@@ -858,8 +897,26 @@ export function ChatScreen({ route, navigation }: Props) {
   }, [])
 
   useEffect(() => {
+    const socket = getSocket()
+    if (!socket) return
+    return socket.subscribe<ModelAccessSnapshot>({ type: "model-access" }, setModelAccess)
+  }, [])
+
+  useEffect(() => {
     if (snapshot?.runtime.planMode === false) setPlanModeOverride(null)
   }, [snapshot?.runtime.planMode, setPlanModeOverride])
+
+  useEffect(() => {
+    const override = planModeOverridesByChat.get(chatId)
+    if (!override) return
+    // A normal-mode turn may have started on another client while this screen
+    // was closed. The approval is scoped to exactly one following user prompt;
+    // once any later prompt exists, never let that stale approval override a
+    // newer plan-mode turn.
+    if (transcriptEntries.some((entry) => entry.kind === "user_prompt" && entry.createdAt > override.approvedAt)) {
+      setPlanModeOverride(null)
+    }
+  }, [chatId, transcriptEntries, setPlanModeOverride])
 
   // Clear the authoritative sidebar unread flag only while this transcript is
   // visible in the foreground. Unlike transcript length, that flag still changes
@@ -937,9 +994,10 @@ export function ChatScreen({ route, navigation }: Props) {
     // system_init, it carries connection and reasoning options. The transcript
     // fallback keeps a restarted host closer to the chat's last proven model
     // instead of silently reverting to the provider default.
-    return commandCatalogModelSelection(snapshot)
+    const selection = commandCatalogModelSelection(snapshot)
       ?? latestSystemInitModelSelection(transcriptEntries, snapshot?.runtime.provider ?? null)
-  }, [snapshot, transcriptEntries])
+    return recoverConnectionModelSelection(selection, modelAccess)
+  }, [snapshot, transcriptEntries, modelAccess])
 
   const sendPresentation = resolveComposerSendPresentation({
     editingQueuedMessage: false,
@@ -1021,7 +1079,7 @@ export function ChatScreen({ route, navigation }: Props) {
         if (toolEntry && normalizedToolKind(toolEntry) === "exit_plan_mode" && confirmed) {
           // Match the desktop composer: approving a plan means the next user
           // message executes normally until the host reports that transition.
-          setPlanModeOverride(false)
+          setPlanModeOverride(false, toolEntry.createdAt)
         }
       } catch (error) {
         setSendError(describeSendError(error))
@@ -1029,7 +1087,7 @@ export function ChatScreen({ route, navigation }: Props) {
         setRespondingKey(null)
       }
     },
-    [chatId, snapshot?.messages],
+    [chatId, snapshot?.messages, setPlanModeOverride],
   )
 
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {

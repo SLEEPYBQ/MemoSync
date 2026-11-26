@@ -60,7 +60,11 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
         <Text style={[styles.unavailable, { color: colors.mutedForeground }]}>{props.unavailableReason}</Text>
       ) : null}
 
-      <View style={[styles.actionBar, { borderTopColor: colors.border, backgroundColor: colors.sidebar }]}>
+      <ScrollView
+        style={[styles.actionBar, { borderTopColor: colors.border, backgroundColor: colors.sidebar }]}
+        nestedScrollEnabled
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.actionsContent}>
           {props.options.map((option) => (
             <Button
@@ -76,7 +80,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             />
           ))}
         </View>
-      </View>
+      </ScrollView>
     </View>
   )
 }
@@ -125,6 +129,10 @@ const styles = StyleSheet.create({
   actionBar: {
     borderTopWidth: StyleSheet.hairlineWidth,
     paddingVertical: spacing.sm,
+    // Long single-select option sets remain answerable without letting the
+    // action list consume the transcript or hide the question body.
+    maxHeight: 190,
+    flexGrow: 0,
   },
   actionsContent: {
     gap: spacing.sm,

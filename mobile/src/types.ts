@@ -12,6 +12,7 @@
 export type SubscriptionTopic =
   | { type: "sidebar"; patches?: boolean }
   | { type: "local-projects" }
+  | { type: "model-access" }
   | { type: "chat"; chatId: string; recentLimit?: number }
 
 export type ModelOptions = {
@@ -161,6 +162,21 @@ export interface RuntimeCommandSelection {
   model?: string
   modelOptions?: ModelOptions
   planMode?: boolean
+}
+
+/** Trimmed model-access topic snapshot: enough to validate whether a remembered
+ * connection-scoped model is still offered by that connection. */
+export interface ModelAccessSnapshot {
+  connections: Array<{
+    id: string
+    readOnly?: boolean
+    models: Array<{ id: string }>
+  }>
+  engines: Record<string, {
+    setup?: {
+      access?: { mode?: string; connectionId?: string; defaultModel?: string }
+    }
+  }>
 }
 
 export interface ChatRuntime {
