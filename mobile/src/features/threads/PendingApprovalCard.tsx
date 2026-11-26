@@ -10,6 +10,7 @@ import { MOBILE_TYPOGRAPHY } from "../../lib/typography"
 export interface PendingApprovalOption {
   readonly key: string
   readonly label: string
+  readonly description?: string
   readonly tone?: "primary" | "secondary" | "danger"
   readonly result: unknown
   readonly disabled?: boolean
@@ -70,6 +71,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
             <Button
               key={option.key}
               label={option.label}
+              description={option.description}
               tone={option.tone ?? (option.key === "accept" ? "primary" : "secondary")}
               size="compact"
               fullWidth

@@ -12,6 +12,7 @@ export type ButtonIconName = ComponentProps<typeof Ionicons>["name"]
 
 export interface ButtonProps {
   readonly label: string
+  readonly description?: string
   readonly accessibilityLabel?: string
   readonly icon?: ButtonIconName
   readonly onPress: () => void
@@ -71,17 +72,24 @@ export function Button(props: ButtonProps) {
       ) : props.icon ? (
         <Ionicons name={props.icon} size={compact ? 16 : 18} color={foregroundColor} />
       ) : null}
-      <Text
-        numberOfLines={1}
-        style={[
-          styles.label,
-          compact ? MOBILE_TYPOGRAPHY.label : MOBILE_TYPOGRAPHY.bodySmall,
-          { color: foregroundColor },
-          props.labelStyle,
-        ]}
-      >
-        {props.label}
-      </Text>
+      <View style={styles.labelStack}>
+        <Text
+          numberOfLines={props.description ? 2 : 1}
+          style={[
+            styles.label,
+            compact ? MOBILE_TYPOGRAPHY.label : MOBILE_TYPOGRAPHY.bodySmall,
+            { color: foregroundColor },
+            props.labelStyle,
+          ]}
+        >
+          {props.label}
+        </Text>
+        {props.description ? (
+          <Text numberOfLines={3} style={[styles.description, { color: foregroundColor }]}>
+            {props.description}
+          </Text>
+        ) : null}
+      </View>
     </Pressable>
   )
 }
@@ -105,9 +113,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.xs + 1,
   },
+  labelStack: {
+    flexShrink: 1,
+    gap: 2,
+  },
   label: {
     flexShrink: 1,
     fontWeight: "600",
+    textAlign: "center",
+  },
+  description: {
+    ...MOBILE_TYPOGRAPHY.caption,
+    opacity: 0.78,
     textAlign: "center",
   },
   primaryLift: {

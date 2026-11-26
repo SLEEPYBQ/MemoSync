@@ -327,7 +327,7 @@ function splitExecutionApprovalQuestion(question: string): { prompt: string; arg
  * that transition when the next turn starts. Keep the mobile override per chat
  * across screen navigation until the authoritative transcript proves a later
  * user turn consumed it. */
-const planModeOverridesByChat = new Map<string, { toolUseId: string; respondedAt: number }>()
+const planModeOverridesByChat = new Map<string, { toolUseId: string; respondedAt: number; queuedContents: string[] }>()
 
 function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
   for (const group of data.projectGroups) {
@@ -606,6 +606,7 @@ function InteractiveToolCard(props: {
             ...simpleOptions.map((option, index) => ({
               key: `answer-${index}`,
               label: option.label,
+              ...(option.description ? { description: option.description } : {}),
               tone: (index === 0 ? "primary" : "secondary") as "primary" | "secondary",
               result: { questions, answers: { [key]: [option.label] } },
             })),
@@ -745,7 +746,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => (planModeOverridesByChat.has(chatId) ? false : null))
-  const setPlanModeOverride = useCallback((value: boolean | null, approval?: { toolUseId: string; respondedAt: number }) => {
+  const setPlanModeOverride = useCallback((value: boolean | null, approval?: { toolUseId: string; respondedAt: number; queuedContents: string[] }) => {
     if (value == null) planModeOverridesByChat.delete(chatId)
     else if (value === false && approval) planModeOverridesByChat.set(chatId, approval)
     setPlanModeOverrideState(value)
@@ -920,8 +921,21 @@ export function ChatScreen({ route, navigation }: Props) {
       (entry) => isToolResultEntry(entry) && entry.toolId === override.toolUseId,
     )
     const approvedAt = result?.createdAt ?? override.respondedAt
-    if (transcriptEntries.some((entry) => entry.kind === "user_prompt" && entry.createdAt > approvedAt)) {
+    // Rows already waiting in the host queue when approval happened still
+    // carry their old plan-mode flag. Their later dispatch timestamp must not
+    // consume the new composer override. Match them by content because the
+    // transcript entry does not expose its queue id; this is conservative for
+    // ordinary follow-ups and never hides a different new user decision.
+    const preApprovedQueue = [...override.queuedContents]
+    for (const entry of transcriptEntries) {
+      if (entry.kind !== "user_prompt" || entry.createdAt <= approvedAt) continue
+      const queuedIndex = preApprovedQueue.indexOf((entry as UserPromptEntry).content)
+      if (queuedIndex >= 0) {
+        preApprovedQueue.splice(queuedIndex, 1)
+        continue
+      }
       setPlanModeOverride(null)
+      break
     }
   }, [chatId, transcriptEntries, setPlanModeOverride])
 
@@ -1086,7 +1100,11 @@ export function ChatScreen({ route, navigation }: Props) {
         if (toolEntry && normalizedToolKind(toolEntry) === "exit_plan_mode" && confirmed) {
           // Match the desktop composer: approving a plan means the next user
           // message executes normally until the host reports that transition.
-          setPlanModeOverride(false, { toolUseId, respondedAt: Date.now() })
+          setPlanModeOverride(false, {
+            toolUseId,
+            respondedAt: Date.now(),
+            queuedContents: (snapshot?.queuedMessages ?? []).map((message) => message.content),
+          })
         }
       } catch (error) {
         setSendError(describeSendError(error))
@@ -1094,7 +1112,7 @@ export function ChatScreen({ route, navigation }: Props) {
         setRespondingKey(null)
       }
     },
-    [chatId, snapshot?.messages, setPlanModeOverride],
+    [chatId, snapshot?.messages, snapshot?.queuedMessages, setPlanModeOverride],
   )
 
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
