@@ -1,4 +1,4 @@
-import { BRANCH_READ_DENIAL, isOpencodeBranchRead, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
+import { BRANCH_READ_DENIAL, isAntigravityBranchRead, isOpencodeBranchRead, isPiBranchPath, isProjectBranchPath, isReadOnlyBranchCommand } from './branch-read-policy'
 export { isReadOnlyBranchCommand } from './branch-read-policy'
 import { snapshotParentLaunch, type ParentLaunch } from './parent-launch'
 import { toClaudeMemoryMcpServer } from './claude-adapter'
@@ -8,6 +8,7 @@ import Ajv, { type ValidateFunction } from "ajv"
 import { randomUUID } from "node:crypto"
 import type { AgentProvider, CodexReasoningEffort, ServiceTier } from "../../shared/types"
 import { normalizePiReasoningEffort } from "../../shared/types"
+import { AntigravityAgentManager } from "../antigravity-agent"
 import { OpencodeAgentManager } from "../opencode-agent"
 import { CodexAppServerManager } from "../codex-app-server"
 import type { HarnessTurn } from "../harness-types"
@@ -85,6 +86,7 @@ export interface MemoryBranchDependencies {
   claudeQuery?: typeof query
   codexManager?: Pick<CodexAppServerManager, "startSession" | "startTurn" | "stopSession">
   opencodeManager?: Pick<OpencodeAgentManager, "startTurn" | "closeChat" | "deleteSession">
+  antigravityManager?: Pick<AntigravityAgentManager, "startTurn" | "closeChat">
   piManager?: Pick<PiAgentManager, "startTurn" | "closeChat">
   resolvePiConnection?: () => Promise<PiConnection | null>
 }
@@ -172,11 +174,13 @@ function validateBranchOutput(raw: Record<string, unknown>, schema?: Record<stri
  */
 export function createMemoryBranch(input: MemoryBranchInput, dependencies: MemoryBranchDependencies = {}): MemoryBranch {
   const id = `memory-${input.purpose ?? "branch"}-${randomUUID()}`
-  const mode = input.parentSessionToken ? "fork" : "empty-history"
+  const mode = input.parentSessionToken && input.provider !== "antigravity" ? "fork" : "empty-history"
   const runClaude = dependencies.claudeQuery ?? query
   const codex = dependencies.codexManager ?? new CodexAppServerManager()
   const ownedOpencode = dependencies.opencodeManager ? undefined : new OpencodeAgentManager()
   const opencode = dependencies.opencodeManager ?? ownedOpencode!
+  const ownedAntigravity = dependencies.antigravityManager ? undefined : new AntigravityAgentManager()
+  const antigravity = dependencies.antigravityManager ?? ownedAntigravity!
   const pi = dependencies.piManager ?? new PiAgentManager()
   const resolveConnection = dependencies.resolvePiConnection ?? resolvePiConnection
   const source = input.parentLaunch
@@ -184,11 +188,11 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   if (parent && parent.provider !== input.provider) throw new Error("Memory branch parent engine mismatch")
   input = { ...input, parentLaunch: parent, model: parent?.provider === "codex" ? parent.turn.model : parent?.options.model ?? input.model,
     effort: parent?.provider === "codex" ? parent.turn.effort : (parent && "effort" in parent.options ? parent.options.effort : undefined) ?? input.effort }
-  let runtime = input.runtime ?? (parent?.provider === "codex" ? parent.session.runtime : parent?.provider === "opencode" ? parent.options.runtime : undefined) ?? runtimeForEnv(input.subprocessEnv)
+  let runtime = input.runtime ?? (parent?.provider === "codex" ? parent.session.runtime : parent?.provider === "opencode" || parent?.provider === "antigravity" ? parent.options.runtime : undefined) ?? runtimeForEnv(input.subprocessEnv)
   let piConnection = parent?.provider === "pi" ? parent.options.connection ?? undefined : runtime?.piConnection
   let sessionToken: string | null = null
   let disposed = false
-  let opencodeCleanup: Promise<void> | undefined
+  let asyncCleanup: Promise<void> | undefined
   let sessionUnavailable = false
   let requestGeneration = 0
   let codexConnected = false
@@ -209,11 +213,11 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
   }
 
   const dispose = () => {
-    if (disposed) return opencodeCleanup
+    if (disposed) return asyncCleanup
     disposed = true
     activeController?.abort(new Error("Memory branch disposed"))
     if (input.provider === "opencode") {
-      opencodeCleanup = (async () => {
+      asyncCleanup = (async () => {
         try {
           await activeTurn?.interrupt().catch(() => {})
           if (sessionToken) await opencode.deleteSession(id, sessionToken, { cwd: input.localPath, model: input.model, runtime, agent: "memosync-branch" })
@@ -222,8 +226,19 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
           try { await opencode.closeChat(id) } finally { await ownedOpencode?.dispose() }
         }
       })()
-      void opencodeCleanup.catch(() => {})
-      return opencodeCleanup
+      void asyncCleanup.catch(() => {})
+      return asyncCleanup
+    }
+    if (input.provider === "antigravity") {
+      asyncCleanup = (async () => {
+        try { await activeTurn?.interrupt().catch(() => {}) }
+        finally {
+          closeTransport()
+          try { await antigravity.closeChat(id) } finally { await ownedAntigravity?.dispose() }
+        }
+      })()
+      void asyncCleanup.catch(() => {})
+      return asyncCleanup
     }
     closeTransport()
   }
@@ -529,6 +544,81 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
     return parseMemoryBranchJson(text)
   }
 
+  async function askAntigravity(prompt: string, _options: MemoryBranchAskOptions, controller: AbortController, budget: MemoryBranchBudget) {
+    runtime ??= await resolveEngineRuntime({ engine: "antigravity", model: input.model, env: input.subprocessEnv })
+    controller.signal.throwIfAborted()
+    const branchRuntime = rememberRuntime({ ...runtime, env: { ...runtime.env, RIPGREP_CONFIG_PATH: "" } })
+    const admitted = new Set<string>()
+    requestStartedAt = performance.now()
+    activeTurn = await antigravity.startTurn({
+      chatId: id,
+      cwd: input.localPath,
+      content: prompt,
+      model: branchRuntime.model || input.model,
+      runtime: branchRuntime,
+      signal: controller.signal,
+      systemPrompt: input.parentLaunch?.provider === "antigravity" ? input.parentLaunch.options.systemPrompt : undefined,
+      // Antigravity ACP does not expose session/fork: create an independent child
+      // session on first ask and resume only this branch's own child session.
+      sessionToken,
+      forkSession: false,
+      allowResumeFallback: false,
+      planMode: false,
+      executionPolicy: { engine: "antigravity", permission: "ask" },
+      onPermissionRequest: async (request, tool) => {
+        if (!tool || !isAntigravityBranchRead(tool.name, tool.input, input.localPath)) return false
+        const callId = typeof request.toolCall === "object" && request.toolCall && "toolCallId" in request.toolCall
+          ? String((request.toolCall as Record<string, unknown>).toolCallId)
+          : String(request.id ?? randomUUID())
+        if (admitted.has(callId)) return true
+        if (admitted.size >= budget.maxToolCalls) return false
+        admitted.add(callId)
+        return true
+      },
+      onToolRequest: async () => ({ cancelled: true, error: "Memory branches cannot request user input." }),
+    })
+    let text = "", completed = false, visibleSteps = 0, toolCalls = 0
+    const observed = new Set<string>()
+    for await (const event of activeTurn.stream) {
+      controller.signal.throwIfAborted()
+      if (event.type === "session_token" && event.sessionToken) {
+        if (input.parentSessionToken && event.sessionToken === input.parentSessionToken) {
+          throw new Error("Memory branch did not obtain an independent Antigravity session")
+        }
+        if (sessionToken && sessionToken !== event.sessionToken) {
+          throw new Error("Memory branch unexpectedly changed session identifier")
+        }
+        sessionToken = event.sessionToken
+        continue
+      }
+      if (event.type !== "transcript" || !event.entry) continue
+      if (event.entry.kind === "tool_call" && !observed.has(event.entry.tool.toolId)) {
+        observed.add(event.entry.tool.toolId)
+        visibleSteps += 1
+        if (event.entry.tool.toolName !== "StructuredOutput") toolCalls += 1
+        if (toolCalls > budget.maxToolCalls) {
+          await interruptForBudget(`Memory branch exceeded its ${budget.maxToolCalls}-tool-call budget`)
+        }
+      }
+      if (event.entry.kind === "assistant_text") {
+        text = event.entry.text
+        visibleSteps += 1
+      }
+      if (visibleSteps > budget.maxTurns) {
+        await interruptForBudget(`Memory branch exceeded its ${budget.maxTurns}-step observable Antigravity budget`)
+      }
+      if (event.entry.kind === "result") {
+        if (event.entry.isError || event.entry.subtype !== "success") {
+          throw new Error(`Memory branch failed: ${event.entry.result || event.entry.subtype}`)
+        }
+        if (!text && event.entry.result.trim()) text = event.entry.result
+        completed = true
+      }
+    }
+    if (!completed) throw new Error("Memory branch ended without a completed turn")
+    return parseMemoryBranchJson(text)
+  }
+
   async function run(prompt: string, options: MemoryBranchAskOptions) {
     if (disposed) throw new Error("Memory branch has been disposed")
     if (sessionUnavailable) throw new Error("Memory branch session was not established; reopen memory preparation")
@@ -558,7 +648,9 @@ export function createMemoryBranch(input: MemoryBranchInput, dependencies: Memor
             input.provider === "codex" ? askCodex(text, requestOptions, controller, requestLimits)
               : input.provider === "pi" ? askPi(text, requestOptions, controller, requestLimits)
               : input.provider === "opencode" ? askOpencode(text, requestOptions, controller, requestLimits)
-                : askClaude(text, requestOptions, controller, requestLimits),
+              : input.provider === "antigravity" ? askAntigravity(text, requestOptions, controller, requestLimits)
+              : input.provider === "claude" ? askClaude(text, requestOptions, controller, requestLimits)
+                : Promise.reject(new Error(`Unsupported memory branch provider: ${String(input.provider)}`)),
             aborted,
           ])
           const validated = validateBranchOutput(raw, options.schema)

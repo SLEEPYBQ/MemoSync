@@ -81,7 +81,9 @@ export function deployedProviders(env: Readonly<Record<string, string | undefine
       ? setup.access.defaultModel || selected?.models[0]?.id || ""
       : provider.id === "opencode"
         ? access.getSnapshot().engines.opencode?.accountDefaultModel || ""
-        : live?.defaultModel || live?.models[0]?.id || (provider.id === "claude" ? "sonnet" : provider.defaultModel)
+        : provider.id === "antigravity"
+          ? access.getSnapshot().engines.antigravity?.accountDefaultModel || ""
+          : live?.defaultModel || live?.models[0]?.id || (provider.id === "claude" ? "sonnet" : provider.defaultModel)
     return { ...provider, models, defaultModel }
   })
   return SERVER_PROVIDERS.map((provider) => {

@@ -17,6 +17,8 @@ export interface MemoryInjectionPlan {
   baseline: MemoryBaseline;
   /** Exact text block baked once into the session context. */
   block: string;
+  /** Unresolved conflict pairs among `injectedMemories`. */
+  conflicts: MemoryConflictPair[];
   /** Whether the load_memory_detail tool should be registered. */
   registerTools: boolean;
   /** Items in play for the turn (per-turn restriction applied) — logging, preview, trace. */
@@ -89,6 +91,7 @@ export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInj
     const selection = opts.restrictToIds ? new Set(opts.restrictToIds) : null;
     const restricted = selection ? injected.filter(m => selection.has(m.id)) : injected;
     const view = compileMemoryView(memory, injected, restricted, opts.projectId, opts.chatId);
+    const conflicts = conflictPairsAmong(memory, restricted);
     return {
       mode: 'skills' as const,
       view,
@@ -96,9 +99,10 @@ export function planMemoryInjection(opts: PlanMemoryInjectionOptions): MemoryInj
       block: buildMemoryBlock({
         memories: restricted,
         tools: true,
-        conflicts: conflictPairsAmong(memory, restricted),
+        conflicts,
         viewRevision: view.revision,
       }),
+      conflicts,
       registerTools: true,
       injectedMemories: restricted,
       bakedMemories: restricted,

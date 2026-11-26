@@ -62,6 +62,7 @@ import {
   planMemoryInjection,
   type MemoryInjectionPlan,
 } from "./memory/injection"
+import { buildMemoryBlock } from "./memory/prompt"
 import { compileMemoryView, relationLifecycleOverrides } from "./memory/view"
 import type { RelevanceService, RelevantMemory } from "./memory/relevance"
 import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext, type MemoryToolSpec } from "./memory/tools"
@@ -2124,9 +2125,13 @@ export class AgentCoordinator {
     const hostStarted = performance.now()
     this.disposeMemoryBranches(args.chatId)
     const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
-    const candidate = this.capture?.buildBranchPrompt?.(captureInput)
-    const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
-    const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
+    const priorDigest = args.provider === "antigravity" && ctx.turnNumber > 1 ? this.recentConversationDigest(args.chatId) : ""
+    const withDigest = <T extends BranchRequest | undefined>(req: T): T => req && !req.skip && priorDigest
+      ? { ...req, constraints: [req.constraints, `PRIOR CONVERSATION DIGEST:\n${priorDigest}`].filter(Boolean).join("\n\n") } as T
+      : req
+    const candidate = withDigest(this.capture?.buildBranchPrompt?.(captureInput))
+    const transfer = withDigest(this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText }))
+    const changes = withDigest(this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText))
     const empty = (raw: Record<string, unknown>): BranchRequest => ({ prompt: '', dependencyKey: '', skip: { raw, reason: 'service-unavailable' } })
     const snapshot = this.memoryBranchSnapshot()
     this.branchPreparations.set(args.chatId, {
@@ -3817,8 +3822,12 @@ export class AgentCoordinator {
         executionPolicy: chat.executionPolicyVersion && policy.engine === 'opencode' ? policy : undefined,
         isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
     } else {
+      if (chat.pendingForkSessionToken) {
+        await this.store.setPendingForkSessionToken(chatId, null)
+        throw new Error('Antigravity chats cannot be forked')
+      }
       preparedToken = await this.antigravityManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
-        runtime, signal, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken),
+        runtime, signal, sessionToken: chat.sessionToken, forkSession: false, planMode: settings.planMode,
         executionPolicy: chat.executionPolicyVersion && policy.engine === 'antigravity' ? policy : undefined,
         isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
     }
@@ -4392,7 +4401,9 @@ export class AgentCoordinator {
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
-    const connectionId = options.modelOptions?.connectionId ?? (provider === "opencode" ? undefined : options.modelOptions?.[provider]?.connectionId)
+    const connectionId = provider === "antigravity"
+      ? undefined
+      : options.modelOptions?.connectionId ?? (provider === "opencode" ? undefined : options.modelOptions?.[provider]?.connectionId)
     const access = getModelAccessService()?.setup(provider).access
     const modelConnectionId = connectionId ?? (access?.mode === "connection" ? access.connectionId : undefined)
     if (provider === "claude") {
@@ -7101,8 +7112,16 @@ export class AgentCoordinator {
       const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
       const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
       const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
+      const basePlanBlock = args.provider === "antigravity"
+        ? (piPlan
+          ? [
+              buildMemoryBlock({ memories: piPlan.injectedMemories, tools: false, conflicts: piPlan.conflicts, viewRevision: piPlan.view.revision }),
+              ...piPlan.injectedMemories.filter(item => item.detail).map(item => `Memory detail [${item.id}]:\n${item.detail}`),
+            ].filter(Boolean).join("\n\n")
+          : "")
+        : (piPlan?.block ?? "")
       const piMemoryBlock = [
-        piPlan?.block ?? "",
+        basePlanBlock,
         piExpectedUses.length ? `How the selected memories are expected to guide this turn:\n${piExpectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
         ...piEnforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
         args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
@@ -7156,16 +7175,21 @@ export class AgentCoordinator {
         }
         turn = await this.opencodeManager.startTurn(opencodeLaunch)
       } else if (args.provider === "antigravity") {
+        if (chat.pendingForkSessionToken) {
+          await this.store.setPendingForkSessionToken(args.chatId, null)
+          throw new Error("Antigravity chats cannot be forked")
+        }
         turn = await this.antigravityManager.startTurn({
           signal: startController.signal, chatId: args.chatId, cwd: project.localPath,
           content: buildPromptText(args.content, providerAttachments),
           model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
           memoryContext: piMemoryBlock || undefined,
-          sessionToken: chat.pendingForkSessionToken ?? chat.sessionToken,
-          forkSession: Boolean(chat.pendingForkSessionToken), planMode: args.planMode,
+          sessionToken: chat.sessionToken,
+          forkSession: false, planMode: args.planMode,
           executionPolicy: !legacyExecution && executionPolicy.engine === "antigravity" ? executionPolicy : undefined,
           isPolicyCurrent, onExecutionPolicyApplied, onToolRequest,
           onPermissionRequest: (request, tool) => requestNativeApproval(tool?.name ?? "permission", tool?.input ?? request, typeof request === "object" && request && "id" in request ? String(request.id) : undefined),
+          onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         })
       } else {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
@@ -7906,7 +7930,8 @@ export class AgentCoordinator {
     const present = engine === "claude" ? Boolean(claude?.pump || native?.alive())
       : native ? native.alive()
       : engine === "codex" && !this.codexManager.getCommandRuntime ? Boolean(this.codexManager.hasSession?.(chatId))
-      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId) || this.antigravityManager.hasSession?.(chatId)) : false
+      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId))
+      : engine === "antigravity" ? Boolean(this.antigravityManager.hasSession?.(chatId)) : false
     if (present) return "present"
     return this.engineStartAbortControllers.has(chatId) ? "starting" : "absent"
   }
@@ -8260,6 +8285,9 @@ export class AgentCoordinator {
     }
     if (!chat.provider) {
       throw new Error("Chat must have a provider before forking")
+    }
+    if (chat.provider === "antigravity") {
+      throw new Error("Antigravity chats cannot be forked")
     }
     if (!chat.sessionToken && !chat.pendingForkSessionToken) {
       throw new Error("Chat has no session to fork")
@@ -8728,7 +8756,7 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    if (!["claude", "codex", "pi", "opencode"].includes(chat.provider ?? "")) {
+    if (!["claude", "codex", "pi", "opencode", "antigravity"].includes(chat.provider ?? "")) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
@@ -9237,7 +9265,7 @@ export class AgentCoordinator {
           await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
         }
 
-        if (active.provider === "codex") {
+        if (active.provider === "codex" || active.provider === "antigravity") {
           const feedback = typeof result.message === "string" ? result.message.trim() : ""
           const clearContext = Boolean(result.confirmed && result.clearContext)
           const instruction = result.confirmed

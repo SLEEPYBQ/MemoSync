@@ -91,7 +91,7 @@ function canForkChat(
   activeStatuses: Map<string, ChatActivityStatus>,
   drainingChatIds: Set<string>,
 ) {
-  if (chat.draft || !chat.provider) return false
+  if (chat.draft || !chat.provider || chat.provider === "antigravity") return false
   if (!chat.sessionToken && !chat.pendingForkSessionToken) return false
   if (activeStatuses.has(chat.id)) return false
   if (drainingChatIds.has(chat.id)) return false
