@@ -11,7 +11,7 @@ import { lastEngineExecutable } from './model-access/executables'
 import { getModelAccessService } from "./model-access/service"
 import { resolveEngineRuntime, runtimeForEnv, type EngineRuntime } from "./model-access/runtime"
 import { query, type CanUseTool, type PermissionResult, type Query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
-import { AttachmentsNotAdmittedError, type ClientCommand } from "../shared/protocol"
+import { AttachmentsNotAdmittedError, validateClientRequestId, type ClientCommand } from "../shared/protocol"
 import { normalizeToolCall } from "../shared/tools"
 import type {
   AgentProvider,
@@ -29,6 +29,7 @@ import { resolveClaudeApiModelId, resolveModelReasoningEffort } from "../shared/
 import { isKnownCatalogModel, resolveChatProviderRoute } from "./chat-providers"
 import { claudeSessionFileExists } from "./claude-session-files"
 import { CodexAppServerManager } from "./codex-app-server"
+import { enqueueAndMaybeSteer } from "./enqueue-and-steer"
 import { EventStore } from "./event-store"
 import type { StoredQueuedMessage } from "./events"
 import { fallbackTitleFromMessage, generateTitleForChatDetailed, type GenerateChatTitleResult } from "./generate-title"
@@ -360,6 +361,8 @@ interface StartTurnArgs {
   /** Stable logical turn id shared by delivery and measurement records. */
   turnId?: string
   queuedMessageId?: string
+  /** Optional client-generated idempotency key for restart/wake dedup. */
+  clientRequestId?: string
   nativeCommand?: boolean
   /**
    * Called only after Claude accepts the prompt, with the exact focused ids
@@ -570,6 +573,14 @@ interface AgentCoordinatorArgs {
   claudeSessionFileExists?: typeof claudeSessionFileExists
   /** Bounded Query.close() drain wait; injectable for lifecycle tests. */
   claudeRetireTimeoutMs?: number
+  /** Dedup retention window for client-generated send/enqueue idempotency keys (default: 15 min). */
+  clientRequestTtlMs?: number
+  /** Maximum recent clientRequestId entries retained per chat (default: 256). */
+  maxClientRequestsPerChat?: number
+  /** Maximum distinct chat/project dedup scopes retained globally (default: 512). */
+  maxClientRequestScopes?: number
+  /** Injectable clock for deterministic expiry tests. */
+  now?: () => number
   startClaudeSession?: (args: {
     localPath: string
     model: string
@@ -592,6 +603,53 @@ interface AgentCoordinatorArgs {
     restrictMemoryIds?: string[]
     onMemoryProposal?: (created: MemoryItem[]) => void
   }) => Promise<ClaudeSessionHandle>
+}
+
+const DEFAULT_CLIENT_REQUEST_TTL_MS = 15 * 60 * 1000
+const DEFAULT_MAX_CLIENT_REQUESTS_PER_CHAT = 256
+const DEFAULT_MAX_CLIENT_REQUEST_SCOPES = 512
+
+interface RecentClientRequestOutcome {
+  chatId: string
+  queuedMessageId?: string
+  queued?: true
+  /** Set when send returned without durably committing a prompt, queue row, or operation (e.g. startup cancellation). */
+  uncommitted?: true
+  sendResult?: { chatId: string; queuedMessageId?: string; queued?: true; operationId?: string }
+}
+
+interface RecentClientRequestEntry {
+  expiresAt: number
+  payloadDigest?: string
+  inFlight?: Promise<RecentClientRequestOutcome>
+  outcome?: RecentClientRequestOutcome
+}
+
+function normalizeClientRequestContent(content: string): string {
+  const trimmed = content.trim()
+  // Native skills rewrite `/name args` to `$name args` (collapsing separator whitespace).
+  const slashOrSkill = trimmed.match(/^([/$])([^\s]+)(?:\s+([\s\S]*))?$/)
+  if (!slashOrSkill) return trimmed
+  return `/${slashOrSkill[2]}${slashOrSkill[3] ? ` ${slashOrSkill[3]}` : ""}`
+}
+
+function computeClientRequestPayloadDigest(content: string, attachments?: readonly ChatAttachment[]): string {
+  const normalizedAttachments = (attachments ?? []).map((attachment) => [
+    attachment.kind,
+    attachment.uploadSha256 ?? attachment.id,
+    attachment.relativePath,
+    attachment.mimeType,
+    attachment.size,
+  ])
+  return createHash("sha256")
+    .update(JSON.stringify([normalizeClientRequestContent(content), normalizedAttachments]))
+    .digest("hex")
+}
+
+function assertClientRequestPayloadMatches(expectedDigest: string | undefined, actualDigest: string) {
+  if (expectedDigest && expectedDigest !== actualDigest) {
+    throw new Error("clientRequestId was already used with a different message payload")
+  }
 }
 
 interface DurableCaptureInput {
@@ -1986,6 +2044,13 @@ export class AgentCoordinator {
    * spans more than one provider run.
    */
   private readonly streamingAssistantTexts = new Map<string, { owner: ActiveTurn; itemId: string; text: string }>()
+  private readonly clientRequestTtlMs: number
+  private readonly maxClientRequestsPerChat: number
+  private readonly maxClientRequestScopes: number
+  private readonly now: () => number
+  private lastClientRequestSweepAt = 0
+  /** Bounded per-chat registry of recently accepted clientRequestId keys across send + enqueue. */
+  private readonly recentClientRequests = new Map<string, Map<string, RecentClientRequestEntry>>()
 
   constructor(args: AgentCoordinatorArgs) {
     this.hostActions = args.hostActions
@@ -2022,6 +2087,10 @@ export class AgentCoordinator {
       args.getMemoryPreviewSettings ?? (() => ({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" }))
     this.claudeSessionFileExists = args.claudeSessionFileExists ?? claudeSessionFileExists
     this.claudeRetireTimeoutMs = args.claudeRetireTimeoutMs ?? 10_000
+    this.clientRequestTtlMs = args.clientRequestTtlMs ?? DEFAULT_CLIENT_REQUEST_TTL_MS
+    this.maxClientRequestsPerChat = Math.max(1, args.maxClientRequestsPerChat ?? DEFAULT_MAX_CLIENT_REQUESTS_PER_CHAT)
+    this.maxClientRequestScopes = Math.max(1, args.maxClientRequestScopes ?? DEFAULT_MAX_CLIENT_REQUEST_SCOPES)
+    this.now = args.now ?? Date.now
   }
 
   private newMemoryBranch(args: Pick<StartTurnArgs, "chatId" | "provider" | "model" | "effort" | "serviceTier" | "engineRuntime">, purpose: string, parent?: string | null, parentLaunch?: ParentLaunch, completedTurn = false, turnId?: string) {
@@ -2921,6 +2990,28 @@ export class AgentCoordinator {
     ))
   }
 
+  private hasDurablyAppendedPromptForQueueRow(
+    chatId: string,
+    queuedMessageId: string,
+    clientRequestId?: string,
+  ): boolean {
+    const messages = this.store.getMessages?.(chatId)
+    if (!messages?.length) return false
+    return messages.some(
+      (entry) =>
+        entry.kind === "user_prompt"
+        && (entry._id === queuedMessageId || (Boolean(clientRequestId) && entry.clientRequestId === clientRequestId)),
+    )
+  }
+
+  private isCancelledQueueRow(chatId: string, queuedMessageId: string): boolean {
+    const messages = this.store.getMessages?.(chatId)
+    if (!messages?.length) return false
+    return messages.some(
+      (entry) => entry.kind === "interrupted" && entry.cancelledQueuedMessageId === queuedMessageId,
+    )
+  }
+
   /**
    * Returns the first queue row that is still eligible for delivery. A Stop
    * marker survives process restart; if its physical dequeue previously
@@ -3619,8 +3710,21 @@ export class AgentCoordinator {
       restoreText: () => this.prepareCurrentContext(chatId, { nativeSession: native.session, nativeInstance: native.instance, version: native.version }).text,
       contextAccepted: () => this.prepareCurrentContext(chatId, { nativeSession: native.session, nativeInstance: native.instance, version: native.version }).accepted(),
       invalidateContext: () => this.invalidateNativeContext(chatId),
-      submit: (entry, args, hostClientId) => this.send({ type: 'chat.send', chatId, content: `${entry.nativeSkill ? `$${entry.nativeSkill.name}` : `/${entry.name}`}${args ? ` ${args}` : ''}`,
-        provider, model: selection?.model ?? runtime?.model, modelOptions: selection?.modelOptions ?? (runtime?.connectionId ? { connectionId: runtime.connectionId } : undefined), planMode: selection?.planMode ?? chat.planMode }, hostClientId, entry),
+      submit: (entry, args, hostClientId, clientRequestId, dedupManagedByCaller) => {
+        const sendCommand: Extract<ClientCommand, { type: 'chat.send' }> = {
+          type: 'chat.send',
+          chatId,
+          content: `${entry.nativeSkill ? `$${entry.nativeSkill.name}` : `/${entry.name}`}${args ? ` ${args}` : ''}`,
+          provider,
+          model: selection?.model ?? runtime?.model,
+          modelOptions: selection?.modelOptions ?? (runtime?.connectionId ? { connectionId: runtime.connectionId } : undefined),
+          planMode: selection?.planMode ?? chat.planMode,
+          ...(clientRequestId ? { clientRequestId } : {}),
+        }
+        return dedupManagedByCaller
+          ? this.performSend(sendCommand, clientRequestId, hostClientId, entry)
+          : this.send(sendCommand, hostClientId, entry)
+      },
     })
     const snapshot = this.commandRegistry.snapshot(chatId)
     if (runtime) snapshot.connectors.items.push({ id: `model:${runtime.connectionId ?? runtime.engine}`, name: runtime.model, kind: 'model-provider',
@@ -3819,7 +3923,15 @@ export class AgentCoordinator {
     }
   }
 
-  async executeCommand(command: ExecuteRuntimeCommand, hostClientId?: string) {
+  async executeCommand(
+    command: ExecuteRuntimeCommand,
+    hostClientId?: string,
+    options?: {
+      dedupManagedByCaller?: boolean
+      clientRequestId?: string
+      onOperationSettled?: (operation: import("../shared/runtime-commands").CommandOperation) => void
+    },
+  ) {
     const chat = this.store.requireChat(command.chatId)
     this.getCommandCatalog(command.chatId)
     this.cancelIdleClose(command.chatId)
@@ -3828,7 +3940,7 @@ export class AgentCoordinator {
       await this.store.promoteDraft(command.chatId)
       this.emitStateChange()
     }
-    return await this.commandRegistry.execute(command, hostClientId) as { chatId: string; operationId?: string }
+    return await this.commandRegistry.execute(command, hostClientId, options) as { chatId: string; operationId?: string }
   }
 
   async cancelCommand(chatId: string, operationId: string) { await this.commandRegistry.cancel(chatId, operationId) }
@@ -3913,6 +4025,15 @@ export class AgentCoordinator {
       statuses.set(chatId, turn.status)
     }
     return statuses
+  }
+
+  /** Authoritative parked memory-preview id owned by this host process, or null if none is live. */
+  getPendingMemoryPreviewId(chatId: string): string | null {
+    const pending = this.pendingPreviews.get(chatId)
+    if (pending) return pending.previewId
+    const claimed = this.claimedPreviewResponses.get(chatId)
+    if (claimed && !claimed.submitted) return claimed.pending.previewId
+    return null
   }
 
   getPendingTool(chatId: string): PendingToolSnapshot | null {
@@ -4204,7 +4325,11 @@ export class AgentCoordinator {
       const failed = stopped.find(result => result.status === "rejected")
       if (failed) throw failed.reason
       await this.store.removeProject(projectId)
-      for (const chat of chats) this.queueDispatches.delete(chat.id)
+      this.recentClientRequests.delete(`project:${projectId}`)
+      for (const chat of chats) {
+        this.queueDispatches.delete(chat.id)
+        this.recentClientRequests.delete(chat.id)
+      }
     } finally {
       // A hidden project stays unavailable through the store, until actually reopened.
       this.hidingProjects.delete(projectId)
@@ -4221,6 +4346,7 @@ export class AgentCoordinator {
 
   async closeChat(chatId: string) {
     this.closedChats.add(chatId)
+    this.recentClientRequests.delete(chatId)
     await this.closeChatSession(chatId)
   }
 
@@ -4249,6 +4375,9 @@ export class AgentCoordinator {
       this.startupReservations.delete(chatId)
     }
     this.cancelledDuringPreview.delete(chatId)
+    this.pendingPreviews.delete(chatId)
+    this.claimedPreviewResponses.delete(chatId)
+    this.recentClientRequests.delete(chatId)
     await this.codexManager.stopSession(chatId)
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
@@ -4428,7 +4557,7 @@ export class AgentCoordinator {
     chatId: string,
     content: string,
     attachments: ChatAttachment[],
-    options: SendMessageOptions & { hostClientId?: string; steer?: boolean },
+    options: SendMessageOptions & { hostClientId?: string; steer?: boolean; clientRequestId?: string },
   ) {
     if (content.trimStart().startsWith('/')) throw new AttachmentsNotAdmittedError('Native commands require an idle session and its current command catalog')
     const write = this.store.enqueueMessage(chatId, {
@@ -4438,6 +4567,7 @@ export class AgentCoordinator {
       model: options.model,
       modelOptions: options.modelOptions,
       planMode: options.planMode,
+      ...(options.clientRequestId ? { clientRequestId: options.clientRequestId } : {}),
     }, options.hostClientId)
     // EventStore serializes inserts. Until the last write settles, a fresh send
     // must join the queue even if its first row isn't visible yet.
@@ -4518,6 +4648,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       steered: options?.steered,
       queuedMessageId: queuedMessage.id,
+      clientRequestId: queuedMessage.clientRequestId,
       // Never borrow the socket that woke the queue or clicked Send now.
       hostClientId: queuedMessage.hostClientId,
       turnId: queuedMessage.id,
@@ -4731,8 +4862,9 @@ export class AgentCoordinator {
             participantContent: args.memoryUserText ?? args.content,
             attachments: args.attachments,
             steered: args.steered,
+            ...(args.clientRequestId ? { clientRequestId: args.clientRequestId } : {}),
           },
-          Date.now(),
+          this.now(),
         ),
         _id: logicalTurnId,
       } as Extract<TranscriptEntry, { kind: "user_prompt" }>
@@ -4751,6 +4883,23 @@ export class AgentCoordinator {
         if (reservation.promptWrite === promptWrite) reservation.promptWrite = undefined
       }
       if (args.queuedMessageId) {
+        // Seed/refresh the dedup cache before removing the persisted queue row
+        // so drainOrphanedQueues() after a restart and >15m queue waits keep
+        // deduplicating retries with the same clientRequestId.
+        if (args.clientRequestId) {
+          const existingRequest = this.recentClientRequests.get(args.chatId)?.get(args.clientRequestId)
+          if (!existingRequest?.inFlight) {
+            this.upsertClientRequestEntry(args.chatId, args.clientRequestId, {
+              expiresAt: this.now() + this.clientRequestTtlMs,
+              payloadDigest: computeClientRequestPayloadDigest(args.memoryUserText ?? args.content, args.attachments),
+              outcome: {
+                chatId: args.chatId,
+                queuedMessageId: args.queuedMessageId,
+                queued: true,
+              },
+            })
+          }
+        }
         try {
           await this.store.removeQueuedMessage(args.chatId, args.queuedMessageId)
           this.emitStateChange(args.chatId)
@@ -4837,7 +4986,7 @@ export class AgentCoordinator {
 
     await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
     } catch (error) {
-      if (!newlyAppendedPrompt || args.resume || args.nativeCommand) throw error
+      if (!newlyAppendedPrompt || args.resume) throw error
       if (!this.startupReservationIsCurrent(args.chatId, reservation)) throw error
       const active = this.activeTurns.get(args.chatId)
       if (active?.startupReservation === reservation && active.hasFinalResult) return
@@ -5243,6 +5392,11 @@ export class AgentCoordinator {
     })
 
     if (decision === "invalidated") {
+      await this.store.appendMessage(
+        args.chatId,
+        timestamped({ kind: "memory_transfer_result", transferId, suggestions: [], done: false }),
+      )
+      this.emitStateChange(args.chatId, { immediate: true })
       return (await this.runTransferGate(args, ctx, Promise.resolve(), {
         transferId,
         recompute: true,
@@ -5689,6 +5843,11 @@ export class AgentCoordinator {
     const decision = await decisionPromise
 
     if (decision === "invalidated") {
+      await this.store.appendMessage(
+        args.chatId,
+        timestamped({ kind: "memory_transfer_result", transferId, suggestions: [], done: false }),
+      )
+      this.emitStateChange(args.chatId, { immediate: true })
       return await this.runTransferGate(args, ctx, Promise.resolve(), {
         transferId,
         recompute: true,
@@ -5715,7 +5874,7 @@ export class AgentCoordinator {
   private async runCheckupGate(
     args: StartTurnArgs,
     ctx: { project: NonNullable<ReturnType<EventStore["getProject"]>>; turnNumber: number },
-    options?: { checkupId?: string; proposalsId?: string; transferId?: string; reuseParent?: boolean },
+    options?: { checkupId?: string; proposalsId?: string; transferId?: string; reuseParent?: boolean; invalidationRevision?: number },
   ): Promise<{ decision: "none" | "handled" | "skipped" | "cancelled" | "reopen_proposals" | "reopen_transfer"; checkupId: string }> {
     const checkupId = options?.checkupId ?? crypto.randomUUID()
     const reuseParent = Boolean(options?.reuseParent)
@@ -5877,10 +6036,22 @@ export class AgentCoordinator {
     })
 
     if (decision === "invalidated") {
+      const invalidationRevision = (options?.invalidationRevision ?? 0) + 1
+      await this.store.appendMessage(
+        args.chatId,
+        timestamped({
+          kind: "memory_preparation_reset",
+          revision: invalidationRevision,
+          from: "checkup",
+          checkupId,
+        }),
+      )
+      this.emitStateChange(args.chatId, { immediate: true })
       return await this.runCheckupGate(args, ctx, {
         ...options,
         checkupId,
         reuseParent: true,
+        invalidationRevision,
       })
     }
 
@@ -8021,10 +8192,379 @@ export class AgentCoordinator {
     this.emitStateChange(chatId)
   }
 
+  private pruneRecentClientRequests(scopeKey: string, now: number) {
+    const entries = this.recentClientRequests.get(scopeKey)
+    if (!entries) return undefined
+    for (const [key, entry] of entries) {
+      if (!entry.inFlight && entry.expiresAt <= now) {
+        entries.delete(key)
+      }
+    }
+    if (entries.size === 0) {
+      this.recentClientRequests.delete(scopeKey)
+      return undefined
+    }
+    return entries
+  }
+
+  private sweepExpiredClientRequests(now: number, force = false) {
+    const sweepInterval = Math.min(this.clientRequestTtlMs, 60_000)
+    if (!force && this.recentClientRequests.size <= this.maxClientRequestScopes && now - this.lastClientRequestSweepAt < sweepInterval) {
+      return
+    }
+    this.lastClientRequestSweepAt = now
+    for (const scopeKey of [...this.recentClientRequests.keys()]) {
+      this.pruneRecentClientRequests(scopeKey, now)
+    }
+    while (this.recentClientRequests.size > this.maxClientRequestScopes) {
+      let evicted = false
+      for (const [scopeKey, entries] of this.recentClientRequests) {
+        const hasInFlight = [...entries.values()].some((entry) => Boolean(entry.inFlight))
+        if (!hasInFlight) {
+          this.recentClientRequests.delete(scopeKey)
+          evicted = true
+          break
+        }
+      }
+      if (!evicted) break
+    }
+  }
+
+  /** Remove all cached idempotency keys for a deleted/pruned chat. */
+  forgetChatClientRequests(chatId: string) {
+    this.recentClientRequests.delete(chatId)
+  }
+
+  /** Prune expired idempotency entries across all inactive chat/project scopes. */
+  pruneExpiredClientRequests() {
+    this.sweepExpiredClientRequests(this.now(), true)
+  }
+
+  private getRecentClientRequest(scopeKey: string, clientRequestId: string): RecentClientRequestEntry | undefined {
+    return this.pruneRecentClientRequests(scopeKey, this.now())?.get(clientRequestId)
+  }
+
+  private upsertClientRequestEntry(scopeKey: string, clientRequestId: string, entry: RecentClientRequestEntry) {
+    const now = this.now()
+    this.sweepExpiredClientRequests(now)
+    let entries = this.pruneRecentClientRequests(scopeKey, now)
+    if (!entries) {
+      entries = new Map()
+    } else {
+      // Refresh scope recency so global LRU eviction drops oldest inactive scopes first.
+      this.recentClientRequests.delete(scopeKey)
+    }
+    this.recentClientRequests.set(scopeKey, entries)
+    entries.delete(clientRequestId)
+    while (entries.size >= this.maxClientRequestsPerChat) {
+      let evicted = false
+      for (const [candidateKey, candidate] of entries) {
+        if (!candidate.inFlight) {
+          entries.delete(candidateKey)
+          evicted = true
+          break
+        }
+      }
+      if (!evicted) break
+    }
+    entries.set(clientRequestId, entry)
+    if (this.recentClientRequests.size > this.maxClientRequestScopes) {
+      this.sweepExpiredClientRequests(now, true)
+    }
+  }
+
+  private settleClientRequest(
+    scopeKey: string,
+    clientRequestId: string,
+    entry: RecentClientRequestEntry,
+    outcome: RecentClientRequestOutcome,
+  ) {
+    entry.inFlight = undefined
+    entry.outcome = outcome
+    entry.expiresAt = this.now() + this.clientRequestTtlMs
+    if (outcome.chatId !== scopeKey) {
+      this.upsertClientRequestEntry(outcome.chatId, clientRequestId, {
+        expiresAt: entry.expiresAt,
+        payloadDigest: entry.payloadDigest,
+        outcome,
+      })
+    }
+  }
+
+  private clearClientRequest(scopeKey: string, clientRequestId: string, entry?: RecentClientRequestEntry) {
+    const entries = this.recentClientRequests.get(scopeKey)
+    if (!entries) return
+    if (entry && entries.get(clientRequestId) !== entry) return
+    entries.delete(clientRequestId)
+    if (entries.size === 0) this.recentClientRequests.delete(scopeKey)
+  }
+
+  private clearSettledClientRequestOutcome(scopeKey: string, clientRequestId: string, outcome: RecentClientRequestOutcome) {
+    const current = this.recentClientRequests.get(scopeKey)?.get(clientRequestId)
+    if (current?.outcome === outcome && !current.inFlight) this.clearClientRequest(scopeKey, clientRequestId, current)
+  }
+
+  /** Forget a recorded idempotency key when an outer wrapper rolls back a failed admission. */
+  forgetClientRequestId(chatId: string, clientRequestId?: string) {
+    if (!clientRequestId) return
+    this.clearClientRequest(chatId, clientRequestId)
+  }
+
+  private isQueuedOnlyOutcomeValid(outcome: RecentClientRequestOutcome, clientRequestId?: string): boolean {
+    if (outcome.uncommitted) return false
+    if (outcome.sendResult?.operationId) {
+      const opStatus = this.commandRegistry.getOperationStatus(outcome.chatId, outcome.sendResult.operationId)
+      return opStatus !== "failed" && opStatus !== "cancelled"
+    }
+    if (!outcome.queuedMessageId) return true
+    if (this.hasDurablyAppendedPromptForQueueRow(outcome.chatId, outcome.queuedMessageId, clientRequestId)) return true
+    if (this.isCancelledQueueRow(outcome.chatId, outcome.queuedMessageId)) return false
+    if (this.store.getQueuedMessage(outcome.chatId, outcome.queuedMessageId)) return true
+    const reservation = this.startupReservations.get(outcome.chatId)
+    if (reservation?.queuedMessageId === outcome.queuedMessageId && !reservation.cancelled && !reservation.superseded) return true
+    return false
+  }
+
+  private findQueuedByClientRequestId(chatId: string, clientRequestId: string): StoredQueuedMessage | undefined {
+    return this.store.getQueuedMessages?.(chatId)?.find(
+      (item) => item.clientRequestId === clientRequestId && !this.isCancelledQueueRow(chatId, item.id),
+    )
+  }
+
+  private findPersistedClientRequestInProject(
+    projectId: string,
+    clientRequestId: string,
+  ): { outcome: RecentClientRequestOutcome; payloadDigest: string; expiresAt: number } | undefined {
+    const projectChats = [...this.store.state.chatsById.values()]
+      .filter((chat) => chat.projectId === projectId && !chat.deletedAt)
+      .sort((a, b) => Math.max(b.lastMessageAt ?? 0, b.updatedAt, b.createdAt) - Math.max(a.lastMessageAt ?? 0, a.updatedAt, a.createdAt))
+      .slice(0, 64)
+
+    for (const chat of projectChats) {
+      const queued = this.findQueuedByClientRequestId(chat.id, clientRequestId)
+      if (queued) {
+        return {
+          outcome: { chatId: chat.id, queuedMessageId: queued.id, queued: true },
+          payloadDigest: computeClientRequestPayloadDigest(queued.content, queued.attachments),
+          expiresAt: this.now() + this.clientRequestTtlMs,
+        }
+      }
+    }
+    for (const chat of projectChats) {
+      const persistedPrompt = this.findPersistedPromptByClientRequestId(chat.id, clientRequestId)
+      if (persistedPrompt) {
+        return {
+          outcome: { chatId: chat.id },
+          payloadDigest: computeClientRequestPayloadDigest(
+            persistedPrompt.participantContent ?? persistedPrompt.content,
+            persistedPrompt.attachments,
+          ),
+          expiresAt: Math.min(this.now(), persistedPrompt.createdAt) + this.clientRequestTtlMs,
+        }
+      }
+    }
+    return undefined
+  }
+
+  private findPersistedPromptByClientRequestId(
+    chatId: string,
+    clientRequestId: string,
+    options?: { enforceWindow?: boolean },
+  ): Extract<TranscriptEntry, { kind: "user_prompt" }> | undefined {
+    const messages = this.store.getMessages?.(chatId)
+    if (!messages?.length) return undefined
+    const enforceWindow = options?.enforceWindow !== false
+    const now = this.now()
+    const newerKeys = new Set<string>()
+    if (enforceWindow) {
+      const activeEntries = this.pruneRecentClientRequests(chatId, now)
+      if (activeEntries) {
+        for (const key of activeEntries.keys()) newerKeys.add(key)
+      }
+      for (const queued of this.store.getQueuedMessages?.(chatId) ?? []) {
+        if (queued.clientRequestId && !this.isCancelledQueueRow(chatId, queued.id)) newerKeys.add(queued.clientRequestId)
+      }
+      if (newerKeys.size >= this.maxClientRequestsPerChat && !newerKeys.has(clientRequestId)) {
+        return undefined
+      }
+    }
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const entry = messages[index]
+      if (!entry || entry.kind !== "user_prompt" || !entry.clientRequestId) continue
+      if (enforceWindow && now - entry.createdAt >= this.clientRequestTtlMs) break
+      if (entry.clientRequestId === clientRequestId) return entry
+      if (enforceWindow) {
+        newerKeys.add(entry.clientRequestId)
+        if (newerKeys.size >= this.maxClientRequestsPerChat) break
+      }
+    }
+    return undefined
+  }
+
+  private formatDeduplicatedSendResult(outcome: RecentClientRequestOutcome) {
+    if (outcome.sendResult) return outcome.sendResult
+    if (outcome.queuedMessageId) {
+      return { chatId: outcome.chatId, queuedMessageId: outcome.queuedMessageId, queued: true as const }
+    }
+    return { chatId: outcome.chatId }
+  }
+
   async send(command: Extract<ClientCommand, { type: "chat.send" }>, hostClientId?: string, nativeCommandValidated: boolean | RuntimeCommand = false) {
     if (command.memoryDisabled !== undefined && typeof command.memoryDisabled !== "boolean") {
       throw new Error("memoryDisabled must be a boolean")
     }
+    const clientRequestId = validateClientRequestId(command.clientRequestId)
+    const dedupScopeKey = command.chatId ?? (command.projectId ? `project:${command.projectId}` : undefined)
+    if (clientRequestId && dedupScopeKey) {
+      const payloadDigest = computeClientRequestPayloadDigest(command.content, command.attachments)
+      // Multiple retry waiters can wake from the same uncommitted inFlight
+      // promise. Re-read the registry after every wakeup: the first waiter may
+      // already have installed the replacement attempt before later waiters run.
+      for (;;) {
+        const existing = this.getRecentClientRequest(dedupScopeKey, clientRequestId)
+        if (!existing) break
+        if (!existing.inFlight && existing.outcome && !this.isQueuedOnlyOutcomeValid(existing.outcome, clientRequestId)) {
+          this.clearClientRequest(dedupScopeKey, clientRequestId, existing)
+          if (existing.outcome.chatId !== dedupScopeKey) {
+            this.clearSettledClientRequestOutcome(existing.outcome.chatId, clientRequestId, existing.outcome)
+          }
+          continue
+        }
+        assertClientRequestPayloadMatches(existing.payloadDigest, payloadDigest)
+        const outcome = existing.inFlight ? await existing.inFlight : existing.outcome!
+        if (this.isQueuedOnlyOutcomeValid(outcome, clientRequestId)) {
+          return this.formatDeduplicatedSendResult(outcome)
+        }
+        this.clearClientRequest(dedupScopeKey, clientRequestId, existing)
+        if (outcome.chatId !== dedupScopeKey) {
+          this.clearSettledClientRequestOutcome(outcome.chatId, clientRequestId, outcome)
+        }
+      }
+      if (command.chatId) {
+        const queued = this.findQueuedByClientRequestId(command.chatId, clientRequestId)
+        if (queued) {
+          const queuedDigest = computeClientRequestPayloadDigest(queued.content, queued.attachments)
+          assertClientRequestPayloadMatches(queuedDigest, payloadDigest)
+          const outcome: RecentClientRequestOutcome = {
+            chatId: command.chatId,
+            queuedMessageId: queued.id,
+            queued: true,
+          }
+          this.upsertClientRequestEntry(command.chatId, clientRequestId, {
+            expiresAt: this.now() + this.clientRequestTtlMs,
+            payloadDigest: queuedDigest,
+            outcome,
+          })
+          return this.formatDeduplicatedSendResult(outcome)
+        }
+        const persistedPrompt = this.findPersistedPromptByClientRequestId(command.chatId, clientRequestId)
+        if (persistedPrompt) {
+          const promptDigest = computeClientRequestPayloadDigest(
+            persistedPrompt.participantContent ?? persistedPrompt.content,
+            persistedPrompt.attachments,
+          )
+          assertClientRequestPayloadMatches(promptDigest, payloadDigest)
+          const outcome: RecentClientRequestOutcome = { chatId: command.chatId }
+          this.upsertClientRequestEntry(command.chatId, clientRequestId, {
+            expiresAt: Math.min(this.now(), persistedPrompt.createdAt) + this.clientRequestTtlMs,
+            payloadDigest: promptDigest,
+            outcome,
+          })
+          return this.formatDeduplicatedSendResult(outcome)
+        }
+      } else if (command.projectId) {
+        const foundInProject = this.findPersistedClientRequestInProject(command.projectId, clientRequestId)
+        if (foundInProject) {
+          assertClientRequestPayloadMatches(foundInProject.payloadDigest, payloadDigest)
+          this.upsertClientRequestEntry(dedupScopeKey, clientRequestId, {
+            expiresAt: foundInProject.expiresAt,
+            payloadDigest: foundInProject.payloadDigest,
+            outcome: foundInProject.outcome,
+          })
+          this.upsertClientRequestEntry(foundInProject.outcome.chatId, clientRequestId, {
+            expiresAt: foundInProject.expiresAt,
+            payloadDigest: foundInProject.payloadDigest,
+            outcome: foundInProject.outcome,
+          })
+          return this.formatDeduplicatedSendResult(foundInProject.outcome)
+        }
+      }
+      const admittedRef: { chatId?: string } = {}
+      const entry: RecentClientRequestEntry = {
+        expiresAt: this.now() + this.clientRequestTtlMs,
+        payloadDigest,
+      }
+      const onOperationSettled = (operation: import("../shared/runtime-commands").CommandOperation) => {
+        if (operation.status !== "failed" && operation.status !== "cancelled") return
+        this.clearClientRequest(dedupScopeKey, clientRequestId, entry)
+        const settledChatId = entry.outcome?.chatId ?? admittedRef.chatId ?? command.chatId
+        if (settledChatId && settledChatId !== dedupScopeKey) {
+          this.clearClientRequest(settledChatId, clientRequestId)
+        }
+      }
+      const execution = (async (): Promise<RecentClientRequestOutcome> => {
+        try {
+          const result = await this.performSend(
+            command,
+            clientRequestId,
+            hostClientId,
+            nativeCommandValidated,
+            admittedRef,
+            onOperationSettled,
+          )
+          const hasQueuedRow = "queuedMessageId" in result && typeof result.queuedMessageId === "string" && result.queuedMessageId.length > 0
+          const hasOperation = "operationId" in result && typeof result.operationId === "string" && result.operationId.length > 0
+          if (!hasQueuedRow && !hasOperation) {
+            const persistedPrompt = this.findPersistedPromptByClientRequestId(result.chatId, clientRequestId, { enforceWindow: false })
+            if (!persistedPrompt) {
+              this.clearClientRequest(dedupScopeKey, clientRequestId, entry)
+              return { chatId: result.chatId, sendResult: result, uncommitted: true }
+            }
+          }
+          if (hasOperation) {
+            const opStatus = this.commandRegistry.getOperationStatus(result.chatId, result.operationId as string)
+            if (opStatus === "failed" || opStatus === "cancelled") {
+              this.clearClientRequest(dedupScopeKey, clientRequestId, entry)
+              return { chatId: result.chatId, sendResult: result, uncommitted: true }
+            }
+          }
+          const outcome: RecentClientRequestOutcome = {
+            chatId: result.chatId,
+            ...(hasQueuedRow ? { queuedMessageId: result.queuedMessageId as string, queued: true as const } : {}),
+            sendResult: result,
+          }
+          this.settleClientRequest(dedupScopeKey, clientRequestId, entry, outcome)
+          return outcome
+        } catch (error) {
+          const resolvedChatId = admittedRef.chatId ?? command.chatId
+          const promptDurablyAppended = Boolean(
+            resolvedChatId
+            && this.findPersistedPromptByClientRequestId(resolvedChatId, clientRequestId, { enforceWindow: false }),
+          )
+          if (promptDurablyAppended && resolvedChatId) {
+            this.settleClientRequest(dedupScopeKey, clientRequestId, entry, { chatId: resolvedChatId })
+          } else {
+            this.clearClientRequest(dedupScopeKey, clientRequestId, entry)
+          }
+          throw error
+        }
+      })()
+      entry.inFlight = execution
+      this.upsertClientRequestEntry(dedupScopeKey, clientRequestId, entry)
+      const outcome = await execution
+      return this.formatDeduplicatedSendResult(outcome)
+    }
+    return await this.performSend(command, clientRequestId, hostClientId, nativeCommandValidated)
+  }
+
+  private async performSend(
+    command: Extract<ClientCommand, { type: "chat.send" }>,
+    clientRequestId: string | undefined,
+    hostClientId?: string,
+    nativeCommandValidated: boolean | RuntimeCommand = false,
+    admittedRef?: { chatId?: string },
+    onOperationSettled?: (operation: import("../shared/runtime-commands").CommandOperation) => void,
+  ) {
     const profile = command.clientTraceId
       ? { traceId: command.clientTraceId, startedAt: performance.now() }
       : null
@@ -8049,6 +8589,7 @@ export class AgentCoordinator {
         projectId: command.projectId,
       })
     }
+    if (admittedRef) admittedRef.chatId = chatId
 
     const chat = this.store.requireChat(chatId)
     if (this.projectUnavailable(chat.projectId)) throw new Error("Project not found")
@@ -8072,8 +8613,20 @@ export class AgentCoordinator {
         await this.store.promoteDraft(chatId)
         this.emitStateChange()
       }
-      return this.executeCommand({ type: 'chat.executeCommand', chatId, runtimeKey: catalog.runtimeKey, expectedRevision: catalog.revision,
-        commandId: entry.id, arguments: match?.[2] ?? '' }, hostClientId)
+      return this.executeCommand(
+        {
+          type: 'chat.executeCommand',
+          chatId,
+          runtimeKey: catalog.runtimeKey,
+          expectedRevision: catalog.revision,
+          commandId: entry.id,
+          arguments: match?.[2] ?? '',
+        },
+        hostClientId,
+        clientRequestId
+          ? { dedupManagedByCaller: true, clientRequestId, onOperationSettled }
+          : undefined,
+      )
     }
     const hasBusyOwner = () => this.queueDispatches.has(chat.id) || this.activeTurns.has(chat.id)
       || this.hasPendingPreviewActivity(chat.id) || this.startingChats.has(chat.id)
@@ -8097,6 +8650,7 @@ export class AgentCoordinator {
         effort: command.effort,
         planMode: command.planMode,
         hostClientId,
+        clientRequestId,
       })
       return { chatId, queuedMessageId: queuedMessage.id, queued: true as const }
     }
@@ -8121,6 +8675,7 @@ export class AgentCoordinator {
       appendUserPrompt: true,
       hostClientId,
       profile,
+      clientRequestId,
       nativeCommand: Boolean(nativeCommandValidated),
     }, checkOnStart)
 
@@ -8134,19 +8689,256 @@ export class AgentCoordinator {
     return { chatId }
   }
 
-  async enqueue(command: Extract<ClientCommand, { type: "message.enqueue" }>, hostClientId?: string) {
+  async enqueue(
+    command: Extract<ClientCommand, { type: "message.enqueue" }>,
+    hostClientId?: string,
+  ): Promise<{ queuedMessageId: string; deduplicated?: true }> {
+    const clientRequestId = validateClientRequestId(command.clientRequestId)
+    if (clientRequestId) {
+      const payloadDigest = computeClientRequestPayloadDigest(command.content, command.attachments)
+      // Re-read after each inFlight wakeup so simultaneous retry waiters cannot
+      // overwrite one another's replacement admission.
+      for (;;) {
+        const existing = this.getRecentClientRequest(command.chatId, clientRequestId)
+        if (!existing) break
+        if (!existing.inFlight && existing.outcome && !this.isQueuedOnlyOutcomeValid(existing.outcome, clientRequestId)) {
+          this.clearClientRequest(command.chatId, clientRequestId, existing)
+          continue
+        }
+        assertClientRequestPayloadMatches(existing.payloadDigest, payloadDigest)
+        const outcome = existing.inFlight ? await existing.inFlight : existing.outcome!
+        if (this.isQueuedOnlyOutcomeValid(outcome, clientRequestId)) {
+          return { queuedMessageId: outcome.queuedMessageId ?? "", deduplicated: true }
+        }
+        this.clearClientRequest(command.chatId, clientRequestId, existing)
+      }
+      const queued = this.findQueuedByClientRequestId(command.chatId, clientRequestId)
+      if (queued) {
+        const queuedDigest = computeClientRequestPayloadDigest(queued.content, queued.attachments)
+        assertClientRequestPayloadMatches(queuedDigest, payloadDigest)
+        this.upsertClientRequestEntry(command.chatId, clientRequestId, {
+          expiresAt: this.now() + this.clientRequestTtlMs,
+          payloadDigest: queuedDigest,
+          outcome: { chatId: command.chatId, queuedMessageId: queued.id, queued: true },
+        })
+        return { queuedMessageId: queued.id, deduplicated: true }
+      }
+      const persistedPrompt = this.findPersistedPromptByClientRequestId(command.chatId, clientRequestId)
+      if (persistedPrompt) {
+        const promptDigest = computeClientRequestPayloadDigest(
+          persistedPrompt.participantContent ?? persistedPrompt.content,
+          persistedPrompt.attachments,
+        )
+        assertClientRequestPayloadMatches(promptDigest, payloadDigest)
+        const outcome: RecentClientRequestOutcome = { chatId: command.chatId }
+        this.upsertClientRequestEntry(command.chatId, clientRequestId, {
+          expiresAt: Math.min(this.now(), persistedPrompt.createdAt) + this.clientRequestTtlMs,
+          payloadDigest: promptDigest,
+          outcome,
+        })
+        return { queuedMessageId: "", deduplicated: true }
+      }
+      const entry: RecentClientRequestEntry = {
+        expiresAt: this.now() + this.clientRequestTtlMs,
+        payloadDigest,
+      }
+      const execution = (async (): Promise<RecentClientRequestOutcome> => {
+        try {
+          const queuedMessage = await this.performEnqueue(command, clientRequestId, hostClientId)
+          const outcome: RecentClientRequestOutcome = {
+            chatId: command.chatId,
+            queuedMessageId: queuedMessage.id,
+            queued: true,
+          }
+          this.settleClientRequest(command.chatId, clientRequestId, entry, outcome)
+          return outcome
+        } catch (error) {
+          this.clearClientRequest(command.chatId, clientRequestId, entry)
+          throw error
+        }
+      })()
+      entry.inFlight = execution
+      this.upsertClientRequestEntry(command.chatId, clientRequestId, entry)
+      const outcome = await execution
+      return { queuedMessageId: outcome.queuedMessageId! }
+    }
+    const queuedMessage = await this.performEnqueue(command, undefined, hostClientId)
+    return { queuedMessageId: queuedMessage.id }
+  }
+
+  /** Keep steered enqueue + steer under a single `inFlight` idempotency barrier
+   * so concurrent retries never ack before `steer()` settles and share any
+   * rollback rejection if steering fails. */
+  async enqueueWithSteer(
+    command: Extract<ClientCommand, { type: "message.enqueue" }>,
+    hostClientId?: string,
+  ): Promise<{ queuedMessageId: string }> {
+    if (!command.steer) {
+      const result = await this.enqueue(command, hostClientId)
+      return { queuedMessageId: result.queuedMessageId }
+    }
+    const clientRequestId = validateClientRequestId(command.clientRequestId)
+    const runEnqueueAndSteer = async (
+      reqId: string | undefined,
+      onCreated?: (queuedMessageId: string) => void,
+    ) =>
+      enqueueAndMaybeSteer(command, {
+        enqueue: async (value) => {
+          const queuedMessage = await this.performEnqueue(value, reqId, hostClientId)
+          onCreated?.(queuedMessage.id)
+          return { queuedMessageId: queuedMessage.id }
+        },
+        steer: (value) => this.steer(value),
+        isQueued: (chatId, messageId) => Boolean(this.store.getQueuedMessage(chatId, messageId)),
+        isRunning: (chatId) => this.getActiveStatuses().has(chatId),
+        remove: async (chatId, queuedMessageId) => {
+          await this.store.removeQueuedMessage(chatId, queuedMessageId)
+          this.emitStateChange(chatId)
+        },
+      })
+    if (!clientRequestId) {
+      return await runEnqueueAndSteer(undefined)
+    }
+
+    const payloadDigest = computeClientRequestPayloadDigest(command.content, command.attachments)
+    const maybeSteerQueuedRow = async (
+      targetEntry: RecentClientRequestEntry,
+      outcome: RecentClientRequestOutcome,
+    ) => {
+      const queuedId = outcome.queuedMessageId
+      if (!queuedId) return
+      if (!this.store.getQueuedMessage(command.chatId, queuedId)) return
+      if (this.startupReservations.get(command.chatId)?.queuedMessageId === queuedId) return
+      if (this.isConsumedQueueRow(command.chatId, queuedId)) return
+      if (!this.getActiveStatuses().has(command.chatId) && !this.hasPendingPreviewActivity(command.chatId)) return
+      let steerUpgrade: Promise<RecentClientRequestOutcome> | undefined
+      steerUpgrade = (async (): Promise<RecentClientRequestOutcome> => {
+        try {
+          try {
+            await this.steer({ type: "message.steer", chatId: command.chatId, queuedMessageId: queuedId })
+          } catch (error) {
+            const stillQueued = Boolean(this.store.getQueuedMessage(command.chatId, queuedId))
+            if (stillQueued && error instanceof Error && error.message === "Chat is still running") return outcome
+            if (!stillQueued && this.getActiveStatuses().has(command.chatId)) return outcome
+            throw error
+          }
+          return outcome
+        } finally {
+          if (targetEntry.inFlight === steerUpgrade) targetEntry.inFlight = undefined
+        }
+      })()
+      targetEntry.inFlight = steerUpgrade
+      await steerUpgrade
+    }
+
+    // As in send/enqueue, every waiter must re-read the registry after an
+    // uncommitted inFlight barrier resolves before installing a replacement.
+    for (;;) {
+      const existing = this.getRecentClientRequest(command.chatId, clientRequestId)
+      if (!existing) break
+      if (!existing.inFlight && existing.outcome && !this.isQueuedOnlyOutcomeValid(existing.outcome, clientRequestId)) {
+        this.clearClientRequest(command.chatId, clientRequestId, existing)
+        continue
+      }
+      assertClientRequestPayloadMatches(existing.payloadDigest, payloadDigest)
+      const outcome = existing.inFlight ? await existing.inFlight : existing.outcome!
+      if (this.isQueuedOnlyOutcomeValid(outcome, clientRequestId)) {
+        await maybeSteerQueuedRow(existing, outcome)
+        return { queuedMessageId: outcome.queuedMessageId ?? "" }
+      }
+      this.clearClientRequest(command.chatId, clientRequestId, existing)
+    }
+    const queued = this.findQueuedByClientRequestId(command.chatId, clientRequestId)
+    if (queued) {
+      const queuedDigest = computeClientRequestPayloadDigest(queued.content, queued.attachments)
+      assertClientRequestPayloadMatches(queuedDigest, payloadDigest)
+      const outcome: RecentClientRequestOutcome = { chatId: command.chatId, queuedMessageId: queued.id, queued: true }
+      const restoredEntry: RecentClientRequestEntry = {
+        expiresAt: this.now() + this.clientRequestTtlMs,
+        payloadDigest: queuedDigest,
+        outcome,
+      }
+      this.upsertClientRequestEntry(command.chatId, clientRequestId, restoredEntry)
+      await maybeSteerQueuedRow(restoredEntry, outcome)
+      return { queuedMessageId: queued.id }
+    }
+    const persistedPrompt = this.findPersistedPromptByClientRequestId(command.chatId, clientRequestId)
+    if (persistedPrompt) {
+      const promptDigest = computeClientRequestPayloadDigest(
+        persistedPrompt.participantContent ?? persistedPrompt.content,
+        persistedPrompt.attachments,
+      )
+      assertClientRequestPayloadMatches(promptDigest, payloadDigest)
+      this.upsertClientRequestEntry(command.chatId, clientRequestId, {
+        expiresAt: Math.min(this.now(), persistedPrompt.createdAt) + this.clientRequestTtlMs,
+        payloadDigest: promptDigest,
+        outcome: { chatId: command.chatId },
+      })
+      return { queuedMessageId: "" }
+    }
+
+    let createdQueuedMessageId: string | undefined
+    const entry: RecentClientRequestEntry = {
+      expiresAt: this.now() + this.clientRequestTtlMs,
+      payloadDigest,
+    }
+    const execution = (async (): Promise<RecentClientRequestOutcome> => {
+      try {
+        const result = await runEnqueueAndSteer(clientRequestId, (id) => {
+          createdQueuedMessageId = id
+        })
+        const outcome: RecentClientRequestOutcome = {
+          chatId: command.chatId,
+          queuedMessageId: result.queuedMessageId,
+          queued: true,
+        }
+        this.settleClientRequest(command.chatId, clientRequestId, entry, outcome)
+        return outcome
+      } catch (error) {
+        const durablyCommitted = Boolean(
+          this.findPersistedPromptByClientRequestId(command.chatId, clientRequestId, { enforceWindow: false })
+          || (createdQueuedMessageId && (
+            this.hasDurablyAppendedPromptForQueueRow(command.chatId, createdQueuedMessageId, clientRequestId)
+            || (
+              !this.isCancelledQueueRow(command.chatId, createdQueuedMessageId)
+              && Boolean(this.store.getQueuedMessage(command.chatId, createdQueuedMessageId))
+            )
+          )),
+        )
+        if (durablyCommitted) {
+          this.settleClientRequest(command.chatId, clientRequestId, entry, {
+            chatId: command.chatId,
+            ...(createdQueuedMessageId ? { queuedMessageId: createdQueuedMessageId, queued: true as const } : {}),
+          })
+        } else {
+          this.clearClientRequest(command.chatId, clientRequestId, entry)
+        }
+        throw error
+      }
+    })()
+    entry.inFlight = execution
+    this.upsertClientRequestEntry(command.chatId, clientRequestId, entry)
+    const outcome = await execution
+    return { queuedMessageId: outcome.queuedMessageId! }
+  }
+
+  private async performEnqueue(
+    command: Extract<ClientCommand, { type: "message.enqueue" }>,
+    clientRequestId: string | undefined,
+    hostClientId?: string,
+  ) {
     if (command.attachments?.length && !command.content.trimStart().startsWith("/")) {
       await this.requireCurrentUploads(command.chatId, command.attachments)
     }
-    const queuedMessage = await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
+    return await this.enqueueMessage(command.chatId, command.content, command.attachments ?? [], {
       provider: command.provider,
       model: command.model,
       modelOptions: command.modelOptions,
       planMode: command.planMode,
       steer: command.steer,
       hostClientId,
+      clientRequestId,
     })
-    return { queuedMessageId: queuedMessage.id }
   }
 
   async steer(command: Extract<ClientCommand, { type: "message.steer" }>) {
@@ -8218,6 +9010,9 @@ export class AgentCoordinator {
     }
 
     await this.store.removeQueuedMessage(command.chatId, command.queuedMessageId)
+    if (queuedMessage.clientRequestId && !this.hasDurablyAppendedPromptForQueueRow(command.chatId, queuedMessage.id, queuedMessage.clientRequestId)) {
+      this.clearClientRequest(command.chatId, queuedMessage.clientRequestId)
+    }
     this.emitStateChange(command.chatId)
   }
 

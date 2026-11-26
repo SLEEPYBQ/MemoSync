@@ -46,7 +46,9 @@ jobs:
         with:
           bun-version: 1.4.4
       - name: Install
-        run: bun install --frozen-lockfile
+        run: |
+          bun install --frozen-lockfile
+          bun install --cwd mobile --frozen-lockfile
       - name: Install Chromium for integration tests
         run: bunx playwright install --with-deps chromium
       - name: Configure git for tests
@@ -57,13 +59,15 @@ jobs:
           git config --global user.name ci
           git config --global user.email ci@example.com
       - name: Typecheck + client builds
-        run: bun run check
+        run: |
+          bun run check
+          bun run --cwd mobile typecheck
       - name: Unit + integration tests
         # Bound integration fixtures without retries. The existing real-shell
         # terminal cases currently skip under CI; this timeout does not run them.
         run: |
           mkdir -p artifacts
-          bun test src/ scripts/analyze-experiment.test.ts --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml
+          bun test src/ scripts/analyze-experiment.test.ts mobile/src/lib/chatState.test.ts --timeout 30000 --reporter=junit --reporter-outfile=artifacts/tests.xml
       - name: Installed package smoke
         env:
           MEMOSYNC_SMOKE_PRIVILEGED_NETNS: "1"

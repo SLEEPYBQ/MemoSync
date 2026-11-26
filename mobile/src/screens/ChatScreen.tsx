@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   FlatList,
   Image,
@@ -24,26 +25,51 @@ import { MOBILE_TYPOGRAPHY } from "../lib/typography"
 import { getSocket, type SocketStatus } from "../lib/socket"
 import { useHostStore } from "../lib/hostStore"
 import {
-  capturePreSendBaseline,
+  EMPTY_DRAFT_STATE,
+  applyDraftEdit,
+  applyRestoredCommandReplace,
+  clearPendingRestoredCommand,
   commandCatalogModelSelection,
+  createClientRequestId,
   deriveEffectiveChatStatus,
   deriveMemoryGateState,
   findPendingInteractiveToolId,
   hasUnconsumedPlanApproval,
   isActiveStatus,
-  isAmbiguousSendTransportError,
+  isStaleNativeCommandRestore,
   isToolResultEntry,
   latestSystemInitModelSelection,
-  modelCommandFields,
+  mergeTranscriptEntries,
   normalizedToolKind,
   recoverConnectionModelSelection,
-  wasSendCommittedInSnapshot,
+  shouldConfirmStaleCommandRestore,
   type MemoryGateState,
   type OpenCheckupGate,
   type OpenProposalsGate,
   type OpenTransferGate,
-  type PreSendBaseline,
+  type PersistedDraftState,
+  type SendRetryAction,
 } from "../lib/chatState"
+import {
+  EMPTY_CHAT_VIEW,
+  applyIncomingChatSnapshot,
+  describeSendError,
+  performChatSendAction,
+  performQueuedMessageDequeueAction,
+  reconcilePersistedDraftAgainstChatSnapshot,
+  type CommittedChatView,
+  type PendingSendReconciliation,
+} from "../lib/chatScreenActions"
+import {
+  clearInFlightSendActive,
+  flushPersistedDraftState,
+  getCachedDraftState,
+  isDequeueActive,
+  isInFlightSendActive,
+  loadPersistedDraftState,
+  subscribeDraftState,
+  updatePersistedDraftState,
+} from "../lib/draftStore"
 import type {
   AskUserQuestionItem,
   AssistantTextEntry,
@@ -82,14 +108,8 @@ import {
 type Props = NativeStackScreenProps<RootStackParamList, "Chat">
 type Colors = ReturnType<typeof useTheme>["colors"]
 
-const SEND_RECONCILE_TIMEOUT_MS = 8_000
-
 function generateTraceId(): string {
-  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0
-    const v = c === "x" ? r : (r & 0x3) | 0x8
-    return v.toString(16)
-  })
+  return createClientRequestId()
 }
 
 function isEntryRenderable(entry: TranscriptEntry, gateState: MemoryGateState): boolean {
@@ -101,8 +121,10 @@ function isEntryRenderable(entry: TranscriptEntry, gateState: MemoryGateState): 
     case "interrupted":
     case "result":
       return true
-    case "memory_preview":
-      return (entry as MemoryPreviewEntry).previewId === gateState.pendingPreviewId
+    case "memory_preview": {
+      const previewId = (entry as MemoryPreviewEntry).previewId
+      return previewId === gateState.pendingPreviewId || previewId === gateState.supersededPreviewId
+    }
     case "memory_proposals":
       return gateState.openProposalsById.has((entry as MemoryProposalsEntry).proposalsId)
     case "memory_transfer":
@@ -124,24 +146,6 @@ function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEnt
 
 function isMemoryPreviewEntry(entry: TranscriptEntry): entry is MemoryPreviewEntry {
   return entry.kind === "memory_preview" && "previewId" in entry
-}
-
-/** Append live entries without dropping rows that fall out of the host's
- * 200-message sliding subscription window. Existing rows are replaced so hidden
- * corrections/redactions still propagate. */
-function mergeTranscriptEntries(first: TranscriptEntry[], second: TranscriptEntry[]): TranscriptEntry[] {
-  const merged = [...first]
-  const positions = new Map(merged.map((entry, index) => [entry._id, index]))
-  for (const entry of second) {
-    const existing = positions.get(entry._id)
-    if (existing == null) {
-      positions.set(entry._id, merged.length)
-      merged.push(entry)
-    } else {
-      merged[existing] = entry
-    }
-  }
-  return merged
 }
 
 /** Some providers persist one reply as adjacent assistant fragments. Joining
@@ -222,25 +226,6 @@ function toolIcon(entry: ToolCallEntry): ButtonIconName {
   if (kind === "exit_plan_mode") return "checkmark-done-outline"
   if (kind === "skill") return "sparkles-outline"
   return "construct-outline"
-}
-
-/** The host intentionally returns stable machine codes for model-access
- * preparation failures; translate the common ones instead of exposing kebab-case. */
-function describeSendError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : ""
-  switch (raw) {
-    case "account-signed-out":
-      return "Sign in to the agent CLI or choose an API connection on the host."
-    case "connection-missing":
-    case "connection-key-missing":
-      return "Choose or configure an API connection in MemoSync settings on the host."
-    case "executable-missing":
-    case "executable-broken":
-    case "executable-incompatible":
-      return "Repair the agent CLI installation in MemoSync settings on the host."
-    default:
-      return raw || "Message could not be sent"
-  }
 }
 
 function activeStatusLabel(status: ChatActivityStatus | undefined): string {
@@ -451,18 +436,25 @@ function ResultRow({ entry }: { entry: ResultEntry }) {
 function MemoryReviewCard(props: {
   entry: MemoryPreviewEntry
   memories: Array<{ id: string; content: string; scope: string }>
+  superseded?: boolean
+  supersededReason?: "reopened" | "inactive" | null
   disabled: boolean
   respondingKey: string | null
   onRespond: (previewId: string, option: PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] }) => Promise<void>
 }) {
   const { colors } = useTheme()
-  const { entry, memories } = props
+  const { entry, memories, superseded = false, supersededReason = null } = props
   const count = memories.length
   const memoryIds = useMemo(() => memories.map((item) => item.id), [memories])
+  const unavailableReason = superseded
+    ? supersededReason === "reopened"
+      ? "Superseded — review reopened on the host."
+      : "Superseded — this review is no longer active on the host."
+    : undefined
 
   return (
     <PendingApprovalCard
-      eyebrow="Working memory"
+      eyebrow={superseded ? "Working memory · Superseded" : "Working memory"}
       title="Review memory for this message"
       detail={
         count === 0
@@ -488,7 +480,8 @@ function MemoryReviewCard(props: {
           </View>
         ) : undefined
       }
-      disabled={props.disabled}
+      disabled={props.disabled || superseded}
+      unavailableReason={unavailableReason}
       respondingKey={props.respondingKey}
       onRespond={(option) =>
         props.onRespond(entry.previewId, option as PendingApprovalOption & { decision: MemoryPreviewDecision; memoryIds?: string[] })
@@ -588,7 +581,7 @@ function MemoryPreparationCard(props: {
 
   return (
     <PendingApprovalCard
-      eyebrow="Memory preparation"
+      eyebrow={stage.superseded ? "Memory preparation · Superseded" : "Memory preparation"}
       title={title}
       detail={detail}
       body={
@@ -607,7 +600,8 @@ function MemoryPreparationCard(props: {
           </View>
         ) : undefined
       }
-      disabled={props.disabled}
+      disabled={props.disabled || stage.superseded}
+      unavailableReason={stage.superseded ? "Superseded — this review is no longer active on the host." : undefined}
       respondingKey={props.respondingKey}
       onRespond={() => props.onSkip(stage.kind, stageId, optionKey)}
       options={[
@@ -835,12 +829,16 @@ function TranscriptRow(props: {
     )
   }
   if (isMemoryPreviewEntry(entry)) {
-    if (entry.previewId !== memoryGateState.pendingPreviewId) return null
+    const isPending = entry.previewId === memoryGateState.pendingPreviewId
+    const isSuperseded = entry.previewId === memoryGateState.supersededPreviewId
+    if (!isPending && !isSuperseded) return null
     const memories = memoryGateState.previewMemoriesById.get(entry.previewId) ?? entry.memories ?? []
     return (
       <MemoryReviewCard
         entry={entry}
         memories={memories}
+        superseded={isSuperseded}
+        supersededReason={isSuperseded ? memoryGateState.supersededPreviewReason : null}
         disabled={props.interactionDisabled}
         respondingKey={props.respondingKey}
         onRespond={props.onRespondMemoryPreview}
@@ -912,11 +910,9 @@ function TranscriptRow(props: {
  * snapshot carries the whole in-progress reply, so it is rendered as-is and
  * never appended to.
  */
-interface PendingSendReconciliation {
-  content: string
-  baseline: PreSendBaseline
-  errorMessage: string
-  timer: ReturnType<typeof setTimeout>
+function summarizeCommandForAlert(content: string): string {
+  const singleLine = content.trim().replace(/\s+/g, " ")
+  return singleLine.length > 80 ? `${singleLine.slice(0, 79)}…` : singleLine
 }
 
 function formatQueuedMessageSummary(message: QueuedChatMessage): string {
@@ -938,19 +934,27 @@ export function ChatScreen({ route, navigation }: Props) {
   const { colors, dark } = useTheme()
   const insets = useSafeAreaInsets()
   const headerHeight = useHeaderHeight()
-  const [snapshot, setSnapshot] = useState<ChatSnapshot | null>(null)
+  const [chatView, setChatView] = useState<CommittedChatView>(EMPTY_CHAT_VIEW)
+  const snapshot = chatView.snapshot
+  const knownEntries = chatView.knownEntries
   const [missing, setMissing] = useState(false)
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("disconnected")
   const [modelAccess, setModelAccess] = useState<ModelAccessSnapshot | null>(null)
-  const [draft, setDraft] = useState("")
+  const [draftState, setDraftState] = useState<PersistedDraftState>(
+    () => getCachedDraftState(chatId) ?? EMPTY_DRAFT_STATE,
+  )
+  const draft = draftState.draft
+  const pendingRestoredCommand = draftState.pendingRestoredCommand ?? null
   const [sending, setSending] = useState(false)
   const [reconcilingSend, setReconcilingSend] = useState(false)
-  const [sendError, setSendError] = useState<string | null>(null)
+  const [dequeuingIds, setDequeuingIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [sendError, setSendError] = useState<string | null>(
+    () => getCachedDraftState(chatId)?.sendError ?? null,
+  )
   const [followUpBehavior, setFollowUpBehavior] = useState<FollowUpBehavior>("queue")
   const [respondingKey, setRespondingKey] = useState<string | null>(null)
   const [sidebarUnread, setSidebarUnread] = useState(false)
   const [foregrounded, setForegrounded] = useState(AppState.currentState === "active")
-  const [knownEntries, setKnownEntries] = useState<TranscriptEntry[]>([])
   const [olderEntries, setOlderEntries] = useState<TranscriptEntry[]>([])
   const [historyCursor, setHistoryCursor] = useState<string | null>(null)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
@@ -965,8 +969,11 @@ export function ChatScreen({ route, navigation }: Props) {
     setPlanModeOverrideState(value)
   }, [chatId])
   const snapshotRef = useRef<ChatSnapshot | null>(null)
+  const mountedRef = useRef(true)
+  const draftStateRef = useRef<PersistedDraftState>(draftState)
   const knownEntriesRef = useRef<TranscriptEntry[]>([])
   const windowUpdatesRef = useRef<Promise<void>>(Promise.resolve())
+  const pendingWindowUpdatesRef = useRef(0)
   const historyInitializedRef = useRef(false)
   const historyGenerationRef = useRef(0)
   const historyLoadingRef = useRef(false)
@@ -974,6 +981,73 @@ export function ChatScreen({ route, navigation }: Props) {
   const listRef = useRef<FlatList<TranscriptEntry>>(null)
   const atEndRef = useRef(true)
   const userScrolledRef = useRef(false)
+
+  const commitDraftState = useCallback(
+    (
+      updater: PersistedDraftState | ((current: PersistedDraftState) => PersistedDraftState),
+      options?: { immediate?: boolean },
+    ) => {
+      return updatePersistedDraftState(
+        chatId,
+        (current) => (typeof updater === "function" ? updater(current) : updater),
+        options,
+      )
+    },
+    [chatId],
+  )
+
+  const reconcilePersistedDraftAgainstSnapshot = useCallback(
+    (value: ChatSnapshot, entriesOverride?: readonly TranscriptEntry[]) => {
+      reconcilePersistedDraftAgainstChatSnapshot(chatId, value, entriesOverride, draftStateRef.current)
+    },
+    [chatId],
+  )
+
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    setDequeuingIds(new Set())
+    const unsubscribeDraft = subscribeDraftState(chatId, (next) => {
+      draftStateRef.current = next
+      setDraftState(next)
+      setSendError(next.sendError)
+    })
+    const cached = getCachedDraftState(chatId)
+    const initial = cached ?? EMPTY_DRAFT_STATE
+    draftStateRef.current = initial
+    setDraftState(initial)
+    setSendError(initial.sendError)
+    if ((cached?.inFlightSend || cached?.pendingRetry || cached?.pendingDequeueRestore) && snapshotRef.current) {
+      reconcilePersistedDraftAgainstSnapshot(snapshotRef.current)
+    }
+    if (!cached) {
+      void loadPersistedDraftState(chatId).then((loaded) => {
+        if (cancelled || !loaded) return
+        draftStateRef.current = loaded
+        setDraftState(loaded)
+        setSendError(loaded.sendError)
+        if (
+          snapshotRef.current &&
+          (loaded.pendingRetry ||
+            (loaded.inFlightSend && !isInFlightSendActive(chatId, loaded.inFlightSend.clientRequestId)) ||
+            (loaded.pendingDequeueRestore && !isDequeueActive(chatId, loaded.pendingDequeueRestore.queuedMessageId)))
+        ) {
+          reconcilePersistedDraftAgainstSnapshot(snapshotRef.current)
+        }
+      })
+    }
+    return () => {
+      cancelled = true
+      flushPersistedDraftState(chatId)
+      unsubscribeDraft()
+    }
+  }, [chatId, reconcilePersistedDraftAgainstSnapshot])
 
   const clearPendingSendReconciliation = useCallback(() => {
     const pending = pendingSendReconciliationRef.current
@@ -984,24 +1058,20 @@ export function ChatScreen({ route, navigation }: Props) {
     return pending
   }, [])
 
-  const restoreFailedSendDraft = useCallback((content: string, errorMessage: string) => {
-    setDraft((current) => (current ? `${content}\n\n${current}` : content))
-    setSendError(errorMessage)
-  }, [])
-
   const transcriptEntries = useMemo(
     () => mergeTranscriptEntries(olderEntries, knownEntries),
     [olderEntries, knownEntries],
   )
+  const wireStatus = snapshot?.runtime.status
+  const pendingMemoryPreviewId = snapshot?.runtime.pendingMemoryPreviewId
   const memoryGateState = useMemo(
-    () => deriveMemoryGateState(transcriptEntries),
-    [transcriptEntries],
+    () => deriveMemoryGateState(transcriptEntries, wireStatus, pendingMemoryPreviewId),
+    [transcriptEntries, wireStatus, pendingMemoryPreviewId],
   )
   const entries = useMemo(
     () => coalesceAssistantFragments(transcriptEntries.filter((entry) => isEntryRenderable(entry, memoryGateState))),
     [transcriptEntries, memoryGateState],
   )
-  const wireStatus = snapshot?.runtime.status
   const status = deriveEffectiveChatStatus(wireStatus, memoryGateState)
   const streamingText = snapshot?.runtime.streamingText ?? null
   const active = isActiveStatus(status)
@@ -1027,6 +1097,7 @@ export function ChatScreen({ route, navigation }: Props) {
     snapshotRef.current = null
     knownEntriesRef.current = []
     windowUpdatesRef.current = Promise.resolve()
+    pendingWindowUpdatesRef.current = 0
     atEndRef.current = true
     userScrolledRef.current = false
     setAtEnd(true)
@@ -1035,9 +1106,8 @@ export function ChatScreen({ route, navigation }: Props) {
     // per-chat value instead of clearing it; it is removed only when the host
     // snapshot proves a normal-mode turn caught up.
     setPlanModeOverrideState(planModeOverridesByChat.has(chatId) ? false : null)
-    setSnapshot(null)
+    setChatView(EMPTY_CHAT_VIEW)
     setMissing(false)
-    setKnownEntries([])
     setOlderEntries([])
     setHistoryCursor(null)
     setHasOlderHistory(false)
@@ -1045,93 +1115,47 @@ export function ChatScreen({ route, navigation }: Props) {
     const unsubscribe = socket.subscribe<ChatSnapshot | null>(
       { type: "chat", chatId, recentLimit: 200 },
       (value) => {
-        if (!value) {
-          const pendingSend = clearPendingSendReconciliation()
-          if (pendingSend) {
-            restoreFailedSendDraft(pendingSend.content, pendingSend.errorMessage)
-          }
-          snapshotRef.current = null
-          setSnapshot(null)
-          setMissing(true)
-          return
-        }
-        snapshotRef.current = value
-        setSnapshot(value)
-        setMissing(false)
-
-        const pendingSend = pendingSendReconciliationRef.current
-        if (pendingSend) {
-          clearPendingSendReconciliation()
-          if (!wasSendCommittedInSnapshot(pendingSend.content, pendingSend.baseline, value.messages, value.queuedMessages)) {
-            restoreFailedSendDraft(pendingSend.content, pendingSend.errorMessage)
-          }
-        }
-
-        if (!historyInitializedRef.current) {
-          historyInitializedRef.current = true
-          knownEntriesRef.current = value.messages
-          setKnownEntries(value.messages)
-          setHistoryCursor(value.history.olderCursor)
-          setHasOlderHistory(value.history.hasOlder)
-          return
-        }
-
-        // Live chat snapshots are sliding windows. If a reconnect jumps ahead
-        // by more than that window, fill the missing range backward from the
-        // new window until the previous newest row is reached. The user's
-        // older-history cursor is deliberately left unchanged.
-        const generation = historyGenerationRef.current
-        const applyWindow = async () => {
-          if (historyGenerationRef.current !== generation) return
-          const current = knownEntriesRef.current
-          const anchorId = current[current.length - 1]?._id
-          let incoming = value.messages
-          if (anchorId && value.messages.length > 0 && !value.messages.some((entry) => entry._id === anchorId)) {
-            let cursor = value.history.olderCursor
-            let bridge: TranscriptEntry[] = []
-            let foundAnchor = false
-            const visited = new Set<string>()
-            while (cursor && !visited.has(cursor)) {
-              if (historyGenerationRef.current !== generation) return
-              visited.add(cursor)
-              const page = await socket.command<ChatHistoryPage>({
-                type: "chat.loadHistory",
-                chatId,
-                beforeCursor: cursor,
-                limit: 100,
-              })
-              if (historyGenerationRef.current !== generation) return
-              const anchorIndex = page.messages.findIndex((entry) => entry._id === anchorId)
-              bridge = mergeTranscriptEntries(
-                anchorIndex >= 0 ? page.messages.slice(anchorIndex + 1) : page.messages,
-                bridge,
-              )
-              if (anchorIndex >= 0) {
-                foundAnchor = true
-                break
-              }
-              cursor = page.hasOlder ? page.olderCursor : null
-            }
-            if (!foundAnchor) throw new Error("Chat history changed while reconnecting; reload the chat")
-            incoming = mergeTranscriptEntries(bridge, value.messages)
-          }
-          if (historyGenerationRef.current !== generation) return
-          const merged = mergeTranscriptEntries(knownEntriesRef.current, incoming)
-          knownEntriesRef.current = merged
-          setKnownEntries(merged)
-        }
-        windowUpdatesRef.current = windowUpdatesRef.current.then(applyWindow).catch((error) => {
-          if (historyGenerationRef.current !== generation) return
-          // A failed backfill must not strand the user on a stale transcript.
-          // Resynchronize to the latest window; its cursor can still reach all
-          // older rows, including the gap, on demand.
-          knownEntriesRef.current = value.messages
-          setKnownEntries(value.messages)
-          setOlderEntries([])
-          setHistoryCursor(value.history.olderCursor)
-          setHasOlderHistory(value.history.hasOlder)
-          setHistoryError(error instanceof Error ? error.message : "Chat history could not be synchronized")
-        })
+        applyIncomingChatSnapshot(
+          {
+            chatId,
+            socket,
+            getSnapshot: () => snapshotRef.current,
+            setSnapshot: (next) => {
+              snapshotRef.current = next
+            },
+            getKnownEntries: () => knownEntriesRef.current,
+            setKnownEntries: (next) => {
+              knownEntriesRef.current = next
+            },
+            getHistoryInitialized: () => historyInitializedRef.current,
+            setHistoryInitialized: (next) => {
+              historyInitializedRef.current = next
+            },
+            getHistoryGeneration: () => historyGenerationRef.current,
+            bumpHistoryGeneration: () => {
+              historyGenerationRef.current += 1
+              return historyGenerationRef.current
+            },
+            getPendingWindowUpdates: () => pendingWindowUpdatesRef.current,
+            setPendingWindowUpdates: (next) => {
+              pendingWindowUpdatesRef.current = next
+            },
+            getWindowUpdates: () => windowUpdatesRef.current,
+            setWindowUpdates: (next) => {
+              windowUpdatesRef.current = next
+            },
+            getPendingSendReconciliation: () => pendingSendReconciliationRef.current,
+            clearPendingSendReconciliation,
+            getDraftStateFallback: () => draftStateRef.current,
+            setChatView,
+            setMissing,
+            setOlderEntries,
+            setHistoryCursor,
+            setHasOlderHistory,
+            setHistoryError,
+          },
+          value,
+        )
       },
     )
     const unsubscribeSidebar = socket.subscribe<SidebarData>({ type: "sidebar" }, (value) => {
@@ -1142,12 +1166,19 @@ export function ChatScreen({ route, navigation }: Props) {
       // subscription; the next page response must not continue paging or write
       // state for a closed chat.
       historyGenerationRef.current += 1
-      clearPendingSendReconciliation()
+      pendingWindowUpdatesRef.current = 0
+      const pendingSend = clearPendingSendReconciliation()
+      if (pendingSend) {
+        // Release the in-process active marker while leaving `inFlightSend` in
+        // draftStore so re-opening the chat reconciles against ChatSnapshot
+        // instead of prematurely resurrecting a possibly-committed prompt.
+        clearInFlightSendActive(chatId, pendingSend.clientRequestId)
+      }
       offStatus()
       unsubscribe()
       unsubscribeSidebar()
     }
-  }, [chatId, clearPendingSendReconciliation, restoreFailedSendDraft])
+  }, [chatId, clearPendingSendReconciliation, reconcilePersistedDraftAgainstSnapshot])
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
@@ -1277,7 +1308,7 @@ export function ChatScreen({ route, navigation }: Props) {
   })
 
   const send = useCallback(async () => {
-    const content = draft.trim()
+    const content = draftStateRef.current.draft.trim()
     const socket = getSocket()
     if (
       !content ||
@@ -1289,93 +1320,37 @@ export function ChatScreen({ route, navigation }: Props) {
     ) {
       return
     }
-    const baseline = capturePreSendBaseline(
-      mergeTranscriptEntries(transcriptEntries, snapshotRef.current?.messages ?? []),
-      snapshot?.queuedMessages ?? [],
-    )
-    setSending(true)
-    setSendError(null)
-    setDraft("")
-    try {
-      if (active) {
-        // A turn is in flight (or parked on a memory gate): queue by default,
-        // or steer when the composer follow-up control is in steer mode.
-        await socket.command({
-          type: "message.enqueue",
-          chatId,
-          content,
-          ...modelCommandFields(composerModelSelection),
-          planMode: effectivePlanMode,
-          steer: sendPresentation.action === "steer",
-        })
-      } else {
-        await socket.command({
-          type: "chat.send",
-          chatId,
-          clientTraceId: generateTraceId(),
-          content,
-          ...modelCommandFields(composerModelSelection),
-          planMode: effectivePlanMode,
-        })
-      }
-    } catch (error) {
-      const errorMessage = describeSendError(error)
-      if (isAmbiguousSendTransportError(error)) {
-        // The host durably commits user_prompt / queuedMessages before booting
-        // the provider and sending the ack. Reconcile against the latest or
-        // next post-reconnect ChatSnapshot before splicing a committed prompt
-        // back into draft.
-        const latestEntries = mergeTranscriptEntries(
-          knownEntriesRef.current,
-          snapshotRef.current?.messages ?? [],
-        )
-        if (
-          wasSendCommittedInSnapshot(
-            content,
-            baseline,
-            latestEntries,
-            snapshotRef.current?.queuedMessages ?? [],
-          )
-        ) {
-          return
-        }
-        clearPendingSendReconciliation()
-        setReconcilingSend(true)
-        const timer = setTimeout(() => {
-          if (pendingSendReconciliationRef.current?.timer !== timer) return
-          pendingSendReconciliationRef.current = null
-          setReconcilingSend(false)
-          const settledEntries = mergeTranscriptEntries(
-            knownEntriesRef.current,
-            snapshotRef.current?.messages ?? [],
-          )
-          if (
-            !wasSendCommittedInSnapshot(
-              content,
-              baseline,
-              settledEntries,
-              snapshotRef.current?.queuedMessages ?? [],
-            )
-          ) {
-            restoreFailedSendDraft(content, errorMessage)
-          }
-        }, SEND_RECONCILE_TIMEOUT_MS)
-        pendingSendReconciliationRef.current = {
-          content,
-          baseline,
-          errorMessage,
-          timer,
-        }
-        console.warn("send interrupted; awaiting snapshot reconciliation", error)
-        return
-      }
-      restoreFailedSendDraft(content, errorMessage)
-      console.warn("send failed", error)
-    } finally {
-      setSending(false)
-    }
+    const action: SendRetryAction = active
+      ? sendPresentation.action === "steer"
+        ? "steer"
+        : "queue"
+      : "send"
+    const combinedEntries = mergeTranscriptEntries(transcriptEntries, snapshotRef.current?.messages ?? [])
+    const baselineQueue = snapshotRef.current?.queuedMessages ?? snapshot?.queuedMessages ?? []
+    await performChatSendAction({
+      chatId,
+      content,
+      active,
+      action,
+      pendingRetry: draftStateRef.current.pendingRetry,
+      socket,
+      effectivePlanMode,
+      composerModelSelection,
+      combinedEntries,
+      baselineQueue,
+      getLatestSnapshot: () => snapshotRef.current,
+      getKnownEntries: () => knownEntriesRef.current,
+      isMounted: () => mountedRef.current,
+      clearPendingSendReconciliation,
+      setPendingSendReconciliation: (next) => {
+        pendingSendReconciliationRef.current = next
+      },
+      getPendingSendReconciliation: () => pendingSendReconciliationRef.current,
+      setSending,
+      setReconcilingSend,
+      setSendError,
+    })
   }, [
-    draft,
     active,
     chatId,
     sending,
@@ -1387,7 +1362,6 @@ export function ChatScreen({ route, navigation }: Props) {
     transcriptEntries,
     snapshot?.queuedMessages,
     clearPendingSendReconciliation,
-    restoreFailedSendDraft,
   ])
 
   const interrupt = useCallback(() => {
@@ -1396,18 +1370,61 @@ export function ChatScreen({ route, navigation }: Props) {
       .catch((error) => setSendError(describeSendError(error)))
   }, [chatId])
 
-  const dequeue = useCallback(
-    (message: QueuedChatMessage) => {
-      getSocket()
-        ?.command({ type: "message.dequeue", chatId, queuedMessageId: message.id })
-        .then(() => {
-          if (message.rejection === "stale_native_command" && message.content.trim()) {
-            setDraft((current) => (current ? `${message.content}\n\n${current}` : message.content))
-          }
-        })
-        .catch((error) => setSendError(describeSendError(error)))
+  const performDequeue = useCallback(
+    (message: QueuedChatMessage, mode: "remove" | "restore_empty" | "replace") => {
+      void performQueuedMessageDequeueAction({
+        chatId,
+        message,
+        mode,
+        socket: getSocket(),
+        getLatestSnapshot: () => snapshotRef.current,
+        isMounted: () => mountedRef.current,
+        onDequeueStart: (id) => {
+          setDequeuingIds((prev) => {
+            const next = new Set(prev)
+            next.add(id)
+            return next
+          })
+        },
+        onDequeueEnd: (id) => {
+          setDequeuingIds((prev) => {
+            if (!prev.has(id)) return prev
+            const next = new Set(prev)
+            next.delete(id)
+            return next
+          })
+        },
+        onError: setSendError,
+      })
     },
     [chatId],
+  )
+
+  const dequeue = useCallback(
+    (message: QueuedChatMessage) => {
+      if (isDequeueActive(chatId, message.id)) return
+      if (shouldConfirmStaleCommandRestore(message, draftStateRef.current.draft)) {
+        Alert.alert(
+          "Replace current draft?",
+          `Restoring "${summarizeCommandForAlert(message.content)}" will replace your current draft so it isn't sent as arguments to the command.`,
+          [
+            { text: "Keep my draft", style: "cancel" },
+            {
+              text: "Discard expired command",
+              onPress: () => performDequeue(message, "remove"),
+            },
+            {
+              text: "Replace draft with restored command",
+              style: "destructive",
+              onPress: () => performDequeue(message, "replace"),
+            },
+          ],
+        )
+        return
+      }
+      performDequeue(message, isStaleNativeCommandRestore(message) ? "restore_empty" : "remove")
+    },
+    [chatId, performDequeue],
   )
 
   const respondTool = useCallback(
@@ -1688,6 +1705,10 @@ export function ChatScreen({ route, navigation }: Props) {
               <View style={styles.queueList}>
                 {queuedMessages.map((message) => {
                   const rejected = message.rejection === "stale_native_command"
+                  const rowActionDisabled =
+                    socketStatus !== "connected" ||
+                    dequeuingIds.has(message.id) ||
+                    isDequeueActive(chatId, message.id)
                   return (
                     <View
                       key={message.id}
@@ -1710,17 +1731,32 @@ export function ChatScreen({ route, navigation }: Props) {
                       >
                         {rejected ? `Command expired: ${formatQueuedMessageSummary(message)}` : formatQueuedMessageSummary(message)}
                       </Text>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={rejected ? "Restore to draft" : "Remove queued message"}
-                        disabled={socketStatus !== "connected"}
-                        onPress={() => dequeue(message)}
-                        hitSlop={10}
-                      >
-                        <Text style={[styles.queueRemove, { color: colors.focus, opacity: socketStatus !== "connected" ? 0.45 : 1 }]}>
-                          {rejected ? "Restore" : "Remove"}
-                        </Text>
-                      </Pressable>
+                      <View style={styles.queueActions}>
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={rejected ? "Restore to draft" : "Remove queued message"}
+                          disabled={rowActionDisabled}
+                          onPress={() => dequeue(message)}
+                          hitSlop={10}
+                        >
+                          <Text style={[styles.queueRemove, { color: colors.focus, opacity: rowActionDisabled ? 0.45 : 1 }]}>
+                            {rejected ? "Restore" : "Remove"}
+                          </Text>
+                        </Pressable>
+                        {rejected ? (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel="Dismiss expired command"
+                            disabled={rowActionDisabled}
+                            onPress={() => performDequeue(message, "remove")}
+                            hitSlop={10}
+                          >
+                            <Text style={[styles.queueRemove, { color: colors.mutedForeground, opacity: rowActionDisabled ? 0.45 : 1 }]}>
+                              Dismiss
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
                     </View>
                   )
                 })}
@@ -1728,7 +1764,39 @@ export function ChatScreen({ route, navigation }: Props) {
             </ScrollView>
           ) : null}
 
-          {reconcilingSend ? (
+          {pendingRestoredCommand !== null ? (
+            <View style={[styles.restoredCommandBox, { backgroundColor: colors.card, borderColor: colors.border }]}>
+              <Text style={[styles.restoredCommandTitle, { color: colors.foreground }]} numberOfLines={2}>
+                Restored command: {summarizeCommandForAlert(pendingRestoredCommand)}
+              </Text>
+              <View style={styles.restoredCommandActions}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Replace draft with restored command"
+                  onPress={() => {
+                    commitDraftState((current) => applyRestoredCommandReplace(pendingRestoredCommand, current), { immediate: true })
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={[styles.restoredCommandAction, { color: colors.destructive }]}>
+                    Replace draft with restored command
+                  </Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="Keep my draft"
+                  onPress={() => {
+                    commitDraftState((current) => clearPendingRestoredCommand(current), { immediate: true })
+                  }}
+                  hitSlop={8}
+                >
+                  <Text style={[styles.restoredCommandAction, { color: colors.focus }]}>Keep my draft</Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
+
+          {reconcilingSend || Boolean(draftState.inFlightSend && !snapshot && !isInFlightSendActive(chatId, draftState.inFlightSend.clientRequestId)) ? (
             <View style={[styles.reconcileBox, { backgroundColor: colors.sidebar, borderColor: colors.border }]}>
               <ActivityIndicator size="small" color={colors.mutedIcon} />
               <Text style={[styles.reconcileText, { color: colors.mutedForeground }]}>
@@ -1748,9 +1816,9 @@ export function ChatScreen({ route, navigation }: Props) {
             <TextInput
               value={draft}
               onChangeText={(value) => {
-                setDraft(value)
-                if (sendError) setSendError(null)
+                commitDraftState((current) => applyDraftEdit(current, value), { immediate: false })
               }}
+              onBlur={() => flushPersistedDraftState(chatId)}
               placeholder={active ? "Follow up…" : "Message…"}
               placeholderTextColor={colors.mutedIcon}
               multiline
@@ -2143,6 +2211,11 @@ const styles = StyleSheet.create({
     ...MOBILE_TYPOGRAPHY.label,
     flex: 1,
   },
+  queueActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+  },
   queueRemove: {
     ...MOBILE_TYPOGRAPHY.label,
     fontWeight: "500",
@@ -2164,6 +2237,26 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+  },
+  restoredCommandBox: {
+    borderRadius: radius.base,
+    borderWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    gap: spacing.xs,
+  },
+  restoredCommandTitle: {
+    ...MOBILE_TYPOGRAPHY.label,
+    fontWeight: "500",
+  },
+  restoredCommandActions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: spacing.md,
+  },
+  restoredCommandAction: {
+    ...MOBILE_TYPOGRAPHY.label,
+    fontWeight: "600",
   },
   reconcileText: {
     ...MOBILE_TYPOGRAPHY.label,

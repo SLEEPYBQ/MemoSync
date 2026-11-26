@@ -233,6 +233,7 @@ function isValidQueuedChatMessage(value: unknown): value is StoredQueuedMessage 
     && isString(value.content)
     && (value.rejection === undefined || value.rejection === "stale_native_command")
     && (value.hostClientId === undefined || isString(value.hostClientId))
+    && (value.clientRequestId === undefined || isString(value.clientRequestId))
     && Array.isArray(value.attachments)
     && isFiniteNumber(value.createdAt)
     && (value.provider === undefined || value.provider === "claude" || value.provider === "codex" || value.provider === "pi" || value.provider === "opencode")
@@ -1347,8 +1348,17 @@ export class EventStore {
 
     const sourceEntries = this.getMessages(sourceChatId)
     if (sourceEntries.length > 0) {
+      // Strip source-chat idempotency keys when cloning history so key reuse in
+      // the forked chat stays isolated to the fork's own submissions.
+      const forkedEntries = sourceEntries.map((entry) => {
+        if (entry.kind !== "user_prompt" || entry.clientRequestId === undefined) {
+          return entry
+        }
+        const { clientRequestId: _stripped, ...rest } = entry
+        return rest
+      })
       const transcriptPath = this.transcriptPath(chatId)
-      const payload = sourceEntries.map((entry) => JSON.stringify(entry)).join("\n")
+      const payload = forkedEntries.map((entry) => JSON.stringify(entry)).join("\n")
       await this.enqueueWrite(async () => {
         await mkdir(this.transcriptsDir, { recursive: true })
         // Atomic write (tmp + rename) so a fork interrupted mid-write can never
@@ -1361,12 +1371,12 @@ export class EventStore {
           chat.hasMessages = true
           chat.updatedAt = Math.max(chat.updatedAt, createdAt)
         }
-        this.setCachedTranscript(chatId, cloneTranscriptEntries(sourceEntries), Buffer.byteLength(payload) + 1)
+        this.setCachedTranscript(chatId, cloneTranscriptEntries(forkedEntries), Buffer.byteLength(payload) + 1)
         // Match ordinary chats: latest user activity, with a legacy fallback
         // only when the inherited transcript contains no prompts.
         let promptAt: number | undefined
         let newestEntryAt: number | undefined
-        for (const entry of sourceEntries) {
+        for (const entry of forkedEntries) {
           if (entry.kind === "user_prompt") promptAt = Math.max(promptAt ?? entry.createdAt, entry.createdAt)
           newestEntryAt = Math.max(newestEntryAt ?? entry.createdAt, entry.createdAt)
         }
@@ -1599,7 +1609,7 @@ export class EventStore {
     })
   }
 
-  async enqueueMessage(chatId: string, message: Omit<QueuedChatMessage, "id" | "createdAt"> & Partial<Pick<QueuedChatMessage, "id" | "createdAt">>, hostClientId?: string) {
+  async enqueueMessage(chatId: string, message: Omit<QueuedChatMessage, "id" | "createdAt"> & Partial<Pick<StoredQueuedMessage, "id" | "createdAt" | "clientRequestId">>, hostClientId?: string) {
     this.requireChat(chatId)
     const queuedMessage: StoredQueuedMessage = {
       id: message.id ?? crypto.randomUUID(),
@@ -1611,6 +1621,7 @@ export class EventStore {
       modelOptions: message.modelOptions,
       planMode: message.planMode,
       ...(hostClientId ? { hostClientId } : {}),
+      ...(message.clientRequestId ? { clientRequestId: message.clientRequestId } : {}),
     }
     const event: QueuedMessageEvent = {
       v: STORE_VERSION,

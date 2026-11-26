@@ -119,6 +119,8 @@ export interface QueuedChatMessage {
   model?: string
   modelOptions?: ModelOptions
   planMode?: boolean
+  /** Optional client-generated idempotency key for reconnect-safe reconciliation. */
+  clientRequestId?: string
 }
 
 export interface InternalUserAttachmentsData {
@@ -873,6 +875,8 @@ export interface UserPromptEntry extends TranscriptEntryBase {
   participantContent?: string
   attachments?: ChatAttachment[]
   steered?: boolean
+  /** Optional client-generated idempotency key persisted for restart-safe send/enqueue dedup. */
+  clientRequestId?: string
 }
 
 export interface SystemInitEntry extends TranscriptEntryBase {
@@ -1733,6 +1737,8 @@ export interface ChatRuntime {
   title: string
   titleUiText?: UiTextReference
   status: ChatActivityStatus
+  /** Authoritative parked memory-preview id owned by the host runtime, or null when none is parked. */
+  pendingMemoryPreviewId?: string | null
   isDraining: boolean
   provider: AgentProvider | null
   planMode: boolean

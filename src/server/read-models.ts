@@ -251,7 +251,8 @@ export function deriveChatSnapshot(
   getMessages: (chatId: string) => Pick<ChatSnapshot, "messages" | "history" | "memoryRecordMessages">,
   streamingTexts?: Map<string, string>,
   commandCatalog?: ChatRuntime["commandCatalog"],
-  harness?: import("../shared/harness-capabilities").ChatHarnessSnapshot
+  harness?: import("../shared/harness-capabilities").ChatHarnessSnapshot,
+  pendingMemoryPreviewId?: string | null
 ): ChatSnapshot | null {
   const chat = state.chatsById.get(chatId)
   if (!chat || chat.deletedAt) return null
@@ -265,6 +266,7 @@ export function deriveChatSnapshot(
     title: chat.title,
         ...(chat.titleUiText ? { titleUiText: chat.titleUiText } : {}),
     status: deriveStatus(chat, activeStatuses.get(chat.id)),
+    ...(pendingMemoryPreviewId !== undefined ? { pendingMemoryPreviewId } : {}),
     isDraining: drainingChatIds.has(chat.id),
     provider: chat.provider,
     memoryDisabled: chat.memoryDisabled ?? false,

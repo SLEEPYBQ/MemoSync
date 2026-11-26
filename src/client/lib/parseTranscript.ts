@@ -65,6 +65,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
   // far); the last one wins, and only a `done` result clears the scan state.
   const transferResults = new Map<string, Extract<TranscriptEntry, { kind: "memory_transfer_result" }>["suggestions"]>()
   const transferResultsDone = new Set<string>()
+  const transferScanning = new Set<string>()
   const checkupResetStates = new Map<string, "waiting" | "pending">()
   // Audit skeletons: a pending memory_trace is superseded by the terminal
   // entry for the same turn — only the last entry per turn renders.
@@ -97,10 +98,26 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
       checkupResetStates.delete(entry.checkupId)
     }
     if (entry.kind === "memory_checkup_decision") checkupDecisions.set(entry.checkupId, entry.decision)
-    if (entry.kind === "memory_transfer_decision") transferDecisions.set(entry.transferId, entry.decision)
+    if (entry.kind === "memory_transfer") {
+      if (entry.pending) transferScanning.add(entry.transferId)
+      else transferScanning.delete(entry.transferId)
+    }
+    if (entry.kind === "memory_transfer_decision") {
+      transferDecisions.set(entry.transferId, entry.decision)
+      transferScanning.delete(entry.transferId)
+    }
     if (entry.kind === "memory_transfer_result") {
       transferResults.set(entry.transferId, entry.suggestions)
-      if (entry.done) transferResultsDone.add(entry.transferId)
+      // A recomputation invalidates the prior decision even before its final
+      // result lands, so a settled card cannot remain live while scanning.
+      transferDecisions.delete(entry.transferId)
+      if (entry.done) {
+        transferResultsDone.add(entry.transferId)
+        transferScanning.delete(entry.transferId)
+      } else {
+        transferResultsDone.delete(entry.transferId)
+        transferScanning.add(entry.transferId)
+      }
     }
     if (entry.kind === "memory_preparation_reset") {
       if (entry.previewId) {
@@ -121,6 +138,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
       }
       if ((entry.from === "transfer" || entry.openingReviewId) && entry.transferId) {
         transferDecisions.delete(entry.transferId)
+        transferScanning.delete(entry.transferId)
       }
     }
     if (entry.kind === "memory_trace" && entry.status !== "pending") settledTraceTurns.add(entry.turn)
@@ -367,7 +385,7 @@ export function processTranscriptMessages(entries: TranscriptEntry[]): HydratedT
           turn: entry.turn,
           // Pending until the live search's FINAL result lands — streamed
           // partial results render as rows with the scan still running.
-          pending: entry.pending && !transferResultsDone.has(entry.transferId),
+          pending: transferScanning.has(entry.transferId) || Boolean(entry.pending && !transferResultsDone.has(entry.transferId)),
           decision: transferDecisions.get(entry.transferId),
         })
         break

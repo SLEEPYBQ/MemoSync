@@ -64,9 +64,12 @@ src/
   lib/
     hostStore.ts           zustand store; pairing credentials in expo-secure-store
     chatState.ts           pure transcript derivations shared by screens:
-                           memory-gate folding + effective chat status,
-                           pending-tool detection, post-approval plan mode,
-                           model-selection recovery, send reconciliation
+                           memory-gate folding + superseded-card checks,
+                           effective chat status, pending-tool detection,
+                           post-approval plan mode, model-selection recovery,
+                           send reconciliation, retry-key & draft helpers
+    draftStore.ts          per-chat composer draft + unacked-send idempotency
+                           key persistence (in-memory + expo-secure-store)
     pairing.ts             pairing REST client + QR URI parsing (no URL API —
                            Hermes coverage has historically lagged)
     socket.ts              reconnecting WebSocket client (~200 lines):
@@ -101,10 +104,22 @@ src/
   screens hold no server state of their own — they subscribe in `useEffect`
   and render the latest snapshot. The socket singleton is created when
   credentials appear and disposed when the device is forgotten.
-- **Nothing is replayed across a reconnect.** Subscriptions re-send (the host
-  re-pushes fresh snapshots), but in-flight commands reject instead of being
-  re-delivered — a re-sent user message must be a deliberate user action.
-  Failed sends restore the composer draft.
+- **Nothing is replayed automatically; retries are idempotent.** Subscriptions
+  re-send (the host re-pushes fresh snapshots), but in-flight commands reject
+  instead of being re-delivered — a re-sent user message is always a deliberate
+  user action. Each composer send attaches a UUID `clientRequestId` on
+  `chat.send` / `message.enqueue`. In-flight send metadata is persisted
+  separately from the visible draft (without duplicating the message body) and
+  reconciled against the first `ChatSnapshot` on cold start so already-committed
+  sends never resurrect into the composer; unacked or failed sends preserve
+  their `clientRequestId` for pure retries while editing the draft or switching
+  follow-up mode to `steer` mints a fresh key. Forgetting a paired host clears
+  all cached and Keychain-persisted drafts.
+- **Expired slash commands never absorb an existing draft.** Restoring an
+  expired queued slash command fills an empty composer directly; when the
+  composer already has text, the user is prompted to either replace the draft
+  with the restored command, discard the expired command while keeping the
+  draft, or cancel (and can also dismiss directly from the queue row).
 - **Streaming is replacement-style.** `runtime.streamingText` is the whole
   in-progress reply, rendered as-is; it is never appended to previous chunks,
   and the final `assistant_text` transcript entry never overlaps it.
@@ -112,15 +127,17 @@ src/
   other host-internal transcript kinds are intentionally not rendered; user
   prompts, assistant text, collapsed tool calls and error results are. Memory
   preparation entries (`memory_preview`, `memory_proposals`,
-  `memory_transfer`, `memory_checkup`) render only while they are live in the
-  current turn: a parked memory preview offers "Continue with memory",
-  "Continue without memory" and "Cancel message" via
-  `chat.respondMemoryPreview`, and parked step-one gates offer
-  "Skip for this message" (`chat.respondMemoryProposals` / `…Transfer` /
-  `…Checkup` with `decision: "skipped"`); item-by-item curation stays on the
-  host. An undecided current-turn gate also treats the chat as waiting for
-  input even when the wire status reads idle, so Stop and Queue/Steer stay
-  reachable; decided or older-turn gates render nothing at all.
+  `memory_transfer`, `memory_checkup`) are interactive only when the wire state
+  proves the host is still parked on them (`runtime.pendingMemoryPreviewId` for
+  previews, `runtime.status === "previewing_memory"` for step-one gates): a
+  parked memory preview offers "Continue with memory", "Continue without
+  memory" and "Cancel message" via `chat.respondMemoryPreview`, and parked
+  step-one gates offer "Skip for this message" (`chat.respondMemoryProposals` /
+  `…Transfer` / `…Checkup` with `decision: "skipped"`); item-by-item curation
+  stays on the host. When the host drops, restarts, or reopens a review,
+  stale review cards deactivate with disabled actions and a quiet "superseded"
+  notice instead of accepting dead taps. Decided or older-turn gates render
+  nothing at all.
 - **Theming follows the system.** Light/dark tokens are baked hex conversions
   of the web CSS custom properties (the warm paper canvas, quiet borders,
   terracotta logo accent). System font throughout, matching the web UI.

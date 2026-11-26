@@ -9,7 +9,7 @@ import os from "node:os"
 import path from "node:path"
 import type { ClientEnvelope, ServerEnvelope, SubscriptionTopic } from "../shared/protocol"
 import type { ModelAccessSnapshot } from "../shared/model-access"
-import { AttachmentsNotAdmittedError, isClientEnvelope } from "../shared/protocol"
+import { AttachmentsNotAdmittedError, isClientEnvelope, validateClientRequestId } from "../shared/protocol"
 import type {
   AppSettingsPatch,
   AppSettingsSnapshot,
@@ -698,6 +698,12 @@ export function createWsRouter({
       activeChatIds,
       protectedChatIds: protectedDraftChatIds,
     })
+    if (prunedChatIds?.length) {
+      for (const prunedChatId of prunedChatIds) {
+        agent.forgetChatClientRequests?.(prunedChatId)
+      }
+    }
+    agent.pruneExpiredClientRequests?.()
     if (isSendToStartingProfilingEnabled()) {
       console.log("[memosync/send->starting][server]", JSON.stringify({
         stage: "ws.prune_stale_empty_chats",
@@ -965,7 +971,8 @@ export function createWsRouter({
           },
           agent.getStreamingAssistantTexts(),
           agent.getCommandCatalog?.(topic.chatId),
-          agent.getHarnessSnapshot?.(topic.chatId)
+          agent.getHarnessSnapshot?.(topic.chatId),
+          agent.getPendingMemoryPreviewId?.(topic.chatId)
         ),
       },
     }
@@ -1725,15 +1732,17 @@ export function createWsRouter({
           return
         }
         case "chat.send": {
+          const clientRequestId = validateClientRequestId(command.clientRequestId)
+          const normalizedCommand = clientRequestId === command.clientRequestId ? command : { ...command, clientRequestId }
           // Navigation or disconnect releases the window's hold, not this
           // request's. Reserve before the coordinator's first validation await.
-          const draftId = command.chatId
+          const draftId = normalizedCommand.chatId
           const holders = draftId ? draftHolders.get(draftId) : undefined
           const attempt = Symbol()
           holders?.add(attempt)
           let result
           try {
-            result = await agent.send(command, hostActions?.originatingClient(ws))
+            result = await agent.send(normalizedCommand, hostActions?.originatingClient(ws))
           } finally {
             if (draftId && holders?.delete(attempt) && !holders.size) {
               draftHolders.delete(draftId)
@@ -2028,15 +2037,23 @@ export function createWsRouter({
           return
         }
         case "message.enqueue": {
-          const result = await enqueueAndMaybeSteer(command, {
-            enqueue: (value) => agent.enqueue(value, hostActions?.originatingClient(ws)),
-            steer: (value) => agent.steer(value),
-            isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
-            isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
-            remove: (chatId, queuedMessageId) => agent.dequeue({ type: "message.dequeue", chatId, queuedMessageId }),
-          })
+          const clientRequestId = validateClientRequestId(command.clientRequestId)
+          const normalizedCommand = clientRequestId === command.clientRequestId ? command : { ...command, clientRequestId }
+          const hostClientId = hostActions?.originatingClient(ws)
+          const result = typeof agent.enqueueWithSteer === "function"
+            ? await agent.enqueueWithSteer(normalizedCommand, hostClientId)
+            : await enqueueAndMaybeSteer(normalizedCommand, {
+                enqueue: (value) => agent.enqueue(value, hostClientId),
+                steer: (value) => agent.steer(value),
+                isQueued: (chatId, messageId) => Boolean(store.getQueuedMessage(chatId, messageId)),
+                isRunning: (chatId) => agent.getActiveStatuses().has(chatId),
+                remove: async (chatId, queuedMessageId) => {
+                  agent.forgetClientRequestId?.(chatId, clientRequestId)
+                  await agent.dequeue({ type: "message.dequeue", chatId, queuedMessageId })
+                },
+              })
           send(ws, { v: PROTOCOL_VERSION, type: "ack", id, result })
-          await broadcastChatAndSidebar(command.chatId)
+          await broadcastChatAndSidebar(normalizedCommand.chatId)
           return
         }
         case "message.steer": {

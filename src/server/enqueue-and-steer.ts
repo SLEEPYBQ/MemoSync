@@ -13,7 +13,7 @@ type EnqueueCommand = Extract<ClientCommand, { type: "message.enqueue" }>
 export async function enqueueAndMaybeSteer(
   command: EnqueueCommand,
   dependencies: {
-    enqueue: (command: EnqueueCommand) => Promise<{ queuedMessageId: string }>
+    enqueue: (command: EnqueueCommand) => Promise<{ queuedMessageId: string; deduplicated?: true }>
     steer: (command: Extract<ClientCommand, { type: "message.steer" }>) => Promise<void>
     isQueued: (chatId: string, messageId: string) => boolean
     isRunning: (chatId: string) => boolean
@@ -21,6 +21,9 @@ export async function enqueueAndMaybeSteer(
   },
 ) {
   const result = await dependencies.enqueue(command)
+  if (result.deduplicated) {
+    return { queuedMessageId: result.queuedMessageId }
+  }
   if (command.steer) {
     try {
       await dependencies.steer({
@@ -30,7 +33,7 @@ export async function enqueueAndMaybeSteer(
       })
     } catch (error) {
       if (dependencies.isQueued(command.chatId, result.queuedMessageId)) {
-        if (error instanceof Error && error.message === "Chat is still running") return result
+        if (error instanceof Error && error.message === "Chat is still running") return { queuedMessageId: result.queuedMessageId }
         await dependencies.remove(command.chatId, result.queuedMessageId)
         throw error
       }
@@ -45,5 +48,5 @@ export async function enqueueAndMaybeSteer(
       }
     }
   }
-  return result
+  return { queuedMessageId: result.queuedMessageId }
 }

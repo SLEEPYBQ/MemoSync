@@ -45,6 +45,8 @@ export type ClientCommand =
       chatId?: string
       projectId?: string
       clientTraceId?: string
+      /** Optional client-generated idempotency key for reconnect-safe retries. */
+      clientRequestId?: string
       provider?: string
       content: string
       model?: string
@@ -61,6 +63,8 @@ export type ClientCommand =
       /** Interrupt via the existing message.steer path after enqueue. */
       steer?: boolean
       chatId: string
+      /** Optional client-generated idempotency key for reconnect-safe retries. */
+      clientRequestId?: string
       content: string
       provider?: string
       model?: string
@@ -171,6 +175,8 @@ export interface QueuedChatMessage {
   provider?: string
   model?: string
   planMode?: boolean
+  /** Optional client-generated idempotency key for reconnect-safe reconciliation. */
+  clientRequestId?: string
 }
 
 export interface RuntimeCommandSelection {
@@ -202,6 +208,8 @@ export interface ChatRuntime {
   localPath: string
   title: string
   status: ChatActivityStatus
+  /** Authoritative parked memory-preview id owned by the host runtime, or null when none is parked. */
+  pendingMemoryPreviewId?: string | null
   isDraining: boolean
   provider: string | null
   planMode: boolean
@@ -270,6 +278,8 @@ export interface UserPromptEntry extends TranscriptEntryBase {
   participantContent?: string
   attachments?: ChatAttachment[]
   steered?: boolean
+  /** Optional client-generated idempotency key persisted on the host transcript. */
+  clientRequestId?: string
 }
 
 export interface AssistantTextEntry extends TranscriptEntryBase {

@@ -317,6 +317,24 @@ describe("processTranscriptMessages", () => {
     })
   })
 
+  test("keeps a reparked Transfer card visible as scanning during invalidated recomputation", () => {
+    const transferId = "transfer-recompute"
+    const messages = processTranscriptMessages([
+      // Step-one-held transfer cards are appended only after detection has
+      // already finished, so their parent row may omit `pending` entirely.
+      entry({ kind: "memory_transfer", transferId, turn: 2, suggestions: [] }),
+      entry({ kind: "memory_transfer_result", transferId, done: false, suggestions: [] }),
+    ])
+
+    const transfer = messages.find((message) => message.kind === "memory_transfer")
+    expect(transfer).toMatchObject({
+      kind: "memory_transfer",
+      pending: true,
+      suggestions: [],
+      decision: undefined,
+    })
+  })
+
   test("preserves structured Claude ask-user-question results when a later echoed tool result arrives", () => {
     const messages = processTranscriptMessages([
       entry({

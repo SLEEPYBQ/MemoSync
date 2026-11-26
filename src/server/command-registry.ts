@@ -1,4 +1,4 @@
-import type { ChatCommandCatalog, CommandRuntimeIdentity, ExecuteRuntimeCommand, RuntimeCommand, RuntimeConnector, RuntimeDiscovery, RuntimeSkill, RuntimeSourceProof } from "../shared/runtime-commands"
+import type { ChatCommandCatalog, CommandOperation, CommandRuntimeIdentity, ExecuteRuntimeCommand, RuntimeCommand, RuntimeConnector, RuntimeDiscovery, RuntimeSkill, RuntimeSourceProof } from "../shared/runtime-commands"
 import { contextIdentity } from "./context-compiler"
 
 export interface NativeCommandDiscovery {
@@ -28,12 +28,19 @@ interface Binding {
   restoreText: () => string
   contextAccepted?: (text: string) => void
   invalidateContext?: () => void
-  submit: (command: RuntimeCommand, args: string, hostClientId?: string) => Promise<unknown>
+  submit: (
+    command: RuntimeCommand,
+    args: string,
+    hostClientId?: string,
+    clientRequestId?: string,
+    dedupManagedByCaller?: boolean,
+  ) => Promise<unknown>
   generation: number
   refresh?: Promise<ChatCommandCatalog>
   controller?: AbortController
   cancellation?: Promise<void>
   unsubscribe?: () => void
+  onOperationSettled?: (operation: CommandOperation) => void
 }
 export function commandRuntimeKey(identity: CommandRuntimeIdentity): string { return contextIdentity(identity) }
 export function discovery<T>(status: RuntimeDiscovery<T>["status"], items: T[], source: RuntimeSourceProof, reason?: string): RuntimeDiscovery<T> {
@@ -53,8 +60,26 @@ async function withCancellation<T>(work: Promise<T>, signal: AbortSignal): Promi
 export class CommandRegistry {
   private bindings = new Map<string, Binding>()
   private retiredOperations = new Map<string, NonNullable<ChatCommandCatalog['operation']>>()
+  private operationStatuses = new Map<string, CommandOperation['status']>()
   private revision = 0
   constructor(private changed: (chatId: string) => void) {}
+  private recordOperationStatus(chatId: string, operationId: string, status: CommandOperation['status']) {
+    const key = `${chatId}:${operationId}`
+    this.operationStatuses.delete(key)
+    this.operationStatuses.set(key, status)
+    while (this.operationStatuses.size > 512) {
+      const oldest = this.operationStatuses.keys().next().value
+      if (oldest === undefined) break
+      this.operationStatuses.delete(oldest)
+    }
+  }
+  getOperationStatus(chatId: string, operationId: string): CommandOperation['status'] | null {
+    const active = this.bindings.get(chatId)?.snapshot.operation
+    if (active?.id === operationId) return active.status
+    const retired = this.retiredOperations.get(chatId)
+    if (retired?.id === operationId) return retired.status
+    return this.operationStatuses.get(`${chatId}:${operationId}`) ?? null
+  }
   bind(chatId: string, input: Omit<Binding, "snapshot" | "generation">) {
     const previous = this.bindings.get(chatId)
     const key = commandRuntimeKey(input.identity)
@@ -70,8 +95,17 @@ export class CommandRegistry {
     const old = this.bindings.get(chatId)
     old?.controller?.abort()
     old?.unsubscribe?.()
-    if (old?.snapshot.operation) this.retiredOperations.set(chatId, { ...old.snapshot.operation,
-      ...(old.snapshot.operation.status === 'running' ? { status: 'cancelled', phase: 'settled', contextRestored: false, reason: 'Native instance retired; history may already have been compacted' } : {}) })
+    if (old?.snapshot.operation) {
+      const retired: CommandOperation = {
+        ...old.snapshot.operation,
+        ...(old.snapshot.operation.status === 'running' ? { status: 'cancelled', phase: 'settled', contextRestored: false, reason: 'Native instance retired; history may already have been compacted' } : {}),
+      }
+      this.retiredOperations.set(chatId, retired)
+      this.recordOperationStatus(chatId, retired.id, retired.status)
+      const notify = old.onOperationSettled
+      old.onOperationSettled = undefined
+      if (retired.phase === 'settled') notify?.(retired)
+    }
     this.bindings.delete(chatId)
     if (old?.controller) void old.native.cancel?.().catch(() => {})
   }
@@ -126,7 +160,15 @@ export class CommandRegistry {
     b.refresh = pending
     try { return await pending } finally { if (b.refresh === pending) b.refresh = undefined }
   }
-  async execute(command: ExecuteRuntimeCommand, hostClientId?: string): Promise<unknown> {
+  async execute(
+    command: ExecuteRuntimeCommand,
+    hostClientId?: string,
+    options?: {
+      dedupManagedByCaller?: boolean
+      clientRequestId?: string
+      onOperationSettled?: (operation: CommandOperation) => void
+    },
+  ): Promise<unknown> {
     const b = this.bindings.get(command.chatId)
     if (!b || !b.native.alive()) throw new Error("Native session unavailable")
     if (b.snapshot.runtimeKey !== command.runtimeKey || b.snapshot.revision !== command.expectedRevision) throw new Error("Command catalog changed; refresh before executing")
@@ -138,19 +180,26 @@ export class CommandRegistry {
     if (b.controller || b.busy()) throw new Error("Chat is busy; wait for its native turn to finish")
     if ((entry.route === 'review-start' || entry.route === 'host-prompt') && b.identity.engine !== 'codex') throw new Error('Command route requires Codex')
     if (entry.route === 'host-prompt' && (entry.name !== 'init' || command.arguments?.trim())) throw new Error('Init does not accept arguments')
-    if (entry.route !== "compact") return b.submit(entry, command.arguments ?? "", hostClientId)
+    if (entry.route !== "compact") {
+      return options?.clientRequestId !== undefined || options?.dedupManagedByCaller
+        ? b.submit(entry, command.arguments ?? "", hostClientId, options?.clientRequestId, options?.dedupManagedByCaller)
+        : b.submit(entry, command.arguments ?? "", hostClientId)
+    }
     if (command.arguments?.trim()) throw new Error("Compact does not accept free-form instructions")
     if (!b.native.compact || !b.native.restore) throw new Error("Native compaction or context restoration unsupported")
     const controller = new AbortController()
     b.controller = controller
-    const operation = { id: crypto.randomUUID(), commandId: entry.id, status: "running" as const, phase: "native" as const, contextRestored: false }
+    const operation: CommandOperation = { id: crypto.randomUUID(), commandId: entry.id, status: "running", phase: "native", contextRestored: false }
     b.snapshot.operation = operation
+    b.onOperationSettled = options?.onOperationSettled
+    this.recordOperationStatus(command.chatId, operation.id, operation.status)
     b.invalidateContext?.()
     this.changed(command.chatId)
     void (async () => {
       const update = (patch: Partial<NonNullable<ChatCommandCatalog["operation"]>>) => {
         if (this.bindings.get(command.chatId) !== b) return
         Object.assign(operation, patch)
+        this.recordOperationStatus(command.chatId, operation.id, operation.status)
         this.changed(command.chatId)
       }
       try {
@@ -178,6 +227,9 @@ export class CommandRegistry {
         }
         if (stopped && b.controller === controller) b.controller = undefined
         b.cancellation = undefined
+        const notify = b.onOperationSettled
+        b.onOperationSettled = undefined
+        notify?.({ ...operation })
         this.changed(command.chatId)
       }
     })()

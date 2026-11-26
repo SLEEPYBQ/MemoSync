@@ -1,6 +1,7 @@
 import * as SecureStore from "expo-secure-store"
 import { create } from "zustand"
 import type { PairingCredentials } from "../types"
+import { clearAllPersistedDrafts } from "./draftStore"
 import { validateDeviceToken } from "./pairing"
 import { ensureSocket, teardownSocket } from "./socket"
 
@@ -80,6 +81,11 @@ export const useHostStore = create<HostState>((set) => ({
       await SecureStore.deleteItemAsync(SECURE_STORE_KEY, SECURE_STORE_OPTIONS)
     } catch {
       // Keychain hiccup — still drop the in-memory credentials.
+    }
+    try {
+      await clearAllPersistedDrafts()
+    } catch {
+      // Best-effort draft wipe; never block unpairing.
     }
     set({ credentials: null })
   },

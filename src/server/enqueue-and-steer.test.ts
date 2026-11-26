@@ -56,4 +56,51 @@ describe("enqueueAndMaybeSteer", () => {
     await expect(enqueueAndMaybeSteer(command, dependencies)).rejects.toThrow("Prompt not allowed")
     expect(queue.size).toBe(0)
   })
+  test("a deduplicated enqueue skips steer and returns the original queuedMessageId", async () => {
+    let steerCalls = 0
+    const dependencies = {
+      enqueue: async () => ({ queuedMessageId: "q1", deduplicated: true as const }),
+      steer: async () => { steerCalls += 1; throw new Error("must not steer again") },
+      isQueued: () => false,
+      isRunning: () => false,
+      remove: async () => {},
+    }
+    const command = { type: "message.enqueue" as const, chatId: "c1", content: "hello", clientRequestId: "k1", steer: true }
+    await expect(enqueueAndMaybeSteer(command, dependencies)).resolves.toEqual({ queuedMessageId: "q1" })
+    expect(steerCalls).toBe(0)
+  })
+  test("a rolled-back steer removes the row and forgets its key so a deliberate resend succeeds", async () => {
+    const queue = new Map<string, string>()
+    const seenKeys = new Map<string, string>()
+    let next = 0
+    let failFirstSteer = true
+    const dependencies = {
+      enqueue: async (cmd: { clientRequestId?: string }) => {
+        if (cmd.clientRequestId && seenKeys.has(cmd.clientRequestId)) {
+          return { queuedMessageId: seenKeys.get(cmd.clientRequestId)!, deduplicated: true as const }
+        }
+        const id = `q${++next}`
+        queue.set(id, cmd.clientRequestId ?? "")
+        if (cmd.clientRequestId) seenKeys.set(cmd.clientRequestId, id)
+        return { queuedMessageId: id }
+      },
+      steer: async () => {
+        if (failFirstSteer) {
+          failFirstSteer = false
+          throw new Error("Steer refused")
+        }
+      },
+      isQueued: (_chatId: string, id: string) => queue.has(id),
+      isRunning: () => false,
+      remove: async (_chatId: string, id: string) => {
+        const key = queue.get(id)
+        queue.delete(id)
+        if (key) seenKeys.delete(key)
+      },
+    }
+    const command = { type: "message.enqueue" as const, chatId: "c1", content: "hello", clientRequestId: "k-steer", steer: true }
+    await expect(enqueueAndMaybeSteer(command, dependencies)).rejects.toThrow("Steer refused")
+    expect(queue.size).toBe(0)
+    await expect(enqueueAndMaybeSteer(command, dependencies)).resolves.toEqual({ queuedMessageId: "q2" })
+  })
 })
