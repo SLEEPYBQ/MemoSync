@@ -125,6 +125,16 @@ export async function createPairingRequest(
   return (await response.json()) as PairingRequestResponse
 }
 
+export class PairingStatusRequestError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message)
+    this.name = "PairingStatusRequestError"
+  }
+}
+
 export async function fetchPairingStatus(
   host: string,
   port: number,
@@ -136,7 +146,7 @@ export async function fetchPairingStatus(
     headers: { Accept: "application/json" },
   })
   if (!response.ok) {
-    throw new Error(`Could not read pairing status (HTTP ${response.status})`)
+    throw new PairingStatusRequestError(response.status, `Could not read pairing status (HTTP ${response.status})`)
   }
   return (await response.json()) as PairingStatusResponse
 }

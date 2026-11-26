@@ -14,6 +14,26 @@ export type SubscriptionTopic =
   | { type: "local-projects" }
   | { type: "chat"; chatId: string; recentLimit?: number }
 
+export type ModelOptions = {
+  connectionId?: string
+  claude?: {
+    connectionId?: string
+    reasoningEffort?: string
+    contextWindow?: string
+    ultracode?: boolean
+  }
+  codex?: {
+    connectionId?: string
+    reasoningEffort?: string
+    fastMode?: boolean
+  }
+  pi?: {
+    connectionId?: string
+    reasoningEffort?: string
+  }
+  opencode?: Record<string, unknown>
+}
+
 export type ClientCommand =
   | { type: "system.ping" }
   | {
@@ -25,6 +45,7 @@ export type ClientCommand =
       provider?: string
       content: string
       model?: string
+      modelOptions?: ModelOptions
       effort?: string
       planMode?: boolean
     }
@@ -40,6 +61,7 @@ export type ClientCommand =
       content: string
       provider?: string
       model?: string
+      modelOptions?: ModelOptions
       planMode?: boolean
     }
   | { type: "message.steer"; chatId: string; queuedMessageId: string }
@@ -134,6 +156,13 @@ export interface QueuedChatMessage {
   planMode?: boolean
 }
 
+export interface RuntimeCommandSelection {
+  provider?: string
+  model?: string
+  modelOptions?: ModelOptions
+  planMode?: boolean
+}
+
 export interface ChatRuntime {
   memoryDisabled: boolean
   chatId: string
@@ -145,6 +174,11 @@ export interface ChatRuntime {
   provider: string | null
   planMode: boolean
   sessionToken: string | null
+  /** The host already publishes the composer's runtime selection inside the
+   * command catalog; mobile only needs this small additive slice. */
+  commandCatalog?: {
+    selection?: RuntimeCommandSelection
+  }
   /**
    * The in-flight assistant reply. REPLACEMENT-style, not deltas: each
    * snapshot carries the full accumulated text. Never overlaps the final
@@ -267,6 +301,13 @@ export interface ResultEntry extends TranscriptEntryBase {
   costUsd?: number
 }
 
+export interface InterruptedEntry extends TranscriptEntryBase {
+  kind: "interrupted"
+  /** Partial assistant reply preserved when Stop interrupts a stream. */
+  assistantText?: string
+  cancelledQueuedMessageId?: string
+}
+
 export interface StatusEntry extends TranscriptEntryBase {
   kind: "status"
   status: string
@@ -285,6 +326,7 @@ export type TranscriptEntry =
   | MemoryPreviewEntry
   | MemoryPreviewDecisionEntry
   | ResultEntry
+  | InterruptedEntry
   | StatusEntry
   | IgnoredEntry
 

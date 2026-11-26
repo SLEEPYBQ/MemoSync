@@ -308,6 +308,14 @@ function CodeBlock({ content, language, colors }: { content: string; language: s
 function TableBlock({ rows, colors }: { rows: string[][]; colors: ColorTokens }) {
   const columnCount = Math.max(...rows.map((row) => row.length), 0)
   if (!columnCount) return null
+  // Rows are independent flex containers in React Native. Give every row the
+  // same explicit column widths; otherwise a long value can widen only its own
+  // row and drift the value out from underneath its header. The width estimate
+  // is intentionally conservative — long text wraps inside its fixed column.
+  const columnWidths = Array.from({ length: columnCount }, (_, columnIndex) => {
+    const longest = Math.max(...rows.map((row) => (row[columnIndex] ?? "").length), 0)
+    return Math.min(220, Math.max(96, longest * 7.5 + spacing.md * 2))
+  })
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false}>
       <View style={[styles.table, { borderColor: colors.border, backgroundColor: colors.card }]}>
@@ -325,6 +333,7 @@ function TableBlock({ rows, colors }: { rows: string[][]; colors: ColorTokens })
                 key={columnIndex}
                 style={[
                   styles.tableCell,
+                  { width: columnWidths[columnIndex] },
                   columnIndex > 0 ? { borderLeftColor: colors.border, borderLeftWidth: StyleSheet.hairlineWidth } : null,
                 ]}
               >

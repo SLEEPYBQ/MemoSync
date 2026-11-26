@@ -21,6 +21,7 @@ import {
   fetchPairingStatus,
   formatPairingCode,
   normalizeHostInput,
+  PairingStatusRequestError,
   parsePairingUri,
 } from "../lib/pairing"
 import { useHostStore } from "../lib/hostStore"
@@ -134,8 +135,19 @@ export function PairingScreen() {
           clearInterval(timer)
           setPhase({ kind: "failed", message: "The pairing request expired. Start a new one." })
         }
-      } catch {
-        // Transient network errors while polling are fine — the next tick retries.
+      } catch (error) {
+        if (cancelled) return
+        // Pairing requests are host-memory state. After a host restart the old
+        // request id is permanently gone (404), not a transient network failure,
+        // so waiting here forever would never surface a recoverable approval.
+        if (error instanceof PairingStatusRequestError && error.status === 404) {
+          clearInterval(timer)
+          setPhase({
+            kind: "failed",
+            message: "The host no longer recognizes this pairing request, usually because it restarted. Start pairing again.",
+          })
+        }
+        // Other network errors while polling are fine — the next tick retries.
       }
     }, POLL_INTERVAL_MS)
     return () => {

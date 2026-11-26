@@ -29,7 +29,9 @@ import type {
   ChatAttachment,
   ChatHistoryPage,
   ChatSnapshot,
+  InterruptedEntry,
   MemoryPreviewEntry,
+  ModelOptions,
   ResultEntry,
   SidebarData,
   ToolCallEntry,
@@ -65,8 +67,53 @@ function isRenderable(entry: TranscriptEntry): boolean {
       entry.kind === "assistant_text" ||
       entry.kind === "tool_call" ||
       entry.kind === "memory_preview" ||
+      entry.kind === "interrupted" ||
       entry.kind === "result")
   )
+}
+
+function isInterruptedEntry(entry: TranscriptEntry): entry is InterruptedEntry {
+  return entry.kind === "interrupted"
+}
+
+interface ComposerModelSelection {
+  provider?: string
+  model?: string
+  modelOptions?: ModelOptions
+}
+
+function modelCommandFields(selection: ComposerModelSelection | null): {
+  provider?: string
+  model?: string
+  modelOptions?: ModelOptions
+} {
+  return {
+    ...(selection?.provider ? { provider: selection.provider } : {}),
+    ...(selection?.model ? { model: selection.model } : {}),
+    ...(selection?.modelOptions ? { modelOptions: selection.modelOptions } : {}),
+  }
+}
+
+function commandCatalogModelSelection(snapshot: ChatSnapshot | null): ComposerModelSelection | null {
+  const selection = snapshot?.runtime.commandCatalog?.selection
+  const provider = snapshot?.runtime.provider ?? null
+  if (!selection?.provider || !selection.model?.trim()) return null
+  if (provider && selection.provider !== provider) return null
+  return {
+    provider: selection.provider,
+    model: selection.model,
+    ...(selection.modelOptions ? { modelOptions: selection.modelOptions } : {}),
+  }
+}
+
+function latestSystemInitModelSelection(entries: TranscriptEntry[], provider: string | null): ComposerModelSelection | null {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index] as TranscriptEntry & { provider?: unknown; model?: unknown }
+    if (entry.kind !== "system_init" || typeof entry.model !== "string" || !entry.model.trim()) continue
+    if (typeof entry.provider !== "string" || (provider && entry.provider !== provider)) continue
+    return { provider: entry.provider, model: entry.model }
+  }
+  return null
 }
 
 function isAssistantTextEntry(entry: TranscriptEntry): entry is AssistantTextEntry {
@@ -229,6 +276,21 @@ function questionKey(question: AskUserQuestionItem): string {
   return question.id || question.question
 }
 
+function isExecutionApprovalQuestion(question: AskUserQuestionItem): boolean {
+  return question.header?.trim() === "Execution approval"
+}
+
+function splitExecutionApprovalQuestion(question: string): { prompt: string; args: string } {
+  const newline = question.indexOf("\n")
+  if (newline === -1) return { prompt: question, args: "" }
+  return { prompt: question.slice(0, newline), args: question.slice(newline + 1) }
+}
+
+/** Plan approval changes the next composer mode, but the host only persists
+ * that transition when the next turn starts. Keep the mobile override per chat
+ * across screen navigation until the authoritative snapshot catches up. */
+const planModeOverridesByChat = new Map<string, boolean>()
+
 function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
   for (const group of data.projectGroups) {
     const rows = [...group.chats, ...(group.previewChats ?? []), ...(group.olderChats ?? []), ...(group.archivedChats ?? [])]
@@ -318,6 +380,18 @@ function AssistantBlock({ text, streaming }: { text: string; streaming?: boolean
           <Text style={[styles.streamingText, { color: colors.mutedForeground }]}>Writing</Text>
         </View>
       ) : null}
+    </View>
+  )
+}
+
+function InterruptedRow() {
+  const { colors } = useTheme()
+  return (
+    <View style={styles.interruptedRow}>
+      <View style={[styles.interruptedPill, { backgroundColor: colors.card, borderColor: colors.border }]}>
+        <Ionicons name="stop-circle-outline" size={14} color={colors.mutedIcon} />
+        <Text style={[styles.interruptedText, { color: colors.mutedForeground }]}>Interrupted</Text>
+      </View>
     </View>
   )
 }
@@ -449,13 +523,33 @@ function InteractiveToolCard(props: {
     if (question && !question.multiSelect && simpleOptions.length > 0 && simpleOptions.length <= 4) {
       const key = questionKey(question)
       const customAnswer = freeformAnswer.trim()
+      const executionApproval = isExecutionApprovalQuestion(question)
+      const executionParts = executionApproval ? splitExecutionApprovalQuestion(question.question) : null
       return (
         <PendingApprovalCard
           eyebrow="Question"
           title={question.header?.trim() || "The agent needs an answer"}
           body={
             <View style={styles.answerBody}>
-              <MarkdownLight text={question.question} colors={colors} />
+              {executionParts ? (
+                <>
+                  <Text style={[styles.executionApprovalPrompt, { color: colors.foreground }]} selectable>
+                    {executionParts.prompt}
+                  </Text>
+                  {executionParts.args ? (
+                    <ScrollView
+                      style={[styles.executionArgsScroll, { backgroundColor: colors.sidebar, borderColor: colors.border }]}
+                      nestedScrollEnabled
+                    >
+                      <Text style={[styles.executionArgsText, { color: colors.mutedForeground }]} selectable>
+                        {executionParts.args}
+                      </Text>
+                    </ScrollView>
+                  ) : null}
+                </>
+              ) : (
+                <MarkdownLight text={question.question} colors={colors} />
+              )}
               <TextInput
                 value={freeformAnswer}
                 onChangeText={setFreeformAnswer}
@@ -552,6 +646,14 @@ function TranscriptRow(props: {
   const { entry } = props
   if (entry.kind === "user_prompt") return <UserBubble entry={entry as UserPromptEntry} />
   if (entry.kind === "assistant_text") return <AssistantBlock text={(entry as AssistantTextEntry).text} />
+  if (isInterruptedEntry(entry)) {
+    return (
+      <View style={styles.interruptedEntry}>
+        {entry.assistantText ? <AssistantBlock text={entry.assistantText} /> : null}
+        <InterruptedRow />
+      </View>
+    )
+  }
   if (isMemoryPreviewEntry(entry)) {
     return entry.previewId === props.pendingMemoryPreviewId ? <MemoryReviewCard entry={entry} /> : null
   }
@@ -603,7 +705,12 @@ export function ChatScreen({ route, navigation }: Props) {
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
-  const [planModeOverride, setPlanModeOverride] = useState<boolean | null>(null)
+  const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => planModeOverridesByChat.get(chatId) ?? null)
+  const setPlanModeOverride = useCallback((value: boolean | null) => {
+    if (value == null) planModeOverridesByChat.delete(chatId)
+    else planModeOverridesByChat.set(chatId, value)
+    setPlanModeOverrideState(value)
+  }, [chatId])
   const knownEntriesRef = useRef<TranscriptEntry[]>([])
   const windowUpdatesRef = useRef<Promise<void>>(Promise.resolve())
   const historyInitializedRef = useRef(false)
@@ -644,7 +751,10 @@ export function ChatScreen({ route, navigation }: Props) {
     historyLoadingRef.current = false
     knownEntriesRef.current = []
     windowUpdatesRef.current = Promise.resolve()
-    setPlanModeOverride(null)
+    // Navigation away must not forget a plan-approval override. Reload the
+    // per-chat value instead of clearing it; it is removed only when the host
+    // snapshot proves a normal-mode turn caught up.
+    setPlanModeOverrideState(planModeOverridesByChat.get(chatId) ?? null)
     setKnownEntries([])
     setOlderEntries([])
     setHistoryCursor(null)
@@ -749,7 +859,7 @@ export function ChatScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     if (snapshot?.runtime.planMode === false) setPlanModeOverride(null)
-  }, [snapshot?.runtime.planMode])
+  }, [snapshot?.runtime.planMode, setPlanModeOverride])
 
   // Clear the authoritative sidebar unread flag only while this transcript is
   // visible in the foreground. Unlike transcript length, that flag still changes
@@ -822,6 +932,15 @@ export function ChatScreen({ route, navigation }: Props) {
     }
   }, [chatId, hasOlderHistory, historyCursor, historyLoading])
 
+  const composerModelSelection = useMemo(() => {
+    // Prefer the host-published command selection: unlike transcript
+    // system_init, it carries connection and reasoning options. The transcript
+    // fallback keeps a restarted host closer to the chat's last proven model
+    // instead of silently reverting to the provider default.
+    return commandCatalogModelSelection(snapshot)
+      ?? latestSystemInitModelSelection(transcriptEntries, snapshot?.runtime.provider ?? null)
+  }, [snapshot, transcriptEntries])
+
   const sendPresentation = resolveComposerSendPresentation({
     editingQueuedMessage: false,
     running: active,
@@ -846,11 +965,18 @@ export function ChatScreen({ route, navigation }: Props) {
           type: "message.enqueue",
           chatId,
           content,
+          ...modelCommandFields(composerModelSelection),
           planMode,
           steer: sendPresentation.action === "steer",
         })
       } else {
-        await socket.command({ type: "chat.send", chatId, content, planMode })
+        await socket.command({
+          type: "chat.send",
+          chatId,
+          content,
+          ...modelCommandFields(composerModelSelection),
+          planMode,
+        })
       }
     } catch (error) {
       // Restore the draft so the user can retry — a message must never vanish —
@@ -861,7 +987,7 @@ export function ChatScreen({ route, navigation }: Props) {
     } finally {
       setSending(false)
     }
-  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode, planModeOverride])
+  }, [draft, active, chatId, sending, socketStatus, sendPresentation.action, snapshot?.runtime.planMode, planModeOverride, composerModelSelection])
 
   const interrupt = useCallback(() => {
     getSocket()
@@ -1030,19 +1156,25 @@ export function ChatScreen({ route, navigation }: Props) {
 
       <View style={[styles.composerRegion, { paddingBottom: Math.max(insets.bottom, spacing.sm) }]}>
         {queuedMessages.length > 0 ? (
-          <View style={styles.queueList}>
-            {queuedMessages.map((message) => (
-              <View key={message.id} style={[styles.queueRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
-                <Ionicons name="time-outline" size={15} color={colors.mutedIcon} />
-                <Text style={[styles.queueText, { color: colors.mutedForeground }]} numberOfLines={1}>
-                  {message.content}
-                </Text>
-                <Pressable onPress={() => dequeue(message.id)} hitSlop={8}>
-                  <Text style={[styles.queueRemove, { color: colors.focus }]}>Remove</Text>
-                </Pressable>
-              </View>
-            ))}
-          </View>
+          <ScrollView
+            style={styles.queueScroll}
+            nestedScrollEnabled
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.queueList}>
+              {queuedMessages.map((message) => (
+                <View key={message.id} style={[styles.queueRow, { backgroundColor: colors.card, borderColor: colors.border }]}>
+                  <Ionicons name="time-outline" size={15} color={colors.mutedIcon} />
+                  <Text style={[styles.queueText, { color: colors.mutedForeground }]} numberOfLines={1}>
+                    {message.content}
+                  </Text>
+                  <Pressable onPress={() => dequeue(message.id)} hitSlop={8}>
+                    <Text style={[styles.queueRemove, { color: colors.focus }]}>Remove</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </View>
+          </ScrollView>
         ) : null}
 
         {sendError ? (
@@ -1254,6 +1386,26 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     paddingRight: spacing.xs,
   },
+  interruptedEntry: {
+    gap: spacing.xs,
+  },
+  interruptedRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+  },
+  interruptedPill: {
+    minHeight: 30,
+    borderRadius: radius.full,
+    borderWidth: StyleSheet.hairlineWidth,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    paddingHorizontal: spacing.md,
+  },
+  interruptedText: {
+    ...MOBILE_TYPOGRAPHY.label,
+    fontStyle: "italic",
+  },
   streamingRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -1331,6 +1483,20 @@ const styles = StyleSheet.create({
   answerBody: {
     gap: spacing.md,
   },
+  executionApprovalPrompt: {
+    ...MOBILE_TYPOGRAPHY.bodySmall,
+    fontWeight: "600",
+  },
+  executionArgsScroll: {
+    maxHeight: 220,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.base,
+  },
+  executionArgsText: {
+    ...MOBILE_TYPOGRAPHY.caption,
+    fontFamily: Platform.select({ ios: "Menlo", default: "monospace" }),
+    padding: spacing.md,
+  },
   answerInput: {
     minHeight: 72,
     maxHeight: 130,
@@ -1346,6 +1512,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingTop: spacing.xs,
     gap: spacing.sm,
+  },
+  queueScroll: {
+    // About three rows. Long queues remain reachable through their own scroll
+    // view instead of consuming the transcript viewport or pushing Stop and
+    // the composer off-screen.
+    maxHeight: 128,
+    flexGrow: 0,
   },
   queueList: {
     gap: spacing.xs,
