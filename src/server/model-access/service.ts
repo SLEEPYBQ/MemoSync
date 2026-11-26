@@ -254,7 +254,13 @@ export class ModelAccessService {
     }
   }
   connections() { return [...this.data.connections, ...legacyConnections(this.env, this.legacyPi)] }
-  setup(engine: EngineId) { return this.data.engines[engine] ?? legacyEngineSetup(engine, this.env, this.connections()) }
+  setup(engine: EngineId): EngineSetup {
+    const configured = this.data.engines[engine]
+    if (configured && engine === "antigravity" && configured.access?.mode === "connection") {
+      return { ...(configured.executablePath !== undefined ? { executablePath: configured.executablePath } : {}), access: { mode: "account" } }
+    }
+    return configured ?? legacyEngineSetup(engine, this.env, this.connections())
+  }
   hasExplicitSetup(engine: EngineId) { return Boolean(this.data.engines[engine]) }
   connection(id: string) { return this.connections().find(c => c.id === id) }
   async getKey(id: string) {

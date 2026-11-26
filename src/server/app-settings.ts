@@ -207,7 +207,7 @@ function normalizeSubmitWhileRunning(value: unknown): SubmitWhileRunning {
 }
 
 function normalizeDefaultProvider(value: unknown): DefaultProviderPreference {
-  return value === "claude" || value === "codex" || value === "pi" || value === "opencode" || value === "last_used" ? value : "last_used"
+  return value === "claude" || value === "codex" || value === "pi" || value === "opencode" || value === "antigravity" || value === "last_used" ? value : "last_used"
 }
 
 function normalizeEditorPreset(value: unknown): EditorPreset {
@@ -298,7 +298,7 @@ function normalizeProviderDefaults(value: AppSettingsFile["providerDefaults"] | 
     codex: normalizeCodexPreference(value?.codex ?? defaults.codex),
     pi: normalizePiPreference(value?.pi ?? defaults.pi),
     opencode: { model: typeof value?.opencode?.model === "string" ? value.opencode.model.trim() : "", modelOptions: {}, planMode: false },
-    antigravity: { model: typeof value?.antigravity?.model === "string" ? value.antigravity.model.trim() : "", modelOptions: {}, planMode: false },
+    antigravity: { model: typeof value?.antigravity?.model === "string" ? value.antigravity.model.trim() : "", modelOptions: {}, planMode: value?.antigravity?.planMode === true },
   }
 }
 
@@ -442,6 +442,15 @@ function applyPatch(state: AppSettingsState, patch: AppSettingsPatch): AppSettin
         },
       },
       opencode: { ...state.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: { ...state.providerDefaults.opencode.modelOptions, ...patch.providerDefaults?.opencode?.modelOptions }, planMode: false },
+      antigravity: {
+        ...state.providerDefaults.antigravity,
+        ...patch.providerDefaults?.antigravity,
+        modelOptions: {
+          ...state.providerDefaults.antigravity.modelOptions,
+          ...patch.providerDefaults?.antigravity?.modelOptions,
+        },
+        planMode: (patch.providerDefaults?.antigravity?.planMode ?? state.providerDefaults.antigravity.planMode) === true,
+      },
       pi: {
         ...state.providerDefaults.pi,
         ...patch.providerDefaults?.pi,

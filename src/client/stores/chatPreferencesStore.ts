@@ -14,6 +14,7 @@ import {
   isCodexReasoningEffort,
   isPiReasoningEffort,
   type AgentProvider,
+  type AntigravityModelOptions,
   type ChatProviderPreferences,
   type ClaudeModelOptions,
   type CodexModelOptions,
@@ -51,7 +52,12 @@ export type ComposerState = { connectionId?: string } & (
     modelOptions: OpencodeModelOptions
     planMode: boolean
   }
-
+  | {
+    provider: "antigravity"
+    model: string
+    modelOptions: AntigravityModelOptions
+    planMode: boolean
+  }
 )
 
 export const NEW_CHAT_COMPOSER_ID = "__new__"
@@ -129,7 +135,11 @@ type PersistedComposerState = { connectionId?: string } & (
     model?: string
     planMode?: boolean
   }
-
+  | {
+    provider: "antigravity"
+    model?: string
+    planMode?: boolean
+  }
 )
 
 type PersistedChatPreferencesState = Pick<
@@ -138,7 +148,7 @@ type PersistedChatPreferencesState = Pick<
 > & LegacyPersistedChatPreferencesState
 
 export function normalizeDefaultProvider(value?: string): DefaultProviderPreference {
-  if (value === "claude" || value === "codex" || value === "pi" || value === "opencode") return value
+  if (value === "claude" || value === "codex" || value === "pi" || value === "opencode" || value === "antigravity") return value
   return "last_used"
 }
 
@@ -217,6 +227,14 @@ export function normalizeOpencodePreference(value?: { model?: string }): Provide
   return { model: value?.model?.trim() ?? "", modelOptions: {}, planMode: false }
 }
 
+/** Antigravity model IDs encode their own thinking level; "" means the engine's own default model. */
+export function normalizeAntigravityPreference(value?: {
+  model?: string
+  planMode?: boolean
+}): ProviderPreference<AntigravityModelOptions> {
+  return { model: value?.model?.trim() ?? "", modelOptions: {}, planMode: Boolean(value?.planMode) }
+}
+
 export function createDefaultProviderDefaults(): ChatProviderPreferences {
   return {
     claude: {
@@ -235,7 +253,7 @@ export function createDefaultProviderDefaults(): ChatProviderPreferences {
       planMode: false,
     },
     opencode: normalizeOpencodePreference(),
-    antigravity: normalizeOpencodePreference(),
+    antigravity: normalizeAntigravityPreference(),
   }
 }
 
@@ -259,14 +277,14 @@ export function normalizeProviderDefaults(value?: {
     planMode?: boolean
   }
   opencode?: { model?: string }
-  antigravity?: { model?: string }
+  antigravity?: { model?: string; planMode?: boolean }
 }): ChatProviderPreferences {
   return {
     claude: normalizeClaudePreference(value?.claude),
     codex: normalizeCodexPreference(value?.codex),
     pi: normalizePiPreference(value?.pi),
     opencode: normalizeOpencodePreference(value?.opencode),
-    antigravity: normalizeOpencodePreference(value?.antigravity),
+    antigravity: normalizeAntigravityPreference(value?.antigravity),
   }
 }
 
@@ -305,6 +323,10 @@ function composerFromProviderDefaults(
 
   if (provider === "opencode") {
     return { provider: "opencode", ...normalizeOpencodePreference(providerDefaults.opencode) }
+  }
+
+  if (provider === "antigravity") {
+    return { provider: "antigravity", ...normalizeAntigravityPreference(providerDefaults.antigravity) }
   }
 
   const preference = providerDefaults.codex
@@ -347,6 +369,8 @@ function sameComposerState(left: ComposerState | undefined, right: ComposerState
   }
 
   if (left.provider === "opencode" && right.provider === "opencode") return true
+
+  if (left.provider === "antigravity" && right.provider === "antigravity") return true
 
   return false
 }
@@ -395,6 +419,13 @@ function normalizeComposerState(
       ...(value?.connectionId ? { connectionId: value.connectionId } : {}),
       provider: "opencode",
       ...normalizeOpencodePreference(value),
+    }
+  }
+
+  if (value?.provider === "antigravity") {
+    return {
+      provider: "antigravity",
+      ...normalizeAntigravityPreference(value),
     }
   }
 
@@ -599,6 +630,11 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               })
               : provider === "opencode"
                 ? normalizeOpencodePreference({ model })
+              : provider === "antigravity"
+                ? normalizeAntigravityPreference({
+                  ...state.providerDefaults.antigravity,
+                  model,
+                })
               : provider === "pi"
                 ? normalizePiPreference({
                   ...state.providerDefaults.pi,
@@ -624,6 +660,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               })
               : provider === "opencode"
                 ? state.providerDefaults.opencode
+              : provider === "antigravity"
+                ? state.providerDefaults.antigravity
               : provider === "pi"
                 ? normalizePiPreference({
                   ...state.providerDefaults.pi,
@@ -717,6 +755,8 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
             }
             : composerState.provider === "opencode"
               ? { ...composerState, provider: "opencode", model: normalizeOpencodePreference({ model }).model }
+            : composerState.provider === "antigravity"
+              ? { ...composerState, provider: "antigravity", model: normalizeAntigravityPreference({ model }).model }
             : composerState.provider === "pi"
               ? {
                 ...composerState,
@@ -758,7 +798,7 @@ export const useChatPreferencesStore = create<ChatPreferencesState>()(
               }).modelOptions,
               planMode: composerState.planMode,
             }
-            : composerState.provider === "opencode"
+            : composerState.provider === "opencode" || composerState.provider === "antigravity"
               ? composerState
             : composerState.provider === "pi"
               ? {

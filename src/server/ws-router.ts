@@ -631,7 +631,7 @@ export function createWsRouter({
         },
       },
       opencode: { ...snapshot.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: {}, planMode: false },
-      antigravity: { ...snapshot.providerDefaults.antigravity, ...patch.providerDefaults?.antigravity, modelOptions: {}, planMode: false },
+      antigravity: { ...snapshot.providerDefaults.antigravity, ...patch.providerDefaults?.antigravity, modelOptions: {}, planMode: (patch.providerDefaults?.antigravity?.planMode ?? snapshot.providerDefaults.antigravity.planMode) === true },
       pi: {
         ...snapshot.providerDefaults.pi,
         ...patch.providerDefaults?.pi,

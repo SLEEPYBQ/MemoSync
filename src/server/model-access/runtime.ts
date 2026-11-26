@@ -81,7 +81,10 @@ export async function resolveEngineRuntime(input: {
   const base = input.env ?? service.env
   const setup = service.setup(input.engine)
   let access = setup.access
-  if (input.connectionId) access = { mode: "connection", connectionId: input.connectionId }
+  if (input.connectionId) {
+    if (input.engine === "antigravity") throw new Error("engine-setup-invalid")
+    access = { mode: "connection", connectionId: input.connectionId }
+  }
   else if (!service.hasExplicitSetup(input.engine) && input.model && input.engine === "claude") {
     // Old chats saved a vendor model, before connectionId existed.
     const legacy = input.model.startsWith("glm-") ? "env-glm" : input.model.startsWith("deepseek-") ? "env-deepseek" : undefined

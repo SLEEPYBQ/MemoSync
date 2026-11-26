@@ -6,10 +6,23 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 
 export type ExecutableEnvironment = Readonly<Record<string, string | undefined>>
 
+const DEFAULT_SYSTEM_DIRECTORIES: readonly string[] = [
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/home/linuxbrew/.linuxbrew/bin",
+  ...(process.platform === "darwin" ? ["/Applications/Antigravity.app/Contents/Resources/app/bin"] : []),
+  ...(process.platform === "linux" ? [
+    "/usr/share/antigravity/bin",
+    "/usr/share/antigravity/resources/app/bin",
+    "/opt/antigravity/bin",
+    "/opt/Antigravity/bin",
+  ] : []),
+]
+
 /** Bounded, one-level scans only. Never execute package managers or shell rc files. */
 export async function knownInstallDirectories(
   env: ExecutableEnvironment,
-  systemDirectories: readonly string[] = ["/opt/homebrew/bin", "/usr/local/bin", "/home/linuxbrew/.linuxbrew/bin"],
+  systemDirectories: readonly string[] = DEFAULT_SYSTEM_DIRECTORIES,
   runtimePath: string = process.execPath,
 ): Promise<string[]> {
   const dirs: string[] = []
@@ -27,8 +40,16 @@ export async function knownInstallDirectories(
     if (env.LOCALAPPDATA) {
       add(join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links"))
       add(join(env.LOCALAPPDATA, "Programs", "nodejs"))
+      add(join(env.LOCALAPPDATA, "Programs", "Antigravity", "bin"))
+      add(join(env.LOCALAPPDATA, "Programs", "Antigravity", "resources", "app", "bin"))
+      add(join(env.LOCALAPPDATA, "Antigravity", "bin"))
     }
-    if (env.ProgramFiles) add(join(env.ProgramFiles, "nodejs"))
+    for (const progRoot of [env.ProgramFiles, env["ProgramFiles(x86)"]]) {
+      if (!progRoot) continue
+      if (progRoot === env.ProgramFiles) add(join(progRoot, "nodejs"))
+      add(join(progRoot, "Antigravity", "bin"))
+      add(join(progRoot, "Antigravity", "resources", "app", "bin"))
+    }
   }
   if (env.FNM_MULTISHELL_PATH) add(join(env.FNM_MULTISHELL_PATH, "bin"))
   const roots: [string, string][] = []
@@ -43,10 +64,12 @@ export async function knownInstallDirectories(
   const home = env.HOME || env.USERPROFILE
   if (home && isAbsolute(home)) {
     for (const suffix of [
-      ".opencode/bin", ".local/bin", ".claude/local", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin",
+      ".opencode/bin", ".antigravity/bin", ".gemini/antigravity-cli/bin",
+      ".local/bin", ".claude/local", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin",
       ".asdf/shims", ".local/share/mise/shims", ".cargo/bin", ".deno/bin", "Library/pnpm",
       ".local/share/pnpm", ".yarn/bin", ".n/bin",
     ]) add(join(home, suffix))
+    if (process.platform === "darwin") add(join(home, "Applications", "Antigravity.app", "Contents", "Resources", "app", "bin"))
     if (process.platform === "win32") add(join(home, "scoop", "shims"))
     // npmrc is installation metadata only; no agent configuration or credentials are read.
     try {

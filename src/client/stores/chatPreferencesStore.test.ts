@@ -133,6 +133,7 @@ describe("migrateChatPreferencesState", () => {
           planMode: false,
         },
         opencode: { model: "", modelOptions: {}, planMode: false },
+        antigravity: { model: "", modelOptions: {}, planMode: false },
       },
       chatStates: {},
       legacyComposerState: {
@@ -248,6 +249,35 @@ describe("migrateChatPreferencesState", () => {
       provider: "codex",
       model: "gpt-5.4",
       modelOptions: { reasoningEffort: "low", fastMode: false },
+      planMode: true,
+    })
+  })
+
+  test("preserves Antigravity default provider, model, and composer state across migration", () => {
+    const migrated = migrateChatPreferencesState({
+      defaultProvider: "antigravity",
+      providerDefaults: {
+        antigravity: { model: "gemini-3.8-flash-medium", planMode: true },
+      },
+      chatStates: {
+        chatA: {
+          provider: "antigravity",
+          model: "gemini-3.8-pro-high",
+          planMode: true,
+        },
+      },
+    })
+
+    expect(migrated.defaultProvider).toBe("antigravity")
+    expect(migrated.providerDefaults.antigravity).toEqual({
+      model: "gemini-3.8-flash-medium",
+      modelOptions: {},
+      planMode: true,
+    })
+    expect(migrated.chatStates.chatA).toEqual({
+      provider: "antigravity",
+      model: "gemini-3.8-pro-high",
+      modelOptions: {},
       planMode: true,
     })
   })
@@ -526,6 +556,30 @@ describe("chat preference store", () => {
       provider: "codex",
       model: "gpt-5.3-codex",
       modelOptions: { reasoningEffort: "low", fastMode: false },
+      planMode: true,
+    })
+  })
+
+  test("choosing Antigravity initializes and updates Antigravity composer state instead of falling through to Codex", () => {
+    const store = useChatPreferencesStore.getState()
+    store.setDefaultProvider("antigravity")
+    store.setProviderDefaultModel("antigravity", "gemini-3.8-flash-medium")
+    store.setProviderDefaultPlanMode("antigravity", true)
+
+    store.initializeComposerForChat("chat-agy")
+    expect(store.getComposerState("chat-agy")).toEqual({
+      provider: "antigravity",
+      model: "gemini-3.8-flash-medium",
+      modelOptions: {},
+      planMode: true,
+    })
+
+    store.setChatComposerProvider("chat-switched", "antigravity")
+    store.setChatComposerModel("chat-switched", "gemini-3.8-pro-high")
+    expect(store.getComposerState("chat-switched")).toEqual({
+      provider: "antigravity",
+      model: "gemini-3.8-pro-high",
+      modelOptions: {},
       planMode: true,
     })
   })

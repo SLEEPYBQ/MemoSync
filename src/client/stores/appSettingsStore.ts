@@ -53,7 +53,12 @@ export function mergeAppSettingsPatch(
         },
       },
       opencode: { ...settings.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: {}, planMode: false },
-      antigravity: { ...settings.providerDefaults.antigravity, ...patch.providerDefaults?.antigravity, modelOptions: {}, planMode: false },
+      antigravity: {
+        ...settings.providerDefaults.antigravity,
+        ...patch.providerDefaults?.antigravity,
+        modelOptions: {},
+        planMode: Boolean(patch.providerDefaults?.antigravity?.planMode ?? settings.providerDefaults.antigravity?.planMode),
+      },
     },
     memory: {
       ...settings.memory,
