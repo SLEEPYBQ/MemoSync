@@ -802,8 +802,292 @@ if(m.method==='session/prompt') send({jsonrpc:'2.0',id:m.id,result:{stopReason:'
       readLegacyPi: async () => null,
       resolveExecutable: fakeExecutableResolver,
     }).initialize()
+    expect(service.getSnapshot().hostPlatform).toBe(process.platform)
     await expect(resolveEngineRuntime({ engine: "antigravity", connectionId: "any-conn", service })).rejects.toThrow("engine-setup-invalid")
   })
+
+  it("preserves memory exclusions and without_memory across Antigravity plan approval continuation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "memosync-agy-plan-mem-")); roots.push(root)
+    const promptsFile = join(root, "plan-prompts.jsonl")
+    const readPrompts = () => readFileSync(promptsFile, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line) as { sessionId: string; mode: string; text: string })
+    const runtime = writeAcpFixture(root, `
+const fs = require('node:fs')
+process.stdin.setEncoding('utf8')
+let b='', n=0
+const send=o=>process.stdout.write(JSON.stringify(o)+'\\n')
+let currentMode='default'
+process.stdin.on('data',c=>{b+=c; for(let i=b.indexOf('\\n');i>=0;i=b.indexOf('\\n')){const line=b.slice(0,i); b=b.slice(i+1); if(!line.trim())continue; const m=JSON.parse(line); if(!m.method)continue
+if(m.method==='initialize') send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1}})
+if(m.method==='session/new') send({jsonrpc:'2.0',id:m.id,result:{sessionId:'plan-mem-'+(++n)}})
+if(m.method==='session/resume') send({jsonrpc:'2.0',id:m.id,result:{sessionId:m.params.sessionId}})
+if(m.method==='session/set_config_option'){
+  if(m.params.configId==='mode') currentMode=m.params.value
+  send({jsonrpc:'2.0',id:m.id,result:{configOptions:[{id:m.params.configId,currentValue:m.params.value}]}})
+}
+if(m.method==='session/close') send({jsonrpc:'2.0',id:m.id,result:{}})
+if(m.method==='session/prompt'){
+  const text = m.params.prompt.map(p => p.text).join('\\n')
+  fs.appendFileSync(${JSON.stringify(promptsFile)}, JSON.stringify({ sessionId: m.params.sessionId, mode: currentMode, text }) + '\\n')
+  if(currentMode==='plan'){
+    send({jsonrpc:'2.0',method:'session/update',params:{sessionId:m.params.sessionId,update:{sessionUpdate:'plan_update',plan:{type:'items',planId:'p1',entries:[{content:'Step 1',status:'pending',priority:'high'}]}}}})
+  } else {
+    send({jsonrpc:'2.0',method:'session/update',params:{sessionId:m.params.sessionId,update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:'Executed plan.'}}}})
+  }
+  send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})
+}}})`)
+    const store = new EventStore(join(root, "events"))
+    await store.initialize()
+    const project = await store.openProject(root, "Plan Exclusion Project")
+    const chat = await store.createChat(project.id)
+    const chatWithout = await store.createChat(project.id)
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: join(root, "memory") })
+    const kept = memory.store.create({
+      content: "KEPT_MEMORY_RULE_ALPHA",
+      type: "constraint",
+      scope: "project",
+      projectId: project.id,
+    }, { actor: "user" })
+    const excluded = memory.store.create({
+      content: "EXCLUDED_MEMORY_RULE_BETA",
+      type: "constraint",
+      scope: "project",
+      projectId: project.id,
+    }, { actor: "user" })
+    const antigravityManager = new AntigravityAgentManager()
+    const coordinator = new AgentCoordinator({
+      store,
+      memory,
+      antigravityManager,
+      memoryBranches: false,
+      memoryPreview: true,
+      generateTitle: async () => ({ title: "Plan Chat", usedFallback: true, failureMessage: null }),
+      onStateChange: () => {},
+    })
+    const bindRuntime = (chatId: string) => {
+      ;(coordinator as any).sessionRuntimes.set(chatId, runtime)
+      ;(coordinator as any).runtimeSelections.set(chatId, JSON.stringify(["antigravity", runtime.model, undefined, undefined]))
+    }
+    bindRuntime(chat.id)
+    bindRuntime(chatWithout.id)
+    try {
+      // 1. User excludes `excluded` at preview, then approves the generated plan.
+      await coordinator.send({ type: "chat.send", chatId: chat.id, provider: "antigravity", model: runtime.model, content: "Plan the refactor", planMode: true })
+      const deadline = Date.now() + 8000
+      while (Date.now() < deadline) {
+        const preview = store.getMessages(chat.id).find(m => m.kind === "memory_preview")
+        if (preview) {
+          expect(preview.memories.map(m => m.id)).toContain(excluded.id)
+          await coordinator.respondMemoryPreview({ chatId: chat.id, previewId: preview.previewId, decision: "go_on", memoryIds: [kept.id] })
+          break
+        }
+        await Bun.sleep(10)
+      }
+      while (Date.now() < deadline && coordinator.getPendingTool(chat.id)?.toolKind !== "exit_plan_mode") await Bun.sleep(10)
+      const pendingPlan = coordinator.getPendingTool(chat.id)
+      expect(pendingPlan?.toolKind).toBe("exit_plan_mode")
+      await coordinator.respondTool({
+        type: "chat.respondTool",
+        chatId: chat.id,
+        toolUseId: pendingPlan!.toolUseId,
+        result: { confirmed: true },
+      })
+      while (Date.now() < deadline) {
+        const results = store.getMessages(chat.id).filter(m => m.kind === "result")
+        if (results.length >= 2) break
+        await Bun.sleep(10)
+      }
+      let prompts = readPrompts()
+      expect(prompts).toHaveLength(2)
+      expect(prompts[0]!.mode).toBe("plan")
+      expect(prompts[0]!.text).toContain("KEPT_MEMORY_RULE_ALPHA")
+      expect(prompts[0]!.text).not.toContain("EXCLUDED_MEMORY_RULE_BETA")
+      expect(prompts[1]!.mode).toBe("default")
+      expect(prompts[1]!.text).toContain("Proceed with the approved plan.")
+      expect(prompts[1]!.text).toContain("KEPT_MEMORY_RULE_ALPHA")
+      expect(prompts[1]!.text).not.toContain("EXCLUDED_MEMORY_RULE_BETA")
+
+      // 2. User selects without_memory at preview, then approves the plan.
+      await coordinator.send({ type: "chat.send", chatId: chatWithout.id, provider: "antigravity", model: runtime.model, content: "Plan without memory", planMode: true })
+      while (Date.now() < deadline) {
+        const preview = store.getMessages(chatWithout.id).find(m => m.kind === "memory_preview")
+        if (preview) {
+          await coordinator.respondMemoryPreview({ chatId: chatWithout.id, previewId: preview.previewId, decision: "without_memory" })
+          break
+        }
+        await Bun.sleep(10)
+      }
+      while (Date.now() < deadline && coordinator.getPendingTool(chatWithout.id)?.toolKind !== "exit_plan_mode") await Bun.sleep(10)
+      const pendingWithout = coordinator.getPendingTool(chatWithout.id)
+      expect(pendingWithout?.toolKind).toBe("exit_plan_mode")
+      await coordinator.respondTool({
+        type: "chat.respondTool",
+        chatId: chatWithout.id,
+        toolUseId: pendingWithout!.toolUseId,
+        result: { confirmed: true },
+      })
+      while (Date.now() < deadline) {
+        const results = store.getMessages(chatWithout.id).filter(m => m.kind === "result")
+        if (results.length >= 2) break
+        await Bun.sleep(10)
+      }
+      prompts = readPrompts()
+      expect(prompts).toHaveLength(4)
+      for (const prompt of prompts.slice(2)) {
+        expect(prompt.text).not.toContain("KEPT_MEMORY_RULE_ALPHA")
+        expect(prompt.text).not.toContain("EXCLUDED_MEMORY_RULE_BETA")
+      }
+    } finally {
+      await coordinator.shutdownRuntime()
+      memory.close()
+    }
+  }, 15000)
+
+  it("keeps native slash commands leading in session/prompt when working memory is injected", async () => {
+    const root = mkdtempSync(join(tmpdir(), "memosync-agy-slash-mem-")); roots.push(root)
+    const promptsFile = join(root, "slash-prompts.json")
+    const runtime = writeAcpFixture(root, `
+const fs = require('node:fs')
+process.stdin.setEncoding('utf8')
+let b=''
+const prompts=[]
+const send=o=>process.stdout.write(JSON.stringify(o)+'\\n')
+process.stdin.on('data',c=>{b+=c; for(let i=b.indexOf('\\n');i>=0;i=b.indexOf('\\n')){const line=b.slice(0,i); b=b.slice(i+1); if(!line.trim())continue; const m=JSON.parse(line); if(!m.method)continue
+if(m.method==='initialize') send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1}})
+if(m.method==='session/new'){
+  send({jsonrpc:'2.0',id:m.id,result:{sessionId:'slash-mem-session'}})
+  send({jsonrpc:'2.0',method:'session/update',params:{sessionId:'slash-mem-session',update:{sessionUpdate:'available_commands_update',availableCommands:[{name:'plan',description:'Native plan'},{name:'review',description:'Review code'}]}}})
+}
+if(m.method==='session/resume') send({jsonrpc:'2.0',id:m.id,result:{sessionId:m.params.sessionId}})
+if(m.method==='session/set_config_option') send({jsonrpc:'2.0',id:m.id,result:{configOptions:[{id:m.params.configId,currentValue:m.params.value}]}})
+if(m.method==='session/close') send({jsonrpc:'2.0',id:m.id,result:{}})
+if(m.method==='session/prompt'){
+  prompts.push(m.params.prompt)
+  fs.writeFileSync(${JSON.stringify(promptsFile)}, JSON.stringify(prompts))
+  send({jsonrpc:'2.0',id:m.id,result:{stopReason:'end_turn'}})
+}}})`)
+    const manager = new AntigravityAgentManager()
+    try {
+      const t1 = await manager.startTurn({
+        chatId: "cmd-mem",
+        cwd: root,
+        content: "/review src/index.ts",
+        nativeCommand: true,
+        memoryContext: "## Working Memory\n- [M-01] Keep strict types",
+        model: runtime.model,
+        runtime,
+      })
+      for await (const _e of t1.stream) { /* drain */ }
+
+      const t2 = await manager.startTurn({
+        chatId: "cmd-mem",
+        cwd: root,
+        content: "/Users/dev/project/file.ts explain this file",
+        memoryContext: "## Working Memory\n- [M-01] Keep strict types",
+        model: runtime.model,
+        runtime,
+        sessionToken: "slash-mem-session",
+      })
+      for await (const _e of t2.stream) { /* drain */ }
+
+      const recorded = JSON.parse(readFileSync(promptsFile, "utf8")) as Array<Array<{ type: string; text: string }>>
+      expect(recorded).toHaveLength(2)
+      expect(recorded[0]).toEqual([
+        { type: "text", text: "/review src/index.ts" },
+        { type: "text", text: "## Working Memory\n- [M-01] Keep strict types" },
+      ])
+      expect(recorded[1]).toEqual([
+        { type: "text", text: "## Working Memory\n- [M-01] Keep strict types\n\n/Users/dev/project/file.ts explain this file" },
+      ])
+    } finally { await manager.dispose() }
+
+    // Also verify end-to-end command dispatcher routing with /native:plan and working memory.
+    const store = new EventStore(join(root, "events"))
+    await store.initialize()
+    const project = await store.openProject(root, "Slash Dispatch Project")
+    const chat = await store.createChat(project.id)
+    const memory = new MemoryService({ dbPath: ":memory:", dataDir: join(root, "memory") })
+    memory.store.create({ content: "MEMORY_FOR_COMMAND_TURN", type: "constraint", scope: "project", projectId: project.id }, { actor: "user" })
+    const coordManager = new AntigravityAgentManager()
+    const coordinator = new AgentCoordinator({
+      store,
+      memory,
+      antigravityManager: coordManager,
+      memoryBranches: false,
+      memoryPreview: false,
+      generateTitle: async () => ({ title: "Slash Chat", usedFallback: true, failureMessage: null }),
+      onStateChange: () => {},
+    })
+    ;(coordinator as any).sessionRuntimes.set(chat.id, runtime)
+    ;(coordinator as any).runtimeSelections.set(chat.id, JSON.stringify(["antigravity", runtime.model, undefined, undefined]))
+    try {
+      await coordManager.prepareSession({ chatId: chat.id, cwd: root, model: runtime.model, runtime })
+      await store.setChatProvider(chat.id, "antigravity")
+      const catalog = await coordinator.readCommandCatalog(chat.id, true)
+      const planCmd = catalog.commands.items.find(c => c.id === "native:plan")
+      expect(planCmd).toBeDefined()
+      await coordinator.executeCommand({
+        type: "chat.executeCommand",
+        chatId: chat.id,
+        runtimeKey: catalog.runtimeKey!,
+        expectedRevision: catalog.revision,
+        commandId: planCmd!.id,
+        arguments: "auth flow",
+      })
+      const deadline = Date.now() + 8000
+      while (Date.now() < deadline && !store.getMessages(chat.id).some(m => m.kind === "result")) await Bun.sleep(10)
+      const recorded = JSON.parse(readFileSync(promptsFile, "utf8")) as Array<Array<{ type: string; text: string }>>
+      const last = recorded.at(-1)!
+      expect(last[0]).toEqual({ type: "text", text: "/plan auth flow" })
+      expect(last[1]?.text).toContain("MEMORY_FOR_COMMAND_TURN")
+    } finally {
+      await coordinator.shutdownRuntime()
+      memory.close()
+    }
+  }, 15000)
+
+  it.skipIf(process.platform === "win32")("cleans up detached descendant processes even when the CLI exits gracefully on session/close", async () => {
+    const root = mkdtempSync(join(tmpdir(), "memosync-agy-tree-")); roots.push(root)
+    const childPidFile = join(root, "descendant.pid")
+    const runtime = writeAcpFixture(root, `
+const fs = require('node:fs')
+const { spawn } = require('node:child_process')
+process.stdin.setEncoding('utf8')
+let b=''
+const send=o=>process.stdout.write(JSON.stringify(o)+'\\n')
+const survivor = spawn('sh', ['-c', "trap '' TERM; sleep 60"], { stdio: 'ignore' })
+fs.writeFileSync(${JSON.stringify(childPidFile)}, String(survivor.pid))
+process.stdin.on('data',c=>{b+=c; for(let i=b.indexOf('\\n');i>=0;i=b.indexOf('\\n')){const line=b.slice(0,i); b=b.slice(i+1); if(!line.trim())continue; const m=JSON.parse(line); if(!m.method)continue
+if(m.method==='initialize') send({jsonrpc:'2.0',id:m.id,result:{protocolVersion:1}})
+if(m.method==='session/new') send({jsonrpc:'2.0',id:m.id,result:{sessionId:'tree-session'}})
+if(m.method==='session/set_config_option') send({jsonrpc:'2.0',id:m.id,result:{configOptions:[{id:m.params.configId,currentValue:m.params.value}]}})
+if(m.method==='session/close'){
+  send({jsonrpc:'2.0',id:m.id,result:{}})
+  process.exit(0)
+}}})`)
+    const manager = new AntigravityAgentManager()
+    let descendantPid = 0
+    try {
+      await manager.prepareSession({ chatId: "tree-chat", cwd: root, model: runtime.model, runtime })
+      descendantPid = Number(readFileSync(childPidFile, "utf8").trim())
+      expect(Number.isInteger(descendantPid) && descendantPid > 1).toBe(true)
+      // Confirm descendant is alive before closeChat.
+      expect(() => process.kill(descendantPid, 0)).not.toThrow()
+      await manager.closeChat("tree-chat")
+      // Descendant in the detached process group must be terminated even though root exited on session/close.
+      let alive = true
+      const deadline = Date.now() + 2000
+      while (Date.now() < deadline) {
+        try { process.kill(descendantPid, 0) } catch { alive = false; break }
+        await Bun.sleep(25)
+      }
+      expect(alive).toBe(false)
+    } finally {
+      if (descendantPid > 1) {
+        try { process.kill(descendantPid, "SIGKILL") } catch {}
+      }
+      await manager.dispose()
+    }
+  }, 10000)
 })
 
 function mkdirSyncCompat(dir: string) {

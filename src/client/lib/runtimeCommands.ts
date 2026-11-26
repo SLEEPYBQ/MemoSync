@@ -5,10 +5,17 @@ import { t } from "../i18n"
 const CONTROL_COMMANDS = new Set(["compact"])
 const SLASH = /^\/([A-Za-z][\w:.-]*)(?:\s+([\s\S]*))?$/
 
-/** Keep equally named native commands and skills independently addressable. */
-export function runtimeCommandToken(command: RuntimeCommand, commands: RuntimeCommand[]): string {
+/** Keep equally named native commands, skills, and host-reserved tokens independently addressable. */
+export function runtimeCommandToken(
+  command: RuntimeCommand,
+  commands: RuntimeCommand[],
+  reservedTokens: readonly string[] = [],
+): string {
   const name = command.name.replace(/^\//, "")
-  return commands.filter(item => item.name.replace(/^\//, "") === name).length > 1 ? `${command.namespace}:${name}` : name
+  const collides =
+    commands.filter(item => item.name.replace(/^\//, "") === name).length > 1
+    || reservedTokens.includes(name)
+  return collides ? `${command.namespace}:${name}` : name
 }
 
 export function isSlashInput(value: string) { return SLASH.test(value.trim()) }
@@ -25,12 +32,16 @@ export function runtimeCatalogSettling(catalog: ChatCommandCatalog | null | unde
  * that merely starts with "/" goes to the engine as text, which handles its own
  * slash syntax. Only host controls such as /compact refuse to degrade to text.
  */
-export function resolveRuntimeSlash(value: string, catalog: ChatCommandCatalog | null | undefined): { command: RuntimeCommand; args: string } | null {
+export function resolveRuntimeSlash(
+  value: string,
+  catalog: ChatCommandCatalog | null | undefined,
+  reservedTokens: readonly string[] = [],
+): { command: RuntimeCommand; args: string } | null {
   const match = SLASH.exec(value.trim())
   if (!match) return null
   const ready = Boolean(catalog?.runtimeKey) && catalog?.commands.status === "ready"
   const items = ready ? catalog!.commands.items : []
-  const command = items.find(item => runtimeCommandToken(item, items) === match[1])
+  const command = items.find(item => runtimeCommandToken(item, items, reservedTokens) === match[1])
   if (command) {
     if (command.route === "compact" && catalog!.compact.status !== "available") throw new Error(catalog!.compact.reason || t("commands:compactUnavailable"))
     return { command, args: match[2] ?? "" }

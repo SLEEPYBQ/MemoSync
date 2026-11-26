@@ -342,6 +342,10 @@ interface StartTurnArgs {
   planMode: boolean
   appendUserPrompt: boolean
   codexPlanThread?: "continue" | "clear"
+  /** Exact turn-only memory allowlist preserved across plan-approval continuations. */
+  restrictMemoryIds?: string[]
+  /** Preserve per-turn "proceed without memory" across plan-approval continuations. */
+  memoryDisabledForTurn?: boolean
   steered?: boolean
   /** Resume of an interrupted turn (2026-08-19 C2): skip the pre-turn gates
    * and the working-memory confirmation — the recovery card confirmed the set. */
@@ -431,6 +435,8 @@ interface ActiveTurn {
   citedIds: Set<string>
   /** User chose "proceed without memory" at the preview gate for this turn. */
   memoryDisabled?: boolean
+  /** Exact turn-only memory allowlist confirmed for this turn (preview or resume). */
+  memoryRestriction?: string[]
   memoryDeliveryAccepted?: boolean
   /**
    * Snapshot of the memory ids injected for THIS turn, taken at engine boot.
@@ -4654,8 +4660,13 @@ export class AgentCoordinator {
     const reservation = this.reserveStartup(args)
     const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
-    // PREVIOUS turn's injection.
-    this.turnMemoryRestriction.delete(args.chatId)
+    // PREVIOUS turn's injection. A plan-approval continuation preserves the
+    // exclusion choice made for this logical turn.
+    if (args.restrictMemoryIds !== undefined) {
+      this.turnMemoryRestriction.set(args.chatId, [...args.restrictMemoryIds])
+    } else {
+      this.turnMemoryRestriction.delete(args.chatId)
+    }
     // A review planner's task-specific guidance belongs to its own turn. Auto
     // starts from the index; interrupt recovery retains its existing context.
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
@@ -4864,7 +4875,12 @@ export class AgentCoordinator {
       }
     }
 
-    await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
+    await this.bootEngineTurn(args, {
+      chat,
+      project,
+      turnNumber,
+      memoryDisabledForTurn: Boolean(args.memoryDisabledForTurn) || !args.memoryState.memoryActive,
+    })
     } catch (error) {
       if (!newlyAppendedPrompt || args.resume || args.nativeCommand) throw error
       if (!this.startupReservationIsCurrent(args.chatId, reservation)) throw error
@@ -6923,7 +6939,7 @@ export class AgentCoordinator {
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
     const hostAdmission = args.hostAdmission
     const reservation = args.startupReservation
-    const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
+    const turnRestriction = args.resume?.selectedIds ?? args.restrictMemoryIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
     if (reservation?.cancelled) return
     const startController = new AbortController()
@@ -7184,6 +7200,7 @@ export class AgentCoordinator {
           content: buildPromptText(args.content, providerAttachments),
           model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
           memoryContext: piMemoryBlock || undefined,
+          nativeCommand: args.nativeCommand,
           sessionToken: chat.sessionToken,
           forkSession: false, planMode: args.planMode,
           executionPolicy: !legacyExecution && executionPolicy.engine === "antigravity" ? executionPolicy : undefined,
@@ -7435,6 +7452,7 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
+      memoryRestriction: turnRestriction ? [...turnRestriction] : undefined,
       // Pi accepts its memory block inside the user prompt (there is no
       // developer_instructions channel) — delivery counts like Codex's.
       memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity",
@@ -8123,7 +8141,11 @@ export class AgentCoordinator {
       }
       await this.commandPreparations.get(chatId)?.promise
       const catalog = await this.readCommandCatalog(chatId)
-      const entry = match && catalog.commands.items.find(item => item.name === match[1])
+      const entry = match && (
+        catalog.commands.items.find(item => item.id === match[1])
+        ?? catalog.commands.items.find(item => `${item.namespace}:${item.name}` === match[1])
+        ?? catalog.commands.items.find(item => item.name === match[1])
+      )
       if (!entry || !catalog.runtimeKey) throw new Error('Command unavailable in the current native session; refresh its catalog')
       if (chat.draft) {
         await this.store.promoteDraft(chatId)
@@ -8716,6 +8738,8 @@ export class AgentCoordinator {
             planMode: active.postToolFollowUp.planMode,
             appendUserPrompt: false,
             turnId: active.turnId,
+            restrictMemoryIds: active.memoryRestriction,
+            memoryDisabledForTurn: active.memoryDisabled,
           })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)

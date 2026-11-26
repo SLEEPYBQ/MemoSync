@@ -168,6 +168,8 @@ export interface EngineStatus {
 export interface ModelAccessSnapshot {
   /** Refreshed with model access, including background CLI discovery on the home screen. */
   providers?: ProviderCatalogEntry[]
+  /** Operating system of the host running the engine executables. */
+  hostPlatform?: NodeJS.Platform
   connections: ApiConnection[]
   engines: Record<EngineId, EngineStatus>
   presets: ConnectionPreset[]

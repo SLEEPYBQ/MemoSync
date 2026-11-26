@@ -69,7 +69,7 @@ export function ProvidersSection({
   defaultExpanded,
   hash,
 }: {
-  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket">>
+  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket" | "localProjects">>
   /** Engines open on first render (tests); otherwise only the one a deep link targets. */
   defaultExpanded?: readonly EngineId[]
   /** The page's current location hash, so search jumps open the target engine. */
@@ -80,6 +80,7 @@ export function ProvidersSection({
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
   const snapshot = useModelAccessStore((s) => s.snapshot)
+  const hostPlatform = snapshot?.hostPlatform ?? state.localProjects?.machine.platform
   const [adding, setAdding] = useState<{ protocol?: ApiProtocol } | null>(null)
   const [expandedEngines, setExpandedEngines] = useState<ReadonlySet<EngineId>>(() => new Set(defaultExpanded ?? engineFromHash(hash)))
   useEffect(() => {
@@ -201,6 +202,7 @@ export function ProvidersSection({
                 key={engine}
                 engine={engine}
                 status={snapshot?.engines[engine]}
+                hostPlatform={hostPlatform}
                 connections={snapshot?.connections ?? []}
                 socket={state.socket}
                 onAddConnection={(protocol) => setAdding({ protocol })}

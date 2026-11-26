@@ -268,7 +268,14 @@ export class ModelAccessService {
     if (id === LEGACY_PI_ID) return this.legacyPi?.apiKey || undefined
     return c?.keySource === "stored" ? this.readCredential(id) : c?.envKeyName ? this.env[c.envKeyName]?.trim() || undefined : undefined
   }
-  getSnapshot(): ModelAccessSnapshot { return structuredClone({ connections: this.connections(), engines: this.statuses, presets: CONNECTION_PRESETS }) }
+  getSnapshot(): ModelAccessSnapshot {
+    return structuredClone({
+      hostPlatform: process.platform,
+      connections: this.connections(),
+      engines: this.statuses,
+      presets: CONNECTION_PRESETS,
+    })
+  }
   onChange(listener: () => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener) } }
   private changed() { this.revision += 1; for (const listener of this.listeners) listener() }
   private serialize<T>(fn: () => Promise<T>): Promise<T> { const next = this.pending.then(fn); this.pending = next.catch(() => {}); return next }

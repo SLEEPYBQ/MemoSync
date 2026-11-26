@@ -40,14 +40,8 @@ import { CONNECTION_FIELD_CLASS, Hint, MODEL_ACCESS_FOCUS_CLASS } from "./modelA
 
 const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode", antigravity: "Antigravity" }
 
-function antigravityInstallCommand() {
-  const platform =
-    typeof navigator === "undefined"
-      ? ""
-      : ((navigator as Navigator & { userAgentData?: { platform?: string } }).userAgentData?.platform ??
-        navigator.platform ??
-        "")
-  return /^win/i.test(platform)
+export function antigravityInstallCommand(hostPlatform?: NodeJS.Platform) {
+  return hostPlatform === "win32"
     ? "irm https://antigravity.google/cli/install.ps1 | iex"
     : "curl -fsSL https://antigravity.google/cli/install.sh | bash"
 }
@@ -55,6 +49,7 @@ function antigravityInstallCommand() {
 export function EngineCard({
   engine,
   status,
+  hostPlatform,
   connections,
   socket,
   onAddConnection,
@@ -64,6 +59,8 @@ export function EngineCard({
 }: {
   engine: EngineId
   status?: EngineStatus
+  /** Host OS running the MemoSync server and engine executables. */
+  hostPlatform?: NodeJS.Platform
   connections: ApiConnection[]
   socket?: Pick<AppSocket, "command">
   onAddConnection: (protocol: ApiProtocol) => void
@@ -139,7 +136,7 @@ export function EngineCard({
         : engine === "opencode"
           ? "npm install -g opencode-ai"
           : engine === "antigravity"
-            ? antigravityInstallCommand()
+            ? antigravityInstallCommand(hostPlatform)
             : "npm install -g @openai/codex"
   const supportsConnections = ENGINE_PROTOCOLS[engine].length > 0
   const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")

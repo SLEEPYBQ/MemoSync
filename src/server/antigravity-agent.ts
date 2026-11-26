@@ -369,6 +369,7 @@ export interface StartAntigravityTurnArgs {
   runtime?: EngineRuntime
   systemPrompt?: string
   memoryContext?: string
+  nativeCommand?: boolean
   sessionToken?: string | null
   forkSession?: boolean
   allowResumeFallback?: boolean
@@ -402,6 +403,52 @@ export class AntigravityAgentManager {
   private disposed = false
   constructor(private readonly spawnProcess: typeof spawn = spawn) {}
 
+  private async terminateProcessTree(child: ChildProcess, connection: AntigravityAcpConnection) {
+    const pid = child.pid
+    const validPid = typeof pid === "number" && Number.isInteger(pid) && pid > 1 && pid !== process.pid
+    if (process.platform === "win32") {
+      // Kill the tree before closing stdin so a parent exiting on EOF cannot
+      // bypass taskkill /T /F (process-utils skips already-exited children).
+      if (!connection.exited && child.exitCode == null && child.signalCode == null) {
+        await killProcessTree(child).catch(() => {})
+      }
+      try { child.stdin?.end() } catch {}
+      await boundedWait(connection.closedPromise, EXIT_GRACE_MS)
+      return
+    }
+    const signalGroup = (signal: NodeJS.Signals | 0) => {
+      if (!validPid) return false
+      try { process.kill(-pid, signal); return true } catch { return false }
+    }
+    try { child.stdin?.end() } catch {}
+    // Signal the detached process group so descendants receive SIGTERM even if
+    // the root CLI already exited during session/close or stdin EOF.
+    const signalledGroup = signalGroup("SIGTERM")
+    if (!signalledGroup && !connection.exited && child.exitCode == null && child.signalCode == null) {
+      try { child.kill("SIGTERM") } catch {}
+    }
+    const graceDeadline = Date.now() + EXIT_GRACE_MS
+    if (!connection.exited && child.exitCode == null && child.signalCode == null) {
+      await boundedWait(connection.closedPromise, EXIT_GRACE_MS)
+    }
+    if (signalledGroup) {
+      while (signalGroup(0) && Date.now() < graceDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+    if (!connection.exited && child.exitCode == null && child.signalCode == null) {
+      await killProcessTree(child).catch(() => {})
+    }
+    if (signalGroup(0)) {
+      signalGroup("SIGKILL")
+      const killDeadline = Date.now() + EXIT_GRACE_MS
+      while (signalGroup(0) && Date.now() < killDeadline) {
+        await new Promise(resolve => setTimeout(resolve, 25))
+      }
+    }
+    await boundedWait(connection.closedPromise, EXIT_GRACE_MS)
+  }
+
   private async stop(chat: ChatAcp) {
     if (chat.closed) return
     chat.closed = true
@@ -422,17 +469,7 @@ export class AntigravityAgentManager {
     }
     chat.connection.fail(new Error("Antigravity session closed"))
     chat.commandListeners.clear()
-    try { chat.child.stdin?.end() } catch {}
-    if (!chat.connection.exited && chat.child.exitCode == null && chat.child.signalCode == null) {
-      if (process.platform !== "win32") {
-        try { chat.child.kill("SIGTERM") } catch {}
-      }
-      await boundedWait(chat.connection.closedPromise, EXIT_GRACE_MS)
-    }
-    if (!chat.connection.exited && chat.child.exitCode == null && chat.child.signalCode == null) {
-      await killProcessTree(chat.child).catch(() => {})
-    }
-    await boundedWait(chat.connection.closedPromise, EXIT_GRACE_MS)
+    await this.terminateProcessTree(chat.child, chat.connection)
   }
   hasSession(chatId: string) { return Boolean(this.chats.get(chatId) && !this.chats.get(chatId)!.closed) }
   getCommandRuntime(chatId: string): NativeCommandRuntime | undefined {
@@ -568,7 +605,8 @@ export class AntigravityAgentManager {
     args.signal?.throwIfAborted()
     if (this.disposed || generation !== (this.generations.get(args.chatId) ?? 0)) throw new Error("Antigravity start cancelled")
     const child = this.spawnProcess(launcher.command, [...launcher.args, ...(runtime.args.length ? runtime.args : ["acp"])], {
-      cwd: args.cwd, env: runtime.env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+      cwd: args.cwd, env: runtime.env as NodeJS.ProcessEnv, stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32", windowsHide: true,
     })
     const connection = new AntigravityAcpConnection(child)
     let stderr = ""
@@ -623,8 +661,7 @@ export class AntigravityAgentManager {
       this.chats.set(args.chatId, chat)
       return chat
     } catch (error) {
-      await killProcessTree(child).catch(() => {})
-      await boundedWait(connection.closedPromise, EXIT_GRACE_MS)
+      await this.terminateProcessTree(child, connection).catch(() => {})
       const detail = stderr.trim()
       throw error instanceof Error && detail ? new Error(`${error.message}${error.message.includes(detail) ? "" : `: ${detail}`}`) : error
     }
@@ -1123,9 +1160,17 @@ export class AntigravityAgentManager {
     }
     queue.push({ type: "session_token", sessionToken: sessionId })
     transcript({ kind: "system_init", provider: "antigravity", model: runtime.model || args.model || "default", tools: ["Read", "Bash", "Edit", "Write", "Grep", "Glob"], agents: [], slashCommands: [...chat.commands.keys()], mcpServers: [] })
-    const prompt = args.memoryContext ? `${args.memoryContext}\n\n${args.content}` : args.content
+    const trimmedContent = args.content.trimStart()
+    const isSlashCommand = Boolean(args.nativeCommand) || /^\/[A-Za-z][\w:.-]*(?:\s|$)/.test(trimmedContent)
+    // ACP slash commands must lead the prompt; keep the command in its own
+    // leading text block and deliver working memory after it instead of prefixing.
+    const promptBlocks = args.memoryContext
+      ? isSlashCommand
+        ? [{ type: "text", text: trimmedContent }, { type: "text", text: args.memoryContext }]
+        : [{ type: "text", text: `${args.memoryContext}\n\n${args.content}` }]
+      : [{ type: "text", text: isSlashCommand ? trimmedContent : args.content }]
     if (!finished && !cancelRequested && !args.signal?.aborted) {
-      void chat.connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text: prompt }] }, 24 * 60 * 60_000)
+      void chat.connection.request("session/prompt", { sessionId, prompt: promptBlocks }, 24 * 60 * 60_000)
         .then(async result => {
           resolvePromptSettled()
           if (finished) return

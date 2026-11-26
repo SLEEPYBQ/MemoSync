@@ -412,6 +412,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   const showPlanMode = providerConfig?.supportsPlanMode ?? false
   // Claude lists Plan among its modes; other engines switch it with /plan, as Codex does.
   const planSlash = showPlanMode && selectedProvider !== "claude"
+  const reservedHostTokens = planSlash ? ["plan"] : []
   const commandSelection: RuntimeCommandSelection = {
     provider: selectedProvider,
     model: providerPrefs.model,
@@ -773,7 +774,7 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
             while (runtimeCatalogSettling(catalogRef.current) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 150))
             catalog = catalogRef.current
           }
-          const invocation = resolveRuntimeSlash(nextValue, catalog)
+          const invocation = resolveRuntimeSlash(nextValue, catalog, reservedHostTokens)
           if (invocation) {
             if (attachmentsForSubmit.length) throw new Error(t("commands:noAttachments"))
             await onExecuteCommand(invocation.command, invocation.args)
@@ -817,8 +818,8 @@ const ChatInputInner = forwardRef<ChatInputHandle, Props>(function ChatInput({
   // A successful empty discovery is authoritative. Only legacy callers without
   // a registry prop use the supplied list; no provider-wide cache is consulted.
   const effectiveSlashCommands = commandCatalog === undefined ? slashCommands
-    : [...(matchingCatalog?.commands.status === "ready" ? matchingCatalog.commands.items.map(command => runtimeCommandToken(command, matchingCatalog.commands.items)) : []),
-      ...(planSlash && !matchingCatalog?.commands.items.some(command => command.name === "plan") ? ["plan"] : [])]
+    : [...(matchingCatalog?.commands.status === "ready" ? matchingCatalog.commands.items.map(command => runtimeCommandToken(command, matchingCatalog.commands.items, reservedHostTokens)) : []),
+      ...reservedHostTokens]
   const slashMatch = slashDismissed ? null : matchSlashCommands(value, effectiveSlashCommands)
   // Typing "/" before the native list arrives shows its loading or failure state instead of nothing.
   const slashPending = !slashMatch && !slashDismissed && commandCatalog !== undefined && Boolean(runtimeChatId)

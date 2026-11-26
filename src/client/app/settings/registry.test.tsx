@@ -4,7 +4,9 @@ import { MemoryRouter } from "react-router-dom"
 import { readAppSettingsSnapshot } from "../../../server/app-settings"
 import { SELF_UPDATE_ENABLED } from "../../../shared/branding"
 import { PROVIDERS, type AppSettingsSnapshot } from "../../../shared/types"
+import { TooltipProvider } from "../../components/ui/tooltip"
 import { useTerminalPreferencesStore } from "../../stores/terminalPreferencesStore"
+import { EngineCard, antigravityInstallCommand } from "./EngineCard"
 import { GeneralSection } from "./GeneralSection"
 import { KeybindingsSection } from "./KeybindingsSection"
 import { MemorySettingsGroups } from "./MemorySection"
@@ -111,5 +113,37 @@ describe("settings registry and section rendering", () => {
     expect(render({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "on_change" })).toContain('aria-label="Confirm working memory"')
     expect(render({ enabled: true, autoProceedWhenEmpty: true, confirmationMode: "every_turn" })).toContain('aria-label="Confirm working memory"')
     expect(render({ enabled: false, autoProceedWhenEmpty: true })).toMatch(/aria-label="Confirm working memory"[^>]*disabled|disabled[^>]*aria-label="Confirm working memory"/)
+  })
+  test("Antigravity install command follows host platform rather than browser navigator", () => {
+    expect(antigravityInstallCommand("win32")).toBe("irm https://antigravity.google/cli/install.ps1 | iex")
+    expect(antigravityInstallCommand("linux")).toBe("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+    expect(antigravityInstallCommand("darwin")).toBe("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+    expect(antigravityInstallCommand(undefined)).toBe("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+
+    const missingStatus = {
+      engine: "antigravity" as const,
+      setup: { access: { mode: "account" as const } },
+      executable: { state: "missing" as const },
+      ready: false,
+      problem: "executable-missing" as const,
+    }
+    const linuxHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <EngineCard engine="antigravity" status={missingStatus} hostPlatform="linux" connections={[]} onAddConnection={() => {}} expanded onToggle={() => {}}>
+          {null}
+        </EngineCard>
+      </TooltipProvider>,
+    )
+    const winHtml = renderToStaticMarkup(
+      <TooltipProvider>
+        <EngineCard engine="antigravity" status={missingStatus} hostPlatform="win32" connections={[]} onAddConnection={() => {}} expanded onToggle={() => {}}>
+          {null}
+        </EngineCard>
+      </TooltipProvider>,
+    )
+    expect(linuxHtml).toContain("curl -fsSL https://antigravity.google/cli/install.sh | bash")
+    expect(linuxHtml).not.toContain("install.ps1")
+    expect(winHtml).toContain("irm https://antigravity.google/cli/install.ps1 | iex")
+    expect(winHtml).not.toContain("install.sh")
   })
 })
