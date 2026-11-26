@@ -90,6 +90,16 @@ function chatDescription(chat: ChatListItem): string | undefined {
   return pieces.length ? pieces.join(" · ") : undefined
 }
 
+function chatAccessibilityLabel(chat: ChatListItem): string {
+  const pieces = [
+    chat.title || "Untitled chat",
+    chat.unread ? "Unread" : undefined,
+    statusLabel(chat.status),
+    chatDescription(chat),
+  ].filter((piece): piece is string => Boolean(piece))
+  return pieces.join(", ")
+}
+
 function SectionPath({ path, colors }: { path: string; colors: ReturnType<typeof useTheme>["colors"] }) {
   return (
     <Text style={[styles.sectionPath, { color: colors.mutedIcon }]} numberOfLines={1} ellipsizeMode="middle">
@@ -255,7 +265,15 @@ export function ProjectsScreen({ navigation }: Props) {
                     />
                   </View>
                 }
-                accessory={<StatusPill label={statusLabel(item.status)} tone={statusTone(item.status)} size="compact" />}
+                accessory={
+                  <>
+                    {item.unread ? (
+                      <View style={[styles.unreadDot, { backgroundColor: colors.success }]} />
+                    ) : null}
+                    <StatusPill label={statusLabel(item.status)} tone={statusTone(item.status)} size="compact" />
+                  </>
+                }
+                accessibilityLabel={chatAccessibilityLabel(item)}
                 onPress={() => navigation.navigate("Chat", { chatId: item.chatId, title: item.title })}
                 style={[
                   styles.groupedRow,
@@ -332,6 +350,11 @@ const styles = StyleSheet.create({
   },
   groupedRow: {
     borderWidth: StyleSheet.hairlineWidth,
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: radius.full,
   },
   chatIconWell: {
     width: 24,

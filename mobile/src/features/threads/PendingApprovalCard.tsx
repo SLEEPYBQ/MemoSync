@@ -72,6 +72,7 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
               key={option.key}
               label={option.label}
               description={option.description}
+              accessibilityLabel={option.description ? `${option.label}. ${option.description}` : option.label}
               tone={option.tone ?? (option.key === "accept" ? "primary" : "secondary")}
               size="compact"
               fullWidth

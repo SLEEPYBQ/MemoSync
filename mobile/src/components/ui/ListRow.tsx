@@ -24,6 +24,7 @@ export function ListRow(
     readonly selected?: boolean
     readonly accessory?: React.ReactNode
     readonly showChevron?: boolean
+    readonly accessibilityLabel?: string
     readonly style?: StyleProp<ViewStyle>
     readonly tone?: "default" | "danger"
   },
@@ -33,7 +34,7 @@ export function ListRow(
   return (
     <RowPressable
       accessibilityRole="button"
-      accessibilityLabel={[props.label, props.description, props.detail].filter(Boolean).join(", ")}
+      accessibilityLabel={props.accessibilityLabel ?? [props.label, props.description, props.detail].filter(Boolean).join(", ")}
       accessibilityState={{
         disabled: Boolean(props.disabled),
         ...(props.selected === undefined ? {} : { checked: props.selected }),
