@@ -68,7 +68,20 @@ export function isAntigravityBranchRead(name: string, input: Record<string, unkn
   }
   if (name === "run_command" || name === "Bash") {
     const command = firstString(input.CommandLine, input.command_line, input.commandLine, input.command)
-    return Boolean(command && isReadOnlyBranchCommand(command, projectRoot))
+    const requestedCwds = [input.Cwd, input.cwd, input.workdir, input.workingDirectory, input.working_directory].filter(value => value !== undefined)
+    if (requestedCwds.some(value => typeof value !== "string" || !value)) return false
+    const requestedCwd = requestedCwds[0] as string | undefined
+    // Ambiguous duplicate cwd spellings fail closed; only one may execute.
+    if (requestedCwds.some(value => value !== requestedCwd)) return false
+    // Validate the model-supplied spelling before anchoring so ~/drive-relative
+    // forms cannot masquerade as project-relative paths after concatenation.
+    if (requestedCwd !== undefined && !isProjectBranchPath(requestedCwd, projectRoot)) return false
+    // Preserve .. segments while anchoring a relative cwd: path resolution would
+    // normalize them away before the symlink-aware project boundary check.
+    const cwd = typeof requestedCwd === "string" && !isAbsolute(requestedCwd)
+      ? `${projectRoot}${sep}${requestedCwd}`
+      : requestedCwd ?? projectRoot
+    return Boolean(command && isReadOnlyBranchCommand(command, projectRoot, cwd))
   }
   return false
 }
