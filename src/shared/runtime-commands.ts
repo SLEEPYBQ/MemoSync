@@ -17,7 +17,7 @@ export function isRuntimeCommandSelection(value: unknown): value is RuntimeComma
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const s = value as Record<string, unknown>
   if (Object.keys(s).some(key => !['provider', 'model', 'modelOptions', 'planMode'].includes(key))) return false
-  if (typeof s.provider !== 'string' || !['claude', 'codex', 'pi', 'opencode'].includes(s.provider)) return false
+  if (typeof s.provider !== 'string' || !['claude', 'codex', 'pi', 'opencode', 'antigravity'].includes(s.provider)) return false
   if (s.model !== undefined && (typeof s.model !== 'string' || s.model.length > 1024)) return false
   if (s.planMode !== undefined && typeof s.planMode !== 'boolean') return false
   if (s.modelOptions === undefined) return true
@@ -25,7 +25,7 @@ export function isRuntimeCommandSelection(value: unknown): value is RuntimeComma
   if (!options || typeof options !== 'object' || Array.isArray(options)) return false
   return Object.entries(options).every(([key, v]) => {
     if (key === 'connectionId') return typeof v === 'string' && v.length <= 1024
-    if (!['claude', 'codex', 'pi', 'opencode'].includes(key) || !v || typeof v !== 'object' || Array.isArray(v)) return false
+    if (!['claude', 'codex', 'pi', 'opencode', 'antigravity'].includes(key) || !v || typeof v !== 'object' || Array.isArray(v)) return false
     const fields = key === 'claude' ? ['connectionId', 'reasoningEffort', 'contextWindow', 'ultracode']
       : key === 'codex' ? ['connectionId', 'reasoningEffort', 'fastMode'] : key === 'pi' ? ['connectionId', 'reasoningEffort'] : []
     return Object.entries(v).every(([name, option]) => fields.includes(name) && (name === 'fastMode' || name === 'ultracode' ? typeof option === 'boolean'

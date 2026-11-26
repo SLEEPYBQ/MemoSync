@@ -91,14 +91,16 @@ export class CapabilityRegistry {
       }
     })
     const hostVerified = engine === "claude" ? ["2.1.241", "2.1.325"].includes(version ?? "")
-      : engine === "opencode" ? ["1.17.4", "1.19.5"].includes(version ?? "") : verified
+      : engine === "opencode" ? ["1.17.4", "1.19.5"].includes(version ?? "")
+      : engine === "antigravity" ? false : verified
+    const hostAvailability = engine === "antigravity" ? "unavailable" : hostVerified ? "available" : "unknown"
     return { engine, revision, executionPolicies, capabilities: [
       { id: "set-execution-policy", availability: "available", revision: 1, executionOwner: "host", proof: { version: "1", source: "MemoSync policy service (desired-state command)", level: "versioned-api" } },
-      { id: HOST_ACTION_CAPABILITY, availability: hostVerified ? "available" : "unknown", revision, executionOwner: "host",
+      { id: HOST_ACTION_CAPABILITY, availability: hostAvailability, revision, executionOwner: "host",
         proof: { version: version ?? "unknown", source: engine === "pi" ? "Pi native session/custom-tool call correlation" : engine === "codex" ? "Codex app-server process/thread/turn/call correlation"
           : engine === "claude" ? "Claude SDK input replay UUID / tool_use / claudecode/toolUseId (loopback native probe)"
-          : engine === "antigravity" ? "Antigravity ACP JSON-RPC session/tool/permission correlation (local protocol probe)" : "OpenCode native prompt parent / tool.execute.before / authenticated MCP ticket (loopback native probe)", level: "versioned-api" },
-        ...(!hostVerified ? { reason: "This runtime version has not been verified." } : {}) },
+          : engine === "antigravity" ? "Antigravity ACP adapter (host-action MCP tools not wired)" : "OpenCode native prompt parent / tool.execute.before / authenticated MCP ticket (loopback native probe)", level: "versioned-api" },
+        ...(engine === "antigravity" ? { reason: "Host UI action tools are not wired for Antigravity ACP sessions." } : !hostVerified ? { reason: "This runtime version has not been verified." } : {}) },
     ] }
   }
 }

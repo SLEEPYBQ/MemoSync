@@ -1320,7 +1320,7 @@ export class EventStore {
   async forkChat(sourceChatId: string) {
     const sourceChat = this.requireChat(sourceChatId)
     const sourceSessionToken = sourceChat.sessionToken ?? sourceChat.pendingForkSessionToken ?? null
-    if (sourceChat.draft || !sourceChat.provider || !sourceSessionToken) {
+    if (sourceChat.draft || !sourceChat.provider || sourceChat.provider === "antigravity" || !sourceSessionToken) {
       throw new Error("Chat cannot be forked")
     }
 
