@@ -550,7 +550,10 @@ export function wasSendCommittedInSnapshot(
 ): boolean {
   const normalized = content.trim()
   for (const entry of entries) {
-    if (entry.kind !== "user_prompt" || baseline.promptIds.has(entry._id)) continue
+    // The host reuses a queued message's id as the transcript prompt id when
+    // the queue dispatches it, so a baseline queue row that merely STARTED
+    // must not count as delivery of the new send.
+    if (entry.kind !== "user_prompt" || baseline.promptIds.has(entry._id) || baseline.queueIds.has(entry._id)) continue
     const prompt = entry as UserPromptEntry
     const text = (prompt.participantContent ?? prompt.content).trim()
     if (text === normalized) return true

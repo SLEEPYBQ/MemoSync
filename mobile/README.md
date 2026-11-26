@@ -63,6 +63,10 @@ src/
                            src/shared/protocol.ts + types.ts shapes
   lib/
     hostStore.ts           zustand store; pairing credentials in expo-secure-store
+    chatState.ts           pure transcript derivations shared by screens:
+                           memory-gate folding + effective chat status,
+                           pending-tool detection, post-approval plan mode,
+                           model-selection recovery, send reconciliation
     pairing.ts             pairing REST client + QR URI parsing (no URL API —
                            Hermes coverage has historically lagged)
     socket.ts              reconnecting WebSocket client (~200 lines):
@@ -104,9 +108,19 @@ src/
 - **Streaming is replacement-style.** `runtime.streamingText` is the whole
   in-progress reply, rendered as-is; it is never appended to previous chunks,
   and the final `assistant_text` transcript entry never overlaps it.
-- **Read-mostly transcript.** Memory-gate entries, system init rows and other
-  host-internal transcript kinds are intentionally not rendered; user prompts,
-  assistant text, collapsed tool calls and error results are.
+- **Read-mostly transcript with live memory gates.** System init rows and
+  other host-internal transcript kinds are intentionally not rendered; user
+  prompts, assistant text, collapsed tool calls and error results are. Memory
+  preparation entries (`memory_preview`, `memory_proposals`,
+  `memory_transfer`, `memory_checkup`) render only while they are live in the
+  current turn: a parked memory preview offers "Continue with memory",
+  "Continue without memory" and "Cancel message" via
+  `chat.respondMemoryPreview`, and parked step-one gates offer
+  "Skip for this message" (`chat.respondMemoryProposals` / `…Transfer` /
+  `…Checkup` with `decision: "skipped"`); item-by-item curation stays on the
+  host. An undecided current-turn gate also treats the chat as waiting for
+  input even when the wire status reads idle, so Stop and Queue/Steer stay
+  reachable; decided or older-turn gates render nothing at all.
 - **Theming follows the system.** Light/dark tokens are baked hex conversions
   of the web CSS custom properties (the warm paper canvas, quiet borders,
   terracotta logo accent). System font throughout, matching the web UI.
