@@ -327,7 +327,7 @@ function splitExecutionApprovalQuestion(question: string): { prompt: string; arg
  * that transition when the next turn starts. Keep the mobile override per chat
  * across screen navigation until the authoritative transcript proves a later
  * user turn consumed it. */
-const planModeOverridesByChat = new Map<string, { approvedAt: number }>()
+const planModeOverridesByChat = new Map<string, { toolUseId: string; respondedAt: number }>()
 
 function sidebarChatIsUnread(data: SidebarData, chatId: string): boolean {
   for (const group of data.projectGroups) {
@@ -745,9 +745,9 @@ export function ChatScreen({ route, navigation }: Props) {
   const [historyLoading, setHistoryLoading] = useState(false)
   const [historyError, setHistoryError] = useState<string | null>(null)
   const [planModeOverride, setPlanModeOverrideState] = useState<boolean | null>(() => (planModeOverridesByChat.has(chatId) ? false : null))
-  const setPlanModeOverride = useCallback((value: boolean | null, approvedAt = 0) => {
+  const setPlanModeOverride = useCallback((value: boolean | null, approval?: { toolUseId: string; respondedAt: number }) => {
     if (value == null) planModeOverridesByChat.delete(chatId)
-    else if (value === false) planModeOverridesByChat.set(chatId, { approvedAt })
+    else if (value === false && approval) planModeOverridesByChat.set(chatId, approval)
     setPlanModeOverrideState(value)
   }, [chatId])
   const knownEntriesRef = useRef<TranscriptEntry[]>([])
@@ -913,7 +913,14 @@ export function ChatScreen({ route, navigation }: Props) {
     // was closed. The approval is scoped to exactly one following user prompt;
     // once any later prompt exists, never let that stale approval override a
     // newer plan-mode turn.
-    if (transcriptEntries.some((entry) => entry.kind === "user_prompt" && entry.createdAt > override.approvedAt)) {
+    // Prefer the host-created tool-result time. The local response time is
+    // only a fallback for very large windows where that result has already
+    // scrolled out of the subscribed transcript.
+    const result = [...transcriptEntries].reverse().find(
+      (entry) => isToolResultEntry(entry) && entry.toolId === override.toolUseId,
+    )
+    const approvedAt = result?.createdAt ?? override.respondedAt
+    if (transcriptEntries.some((entry) => entry.kind === "user_prompt" && entry.createdAt > approvedAt)) {
       setPlanModeOverride(null)
     }
   }, [chatId, transcriptEntries, setPlanModeOverride])
@@ -1079,7 +1086,7 @@ export function ChatScreen({ route, navigation }: Props) {
         if (toolEntry && normalizedToolKind(toolEntry) === "exit_plan_mode" && confirmed) {
           // Match the desktop composer: approving a plan means the next user
           // message executes normally until the host reports that transition.
-          setPlanModeOverride(false, toolEntry.createdAt)
+          setPlanModeOverride(false, { toolUseId, respondedAt: Date.now() })
         }
       } catch (error) {
         setSendError(describeSendError(error))
