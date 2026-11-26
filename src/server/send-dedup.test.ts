@@ -794,14 +794,15 @@ describe("send & enqueue deduplication (clientRequestId)", () => {
       await new Promise((resolve) => setTimeout(resolve, 40))
 
       failNativeBoot = true
-      const failedNative = await h.coordinator.send({
-        type: "chat.send",
-        chatId: h.chat.id,
-        provider: "pi",
-        content: "/review",
-        clientRequestId: "req-native-boot-fail-1",
-      })
-      expect(failedNative).toEqual({ chatId: h.chat.id })
+      await expect(
+        h.coordinator.send({
+          type: "chat.send",
+          chatId: h.chat.id,
+          provider: "pi",
+          content: "/review",
+          clientRequestId: "req-native-boot-fail-1",
+        }),
+      ).rejects.toThrow("provider boot crashed after prompt append")
 
       const promptsAfterFail = h.store.getMessages(h.chat.id).filter((m) => m.kind === "user_prompt")
       expect(promptsAfterFail).toHaveLength(3)

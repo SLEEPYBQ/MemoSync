@@ -5011,6 +5011,10 @@ export class AgentCoordinator {
       if (appended === false) return
       await this.store.recordTurnFailed(args.chatId, message)
       this.emitStateChange(args.chatId)
+      // Native commands historically reject their caller even when the prompt
+      // was durably appended; preserve that contract after recording the
+      // terminal error so retries cannot black-hole the command silently.
+      if (args.nativeCommand) throw error
     } finally {
       // By now the turn is parked (pendingPreviews) or booted (activeTurns);
       // either way those guard the chat, so releasing the reservation is safe.
