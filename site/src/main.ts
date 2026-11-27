@@ -41,16 +41,18 @@ for (const mark of $$("[data-brand]")) {
   mark.innerHTML = `<svg viewBox="${svg.viewBox}" fill="currentColor" aria-hidden="true">${svg.markup}</svg>`
 }
 
-const copy = $<HTMLButtonElement>("[data-copy]")
-copy.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText($("[data-commands]").textContent ?? "")
-    copy.textContent = "Copied"
-  } catch {
-    copy.textContent = "Select & copy"
-  }
-  setTimeout(() => (copy.textContent = "Copy"), 1600)
-})
+for (const copy of $$<HTMLButtonElement>("[data-copy]")) {
+  copy.addEventListener("click", async () => {
+    const code = copy.closest(".terminal")?.querySelector("code")
+    try {
+      await navigator.clipboard.writeText(code?.textContent ?? "")
+      copy.textContent = "Copied"
+    } catch {
+      copy.textContent = "Select & copy"
+    }
+    setTimeout(() => (copy.textContent = "Copy"), 1600)
+  })
+}
 
 fetch("https://api.github.com/repos/SLEEPYBQ/MemoSync")
   .then((r) => (r.ok ? r.json() : null))

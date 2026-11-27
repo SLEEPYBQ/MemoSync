@@ -12,6 +12,8 @@
   <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg" /></a>
   <img alt="Bun 1.3.5+" src="https://img.shields.io/badge/bun-%E2%89%A51.3.5-f9f1e1.svg" />
   <img alt="Local-first" src="https://img.shields.io/badge/data-local--first-2ea44f.svg" />
+  <a href="https://arxiv.org/abs/2611.24165"><img alt="arXiv:2611.24165" src="https://img.shields.io/badge/arXiv-2611.24165-b31b1b.svg" /></a>
+  <a href="https://github.com/alvinreal/awesome-opensource-ai"><img alt="Mentioned in Awesome Open Source AI" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Open%20Source%20AI-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
   <a href="https://github.com/kyrolabs/awesome-agents"><img alt="Mentioned in Awesome Agents" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agents-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
   <a href="https://github.com/TeleAI-UAGI/Awesome-Agent-Memory"><img alt="Mentioned in Awesome Agent Memory" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Agent%20Memory-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
   <a href="https://github.com/yzfly/awesome-context-engineering"><img alt="Mentioned in Awesome Context Engineering" src="https://img.shields.io/badge/mentioned%20in-Awesome%20Context%20Engineering-fc60a8.svg?logo=awesomelists&logoColor=white" /></a>
@@ -19,7 +21,7 @@
 </p>
 
 <p align="center">
-  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://memosync.cc/">Website</a>
+  <b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="https://memosync.cc/">Website</a> · <a href="https://arxiv.org/abs/2611.24165">Paper</a>
 </p>
 
 <p align="center">
@@ -305,3 +307,19 @@ Provider presets and engine discovery are adapted from [Magpie](https://github.c
 ## License
 
 [MIT](LICENSE)
+
+## Citation
+
+If you use MemoSync in your research, please cite [our paper](https://arxiv.org/abs/2611.24165):
+
+```bibtex
+@misc{zhang2026memosync,
+  title={MemoSync: Co-Managing Developer-Agent Metamemory Across Contexts},
+  author={Baiqiao Zhang and Junze Li and Chunyang Luo and Yuying Tang and Wenshuo Zhang and Shiyuan Piao and Dingdong Liu and Shuai Ma and Xiaojuan Ma},
+  year={2026},
+  eprint={2611.24165},
+  archivePrefix={arXiv},
+  primaryClass={cs.HC},
+  url={https://arxiv.org/abs/2611.24165},
+}
+```
