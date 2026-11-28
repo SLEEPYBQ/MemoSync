@@ -137,6 +137,7 @@ function sameQueuedMessage(left: QueuedChatMessage, right: QueuedChatMessage) {
     && left.provider === right.provider
     && left.model === right.model
     && left.planMode === right.planMode
+    && left.clientRequestId === right.clientRequestId
     && JSON.stringify(left.modelOptions) === JSON.stringify(right.modelOptions)
     && sameAttachmentArray(left.attachments, right.attachments)
 }

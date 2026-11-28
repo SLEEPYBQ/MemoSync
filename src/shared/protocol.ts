@@ -181,6 +181,8 @@ export type ClientCommand =
       chatId?: string
       projectId?: string
       clientTraceId?: string
+      /** Optional client-generated idempotency key; prevents duplicate admission across reconnect retries. */
+      clientRequestId?: string
       provider?: AgentProvider
       content: string
       attachments?: ChatAttachment[]
@@ -280,6 +282,8 @@ export type ClientCommand =
       /** Interrupt via the existing message.steer path after enqueue. */
       steer?: boolean
       chatId: string
+      /** Optional client-generated idempotency key; prevents duplicate queue rows across reconnect retries. */
+      clientRequestId?: string
       content: string
       attachments?: ChatAttachment[]
       provider?: AgentProvider
@@ -330,6 +334,20 @@ export type ServerEnvelope =
   | { v: 1; type: "event"; id: string; event: TerminalEvent }
   | { v: 1; type: "ack"; id: string; result?: unknown | ChatHistoryPage | StandaloneTranscriptExportResult }
   | { v: 1; type: "error"; id?: string; message: string; uiText?: UiTextReference; attachmentsNotAdmitted?: true }
+
+export const MAX_CLIENT_REQUEST_ID_LENGTH = 128
+
+export function validateClientRequestId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== "string") {
+    throw new Error("clientRequestId must be a non-empty string")
+  }
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.length > MAX_CLIENT_REQUEST_ID_LENGTH) {
+    throw new Error("clientRequestId must be a non-empty string")
+  }
+  return trimmed
+}
 
 export function isClientEnvelope(value: unknown): value is ClientEnvelope {
   if (!value || typeof value !== "object") return false

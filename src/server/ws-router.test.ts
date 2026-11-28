@@ -2676,4 +2676,83 @@ describe("chat memory command routing", () => {
     expect(calls).toHaveLength(1)
     expect(ws.sent.at(-1)).toMatchObject({ type: "error", id: "failed-memory-off", message: "Could not save chat settings" })
   })
+
+  test("forwards pendingMemoryPreviewId on chat snapshots and forgets clientRequestIds on pruned empty chats", async () => {
+    const state = createEmptyState()
+    state.projectsById.set("proj-1", {
+      id: "proj-1",
+      localPath: "/tmp/proj",
+      title: "Proj",
+      createdAt: 1,
+      updatedAt: 1,
+    })
+    state.chatsById.set("chat-1", {
+      id: "chat-1",
+      projectId: "proj-1",
+      title: "Chat",
+      createdAt: 1,
+      updatedAt: 1,
+      unread: false,
+      provider: "claude",
+      planMode: false,
+      sessionToken: null,
+      lastTurnOutcome: "failed",
+    })
+    const forgottenChats: string[] = []
+    let prunedExpiredCalls = 0
+    const router = createWsRouter({
+      store: {
+        state,
+        getRecentChatHistory: () => ({
+          messages: [],
+          history: { hasOlder: false, olderCursor: null, recentLimit: 200 },
+        }),
+        getMessages: () => [],
+        pruneStaleEmptyChats: async () => ["stale-chat-9"],
+      } as never,
+      agent: {
+        getActiveStatuses: () => new Map(),
+        getDrainingChatIds: () => new Set(),
+        getStreamingAssistantTexts: () => new Map(),
+        getPendingMemoryPreviewId: (chatId: string) => (chatId === "chat-1" ? "prev-99" : null),
+        forgetChatClientRequests: (chatId: string) => {
+          forgottenChats.push(chatId)
+        },
+        pruneExpiredClientRequests: () => {
+          prunedExpiredCalls += 1
+        },
+      } as never,
+      terminals: { getSnapshot: () => null, onEvent: () => () => {} } as never,
+      keybindings: { getSnapshot: () => DEFAULT_KEYBINDINGS_SNAPSHOT, onChange: () => () => {} } as never,
+      refreshDiscovery: async () => [],
+      getDiscoveredProjects: () => [],
+      machineDisplayName: "Test",
+      updateManager: null,
+    })
+    const ws = new FakeWebSocket()
+    router.handleOpen(ws as never)
+    await router.handleMessage(
+      ws as never,
+      JSON.stringify({ v: PROTOCOL_VERSION, type: "subscribe", id: "sub-chat", topic: { type: "chat", chatId: "chat-1" } }),
+    )
+    expect(ws.sent).toContainEqual(
+      expect.objectContaining({
+        type: "snapshot",
+        id: "sub-chat",
+        snapshot: expect.objectContaining({
+          type: "chat",
+          data: expect.objectContaining({
+            runtime: expect.objectContaining({
+              status: "failed",
+              pendingMemoryPreviewId: "prev-99",
+            }),
+          }),
+        }),
+      }),
+    )
+
+    await router.pruneStaleEmptyChats()
+    expect(forgottenChats).toEqual(["stale-chat-9"])
+    expect(prunedExpiredCalls).toBe(1)
+  })
 })

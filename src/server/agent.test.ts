@@ -4122,8 +4122,8 @@ test("native command startup keeps its rejecting caller contract after prompt pe
       undefined, true,
     )).rejects.toThrow("native fixture boot failed")
     expect(store.messages.filter(entry => entry.kind === "user_prompt")).toHaveLength(1)
-    expect(store.messages.filter(entry => entry.kind === "result")).toHaveLength(0)
-    expect(store.turnFailures).toEqual([])
+    expect(store.messages.filter(entry => entry.kind === "result" && entry.isError)).toHaveLength(1)
+    expect(store.turnFailures).toEqual(["native fixture boot failed"])
   } finally { await coordinator.shutdownRuntime() }
 })
 
