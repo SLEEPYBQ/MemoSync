@@ -6,6 +6,7 @@ export type NativeExecutionPolicy =
   | { engine: "codex"; approvalPolicy: "on-request" | "untrusted" | "never"; approvalsReviewer: "user" | "auto_review"; sandbox: "read-only" | "workspace-write" | "danger-full-access" }
   | { engine: "pi"; toolGate: "read-only" | "ask" | "allow" }
   | { engine: "opencode"; permission: "ask" | "allow" | "deny" }
+  | { engine: "antigravity"; permission: "ask" | "allow" | "deny" }
 
 export type CapabilityAvailability = "available" | "unavailable" | "needs-auth" | "unknown"
 export interface CapabilityProof {

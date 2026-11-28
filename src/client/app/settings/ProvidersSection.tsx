@@ -30,6 +30,7 @@ const DEFAULTS_ROWS: Record<AgentProvider, SettingsRowDef> = {
   codex: SETTINGS_ROWS.codexDefaults,
   pi: SETTINGS_ROWS.piDefaults,
   opencode: SETTINGS_ROWS.opencodeDefaults,
+  antigravity: SETTINGS_ROWS.antigravityDefaults,
 }
 
 /** The option a picker change sets on that provider's saved defaults, if it is one this provider has. */
@@ -68,7 +69,7 @@ export function ProvidersSection({
   defaultExpanded,
   hash,
 }: {
-  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket">>
+  state: Pick<AppState, "handleWriteAppSettings" | "availableProviders"> & Partial<Pick<AppState, "socket" | "localProjects">>
   /** Engines open on first render (tests); otherwise only the one a deep link targets. */
   defaultExpanded?: readonly EngineId[]
   /** The page's current location hash, so search jumps open the target engine. */
@@ -79,6 +80,7 @@ export function ProvidersSection({
   const [error, setError] = useState<string | null>(null)
   const providers = state.availableProviders
   const snapshot = useModelAccessStore((s) => s.snapshot)
+  const hostPlatform = snapshot?.hostPlatform ?? state.localProjects?.machine.platform
   const [adding, setAdding] = useState<{ protocol?: ApiProtocol } | null>(null)
   const [expandedEngines, setExpandedEngines] = useState<ReadonlySet<EngineId>>(() => new Set(defaultExpanded ?? engineFromHash(hash)))
   useEffect(() => {
@@ -103,8 +105,9 @@ export function ProvidersSection({
 
   function renderDefaults(provider: AgentProvider) {
     const defaults = preferences.providerDefaults[provider]
-    const setup = snapshot?.engines[provider].setup
+    const setup = snapshot?.engines[provider]?.setup
     const access = setup?.access
+    const connectionMode = provider !== "antigravity" && access?.mode === "connection"
     return (
       <SettingsRow
         key={provider}
@@ -119,12 +122,12 @@ export function ProvidersSection({
             availableProviders={providers}
             selectedProvider={provider}
             showProviderPicker={false}
-            useModelAccess={access?.mode === "connection"}
+            useModelAccess={connectionMode}
             selectedConnectionOnly
-            connectionId={access?.mode === "connection" ? access.connectionId : undefined}
+            connectionId={connectionMode ? access.connectionId : undefined}
             providerLocked
             model={
-              access?.mode === "connection"
+              connectionMode
                 ? (access.defaultModel ??
                   snapshot?.connections.find((connection) => connection.id === access.connectionId)?.models[0]?.id ??
                   t("modelAccess:chooseModel"))
@@ -132,7 +135,7 @@ export function ProvidersSection({
             }
             modelOptions={defaults.modelOptions}
             onModelChange={(_, model) => {
-              if (setup && access?.mode === "connection" && state.socket) {
+              if (setup && connectionMode && state.socket) {
                 setError(null)
                 void state.socket
                   .command({
@@ -194,11 +197,12 @@ export function ProvidersSection({
         </SettingsGroup>
         <section id={SETTINGS_ROWS.modelEngines.id} data-settings-row className="scroll-mt-6 rounded-xl">
           <SettingsGroup title={t("modelAccess:engines")}>
-            {(["claude", "codex", "pi", "opencode"] as const).map((engine) => (
+            {(["claude", "codex", "pi", "opencode", "antigravity"] as const).map((engine) => (
               <EngineCard
                 key={engine}
                 engine={engine}
                 status={snapshot?.engines[engine]}
+                hostPlatform={hostPlatform}
                 connections={snapshot?.connections ?? []}
                 socket={state.socket}
                 onAddConnection={(protocol) => setAdding({ protocol })}

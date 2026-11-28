@@ -242,6 +242,11 @@ export const SETTINGS_ROWS = defineRows({
     get title() { return t("settings:opencodeDefaults") },
     get description() { return t("settings:savedModelForNewOpencodeChats") },
   },
+  antigravityDefaults: {
+    sectionId: "providers",
+    get title() { return t("settings:antigravityDefaults") },
+    get description() { return t("settings:savedModelForNewAntigravityChats") },
+  },
   installedSkills: { sectionId: "skills", get title() { return t("settings:installed") }, get description() { return t("settings:globallyInstalledAgentSkills") } },
   discoverSkills: { sectionId: "skills", get title() { return t("settings:discover") }, get description() { return t("settings:searchSkillsToInstallGlobally") } },
   remoteAccess: {

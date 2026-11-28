@@ -124,6 +124,21 @@ function OpencodeIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   )
 }
 
+function AntigravityIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
+  useI18n()
+  return (
+    <svg
+      viewBox={BRAND_SVGS.gemini.viewBox}
+      fill="currentColor"
+      aria-hidden="true"
+      data-provider-icon="antigravity"
+      className={cn("shrink-0", className)}
+      {...props}
+      dangerouslySetInnerHTML={{ __html: BRAND_SVGS.gemini.markup }}
+    />
+  )
+}
+
 // Claude's mark, in currentColor like the other engine icons. Static in-repo
 // constant (brand-svgs.ts), never user or network content.
 const CLAUDE_MARKUP = BRAND_SVGS.claude.markup.replace(/\sfill="[^"]*"/g, "")
@@ -147,6 +162,7 @@ export const PROVIDER_ICONS: Record<AgentProvider, IconComponent> = {
   codex: OpenAIIcon,
   pi: PiIcon,
   opencode: OpencodeIcon,
+  antigravity: AntigravityIcon,
 }
 
 // The Claude-engine catalog spans vendors; the composer chip follows the
@@ -401,7 +417,7 @@ export function ChatPreferenceControls({
   const allModels = selectedProvider === "pi" && registry.models.length ? registry.models : baseModelList
   const query = modelSearch.trim().toLowerCase()
   // An OpenCode sign-in can expose hundreds of models across its providers.
-  const searchableAccountModels = selectedProvider === "opencode" && showAccountModels
+  const searchableAccountModels = (selectedProvider === "opencode" || selectedProvider === "antigravity") && showAccountModels
   const modelList = selectedProvider === "pi" || searchableAccountModels
     ? allModels.filter(candidate => !query || `${candidate.id} ${candidate.label}`.toLowerCase().includes(query)).slice(0, 60)
     : allModels

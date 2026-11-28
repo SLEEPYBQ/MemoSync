@@ -5,11 +5,15 @@ import { CONNECTION_PRESETS } from "./presets"
 export type RuntimeEnv = Readonly<Record<string, string | undefined>>
 export const LEGACY_PI_ID = "env-llm-provider"
 
+const AMBIENT_PROVIDER_PREFIX = /^(ANTHROPIC_|CLAUDE_|CODEX_|OPENAI_|CHATGPT_|AGY_|ANTIGRAVITY_|GEMINI_)/
+const AMBIENT_SECRET_SUFFIX = /(?:^|_)(?:API_KEY|APIKEY|AUTH_TOKEN|ACCESS_TOKEN|REFRESH_TOKEN|ID_TOKEN|BEARER_TOKEN|CSRF_TOKEN|SESSION_TOKEN|TOKEN|SECRET|SECRET_KEY|SECRET_ACCESS_KEY|PRIVATE_KEY|PASSWORD|PASSWD|CREDENTIALS?)$/i
+const AMBIENT_EXACT_KEYS = new Set(["CLAUDECODE", "MEMOSYNC_CODEX_API_KEY", "CLOUD_CODE_URL", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_API_KEY"])
+
 /** Account discovery and connection launches share the same ambient-env boundary. */
 export function cleanConnectionEnv(base: RuntimeEnv): Record<string, string | undefined> {
   const env = { ...base }
   for (const key of Object.keys(env)) {
-    if (/^(ANTHROPIC_|CLAUDE_|CODEX_|OPENAI_|CHATGPT_)/.test(key) || key === "CLAUDECODE" || /(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET)$/.test(key) || key === "MEMOSYNC_CODEX_API_KEY") delete env[key]
+    if (AMBIENT_PROVIDER_PREFIX.test(key) || AMBIENT_EXACT_KEYS.has(key) || AMBIENT_SECRET_SUFFIX.test(key)) delete env[key]
   }
   return env
 }
@@ -141,7 +145,9 @@ export function resolveChatProviderRoute(
 /** Version/executable probes never receive provider credentials. */
 export function executableEnvironment(base: RuntimeEnv): Record<string, string | undefined> {
   return Object.fromEntries(Object.entries(base).filter(([key]) =>
-    !/^(ANTHROPIC_|OPENAI_|DEEPSEEK_|GLM_|OPENROUTER_)/.test(key)
-    && !/(?:API_KEY|AUTH_TOKEN|ACCESS_TOKEN|SECRET|PASSWORD|SECRET_ACCESS_KEY)$/.test(key),
+    !/^(ANTHROPIC_|OPENAI_|DEEPSEEK_|GLM_|OPENROUTER_|ANTIGRAVITY_|GEMINI_)/.test(key)
+    && (!/^AGY_/.test(key) || key === "AGY_PATH")
+    && !AMBIENT_EXACT_KEYS.has(key)
+    && !AMBIENT_SECRET_SUFFIX.test(key),
   ))
 }

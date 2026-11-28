@@ -38,6 +38,7 @@ function expectedSettingsSnapshot(filePath: string, overrides: Partial<AppSettin
     defaultProvider: "last_used",
     providerDefaults: {
       opencode: { model: "", modelOptions: {}, planMode: false },
+    antigravity: { model: "", modelOptions: {}, planMode: false },
       claude: {
         model: "deepseek-v4-flash",
         modelOptions: {
@@ -197,6 +198,12 @@ describe("AppSettingsManager", () => {
       }
       await manager.writePatch({ providerDefaults: { codex: { model: "gpt-live", modelOptions: { reasoningEffort: "ultra", fastMode: false } } } })
       expect((await readAppSettingsSnapshot(filePath)).providerDefaults.codex).toMatchObject({ model: "gpt-live", modelOptions: { reasoningEffort: "ultra", fastMode: false } })
+      await manager.writePatch({ defaultProvider: "antigravity", providerDefaults: { antigravity: { model: "gemini-3.8-flash-medium", planMode: true } } })
+      await manager.writePatch({ theme: "dark" })
+      await manager.reload()
+      const agySnapshot = await readAppSettingsSnapshot(filePath)
+      expect(agySnapshot.defaultProvider).toBe("antigravity")
+      expect(agySnapshot.providerDefaults.antigravity).toEqual({ model: "gemini-3.8-flash-medium", modelOptions: {}, planMode: true })
     } finally {
       manager.dispose()
     }

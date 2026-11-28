@@ -26,6 +26,7 @@ export function engineProblemMessage(status: EngineStatus) {
   if (status.accountIsolated) return t("modelAccess:accountIsolated")
   if (status.problem === "executable-incompatible" && status.executable?.belowMinimum) return t("modelAccess:executableTooOld")
   if (status.engine === "pi" && status.problem === "executable-incompatible") return t("modelAccess:piVersionUnsupported")
+  if (status.engine === "antigravity" && status.problem === "account-config-invalid") return t("modelAccess:antigravityAccountInvalid")
   const messages = {
     "executable-missing": "modelAccess:executableMissing",
     "executable-incompatible": "modelAccess:executableIncompatible",

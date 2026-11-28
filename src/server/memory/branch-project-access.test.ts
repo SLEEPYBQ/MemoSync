@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import type { query, Query, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { StartPiTurnArgs } from '../pi-agent'
 import { createMemoryBranch, isReadOnlyBranchCommand } from './branch-runtime'
+import { isAntigravityBranchRead } from './branch-read-policy'
 import { codexBranchGuardCommand } from './codex-branch-command'
 import { spawnSync } from 'node:child_process'
 
@@ -70,6 +71,22 @@ describe('memory branch project read boundary', () => {
       }
       for (const name of ['Glob', 'Grep']) expect((await check(name, { pattern: 'inside' })).permissionDecision).toBe('allow')
     } finally { branch.dispose(); rmSync(f.root, { recursive: true, force: true }) }
+  })
+
+  test('Antigravity run_command confines its requested cwd to the project', () => {
+    const f = fixture()
+    try {
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat inside.txt' }, f.project)).toBe(true)
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat inside.txt', Cwd: f.project }, f.project)).toBe(true)
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat ../inside.txt', Cwd: 'nested' }, f.project)).toBe(true)
+      for (const cwd of [f.root, 'escape', 'escape/../nested', '~']) {
+        expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat outside.txt', Cwd: cwd }, f.project)).toBe(false)
+      }
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat outside.txt', cwd: f.root }, f.project)).toBe(false)
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat inside.txt', Cwd: 42 }, f.project)).toBe(false)
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat inside.txt', Cwd: null }, f.project)).toBe(false)
+      expect(isAntigravityBranchRead('run_command', { CommandLine: 'cat inside.txt', Cwd: 'nested', cwd: f.project }, f.project)).toBe(false)
+    } finally { rmSync(f.root, { recursive: true, force: true }) }
   })
 
   test('Pi beforeToolCall scopes every read path, including its @ prefix', async () => {

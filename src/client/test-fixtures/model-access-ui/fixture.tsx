@@ -47,7 +47,7 @@ export const fixtureSnapshot: ModelAccessSnapshot = {
     noKey: i === 2,
   })),
   engines: Object.fromEntries(
-    (["claude", "codex", "pi", "opencode"] as const).map((engine, i) => [
+    (["claude", "codex", "pi", "opencode", "antigravity"] as const).map((engine) => [
       engine,
       {
         engine,
@@ -63,7 +63,7 @@ export const fixtureSnapshot: ModelAccessSnapshot = {
             ? { state: "not-needed" }
             : {
                 state: "ready",
-                path: `/fixture/bin/${engine}`,
+                path: `/fixture/bin/${engine === "antigravity" ? "agy" : engine}`,
                 version: "9.0.0",
                 source: "path",
                 minimumVersion: "1.0.0",
@@ -170,7 +170,7 @@ const api = {
       status.executable.state = id === "pi" && state === "ready" ? "not-needed" : state
       status.problem = problem ?? (state === "ready" ? undefined : (`executable-${state}` as EngineStatus["problem"]))
       status.setup.access =
-        mode === "account" && id !== "pi"
+        (mode === "account" && id !== "pi") || id === "antigravity"
           ? { mode: "account" }
           : {
               mode: "connection",

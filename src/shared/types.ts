@@ -4,7 +4,7 @@ import type { ChatCommandCatalog } from "./runtime-commands"
 export const STORE_VERSION = 2 as const
 export const PROTOCOL_VERSION = 1 as const
 
-export type AgentProvider = "claude" | "codex" | "pi" | "opencode"
+export type AgentProvider = "claude" | "codex" | "pi" | "opencode" | "antigravity"
 export type LlmProviderKind = "openai" | "openrouter" | "custom"
 export type AppThemePreference = "light" | "dark" | "system"
 export type ChatSoundPreference = "never" | "unfocused" | "always"
@@ -218,11 +218,15 @@ export interface PiModelOptions {
 /** OpenCode exposes no effort or plan controls; use ModelOptions.connectionId. */
 export type OpencodeModelOptions = Record<string, never>
 
+/** Antigravity model IDs already encode their thinking level (for example gemini-3.8-flash-medium). */
+export type AntigravityModelOptions = Record<string, never>
+
 export interface ProviderModelOptionsByProvider {
   claude: ClaudeModelOptions
   codex: CodexModelOptions
   pi: PiModelOptions
   opencode: OpencodeModelOptions
+  antigravity: AntigravityModelOptions
 }
 
 export interface ProviderPreference<TModelOptions> {
@@ -236,6 +240,7 @@ export type ChatProviderPreferences = {
   codex: ProviderPreference<CodexModelOptions>
   pi: ProviderPreference<PiModelOptions>
   opencode: ProviderPreference<OpencodeModelOptions>
+  antigravity: ProviderPreference<AntigravityModelOptions>
 }
 
 export type ModelOptions = Partial<{
@@ -405,6 +410,10 @@ export const PROVIDERS: ProviderCatalogEntry[] = [
   {
     id: "opencode", label: "OpenCode", defaultModel: "",
     supportsPlanMode: false, models: [], efforts: [],
+  },
+  {
+    id: "antigravity", label: "Antigravity", defaultModel: "",
+    supportsPlanMode: true, models: [], efforts: [],
   },
 ]
 
@@ -640,6 +649,7 @@ export interface AppSettingsPatch {
     codex?: Partial<ProviderPreference<CodexModelOptions>>
     pi?: Partial<ProviderPreference<PiModelOptions>>
     opencode?: Partial<ProviderPreference<OpencodeModelOptions>>
+    antigravity?: Partial<ProviderPreference<AntigravityModelOptions>>
   }
   memory?: Partial<MemorySettings>
   memoryPreview?: Partial<MemoryPreviewSettings>

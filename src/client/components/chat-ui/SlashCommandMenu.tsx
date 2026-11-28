@@ -44,7 +44,8 @@ interface Props {
 /** The composer's single entry to native commands, skills and connectors. */
 export const SlashCommandMenu = forwardRef<HTMLDivElement, Props>(function SlashCommandMenu({ catalog, matches, activeIndex, maxHeight, busy, onPick, onRetry, hostCommands }, listRef) {
   const items = catalog?.commands.items ?? []
-  const byToken = new Map(items.map(command => [runtimeCommandToken(command, items), command]))
+  const reserved = hostCommands ? Object.keys(hostCommands) : []
+  const byToken = new Map(items.map(command => [runtimeCommandToken(command, items, reserved), command]))
   const failed = catalog?.preparation?.status === "error" || catalog?.commands.status === "failed"
   const connectors = (catalog?.connectors.items ?? []).filter(connector => connector.kind !== "model-provider")
   return <div style={{ maxHeight }} className="absolute bottom-full left-2 right-2 z-20 mb-2 flex flex-col overflow-hidden rounded-2xl border border-border bg-background shadow-lg">

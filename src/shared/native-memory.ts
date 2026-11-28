@@ -1,5 +1,5 @@
 /** Native memory v2: server-issued identities, read-only sources, reviewed writes. */
-export type NativeMemoryEngine = "claude" | "codex" | "pi" | "opencode";
+export type NativeMemoryEngine = "claude" | "codex" | "pi" | "opencode" | "antigravity";
 export type NativeSourceKind = "native-memory" | "project-rule" | "skill";
 export type NativeMemoryOwner =
   | { scope: "personal"; projectId?: never; sessionId?: never }

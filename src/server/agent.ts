@@ -62,6 +62,7 @@ import {
   planMemoryInjection,
   type MemoryInjectionPlan,
 } from "./memory/injection"
+import { buildMemoryBlock } from "./memory/prompt"
 import { compileMemoryView, relationLifecycleOverrides } from "./memory/view"
 import type { RelevanceService, RelevantMemory } from "./memory/relevance"
 import { buildMemoryToolSpecs, dispatchMemoryTool, type MemoryToolContext, type MemoryToolSpec } from "./memory/tools"
@@ -78,6 +79,7 @@ import type { ExpectedMemoryUse, UsePlanService } from "./memory/use-plan"
 import { ensureProjectDirectory } from "./paths"
 import { isManagedChatUpload, matchesProjectUpload } from "./uploads"
 import { OpencodeAgentManager } from "./opencode-agent"
+import { AntigravityAgentManager } from "./antigravity-agent"
 import { PiAgentManager, resolvePiConnection, type PiConnection } from "./pi-agent"
 import {
   applyClaudeSdkModels,
@@ -340,6 +342,10 @@ interface StartTurnArgs {
   planMode: boolean
   appendUserPrompt: boolean
   codexPlanThread?: "continue" | "clear"
+  /** Exact turn-only memory allowlist preserved across plan-approval continuations. */
+  restrictMemoryIds?: string[]
+  /** Preserve per-turn "proceed without memory" across plan-approval continuations. */
+  memoryDisabledForTurn?: boolean
   steered?: boolean
   /** Resume of an interrupted turn (2026-08-19 C2): skip the pre-turn gates
    * and the working-memory confirmation — the recovery card confirmed the set. */
@@ -429,6 +435,8 @@ interface ActiveTurn {
   citedIds: Set<string>
   /** User chose "proceed without memory" at the preview gate for this turn. */
   memoryDisabled?: boolean
+  /** Exact turn-only memory allowlist confirmed for this turn (preview or resume). */
+  memoryRestriction?: string[]
   memoryDeliveryAccepted?: boolean
   /**
    * Snapshot of the memory ids injected for THIS turn, taken at engine boot.
@@ -531,6 +539,7 @@ interface AgentCoordinatorArgs {
   onStateChange: (chatId?: string, options?: { immediate?: boolean }) => void
   codexManager?: CodexAppServerManager
   opencodeManager?: OpencodeAgentManager
+  antigravityManager?: AntigravityAgentManager
   piManager?: PiAgentManager
   /** Injectable for tests; defaults to the Model Registry/env resolution. */
   resolvePiConnection?: () => Promise<PiConnection | null>
@@ -1842,6 +1851,7 @@ export class AgentCoordinator {
   private readonly questionToolIds = new Map<string, string>()
   private readonly codexManager: CodexAppServerManager
   private readonly opencodeManager: OpencodeAgentManager
+  private readonly antigravityManager: AntigravityAgentManager
   private readonly piManager: PiAgentManager
   private readonly hasCustomPiConnection: boolean
   private readonly resolvePiConnectionFn: () => Promise<PiConnection | null>
@@ -1996,6 +2006,7 @@ export class AgentCoordinator {
     this.codexManager.setCommandContextRestorer?.((chatId, text, signal) => this.codexManager.appendDeveloperContext(chatId, text, signal))
     this.stableToolSchemas = args.stableToolSchemas ?? (() => [])
     this.opencodeManager = args.opencodeManager ?? new OpencodeAgentManager()
+    this.antigravityManager = args.antigravityManager ?? new AntigravityAgentManager()
     this.piManager = args.piManager ?? new PiAgentManager()
     this.hasCustomPiConnection = Boolean(args.resolvePiConnection)
     this.resolvePiConnectionFn = args.resolvePiConnection ?? resolvePiConnection
@@ -2120,9 +2131,13 @@ export class AgentCoordinator {
     const hostStarted = performance.now()
     this.disposeMemoryBranches(args.chatId)
     const captureInput = { projectId: ctx.project.id, sessionId: args.chatId, turn: ctx.turnNumber, engine: args.provider, userText: args.memoryUserText ?? args.content, policyKey: this.memoryAnalysisPolicyKey(args.chatId, args.provider) }
-    const candidate = this.capture?.buildBranchPrompt?.(captureInput)
-    const transfer = this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText })
-    const changes = this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText)
+    const priorDigest = args.provider === "antigravity" && ctx.turnNumber > 1 ? this.recentConversationDigest(args.chatId) : ""
+    const withDigest = <T extends BranchRequest | undefined>(req: T): T => req && !req.skip && priorDigest
+      ? { ...req, constraints: [req.constraints, `PRIOR CONVERSATION DIGEST:\n${priorDigest}`].filter(Boolean).join("\n\n") } as T
+      : req
+    const candidate = withDigest(this.capture?.buildBranchPrompt?.(captureInput))
+    const transfer = withDigest(this.memoryTransferDetect?.buildTaskBranchPrompt?.({ ...captureInput, projectTitle: ctx.project.title, taskText: captureInput.userText }))
+    const changes = withDigest(this.memoryCheckup?.buildBranchPrompt?.(captureInput, captureInput.userText))
     const empty = (raw: Record<string, unknown>): BranchRequest => ({ prompt: '', dependencyKey: '', skip: { raw, reason: 'service-unavailable' } })
     const snapshot = this.memoryBranchSnapshot()
     this.branchPreparations.set(args.chatId, {
@@ -3602,6 +3617,7 @@ export class AgentCoordinator {
     const native = provider === 'claude' ? (!claude?.retired ? claude?.session.commandRuntime : undefined)
       : provider === 'pi' ? this.piManager.getCommandRuntime?.(chatId)
       : provider === 'opencode' ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : provider === 'antigravity' ? this.antigravityManager.getCommandRuntime?.(chatId)
       : provider === 'codex' ? this.codexManager.getCommandRuntime?.(chatId) : undefined
     const project = chat ? this.store.getProject(chat.projectId) : undefined
     if (!chat || !provider || !project || !native || !native.alive() || (preparation && preparation.status !== 'ready')) {
@@ -3735,6 +3751,7 @@ export class AgentCoordinator {
     const session = this.claudeSessions.get(chatId)
     await Promise.all([
       this.opencodeManager.closeChat?.(chatId),
+      this.antigravityManager.closeChat?.(chatId),
       session && !session.retired ? this.retireClaudeSession(session, 'session_rebuild') : undefined,
     ])
   }
@@ -3805,10 +3822,19 @@ export class AgentCoordinator {
         effort: normalizePiModelOptions(undefined, settings.effort).reasoningEffort, connection, signal, sessionToken,
         forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
         beforeToolCall: async () => ({ block: true, reason: 'No active model turn' }), isPolicyCurrent: isCurrent })
-    } else {
+    } else if (selection.provider === 'opencode') {
       preparedToken = await this.opencodeManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
         runtime, signal, sessionToken, forkSession: Boolean(chat.pendingForkSessionToken), memorySpecs: specs.length ? specs : undefined,
         executionPolicy: chat.executionPolicyVersion && policy.engine === 'opencode' ? policy : undefined,
+        isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
+    } else {
+      if (chat.pendingForkSessionToken) {
+        await this.store.setPendingForkSessionToken(chatId, null)
+        throw new Error('Antigravity chats cannot be forked')
+      }
+      preparedToken = await this.antigravityManager.prepareSession({ chatId, cwd: project.localPath, model: runtime?.model ?? settings.model,
+        runtime, signal, sessionToken: chat.sessionToken, forkSession: false, planMode: settings.planMode,
+        executionPolicy: chat.executionPolicyVersion && policy.engine === 'antigravity' ? policy : undefined,
         isPolicyCurrent: isCurrent, onExecutionPolicyApplied: applied })
     }
     signal.throwIfAborted()
@@ -3970,7 +3996,7 @@ export class AgentCoordinator {
 
   private hasIdleSession(chatId: string) {
     const claude = this.claudeSessions.get(chatId)
-    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId) || this.piManager.getCommandRuntime?.(chatId)?.alive())
+    return Boolean((claude && !claude.retired) || this.codexManager.hasSession?.(chatId) || this.opencodeManager.hasSession?.(chatId) || this.antigravityManager.hasSession?.(chatId) || this.piManager.getCommandRuntime?.(chatId)?.alive())
   }
 
   private idleCloseBlocked(chatId: string) {
@@ -3986,7 +4012,7 @@ export class AgentCoordinator {
       || Boolean(this.claudeSessions.get(chatId)?.pendingPrompts.some(prompt =>
         !this.claudeSessions.get(chatId)!.cancelledPromptSeqs.has(prompt.seq)))
       || Boolean(this.codexManager.hasPendingWork?.(chatId))
-      || Boolean(this.opencodeManager.hasPendingWork?.(chatId))
+      || Boolean(this.opencodeManager.hasPendingWork?.(chatId) || this.antigravityManager.hasPendingWork?.(chatId))
   }
 
   /** All work must be settled for a full 30 minutes, including detached memory passes. */
@@ -4018,6 +4044,7 @@ export class AgentCoordinator {
     const session = this.claudeSessions.get(chatId)
     await Promise.all([
       this.opencodeManager.closeChat(chatId),
+      this.antigravityManager.closeChat(chatId),
       session && !session.retired ? this.retireClaudeSession(session, "idle_timeout") : undefined,
     ])
     await this.retireHarnessPolicyIfAbsent(chatId)
@@ -4253,6 +4280,7 @@ export class AgentCoordinator {
     await this.stopDraining(chatId)
     this.piManager.closeChat(chatId)
     await this.opencodeManager.closeChat(chatId)
+    await this.antigravityManager.closeChat(chatId)
     await Promise.allSettled(memoryBranchCleanups)
     this.parentLaunches.delete(chatId)
     this.sessionRuntimes.delete(chatId)
@@ -4297,6 +4325,7 @@ export class AgentCoordinator {
     this.piManager.dispose()
     await Promise.allSettled([...this.branchCleanups.values()].flatMap(cleanups => [...cleanups]))
     await this.opencodeManager.dispose()
+    await this.antigravityManager.dispose()
     await Promise.allSettled(commandPreparations)
     this.commandPreparations.clear()
     this.commandSelections.clear()
@@ -4338,6 +4367,7 @@ export class AgentCoordinator {
     }
     await attempt(() => this.codexManager.stopAll())
     await attempt(() => this.opencodeManager.dispose())
+    await attempt(() => this.antigravityManager.dispose())
     if (errors.length === 1) throw errors[0]
     if (errors.length > 1) {
       throw new AggregateError(errors, "Failed to stop remaining agent turns")
@@ -4377,7 +4407,9 @@ export class AgentCoordinator {
 
   private getProviderSettings(provider: AgentProvider, options: SendMessageOptions) {
     const catalog = getServerProviderCatalog(provider)
-    const connectionId = options.modelOptions?.connectionId ?? (provider === "opencode" ? undefined : options.modelOptions?.[provider]?.connectionId)
+    const connectionId = provider === "antigravity"
+      ? undefined
+      : options.modelOptions?.connectionId ?? (provider === "opencode" ? undefined : options.modelOptions?.[provider]?.connectionId)
     const access = getModelAccessService()?.setup(provider).access
     const modelConnectionId = connectionId ?? (access?.mode === "connection" ? access.connectionId : undefined)
     if (provider === "claude") {
@@ -4400,6 +4432,9 @@ export class AgentCoordinator {
 
     if (provider === "opencode") {
       return { connectionId, model: options.model?.trim() || normalizeServerModel(provider), effort: undefined, serviceTier: undefined, planMode: false }
+    }
+    if (provider === "antigravity") {
+      return { connectionId, model: options.model?.trim() || normalizeServerModel(provider), effort: undefined, serviceTier: undefined, planMode: catalog.supportsPlanMode ? Boolean(options.planMode) : false }
     }
     if (provider === "pi") {
       const piModelOptions = normalizePiModelOptions(options.modelOptions, options.effort)
@@ -4625,8 +4660,13 @@ export class AgentCoordinator {
     const reservation = this.reserveStartup(args)
     const startupCancelled = () => reservation.cancelled
     // A fresh turn starts unrestricted — an edited gate only scoped the
-    // PREVIOUS turn's injection.
-    this.turnMemoryRestriction.delete(args.chatId)
+    // PREVIOUS turn's injection. A plan-approval continuation preserves the
+    // exclusion choice made for this logical turn.
+    if (args.restrictMemoryIds !== undefined) {
+      this.turnMemoryRestriction.set(args.chatId, [...args.restrictMemoryIds])
+    } else {
+      this.turnMemoryRestriction.delete(args.chatId)
+    }
     // A review planner's task-specific guidance belongs to its own turn. Auto
     // starts from the index; interrupt recovery retains its existing context.
     if (args.memoryState.control === "auto" && !args.resume) this.turnExpectedUses.delete(args.chatId)
@@ -4835,7 +4875,12 @@ export class AgentCoordinator {
       }
     }
 
-    await this.bootEngineTurn(args, { chat, project, turnNumber, memoryDisabledForTurn: !args.memoryState.memoryActive })
+    await this.bootEngineTurn(args, {
+      chat,
+      project,
+      turnNumber,
+      memoryDisabledForTurn: Boolean(args.memoryDisabledForTurn) || !args.memoryState.memoryActive,
+    })
     } catch (error) {
       if (!newlyAppendedPrompt || args.resume || args.nativeCommand) throw error
       if (!this.startupReservationIsCurrent(args.chatId, reservation)) throw error
@@ -6894,7 +6939,7 @@ export class AgentCoordinator {
     const { chat, project, turnNumber, memoryDisabledForTurn } = ctx
     const hostAdmission = args.hostAdmission
     const reservation = args.startupReservation
-    const turnRestriction = args.resume?.selectedIds ?? this.turnMemoryRestriction.get(args.chatId)
+    const turnRestriction = args.resume?.selectedIds ?? args.restrictMemoryIds ?? this.turnMemoryRestriction.get(args.chatId)
     const providerAttachments = args.providerAttachments ?? args.attachments
     if (reservation?.cancelled) return
     const startController = new AbortController()
@@ -7044,7 +7089,7 @@ export class AgentCoordinator {
         provider: args.provider,
         model: args.model,
       })
-    } else if (args.provider === "pi" || args.provider === "opencode") {
+    } else if (args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity") {
       logSendToStartingProfile(args.profile, "start_turn.provider_boot.begin", {
         chatId: args.chatId,
         provider: args.provider,
@@ -7083,8 +7128,16 @@ export class AgentCoordinator {
       const piSelected = new Set(piPlan?.injectedMemories.map(item => item.id) ?? [])
       const piExpectedUses = (this.turnExpectedUses.get(args.chatId) ?? []).filter(use => piSelected.has(use.id))
       const piEnforced = (this.turnPayAttention.get(args.chatId) ?? []).filter(item => piSelected.has(item.id))
+      const basePlanBlock = args.provider === "antigravity"
+        ? (piPlan
+          ? [
+              buildMemoryBlock({ memories: piPlan.injectedMemories, tools: false, conflicts: piPlan.conflicts, viewRevision: piPlan.view.revision }),
+              ...piPlan.injectedMemories.filter(item => item.detail).map(item => `Memory detail [${item.id}]:\n${item.detail}`),
+            ].filter(Boolean).join("\n\n")
+          : "")
+        : (piPlan?.block ?? "")
       const piMemoryBlock = [
-        piPlan?.block ?? "",
+        basePlanBlock,
         piExpectedUses.length ? `How the selected memories are expected to guide this turn:\n${piExpectedUses.map(use => `[${use.id}] ${use.expectedUse}`).join("\n")}` : "",
         ...piEnforced.map(item => `ENFORCED THIS RUN: [${item.id}] MUST be followed.${item.quote ? ` Previous violation: ${item.quote}` : ""}`),
         args.resume ? `RESUMING AN INTERRUPTED TURN: continue the existing conversation and completed work. Correction: ${args.resume.correction}` : "",
@@ -7137,6 +7190,24 @@ export class AgentCoordinator {
           onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
         }
         turn = await this.opencodeManager.startTurn(opencodeLaunch)
+      } else if (args.provider === "antigravity") {
+        if (chat.pendingForkSessionToken) {
+          await this.store.setPendingForkSessionToken(args.chatId, null)
+          throw new Error("Antigravity chats cannot be forked")
+        }
+        turn = await this.antigravityManager.startTurn({
+          signal: startController.signal, chatId: args.chatId, cwd: project.localPath,
+          content: buildPromptText(args.content, providerAttachments),
+          model: args.engineRuntime?.model ?? args.model, runtime: args.engineRuntime,
+          memoryContext: piMemoryBlock || undefined,
+          nativeCommand: args.nativeCommand,
+          sessionToken: chat.sessionToken,
+          forkSession: false, planMode: args.planMode,
+          executionPolicy: !legacyExecution && executionPolicy.engine === "antigravity" ? executionPolicy : undefined,
+          isPolicyCurrent, onExecutionPolicyApplied, onToolRequest,
+          onPermissionRequest: (request, tool) => requestNativeApproval(tool?.name ?? "permission", tool?.input ?? request, typeof request === "object" && request && "id" in request ? String(request.id) : undefined),
+          onLaunch: launch => this.parentLaunches.set(args.chatId, launch),
+        })
       } else {
       const connection = args.engineRuntime?.piConnection ?? await this.resolvePiConnectionFn()
       if (reservation?.cancelled || startController.signal.aborted || this.isEngineStartBlocked(args.chatId)) return
@@ -7381,9 +7452,10 @@ export class AgentCoordinator {
       assistantChunks: [],
       citedIds: new Set<string>(),
       memoryDisabled: memoryDisabledForTurn,
+      memoryRestriction: turnRestriction ? [...turnRestriction] : undefined,
       // Pi accepts its memory block inside the user prompt (there is no
       // developer_instructions channel) — delivery counts like Codex's.
-      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode",
+      memoryDeliveryAccepted: args.provider === "codex" || args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity",
       injectedIds: injectedIdsAtBoot,
     }
     this.activeTurns.set(args.chatId, active)
@@ -7397,7 +7469,7 @@ export class AgentCoordinator {
         const state = this.harnessPolicies.failed(scope, error instanceof Error ? error.message : String(error))
         if (state) await this.store.setExecutionPolicyState?.(args.chatId, state)
       }
-      if ((args.provider === "pi" || args.provider === "opencode") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
+      if ((args.provider === "pi" || args.provider === "opencode" || args.provider === "antigravity") && (startController.signal.aborted || this.isEngineStartBlocked(args.chatId))) return
       throw error
     } finally {
       admitTurn()
@@ -7857,7 +7929,7 @@ export class AgentCoordinator {
   getHarnessSnapshot(chatId: string, engine?: AgentProvider) {
     const chat = this.store.getChat(chatId)
     if (!chat || chat.deletedAt) return undefined
-    if (engine && !["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (engine && !["claude", "codex", "pi", "opencode", "antigravity"].includes(engine)) throw new Error("Invalid harness engine")
     if (engine && chat.provider && chat.provider !== engine) throw new Error("Execution policy engine does not match the chat")
     // Before the first turn, the pushed snapshot follows the engine the composer is preparing.
     const prepared = this.commandPreparations.get(chatId)?.selection.provider ?? this.commandSelections.get(chatId)?.provider
@@ -7870,12 +7942,14 @@ export class AgentCoordinator {
     const native = engine === "claude" ? claude?.session.commandRuntime
       : engine === "codex" ? this.codexManager.getCommandRuntime?.(chatId)
       : engine === "opencode" ? this.opencodeManager.getCommandRuntime?.(chatId)
+      : engine === "antigravity" ? this.antigravityManager.getCommandRuntime?.(chatId)
       : this.piManager.getCommandRuntime?.(chatId)
     // A retiring Claude pump remains a native handle until it has drained.
     const present = engine === "claude" ? Boolean(claude?.pump || native?.alive())
       : native ? native.alive()
       : engine === "codex" && !this.codexManager.getCommandRuntime ? Boolean(this.codexManager.hasSession?.(chatId))
-      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId)) : false
+      : engine === "opencode" && !this.opencodeManager.getCommandRuntime ? Boolean(this.opencodeManager.hasSession?.(chatId))
+      : engine === "antigravity" ? Boolean(this.antigravityManager.hasSession?.(chatId)) : false
     if (present) return "present"
     return this.engineStartAbortControllers.has(chatId) ? "starting" : "absent"
   }
@@ -7894,7 +7968,7 @@ export class AgentCoordinator {
   }
 
   getEngineCapabilities(engine: AgentProvider) {
-    if (!["claude", "codex", "pi", "opencode"].includes(engine)) throw new Error("Invalid harness engine")
+    if (!["claude", "codex", "pi", "opencode", "antigravity"].includes(engine)) throw new Error("Invalid harness engine")
     return this.harnessPolicies.registry.snapshot(engine, this.harnessRuntimeVersion(engine, lastEngineExecutable(engine)?.version))
   }
 
@@ -7924,6 +7998,7 @@ export class AgentCoordinator {
       await this.codexManager.stopSession(command.chatId)
       this.piManager.closeChat(command.chatId)
       await this.opencodeManager.closeChat(command.chatId)
+      await this.antigravityManager.closeChat(command.chatId)
       this.parentLaunches.delete(command.chatId)
       // Some adapters stop asynchronously. A remaining live handle is still pending retirement.
       state = this.harnessNativeRuntime(command.chatId, command.policy.engine) === "present"
@@ -8066,7 +8141,11 @@ export class AgentCoordinator {
       }
       await this.commandPreparations.get(chatId)?.promise
       const catalog = await this.readCommandCatalog(chatId)
-      const entry = match && catalog.commands.items.find(item => item.name === match[1])
+      const entry = match && (
+        catalog.commands.items.find(item => item.id === match[1])
+        ?? catalog.commands.items.find(item => `${item.namespace}:${item.name}` === match[1])
+        ?? catalog.commands.items.find(item => item.name === match[1])
+      )
       if (!entry || !catalog.runtimeKey) throw new Error('Command unavailable in the current native session; refresh its catalog')
       if (chat.draft) {
         await this.store.promoteDraft(chatId)
@@ -8228,6 +8307,9 @@ export class AgentCoordinator {
     }
     if (!chat.provider) {
       throw new Error("Chat must have a provider before forking")
+    }
+    if (chat.provider === "antigravity") {
+      throw new Error("Antigravity chats cannot be forked")
     }
     if (!chat.sessionToken && !chat.pendingForkSessionToken) {
       throw new Error("Chat has no session to fork")
@@ -8656,6 +8738,8 @@ export class AgentCoordinator {
             planMode: active.postToolFollowUp.planMode,
             appendUserPrompt: false,
             turnId: active.turnId,
+            restrictMemoryIds: active.memoryRestriction,
+            memoryDisabledForTurn: active.memoryDisabled,
           })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -8696,7 +8780,7 @@ export class AgentCoordinator {
 
   private assertMemoSyncControl(chatId: string): void {
     const chat = this.store.requireChat(chatId)
-    if (!["claude", "codex", "pi", "opencode"].includes(chat.provider ?? "")) {
+    if (!["claude", "codex", "pi", "opencode", "antigravity"].includes(chat.provider ?? "")) {
       throw new Error("Per-memory interrupt is only available on a supported MemoSync engine")
     }
   }
@@ -9205,7 +9289,7 @@ export class AgentCoordinator {
           await this.store.appendMessage(command.chatId, timestamped({ kind: "context_cleared" }))
         }
 
-        if (active.provider === "codex") {
+        if (active.provider === "codex" || active.provider === "antigravity") {
           const feedback = typeof result.message === "string" ? result.message.trim() : ""
           const clearContext = Boolean(result.confirmed && result.clearContext)
           const instruction = result.confirmed

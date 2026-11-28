@@ -143,6 +143,7 @@ const EMPTY_MODEL_ACCESS_SNAPSHOT: ModelAccessSnapshot = {
     claude: { engine: "claude", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
     codex: { engine: "codex", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
     opencode: { engine: "opencode", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
+    antigravity: { engine: "antigravity", setup: { access: { mode: "account" } }, executable: { state: "missing" }, ready: false },
     pi: { engine: "pi", setup: { access: { mode: "account" } }, executable: { state: "not-needed" }, ready: false, problem: "connection-missing" },
   },
 }
@@ -577,6 +578,7 @@ export function createWsRouter({
         planMode: false,
       },
       opencode: { model: "", modelOptions: {}, planMode: false },
+    antigravity: { model: "", modelOptions: {}, planMode: false },
       pi: {
         model: DEFAULT_PI_MODEL,
         modelOptions: {
@@ -629,6 +631,7 @@ export function createWsRouter({
         },
       },
       opencode: { ...snapshot.providerDefaults.opencode, ...patch.providerDefaults?.opencode, modelOptions: {}, planMode: false },
+      antigravity: { ...snapshot.providerDefaults.antigravity, ...patch.providerDefaults?.antigravity, modelOptions: {}, planMode: (patch.providerDefaults?.antigravity?.planMode ?? snapshot.providerDefaults.antigravity.planMode) === true },
       pi: {
         ...snapshot.providerDefaults.pi,
         ...patch.providerDefaults?.pi,

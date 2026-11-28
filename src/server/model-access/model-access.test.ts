@@ -569,7 +569,7 @@ describe("scoped account-model cache", () => {
     const env: Record<string, string> = { HOME: home, PATH: root }
     const open = (readEngineModels: EngineModelReader = async () => null) => new ModelAccessService({ keyring: testKeyring,
       dataDir, env, readEngineModels, readLegacyPi: async () => null,
-      resolveExecutable: async engine => engine === "pi" ? { state: "not-needed" } : engine === "opencode" ? { state: "missing" } : { ...executable[engine] },
+      resolveExecutable: async engine => engine === "pi" ? { state: "not-needed" } : engine === "opencode" || engine === "antigravity" ? { state: "missing" } : { ...executable[engine as AccountEngine] },
     }).initialize()
     return { root, home, dataDir, env, executable, open, cacheFile: join(dataDir, "engine-models.json") }
   }

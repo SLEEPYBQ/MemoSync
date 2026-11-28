@@ -38,10 +38,18 @@ import { BrandTile, ENGINE_BRANDS } from "../../components/brand/BrandIcon"
 import { cn } from "../../lib/utils"
 import { CONNECTION_FIELD_CLASS, Hint, MODEL_ACCESS_FOCUS_CLASS } from "./modelAccessUi"
 
-const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode" }
+const ENGINE_NAMES = { claude: "Claude Code", codex: "Codex", pi: "Pi", opencode: "OpenCode", antigravity: "Antigravity" }
+
+export function antigravityInstallCommand(hostPlatform?: NodeJS.Platform) {
+  return hostPlatform === "win32"
+    ? "irm https://antigravity.google/cli/install.ps1 | iex"
+    : "curl -fsSL https://antigravity.google/cli/install.sh | bash"
+}
+
 export function EngineCard({
   engine,
   status,
+  hostPlatform,
   connections,
   socket,
   onAddConnection,
@@ -51,6 +59,8 @@ export function EngineCard({
 }: {
   engine: EngineId
   status?: EngineStatus
+  /** Host OS running the MemoSync server and engine executables. */
+  hostPlatform?: NodeJS.Platform
   connections: ApiConnection[]
   socket?: Pick<AppSocket, "command">
   onAddConnection: (protocol: ApiProtocol) => void
@@ -119,7 +129,16 @@ export function EngineCard({
             ? "brokenStatus"
             : "notReadyStatus"
   const installCommand =
-    engine === "claude" ? "npm install -g @anthropic-ai/claude-code" : engine === "pi" ? "npm install -g --ignore-scripts @earendil-works/pi-coding-agent" : engine === "opencode" ? "npm install -g opencode-ai" : "npm install -g @openai/codex"
+    engine === "claude"
+      ? "npm install -g @anthropic-ai/claude-code"
+      : engine === "pi"
+        ? "npm install -g --ignore-scripts @earendil-works/pi-coding-agent"
+        : engine === "opencode"
+          ? "npm install -g opencode-ai"
+          : engine === "antigravity"
+            ? antigravityInstallCommand(hostPlatform)
+            : "npm install -g @openai/codex"
+  const supportsConnections = ENGINE_PROTOCOLS[engine].length > 0
   const bundledPi = engine === "pi" && (!executable || executable.state === "not-needed")
   const needsInstall = executable && !["ready", "not-needed"].includes(executable.state)
   const upgradeCommand = belowMinimum ? executable.upgradeCommand : undefined
@@ -129,7 +148,7 @@ export function EngineCard({
     ? null
     : !status.ready
       ? expanded ? null : status.problem === "account-signed-out" && !status.accountIsolated ? t("modelAccess:signedOutShort") : engineProblemMessage(status)
-      : access?.mode === "connection"
+      : supportsConnections && access?.mode === "connection"
         ? (() => {
             const modelId = access.defaultModel ?? selectedConnection?.models[0]?.id
             const model = selectedConnection?.models.find((candidate) => candidate.id === modelId)
@@ -252,7 +271,15 @@ export function EngineCard({
               <p>
                 {engineProblemMessage(status)}{" "}
                 {needsInstall && engine !== "pi"
-                  ? t(engine === "claude" ? "modelAccess:installClaude" : engine === "opencode" ? "modelAccess:installOpencode" : "modelAccess:installCodex")
+                  ? t(
+                      engine === "claude"
+                        ? "modelAccess:installClaude"
+                        : engine === "opencode"
+                          ? "modelAccess:installOpencode"
+                          : engine === "antigravity"
+                            ? "modelAccess:installAntigravity"
+                            : "modelAccess:installCodex",
+                    )
                   : null}
               </p>
               {status.problemDetail ? (
@@ -322,13 +349,13 @@ export function EngineCard({
             description={t(
               engine === "pi"
                 ? "modelAccess:piAccessDescription"
-                : access?.mode === "connection"
+                : supportsConnections && access?.mode === "connection"
                   ? "modelAccess:connectionAccessDescription"
                   : "modelAccess:accountAccessDescription",
             )}
-            wideControl={engine !== "pi"}
+            wideControl={supportsConnections && engine !== "pi"}
           >
-            {ENGINES_WITH_ACCOUNT_MODE.includes(engine) ? (
+            {ENGINES_WITH_ACCOUNT_MODE.includes(engine) && supportsConnections ? (
               <SettingsSegmented
                 aria-label={t("modelAccess:access")}
                 value={access?.mode ?? "account"}
@@ -345,7 +372,7 @@ export function EngineCard({
               />
             ) : null}
           </SettingsRow>
-          {access?.mode === "connection" || engine === "pi" ? (
+          {supportsConnections && (access?.mode === "connection" || engine === "pi") ? (
             <SettingsRow title={t("modelAccess:connectionRow")} description={status?.translated ? t("modelAccess:viaTranslation") : undefined}>
               <SettingsSelect
                 aria-label={t("modelAccess:connection")}

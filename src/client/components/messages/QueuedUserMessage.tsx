@@ -17,7 +17,7 @@ interface QueuedUserMessageProps {
 export function QueuedUserMessage({ message, connections, onRemove, onSendNow }: QueuedUserMessageProps) {
   useI18n()
   const connectionId = message.modelOptions?.connectionId
-    ?? (message.provider && message.provider !== "opencode" ? message.modelOptions?.[message.provider]?.connectionId : undefined)
+    ?? (message.provider && message.provider !== "opencode" && message.provider !== "antigravity" ? message.modelOptions?.[message.provider]?.connectionId : undefined)
   const missingConnection = connectionId && connections && !connections.some(connection => connection.id === connectionId)
   return (
     <div className="flex justify-end py-2">

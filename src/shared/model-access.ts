@@ -14,7 +14,7 @@
 
 import type { ProviderCatalogEntry } from "./types"
 
-export type EngineId = "claude" | "codex" | "pi" | "opencode"
+export type EngineId = "claude" | "codex" | "pi" | "opencode" | "antigravity"
 
 /** Wire protocol an endpoint speaks. */
 export type ApiProtocol = "anthropic-messages" | "openai-responses" | "openai-chat"
@@ -25,11 +25,12 @@ export const ENGINE_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>
   codex: ["openai-responses"],
   pi: ["openai-chat", "openai-responses"],
   opencode: ["openai-chat", "openai-responses", "anthropic-messages"],
+  antigravity: [],
 }
 
 /** Fallback protocols translated by the loopback gateway. Pi uses native endpoints. */
 export const ENGINE_TRANSLATED_PROTOCOLS: Readonly<Record<EngineId, readonly ApiProtocol[]>> = {
-  claude: ["openai-chat"], codex: ["openai-chat"], pi: [], opencode: [],
+  claude: ["openai-chat"], codex: ["openai-chat"], pi: [], opencode: [], antigravity: [],
 }
 
 export function connectionSupport(engine: EngineId, connection: Pick<ApiConnection, "endpoints">): "native" | "translated" | "unsupported" {
@@ -43,7 +44,7 @@ export function compatibleEndpointForEngine(engine: EngineId, connection: Pick<A
 }
 
 /** Engines that can use the agent's own sign-in. Pi has none. */
-export const ENGINES_WITH_ACCOUNT_MODE: readonly EngineId[] = ["claude", "codex", "opencode"]
+export const ENGINES_WITH_ACCOUNT_MODE: readonly EngineId[] = ["claude", "codex", "opencode", "antigravity"]
 
 export interface ConnectionEndpoint {
   protocol: ApiProtocol
@@ -167,6 +168,8 @@ export interface EngineStatus {
 export interface ModelAccessSnapshot {
   /** Refreshed with model access, including background CLI discovery on the home screen. */
   providers?: ProviderCatalogEntry[]
+  /** Operating system of the host running the engine executables. */
+  hostPlatform?: NodeJS.Platform
   connections: ApiConnection[]
   engines: Record<EngineId, EngineStatus>
   presets: ConnectionPreset[]

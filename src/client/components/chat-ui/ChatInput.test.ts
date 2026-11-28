@@ -5,7 +5,9 @@ import { MemoryRouter } from "react-router-dom"
 import { TooltipProvider } from "../ui/tooltip"
 import { PROVIDERS, type ChatAttachment } from "../../../shared/types"
 import { bindLandingUpload, ChatInput, composerModelOptions, createUploadFormData, getClipboardImageFiles, trimTrailingPastedNewlines, willExceedAttachmentLimit } from "./ChatInput"
-import { isRuntimeCommandSelection } from "../../../shared/runtime-commands"
+import { SlashCommandMenu } from "./SlashCommandMenu"
+import { isRuntimeCommandSelection, type ChatCommandCatalog } from "../../../shared/runtime-commands"
+import { ListTodo } from "lucide-react"
 
 function createClipboardItem(args: {
   kind?: string
@@ -189,5 +191,38 @@ describe("ChatInput", () => {
     expect(html).toContain('type="file"')
     expect(html).toContain("absolute inset-0 cursor-pointer opacity-0")
     expect(html).not.toContain('type="file" multiple="" class="hidden"')
+  })
+
+  test("SlashCommandMenu keeps host /plan and colliding Antigravity native /native:plan distinct", () => {
+    const proof = { api: "ACP session/update available_commands_update", version: "1.5.18", evidence: "native-response" as const }
+    const catalog: ChatCommandCatalog = {
+      runtime: { engine: "antigravity", nativeInstance: "i1", nativeSession: "s1", version: "1.5.18", profile: "p", workspace: "/w", mode: "m" },
+      runtimeKey: "rk",
+      revision: 1,
+      commands: {
+        status: "ready",
+        source: proof,
+        items: [{
+          id: "native:plan", name: "plan", description: "Native ACP plan command", namespace: "native", owner: "native-engine",
+          arguments: { type: "string" }, requiresIdle: true, sideEffect: "model-turn", route: "native-prompt", source: proof, requiredRuntimeVersion: "1.5.18",
+        }],
+      },
+      skills: { status: "unsupported", items: [], source: proof },
+      connectors: { status: "unsupported", items: [], source: proof },
+      compact: { status: "unsupported" },
+      operation: null,
+    }
+    const html = renderToStaticMarkup(createElement(SlashCommandMenu, {
+      catalog,
+      matches: ["native:plan", "plan"],
+      activeIndex: 0,
+      maxHeight: 240,
+      onPick: () => {},
+      hostCommands: { plan: { description: "Toggle plan mode", icon: ListTodo } },
+    }))
+    expect(html).toContain("/native:plan")
+    expect(html).toContain("Native ACP plan command")
+    expect(html).toContain("/plan")
+    expect(html).toContain("Toggle plan mode")
   })
 })

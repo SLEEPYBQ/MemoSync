@@ -58,6 +58,9 @@
   "desc_opencode_ask": "Ask before each tool call",
   "desc_opencode_allow": "Tools run without asking",
   "desc_opencode_deny": "No tool calls",
+  "desc_antigravity_ask": "Ask before each tool call",
+  "desc_antigravity_allow": "Tools run without asking",
+  "desc_antigravity_deny": "No tool calls",
   "planOn": "Plan mode is on",
   "planOff": "Turn off plan mode",
   "planSlash": "Toggle plan mode: plan before making changes"

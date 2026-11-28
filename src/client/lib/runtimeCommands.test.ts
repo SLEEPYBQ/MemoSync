@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import type { ChatCommandCatalog, RuntimeCommand } from "../../shared/runtime-commands"
-import { resolveRuntimeSlash, runtimeCatalogSettling } from "./runtimeCommands"
+import { resolveRuntimeSlash, runtimeCatalogSettling, runtimeCommandToken } from "./runtimeCommands"
 
 const proof = { api: "native.commands", version: "verified", evidence: "native-response" as const }
 const compact: RuntimeCommand = { id: "compact", name: "compact", description: "Compact", namespace: "native", owner: "native-engine", arguments: { type: "string" }, requiresIdle: true, sideEffect: "context-compaction", route: "compact", source: proof, requiredRuntimeVersion: "verified" }
@@ -29,6 +29,19 @@ describe("native command submission", () => {
     expect(resolveRuntimeSlash("/native:compact", both)?.command.id).toBe("compact")
     expect(resolveRuntimeSlash("/skill:compact Keep Foo.ts", both)).toEqual({ command: skill, args: "Keep Foo.ts" })
     expect(() => resolveRuntimeSlash("/compact", both)).toThrow()
+  })
+  test("native commands colliding with host-reserved tokens such as /plan namespace to native:<name>", () => {
+    const nativePlan: RuntimeCommand = {
+      id: "native:plan", name: "plan", description: "Plan task", namespace: "native", owner: "native-engine",
+      arguments: { type: "string" }, requiresIdle: true, sideEffect: "model-turn", route: "native-prompt", source: proof, requiredRuntimeVersion: "verified",
+    }
+    const items = [nativePlan]
+    const cat = catalog(items)
+    expect(runtimeCommandToken(nativePlan, items, ["plan"])).toBe("native:plan")
+    expect(runtimeCommandToken(nativePlan, items)).toBe("plan")
+    expect(resolveRuntimeSlash("/native:plan build auth", cat, ["plan"])).toEqual({ command: nativePlan, args: "build auth" })
+    expect(resolveRuntimeSlash("/plan", cat, ["plan"])).toBeNull()
+    expect(resolveRuntimeSlash("/plan build auth", cat)).toEqual({ command: nativePlan, args: "build auth" })
   })
   test("an unlisted slash command reaches the engine as text instead of failing", () => {
     expect(resolveRuntimeSlash("/frobnicate now", catalog())).toBeNull()

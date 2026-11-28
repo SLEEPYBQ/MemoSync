@@ -58,6 +58,9 @@
   "desc_opencode_ask": "调用工具前询问",
   "desc_opencode_allow": "工具直接执行，不询问",
   "desc_opencode_deny": "不允许调用工具",
+  "desc_antigravity_ask": "调用工具前询问",
+  "desc_antigravity_allow": "工具直接执行，不询问",
+  "desc_antigravity_deny": "不允许调用工具",
   "planOn": "计划模式已开启",
   "planOff": "关闭计划模式",
   "planSlash": "切换计划模式：先制定计划，再动手修改"

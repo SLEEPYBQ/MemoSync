@@ -52,6 +52,40 @@ export function isOpencodeBranchRead(name: string, input: Record<string, unknown
   return true
 }
 
+export function isAntigravityBranchRead(name: string, input: Record<string, unknown>, projectRoot: string): boolean {
+  const firstString = (...values: unknown[]) => values.find(value => typeof value === "string" && value.length > 0) as string | undefined
+  if (name === "view_file" || name === "read_file" || name === "Read") {
+    const filePath = firstString(input.Path, input.absolute_path, input.path, input.file_path)
+    return Boolean(filePath && isProjectBranchPath(filePath, projectRoot))
+  }
+  if (name === "grep_search" || name === "find_by_name" || name === "list_dir" || name === "Grep" || name === "Glob") {
+    const searchPath = firstString(input.Path, input.SearchDirectory, input.SearchPath, input.Directory, input.path) ?? "."
+    if (!isProjectBranchPath(searchPath, projectRoot)) return false
+    const cwd = resolve(projectRoot, searchPath)
+    const pattern = firstString(input.Pattern, input.pattern)
+    if ((name === "find_by_name" || name === "Glob") && pattern && !isProjectBranchPath(pattern, projectRoot, cwd)) return false
+    return true
+  }
+  if (name === "run_command" || name === "Bash") {
+    const command = firstString(input.CommandLine, input.command_line, input.commandLine, input.command)
+    const requestedCwds = [input.Cwd, input.cwd, input.workdir, input.workingDirectory, input.working_directory].filter(value => value !== undefined)
+    if (requestedCwds.some(value => typeof value !== "string" || !value)) return false
+    const requestedCwd = requestedCwds[0] as string | undefined
+    // Ambiguous duplicate cwd spellings fail closed; only one may execute.
+    if (requestedCwds.some(value => value !== requestedCwd)) return false
+    // Validate the model-supplied spelling before anchoring so ~/drive-relative
+    // forms cannot masquerade as project-relative paths after concatenation.
+    if (requestedCwd !== undefined && !isProjectBranchPath(requestedCwd, projectRoot)) return false
+    // Preserve .. segments while anchoring a relative cwd: path resolution would
+    // normalize them away before the symlink-aware project boundary check.
+    const cwd = typeof requestedCwd === "string" && !isAbsolute(requestedCwd)
+      ? `${projectRoot}${sep}${requestedCwd}`
+      : requestedCwd ?? projectRoot
+    return Boolean(command && isReadOnlyBranchCommand(command, projectRoot, cwd))
+  }
+  return false
+}
+
 /** Match Pi's path normalization and read-tool filename fallbacks before checking
  * realpath. Otherwise a missing ASCII name could select an outside curly/NFD link.
  */

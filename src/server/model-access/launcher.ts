@@ -29,9 +29,15 @@ export async function executableLauncher(file: string, env: ExecutableEnvironmen
   await access(target, constants.R_OK)
   if (/\.(cmd|bat)$/i.test(target)) {
     const wrapper = await readFile(target, "utf8")
-    const match = wrapper.match(/"(?:%dp0%[\\/]|%~dp0[\\/]?)([^"\r\n]+\.(?:js|mjs|cjs))"\s+%\*/i)
-    if (!match) throw new Error("Unsupported executable shim; configure the native binary or JS entry")
-    return executableLauncher(resolve(dirname(target), match[1]!.replaceAll("\\", "/")), env)
+    const jsMatch = wrapper.match(/"(?:%dp0%[\\/]|%~dp0[\\/]?)([^"\r\n]+\.(?:js|mjs|cjs))"\s+%\*/i)
+    if (jsMatch) {
+      return executableLauncher(resolve(dirname(target), jsMatch[1]!.replaceAll("\\", "/")), env)
+    }
+    const exeMatch = wrapper.match(/"(?:%dp0%[\\/]|%~dp0[\\/]?)([^"\r\n]+\.exe)"\s+%\*/i)
+    if (exeMatch) {
+      return executableLauncher(resolve(dirname(target), exeMatch[1]!.replaceAll("\\", "/")), env)
+    }
+    throw new Error("Unsupported executable shim; configure the native binary or JS entry")
   }
   const handle = await open(target, "r")
   let firstLine: string

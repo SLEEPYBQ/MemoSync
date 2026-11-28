@@ -13,6 +13,7 @@ export function executionPolicyKey(policy: NativeExecutionPolicy | null): string
     case "codex": return `codex:${policy.approvalPolicy}:${policy.approvalsReviewer}:${policy.sandbox}`
     case "pi": return `pi:${policy.toolGate}`
     case "opencode": return `opencode:${policy.permission}`
+    case "antigravity": return `antigravity:${policy.permission}`
   }
 }
 
@@ -40,6 +41,7 @@ export function executionPolicyLabel(policy: NativeExecutionPolicy | null): stri
     case "pi":
       return policy.toolGate === "read-only" ? t("harness:readOnlyTools") : policy.toolGate === "ask" ? t("harness:askTools") : t("harness:allowTools")
     case "opencode":
+    case "antigravity":
       return policy.permission === "ask" ? t("harness:ask") : policy.permission === "allow" ? t("harness:allowTools") : t("harness:denyTools")
   }
 }
@@ -63,7 +65,8 @@ export function policyIcon(policy: NativeExecutionPolicy): LucideIcon {
     case "codex": return policy.approvalsReviewer === "auto_review" ? Sparkles : policy.sandbox === "read-only" ? Eye
       : policy.sandbox === "danger-full-access" ? ShieldOff : Hand
     case "pi": return policy.toolGate === "read-only" ? Eye : policy.toolGate === "ask" ? Hand : ShieldOff
-    case "opencode": return policy.permission === "deny" ? Ban : policy.permission === "ask" ? Hand : ShieldOff
+    case "opencode":
+    case "antigravity": return policy.permission === "deny" ? Ban : policy.permission === "ask" ? Hand : ShieldOff
   }
 }
 
@@ -78,6 +81,7 @@ function policyDescription(policy: NativeExecutionPolicy): string {
       return t("harness:desc_codex_ask")
     case "pi": return t(`harness:desc_pi_${policy.toolGate}`)
     case "opencode": return t(`harness:desc_opencode_${policy.permission}`)
+    case "antigravity": return t(`harness:desc_antigravity_${policy.permission}`)
   }
 }
 

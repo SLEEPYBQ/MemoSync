@@ -1,4 +1,5 @@
 import type { Options } from '@anthropic-ai/claude-agent-sdk'
+import type { StartAntigravityTurnArgs } from '../antigravity-agent'
 import type { StartCodexSessionArgs, StartCodexTurnArgs } from '../codex-app-server'
 import type { StartOpencodeTurnArgs } from '../opencode-agent'
 import type { StartPiTurnArgs } from '../pi-agent'
@@ -23,7 +24,11 @@ export interface OpencodeParentLaunch {
   provider: 'opencode'
   options: Pick<StartOpencodeTurnArgs, 'model' | 'runtime' | 'systemPrompt' | 'memorySpecs'>
 }
-export type ParentLaunch = ClaudeParentLaunch | CodexParentLaunch | PiParentLaunch | OpencodeParentLaunch
+export interface AntigravityParentLaunch {
+  provider: 'antigravity'
+  options: Pick<StartAntigravityTurnArgs, 'model' | 'runtime' | 'systemPrompt'> & { memorySpecs?: MemoryToolSpec[] }
+}
+export type ParentLaunch = ClaudeParentLaunch | CodexParentLaunch | PiParentLaunch | OpencodeParentLaunch | AntigravityParentLaunch
 
 /** Copy data at the turn boundary. Only inert tool definitions retain handlers;
  * live transports/callbacks are deliberately absent from ParentLaunch. */

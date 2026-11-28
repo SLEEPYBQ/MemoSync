@@ -12,10 +12,12 @@ describe("execution policy boundaries", () => {
     expect(defaultExecutionPolicy("claude", true)).toEqual({ engine: "claude", permissionMode: "acceptEdits" })
     expect(defaultExecutionPolicy("pi")).toEqual({ engine: "pi", toolGate: "ask" })
     expect(defaultExecutionPolicy("opencode")).toEqual({ engine: "opencode", permission: "ask" })
+    expect(defaultExecutionPolicy("antigravity")).toEqual({ engine: "antigravity", permission: "ask" })
+    expect(defaultExecutionPolicy("antigravity", true)).toEqual({ engine: "antigravity", permission: "allow" })
   })
 
   test("version drift leaves adapter policies selectable, with native eligibility still required", () => {
-    for (const engine of ['claude', 'codex', 'pi', 'opencode'] as const) {
+    for (const engine of ['claude', 'codex', 'pi', 'opencode', 'antigravity'] as const) {
       for (const version of [undefined, '999.0.0', '2.1.319', 'claude 2.1.319 (Claude Code)']) {
         const snapshot = engineCapabilities(engine, version)
         expect(snapshot.executionPolicies.every(c => c.availability === 'available')).toBe(true)

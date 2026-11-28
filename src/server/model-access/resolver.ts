@@ -81,6 +81,10 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
             const capability = await runExecutableProbe(launcher, ["app-server", "--help"], env, timeoutMs)
             if (!capability.ok) return { state: "incompatible", version, detail: `Codex app-server is unavailable: ${capability.detail}` }
           }
+          if (engine === "antigravity") {
+            const capability = await runExecutableProbe(launcher, ["acp", "--help"], env, timeoutMs)
+            if (!capability.ok) return { state: "incompatible", version, detail: `Antigravity ACP is unavailable: ${capability.detail}` }
+          }
           return { state: "ready", version }
         })()
         // Bound old identities after repeated installs/environment changes.
@@ -125,7 +129,12 @@ export function createExecutableResolver(options: ResolverOptions = {}) {
       const result = await candidate(expand(env.CLAUDE_EXECUTABLE.trim()), "configured")
       if (result) return result
     }
-    const names = process.platform === "win32" ? [`${engine}.exe`, `${engine}.cmd`, engine] : [engine]
+    if (engine === "antigravity" && env.AGY_PATH?.trim()) {
+      const result = await candidate(expand(env.AGY_PATH.trim()), "configured")
+      if (result) return result
+    }
+    const binary = engine === "antigravity" ? "agy" : engine
+    const names = process.platform === "win32" ? [`${binary}.exe`, `${binary}.cmd`, binary] : [binary]
     const inDirectories = async (dirs: readonly string[], source: Source) => {
       for (const dir of dirs) for (const name of names) {
         const result = await candidate(resolve(dir.replace(/^"|"$/g, ""), name), source)

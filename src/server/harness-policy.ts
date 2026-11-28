@@ -9,6 +9,7 @@ export function defaultExecutionPolicy(engine: AgentProvider, legacy = false): N
     case "codex": return { engine, approvalPolicy: legacy ? "never" : "on-request", approvalsReviewer: "user", sandbox: legacy ? "danger-full-access" : "workspace-write" }
     case "pi": return { engine, toolGate: legacy ? "allow" : "ask" }
     case "opencode": return { engine, permission: legacy ? "allow" : "ask" }
+    case "antigravity": return { engine, permission: legacy ? "allow" : "ask" }
   }
 }
 
@@ -21,7 +22,8 @@ export function isNativeExecutionPolicy(value: unknown): value is NativeExecutio
     case "claude": return ["default", "acceptEdits", "dontAsk", "bypassPermissions", "auto"].includes(p.permissionMode as string)
     case "codex": return ["on-request", "untrusted", "never"].includes(p.approvalPolicy as string) && ["user", "auto_review"].includes(p.approvalsReviewer as string) && ["read-only", "workspace-write", "danger-full-access"].includes(p.sandbox as string)
     case "pi": return ["read-only", "ask", "allow"].includes(p.toolGate as string)
-    case "opencode": return ["ask", "allow", "deny"].includes(p.permission as string)
+    case "opencode":
+    case "antigravity": return ["ask", "allow", "deny"].includes(p.permission as string)
     default: return false
   }
 }
@@ -42,6 +44,7 @@ export function executionPolicyKey(policy: NativeExecutionPolicy): string {
     case "codex": return `codex:${policy.approvalPolicy}:${policy.approvalsReviewer}:${policy.sandbox}`
     case "pi": return `pi:${policy.toolGate}`
     case "opencode": return `opencode:${policy.permission}`
+    case "antigravity": return `antigravity:${policy.permission}`
   }
 }
 
@@ -54,7 +57,7 @@ export class CapabilityRegistry {
     this.revisions.set(engine, { version, revision })
     const verified = engine === "pi" ? version === "1.5.0"
       : engine === "claude" ? ["2.1.241", "2.1.318"].includes(version ?? "")
-      : engine === "codex" ? ["0.166.0-alpha.5.1", "0.166.0-alpha.6"].includes(version ?? "") : version === "1.19.5"
+      : engine === "codex" ? ["0.166.0-alpha.5.1", "0.166.0-alpha.6"].includes(version ?? "") : engine === "antigravity" ? Boolean(version && /^1\.5\.(?:1[7-9]|[2-9]\d)/.test(version)) : version === "1.19.5"
     const policies: Array<[string, NativeExecutionPolicy]> = engine === "claude" ? [
       ["Ask for native approvals", { engine, permissionMode: "default" }],
       ["Accept file edits", { engine, permissionMode: "acceptEdits" }],
@@ -81,21 +84,23 @@ export class CapabilityRegistry {
         executionOwner: engine === "pi" ? "host" : "native-engine",
         boundary: engine === "pi" ? "tool-gating" : engine === "codex" ? "native-sandbox" : "native-permissions",
         availability: "available",
-        proof: { version: version ?? "unknown", source: engine === "pi" ? "Pinned @earendil-works/pi-coding-agent 1.5.0 beforeToolCall adapter" : engine === "claude" ? "Claude SDK 0.3.241 Query.setPermissionMode / canUseTool" : engine === "codex" ? "Codex f79b26cc app-server thread/turn policy API" : "OpenCode SDK 1.19.5 session.update permission rules / permission.reply", level: "versioned-api" },
+        proof: { version: version ?? "unknown", source: engine === "pi" ? "Pinned @earendil-works/pi-coding-agent 1.5.0 beforeToolCall adapter" : engine === "claude" ? "Claude SDK 0.3.241 Query.setPermissionMode / canUseTool" : engine === "codex" ? "Codex f79b26cc app-server thread/turn policy API" : engine === "antigravity" ? "Antigravity ACP session/request_permission + session/set_config_option" : "OpenCode SDK 1.19.5 session.update permission rules / permission.reply", level: "versioned-api" },
         reason: [!verified ? `Runtime version ${version ?? "unknown"} differs from the verified baseline; the native API must acknowledge or reject this policy.` : "Native acknowledgement is required before this policy is effective.",
           eligibilitySensitive ? "Runtime/model eligibility and managed requirements are decided by the native engine." : "",
           engine === "pi" ? "Tool gating only. Shell subprocesses have no OS sandbox." : ""].filter(Boolean).join(" "),
       }
     })
     const hostVerified = engine === "claude" ? ["2.1.241", "2.1.325"].includes(version ?? "")
-      : engine === "opencode" ? ["1.17.4", "1.19.5"].includes(version ?? "") : verified
+      : engine === "opencode" ? ["1.17.4", "1.19.5"].includes(version ?? "")
+      : engine === "antigravity" ? false : verified
+    const hostAvailability = engine === "antigravity" ? "unavailable" : hostVerified ? "available" : "unknown"
     return { engine, revision, executionPolicies, capabilities: [
       { id: "set-execution-policy", availability: "available", revision: 1, executionOwner: "host", proof: { version: "1", source: "MemoSync policy service (desired-state command)", level: "versioned-api" } },
-      { id: HOST_ACTION_CAPABILITY, availability: hostVerified ? "available" : "unknown", revision, executionOwner: "host",
+      { id: HOST_ACTION_CAPABILITY, availability: hostAvailability, revision, executionOwner: "host",
         proof: { version: version ?? "unknown", source: engine === "pi" ? "Pi native session/custom-tool call correlation" : engine === "codex" ? "Codex app-server process/thread/turn/call correlation"
           : engine === "claude" ? "Claude SDK input replay UUID / tool_use / claudecode/toolUseId (loopback native probe)"
-          : "OpenCode native prompt parent / tool.execute.before / authenticated MCP ticket (loopback native probe)", level: "versioned-api" },
-        ...(!hostVerified ? { reason: "This runtime version has not been verified." } : {}) },
+          : engine === "antigravity" ? "Antigravity ACP adapter (host-action MCP tools not wired)" : "OpenCode native prompt parent / tool.execute.before / authenticated MCP ticket (loopback native probe)", level: "versioned-api" },
+        ...(engine === "antigravity" ? { reason: "Host UI action tools are not wired for Antigravity ACP sessions." } : !hostVerified ? { reason: "This runtime version has not been verified." } : {}) },
     ] }
   }
 }
@@ -293,7 +298,8 @@ export class HarnessPolicyService implements HostActionAdmissionPolicy {
     const p = this.runtimes.get(this.id(scope.chatId, scope.engine))!.state.desired
     switch (p.engine) {
       case "pi": return p.toolGate === "read-only" ? "deny" : p.toolGate
-      case "opencode": return p.permission
+      case "opencode":
+      case "antigravity": return p.permission
       case "codex": return p.sandbox === "read-only" ? "deny" : p.approvalPolicy === "never" ? "allow" : "ask"
       case "claude": return p.permissionMode === "dontAsk" ? "deny" : "ask"
     }
